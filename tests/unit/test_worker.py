@@ -1163,3 +1163,119 @@ def test_lldb_s_thread_list_is_read_for_its_thread_ids():
         NativeSession.listed_threads(SimpleNamespace(request=lambda *a, **k: {"result": ""}))
         is None
     )
+
+
+def test_rows_read_through_a_container_a_library_call_is_changing_are_withheld(tmp_path):
+    # #187: in `main` below `o.items.clear()`, `o.items[1].name` read the freed string of
+    # an element already destroyed. The runtime says why such a row is withheld; the
+    # row then has no value and no handle (nothing below it reads), even under a note.
+    from types import SimpleNamespace
+
+    from peeky.native import Withholding
+    from peeky.worker import DebugWorker
+
+    asked = []
+
+    def changing_container(frame, steps, stack=None, deeper=None, threads=None):
+        # The stop's threads are the runtime's to judge (review of #187).
+        assert threads == worker.threads_at_stop and deeper == worker.whole_stack
+        asked.append((steps, stack))
+        if steps[:2] == ["o", "items"] and len(steps) > 2:
+            return Withholding("a standard-library call below this frame …", "not shown", "x")
+        return None
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        changing_container=changing_container,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.listed_frames = [{"id": 1, "name": "main"}]
+    elements = [
+        {"name": "[1]", "type": "Noisy", "value": "Noisy @ 0x10", "variablesReference": 7},
+        {"name": "dropped", "type": "int", "value": "1", "variablesReference": 0},
+    ]
+    shown, other = worker.expose_variables(
+        elements, {"id": 1}, ("Locals",), (("o", "Owner"), ("items", "std::vector<Noisy>"))
+    )
+    assert shown["unavailable"] and shown["value"] is None and shown["variablesReference"] == 0
+    assert shown["withheld"] and shown["withheld_as"] == "not shown" and not shown["settable"]
+    assert shown["reason"].startswith("a standard-library call below this frame")
+    assert asked[0] == (["o", "items", "[1]"], worker.listed_frames)
+    # Under a noted parent (#148) too; a sibling path is read as before.
+    (noted,) = worker.expose_variables(
+        elements[:1], {"id": 1}, ("Locals",), (("o", "Owner"), ("items", "")), noted=("n", False)
+    )
+    assert noted["unavailable"] and "note" not in noted
+    (plain,) = worker.expose_variables(elements[1:], {"id": 1}, ("Locals",), (("o", "Owner"),))
+    assert plain["value"] == "1" and not plain.get("unavailable")
+    # Root locals are never asked (they are not read through a container).
+    worker.expose_variables(elements[1:], {"id": 1}, ("Locals",), ())
+    assert all(len(steps) > 1 for steps, _ in asked)
+
+
+def test_a_long_element_type_is_withheld_as_any_row(tmp_path):
+    # Review of #187: a child whose name or type passes 2,000 characters was shown with
+    # its raw value before the container rule ran (`value="FREED"`, no `withheld`).
+    from types import SimpleNamespace
+
+    from peeky.native import Withholding
+    from peeky.worker import DebugWorker
+
+    def changing_container(frame, steps, **stop):
+        return Withholding("the program runs 2 threads: …", "not shown", "x")
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        changing_container=changing_container,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.listed_frames = [{"id": 1, "name": "main"}]
+    long = "std::pair<" + "a" * 2001 + ">"
+    element = {"name": "[0]", "type": long, "value": "FREED", "variablesReference": 7}
+    (shown,) = worker.expose_variables(
+        [element], {"id": 1}, ("Locals",), (("v", "std::vector<…>"),)
+    )
+    assert shown["value"] is None and shown["unavailable"] and shown["withheld"], shown
+    assert shown["withheld_as"] == "not shown" and shown["reason"].startswith("the program")
+    assert shown["identity_truncated"] and shown["variablesReference"] == 0
+    assert len(shown["type"]) < 300 and "FREED" not in json.dumps(shown)
+
+
+class PagedDap:
+    """`stackTrace` replies of the frames asked for, out of ``depth``, with a
+    `totalFrames` of ``total``."""
+
+    def __init__(self, depth, total=None, fail=False):
+        self.depth, self.total, self.fail = depth, total, fail
+
+    def request(self, command, arguments=None, **_):
+        if self.fail:
+            raise TimeoutError("no reply")
+        frames = [{"id": i, "name": "f"} for i in range(min(self.depth, arguments["levels"]))]
+        reply = {"stackFrames": frames}
+        if self.total is not None:
+            reply["totalFrames"] = self.total
+        return reply
+
+
+def test_a_partial_stack_page_is_never_the_whole_stack(tmp_path):
+    # Review of #187: 64 frames with `totalFrames: 2000` were taken for the whole stack.
+    from peeky.worker import DebugWorker, StackPage
+
+    assert StackPage([{}] * 3, 10, 3).complete is True
+    assert StackPage([{}] * 3, 10, None).complete is True
+    assert StackPage([{}] * 3, 10, 20).complete is False
+    assert StackPage([{}] * 10, 10, 10).complete is False
+    assert StackPage([], 10, None, failed=True).complete is False
+    for depth, total, whole in ((64, 2000, False), (64, 64, True), (64, None, True)):
+        worker = DebugWorker(tmp_path)
+        worker.dap, worker.thread_id, worker.whole_frames = PagedDap(depth, total), 1, None
+        page = worker.whole_stack(1024)
+        assert len(page) == 64 and page.complete is whole, (depth, total)
+    worker = DebugWorker(tmp_path)
+    worker.dap, worker.thread_id, worker.whole_frames = PagedDap(5, fail=True), 1, None
+    assert worker.whole_stack(1024).complete is False

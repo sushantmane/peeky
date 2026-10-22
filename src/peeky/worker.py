@@ -142,6 +142,19 @@ def _process_alive(pid):
     return True
 
 
+class StackPage(list):
+    """The frames of one `stackTrace` reply, innermost first, and whether they are the
+    whole stack (``complete``): fewer than ``levels`` asked for (DAP: a shorter reply
+    ends the stack), and no more in its `totalFrames` (#187 review: a partial page is
+    never taken for the whole stack)."""
+
+    def __init__(self, frames, levels, total, failed=False):
+        super().__init__(frames)
+        self.complete = (
+            not failed and len(self) < levels and not (type(total) is int and total > len(self))
+        )
+
+
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
@@ -158,6 +171,7 @@ class DebugWorker:
         self.listed_frames = []
         self.deeper_frames = None
         self.thread_count = None
+        self.whole_frames = None
         self.innermost_frame = None
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
@@ -1426,6 +1440,7 @@ class DebugWorker:
         self.listed_frames = []
         self.deeper_frames = None
         self.thread_count = None
+        self.whole_frames = None
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
@@ -1883,6 +1898,7 @@ class DebugWorker:
             self.listed_frames = []
             self.deeper_frames = None
             self.thread_count = None
+            self.whole_frames = None
             self.references.clear()
             self.reference_frames.clear()
             self.reference_adapter.clear()
@@ -1966,10 +1982,12 @@ class DebugWorker:
             stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
             frames = stack.get("stackFrames", [])[:10]
             self.frames = {f["id"] for f in frames}
-            # As listed, for rules that read what runs below a frame (a constructor).
-            self.listed_frames = list(frames)
+            # As listed, for rules that read what runs below a frame (a constructor), with
+            # whether they are the whole stack.
+            self.listed_frames = StackPage(frames, 10, stack.get("totalFrames"))
             self.deeper_frames = None
             self.thread_count = None
+            self.whole_frames = None
             self.innermost_frame = frames[0].get("id") if frames else None
             if listed := getattr(runtime, "frames_listed", None):
                 # Which frame is innermost: a caller's address is where its call returns.
@@ -2536,9 +2554,27 @@ class DebugWorker:
         listed, a way to read more, and how many threads the program has."""
         return {
             "stack": getattr(self, "listed_frames", None),
-            "deeper": self.deeper_stack,
+            "deeper": self.whole_stack,
             "threads": self.threads_at_stop,
         }
+
+    def whole_stack(self, levels):
+        """The stop's first ``levels`` frames (a ``StackPage``), fetched once per
+        inspection, for the rule on standard containers a library call may be changing
+        (#181, #187); none, and not the whole stack, if the debugger refuses."""
+        cached = getattr(self, "whole_frames", None)
+        if cached is None or cached[0] < levels:
+            try:
+                reply = self.dap.request(
+                    "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=10
+                )
+                frames = StackPage(
+                    reply.get("stackFrames", [])[:levels], levels, reply.get("totalFrames")
+                )
+            except (TimeoutError, RuntimeError, OSError):
+                frames = StackPage([], levels, None, failed=True)
+            self.whole_frames = cached = (levels, frames)
+        return cached[1]
 
     def threads_at_stop(self):
         """How many threads the program has at this stop, read once per inspection, or
@@ -2753,6 +2789,7 @@ class DebugWorker:
         string_value = getattr(self.runtime, "string_value", None)
         preview = getattr(self.runtime, "preview_value", None)
         member_value = getattr(self.runtime, "member_value", None)
+        changing_container = getattr(self.runtime, "changing_container", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
         # Python's module globals are no frame's own locals: none is judged as one.
@@ -2767,6 +2804,16 @@ class DebugWorker:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
                 raise RuntimeError("Malformed debugger variable identity")
+            # Read through a standard container something may be part-way through
+            # changing (an element `clear()` has destroyed, another thread's `push_back`,
+            # #187): withheld, and so is everything below it, whatever its identity.
+            changing = (
+                changing_container(
+                    frame, [step for step, _ in ancestry] + [name], **self.preview_stack()
+                )
+                if ancestry and changing_container
+                else None
+            )
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
                 if not ancestry:
                     raise RuntimeError("Debugger variable identity exceeds limit")
@@ -2780,7 +2827,12 @@ class DebugWorker:
                     **({"type": kind if len(kind) <= 2000 else kind[:200] + "…"} if kind else {}),
                     "identity_truncated": True,
                 }
-                if view_variable:
+                if changing:
+                    shown.update(value=None, unavailable=True, reason=changing[:300])
+                    shown.update(withheld=True, settable=False)
+                    if isinstance(label := getattr(changing, "label", None), str):
+                        shown["withheld_as"] = label[:100]
+                elif view_variable:
                     # Values that need a qualified view (Rust enums) are never shown raw.
                     shown["value"] = "<not shown: type name too long to verify>"
                 elif self.placeholders() and is_unavailable(shown["value"]):
@@ -2828,6 +2880,8 @@ class DebugWorker:
                 carried = (f"read through `{name}`: {note}"[:500], refuses)
             elif noted:
                 note, carried = noted[0], noted
+            if changing and not reason:
+                reason, note, carried = changing, None, None
             if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set,
                 # nor read through by a qualified view (a Rust container, enum or Box).
@@ -4037,6 +4091,7 @@ class DebugWorker:
         self.listed_frames = []
         self.deeper_frames = None
         self.thread_count = None
+        self.whole_frames = None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()
