@@ -60,10 +60,9 @@ def test_a_callers_loop_counter_says_where_to_read_it_and_a_missing_name_is_name
         rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
         assert rows["total"].get("value") == "2" and "value" not in rows["i"], rows
         assert rows["i"]["error"] == (
-            "no value yet: declared on line 11, in this caller frame's `for` header, and "
-            "Peeky cannot prove the loop has run its initialization (a `goto` into the body "
-            "or a macro's call can skip or delay it): its storage may hold leftovers; read it "
-            "in the loop's body (a probe there, or `step --out` to this frame)"
+            "no value yet: read it in the loop's body: a probe there, or `step --out` to this "
+            "frame. It is declared in this caller frame's `for` header, on line 11, and Peeky "
+            "cannot prove the loop has run its initialization: its storage may hold leftovers"
         ), rows["i"]
         # wrap 6: exit 1 said nothing of which selector had no value.
         assert main(["session", "get", "--frame", "1", "total", "nosuch"]) == 1

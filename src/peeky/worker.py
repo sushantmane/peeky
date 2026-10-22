@@ -4027,11 +4027,11 @@ class DebugWorker:
             note = getattr(runtime, "storage_note", None)
             first = changes[0]
             refusal = (
-                f"`{first['name']}` cannot be changed: changing values is refused in an "
-                f"optimized build ({level}), where the program may keep using other copies of "
-                "a value"
+                f"`{first['name']}` cannot be changed: use an unoptimized build. Changing "
+                f"values is refused in an optimized build ({level}), because the program may "
+                "keep using other copies of a value"
                 + ((note(program, [first["line"]], first["name"]) or "") if note else "")
-                + ". Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build"
+                + _BEFORE_LAUNCH
             )
         elif check := getattr(runtime, "launch_refusal", None):
             # Java (#183): each change from the class files' declared types, its value too.
@@ -4075,11 +4075,11 @@ class DebugWorker:
                 # No stop of this run allows one: no advice to stop elsewhere.
                 raise ValueError(f"{selector!r} cannot be changed: {reason}")
             raise ValueError(
-                f"{selector!r} cannot be changed here: {reason}, so that statement may "
-                "already hold a copy of the old value and would not see the change. Change "
-                "it at a statement's first instruction, this one's or an earlier one's: a "
-                "breakpoint on the statement's first line (`session continue --to LINE`, a "
-                "probe's `--at`), or a `session step` that lands there"
+                f"{selector!r} cannot be changed here. Change it at a statement's first "
+                "instruction: stop on the statement's first line (a probe's `--at`, `session "
+                "continue --to LINE`), or `session step` to it. Here, "
+                f"{reason}, so the statement may hold a copy of the old value and would not "
+                "see the change"
             )
 
     def walk(self, record, runtime, trail=None):
@@ -4206,10 +4206,10 @@ STRING_VIEW_NOTE = (
 )
 # C, C++ and Rust (#137): a text changes a string local, not a field or element.
 _TEXT_MEMBER = (
-    "`{name}` cannot be changed to a text: Peeky writes text into a string local the "
-    "stopped frame holds (a char array, std::string or Rust String), not into a field or "
-    "element; copy it into a local with a candidate edit (`--old`/`--new`), or edit the "
-    "source"
+    "`{name}` cannot be changed to a text: copy it into a local with a candidate edit "
+    "(`--old`/`--new`), or edit the source. Peeky writes text only into a string local "
+    "that the stopped frame holds (a char array, a std::string or a Rust String), not into a "
+    "field or element"
 )
 _BEFORE_LAUNCH = (
     ". Refused before the program runs: the debugger's launch/attach request was not sent"

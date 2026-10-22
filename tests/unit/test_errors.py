@@ -8,7 +8,7 @@ from peeky.errors import Refused, classify
 @pytest.mark.parametrize(
     ("message", "action"),
     [
-        ("'s.a' cannot be changed here: the stop is part-way through line 9", "first instruction"),
+        ("'s.a' cannot be changed here: the stop is part-way through line 9", "first line"),
         ("`ps.start` cannot be changed: `ps` is a pointer: Peeky changes only", "--set-hit N"),
         (
             "Rust mutation requires a local the program keeps in memory; 'width' in f is "
