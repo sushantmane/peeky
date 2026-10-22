@@ -299,6 +299,50 @@ def test_timed_out_probes_do_not_claim_to_have_ended_at_their_hits(target):
     assert result["ended"] in ("exit", None) and result["hits"] == 3
 
 
+RAN_ON = """import sys
+import time
+
+print("BEFORE", flush=True)
+total = 0
+for i in range(3):
+    total += i
+print("AFTER", total, flush=True)
+time.sleep(float(sys.argv[1]))
+"""
+
+
+@pytest.mark.parametrize("sleep", ["30", "0"])
+def test_until_hits_says_the_output_can_follow_the_last_hit(target, sleep):
+    # #203: resumed after its last hit, the program runs on until the probe ends it; its
+    # output read meanwhile was "so far (the program was still running)", with
+    # output_complete false, even when the program had exited.
+    from peeky.probe import _table
+
+    (target / "ran_on.py").write_text(RAN_ON)
+    probe = Probe("ran_on.py", 7, ("i",), hits=2, until="hits", args=(sleep,))
+    result = run_probe(target, probe)
+    assert result["status"] == "completed" and result["ended"] == "hits"
+    text = _table(result)
+    assert "still running" not in text and result["output"].startswith("BEFORE\n")
+    assert result.get("output_after_last_hit") is True
+    if result["output_complete"]:
+        # It exited before Peeky disconnected, and the adapter then ended its stream: all
+        # of its output, and its exit.
+        assert sleep == "0" and result["exit_code"] == 0 and result["output"] == "BEFORE\nAFTER 3\n"
+        assert not result["output_truncated"] and "program_ended" not in result
+        assert "output (all of it: the program ran on after the last hit, to its exit):" in text
+    elif result.get("program_ended"):
+        # It ended, but the adapter kept its stream open: more output may have been coming.
+        assert sleep == "0" and "after the last hit and ended, but its output may still" in text
+    else:
+        # Peeky ended it: no exit of its own to report.
+        assert "exit_code" not in result
+        assert (
+            "output so far (the program ran on after the last hit, so this can include text "
+            "written after it):\n  BEFORE"
+        ) in text
+
+
 def test_continue_to_exit_never_clears_breakpoints_for_a_stale_stop(target):
     worker = DebugWorker(target)
     try:

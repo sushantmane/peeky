@@ -350,7 +350,7 @@ output:
 
 ### 2.6 Stop Right After the Last Hit
 
-**What it answers:** I only need the values, not the output. Can it be faster?
+**What it answers:** I only need the values, not the output. Can it be faster? It saves the most where the program is slow to exit (JVMs, Python).
 
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --until hits
@@ -360,7 +360,12 @@ peeky probe examples/pagination_bug.py --at 8 --capture start --until hits
 status: completed  hits: 1  seconds: 0.267  max pause: 4.1 ms
 ```
 
-That took 0.27 s, compared with 1.0 s when waiting for the program to exit. The output is then incomplete (`output_complete: false` in JSON). Attached JVMs default to this.
+That took 0.27 s, compared with 1.0 s when waiting for the program to exit. Attached JVMs default to this.
+
+- **The program runs on:** after the last hit, Peeky removes its breakpoints, resumes the program, reads its output, and then ends it (an attached JVM is detached instead, and keeps running). Until then the program runs unwatched: what it prints meanwhile may be in `output`, and what it does (a file it writes) happens.
+- **So the output is not the output at the hit:** JSON says `output_after_last_hit: true`, and the text `output so far (the program ran on after the last hit, so this can include text written after it):`. `output_complete` is `false`.
+- **Unless it had exited, and all its output was read:** when the debugger has reported the program's end (`exited` or `terminated`) before Peeky disconnects, Peeky ends the adapter's input and reads its stream to its end: output can follow `terminated`, but none can follow that end. The output is what the debugger sent before Peeky sent its disconnect; when nothing more came before the end (not even while the adapter handled the disconnect), `output_complete` is `true`, with `exit_code`, and the text says `output (all of it: the program ran on after the last hit, to its exit):`, or, with `output_truncated: true`, `output through the program's exit (it ran on after the last hit; truncated: some of it was dropped):`. A C, C++, Rust or Java program that exits right after the hit can have ended in time; a Python one rarely has (debugpy delays its exit by about 0.5 s). For the whole output, run to the exit (the default).
+- **Ended, but not proven whole:** if the adapter keeps its stream open (2 s), sends text once Peeky began closing the session, even before answering its disconnect (its own, or the program's that was still on its way, kept apart in `output_after_disconnect`: lldb-dap 18 on Linux prints its crash as it exits), exits with a status other than 0 (`adapter_exit`, and a warning: it may have dropped output it held; the one exception is debugpy's status 1 when Peeky ends its input as it answers the disconnect, an exit Peeky provokes, and only with the failure debugpy then prints on stderr: `exit_provoked: true`, no warning), or the end is only Peeky's inference (java-debug dropped its exit event, issue #27: [Java](lang/java.md)), `output_complete` stays `false` with `program_ended: true`, and the text says the program ended `but its output may still have been arriving`. This holds for any probe, not only `--until hits`.
 
 ### 2.7 JSON for Scripts
 
@@ -1112,7 +1117,7 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 | --- | --- | --- |
 | `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run, nothing left running |
 | `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only; no expressions. Quote selectors with `[...]` (zsh globs them) |
-| `print m[1]` (a C++ `std::map`) | `--capture "m[1],m[#0].first"` | `m[1]` is the value for key 1, as in C++; `m[#0]` is the first entry in iteration order ([C and C++ 7.1](lang/c-cpp-cookbook.md#maps-and-sets-c)) |
+| `print m[1]` (a C++ `std::map`) | `--capture "m[1],m[#0].first"` | `m[1]` is the value for key 1, as in C++; `m[#0]` is the first entry in iteration order ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-c-map-or-set-by-key)) |
 | `set var x = 0`, `continue` | `--set x=0` | Applied once, at `--set-hit N`; the output shows the effect |
 | `ignore 1 9`, `continue` ×10 | `--hits 10` (or `--hits all`), then `peeky queries hits` | Every hit is captured and saved |
 | `commands 1 / silent / print x / end` | `--hits N --capture x` | Logging without breaking into the run |

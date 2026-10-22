@@ -163,7 +163,9 @@ def test_agent_feedback_args_function_names_and_partial_output(case, capsys):
     assert {row["function"] for row in result["rows"]} >= {"is_private"}
     assert result["output_complete"] is True and result["by_hit"][0]["function"]
     code, out = run(capsys, "probe", root, "--at", at, "--run", data["driver"], "--until", "hits")
-    assert code == 0 and "output so far (the program was still running)" in out.out
+    # Resumed after its last hit, the program ran on: never "still running" (#203).
+    assert code == 0 and "the program ran on after the last hit" in out.out
+    assert "still running" not in out.out
 
 
 def test_directory_targets_explain_what_to_pass(case, capsys):
