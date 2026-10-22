@@ -156,6 +156,7 @@ class DebugWorker:
         self.frames = set()
         self.listed_frames = []
         self.deeper_frames = None
+        self.thread_count = None
         self.innermost_frame = None
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
@@ -1423,6 +1424,7 @@ class DebugWorker:
         self.frames.clear()
         self.listed_frames = []
         self.deeper_frames = None
+        self.thread_count = None
         self.references.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
@@ -1864,6 +1866,7 @@ class DebugWorker:
             self.frames.clear()
             self.listed_frames = []
             self.deeper_frames = None
+            self.thread_count = None
             self.references.clear()
             self.reference_frames.clear()
             self.reference_adapter.clear()
@@ -1950,6 +1953,7 @@ class DebugWorker:
             # As listed, for rules that read what runs below a frame (a constructor).
             self.listed_frames = list(frames)
             self.deeper_frames = None
+            self.thread_count = None
             self.innermost_frame = frames[0].get("id") if frames else None
             if listed := getattr(runtime, "frames_listed", None):
                 # Which frame is innermost: a caller's address is where its call returns.
@@ -2511,6 +2515,43 @@ class DebugWorker:
             listed = [scope for scope in listed if not is_global(scope)]
         return listed[:16]
 
+    def preview_stack(self):
+        """The stop for a preview's rule on standard containers (#181): its frames as
+        listed, a way to read more, and how many threads the program has."""
+        return {
+            "stack": getattr(self, "listed_frames", None),
+            "deeper": self.deeper_stack,
+            "threads": self.threads_at_stop,
+        }
+
+    def threads_at_stop(self):
+        """How many threads the program has at this stop, read once per inspection, or
+        None where that is not sure (#181 review). The threads every source names: two
+        `threads` replies (lldb-dap answers its first with the threads the program had
+        at launch), the `thread` events that said a thread started since launch, and
+        the runtime's own list where it has one (LLDB's `thread list`); a source that
+        does not answer makes it unsure."""
+        if getattr(self, "thread_count", None) is None:
+            ids, sure = set(), True
+            for _ in range(2):
+                try:
+                    listed = self.dap.request("threads", {}, timeout=2).get("threads")
+                except (TimeoutError, RuntimeError, OSError):
+                    listed = None
+                if not isinstance(listed, list):
+                    sure = False
+                    continue
+                ids |= {each.get("id") for each in listed if isinstance(each, dict)}
+            ids |= set(getattr(self.dap, "started_threads", None) or ())
+            if listing := getattr(self.runtime, "listed_threads", None):
+                found = listing(self.dap)
+                if found is None:
+                    sure = False
+                else:
+                    ids |= set(found)
+            self.thread_count = len(ids) if sure and ids and None not in ids else -1
+        return None if self.thread_count < 0 else self.thread_count
+
     def deeper_stack(self, levels=64):
         """The stop's first ``levels`` frames, fetched once per inspection for a rule that
         cannot decide from the ten listed; [] if the debugger refuses."""
@@ -2992,7 +3033,14 @@ class DebugWorker:
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
                 steps = [step for step, _ in ancestry] + [name]
                 try:
-                    shown = preview(variable, self.preview_fetch, reads, frame=frame, steps=steps)
+                    shown = preview(
+                        variable,
+                        self.preview_fetch,
+                        reads,
+                        frame=frame,
+                        steps=steps,
+                        **self.preview_stack(),
+                    )
                 except ValueError:
                     # The budget is spent: the value stays as the debugger shows it.
                     shown = None
@@ -3239,6 +3287,7 @@ class DebugWorker:
                 pointee=args.get("pointee") is True,
                 frame=frame,
                 steps=steps,
+                **self.preview_stack(),
             )
         except ValueError:
             shown = None
@@ -3951,6 +4000,7 @@ class DebugWorker:
         self.frames.clear()
         self.listed_frames = []
         self.deeper_frames = None
+        self.thread_count = None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()

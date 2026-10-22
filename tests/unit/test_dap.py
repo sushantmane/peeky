@@ -337,3 +337,15 @@ def test_bounded_polls_and_their_notes_never_flood_the_trace(monkeypatch):
         assert dap.ignored_events["telemetry"] == 301 and not dap.untraced
     finally:
         dap.close()
+
+
+def test_threads_a_thread_event_says_started_are_kept():
+    # Review of #181: a second thread started since launch means the program runs
+    # several, whatever a `threads` reply says.
+    dap = transport()
+    for thread in (1, 2, 2):
+        dap._accept(
+            {"type": "event", "event": "thread", "body": {"reason": "started", "threadId": thread}}
+        )
+    dap._accept({"type": "event", "event": "thread", "body": {"reason": "exited", "threadId": 3}})
+    assert dap.started_threads == {1, 2}
