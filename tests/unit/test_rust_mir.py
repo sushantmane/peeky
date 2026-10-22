@@ -1210,6 +1210,189 @@ def test_an_inlined_frame_s_references_are_judged_at_every_place_of_its_line(tmp
     assert owned.proven("h00000000000000ee", "k", 17, MAIN)
 
 
+def test_a_reference_judged_unproven_says_what_may_have_run_since_its_last_use(tmp_path):
+    # #259: the reason a reference shows only its pointer is the one that held: not yet
+    # assigned, a call on lines 16 and 17 since its last use, or a stop no line places.
+    path = tmp_path / "app.ll"
+    path.write_text(INLINED_IR)
+    owned = OwnedLocals([parse_body(INLINED)], ir_functions(path, ["src/main.rs"]), SOURCES)
+    for breakpoint in (False, True):
+        expected = {
+            14: [("unassigned",)],
+            17: [("since", frozenset({("call", 16), ("call", 17)}))],
+            19: [("elsewhere",)],
+        }
+        for line, reasons in expected.items():
+            why = []
+            assert (
+                owned.reference_valid(
+                    "h00000000000000ee", "first", line, MAIN, breakpoint, 5, why=why
+                )
+                is False
+            )
+            assert why == reasons, (line, why)
+        why = []
+        assert owned.reference_valid(
+            "h00000000000000ee", "first", 15, MAIN, breakpoint, 13, why=why
+        )
+        assert why == []
+
+
+# A reference made into a raw pointer for a comparison (kitty's `if ptr::eq(f, e.payer)`):
+# its last use, then the call, which a stop on the line may be past.
+COMPARED = {
+    0: [
+        "_29 = copy (((_23 as Some).0: (usize, &Friend)).1: &Friend);",
+        "_31 = &raw const (*_29);",
+        "_32 = copy ((*_13).0: *const Friend);",
+        "_30 = {} -> [return: bb1, unwind continue];",
+    ],
+    1: ["switchInt(move _30) -> [0: bb2, otherwise: bb2];"],
+    2: ["return;"],
+}
+
+
+def compared(call, *more):
+    blocks = {number: list(statements) for number, statements in COMPARED.items()}
+    blocks[0][3] = blocks[0][3].format(call)
+    blocks[2] = [*more, *blocks[2]]
+    return mir(blocks)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "std::ptr::eq::<Friend>(move _31, move _32)",
+        "core::ptr::eq::<dyn Fn()>(move _31, move _32)",
+        "addr_eq::<Friend, Friend>(move _31, move _32)",
+        "std::ptr::addr_eq::<Friend, (i64, i64)>(move _31, move _32)",
+    ],
+)
+def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(call):
+    # #259: making `f` a raw pointer is its last use; past the comparison's call, what it
+    # points at still stands, since the call only compares two addresses. The raw pointer
+    # it was made into is no use of `f`.
+    body = compared(call)
+    assert not body.used_ahead(29, (1, 0))
+    assert body.used_before(29, (0, 3)) and body.used_before(29, (0, 3), compares=True)
+    assert not body.used_before(29, (1, 0))
+    assert body.gaps_before(29, (1, 0)) == {(0, 3)}
+    assert body.used_before(29, (1, 0), compares=True)
+    assert body.gaps_before(29, (1, 0), compares=True) == set()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        # The crate's own function, which may free it (a `&mut` alias, interior
+        # mutability), and an `eq` the dump does not name the standard library's.
+        "same(move _31, move _32)",
+        "eq::<Friend>(move _31, move _32)",
+        "ptr::eq::<Friend>(move _31, move _32)",
+        "kitty::std::ptr::eq::<Friend>(move _31, move _32)",
+    ],
+)
+def test_another_call_after_a_reference_s_last_use_still_ends_its_proof(call):
+    body = compared(call)
+    assert not body.used_before(29, (1, 0), compares=True)
+    assert body.gaps_before(29, (1, 0), compares=True) == {(0, 3)}
+
+
+def test_a_comparison_s_result_stored_into_a_borrowed_local_is_a_write():
+    body = compared("std::ptr::eq::<Friend>(move _31, move _32)", "_40 = &_30;")
+    assert not body.used_before(29, (1, 0), compares=True)
+
+
+def test_every_gap_since_the_last_use_is_found_on_every_path_back():
+    body = mir(
+        {
+            0: [
+                "_3 = copy _2;",
+                "_4 = copy (*_3);",
+                "switchInt(move _4) -> [0: bb1, otherwise: bb2];",
+            ],
+            1: ["_5 = grow(move _6) -> [return: bb3, unwind continue];"],
+            2: ["drop(_7) -> [return: bb3, unwind continue];"],
+            3: ["_8 = shrink(move _9) -> [return: bb4, unwind continue];"],
+            4: ["return;"],
+        }
+    )
+    assert body.gaps_before(3, (4, 0)) == {(1, 0), (2, 0), (3, 0)}
+    assert len(body.gaps_before(3, (4, 0), every=False)) == 1
+    assert len(body.gaps_before(3, (4, 0), limit=2)) == 2
+    # A path from the function's start has no use; its own storage's end stops a path.
+    assert (None, None) in body.gaps_before(12, (4, 0))
+    body.blocks[3].statements.insert(0, ("StorageDead(_3);", "src/main.rs", 10))
+    assert body.gaps_before(3, (4, 0)) == {(3, 0), (3, 1)}
+
+
+def owned_crate(text):
+    return OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": text})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "use std::ptr;\nfn main() { ptr::eq(a, b); std::ptr::addr_eq(a, b); }\n",
+        'use std::ptr;\n// fn addr_eq\nfn main() { let s = "mod std"; ptr::addr_eq(a, b); }\n',
+        "fn main() { core :: ptr :: addr_eq(a, b); }\n",
+    ],
+)
+def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
+    assert owned_crate(text)._std_compares() is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A `std` or `core` of the crate's own: the dump names its items `std::…` too.
+        "mod std { pub mod ptr {} }\n",
+        "use crate::m as core;\n",
+        "macro_rules! m { () => { mod std {} } }\n",
+        # An `addr_eq` of its own, which the dump would name alone.
+        "fn addr_eq(a: *const u8, b: *const u8) -> bool { a == b }\n",
+        "use std::ptr::addr_eq;\nfn main() { addr_eq(a, b); }\n",
+        # A source that does not lex.
+        'fn main() { let s = "open; }\n',
+    ],
+)
+def test_a_crate_that_may_name_them_itself_trusts_none(text):
+    assert owned_crate(text)._std_compares() is False
+
+
+def test_the_note_names_what_may_have_run_since_a_reference_s_last_use():
+    from peeky.rust import _gap_reason
+
+    def since(*gaps):
+        return [("since", frozenset(gaps))]
+
+    assert _gap_reason("f", since(("call", 67)), 67) == (
+        "the stop may be past a call on this line that runs after `f`'s last use; probe a "
+        "line that uses `f` before any call"
+    )
+    assert _gap_reason("first", since(("call", 16), ("call", 17), ("write", 15)), 17) == (
+        "`first` is not used ahead, and calls on lines 16 and 17 may have run since its last "
+        "use; probe a line that still uses `first`"
+    )
+    assert _gap_reason("r", since(("drop", 4), ("call", None)), 9) == (
+        "`r` is not used ahead, and a call in a macro's code and a drop on line 4 may have "
+        "run since its last use; probe a line that still uses `r`"
+    )
+    calls = since(*(("call", n) for n in (3, 5, 7, 9, 11, 13)), ("call", None))
+    assert "calls on lines 3, 5, 7, 9 and others, and in a macro's code" in _gap_reason(
+        "r", calls, 20
+    )
+    # Only a write or a scope's end: named, as nothing else may have run.
+    assert "and a write on line 8 may have run" in _gap_reason("r", since(("write", 8)), 9)
+    assert "the end of a variable's scope on line 8" in _gap_reason("r", since(("end", 8)), 9)
+    assert _gap_reason("r", [("dropped",)], 9) == (
+        "what `r` points at may be dropped here, before a new value is stored there"
+    )
+    assert _gap_reason("r", [("unassigned",)], 9) == "`r` may not be assigned yet here"
+    for reasons in ([], [("since", frozenset())], since(("start", None), ("call", 3))):
+        assert _gap_reason("r", reasons, 9).startswith("`r` is not used ahead, and the MIR")
+
+
 def test_an_inlined_function_not_told_apart_gates_its_borrowing_bindings(tmp_path):
     path = tmp_path / "app.ll"
     path.write_text(INLINED_IR)

@@ -1469,38 +1469,60 @@ class Body:
                         work.append(target)
         return entry
 
-    def used_before(self, local, start):
+    def used_before(self, local, start, compares=False):
         """True if every path into ``start`` passes a use of ``local`` (or its assignment)
         with nothing since that can move, drop, free or write what it points into: no
         call, drop, write to a place's part or a borrowed local, nor end of a borrowed
         local's storage. At a use the borrow checker has kept its target; only branches,
-        assertions and whole assignments to locals nothing borrows run between."""
+        assertions and whole assignments to locals nothing borrows run between, and with
+        ``compares``, the standard library's address comparisons (``_harmless``)."""
+        return not self.gaps_before(local, start, compares, every=False)
+
+    def gaps_before(self, local, start, compares=False, every=True, limit=16):
+        """Why ``used_before`` is False at ``start``: {(block, index)} of each statement
+        on a path back from it to a use of ``local``, that can move, drop, free or write
+        what it points into, or ends its storage (where the path stops), with (None,
+        None) for a path that reaches the function's start or a block not known first.
+        With ``every`` False, only the first found; else up to ``limit`` of them (a long
+        function's walk back to an early use stops there)."""
         predecessors, borrowed = self.predecessors(), self._borrowed()
-        pending, seen = [start], set()
-        while pending:
+        pending, seen, found = [start], set(), set()
+        while pending and len(found) < limit:
             number, index = pending.pop()
             if (number, index) in seen:
                 continue
             seen.add((number, index))
             block = self.blocks.get(number)
             if block is None:
-                return False
-            used = False
-            for text, _, _ in reversed(block.statements[:index]):
+                found.add((None, None))
+                if not every:
+                    return found
+                continue
+            stopped = False
+            for back in range(min(index, len(block.statements)) - 1, -1, -1):
+                text = block.statements[back][0]
                 event = _event(text, local)
                 assigned = _WHOLE_ASSIGNMENT.match(text)
                 if event == "use" or (assigned and int(assigned[1]) == local):
-                    used = True
+                    stopped = True
                     break
-                if event == "end" or not _harmless(text, borrowed):
-                    return False
-            if used:
+                if event == "end" or not _harmless(text, borrowed, compares):
+                    found.add((number, back))
+                    if not every or len(found) >= limit:
+                        return found
+                    if event == "end":
+                        stopped = True
+                        break
+            if stopped:
                 continue
             froms = predecessors.get(number, ())
             if number == 0 or not froms:
-                return False
+                found.add((None, None))
+                if not every:
+                    return found
+                continue
             pending.extend((other, len(self.blocks[other].statements)) for other in froms)
-        return True
+        return found
 
     def _borrowed(self):
         """Locals whose own storage is borrowed somewhere (`&_3`, `&mut (_3.0: Pt)`,
@@ -3012,16 +3034,55 @@ def _scope(block, index):
         return None
 
 
-def _harmless(text, borrowed):
+# #259: the standard library's address comparisons, which read the two pointers they are
+# given and nothing else. The dump names `core::ptr::eq` `std::ptr::eq` (never `eq`
+# alone: many items are), and `addr_eq` alone where no other item is so named
+# (``OwnedLocals._std_compares`` says when those names are the standard library's).
+_ADDRESS_COMPARISON = re.compile(
+    r"^_([0-9]+) = (?:(?:std|core)::ptr::eq|(?:(?:std|core)::ptr::)?addr_eq)::<.+>\(.*\)"
+    r" -> \[return: bb[0-9]+(?:, unwind(?:: bb[0-9]+| \w+(?:\(\w+\))?))?\];$"
+)
+
+
+def _false(why, reason):
+    """False, with ``reason`` added to ``why`` where one is kept (OwnedLocals._judge)."""
+    if why is not None:
+        why.append(reason)
+    return False
+
+
+def _gap(body, function, number, index):
+    """(kind, line) of the statement ``gaps_before`` found at ``index`` of block
+    ``number`` (see OwnedLocals._judge); ("start", None) for (None, None)."""
+    if number is None:
+        return ("start", None)
+    block = body.blocks[number]
+    text, spanned, spanned_line = block.statements[index]
+    line = spanned_line if spanned == function.file else None
+    if text.startswith("StorageDead("):
+        return ("end", line)
+    if _call(block, index):
+        return ("call", line)
+    if _DROP.match(text):
+        return ("drop", line)
+    return ("write", line)
+
+
+def _harmless(text, borrowed, compares=False):
     """True if the statement cannot move, drop, free or write what a reference points
     into: a branch, an assertion, a storage marker of a local never borrowed itself, a
-    whole assignment (not a call) to a local never borrowed itself."""
+    whole assignment (not a call) to a local never borrowed itself; with ``compares``
+    (the dump's `std::ptr::eq` and `addr_eq` are the standard library's), a call of one
+    of them whose result goes to such a local (#259: `ptr::eq(f, e.payer)` only
+    compares the addresses it is given)."""
     if _BRANCHES.match(text) or text.startswith("goto ") or _NOT_A_USE.match(text):
         return True
     if storage := re.match(r"^StorageDead\(_([0-9]+)\);$", text):
         return int(storage[1]) not in borrowed
     if text == "nop;":
         return True
+    if compares and (found := _ADDRESS_COMPARISON.match(text)):
+        return int(found[1]) not in borrowed
     found = _WHOLE_ASSIGNMENT.match(text)
     return bool(found) and "->" not in text and int(found[1]) not in borrowed
 
@@ -4374,7 +4435,15 @@ class OwnedLocals:
         return self._formatting_known
 
     def reference_valid(
-        self, hashed, variable_name, line, path, breakpoint=False, column=None, block=None
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        why=None,
     ):
         """For the frame's local ``variable_name`` whose type borrows (a reference, `&str`,
         a tuple, `Vec` or closure holding one, a raw pointer): True if what it points into
@@ -4384,7 +4453,8 @@ class OwnedLocals:
 
         True where, from every place the stop can be on the line, the code still uses it
         ahead, or used it last with nothing since that can move, drop or write (no call,
-        no drop): the borrow checker keeps what it borrows alive and unchanged until its
+        no drop; a call of `std::ptr::eq` or `addr_eq`, which only compares addresses, is
+        none, #259): the borrow checker keeps what it borrows alive and unchanged until its
         last use. Past a call or drop after its last use, what it pointed into may be
         moved, dropped or reallocated, which no simpler reading of the MIR can rule out
         (interior mutability, `&mut` aliases, loops), so then it is False. Also True: a
@@ -4398,10 +4468,14 @@ class OwnedLocals:
         shows only its address, #255). A value not yet assigned (its declaration line)
         is False. A name bound more than once that the stop cannot tell apart is judged
         by every binding. ``block`` (a ``StopBlock``): the
-        DWARF lexical block the stop's pc is in, if known (#115)."""
+        DWARF lexical block the stop's pc is in, if known (#115). Where False, ``why`` (a
+        list, if given) gets the reason (#259): ``_judge``'s, ("elsewhere",) for a stop
+        the function's own lines cannot place, or ("captured",) for a capture whose
+        closure or future may be dropped."""
         site = self._site(hashed, line, path)
         if site is None:
-            return self._elsewhere(hashed, variable_name, path)
+            verdict = self._elsewhere(hashed, variable_name, path)
+            return _false(why, ("elsewhere",)) if verdict is False else verdict
         body, function = site[0], site[1]
         local = self._local(body, variable_name, line, path, block, site)
         captures = []
@@ -4441,10 +4515,12 @@ class OwnedLocals:
             if any(
                 body.dropped_through(root, position) for root in captures for position in positions
             ):
+                return _false(why, ("captured",))
+        verdicts = []
+        for candidate in candidates:
+            verdicts.append(self._judge(site, candidate, line, facts, block, why))
+            if verdicts[-1] is False:
                 return False
-        verdicts = [self._judge(site, candidate, line, facts, block) for candidate in candidates]
-        if False in verdicts:
-            return False
         if verdicts and all(verdict is True for verdict in verdicts):
             return True
         return None
@@ -4738,7 +4814,14 @@ class OwnedLocals:
         # its statements keep the macro's lines: any statement can be the stop.
         return body.anywhere(blocks)
 
-    def _judge(self, site, local, line, facts, block=None):
+    def _judge(self, site, local, line, facts, block=None, why=None):
+        """True, False or None for ``local`` (see reference_valid). Where False, ``why``
+        (a list, if given) gets the reason: ("raw",), ("dropped",), ("unassigned",), or
+        ("since", gaps): {(kind, line)} of what may have run since its last use on some
+        path to the stop ("call", "drop", "write", "end" of a variable's storage;
+        "start" for a path with no use at all), up to ``Body.gaps_before``'s limit per
+        place, the line None where the statement is not in the function's own file (a
+        macro's code)."""
         body, function, blocks, _ = site
         if local is None:
             return None
@@ -4751,7 +4834,7 @@ class OwnedLocals:
         # holding one is judged as a value is (the MIR names no field types); the raw
         # pointer inside it shows only its address (#255).
         if _RAW_POINTER.match(kind.lstrip("[")):
-            return False
+            return _false(why, ("raw",))
         assigned = body._assignments().get(local, [])
         # Written through a `&mut` to it (`*p = owned.as_str()`), it holds what no
         # assignment of its own shows.
@@ -4770,7 +4853,7 @@ class OwnedLocals:
             return None
         # Between `drop((*v))` and the store of `*v = new`, it points at a dropped value.
         if any(body.dropped_through(local, position) for position in positions):
-            return False
+            return _false(why, ("dropped",))
         if (
             argument
             and kind.startswith("&")
@@ -4786,17 +4869,33 @@ class OwnedLocals:
             and positions != self._positions(site, line, facts)
             and body.initialized_before(local, positions)
         ):
-            return False
+            return _false(why, ("unassigned",))
         if argument:
             return True
         if free and assigned and all(self._frozen(site, local, value, line) for value in assigned):
             return True
         if free and self._borrows_frozen(site, local, line):
             return True
-        return all(
-            body.used_ahead(local, position) or body.used_before(local, position)
-            for position in positions
-        )
+        # #259: `ptr::eq(f, e.payer)` makes `f` a raw pointer (its last use) before the
+        # call, which a stop on the line may be past; the call only compares addresses.
+        compares = self._std_compares()
+
+        def late(position):
+            return not body.used_ahead(local, position) and not body.used_before(
+                local, position, compares
+            )
+
+        if why is None:
+            return not any(late(position) for position in positions)
+        gaps = set()
+        for position in positions:
+            if late(position):
+                for number, index in body.gaps_before(local, position, compares):
+                    gaps.add(_gap(body, function, number, index))
+        if not gaps:
+            return True
+        why.append(("since", frozenset(gaps)))
+        return False
 
     def _borrows_frozen(self, site, local, line):
         """True if the shared reference ``local`` (`&str`) points only into what frozen
@@ -4888,6 +4987,29 @@ class OwnedLocals:
                 for code in codes
             )
         return self._std_iterator_known
+
+    def _std_compares(self):
+        """Whether the calls the dump names `std::ptr::eq`, `core::ptr::eq` and `addr_eq`
+        (``_ADDRESS_COMPARISON``) are the standard library's (#259): the crate names no
+        item or import `std` or `core` of its own (a `mod std` would be dumped so too),
+        and its code names `addr_eq` only as a path's last part after `ptr::`, so it
+        declares no `addr_eq` (which the dump would name alone). A crate whose sources do
+        not lex trusts none."""
+        if "_std_compares_known" not in self.__dict__:
+            from peeky.rust_lexer import code_only
+
+            codes = [
+                code_only(self.texts[source]) if source in self.texts else None
+                for source in self.sources
+            ]
+            self._std_compares_known = bool(codes) and all(
+                code is not None
+                and not _named_own(code, {"std", "core"})
+                and len(re.findall(r"\baddr_eq\b", code))
+                == len(re.findall(r"\bptr\s*::\s*addr_eq\b", code))
+                for code in codes
+            )
+        return self._std_compares_known
 
     def _frozen(self, site, local, value, line):
         """True if ``local`` assigned ``value`` points where nothing can move or free

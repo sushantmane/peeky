@@ -103,8 +103,8 @@ TABLES = {
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option); 'stale' (whatever its view) "
-            "for a value in a Rust local that may be moved or dropped (the bytes it left, "
-            "#108); else NULL",
+            "for a value in a Rust local that may be moved or dropped (the bytes it left); "
+            "else NULL",
             "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
             "the object, not an address; the object keeps it if its class is reassigned). "
             "Within one hit, equal means the same object (an alias), different means "
@@ -158,7 +158,7 @@ TABLES = {
             "`gen::tf<gen::A>`, cut at 300 characters with `…`; a closure, "
             "`main::{closure#1}`), else NULL",
             "stop": "Which of its line's breakpoint locations in that function the stop was "
-            "at, 1 to N in address order, where the line has several there (#157): hit counts "
+            "at, 1 to N in address order, where the line has several there: hit counts "
             "every one, so @HIT names a stop, not a pass. NULL for a line with one (and for "
             "runs saved before schema 14)",
         },
