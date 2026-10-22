@@ -5474,14 +5474,15 @@ class NativeSession:
         `NAME = push(ARGS);` (or `NAME op=`, or a declaration's `TYPE NAME =`), `return
         push(ARGS);` and `if (push(ARGS) ...)`, NAME a plain name other than ``root``;
         ARGS are `&root` and reads (``_reads``), and so is the rest of an `if`'s
-        condition; and the caller takes no address of ``root`` or its fields elsewhere
-        but to lend it (``_lent``), so no pointer reaches it, and has no inline assembly
-        (which may take it unseen). Anything else may change it
+        condition; and the caller's body, as preprocessed (a header included inside it
+        too), takes no address of ``root`` or its fields elsewhere but to lend it
+        (``_lent``), so no pointer reaches it, and has no inline assembly (which may take
+        it unseen). Anything else may change it
         first (`r = q, push(&r, 1)`, `push(&r, RESET(r))`, `push(&r, ops[0](r.buf))`
         writing through the array that starts `r`, a pointer `a = &r` set earlier)."""
         from peeky.fields import Unsettable
 
-        preprocessed, statements = site["unit"]
+        _, statements = site["unit"]
         code, caller, opening = statements.blanked, site["caller"], site["opening"]
         closed, spans = _arguments(code, opening), _argument_spans(code, opening)
         if closed is None or spans is None or site["index"] is None or self.fields is None:
@@ -5505,26 +5506,20 @@ class NativeSession:
             or not all(self._reads(part, root, kind) for part in (*parts, rest))
         ):
             return False
-        span = caller.get("span")
-        if not span:
-            return False
         own = range(site["argument_span"][0], site["argument_span"][1])
-        for number in range(span[0], span[1] + 1):
-            at = preprocessed.line(caller.get("source"), number)
-            if at == 0:
-                return False  # the line is in the unit more than once
-            if at is None:
-                continue
-            begin = statements.starts[at - 1]
-            finish = statements.starts[at] if at < len(statements.starts) else None
-            body = statements.blanked[begin:finish]
-            if _ASSEMBLY.search(body):
-                return False  # it may take the root's address unseen
-            address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
-            for found in re.finditer(address, body):
-                at = begin + found.start()
-                if at not in own and not self._lent(site, root, at):
-                    return False
+        # Its whole body as the compiler preprocessed it, whatever each line's origin: a
+        # header included inside it is its code too (review of #211).
+        defined = self._definition(site["unit"], caller)
+        if defined is None:
+            return False
+        _, body, begin = defined
+        if _ASSEMBLY.search(body):
+            return False  # it may take the root's address unseen
+        address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
+        for found in re.finditer(address, body):
+            at = begin + found.start()
+            if at not in own and not self._lent(site, root, at):
+                return False
         return True
 
     def _reads(self, text, root, kind):

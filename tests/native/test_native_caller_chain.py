@@ -285,3 +285,78 @@ def test_a_header_function_is_not_read_from_another_units_copy(c_program, capsys
     )  # fmt: skip
     result = json.loads(out)
     assert code == 0 and result["output"].strip() == "SEEN:5", result
+
+
+# Review of PR #211, round 2: a header included inside main is main's code too. keep()
+# saves the pointer, and wrap writes the width through it before fits reads it.
+INCLUDED = """#include <stdio.h>
+struct layout { int width; };
+static struct layout *saved;
+static void keep(struct layout *p) { saved = p; }
+static int fits(const struct layout *p) {
+    return p->width; /* AT */
+}
+static int wrap(const struct layout *p) {
+    if (saved) saved->width = 5;
+    return fits(p);
+}
+int main(void) {
+    struct layout x = { 1 };
+#include "capture.h"
+    int seen = 0;
+    seen = wrap(&x); /* CALL */
+    printf("SEEN:%d\\n", seen);
+    return 0;
+}
+"""
+CAPTURES = {
+    "address": "keep(&x);\n",
+    "assembly": '__asm__ volatile("" : : : "memory");\n',
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("case", list(CAPTURES))
+def test_a_header_included_inside_the_owner_is_scanned_too(c_program, capsys, case):
+    source = c_program("m.c", INCLUDED)
+    c_program("capture.h", CAPTURES[case])
+    at, call = line_of(INCLUDED, "/* AT */"), line_of(INCLUDED, "/* CALL */")
+    code, out = run(capsys, "probe", source, "--at", at, "--set", "p.width=7")
+    message = out.splitlines()[0]
+    assert code == 2, out
+    assert (
+        f"wrap has one caller: m.c:{call} in main, which passes `&x`; change the value where "
+        f"it is owned, before that call: Peeky cannot tell that a change at line {call} "
+        "reaches it"
+    ) in message, out
+    assert "settable" not in message.split("one caller")[1] and "--set-at" not in message, out
+    if case == "address":
+        # The claim would have been wrong: wrap overwrites main's change through keep's
+        # pointer, and fits reads 5.
+        code, out = run(
+            capsys, "probe", source, "--at", at, "--capture", "p.width", "--set-at",
+            f"{call}@1", "x.width=9", "--json",
+        )  # fmt: skip
+        result = json.loads(out)
+        assert code == 0 and [(i["before"], i["after"]) for i in result["interventions"]] == [
+            ("1", "9")
+        ], result
+        assert [row["value"] for row in result["rows"]] == ["5"], result["rows"]
+        assert result["output"].strip() == "SEEN:5", result["output"]
+
+
+@pytest.mark.timeout(300)
+def test_a_header_included_inside_a_function_on_the_way_is_scanned_too(c_program, capsys):
+    # The same for wrap: its whole preprocessed body is read, the asm in clobber.h too.
+    text = ASM.replace(
+        '    __asm__ volatile("" : "=r"(p->width) : "0"(5));\n', '#include "clobber.h"\n'
+    )
+    source = c_program("m.c", text)
+    c_program("clobber.h", '__asm__ volatile("" : "=r"(p->width) : "0"(5));\n')
+    code, out = run(
+        capsys, "probe", source, "--at", line_of(text, "/* AT */"), "--set", "p.width=7"
+    )
+    message = out.splitlines()[0]
+    assert code == 2, out
+    assert "and wrap has inline assembly, which may change `p`" in message, out
+    assert "settable" not in message.split("one caller")[1] and "--set-at" not in message, out
