@@ -114,8 +114,13 @@ def test_continue_to_says_when_the_sessions_breakpoint_came_first(sched, capsys)
         assert "(line 30, hit 3) before reaching line 17" in state["note"], state
         for _ in range(2):
             code, out = run(capsys, "session", "continue", "--to", "17")
-        # Past the parsing loop, line 17 comes first: no note.
-        assert code == 0 and "sched.cpp:17" in out and "note:" not in out, out
+        # Past the parsing loop, line 17 comes first: no note about the `--to` line. The
+        # comparator is a call std::sort made, several calls below `main` (tenth evaluation).
+        assert code == 0 and "sched.cpp:17" in out and "before reaching" not in out, out
+        # How many depends on the standard library's sort.
+        (note,) = out.splitlines()[1:]
+        assert note.startswith("note: entered `before(Task const&, Task const&)`, "), out
+        assert note.endswith(" calls below `main`"), out
         # No call reaches line 18 on this input (no two tasks tie on both keys).
         code, out = run(capsys, "session", "continue", "--to", "18", "--json")
         state = json.loads(out)

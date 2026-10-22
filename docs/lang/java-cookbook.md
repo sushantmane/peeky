@@ -535,8 +535,9 @@ Other details:
   after 38 characters, with `…`.
 - Object numbers, like `@143`, follow the order in which the debugger first touched the objects.
   So `queries diff` treats them like addresses in Java runs.
-- A `step` from a block's last statement stops on its closing `}`. There the block's locals are
-  gone, so read them before you step.
+- A `step` from a block's last statement stops on its closing `}`, or on the loop's header. There
+  the block's locals are gone, so read them before you step. A `get` of one then says that its
+  block has ended ([COOKBOOK 5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).
 
 ## 7.4 Java Tests Already Running (Gradle `--debug-jvm`, e.g. Venice)
 

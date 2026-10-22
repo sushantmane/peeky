@@ -65,7 +65,8 @@ A C++ compiler that isn't clang is refused before anything runs
 - To get one row per pass, put `--at` on a plain statement line in the loop's body. A loop header
   may stop only once, before its loop ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - A step can land on a closing `}`, on a loop header, or back on an `if`'s line
-  ([1.1](../COOKBOOK.md#11-what-can-i-ask)).
+  ([1.1](../COOKBOOK.md#11-what-can-i-ask)). Past a block's end, `get` of its locals says the
+  block ended ([5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).
 - A reference or pointer is saved with its address first: `0x000000016d78b298 "apple"`. To compare
   or group such values, use `no_addresses(value)`, or take the text after the address
   ([C and C++ 4.7](c-cpp-cookbook.md#47-c-references-and-pointers-in-sql)).

@@ -720,9 +720,114 @@ def test_step_and_continue_requests_are_validated(tmp_path):
         ("continue", {"to_line": 0}, "positive line"),
         ("continue", {"to_line": "9"}, "positive line"),
         ("continue", {"to_line": 9, "to_exit": True}, "not both"),
+        ("step", {"calls": "yes"}, "calls must be a boolean"),
+        ("continue", {"calls": 1}, "calls must be a boolean"),
     ):
         with pytest.raises(ValueError, match=message):
             DebugWorker.validate(operation, args)
+
+
+CALLS = """def rename(items, at, text):
+    items[at] = text
+
+
+def walk(depth):
+    if depth == 0:
+        return 0
+    return 1 + walk(depth - 1)
+
+
+def run(names):
+    rename(names, 0, "b")
+    total = walk(2)
+
+    return names, total
+
+
+print("CALLS:", run(["a"]))
+"""
+
+
+def test_session_states_say_when_a_stop_is_in_another_call(tmp_path, capsys, monkeypatch):
+    # Tenth evaluation (outline): a step off `rename`'s last line landed in `run` with no
+    # word of it, and the next `get` of rename's names failed.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    program = tmp_path / "calls.py"
+    program.write_text(CALLS)
+    try:
+        assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
+        code, out = run(capsys, "session", "step")
+        assert code == 0 and out.out.splitlines()[1:] == ["note: returned from `rename` to `run`"]
+        code, out = run(capsys, "session", "get", "items")
+        place = (
+            "note: this stop is in run at calls.py:12; since the previous stop, the program "
+            "returned from `rename` to `run`"
+        )
+        assert code == 1 and place in out.out, out.out
+        code, out = run(capsys, "session", "step", "--json")
+        state = json.loads(out.out)
+        assert state["location"].endswith("calls.py:13") and "call_change" not in state
+        code, out = run(capsys, "session", "step", "--into", "--json")
+        state = json.loads(out.out)
+        assert state["call_change"] == {"kind": "entered", "from": "run", "to": "walk", "calls": 1}
+        assert "note: entered `walk`, called from `run`" in run(capsys, "session", "wait")[1].out
+        assert "note:" not in run(capsys, "session", "step")[1].out
+        # A recursive call is another call, though the function's name is the same.
+        code, out = run(capsys, "session", "step", "--into")
+        assert "calls.py:6 in walk" in out.out and "note: entered `walk`, called from `walk`" in (
+            out.out
+        )
+        code, out = run(capsys, "session", "step", "--out")
+        assert "calls.py:8 in walk" in out.out and "note: returned from `walk` to `walk`" in (
+            out.out
+        )
+    finally:
+        run(capsys, "session", "close")
+    # A continue that leaves the call and stops in another at the same depth.
+    try:
+        assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
+        code, out = run(capsys, "session", "continue", "--to", "6", "--json")
+        state = json.loads(out.out)
+        assert code == 0 and state["call_change"] == {
+            "kind": "other",
+            "from": "rename",
+            "to": "walk",
+        }, state
+    finally:
+        run(capsys, "session", "close")
+
+
+def test_session_start_warns_when_the_debugger_moved_its_breakpoint(tmp_path, capsys, monkeypatch):
+    # Tenth evaluation (outline): `session start --at` a blank line stopped at the line
+    # before it with no warning, where a probe at that line warns.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    program = tmp_path / "calls.py"
+    program.write_text(CALLS)
+    moved = (
+        "The debugger moved the breakpoint from line 14 to line 13 (line 14 has no code of its "
+        "own); values are from line 13. Choose a line from `peeky describe`."
+    )
+    code, out = run(
+        capsys, "probe", program, "--at", "14", "--capture", "names", "--json", "--no-save"
+    )
+    assert code == 0 and moved in json.loads(out.out)["warnings"]
+    try:
+        code, out = run(capsys, "session", "start", program, "--at", "14")
+        assert code == 0 and "calls.py:13 in run, hit 1" in out.out
+        assert f"\nwarning: {moved}" in out.out, out.out
+    finally:
+        run(capsys, "session", "close")
+    try:
+        code, out = run(capsys, "session", "start", program, "--at", "14", "--json")
+        assert code == 0 and json.loads(out.out)["warnings"] == [moved]
+    finally:
+        run(capsys, "session", "close")
+    try:
+        # Where it is not moved, no warning.
+        code, out = run(capsys, "session", "start", program, "--at", "13", "--json")
+        assert code == 0 and "warnings" not in json.loads(out.out)
+    finally:
+        run(capsys, "session", "close")
 
 
 def test_steps_into_code_outside_the_root_read_and_change_nothing(tmp_path, capsys, monkeypatch):
