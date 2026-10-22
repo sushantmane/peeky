@@ -120,10 +120,11 @@ def test_each_call_of_a_recursive_function_gets_its_own_return(c_program, capsys
 
 @pytest.mark.timeout(120)
 def test_returns_are_shown_only_where_exact(c_program, capsys):
-    # A line run on each pass of a loop: only the call's last hit gets the return.
+    # A line run on each pass of a loop: each pass's stop is proven in the same call by
+    # the step out's watch (#174), so every hit gets the call's return.
     loop = returns(probe(capsys, c_program, "LOOP"))
     assert loop[3]["value"] == "6" and loop[3]["line"] == line_of("int s = sum_to(3)")
-    assert all("value" not in loop[hit] and "ran again" in loop[hit]["error"] for hit in (1, 2))
+    assert [loop[hit].get("value") for hit in (1, 2)] == ["6", "6"], loop
     # A struct returned in registers, and a function returning nothing: withheld.
     made = returns(probe(capsys, c_program, "MAKE"))[1]
     assert "value" not in made, made
@@ -314,6 +315,83 @@ def test_a_return_after_a_set_at_in_the_call_is_that_calls(c_program, capsys):
     assert [hits[hit][RETURN]["value"] for hit in (1, 2)] == ["501", "21"], hits
     # folded(1) + add(1) + add(2), the first add's r set to 500.
     assert result["output"].split()[1] == str(7 + 501 + 21)
+
+
+# #174: `if (...) SWAP(...)` has two breakpoint locations (#160), the condition and the
+# macro's block, so a call of `order` that swaps stops twice before it returns; `jump(1)`
+# leaves by longjmp, and main then calls `jump(2)` from another place, at the same depth.
+MULTI = """#include <setjmp.h>
+#include <stdio.h>
+
+#define SWAP(a, b) do { int t_ = (a); (a) = (b); (b) = t_; } while (0)
+
+static jmp_buf jb;
+
+static int order(int *a, int *b) {
+    if (*a > *b) SWAP(*a, *b); /* ORDER */
+    return *a + 10 * *b;
+}
+
+static int jump(int n) {
+    int r = n * 2; /* JUMP */
+    if (n == 1) longjmp(jb, 1);
+    return r;
+}
+
+int main(void) {
+    int x = 3, y = 1, z = 2;
+    volatile int j = 0;
+    int r1 = order(&x, &y);
+    int r2 = order(&x, &z);
+    if (setjmp(jb) == 0) j = jump(1);
+    j += jump(2);
+    printf("%d %d %d\\n", r1, r2, j);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_return_is_followed_across_a_lines_breakpoint_locations(c_program, capsys):
+    # order(&x, &y) stops at the condition, then in SWAP's block (stop 2 of 2), before
+    # it returns 31. Hit 1's return was withheld as "the line ran again ... (a loop's
+    # next pass ...)"; the step out's watch proves stop 2 is in the same call, so both
+    # hits get its return, each `(return)` row with its own hit's stop.
+    source = c_program.with_name("multi.c")
+    source.write_text(MULTI)
+    line = next(i for i, row in enumerate(MULTI.splitlines(), 1) if "ORDER" in row)
+    command = ["probe", str(source), "--at", str(line), "--capture", "return", "--hits", "all"]
+    assert main([*command, "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["output"].strip() == "31 21 4"
+    shown = [(r["hit"], r.get("value"), r.get("stop"), r.get("stops")) for r in result["rows"]]
+    assert shown == [(1, "31", 1, 2), (2, "31", 2, 2), (3, "21", 1, 2)], result["rows"]
+    assert [(entry["hit"], entry["stop"]) for entry in result["by_hit"]] == [(1, 1), (2, 2), (3, 1)]
+    # The evidence keeps each `(return)` row's stop.
+    assert main(["sql", "SELECT hit, stop, value FROM last_run", "--json"]) == 0
+    stored = json.loads(capsys.readouterr().out)["rows"]
+    assert [(row["hit"], row["stop"], row["value"]) for row in stored] == [
+        (1, 1, "31"),
+        (2, 2, "31"),
+        (3, 1, "21"),
+    ]
+
+
+@pytest.mark.timeout(120)
+def test_a_line_that_stops_again_in_another_call_says_so(c_program, capsys):
+    # jump(1) left by longjmp, and jump(2) stopped at the line at the same depth before
+    # any return: the reason said "the line ran again ... (a loop's next pass ...)".
+    # The frames under the stop are not jump(1)'s: another call, said as such.
+    source = c_program.with_name("multi.c")
+    source.write_text(MULTI)
+    _, hits = run(capsys, source, MULTI, "JUMP", "n,return")
+    assert [rows["n"]["value"] for rows in hits.values()] == ["1", "2"]
+    left = hits[1][RETURN]
+    assert "value" not in left and left["error"].startswith(
+        "withheld: the line stopped again at the same depth in another call (the frames "
+        "under it are not this call's)"
+    ), left
+    assert "next pass" not in left["error"] and hits[2][RETURN]["value"] == "4"
 
 
 @pytest.mark.timeout(120)
