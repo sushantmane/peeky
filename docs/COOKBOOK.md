@@ -500,6 +500,9 @@ status: completed  hits: 3 (all)  seconds: 1.07  max pause: 5.3 ms
 ```
 
 - A warning says when the cap was reached.
+- A table of more than 40 rows, of several selectors, ends with a pointer to one line per hit:
+  `` evidence: one line per hit, a column per selector: `peeky queries wide --param run=7` ``
+  ([3.4](#34-one-row-per-hit)).
 - `all` needs the program to exit, so it can't be combined with `--until hits`. For an attached
   JVM, give a number.
 - Progress prints the first hit, then at most one line every 2 seconds, then the total when the
@@ -1025,6 +1028,13 @@ Add `--json` to any command, and read the result with a tool such as `jq`:
 peeky probe examples/pagination_bug.py --at 8 --capture start --json --quiet | jq -c '.by_hit[0].observed'
 # {"start":"3"}
 ```
+
+`output` is the program's text as the debugger passed it on. A C, C++ or Rust program writes
+through a terminal that LLDB opens, and a terminal ends each line with `\r\n`. So their `output`
+has `\r\n` where the program wrote `\n`. Java's and Python's keep the program's own line ends. The
+evidence store keeps `output` as JSON does. The text table shows the lines without their ends.
+Peeky doesn't turn `\r\n` back into `\n`: it can't tell a `\r` the terminal added from one the
+program wrote.
 
 Branch on the exit status:
 
@@ -2193,6 +2203,12 @@ cleanup: nothing Peeky could identify was still running
 - `session get` on a list, dict or struct lists one level of children. Each child shows the
   selector that reads it.
 - A child that has children of its own shows `(children: ...)`.
+- A value 4 levels below a local, such as `self.history[-1][2]`, lists no children. That is the
+  inspection's depth limit, and the row says so:
+  `<children: none listed: this value is 4 levels below a local, …>`. Read the same object by a
+  shorter path, if there is one: `self.items[2]`, where `[id 31]` shows it is the same dict.
+- Each selector is read on its own. Two paths to one object each list its children, within the
+  depth limit.
 
 #### When a name has no value
 
@@ -2213,6 +2229,9 @@ peeky: no value for nosuch (each row above says why), so the exit status is 1
 The note tells you where you are. For example, this note says that a comparator's `a` is not
 `main`'s: `note: this stop is in main at sched.cpp:30`. In JSON, such a row has the stop's
 `location`.
+
+When several rows give the same `visible:` list, the later ones say `visible: as listed above`.
+A probe's table does the same: `visible: as listed at hit 1`. JSON keeps every list whole.
 
 #### Go on to the next stop, or use another session
 

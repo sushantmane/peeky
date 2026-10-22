@@ -160,7 +160,7 @@ the commands.
 - **Refused before the run:** what the build rules out, such as a Rust local kept in a register
   (`[not settable: register]`, listed by `describe`), or a field through a pointer. So is a Java
   local whose declared type isn't supported, a value that doesn't fit, or a local never read after
-  the stop. One refusal fails the probe, and ends with what is settable there
+  the stop. One refusal fails the probe. Rust's ends with what is settable there
   (`settable here: total, i`, or `none`).
 - **Checks:** `session inspect` says why when nothing is `[settable]`; a Java row says why it isn't.
   Every change is read back. One the debugger refuses or can't store is `MUTATION_REJECTED`, and

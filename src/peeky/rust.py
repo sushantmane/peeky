@@ -82,7 +82,7 @@ from peeky.rust_symbols import (
     without_numbered_structs,
 )
 from peeky.text_sets import text_kind
-from peeky.textlines import split_lines
+from peeky.textlines import read_source, source_lines, split_lines
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
@@ -969,6 +969,16 @@ class _Copied(str):
         return made
 
 
+def _local(body, name):
+    """Whether the MIR ``body`` binds ``name`` only to whole locals, none a parameter (a
+    `for` loop's item, `let r = &mut x;`); False where it can't tell (no body, a
+    closure's capture)."""
+    bindings = body.bindings.get(name, ()) if body is not None else ()
+    return bool(bindings) and all(
+        binding[0] is not None and binding[0] not in body.arguments for binding in bindings
+    )
+
+
 def _names(names):
     """`n`, `n` and `m`, `a`, `b` and `c`: names for a message."""
     shown = [f"`{name}`" for name in names]
@@ -1647,13 +1657,18 @@ class RustSession(NativeSession):
         declared where the body places no binding of that name in the program's
         sources, while every binding of the name the body places there has a
         declaration of its own (one moved to the invoking line, by a
-        `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Shown when
-        unsure: a function with no body matched, and anything without the MIR (an
-        optimized build)."""
+        `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Also the
+        bindings a `?` desugars to (`residual`, `val`: tenth evaluation, prep 7), which
+        the DWARF does not mark artificial: every binding the body places on that line
+        under that name has a span ending at a `?` of the source, where a binding the
+        program writes ends with its name (``_try_bindings``). Shown when unsure: a
+        function with no body matched, and anything without the MIR (an optimized
+        build)."""
         proofs = getattr(self, "owned", None)
         if proofs is None:
             return None
         declared = set(self.lines)
+        texts = {}
 
         def hidden(linkages, positions):
             bodies = []
@@ -1673,6 +1688,8 @@ class RustSession(NativeSession):
                             foreign.add(name)
 
             def left_out(source, name, line):
+                if self._try_bindings(bodies, source, name, line, texts):
+                    return True
                 places = own.get(name, set())
                 if name not in foreign or source is None or (source, line) in places:
                     return False
@@ -1682,6 +1699,46 @@ class RustSession(NativeSession):
             return left_out
 
         return hidden
+
+    def _try_bindings(self, bodies, source, name, line, texts):
+        """Whether ``bodies`` (the MIR of one function's copies) bind ``name`` on
+        ``line`` of ``source`` only as a `?` desugars it: each such binding's span ends
+        at a `?` in the source (`residual`'s is the `?`, `val`'s the expression it ends),
+        which an identifier never does. False where any span is missing or the source
+        can't be read as rustc read it. ``texts``: {source: its lines}, read once."""
+        if source is None or source not in self.lines:
+            return False
+        bindings = [
+            binding
+            for body in bodies
+            for binding in body.bindings.get(name, ())
+            if binding[1] == source and binding[2] == line
+        ]
+        ends = [end for body in bodies for end in body.binding_ends.get((name, source, line), ())]
+        if not bindings or len(ends) != len(bindings):
+            # A binding whose span the MIR did not give: unsure, so shown.
+            return False
+        if source not in texts:
+            try:
+                text = read_source(Path(self.prepared.source_root) / source)
+            except (OSError, UnicodeDecodeError):
+                text = None
+            # As rustc counts columns: in characters, with no byte order mark.
+            texts[source] = (
+                None if text is None else source_lines(text.removeprefix("\ufeff"), True)
+            )
+        lines = texts[source]
+        if lines is None:
+            return False
+        for end_line, end_column in ends:
+            if (
+                not 1 <= end_line <= len(lines)
+                or not 2 <= end_column <= len(lines[end_line - 1]) + 1
+            ):
+                return False
+            if lines[end_line - 1][end_column - 2] != "?":
+                return False
+        return True
 
     def launch_args(self, program, root, args=None):
         launch = super().launch_args(program, root, args)
@@ -2148,7 +2205,13 @@ class RustSession(NativeSession):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
         ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
         information Peeky needs could not be read (nothing is ruled out then)."""
-        from peeky.fields import Unsettable, debugger_steps, member_indexes, settable_member
+        from peeky.fields import (
+            Unsettable,
+            debugger_steps,
+            local_pointer_advice,
+            member_indexes,
+            settable_member,
+        )
 
         plain = _plain(root)
         # The part a change makes, which the program's own copies are judged by (#192).
@@ -2199,7 +2262,14 @@ class RustSession(NativeSession):
                 named = debugger_steps(graph, kind, root, steps)
                 if named is None:
                     return None
-                settable_member(graph, kind, root, named)
+                settable_member(
+                    graph,
+                    kind,
+                    root,
+                    named,
+                    # No call passed a local reference: the call advice would lead nowhere.
+                    owner=lambda: local_pointer_advice(root) if _local(body, plain) else None,
+                )
                 projection = member_indexes(graph, kind, root, named)
                 if not framed:
                     raise Unsettable(
@@ -2567,6 +2637,16 @@ class RustSession(NativeSession):
                 rows = []
             self._rows = sorted(rows)
         return self._rows
+
+    def _pointer_advice(self, frame, root, steps):
+        """At a stop: local_pointer_advice where the build's MIR binds ``root`` only to
+        locals of the frame's function, none a parameter; else None (the general
+        advice: change it before the call that passed it)."""
+        from peeky.fields import local_pointer_advice
+
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        body = proofs.body(hashed[1]) if hashed and proofs is not None else None
+        return local_pointer_advice(root) if _local(body, _plain(root)) else None
 
     def _root_type(self, frame, root):
         """(type offset, whether the frame keeps it in its own memory, type graph) of the

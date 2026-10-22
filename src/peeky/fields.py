@@ -58,6 +58,17 @@ class Unsettable(ValueError):
     """Why a field or element cannot be changed."""
 
 
+def local_pointer_advice(root):
+    """settable_member's advice where the pointer or reference ``root`` is a local of the
+    function, not a parameter (a `for` loop's item, `let r = &mut x;`): no call passed
+    it, so the call advice would lead nowhere (tenth evaluation: kitty's `e.payer`)."""
+    return (
+        f"`{root}` is a local here, not a parameter, so no call passed it: change the value "
+        "it reaches in the frame that holds that value as its own local (rows mark it "
+        "[settable]), or edit the source with `--old`/`--new`"
+    )
+
+
 def _target(value):
     found = _REFERENCE.fullmatch(value or "")
     return int(found[1], 16) if found else None

@@ -108,6 +108,15 @@ def parse_selector(text):
                     "; a tuple's fields are .__0, .__1 in Rust (as LLDB names them) and "
                     "[0] in Python: " + re.sub(r"[.]([0-9]+)", r".__\1", text)
                 )
+            # An index named by a variable (outline 4, tenth evaluation): never evaluated.
+            named = re.match(r"\[\s*([^\]'\"#]*?)\s*\]", text[position:])
+            if named and named[1] and not re.fullmatch(r"-?[0-9]+", named[1]):
+                arrow += (
+                    "; an index or key is a literal (a number, or text in quotes), never a name "
+                    "or an expression: capture "
+                    + (f"`{named[1]}`" if is_name(named[1]) else "what it is computed from")
+                    + f" first, then use its value, as {text[:position]}[2]"
+                )
             raise ValueError(
                 f"Invalid selector: {text}{_SELECTOR_HELP}{arrow}{_invisible_hint(text)}"
             )
@@ -1807,8 +1816,18 @@ def _capture(
                     row["note"] = _held_unproven_note(unproven)
                 elif "note" not in row and any(c.get("stale") for c in listed):
                     row["note"] = _STALE_RUST + "."
+            elif children and variable.get("depth_limited"):
+                # Its fields exist, but are not read here (outline 5, tenth evaluation:
+                # `self.history[-1][2]` listed none, beside `self.items[2]`, the same dict).
+                row["children_error"] = DEPTH_LIMITED_CHILDREN
         rows.append(row)
     return rows
+
+
+DEPTH_LIMITED_CHILDREN = (
+    "none listed: this value is 4 levels below a local, the inspection's depth limit; read "
+    "its parts through a shorter path to the same object, if there is one"
+)
 
 
 # How the worker prefixes the note of what is read through a local shown with one (#148).
@@ -4221,6 +4240,30 @@ def _holds(selector, target):
     )
 
 
+_VISIBLE = "; visible: "
+
+
+def repeated_visible(rows, where):
+    """{index: error} for the rows of ``rows`` whose error ends with a `visible:` list
+    (and what follows it) that an earlier row's ended with already: that part is
+    `visible: as listed <where(earlier row)>`. Text only; JSON and the store keep every
+    error whole (tenth evaluation: a probe's stops in `settle` restated its ten names
+    twice per hit)."""
+    seen, shortened = {}, {}
+    for index, row in enumerate(rows):
+        error = row.get("error")
+        if "value" in row or not isinstance(error, str):
+            continue
+        head, marker, tail = error.partition(_VISIBLE)
+        if not marker:
+            continue
+        if tail in seen:
+            shortened[index] = f"{head}{marker}as listed {where(seen[tail])}"
+        else:
+            seen[tail] = row
+    return shortened
+
+
 def _table(result, short_names=True):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory."""
@@ -4271,6 +4314,7 @@ def _table(result, short_names=True):
         or observed.get((row["hit"], row["selector"])) != (row["value"], row.get("identity"))
     ]
     left_out = len(result["rows"]) - len(kept)
+    errors = repeated_visible(kept, lambda row: f"at hit {row['hit']}")
     rows = [
         (
             str(row["hit"]),
@@ -4280,7 +4324,7 @@ def _table(result, short_names=True):
             short_instance(row) or functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
-            row.get("value", "<" + row.get("error", "") + ">")
+            row.get("value", "<" + errors.get(index, row.get("error", "")) + ">")
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
@@ -4289,7 +4333,7 @@ def _table(result, short_names=True):
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [note]" if row.get("note") and not _rust_note_kind(row["note"]) else ""),
         )
-        for row in kept
+        for index, row in enumerate(kept)
     ]
     widths = [max(len(item[i]) for item in [header, *rows]) for i in range(len(header) - 1)]
     for item in [header, *rows]:

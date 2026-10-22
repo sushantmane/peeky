@@ -293,6 +293,13 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
     (
+        # Python's field or element `--set` (tenth evaluation): Python shows no [settable].
+        r"which only Java, Rust, C and C\+\+ targets allow"
+        r"|can be changed for this language \(fields and elements cannot\)",
+        "Set a local of the stopped function instead, or add one with a candidate edit "
+        "(`--old`/`--new`) and set it in the same probe.",
+    ),
+    (
         # The debugger's own refusal, whatever it quotes (#261): a row's mark can't foresee it.
         r"[Tt]he debugger refused to change",
         "Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger "
@@ -336,6 +343,11 @@ _MUTATION_HINTS = (
     (
         r"has one caller: \S+:[0-9]+ in ",
         "Change the value in the caller the message names, before that call, as the message says.",
+    ),
+    (
+        r"not a parameter, so no call passed it",
+        "Change the value in the frame that holds it as a local, or edit the source with "
+        "`--old`/`--new`.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",

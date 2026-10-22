@@ -55,6 +55,11 @@ names in peeky_pagination::main (src/main.rs:22-41): args (Vec<String>, lines 24
 
 A macro of your own crate keeps its bindings, even with `#[collapse_debuginfo(yes)]`.
 
+`describe` also leaves out the bindings that the compiler makes for a `?`: `residual` and `val`.
+The debug information lists them as locals, without marking them as the compiler's. The build's
+MIR places each one at the `?` itself, where a binding you write sits at its name. So a local
+that you name `val` or `residual` is still listed. Where Peeky can't tell, the binding is listed.
+
 ### Read types as the program spells them
 
 Types are spelled as the program spells them: `Vec<u32>`, `String`, `Option<i32>`. This holds in
@@ -330,6 +335,11 @@ Fields stay selectable: `w.start`, `runs[0].__0`.
 
 - A reference parameter shows its Rust type, such as `&mut limiter::Window`. LLDB's type,
   `limiter::Window *`, is kept in `debugger_type`.
+- A reference or raw pointer local or field shows LLDB's type: `f  kitty::Friend *` for a
+  `&Friend` loop item, and for a `*const Friend` field alike. `describe` spells them the same way.
+  So `f` in `settle` reads `kitty::Friend *`, and a closure's `f` parameter reads
+  `&kitty::Friend`. A raw pointer is told apart by its `[unproven]` mark and its note, and in JSON
+  by `unproven_pointer: "raw"`.
 - A field's or element's type comes from the build's debug information: `self.k  usize`, where
   LLDB says `unsigned long`. `debugger_type` keeps LLDB's. This holds for a field that a preview
   reads from memory too.
@@ -1100,6 +1110,11 @@ moved, dropped or not yet assigned local (`drop(h)`, `let later: Span;` before i
 would be lost, or overwritten by the assignment. Several can change at once:
 `--set w.start=10 --set w.count=0`.
 
+To change a value at a given stop of any line of the `--at` file, use `--set-at LINE@HIT
+NAME=VALUE` ([COOKBOOK 2.8](../COOKBOOK.md#28-change-a-value-then-restore-it)). HIT counts that
+line's own stops. Repeat it for several stops: in `kitty`, `--set-at 72@1 payer=3 --set-at 72@3
+payer=0` credits the first and third expenses to other friends in one run.
+
 Peeky never changes these:
 
 - anything through a reference, a raw pointer or a `Box`
@@ -1283,6 +1298,8 @@ output:
 
 To stop at the right call, use one of these:
 
+- `--set-at <call line>@N` in a probe at any line of the file, such as
+  `--set-at 30@3 w.start=10`;
 - a probe `--at` the call's line, with `--hits N --set-hit N`;
 - `session start --at` the call's line, with `--hit N`.
 
@@ -1293,6 +1310,12 @@ These don't reach the stop you need:
 
 - `session continue --to` the call's line reaches only the next call.
 - `session step --out` returns part-way through the line, where changes are refused.
+
+A reference that is a local, not a parameter, came from no call. Examples are a `for` loop's item
+over a slice, `e` in `for e in expenses`, and `let r = &mut x;`. The refusal says so. Change the
+value in the frame that holds it as its own local, where rows mark it `[settable]`. What a
+`Vec` or a slice holds is never settable, so for `e.cents`, edit the source with
+`--old`/`--new`.
 
 ### Set a String to a text
 

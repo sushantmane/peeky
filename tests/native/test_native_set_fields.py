@@ -155,7 +155,8 @@ def test_c_fields_and_elements_change_and_the_program_sees_them(directory, capsy
         code, result = change(capsys, assignment)
         assert code == 0, (assignment, result)
         assert (result["before"], result["after"]) == (before, after), (assignment, result)
-    refused(capsys, "ps.start=8", "`ps` is a pointer", "before the call", "--set-hit N")
+    # `ps` is `main`'s own local, which no call passed (tenth evaluation, prep 9).
+    refused(capsys, "ps.start=8", "`ps` is a pointer", "not a parameter, so no call passed it")
     refused(capsys, "b.a=3", "`b.a` is a bitfield")
     refused(capsys, "c.fixed=3", "`c.fixed` is const")
     refused(capsys, "u.i=3", "`u` is a union")

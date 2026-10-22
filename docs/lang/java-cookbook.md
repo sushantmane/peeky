@@ -600,12 +600,14 @@ In a launched Java program, a value that you capture or `session get` shows more
 
 | Value | Shows | Example |
 | --- | --- | --- |
-| An object | its first fields | `Merge$Interval@143 {end=10, start=1}` |
-| An array | its first elements | `int[3]@144 [1, 2, 3]` |
-| An `ArrayList` | its size and first elements | `ArrayList@142 size=2 [...]` |
+| An object | its first 8 fields | `Merge$Interval@143 {end=10, start=1}` |
+| An array | its first 8 elements | `int[3]@144 [1, 2, 3]` |
+| An `ArrayList` | its size and first 8 elements | `ArrayList@142 size=2 [...]` |
 | An empty `ArrayList` | its raw fields | `size=0` |
 
 - These are the debugger's reads of the value's own fields. No code runs in the program.
+- A value with more than 8 fields or elements ends with `…`: `int[9]@57 [0, 1, 1, 1, 0, 1, 0, 1, …]`.
+  Read the rest by name or index: `choice[8]`.
 - Java `inspect` listings stay plain.
 - An attached JVM shows plain values, to keep its pauses short.
 - Read members through `this`: `this.total`.

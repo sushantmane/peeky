@@ -60,6 +60,10 @@ prints:
 names in push (ring.c:13-19): r (struct ring *), v (int)
 ```
 
+Probe rows, `session inspect` and `session get` show a value's type as LLDB names it, without the
+tag: `r: ring * = 0x…`. `describe` reads the build's debug information, and writes the tag as C
+code does. Both name the same type.
+
 ### How a C++ function's name is shown
 
 LLDB names a C++ frame by its whole signature, about 100 characters long:
@@ -1056,8 +1060,35 @@ What Peeky checks:
 
 ### Change a field behind a pointer
 
-Peeky doesn't write through a pointer or a reference, because what it reaches may be freed or
-moved. That covers every local whose storage the debug information reaches through a pointer:
+Peeky never writes through a pointer or a reference, because what it reaches may be freed or
+moved. Change the value in the frame that owns it instead. The refusal says where, so read it
+first. In C, where Peeky can follow the calls, it names the owner's line and the `--set-at` to use:
+
+```
+`db.count` cannot be changed at debounce.c:35, at any stop of this build: in settle, `db` is a pointer: …; settle has one caller: debounce.c:57 in feed, which passes it on (`db`, its own pointer parameter); feed has one caller: debounce.c:80 in main, which passes `&db`, where `db.count` is settable: a probe's `--set-at 80@N db.count=<value>`, N counting line 80's own stops (find N with `--at 80 --capture db.count --hits all`). Refused before the program runs: nothing ran
+```
+
+Do what it says. `--set-at 80@5 db.count=0` sets `main`'s `db.count` at line 80's fifth stop,
+before that call. Repeat it for more stops. Other refusals say:
+
+- The owner's call alone, with no `settable`: a change there may not reach the call
+  ([below](#when-the-refusal-says-settable-c)).
+- `Peeky cannot single out one call of wrap`: `describe`'s `mutable:` line lists the fields each
+  function can set.
+- `` `p` is a local here, not a parameter, so no call passed it ``: change the value where a frame
+  holds it as its own local, or edit the source.
+- `change the value where it is owned, before the call that passed it`. C++ says this for a
+  parameter, because overloads and member calls make a call's target unclear from the text. Use
+  `--set-at <call line>@N`, a probe `--at` the call's line with `--hits N --set-hit N`, or
+  `session start --at` that line with `--hit N`.
+
+N counts the call line's own stops, not the called function's. To find N, run
+`peeky probe ... --at <call line> --capture <argument> --hits all`. `session continue --to` the
+call's line reaches only the next call.
+
+#### What counts as behind a pointer
+
+Every local whose storage the debug information reaches through a pointer:
 
 - a structured binding of a reference: `dropped` in `auto &[at, dropped] = *owner;`. It has no
   storage of its own, and is never marked `[settable]`. Its fields show
@@ -1066,61 +1097,58 @@ moved. That covers every local whose storage the debug information reaches throu
 - in C on macOS, a `__block` variable;
 - the elements of GCC's variable-length arrays.
 
-The refusal says:
-
-```
-`dropped` is reached through a pointer or reference …. Change the value where it is owned: Peeky changes only values the frame holds itself
-```
+Their refusal says
+`` `dropped` is reached through a pointer or reference …. Change the value where it is owned: Peeky changes only values the frame holds itself ``.
 
 These change as usual, because the frame holds them itself: a by-value structured binding
 (`auto [a, b] = pt;`), and a by-value parameter that the ABI passes through a hidden pointer. That
 is a struct over 16 bytes on arm64, or any class with a destructor: the call's own copy.
 
-To change a value behind a pointer, change it where it is owned, before the call that passed it:
+#### When the refusal says `settable` (C)
 
-- a probe `--at` the call's line, with `--hits N --set-hit N`;
-- or `session start --at` the call's line, with `--hit N`.
+In C, Peeky follows the calls in the program's sources, from the stopped function up to the frame
+that owns the struct:
 
-N counts the call line's own stops, not the called function's. They differ when the function is
-called from several lines. To find N, run
-`peeky probe ... --at <call line> --capture <argument> --hits all`. `session continue --to` the
-call's line reaches only the next call.
+- Each function on the way, the stopped one too, must have one caller. Peeky counts every mention
+  of its name in the preprocessed sources, so a macro used twice is two calls. A mention that is
+  not a call by name, a prototype or the definition, such as taking its address, leaves the
+  callers unknown.
+- A caller that passes its own pointer parameter on as is, to the same type, is followed:
+  `fits(lay, …)` in `wrap(const struct layout *lay, …)`. It must never point it elsewhere (no
+  `lay = …`, `lay++` or `&lay`), and must have no inline assembly (`asm`, `__asm__`) and no
+  address builtin (`__builtin_addressof`).
 
-#### When the function has one caller (C)
+Where that stops before the owner, the refusal names no frame. So does a last caller that passes
+a pointer it keeps or computes: `p`, `&a[i]`, `s->inner`.
 
-In C, when the program's sources call the function only once, the refusal names that call
-instead:
+A struct that the caller doesn't hold in its frame is never changed there: `&g` for a global, or
+a static local. To change it, change what sets it with a candidate edit.
 
-```
-push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable: a probe's `--set-at 15@N r.tail=<value>` ...
-```
+The refusal says `settable`, with the `--set-at`, only where a stop on the first line of the
+owner's call statement can make the change, and the call sees it. Here the root is `r`, the first
+local in the selector `r.tail`. Otherwise it names the owner's call alone. All of these must hold:
 
-The refusal says `settable`, and how to change it, only in one case. A stop on the first line of
-the call's statement must be able to make the change, and the call must see it. Here the root is
-`r`, the first local in the selector `r.tail`. In detail, all of these must hold:
-
-- The call is in the first statement on that line. In `r.tail = 1; total += push(&r, 1);`, the
+- Each function on the way uses the pointer only for that call, and to read integer fields
+  through it: `lay->indent`.
+- The call is in the first statement on its line. In `r.tail = 1; total += push(&r, 1);`, the
   first statement overwrites the change.
 - The statement is one of these forms, read as the compiler preprocesses it, with a macro's code
-  where it is used. NAME is not the root.
-  - `push(ARGS);`
-  - `NAME = push(ARGS);`, or `+=` and the like
-  - a declaration's `int NAME = push(ARGS);`
-  - `return push(ARGS);`
-  - `if (push(ARGS) ...)`
+  where it is used. NAME is not the root: `push(ARGS);`; `NAME = push(ARGS);`, or `+=` and the
+  like; a declaration's `int NAME = push(ARGS);`; `return push(ARGS);`; `if (push(ARGS) ...)`.
 - ARGS, and the rest of an `if`'s condition, only read:
   - no assignment, `++`, `--` or `&`, except the address of another plain name: `&out`;
   - no call of any kind: `atoi(s)`, `ops[0](r.buf)`, `(*fp)(x)`, `v.fn(x)`, `sizeof(x)`;
   - the root only as the `&r` passed, and in reads of its integer fields: `r.head`, but not
     `r.buf`, which is a pointer into it.
 - The caller takes no address of the root or its fields anywhere else in its body, as
-  preprocessed, a header included inside it too. A pointer `a = &r` may change it. That means:
+  preprocessed, a header included inside it too. A pointer `a = &r` may change it. So:
   - no builtin, except those known to reach no memory, such as `__builtin_expect`.
     `__builtin_addressof`, `__builtin_frame_address` and `__builtin_dwarf_cfa` count;
   - no array in the root named without an index: `keep(r.buf)`. `r.buf[0]` and `sizeof r.buf` are
     fine;
   - passing `&r` whole is fine, to a function of the same file that only uses its fields through
     it: `pop(&r, &v)` reading `r->count` and `r->buf[i]`.
+- The owner's function has no inline assembly, which may change any value it reaches.
 - The root is declared above the call, and the usual `set` rules allow the change at that stop.
   For example, `int total = 1 +` / `push(&r, 1);` is named by its statement's first line, 10,
   whose stop comes after the call.
@@ -1129,7 +1157,7 @@ Anything else may change the value first: `r = q, push(&r, 1)`, `push(&r, RESET(
 `push(&r, ops[0](r.buf))` through the array at `r`'s start. So a call such as
 `push(&r, atoi(argv[i] + 1))` is named alone, without `settable`.
 
-More rules:
+Calls in other files:
 
 - A call in another source file is changed by a probe `--at` that file's line:
   `--at other.c:6 --set q.tail=<value> --set-hit N`. This works as `--set-at` names a line of the
@@ -1138,48 +1166,6 @@ More rules:
   includes it, and its macros may make those copies differ. So a call in a header that two files
   include is two calls. A function, or a caller, defined in more than one file gets the general
   advice.
-- No `settable` claim is made where the owner's function, or a function on the way, has inline
-  assembly (`asm`, `__asm__`). Inline assembly may change any value it reaches.
-- Peeky counts every mention of the function's name in the preprocessed sources. So a macro used
-  twice is two calls. Any mention that is not a call by name, a prototype or the definition, such
-  as taking its address, leaves the callers unknown.
-- C++ keeps the general advice, because overloads and member calls make a call's target unclear
-  from the text.
-
-#### When the caller passes the pointer on
-
-Sometimes the one caller passes its own pointer parameter on as is: `fits(lay, …)` in
-`wrap(const struct layout *lay, …)`. A change there is refused too. So the refusal follows the
-calls, up to the frame that owns the struct, while each function on the way:
-
-- has one caller;
-- passes the same pointer on, to the same type;
-- never points it elsewhere: no `lay = …`, `lay++` or `&lay`;
-- has no inline assembly and no address builtin (`__builtin_addressof`).
-
-```
-fits has one caller: wrap.c:40 in wrap, which passes it on (`lay`, its own pointer parameter); wrap has one caller: wrap.c:75 in main, which passes `&lay`, where `lay.width` is settable: a probe's `--set-at 75@N lay.width=<value>` ...
-```
-
-It says `settable` only where the rules above hold at the owner's call. Also, each function on the
-way must use the pointer only for that call, and to read integer fields through it
-(`lay->indent`). Otherwise it names the owner's call alone.
-
-The refusal names no frame for the change in these cases:
-
-- a function on the way has several or unknown callers, may point the pointer elsewhere, or has
-  inline assembly;
-- the caller passes a pointer it keeps or computes: `p`, `&a[i]`, `s->inner`.
-
-The refusal then says that the caller passes it on:
-`…, and Peeky cannot single out one call of wrap`. It points to `describe`'s `mutable:` line,
-which lists the fields each function can set.
-
-A struct that the caller doesn't hold in its frame is never changed there: `&g` for a global, or a
-static local. To change it, change what sets it with a candidate edit.
-
-When a call is named but these rules don't let Peeky say `settable`, the refusal names the call
-alone.
 
 ### Same-named locals: which one a name means
 

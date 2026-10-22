@@ -5235,7 +5235,7 @@ class NativeSession:
                 kind,
                 name,
                 steps,
-                owner=lambda: self._caller_advice(self._function_at(frame), name, steps),
+                owner=lambda: self._pointer_advice(frame, name, steps),
             )
             if not framed:
                 raise Unsettable(_not_framed(name, self._storages(frame, root)))
@@ -5274,6 +5274,11 @@ class NativeSession:
                 f"{low} to {high})"
             )
 
+    def _pointer_advice(self, frame, root, steps):
+        """Where to change what the pointer local ``root`` of ``frame`` reaches, at a
+        stop (validate_member): ``_caller_advice``, or None for the general advice."""
+        return self._caller_advice(self._function_at(frame), root, steps)
+
     def _caller_advice(self, function, root, steps):
         """Where to change a field (``steps``, the debugger's child names) reached
         through the pointer parameter ``root`` of the C function ``function`` (a
@@ -5293,10 +5298,19 @@ class NativeSession:
         static), no frame is named for the change: the message says so and points to
         `describe`'s `mutable:` line. None, for the general advice, where the function
         itself has several or unknown callers, and in C++ (overloads, argument-dependent
-        lookup and member calls make a call's target unclear from the text)."""
-        if function is None or getattr(self.target, "language", None) != "c":
+        lookup and member calls make a call's target unclear from the text). A ``root``
+        that is a local of the function, C or C++, gets local_pointer_advice: no call
+        passed it."""
+        if function is None:
             return None
         declared = (function.get("types") or {}).get(root) or ()
+        if declared and {storage for _, storage, _ in declared} == {"automatic"}:
+            # A local pointer (`struct node *p = head;`): no call passed it.
+            from peeky.fields import local_pointer_advice
+
+            return local_pointer_advice(root)
+        if getattr(self.target, "language", None) != "c":
+            return None
         if not declared or {storage for _, storage, _ in declared} != {"parameter"}:
             return None
         try:
