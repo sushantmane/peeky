@@ -3,7 +3,8 @@
 Peeky's minimum product, the MVP, covers five languages: Python, Java, C, C++ and Rust. Python was
 the first alpha. The other languages followed, one slice at a time.
 
-The MVP is delivered: its issues, #6 to #13, are all closed. This page lists what each slice
+The tracked MVP issues, #6 to #13, are delivered and closed. Java on a separate host is still
+open: binding its source paths there isn't qualified yet. This page lists what each slice
 delivered, with links, then what comes next and what stays deferred.
 [LANGUAGES.md](LANGUAGES.md) has the language priorities and acceptance criteria.
 
@@ -63,7 +64,7 @@ extend it. Kubernetes stays deferred.
   - Deterministic transports and real debugpy cover a matrix of state transitions and failures.
   - No change succeeds on a retry after its reply was lost.
   - No owned debuggee remains after close, in the supported Linux configuration.
-- **Delivered** in the bootstrap, then in #15 and #25:
+- **Delivered** in the bootstrap, then in [#15][p15] and [#25][p25]:
   - deadlines on DAP pipe writes, and cleanup of a stalled pipe
   - rejecting old handles at a second stop
   - responses to a failed launch
@@ -98,12 +99,12 @@ extend it. Kubernetes stays deferred.
   - A [live evaluation](evaluations/2026-10-15-agent-cli.md) with three agents. All three reached
     verified general fixes, and its ten usability findings are fixed.
   - A program chosen by the user, not synthetic: CPython 3.9.6's `ipaddress`, with the real
-    CVE-2024-4032 bug, in `examples/real/ipaddress_mapped` (#28). It runs through an entry script
-    with `--run`.
+    CVE-2024-4032 bug, in `examples/real/ipaddress_mapped` ([#28][p28]). It runs through an
+    entry script with `--run`.
   - On that program, a [live agent](evaluations/2026-10-15-real-program.md) verified a fix
     equivalent to upstream's. The checker rejected its partial fix.
-  - Usability follow-ups (#26): `--set-hit`, Python scopes in `describe`, safe negative indexes
-    and `by_hit`.
+  - Usability follow-ups ([#26][p26]): `--set-hit`, Python scopes in `describe`, safe negative
+    indexes and `by_hit`.
 
 ### Slice 3: a remote developer workflow (#8)
 
@@ -117,21 +118,25 @@ extend it. Kubernetes stays deferred.
   - Automated network tests with two processes, plus one recorded run on a separate host.
   - No cluster permissions are required.
   - Where verification runs, and what it depends on, are explicit.
-- **Delivered** in #42. [REMOTE.md](REMOTE.md) has the recorded run. `tests/remote/test_ssh_e2e.py`
-  repeats it in the CI job "remote SSH e2e".
+- **Delivered:**
+  - [#33][p33]: `--worker`, source matching and the transport behaviour.
+  - [#42][p42]: the run on a real second host, and its CI lane. [REMOTE.md](REMOTE.md) has the
+    recorded run. `tests/remote/test_ssh_e2e.py` repeats it in the CI job "remote SSH e2e".
+- **Still open:** Java on a separate host. Binding its source paths there isn't qualified yet
+  ([LANGUAGES.md](LANGUAGES.md)).
 
 ### Language slices P1 to P5
 
 | Slice | Scope | Delivered in |
 |---|---|---|
-| P1 (#9) | Extract the adapter and the build and verification boundaries | #16 |
+| P1 (#9) | Extract the adapter and the build and verification boundaries | [#16][p16] |
 | | Keep Python's conformance while doing it | |
-| P2 (#10) | Java, through a headless adapter: launch, inspect, change primitives | #16, #17, #18 |
-| | Verify compiled fixes | |
-| P3 (#11) | A shared native adapter, with C as the first fixture | #19, #20 |
-| P4 (#12) | C++ fixtures, and verification of rebuilt candidates | #21, #32 |
-| P5 (#13) | Rust fixtures and formatters | #22, #23, #30, #32 |
-| | Cargo verification and capability reports | |
+| P2 (#10) | Java, through a headless adapter | [#16][p16], [#17][p17], |
+| | Launch, inspect, change primitives, and verify compiled fixes | [#18][p18] |
+| P3 (#11) | A shared native adapter, with C as the first fixture | [#19][p19], [#20][p20] |
+| P4 (#12) | C++ fixtures, and verification of rebuilt candidates | [#21][p21], [#32][p32] |
+| P5 (#13) | Rust fixtures and formatters | [#22][p22], [#23][p23], |
+| | Cargo verification and capability reports | [#30][p30], [#32][p32] |
 
 - The plan was to close common lifecycle blockers before adding Java. The full Python corpus was
   not a prerequisite.
@@ -147,10 +152,12 @@ extend it. Kubernetes stays deferred.
   - Stateless probes, one request each: `peeky probe`.
 - **Goal:** as easy as heappy: one command per question, a `describe` manifest, canned queries and
   SQL over captured evidence.
-- **Delivered:** steps 1 to 4 of [ADR 0004][adr4]. The commands are `peeky probe`,
-  `peeky describe`, and `peeky sql` and `peeky queries` (#35).
-  [ADR 0005](adr/0005-tool-not-agent.md) unified them with `peeky session`. Session mode is
-  unchanged.
+- **Delivered:** steps 1 to 4 of [ADR 0004][adr4], under one interface
+  ([ADR 0005](adr/0005-tool-not-agent.md)). Session mode is unchanged.
+  - [#25][p25]: `peeky probe`, `peeky describe`, `peeky session` and `peeky verify`.
+  - [#35][p35]: `peeky sql` and `peeky queries`, over the saved evidence.
+  - [#68][p68]: probing a candidate fix, `probe --old/--new`, on a fresh build.
+  - [#83][p83]: several edits per `verify` and per candidate probe.
 - **Remaining:** step 5, a prepared-build cache. Build it only if measured probe latency needs it.
 - **Design guideline:** keep worker operations composable and declarative. A new worker feature
   should be expressible as a declared probe step: a location, a selector and a bounded change. It
@@ -202,8 +209,28 @@ order:
 ## What stays deferred
 
 - Broader autonomous patching across several files. `peeky verify` takes several edits, all in
-  one file.
+  one file ([#83][p83]).
 - Kubernetes workers and an outbound relay, above.
 - Multi-tenant authorization. A worker has one controller and one session.
 - Production data policies, and a production mutation policy.
 - Attach for languages other than Java.
+
+[p15]: https://github.com/sushantmane/peeky/pull/15
+[p16]: https://github.com/sushantmane/peeky/pull/16
+[p17]: https://github.com/sushantmane/peeky/pull/17
+[p18]: https://github.com/sushantmane/peeky/pull/18
+[p19]: https://github.com/sushantmane/peeky/pull/19
+[p20]: https://github.com/sushantmane/peeky/pull/20
+[p21]: https://github.com/sushantmane/peeky/pull/21
+[p22]: https://github.com/sushantmane/peeky/pull/22
+[p23]: https://github.com/sushantmane/peeky/pull/23
+[p25]: https://github.com/sushantmane/peeky/pull/25
+[p26]: https://github.com/sushantmane/peeky/pull/26
+[p28]: https://github.com/sushantmane/peeky/pull/28
+[p30]: https://github.com/sushantmane/peeky/pull/30
+[p32]: https://github.com/sushantmane/peeky/pull/32
+[p33]: https://github.com/sushantmane/peeky/pull/33
+[p35]: https://github.com/sushantmane/peeky/pull/35
+[p42]: https://github.com/sushantmane/peeky/pull/42
+[p68]: https://github.com/sushantmane/peeky/pull/68
+[p83]: https://github.com/sushantmane/peeky/pull/83
