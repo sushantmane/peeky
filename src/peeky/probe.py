@@ -636,14 +636,17 @@ def _scope_lookup(worker, stop, snapshot, scopes, name):
     line alike, `p @ s.c:10`), it is refused: which is which cannot be told. A plain
     name LLDB lists only with where it is declared (`t @ two.c:20`, an inner block's
     shadowing an outer `t @ two.c:18`) is the one the worker says the code at the stop
-    names (``selected_as``, #158)."""
+    names (``selected_as``, #158). A name with where it is declared (`entry @ main.rs:81`,
+    as `describe` lists a Rust local its function declares more than once) is also the
+    one the debugger lists by its plain name there, if the worker says it is declared
+    there (``declared_at``, #206)."""
     listed = [(v, scope) for scope in scopes for v in scope["variables"] if v["name"] == name]
     if not listed:
         listed = [
             (v, scope)
             for scope in scopes
             for v in scope["variables"]
-            if v.get("selected_as") == name
+            if name in (v.get("selected_as"), v.get("declared_at"))
         ]
     if len(listed) > 1:
         raise Refused(
@@ -856,7 +859,15 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 f"; value {value[:80]}" if isinstance(value, str) and "view" not in variable else ""
             )
             if variable.get("view") == "unproven":
-                raise ValueError(f"cannot expand {variable['name']!r}: {_UNPROVEN_RUST}")
+                reason = variable.get("unproven_reason")
+                raise ValueError(
+                    f"cannot expand {variable['name']!r}: "
+                    + (
+                        f"this Rust reference shows only its pointer: {reason}"
+                        if isinstance(reason, str)
+                        else _UNPROVEN_RUST
+                    )
+                )
             keyed = (
                 f"; {path} is the value for that key, as in C++ (an entry's key and value are "
                 f"{variable['_map']}[#N].first and .second)"
@@ -962,7 +973,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
     return {**variable, "scope": "globals"} if module else variable
 
 
-_RUST_TEXT = frozenset({"&str", "&mut str", "alloc::string::String *"})
+_RUST_TEXT = frozenset({"&str", "&mut str", "&str *", "alloc::string::String *"})
 
 
 # Owned Rust containers are raw: a moved or dropped local can still point at freed memory.
@@ -1021,31 +1032,57 @@ _OWNED_RUST = (
     "This owned Rust Vec or String shows its raw fields: Peeky reads an owned local's "
     "contents only where the build's MIR proves it initialized at the stop line, in the "
     "innermost frame, and here it may be moved, dropped or not yet assigned around this "
-    "line (#53). Capture `.len` for the length, probe a line where it is live, or read it "
-    "where it is passed as &Vec, &[T], &String or &str."
+    "line (#53). {length}Probe a line where it is live, or read it where it is passed as "
+    "&Vec, &[T], &String or &str."
 )
 _FIELD_RUST = (
     "This Rust Vec or String field shows its raw fields: Peeky reads a field's contents "
     "only where a reference parameter the build's IR proves live (a `&mut` one in the "
     "innermost frame) or a local the MIR proves initialized at the stop line, in the "
-    "innermost frame, holds it through plain struct and tuple fields (#156). Capture "
-    "`.len` for the length."
+    "innermost frame, holds it through plain struct and tuple fields (#156). {length}"
 )
+
+
+def _length_step(kind):
+    """The child a raw Rust container (as LLDB names its type) keeps its length in:
+    `vec.len` (String), `len` (Vec, also through a `&Vec`), `length` (a slice or `&str`,
+    also through a `&&str`); None where LLDB's own children name none Peeky knows (#205)."""
+    base = kind.removesuffix(" *")
+    if base.startswith("alloc::string::String"):
+        return "vec.len"
+    if base.startswith("alloc::vec::Vec<"):
+        return "len"
+    if base.startswith(("&[", "&mut [")) or base in ("&str", "&mut str"):
+        return "length"
+    return None
+
+
+def _length_hint(variable, selector):
+    """`Capture names.len for the length. ` for a raw Rust container, naming the child
+    that holds it (#205), or nothing where none is known."""
+    step = _length_step(_lldb_type(variable))
+    return f"Capture {selector}.{step} for the length. " if step else ""
+
+
+def _rust_note(template, variable, selector):
+    return template.format(length=_length_hint(variable, selector)).rstrip()
 
 
 def _raw_rust(variable, selector):
     """The note of a Rust container left as LLDB shows it, with the worker's reason."""
     kind = _lldb_type(variable)
     if kind.startswith("alloc::string::String"):
-        what, length = "String", "vec.len"
+        what = "String"
     elif kind.startswith("alloc::vec::Vec<"):
-        what, length = "Vec", "len"
+        what = "Vec"
     else:
-        what, length = kind, "length"
+        what = kind
+    step = _length_step(kind)
     return (
         f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
-        f"{variable['raw_reason']}. Capture {selector}.{length} for the length, and check "
-        "contents with `peeky verify`."
+        f"{variable['raw_reason']}. {_str_items(variable, selector)}"
+        + (f"Capture {selector}.{step} for the length, and check" if step else "Check")
+        + " contents with `peeky verify`."
     )
 
 
@@ -1054,8 +1091,8 @@ _COMPOSITE_RUST = (
     "Peeky reads them only when every field is an integer, bool, float or char (the "
     "build's debug info decides; no nested containers, references or enums), and an owned "
     "Vec only where the build's MIR proves it initialized at the stop line, in the "
-    "innermost frame (#53). Capture `.len` for the length, probe a line where it is live "
-    "or read it where it is passed as &Vec or &[T], and check contents with `peeky verify`."
+    "innermost frame (#53). {length}Probe a line where it is live or read it where it is "
+    "passed as &Vec or &[T], and check contents with `peeky verify`."
 )
 _UNPROVEN_RUST = (
     "this Rust Box (or a pointer the build's MIR does not identify, a reference into a "
@@ -1084,10 +1121,44 @@ _STALE_RUST = (
 _UNREAD_RUST = (
     "Peeky reads Rust contents only for String, &str and containers of integer, bool, "
     "float and char elements (or of tuples of them, and structs of them your crate "
-    "defines); this value is LLDB's "
-    "summary (its type and address), not the contents. "
-    "Capture `.len` for the length, and check contents with `peeky verify`."
+    "defines); this value is LLDB's summary (its type and address), not the contents. "
+    "{items}{length}Check contents with `peeky verify`."
 )
+
+
+def _str_items(variable, selector):
+    """Where a slice's or Vec's `&str` items read (#205), or nothing for another value."""
+    kind = _lldb_type(variable).removesuffix(" *")
+    if re.fullmatch(r"&(?:mut )?\[&(?:mut )?str\]|alloc::vec::Vec<&(?:mut )?str, .+>", kind):
+        return (
+            "Its `&str` items read as text where the code binds one (`for cell in "
+            f"{selector}`: `cell`). "
+        )
+    return ""
+
+
+def _unread_note(variable, selector):
+    """_UNREAD_RUST for one value: where its `&str` items read (#205), and its length."""
+    return _UNREAD_RUST.format(
+        items=_str_items(variable, selector), length=_length_hint(variable, selector)
+    )
+
+
+def _unproven_note(variable):
+    """The note of a Rust value shown only as its pointer: why, where the worker says
+    (a reference past #110's proof, #205), else every way that can be."""
+    reason = variable.get("unproven_reason")
+    if isinstance(reason, str):
+        return f"This Rust reference shows only its pointer: {reason}."
+    return _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+
+
+# The opening words of each Rust row note said once per selector among a probe's
+# warnings, unmarked in the table: Peeky's limits, not doubts about the value.
+_RUST_NOTE_OPENINGS = tuple(
+    text.split(":")[0].split(";")[0]
+    for text in (_OWNED_RUST, _FIELD_RUST, _UNREAD_RUST, _COMPOSITE_RUST, _STALE_RUST)
+) + ("This Rust Box", "This Rust reference shows only its pointer")
 _RUST_CONTAINERS = (
     "alloc::vec::Vec<",
     "alloc::string::String",
@@ -1229,6 +1300,12 @@ def _absence(variable, segment, children, path=None, pointers=False):
             )
         return message
     twin = "" if segment.startswith("[") else twin_hint(segment, names)
+    shown_path = path or variable["name"]
+    step = _length_step(_lldb_type(variable))
+    if not twin and segment in ("len", "length") and step and step != segment:
+        # A Rust slice's or `&str`'s length is `length`, a Vec's `len`, a String's
+        # `vec.len` (#205).
+        twin = f"; its length is {shown_path}.{step}"
     return f"{_shown(segment)} not found in {label}; children: {shown or 'none'}{twin}"
 
 
@@ -1506,20 +1583,20 @@ def _capture(
                         row["value"] = shown
                 owned_type = "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES
                 if variable.get("view") == "unproven":
-                    row["note"] = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+                    row["note"] = _unproven_note(variable)
                 elif isinstance(variable.get("raw_reason"), str):
                     # Why a Rust Vec or String stays raw here (#156).
                     row["note"] = _raw_rust(variable, selector)
                 elif owned_type and len(parse_selector(selector)) == 1:
-                    row["note"] = _OWNED_RUST
+                    row["note"] = _rust_note(_OWNED_RUST, variable, selector)
                 elif variable.get("stale"):
                     row["note"] = _STALE_RUST + "."
                 elif owned_type:
-                    row["note"] = _FIELD_RUST
+                    row["note"] = _rust_note(_FIELD_RUST, variable, selector)
                 elif "view" not in variable and _unread_rust(_lldb_type(variable)):
-                    row["note"] = _UNREAD_RUST
+                    row["note"] = _unread_note(variable, selector)
                 elif "view" not in variable and _rust_composite(_lldb_type(variable)):
-                    row["note"] = _COMPOSITE_RUST
+                    row["note"] = _rust_note(_COMPOSITE_RUST, variable, selector)
                 elif isinstance(variable.get("note"), str):
                     # A value the runtime shows but cannot vouch for (C, C++: a line a loop
                     # returns to; initialization not judged), or one read through it (#148).
@@ -3696,22 +3773,12 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
     for note, names in caveats.items():
         named = ", ".join(f"`{name}`" for name in dict.fromkeys(names))
         warnings.append(f"Changed {named}: {note}")
-    unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-    for note in (
-        _OWNED_RUST,
-        _FIELD_RUST,
-        _UNREAD_RUST,
-        _COMPOSITE_RUST,
-        unproven,
-        _STALE_RUST + ".",
-    ):
-        if any(row.get("note") == note for row in rows):
-            warnings.append(note)
-    # Any other row's note, once per selector: rows marked `[note]` in the table. What
-    # is read through a local shares that local's (#148).
+    # Each row's note, once, with the selectors it is about (#205): rows marked `[note]`
+    # in the table, unless it is one of Peeky's Rust limits. What is read through a
+    # local shares that local's (#148).
     noted = {}
     for row in rows:
-        if row.get("note") and row["note"] not in _rust_notes():
+        if row.get("note"):
             note = _THROUGH.sub("", row["note"], count=1)
             noted.setdefault(note, []).append(row["selector"])
     for note, selectors in noted.items():
@@ -3831,10 +3898,9 @@ def _by_hit(rows):
     return list(grouped.values())
 
 
-def _rust_notes():
-    """The Rust rows' notes, each said once among a probe's warnings, unmarked."""
-    unproven = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
-    return {_OWNED_RUST, _FIELD_RUST, _UNREAD_RUST, _COMPOSITE_RUST, unproven, _STALE_RUST + "."}
+def _rust_note_kind(note):
+    """Whether a row's note is one of Peeky's Rust limits (see _RUST_NOTE_OPENINGS)."""
+    return isinstance(note, str) and note.startswith(_RUST_NOTE_OPENINGS)
 
 
 def _short_instance(row):
@@ -3944,7 +4010,7 @@ def _table(result, short_names=True):
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
-            + ("  [note]" if row.get("note") and row["note"] not in _rust_notes() else ""),
+            + ("  [note]" if row.get("note") and not _rust_note_kind(row["note"]) else ""),
         )
         for row in kept
     ]

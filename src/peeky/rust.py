@@ -1341,8 +1341,9 @@ def _top_level_parts(text, separator):
     return [*parts, text[start:]]
 
 
-def _unproven(variable):
-    """``variable`` shown only as its pointer (#101, #108)."""
+def _unproven(variable, why=None):
+    """``variable`` shown only as its pointer (#101, #108); ``why``, where it is a
+    reference past #110's proof, says so (#205)."""
     # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read through the
     # pointer too.
     address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
@@ -1352,6 +1353,7 @@ def _unproven(variable):
         "value": address[0] if address else "<not shown: may point at freed memory>",
         "variablesReference": 0,
         "rust_view": "unproven",
+        **({"why": why} if why else {}),
     }
 
 
@@ -1450,8 +1452,9 @@ class RustSession(NativeSession):
 
     def _register_names(self, linkages, names):
         """For `describe` (#138): of a function's integer locals (``names``: {name:
-        types}), those no stop can change, and why, as their rows say (see
-        never_settable_row): `async state` where an async body keeps one across an
+        types}; `x @ main.rs:6` for one of several of its name, #206), those no stop can
+        change, and why, as their rows say (see never_settable_row): `async state` where
+        an async body keeps one across an
         `.await` in its state; `inlined` where only a copy of the function inlined where
         it is called keeps it out of memory; `another binding in a register (line N)`
         where a binding of the name has a slot but the one declared on line N has none
@@ -1467,7 +1470,7 @@ class RustSession(NativeSession):
         bodies = {hashed: proofs.body(hashed) if proofs is not None else None for hashed in hashes}
 
         def why(hashed, name):
-            if _state_held(bodies[hashed], name):
+            if _state_held(bodies[hashed], _plain(name)):
                 return "async state"
             kind, lines = self._not_in_memory(hashed, name)
             if kind == "inlined":
@@ -1480,7 +1483,7 @@ class RustSession(NativeSession):
         for name, kinds in names.items():
             if not kinds or not set(kinds) <= _SETTABLE_RUST:
                 continue
-            if any(self.memory.get((hashed, name)) is True for hashed in hashes):
+            if any(self.memory.get((hashed, _plain(name))) is True for hashed in hashes):
                 continue
             whys = {why(hashed, name) for hashed in hashes}
             found[name] = min(whys, key=lambda each: (_never_rank(each), each))
@@ -1816,6 +1819,50 @@ class RustSession(NativeSession):
         lines = {binding[2] for binding in bindings if local is not None and binding[0] == local}
         return lines.pop() if len(lines) == 1 else None
 
+    def _in_scope(self, hashed, name, line, path):
+        """(source, line) of the declaration of the root local ``name`` in scope at
+        ``line`` of ``path`` (the MIR's scopes), for _declared_type to pick among a
+        function's locals of that name (#206: a loop's `entry`, not an earlier loop's);
+        None where the name says it (`x @ main.rs:6`) or that is not one binding."""
+        if not is_name(str(name), limit=None) or path is None or type(line) is not int:
+            return None
+        found = self._binding_line(hashed, str(name), line, path)
+        return None if found is None else (path, found)
+
+    def _frame_scope(self, frame, root):
+        """_in_scope for the root local ``root`` (a debugger variable) of ``frame``."""
+        hashed, place = _frame_hash(frame), frame or {}
+        if not hashed:
+            return None
+        path = (place.get("source") or {}).get("path")
+        return self._in_scope(hashed[1], root.get("name"), place.get("line"), path)
+
+    def declared_at(self, variable, frame):
+        """`entry @ main.rs:81` for a root local lldb-dap lists by its plain name where
+        its function binds that name more than once (#206): where it is declared, as
+        `describe` lists it and as lldb-dap names it where another of its name is in
+        scope too. None for another, or where the MIR does not tell which it is."""
+        name = variable.get("name")
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        if not hashed or proofs is None or not is_name(str(name), limit=None):
+            return None
+        body = proofs.body(hashed[1])
+        places = {(Path(b[1]).name, b[2]) for b in (body.bindings.get(name, ()) if body else ())}
+        if len(places) < 2:
+            return None
+        place = frame or {}
+        line, path = place.get("line"), (place.get("source") or {}).get("path")
+        local = proofs._local(body, name, line, path) if type(line) is int and path else None
+        found = {
+            (Path(b[1]).name, b[2])
+            for b in body.bindings.get(name, ())
+            if local is not None and b[0] == local
+        }
+        if len(found) != 1:
+            return None
+        file, number = found.pop()
+        return f"{name} @ {file}:{number}"
+
     @staticmethod
     def _register_text(function, name, why, parameter=False):
         """The rule and its way around for a local the IR proves no memory for (see
@@ -1974,7 +2021,9 @@ class RustSession(NativeSession):
             if types is None:
                 return ("type", "Peeky cannot match it to the build's debug information")
             try:
-                kind, framed = self._declared_type(types, root)
+                kind, framed = self._declared_type(
+                    types, root, self._in_scope(hashed, root, line, source)
+                )
                 # As the stop's walk reads the selector (`sp[-1]`, `sp[01]` are `sp[1]`).
                 named = debugger_steps(graph, kind, root, steps)
                 if named is None:
@@ -2246,7 +2295,9 @@ class RustSession(NativeSession):
                 breakpoint=True,
                 column=place.get("column"),
                 block=self._stop_block(hashed[1], frame),
-                projection=self._projection(hashed[1], variable.get("name"), steps),
+                projection=self._projection(
+                    hashed[1], variable.get("name"), steps, self._frame_scope(frame, variable)
+                ),
                 named=not members,
             )
         if found is not None and not any(hazards for _, hazards in found):
@@ -2278,10 +2329,11 @@ class RustSession(NativeSession):
             "stop has read it"
         )
 
-    def _projection(self, hashed, root, steps):
+    def _projection(self, hashed, root, steps, where=None):
         """The MIR projection the debugger's child names ``steps`` make in the root local
         ``root`` of the function ``hashed`` (fields.member_indexes): () for the whole
-        local, None where the debug information does not tell (#192 review)."""
+        local, None where the debug information does not tell (#192 review). ``where``:
+        the declaration in scope at the stop (_in_scope)."""
         from peeky.fields import Unsettable, member_indexes
 
         if not steps:
@@ -2291,7 +2343,7 @@ class RustSession(NativeSession):
             types = functions.get(hashed)
             if types is None:
                 return None
-            kind, _ = self._declared_type(types, root)
+            kind, _ = self._declared_type(types, root, where)
             return member_indexes(graph, kind, root, list(steps))
         except Unsettable:
             return None
@@ -2350,7 +2402,10 @@ class RustSession(NativeSession):
         types = functions.get(hashed[1]) if hashed else None
         if types is None:
             raise Unsettable("Peeky cannot match this frame to the build's debug information")
-        return (*self._declared_type(types, root.get("name")), graph)
+        return (
+            *self._declared_type(types, root.get("name"), self._frame_scope(frame, root)),
+            graph,
+        )
 
     def _root_holds(self, frame, root, stack=None, deeper=None):
         """Raise fields.Unsettable unless the build's IR keeps the root local in memory
@@ -2417,7 +2472,9 @@ class RustSession(NativeSession):
             return None
         types = functions.get(hashed[1]) if hashed else None
         try:
-            root, _ = self._declared_type(types or {}, path[0])
+            root, _ = self._declared_type(
+                types or {}, path[0], self._frame_scope(frame, {"name": path[0]})
+            )
         except Unsettable:
             return None
         declared = member_base(self._field_cache[2], root, path[1:])
@@ -2590,7 +2647,7 @@ class RustSession(NativeSession):
             and unoptimized
             and hashed
             and proofs is not None
-            and (kind in ("&str", "&mut str") or str(kind).startswith(("&[", "&mut [")))
+            and (kind in ("&str", "&mut str", "&str *") or str(kind).startswith(("&[", "&mut [")))
             and REFERENCE_PARAMETERS.get(
                 declared := proofs.declared_type(hashed[1], variable.get("name"), line, shown_path)
             )
@@ -2599,7 +2656,8 @@ class RustSession(NativeSession):
             and reference_valid() is True
         ):
             # A `&str` or slice local whose target #110 shows still standing (`v` of `for
-            # v in args[2].split(',')`, #156) reads as a parameter's does.
+            # v in args[2].split(',')`, #156) reads as a parameter's does; so does a `&&str`
+            # (`cell` of `for cell in cells`, #205), whose `&str` outlives it.
             parameter = declared
         owned = bool(
             hashed
@@ -2685,6 +2743,7 @@ class RustSession(NativeSession):
             )
             # Judged in every frame (`--frame N` reads callers): only proofs that make a
             # value readable (an owned container, a Box) are the innermost frame's.
+            lent_only = not gated
             if not gated and unoptimized and hashed:
                 # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
@@ -2708,11 +2767,45 @@ class RustSession(NativeSession):
                         siblings,
                         read,
                     )
+            if (
+                gated
+                and lent_only
+                and str(kind).startswith("alloc::vec::Vec<")
+                and not _holds_data_pointers(kind)
+                and provable
+                and proofs.proven(hashed[1], variable.get("name"), line, shown_path)
+            ):
+                # A Vec of references past #110's proof (`names: Vec<&str>` after its last
+                # use, #205): its own fields (`names.len`) are its own, initialized, and
+                # read; the pointers inside it show only their address.
+                name = variable.get("name")
+                return {
+                    "raw_reason": "its items are references, and the build's MIR does not "
+                    "show that what they point at still stands here (#110: a call or drop "
+                    f"may have come since `{name}` was last used)",
+                    "taint": "pointers",
+                }
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
                 # points at is not.
-                return _unproven(variable)
+                why = None
+                if (
+                    lent_only
+                    and plain
+                    and (
+                        _holds_data_pointers(kind)
+                        or kind in ("&str", "&mut str")
+                        or str(kind).startswith(("&[", "&mut ["))
+                    )
+                ):
+                    # A reference past its last use (`cell` of `for cell in cells`, #205).
+                    why = (
+                        "the build's MIR does not show that what it points at still stands "
+                        "here (#110: a call or drop may have come since "
+                        f"`{variable.get('name')}` was last used)"
+                    )
+                return _unproven(variable, why)
         view = active_variant(variable, fetch, layouts)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB
@@ -2830,12 +2923,25 @@ class RustSession(NativeSession):
                 }
             declared = proofs.declared_type(hashed[1], root, line, path) or ""
             through, dereference = "owned", bool(re.match(r"(?:std::boxed::)?Box<", declared))
+            if re.match(r"&(?:mut )?[\w(]", declared):
+                # A reference local (`entry` of `for entry in entries.iter()`, #206): what
+                # it points at, where #110 shows that still standing; what the target's
+                # own references borrow outlives it (`&'b S<'a>` needs `'a: 'b`).
+                if valid() is not True:
+                    return {
+                        "raw_reason": f"`{root}` is a reference, and the build's MIR does "
+                        "not show that what it points at still stands here (#110: a call or "
+                        f"drop may have come since `{root}` was last used)"
+                    }
+                through, dereference = "lent", True
         try:
             functions, graph = self._field_types()
             types = functions.get(hashed[1])
             if types is None:
                 raise Unsettable("Peeky cannot match this frame to the build's debug information")
-            offset, _ = self._declared_type(types, root)
+            offset, _ = self._declared_type(
+                types, root, self._in_scope(hashed[1], root, line, path)
+            )
             name = held_container(graph, offset, root, steps, dereference=dereference)
         except Unsettable as exc:
             return {"raw_reason": str(exc)}
@@ -2999,7 +3105,11 @@ class RustSession(NativeSession):
         if hashed and path and all(isinstance(step, str) for step in path):
             try:
                 functions, _ = self._field_types()
-                root, _ = self._declared_type(functions.get(hashed[1]) or {}, path[0])
+                root, _ = self._declared_type(
+                    functions.get(hashed[1]) or {},
+                    path[0],
+                    self._frame_scope(frame, {"name": path[0]}),
+                )
                 node = member_type(self._field_cache[2], root, path[1:])
             except (Unsettable, TypeError, IndexError):
                 node = None
