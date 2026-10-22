@@ -216,7 +216,7 @@ frame for the change. It points to `describe`'s `mutable:` line instead.
 ## Two Java debugger failures
 
 Two java-debug failures end with `DEBUGGER_ERROR` at once, instead of a timeout. See
-[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27). java-debug's issue #27 tracks both.
+[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events). java-debug's issue #27 tracks both.
 
 ### `java-debug's event thread died (…)`
 
