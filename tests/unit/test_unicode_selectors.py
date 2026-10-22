@@ -634,3 +634,16 @@ def test_a_row_that_looks_located_and_does_not_parse_is_withheld():
         reason = session.not_yet_declared({"name": name, "value": "1"}, frame)
         assert "in a form Peeky cannot read" in reason, name
         assert "may hold leftovers" in reason
+
+
+def test_a_containers_storage_is_judged_by_the_one_parser():
+    # #199 review, after #186: `_declared_storages` took `t @ one` for the base of
+    # `t @ one @ two.c:5` and found no declaration, so a binding of a reference was
+    # not known to be one.
+    from peeky.native import NativeSession
+
+    types = {
+        "t": frozenset({(0x60, "through", ("one @ two.c", 5)), (0x70, "automatic", ("main.c", 9))})
+    }
+    assert NativeSession._declared_storages(types, "t @ one @ two.c:5") == {"through"}
+    assert NativeSession._declared_storages(types, "t @ main.c:9") == {"automatic"}

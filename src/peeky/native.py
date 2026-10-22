@@ -3465,13 +3465,19 @@ class NativeSession:
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
-        plain = re.fullmatch(r"(.+) @ [^:]+:[0-9]+", str(steps[0]))
+        root = str(steps[0])
+        plain = split_located(root)
         referred = function.get("referred")
         # A local the frame reaches through a pointer (a structured binding of a
         # reference, `auto& [items, n] = *owner`, which the debug information types as
         # the vector itself), or one whose locations were not all read, counts as one
-        # reached through a pointer (#181 review).
-        reached = referred is None or (plain[1] if plain else str(steps[0])) in referred
+        # reached through a pointer (#181 review); so does a row LLDB places where
+        # Peeky cannot read (#199 review).
+        reached = (
+            referred is None
+            or (plain is None and looks_located(root))
+            or (plain[0] if plain else root) in referred
+        )
         indirect, contained = not framed or reached, False
         for step in steps[1:]:
             holder = typed
@@ -5451,10 +5457,10 @@ class NativeSession:
     def _declared_storages(types, name, where=None):
         """The storages of the declarations of ``name`` that ``_declared_type`` reads
         (fields.local_types); empty where it declares none."""
-        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
-        declared = types.get(shown[1] if shown else name) or set()
+        shown = split_located(str(name))
+        declared = types.get(shown[0] if shown else name) or set()
         if declared and shown:
-            declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+            declared = {each for each in declared if each[2] == shown[1:]}
         if declared and where is not None and len(declared) > 1:
             place = (Path(str(where[0])).name, where[1])
             declared = {each for each in declared if each[2] == place} or declared
