@@ -36,7 +36,7 @@ Real conformance (`tests/rust/test_rust_worker.py`) covers HTTP launch, `Some(3)
 
 **Mutations must reach the program.** At opt-level 0, rustc still keeps a local that is assigned once and never borrowed in a register. For the debugger it stores a copy (`<name>.dbg.spill`), which LLDB shows and writes but the program never reads. Builds therefore also emit LLVM IR (`--emit=link,llvm-ir`). A change is allowed only if every declaration of that local in the stopped function is a real memory slot; the function is matched by the symbol hash ending LLDB's frame name. Otherwise the change is refused rather than reported as applied. **Every compiled file is declared:** each file in rustc's dependency files for the application and test crates must be a declared source or test, so `#[path]` modules, `include!` and `include_str!` cannot bring in bytes that no check covers.
 
-Compiled Cargo tests and independent candidate verification are described in [RUST_AGENT.md](RUST_AGENT.md#the-investigation-loop). Not yet delivered: separate-host use, live-model Rust evaluation, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.
+Compiled Cargo tests and independent candidate verification are described in [AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates). Not yet delivered: separate-host use, live-model Rust evaluation, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.
 
 ## Optimized builds (opt-in)
 

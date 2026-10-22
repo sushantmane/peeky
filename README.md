@@ -211,13 +211,13 @@ revised after two adversarial reviews.
   [five-language plan](docs/LANGUAGES.md).
 - **Python** runs through debugpy and the Debug Adapter Protocol (DAP).
 - **Design notes per language:**
-  - Java: the [worker](docs/WORKER.md#start-a-java-worker) and the [investigation loop](docs/JAVA_AGENT.md),
+  - Java: the [worker](docs/WORKER.md#start-a-java-worker) and the [investigation loop](docs/AGENT_LOOP.md#java-paginationbugjava),
     with an example in `examples/java`;
-  - C: the [worker](docs/WORKER.md) and the [investigation loop](docs/NATIVE_AGENT.md);
+  - C: the [worker](docs/WORKER.md) and the [investigation loop](docs/AGENT_LOOP.md#c-pagination_bugc);
   - C++: [how Peeky reads C and C++ values](docs/NATIVE_INTERNALS.md), the
     [worker](docs/WORKER.md#configure-a-c-target) and the
-    [investigation loop](docs/NATIVE_AGENT.md#the-c-fixture);
-  - Rust: the [worker](docs/RUST_GATE.md) and the [investigation loop](docs/RUST_AGENT.md#the-investigation-loop).
+    [investigation loop](docs/AGENT_LOOP.md#c-pagination_bugcpp);
+  - Rust: the [worker](docs/RUST_GATE.md) and the [investigation loop](docs/AGENT_LOOP.md#rusts-two-gates).
 - **The worker:** one controller and one session per worker, with session and stop identities. It
   offers local launch, breakpoints, bounded inspection, variable changes, continuation and evidence
   reports.
