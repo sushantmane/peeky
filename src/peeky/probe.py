@@ -4086,8 +4086,8 @@ def _table(result, short_names=True):
         lines.extend("  " + line for line in shown[-20:])
     if result.get("output_after_disconnect"):
         lines.append(
-            "the debugger sent more text once Peeky disconnected, its own or the program's "
-            "(output_after_disconnect in --json)"
+            "the debugger sent more text once Peeky began closing the session, its own or "
+            "the program's still on its way (output_after_disconnect in --json)"
         )
     return "\n".join(lines)
 
