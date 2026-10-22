@@ -402,6 +402,20 @@ _SAME = (
 # Where both runs label their stops (#157: a line with several breakpoint locations in a
 # function), a hit is also its stop: the same hit at another stop is another row.
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
+
+
+def _applied(alias):
+    """SQL: a run's interventions (runs.sets), each as [name, value, "LINE@HIT"]: a
+    --set at its probe line's set_hit too (ninth evaluation: `diff`'s `(sets)` row and
+    `outputs` did not say which hit a --set applied at)."""
+    return (
+        "(SELECT json_group_array(CASE WHEN json_array_length(value) = 2 THEN json_array("
+        f"json_extract(value, '$[0]'), json_extract(value, '$[1]'), {alias}.line || '@' || "
+        f"COALESCE({alias}.set_hit, 1)) ELSE json(value) END) FROM json_each(COALESCE("
+        f"{alias}.sets, '[]')))"
+    )
+
+
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
 # A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15 (#174);
 # one saved without it (#155) takes it from the other rows of its hit where they agree,
@@ -514,10 +528,10 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, NULL, NULL, '(sets)', COALESCE(ra.sets, '[]'), COALESCE(rb.sets, '[]'), 1,
+  UNION ALL SELECT 5, NULL, NULL, '(sets)', {_applied("ra")}, {_applied("rb")}, 1,
     'the runs made different interventions (--set, --set-at)', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND COALESCE(ra.sets, '[]') IS NOT COALESCE(rb.sets, '[]'))
+    AND {_applied("ra")} IS NOT {_applied("rb")})
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -683,11 +697,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         (),
     ),
     "outputs": (
-        "Inputs, interventions (and the hit they were applied at), outcome and program output "
-        "of two runs",
-        f"SELECT run_id, label, args, sets, CASE WHEN sets = '[]' OR sets IS NULL THEN NULL "
-        f"ELSE set_hit END AS set_hit, status, error_code, output FROM runs "
-        f"WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
+        "Inputs, interventions (sets: each [name, value, LINE@HIT], the line and hit it was "
+        "applied at, a --set's too), outcome and program output of two runs",
+        f"SELECT run_id, label, args, {_applied('r')} AS sets, status, error_code, output FROM "
+        f"runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
         (),
     ),

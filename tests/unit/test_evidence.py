@@ -273,7 +273,7 @@ def test_canned_queries_answer_comparisons(store):
     assert [(row["value"], row["changed"]) for row in hits] == [("3", None), ("6", 1)]
     outputs = evidence.run_query(store, "outputs")["rows"]
     assert [row["output"] for row in outputs] == ["PAGE: [40]\n", "PAGE: [10]\n"]
-    assert "set_hit" in outputs[0]
+    assert "set_hit" not in outputs[0] and "sets" in outputs[0]
     values = evidence.run_query(store, "values", {"selector": "start"})["rows"]
     assert values[0] == {
         "program": "a.py",
