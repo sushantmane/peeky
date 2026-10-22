@@ -90,3 +90,55 @@ def test_a_session_marks_reads_and_sets_native_names_in_unicode(directory, capsy
         assert "AFTER 3 40 6 7" in json.loads(capsys.readouterr().out)["output"]
     finally:
         main(["session", "close"])
+
+
+# Review of #199, round 2: LLDB names a shadowed local with its file (`t @ my file.c:5`),
+# which no selector can write when the file's name holds a space; `t` reads and sets the
+# one the code names, as #158 made it, and the row says so.
+SHADOWED = """#include <stdio.h>
+
+int main(void) {
+    int t = 1;
+    {
+        int t = 2;
+        printf("BEFORE %d\\n", t);  // STOP
+        printf("INNER %d\\n", t);
+    }
+    printf("OUTER %d\\n", t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_shadowed_local_in_a_file_named_with_a_space_is_read_and_set(directory, capsys):
+    path = directory / "my file.c"
+    path.write_text(SHADOWED)
+    stop = next(n for n, text in enumerate(SHADOWED.splitlines(), 1) if "STOP" in text)
+    assert main(["session", "start", str(path), "--at", str(stop)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "inspect"]) == 0
+        inspected = capsys.readouterr().out
+        # The inner `t`, which `t` selects, is offered and settable; the outer one, which
+        # no selector names, is neither.
+        assert "t @ my file.c:6: int = 2  [settable]\n" in inspected, inspected
+        assert "t @ my file.c:4: int = 1 [not selectable]" in inspected, inspected
+        assert main(["session", "get", "t", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["value"] == "2"
+        assert main(["session", "set", "t=20"]) == 0
+        assert "set t @ my file.c:6: 2 -> 20" in capsys.readouterr().out
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        output = json.loads(capsys.readouterr().out)["output"]
+        assert "INNER 20" in output and "OUTER 1" in output, output
+    finally:
+        main(["session", "close"])
+    capsys.readouterr()
+    code = main(
+        ["probe", str(path), "--at", str(stop), "--capture", "t", "--set", "t=30", "--json"]
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    assert "INNER 30" in result["output"] and "OUTER 1" in result["output"], result["output"]

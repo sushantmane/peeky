@@ -30,7 +30,7 @@ from pathlib import Path
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
-from peeky.identifiers import is_name, look_alike, selectable
+from peeky.identifiers import is_name, look_alike, reachable
 from peeky.probe import (
     CANDIDATE_NEEDS_BUILD,
     MAX_EDITS,
@@ -1458,7 +1458,7 @@ def _variables_text(snapshot, name="default"):
             elif variable["name"] in PYDEVD_GROUPS and not variable.get("type"):
                 lines.append(f"  ({variable['name']}: debugpy's group; select its members by name)")
                 continue
-            elif not selectable(variable["name"]):
+            elif not reachable(variable):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
             if variable["name"] in alike:

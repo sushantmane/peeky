@@ -68,11 +68,39 @@ _LISTED_PLACE = re.compile(r" @ [^\s:@\[\]'\"]{1,255}:(?:0|[1-9][0-9]{0,8})")
 _INDEX = re.compile(r"\[(?:0|[1-9][0-9]{0,9})\]|0|[1-9][0-9]{0,9}")
 
 
+# Where LLDB says a local is declared, as LLDB writes it: any file name with no colon
+# (`t @ my file.c:3`). NativeSession.selected_as reads this (#158).
+LLDB_PLACE = r" @ ([^:]{1,255}):([0-9]{1,9})"
+
+
 def selectable(name):
     """Whether a row the debugger lists as ``name`` is one a selector reads whole, as
-    `parse_selector` reads it: a name, or one with where LLDB says it is declared. What
-    `inspect` offers, and what alone may be marked [settable]."""
+    `parse_selector` reads it: a name, or one with where LLDB says it is declared."""
     return is_name(name) or is_located(name, _LISTED_PLACE)
+
+
+def reachable(row):
+    """Whether a selector reads the root row ``row`` whole: by its own name
+    (``selectable``), or by the plain name the worker gives it (``selected_as``, #158)
+    where the row is that name with where LLDB says it is declared (`t` for
+    `t @ my file.c:3`). What `inspect` offers, and what alone may be marked [settable]."""
+    name, alias = row.get("name"), row.get("selected_as")
+    if selectable(name):
+        return True
+    return (
+        is_name(alias)
+        and isinstance(name, str)
+        and name.startswith(alias)
+        and re.fullmatch(LLDB_PLACE, name[len(alias) :]) is not None
+    )
+
+
+def changeable(name):
+    """Whether a root local's ``name`` is one a change may give the debugger: a name, or
+    one LLDB lists with where it is declared, as LLDB writes it (``LLDB_PLACE``), which a
+    selector reaches through its plain name (``reachable``). The debugger's rows must
+    still list exactly that name."""
+    return is_name(name) or is_located(name, LLDB_PLACE)
 
 
 def member_name(name):

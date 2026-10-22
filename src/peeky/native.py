@@ -43,7 +43,7 @@ from peeky.build import (
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
-from peeky.identifiers import selectable
+from peeky.identifiers import LLDB_PLACE, changeable
 from peeky.names import standard_type, unicode_escape
 from peeky.text_sets import text_kind
 
@@ -1727,7 +1727,7 @@ def _trampoline(name):
 
 _SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
 # The same, with the file: (name, file, line).
-_NAMED_AT = re.compile(r"(.+) @ ([^:]+):([0-9]+)")
+_NAMED_AT = re.compile(r"(.+)" + LLDB_PLACE)
 
 
 def _is_object(variable):
@@ -2842,9 +2842,10 @@ def _writable_integer(variable):
         variable.get("type") in INTEGER_RANGES
         and variable.get("variablesReference", 0) == 0
         and "readOnly" not in attributes
-        # A name a selector can give: also one LLDB gives with where it is declared,
-        # when several of that name are in scope (`n @ main.c:15`).
-        and selectable(str(variable.get("name", "")))
+        # A name a change can give: also one LLDB gives with where it is declared, when
+        # several of that name are in scope (`n @ main.c:15`); the worker marks it
+        # [settable] only where a selector reaches it (identifiers.reachable).
+        and changeable(str(variable.get("name", "")))
     )
 
 

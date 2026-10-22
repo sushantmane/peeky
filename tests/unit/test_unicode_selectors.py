@@ -430,23 +430,32 @@ def test_a_row_past_128_characters_is_never_offered_or_marked_settable():
 
 
 @pytest.mark.parametrize(
-    "name, writable",
+    "row, changeable, reachable",
     [
-        (LONG, True),
-        (LONGER, False),
-        (f"{LONG} @ main.c:15", True),
-        (f"{LONGER} @ main.c:15", False),
-        ("n @ my file.c:15", False),
-        ("n @ main.c:015", False),  # LLDB never writes a line so; a selector reads it as 15
+        ({"name": LONG}, True, True),
+        ({"name": LONGER}, False, False),
+        ({"name": f"{LONG} @ main.c:15"}, True, True),
+        ({"name": f"{LONGER} @ main.c:15"}, False, False),
+        # LLDB's spelling of a shadowed local in a file no selector can write: a change
+        # may name it, and a selector reaches it only through its plain name (#158).
+        ({"name": "n @ my file.c:15"}, True, False),
+        ({"name": "n @ my file.c:15", "selected_as": "n"}, True, True),
+        ({"name": "n @ my file.c:15", "selected_as": "m"}, True, False),
+        ({"name": "n @ my file.c:15", "selected_as": "n\u200d"}, True, False),
+        ({"name": "n\u200d @ my file.c:15", "selected_as": "n\u200d"}, False, False),
+        ({"name": "n @ a:b.c:15", "selected_as": "n"}, False, False),
+        ({"name": "n @ " + "f" * 256 + ":15", "selected_as": "n"}, False, False),
     ],
 )
-def test_lldb_integers_are_writable_only_under_a_name_a_selector_reads(name, writable):
+def test_lldb_integers_are_marked_only_where_a_selector_reaches_them(row, changeable, reachable):
+    from peeky.identifiers import reachable as reaches
     from peeky.native import _writable_integer
-    from peeky.probe import parse_selector
 
-    assert _writable_integer({"name": name, "type": "int", "variablesReference": 0}) is writable
-    if writable:
-        assert parse_selector(name) == [name]
+    variable = {**row, "type": "int", "variablesReference": 0}
+    assert _writable_integer(variable) is changeable
+    assert reaches(row) is reachable
+    if reachable and "selected_as" not in row:
+        assert parse_selector(row["name"]) == [row["name"]]
 
 
 def test_java_locals_and_members_past_128_characters_are_not_settable():
@@ -457,3 +466,69 @@ def test_java_locals_and_members_past_128_characters_are_not_settable():
     assert JavaSession.member_settable(None, {"name": LONGER, "type": "int"}) == (
         "no selector names it"
     )
+
+
+# Review of #199, round 2: a shadowed local LLDB names in a file a selector cannot write
+# (`t @ my file.c:3`) is read and changed through its plain name, as before #195.
+SHADOWED = {
+    "name": "t @ my file.c:5",
+    "type": "int",
+    "value": "2",
+    "variablesReference": 0,
+    "selected_as": "t",
+}
+OUTER = {"name": "t @ my file.c:3", "type": "int", "value": "1", "variablesReference": 0}
+
+
+def test_a_shadowed_local_in_an_oddly_named_file_is_changed_through_its_plain_name():
+    from peeky.probe import apply_set
+    from peeky.worker import DebugWorker
+
+    sent = []
+
+    class Worker:
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                return snapshot(SHADOWED, OUTER)
+            assert operation == "set_variable"
+            DebugWorker.validate(operation, args)  # the worker's own check
+            sent.append(args["name"])
+            return {"name": args["name"], "before": "2", "after": "20"}
+
+    assert apply_set(Worker(), {"session_id": "s", "stop_id": "t"}, "t", "20")["after"] == "20"
+    assert sent == ["t @ my file.c:5"]
+
+
+def test_a_shadowed_row_reached_through_its_plain_name_is_selectable():
+    from peeky.cli import _variables_text
+
+    text = _variables_text(
+        {
+            "frames": [{"source": {"path": "my file.c"}, "line": 6}],
+            "scopes": [{"name": "Locals", "variables": [{**SHADOWED, "settable": True}, OUTER]}],
+        }
+    )
+    assert "t @ my file.c:5: int = 2  [settable]\n" in text + "\n"
+    assert "t @ my file.c:3: int = 1 [not selectable]" in text
+
+
+def test_the_worker_takes_lldbs_spelling_of_a_shadowed_root_and_nothing_else(tmp_path):
+    from peeky.worker import DebugWorker
+
+    def check(name):
+        DebugWorker.validate(
+            "set_variable",
+            {"session_id": "s", "stop_id": "t", "reference": 7, "name": name, "value": "1"},
+        )
+
+    for name in ("t @ my file.c:5", "t @ it's [1].c:5", "größe @ ä b.c:12"):
+        check(name)
+    for name in (
+        "t @ a:b.c:5",
+        "t @ my file.c:x",
+        "t\u200d @ my file.c:5",
+        "t @ :5",
+        LONGER + " @ a.c:5",
+    ):
+        with pytest.raises(ValueError, match="set_variable's name must be a local's name"):
+            check(name)

@@ -18,7 +18,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
-from peeky.identifiers import is_located, is_name, member_name
+from peeky.identifiers import changeable, is_located, is_name, member_name, reachable
 from peeky.names import display_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
@@ -1557,7 +1557,7 @@ class DebugWorker:
             # Only what a selector can name (#195): a change never reaches a variable the
             # CLI could not select, such as one whose name holds an invisible character.
             name = args["name"]
-            if "reference" in args and not (is_name(name) or is_located(name, _SHADOWED_PLACE)):
+            if "reference" in args and not changeable(name):
                 raise ValueError(_SET_NAME)
             if "handle" in args and not member_name(name):
                 raise ValueError(_SET_MEMBER)
@@ -2825,7 +2825,7 @@ class DebugWorker:
                     output["note"] = note[:500]
                 if not ancestry and (marked := self.view_settable(variable, frame)) is not None:
                     # A Rust String's text (#137), shown as read from memory.
-                    output["settable"] = marked
+                    output["settable"] = marked and reachable({"name": name, "selected_as": plain})
                 if plain:
                     output["selected_as"] = plain
                 result.append(output)
@@ -2844,6 +2844,9 @@ class DebugWorker:
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and (bool(check(variable, frame)) or self.text_settable(variable, frame))
+                    # Marked only where a selector reaches it (#195): `t` for LLDB's
+                    # `t @ my file.c:3`, never a row no selector names.
+                    and reachable({"name": name, "selected_as": plain})
                 )
                 # Not a value shown with a note whose declaration still runs here (#140),
                 # nor one a statement under way may hold a copy of (#105); why, for
