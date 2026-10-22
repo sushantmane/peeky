@@ -129,8 +129,8 @@ extend it. Kubernetes stays deferred.
   - [#248][i248]: Java on the second host, for a launched JVM and an attached one, in the same CI
     job ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
   - [#252][i252]: C, C++ and Rust on the second host, in the same CI job
-    ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)). Remote locations name your checkout,
-    not the worker host's paths.
+    ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)). A remote location in a compared
+    source names your checkout; any other path is marked as the worker host's.
 - [#249][i249]: before launching, the worker compares the target's sources with the client's,
   not only the breakpoint's file (protocol 2). [REMOTE.md](REMOTE.md#source-identity) lists
   which files count, and what isn't compared.

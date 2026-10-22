@@ -227,6 +227,22 @@ class Host:
         import debugpy
 
         java = {"java": remote[4]} if self.target == "java" else {}
+        if self.target == "native":
+            # The versions this run used: apt installs LLVM 18's current package.
+            tools = self.ssh(
+                "clang-18 --version | head -1; lldb-18 --version | head -1; "
+                "llvm-dwarfdump-18 --version | head -1; "
+                "dpkg-query -W -f '${Version}' lldb-18; echo; "
+                # ssh sessions don't see Docker's ENV, which names the toolchain's home.
+                "export RUSTUP_HOME=/opt/rust/rustup; /opt/rust/cargo/bin/rustc --version; "
+                "/opt/rust/cargo/bin/cargo --version; /opt/rust/cargo/bin/rustup --version"
+            ).stdout.split("\n")
+            java = dict(
+                zip(
+                    ("clang", "lldb", "llvm-dwarfdump", "lldb package", "rustc", "cargo", "rustup"),
+                    (line.strip() for line in tools),
+                )
+            )
         return {
             "client": {
                 "os": platform.platform(),
@@ -877,7 +893,8 @@ def native(request, native_host, tmp_path):
 
 
 def _host_paths(value, where="result", found=None):
-    """(where, text) for every string in ``value`` that names a path on the worker host."""
+    """(where, text) for every string in ``value`` that names a path on the worker host
+    without saying so (`worker:`)."""
     found = [] if found is None else found
     if isinstance(value, dict):
         for key, item in value.items():
@@ -885,7 +902,12 @@ def _host_paths(value, where="result", found=None):
     elif isinstance(value, list):
         for index, item in enumerate(value):
             _host_paths(item, f"{where}[{index}]", found)
-    elif isinstance(value, str) and re.search(r"/home/peeky/|/tmp/peeky-", value):
+    elif (
+        isinstance(value, str)
+        and not value.startswith("worker:")
+        and re.search(r"/home/peeky/|/tmp/peeky-", value)
+    ):
+        # Unmarked: a path that exists only on the worker host, shown as if it were yours.
         found.append((where, value))
     return found
 
@@ -949,7 +971,11 @@ def test_a_native_session_runs_on_the_other_host(native_host, capsys, native):
     shown = {
         "session start": lambda r: {"state": r["state"], "at": _mine(r["location"], checkout)},
         "session get": lambda r: {"start": r[0]["value"]},
-        "session inspect": lambda r: {"frame 0": _mine(r["frames"][0]["source"]["path"], checkout)},
+        "session inspect": lambda r: {
+            "frame 0": _mine(r["frames"][0]["source"]["path"], checkout),
+            # The callers, outside your sources: the worker host's, and marked so.
+            "frames 1-2": [(f.get("source") or {}).get("path") for f in r["frames"][1:3]],
+        },
         "session continue": lambda r: {"state": r["state"]},
         "session report": lambda r: {"output": r["output"].strip()},
         "session close": lambda r: {"closed": r["closed"]},

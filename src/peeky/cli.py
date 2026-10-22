@@ -1163,6 +1163,12 @@ def _probe_edit(args, root, program, line, language):
     return edit, original
 
 
+CANDIDATE_LOCATIONS = (
+    "In the edited file, locations name the candidate's copy, since the line numbers are "
+    "the candidate's"
+)
+
+
 def _bind_candidate(result, original, edit, program):
     """Attach the diff, and keep values only if they came from exactly this candidate."""
     candidate = original.replace(*combine_edits(original, edit), 1)
@@ -1170,6 +1176,8 @@ def _bind_candidate(result, original, edit, program):
     (result.get("probe") or {}).pop("edit", None)
     info = result.setdefault("candidate", {})
     info["diff"] = _diff(original, candidate, program)
+    # Its frames, breakpoint and locations are the copy that ran (#252).
+    info["note"] = CANDIDATE_LOCATIONS
     ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
     if info.get("sha256") != expected and (ran or info.get("sha256") is not None):
         from peeky.errors import classify
@@ -1310,6 +1318,8 @@ def _probe_text(result, quiet=False):
             text += (
                 f" (line {candidate['original_line']} is line {candidate['line']} of the candidate)"
             )
+        if note := candidate.get("note"):
+            text += f"\ncandidate: {note}"
         if diff := candidate.get("diff"):
             text += "\n" + diff.rstrip("\n")
     if saved := result.get("evidence"):
@@ -1457,41 +1467,76 @@ def _remote_session(name, record):
 
 
 class _RemoteClient(Client):
-    """A remote worker's client: the worker's paths come back as yours (#252).
-
-    A location the worker reports under its own root (`/srv/app/main.c:7`) names the same
-    file in your checkout, so it is shown there; a path the worker's root doesn't hold is
-    left as it is."""
+    """A remote worker's client (#252). The worker marks each location that is one of the
+    sources you both compared (`source:src/main.rs:5`): it is shown as your copy of that
+    file, once you have it among the files you hashed. Any other path is the worker
+    host's, and is shown as such: `worker:/srv/app/.venv/lib/pkg.py:12`."""
 
     def __init__(self, url, token, worker_root=None, client_root=None):
         super().__init__(url, token)
         self.sources = None
         self.worker_root, self.client_root = worker_root, client_root
+        # The names of the sources you hashed for this request.
+        self.names = None
 
     def call(self, operation, **arguments):
         result = super().call(operation, **arguments)
-        if operation == "version" or not (self.worker_root and self.client_root):
+        if operation == "version":
             return result
-        return _client_paths(result, self.worker_root, str(self.client_root))
+        return _client_paths(result, self.worker_root, self.client_root, self.names)
 
 
-def _client_paths(value, worker_root, client_root):
-    """``value`` with each location or source path under ``worker_root`` moved to
-    ``client_root``."""
+WORKER_PATH = "worker:"
+
+
+def _client_paths(value, worker_root, client_root, names, parent=None):
+    """``value`` with each `location`, and each `source`'s `path`, as you can read it:
+    your copy of a compared source, else marked as the worker host's."""
     if isinstance(value, list):
-        return [_client_paths(item, worker_root, client_root) for item in value]
+        return [_client_paths(item, worker_root, client_root, names, parent) for item in value]
     if not isinstance(value, dict):
-        return value
-    head = worker_root.rstrip("/")
-    if not head:
         return value
     shown = {}
     for key, item in value.items():
-        if key in ("location", "path") and isinstance(item, str):
-            if item == head or item.startswith((head + "/", head + ":")):
-                item = client_root.rstrip("/") + item[len(head) :]
-        shown[key] = _client_paths(item, worker_root, client_root)
+        if isinstance(item, str) and (key == "location" or (key == "path" and parent == "source")):
+            item = _client_path(item, worker_root, client_root, names, key == "location")
+        shown[key] = _client_paths(item, worker_root, client_root, names, key)
     return shown
+
+
+def _client_path(text, worker_root, client_root, names, located):
+    if text.startswith(WORKER_PATH):
+        return text
+    path, line = text, ""
+    if located:
+        head, separator, tail = text.rpartition(":")
+        if separator and tail.isdigit():
+            path, line = head, separator + tail
+    if path.startswith("source:"):
+        name = path.removeprefix("source:")
+        if (mine := _own_copy(name, client_root, names)) is not None:
+            return mine + line
+        where = f"{worker_root.rstrip('/')}/{name}" if isinstance(worker_root, str) else name
+        return f"{WORKER_PATH}{where}{line}"
+    # A path the worker did not name as a compared source (or an older worker's).
+    return f"{WORKER_PATH}{text}" if os.path.isabs(path) else text
+
+
+def _own_copy(name, client_root, names):
+    """Your copy of the compared source ``name``: None unless you hashed a file of that
+    name, and it is a regular file under your root, reached through no link."""
+    if client_root is None or names is None or name not in names:
+        return None
+    if not name or "\\" in name or any(part in ("", ".", "..") for part in name.split("/")):
+        return None
+    root = Path(client_root)
+    try:
+        real = (root / name).resolve(strict=True)
+        if real.relative_to(root.resolve()).as_posix() != name or not real.is_file():
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return str(root / name)
 
 
 class _RemoteSession(_RemoteClient):
@@ -1512,7 +1557,11 @@ class _RemoteSession(_RemoteClient):
 
     def unchanged(self):
         try:
-            _checkout_unchanged(Path(self.record["root"]), self.sources, self.record, saved=True)
+            self.names = frozenset(
+                _checkout_unchanged(
+                    Path(self.record["root"]), self.sources, self.record, saved=True
+                )
+            )
         except RuntimeError:
             try:
                 Client.call(self, "close", session_id=self.record["session_id"])
@@ -1523,13 +1572,15 @@ class _RemoteSession(_RemoteClient):
 
 
 def _checkout_unchanged(root, sources, expected, *, saved=False):
-    """Raise PROVENANCE_CHANGED if your checkout's sources are no longer the ones the
-    worker compared: ``expected`` is that manifest, or a saved session record."""
+    """Your checkout's sources ({name: sha256}), once they are still the ones the worker
+    compared: else PROVENANCE_CHANGED. ``expected`` is that manifest, or a saved session
+    record."""
     from peeky.sources import client_sources, digest
 
     accepted = expected["inputs_checked"] if saved else digest(expected)
     try:
-        current = digest(client_sources(root, sources))
+        hashed = client_sources(root, sources)
+        current = digest(hashed)
     except (ValueError, RuntimeError) as exc:
         current, why = None, f" ({exc})"
     else:
@@ -1544,6 +1595,7 @@ def _checkout_unchanged(root, sources, expected, *, saved=False):
                 else "Its results were discarded. Run it again"
             )
         )
+    return hashed
 
 
 class _LocalClient(Client):
@@ -2295,6 +2347,7 @@ def _remote_probe(args, root, request):
     client, _ = _remote(args.worker)
     client.client_root = root
     inputs = client_sources(root, client.sources)
+    client.names = frozenset(inputs)
     request = replace(request, expect_inputs=tuple(sorted(inputs.items())))
     return client, request, _expected(root, request.program, request.entry)
 
@@ -2434,6 +2487,7 @@ def _start_remote(args, root, program, line, language, max_pause):
     client, token = _remote(args.worker)
     client.client_root = root
     inputs = client_sources(root, client.sources)
+    client.names = frozenset(inputs)
     launch = client.call(
         "launch",
         program=program,

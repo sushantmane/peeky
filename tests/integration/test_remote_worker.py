@@ -449,6 +449,41 @@ def test_remote_stops_are_named_in_your_checkout(remote, capsys):
     assert code == 0 and str(host.resolve()) not in out.out, out.out
 
 
+VENV_MAIN = (
+    "import os, sys\n"
+    "sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env', 'lib'))\n"
+    "import pkg\n"
+    "def total(x):\n"
+    "    y = x + 1\n"
+    "    return y\n"
+    "print('TOTAL', pkg.run(total))\n"
+)
+
+
+def test_a_frame_outside_the_compared_sources_stays_the_worker_hosts(remote, capsys):
+    # #268 review: a frame in a virtual environment under the root was shown as a file
+    # of yours, though no virtual environment is compared.
+    host, local, worker, _ = remote
+    for root in (host, local):
+        (root / "main.py").write_text(VENV_MAIN)
+        (root / "env" / "lib").mkdir(parents=True)
+        (root / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (root / "env" / "lib" / "pkg.py").write_text("def run(f):\n    return f(2)\n")
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    start = ["session", "start", local / "main.py", "--at", "5", "--worker", url, "--json"]
+    code, out = run(capsys, *start)
+    assert code == 0, out
+    code, out = run(capsys, "session", "inspect", "--json")
+    paths = [frame["source"]["path"] for frame in json.loads(out.out)["frames"]]
+    assert paths[:3] == [
+        str(local.resolve() / "main.py"),
+        f"worker:{host.resolve()}/env/lib/pkg.py",
+        str(local.resolve() / "main.py"),
+    ], paths
+    run(capsys, "session", "close")
+
+
 def test_a_stale_pyc_in_the_tree_is_never_used(remote, capsys):
     # The worker host's __pycache__ holds a helper.pyc compiled from other code, marked
     # unchecked: Python loads it without looking at helper.py.

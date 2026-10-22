@@ -194,6 +194,7 @@ set width: 10 -> 9
 output:
   ACCEPTED:0,1,10,11
 candidate: values are from a fresh build with this edit; your files are unchanged
+candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
 ...
 ```
 

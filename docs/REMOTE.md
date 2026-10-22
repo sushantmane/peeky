@@ -56,13 +56,41 @@ A session started with `--worker` says `remote` in its state: `session default (
 
 - The worker's interpreter, and its trusted target config, choose the runtime.
 - The client never sends executables or configuration.
-- Locations name your checkout. A path under the worker's `--root` comes back as the same file in
-  yours ([exceptions](#c-c-and-rust-on-the-worker-host)).
+- A location in a compared source names your copy of it. Any other path is the worker host's, and
+  is marked `worker:` ([Paths in results](#paths-in-results)).
 - The client saves remote probe evidence, and its `runs.worker` column names the worker's URL. The
   worker runs stateless probes with `--no-save`, so the worker host keeps none.
 - **Verification runs locally.** `peeky verify` builds and checks candidates on your machine. So
   the local interpreter, toolchain and dependencies must match the target's for the verdict to
   carry over. When they differ, run `verify` on the target host.
+
+### Paths in results
+
+A location, frame or breakpoint names your copy of a file only when that file is one of the
+sources compared ([Source identity](#source-identity)). Both hosts check this:
+
+- **The worker** names the file only if the path is the compared file itself, under its root, with
+  no `..` and through no link.
+- **Your client** shows it only if it hashed a file of that name, and that file is still a regular
+  file under your root, reached through no link.
+
+Any other path is the worker host's, and is marked `worker:`. In the recorded Rust session, frame 0
+was `src/main.rs` in the client's checkout. Its callers, in Rust's standard library, came back as:
+
+```
+worker:/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/ops/function.rs
+worker:/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/sys/backtrace.rs
+```
+
+These paths stay the worker host's:
+
+- a file never compared: in a virtual environment under the root, or a generated one;
+- a path with `..` in it, or reached through a link;
+- installed files, such as the standard library's;
+- the build's own files, and a candidate's edited file, since its lines are the candidate's;
+- a compared file that your checkout no longer has.
+
+In JSON, your files' paths are absolute. A `worker:` path may not exist on your machine.
 
 ### Java on the worker host
 
@@ -146,13 +174,9 @@ $ peeky session get start
 start: i32 = 3  [settable]
 ```
 
-**Locations name your checkout.** The worker builds from a private copy of the sources on its
-host. Locations, frames and breakpoints in that copy, or under the worker's `--root`, come back as
-the same file in your checkout. So the session above stopped at `src/main.rs:5`, not at a path that
-exists only on the host. Two kinds of path stay as the host reports them:
-
-- a file only the build has, such as a generated one;
-- a file outside both, such as the standard library's.
+**Locations name your checkout,** for the compared sources. The worker builds from a private copy
+of the sources on its host. Still, the session above stopped at `src/main.rs:5` in your checkout,
+not in that copy. Other paths are marked `worker:` ([Paths in results](#paths-in-results)).
 
 **In a container,** LLDB turns off address randomization for the program it launches. Docker's
 default seccomp profile refuses that call, so run the container with `--cap-add=SYS_PTRACE
@@ -350,8 +374,8 @@ The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ an
 | Python / debugpy | 3.13.8 / 1.8.22 | 3.11.17 / 1.8.22 |
 | SSH | OpenSSH 10.3p1 client | OpenSSH 10.0p2 sshd |
 | Java | none needed | Temurin 17.0.20.1 (the `java` target only) |
-| C, C++ | none needed | clang, lldb and llvm-dwarfdump 18.1.8 (the `native` target only) |
-| Rust | none needed | rustc and cargo 1.96.0, linked with clang 18 (the `native` target only) |
+| C, C++ | none needed | LLVM 18 from Debian 13's signed packages: clang, lldb and llvm-dwarfdump 18.1.8 in this run (the `native` target only) |
+| Rust | none needed | rustc and cargo 1.96.0, linked with clang 18; installed by rustup-init 1.29.2, checked against its published SHA-256 (the `native` target only) |
 
 | Step | Command (client) | Exit | Seconds | Result |
 | --- | --- | ---: | ---: | --- |
@@ -412,9 +436,12 @@ The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ an
 | The host's header or module differs | `peeky probe … --worker URL` | 2 | 0.08–0.09 | `PROVENANCE_CHANGED`, naming `page.h`, `page.hpp` or `src/page.rs`; refused before launching |
 
 - The C++ and Rust commands are the same, with `main.cpp:7` or `src/main.rs:5`.
+- The record's `environment` keeps the tool versions each run used. apt installs LLVM 18's current
+  Debian package, so its patch version can change.
 - The changed `main` file creates a marker file if it runs. The marker never appeared.
-- No probe or session result names a path that exists only on the host. Those tests check every
-  string in their JSON results for the worker's root and its build directories.
+- No probe or session result names a path that exists only on the host, unless it is marked
+  `worker:`. Those tests check every string in their JSON results for the worker's root and its
+  build directories.
 - The container needs `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined` for LLDB.
 - With all three images built, the whole module took 19.8 s locally: 21 tests, 12 of them C, C++
   and Rust.
@@ -422,4 +449,4 @@ The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ an
   `java` and 73 s for `native`. The `native` stage took 35–37 s in two earlier builds; most of it
   is downloading. The image is 1.8 GB.
 - The `native` stage installs its toolchain before Peeky. So a change to Peeky's source rebuilds it
-  in about 5 s.
+  in about 5 s. A cold rebuild of the stage, with the checked rustup-init, took 45 s.

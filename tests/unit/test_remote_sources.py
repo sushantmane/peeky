@@ -75,32 +75,101 @@ def test_a_python_worker_compares_every_module_under_its_root(app):
     assert worker.dap is None  # nothing was launched
 
 
-def test_a_workers_paths_come_back_as_the_clients():
-    # #252: a remote stop was named by the worker host's path, which the client lacks.
+def test_the_worker_names_only_the_compared_sources_in_a_remote_result(tmp_path):
+    # #268 review: paths were mapped by prefix, so `..`, links, virtual environments and
+    # files never compared were shown as the client's.
+    from peeky.worker import _source_names
+
+    root, outside = tmp_path / "app", tmp_path / "outside"
+    for name in ("main.py", "a/util.c", "b/util.c", "gen.py", ".venv/lib/pkg.py"):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x = 1\n")
+    (root / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    outside.mkdir()
+    (outside / "x.py").write_text("x = 1\n")
+    (root / "link").symlink_to(outside)
+    (root / "alias.py").symlink_to(root / "main.py")
+    root = root.resolve()
+    # gen.py and the virtual environment were not compared; the links were named, but
+    # lead elsewhere.
+    names = frozenset({"main.py", "a/util.c", "b/util.c", "link/x.py", "alias.py"})
+    at = f"{root}/"
+    answer = {
+        "location": f"{at}b/util.c:7",
+        "innermost": {"location": f"{at}main.py"},
+        "frames": [
+            {"source": {"path": f"{at}a/util.c"}},
+            {"source": {"path": f"{at}../outside/x.py"}},
+            {"source": {"path": f"{at}a/../main.py"}},
+            {"source": {"path": f"{at}.venv/lib/pkg.py"}},
+            {"source": {"path": f"{at}gen.py"}},
+            {"source": {"path": f"{at}link/x.py"}},
+            {"source": {"path": f"{at}alias.py"}},
+            {"source": {"path": f"{at}missing.py"}},
+            {"source": {"path": f"{at}main.py`main"}},
+            {"source": {"path": "main.py"}},
+        ],
+        "path": f"{at}main.py",
+        "output": f"{at}main.py:3",
+    }
+    shown = _source_names(answer, root, names)
+    assert shown["location"] == "source:b/util.c:7"
+    assert shown["innermost"]["location"] == "source:main.py"
+    paths = [frame["source"]["path"] for frame in shown["frames"]]
+    assert paths[0] == "source:a/util.c"
+    # Each of the others stays this host's path, as it was.
+    assert paths[1:] == [frame["source"]["path"] for frame in answer["frames"][1:]]
+    # Only locations and the paths of sources: other text keeps its paths.
+    assert shown["path"] == answer["path"] and shown["output"] == answer["output"]
+
+
+def test_the_client_shows_its_own_copy_only_of_a_compared_source(tmp_path):
     from peeky.cli import _client_paths
 
+    mine = tmp_path / "mine"
+    for name in ("main.py", "a/util.c", "b/util.c"):
+        (mine / name).parent.mkdir(parents=True, exist_ok=True)
+        (mine / name).write_text("x = 1\n")
+    (mine / "link.py").symlink_to(mine / "main.py")
+    names = frozenset({"main.py", "a/util.c", "b/util.c", "gone.py", "link.py", "../x.py"})
     answer = {
-        "location": "/srv/app/src/main.rs:5",
+        "location": "source:b/util.c:7",
         "frames": [
-            {"name": "main", "source": {"path": "/srv/app/src/main.rs"}},
-            {"name": "start", "source": {"path": "/rustc/abc/library/std/src/rt.rs"}},
+            {"source": {"path": "source:a/util.c"}},
+            # Hashed here once, but absent now; never hashed; a link; out of the root.
+            {"source": {"path": "source:gone.py"}},
+            {"source": {"path": "source:other.py"}},
+            {"source": {"path": "source:link.py"}},
+            {"source": {"path": "source:../x.py"}},
+            # Not named as a compared source, or from an older worker.
+            {"source": {"path": "/srv/app/.venv/lib/pkg.py"}},
+            {"source": {"path": "/srv/app/main.py"}},
+            {"source": {"path": "worker:/srv/app/gen.py"}},
+            {"source": {"name": "main"}},
         ],
-        "history": [{"result": {"location": "/srv/app:1", "path": "/srv/app"}}],
-        # Only locations and paths: other text, and a root that merely shares a prefix.
-        "output": "/srv/app/src/main.rs",
-        "path": "/srv/application/main.rs",
+        "innermost": {"location": "/srv/app/main.py:3"},
+        "diagnosis": {"location": "main.c:7"},
+        "output": "/srv/app/main.py",
     }
-    assert _client_paths(answer, "/srv/app", "/home/me/app") == {
-        "location": "/home/me/app/src/main.rs:5",
-        "frames": [
-            {"name": "main", "source": {"path": "/home/me/app/src/main.rs"}},
-            {"name": "start", "source": {"path": "/rustc/abc/library/std/src/rt.rs"}},
-        ],
-        "history": [{"result": {"location": "/home/me/app:1", "path": "/home/me/app"}}],
-        "output": "/srv/app/src/main.rs",
-        "path": "/srv/application/main.rs",
-    }
-    assert _client_paths(answer, "/", "/home/me/app") == answer
+    shown = _client_paths(answer, "/srv/app", mine, names)
+    assert shown["location"] == f"{mine}/b/util.c:7"
+    assert [frame["source"].get("path") for frame in shown["frames"]] == [
+        f"{mine}/a/util.c",
+        "worker:/srv/app/gone.py",
+        "worker:/srv/app/other.py",
+        "worker:/srv/app/link.py",
+        "worker:/srv/app/../x.py",
+        "worker:/srv/app/.venv/lib/pkg.py",
+        "worker:/srv/app/main.py",
+        "worker:/srv/app/gen.py",
+        None,
+    ]
+    assert shown["innermost"]["location"] == "worker:/srv/app/main.py:3"
+    # A relative name is no path of either host's; other text is left alone.
+    assert shown["diagnosis"] == answer["diagnosis"] and shown["output"] == answer["output"]
+    # Without the names you hashed, nothing is shown as yours.
+    unknown = _client_paths(answer, "/srv/app", mine, None)
+    assert unknown["location"] == "worker:/srv/app/b/util.c:7"
 
 
 def test_a_program_that_differs_is_named_by_its_path_under_the_root(app):

@@ -34,17 +34,30 @@ COPY adapters/java /opt/peeky/adapters/java
 RUN python /opt/peeky/scripts/setup_java_adapter.py --output /opt/peeky-java >/dev/null
 COPY --chown=peeky:peeky examples/java/demo/PaginationBug.java /home/peeky/java/demo/
 
-# C, C++ and Rust: LLVM 18 (clang, lldb-dap, llvm-dwarfdump) and Rust 1.96.0, the versions
-# the CI lanes use (scripts/ci_linux). rustup installs into /opt/rust, readable by the ssh
-# user; tools.json names the toolchain's real cargo and rustc, which Rust configs need.
-# Installed before Peeky, so a change to Peeky's source doesn't rebuild the toolchain.
+# C, C++ and Rust: LLVM 18 (clang, lldb-dap, llvm-dwarfdump) from Debian 13's signed
+# packages, and Rust 1.96.0: the majors and the toolchain the CI lanes use (scripts/ci_linux).
+# rustup-init 1.29.2 is checked against its published SHA-256 for the architecture before
+# it runs. It installs into /opt/rust, readable by the ssh user; tools.json names the
+# toolchain's real cargo and rustc, which Rust configs need. Installed before Peeky, so a
+# change to Peeky's source doesn't rebuild the toolchain.
 FROM base AS native
 ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       clang-18 lldb-18 llvm-18 libc6-dev libstdc++-14-dev curl ca-certificates \
-    && curl -sSf https://sh.rustup.rs \
-      | sh -s -- -y --profile minimal --default-toolchain 1.96.0 --no-modify-path \
+    && case "$(dpkg --print-architecture)" in \
+      amd64) triple=x86_64-unknown-linux-gnu \
+        sum=5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4 ;; \
+      arm64) triple=aarch64-unknown-linux-gnu \
+        sum=a9c168dbea81a84671c6b7a5c1795cb0eb699020110d107ddfca427bd797e697 ;; \
+      *) echo "no pinned rustup-init for $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl -sSf -o /tmp/rustup-init \
+      "https://static.rust-lang.org/rustup/archive/1.29.2/$triple/rustup-init" \
+    && echo "$sum  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --profile minimal --default-toolchain 1.96.0 --no-modify-path \
+    && rm /tmp/rustup-init \
     && printf '{"cargo": "%s", "rustc": "%s"}\n' \
       "$(/opt/rust/cargo/bin/rustup which --toolchain 1.96.0 cargo)" \
       "$(/opt/rust/cargo/bin/rustup which --toolchain 1.96.0 rustc)" > /opt/rust/tools.json \
