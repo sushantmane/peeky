@@ -87,7 +87,8 @@ def remote(tmp_path, monkeypatch):
             "PEEKY_STATE_DIR": str(tmp_path / "worker-state"),
         }
         env.pop("PEEKY_WORKER_TOKEN", None)
-        command = [sys.executable, "-m", "peeky.worker", "--root", str(host), "--port", "0"]
+        # -B: the worker writes no bytecode of its own; what it runs is up to the test.
+        command = [sys.executable, "-B", "-m", "peeky.worker", "--root", str(host), "--port", "0"]
         process, banner = spawn([*command, *extra], env)
         processes.append(process)
         return process, int(banner.rsplit(":", 1)[1].split(";")[0])
@@ -207,6 +208,93 @@ def test_a_module_on_one_side_only_is_refused_before_launch(remote, capsys):
     assert (
         code == 2 and "sitecustom/hook.py (only on the worker host)" in (result["error"]["message"])
     )
+
+
+def test_a_python_session_launch_reports_the_sources_it_accepted(remote):
+    # #254 review, blocking 1: a Python session's launch answered inputs_checked but no
+    # inputs_sha256, and the client accepted the missing digest.
+    from peeky.client import Client
+    from peeky.sources import digest, python_digest, python_sources
+
+    host, local, worker, relay = remote
+    _, port = worker()
+    client = Client(f"http://127.0.0.1:{port}", TOKEN)
+    expected = dict(python_sources(local))
+    launch = client.call(
+        "launch",
+        program="pagination_bug.py",
+        breakpoints=[{"line": 8}],
+        expect_sha256={"program": expected["pagination_bug.py"]},
+        expect_inputs=expected,
+    )
+    try:
+        assert launch["inputs_checked"] == digest(expected)
+        assert launch["inputs_sha256"] == python_digest(local)
+    finally:
+        client.call("close", session_id=launch["session_id"])
+
+
+def test_a_python_session_that_meets_a_changed_source_is_closed_without_values(remote, capsys):
+    # #254 review, blocking 5: the program imported a helper.py changed after the start.
+    host, local, worker, relay = remote
+    program = "x = 0\nimport helper\nx = helper.page()\nprint('PAGE', x)\n"
+    for root in (host, local):
+        (root / "main.py").write_text(program)
+        (root / "helper.py").write_text(HELPER)
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    code, out = run(capsys, "session", "start", local / "main.py", "--at", "2", "--worker", url)
+    assert code == 0, out.err
+    (host / "helper.py").write_text(HELPER.replace("3", "4"))
+    code, out = run(capsys, "session", "continue", "--to-exit", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "PROVENANCE_CHANGED", error
+    assert "helper.py changed on the worker host after launch" in error["message"]
+    assert error["session_closed"] is True
+    code, out = run(capsys, "session", "report", "--json")
+    assert "PAGE" not in out.out
+
+
+def test_a_module_in_a_hidden_directory_is_compared(remote, capsys):
+    # #254 review, blocking 6a: .hidden/ was skipped on both sides, so the host ran a
+    # different .hidden/helper.py (x=4) and the probe exited 0.
+    host, local, worker, relay = remote
+    for root in (host, local):
+        (root / ".hidden").mkdir()
+        (root / ".hidden" / "main.py").write_text(MAIN)
+        (root / ".hidden" / "helper.py").write_text(HELPER)
+    (host / ".hidden" / "helper.py").write_text(HELPER.replace("3", "4"))
+    _, port = worker()
+    code, out = run(
+        capsys,
+        "probe",
+        local,
+        "--at",
+        ".hidden/main.py:3",
+        "--capture",
+        "x",
+        "--worker",
+        f"http://127.0.0.1:{port}",
+        "--json",
+    )
+    result = json.loads(out.out)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert ".hidden/helper.py (the copy on the worker host differs" in result["error"]["message"]
+
+
+def test_a_remote_python_run_writes_no_bytecode_into_the_root(remote, capsys, monkeypatch):
+    host, local, worker, relay = remote
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)  # the worker's own setting
+    for root in (host, local):
+        (root / "main.py").write_text(MAIN)
+        (root / "helper.py").write_text(HELPER)
+    _, port = worker()
+    code, out = run(
+        capsys, "probe", local / "main.py", "--at", "3", "--worker", f"http://127.0.0.1:{port}"
+    )
+    assert code == 0, out
+    assert not (host / "__pycache__").exists()
+    assert "installed packages, the standard library and compiled modules are not" in out.out
 
 
 def test_remote_session_survives_a_dropped_tunnel_and_closing_keeps_the_worker(remote, capsys):

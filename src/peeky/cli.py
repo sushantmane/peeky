@@ -1034,7 +1034,7 @@ def _probe_request(args):
 def _expect_inputs(args):
     path = getattr(args, "expect_inputs_file", None)
     if path is None:
-        return ()
+        return None
     expected = json.loads(Path(path).read_text())
     if not isinstance(expected, dict):
         raise ValueError("--expect-inputs-file holds a JSON object of path: sha256")
@@ -1402,8 +1402,32 @@ def _load(name):
     ):
         raise ValueError(f"Session record {path} is malformed; remove it")
     if record.get("remote"):
-        return record, Client(record["url"], record["token"])
+        return record, _remote_session(name, record)
     return record, _LocalClient(record["url"], record["token"], record.get("pid"))
+
+
+def _remote_session(name, record):
+    """A remote session's client, once the worker still speaks the protocol the session
+    was started with: one that compares every source (#249)."""
+    if record.get("protocol") != PROTOCOL_VERSION or not isinstance(
+        record.get("inputs_checked"), str
+    ):
+        raise ValueError(
+            f"Remote session {name!r} was started without source provenance (by a Peeky "
+            f"before protocol {PROTOCOL_VERSION}): start the session again. Drop this record "
+            f"with `peeky session close --forget --name {name}`; the worker ends the old "
+            "session after its idle timeout"
+        )
+    client = Client(record["url"], record["token"])
+    version = client.call("version")
+    protocol = version.get("protocol") if isinstance(version, dict) else None
+    if protocol != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Worker speaks protocol {protocol}, this session {PROTOCOL_VERSION}: start the "
+            "session again on a worker of the same Peeky version"
+        )
+    client.sources = version.get("sources")
+    return client
 
 
 class _LocalClient(Client):
@@ -2090,6 +2114,12 @@ def _pause_text(state):
 WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
 
 
+REMOTE_PYTHON_NOTE = (
+    "Remote Python: only the .py files under the target's directory are compared with yours; "
+    "installed packages, the standard library and compiled modules are not."
+)
+
+
 def _remote(url):
     """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
     if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
@@ -2162,8 +2192,11 @@ def _inputs_match(root, client, expected, reported):
         )
     read = reported.get("inputs_sha256")
     if read is None:
-        return
-    if (client.sources or {}).get("kind") == "python":
+        raise RuntimeError(
+            "Worker source provenance is unconfirmed: the worker did not report which sources "
+            "the run read (inputs_sha256). Install the same Peeky version on both hosts"
+        )
+    if (getattr(client, "sources", None) or {}).get("kind") == "python":
         own = _python_inputs(root)
     if read != own:
         raise RuntimeError(
@@ -2254,6 +2287,8 @@ def _probe_remote(args, root, request, client, expected):
             _source_matches(root, request.entry, result.get("entry_sha256"), "entry script")
         if ran or result.get("source_sha256") is not None:
             _inputs_match(root, client, dict(request.expect_inputs), result)
+        if (getattr(client, "sources", None) or {}).get("kind") == "python":
+            result["warnings"].append(REMOTE_PYTHON_NOTE)
     except RuntimeError as exc:
         from peeky.errors import classify
 
@@ -2304,6 +2339,8 @@ def _start_remote(args, root, program, line, language, max_pause):
         raise
     record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
     record.update(root=str(root), program=program, language=language)
+    # What a later command checks again before it uses this session (#249).
+    record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
@@ -2315,6 +2352,8 @@ def _start_remote(args, root, program, line, language, max_pause):
         state["warnings"] = launch["warnings"]
     if misplaced := _misplaced_options(args):
         state["warnings"] = [*state.get("warnings", []), misplaced]
+    if (client.sources or {}).get("kind") == "python":
+        state["warnings"] = [*state.get("warnings", []), REMOTE_PYTHON_NOTE]
     _emit(
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,

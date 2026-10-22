@@ -54,7 +54,9 @@ def test_the_first_source_that_differs_or_is_on_one_side_only_is_named():
     )
     assert sources.difference({"x.c": a, "z.h": a}, {"x.c": a}) == "z.h (only in your checkout)"
     assert sources.difference({"x.c": a}, {"x.c": a, "w.h": a}) == "w.h (only on the worker host)"
-    assert sources.difference({"x.c": a}, {"x.c": None}) == "x.c (missing on the worker host)"
+    assert sources.difference({"x.c": a}, {"x.c": None}) == (
+        "x.c (missing on the worker host, or not a readable regular file)"
+    )
     # By name: the first of several is named.
     assert sources.difference({"b.h": a, "c.h": a}, {"b.h": b, "a.h": a}).startswith("a.h ")
 
@@ -73,17 +75,46 @@ def test_a_python_worker_compares_every_module_under_its_root(app):
     assert worker.dap is None  # nothing was launched
 
 
-def test_hidden_cache_and_environment_directories_are_not_sources(app):
-    for directory in (".git", "__pycache__", "venv", "env", "site-packages", "node_modules"):
+def test_only_caches_git_and_virtual_environments_are_left_out(app):
+    # #254 review: hidden directories and names like `env` were skipped, so a program
+    # in .hidden/ imported a .hidden/helper.py that was never compared.
+    for directory in (".git", "__pycache__", ".hidden", "env", "site-packages", "node_modules"):
         (app / directory).mkdir()
         (app / directory / "mod.py").write_text("z = 3\n")
-    (app / "pkg").mkdir()
-    (app / "pkg" / "mod.py").write_text("z = 3\n")
+    for environment in (".venv", "venv"):
+        (app / environment / "lib").mkdir(parents=True)
+        (app / environment / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (app / environment / "lib" / "installed.py").write_text("z = 3\n")
     assert {name for name, _ in sources.python_sources(app)} == {
         "helper.py",
         "main.py",
-        "pkg/mod.py",
+        ".hidden/mod.py",
+        "env/mod.py",
+        "node_modules/mod.py",
+        "site-packages/mod.py",
     }
+
+
+def test_a_symlinked_directory_under_the_root_is_refused_not_skipped(app, tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "linked.py").write_text("z = 3\n")
+    (app / "lib").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    with pytest.raises(ValueError, match="lib is a symlinked directory"):
+        sources.python_sources(app)
+
+
+def test_only_regular_files_are_hashed_and_sizes_are_checked_before_reading(app):
+    import os
+
+    os.mkfifo(app / "pipe.py")
+    with pytest.raises(ValueError, match="pipe.py is not a readable regular file"):
+        sources.python_sources(app)
+    assert sources.files(app, ["pipe.py"]) == {"pipe.py": None}
+    (app / "pipe.py").unlink()
+    with open(app / "huge.py", "wb") as stream:
+        stream.truncate(sources.MAX_PYTHON_BYTES + 1)  # sparse: never read
+    with pytest.raises(ValueError, match="more than 16 MiB"):
+        sources.python_sources(app)
 
 
 def test_declared_targets_name_their_sources():
@@ -105,7 +136,7 @@ def test_the_worker_names_a_declared_source_missing_on_its_host(tmp_path):
     assert sources.worker_sources(Native(), tmp_path)["page.h"] is None
     expected = {"main.c": sha("int main(void) { return 0; }\n"), "page.h": sha("#define N 3\n")}
     assert sources.difference(expected, sources.worker_sources(Native(), tmp_path)) == (
-        "page.h (missing on the worker host)"
+        "page.h (missing on the worker host, or not a readable regular file)"
     )
 
 
@@ -171,8 +202,10 @@ def test_a_manifest_larger_than_the_old_request_limit_reaches_the_comparison(ser
 
 
 def test_expected_inputs_are_bounded():
-    with pytest.raises(ValueError, match="at most 4096"):
+    with pytest.raises(ValueError, match="1 to 4096"):
         sources.check_expected({f"m{n}.py": "0" * 64 for n in range(4097)})
+    with pytest.raises(ValueError, match="1 to 4096"):
+        sources.check_expected({})
     with pytest.raises(ValueError, match="sha256 hex"):
         sources.check_expected({"m.py": "not-a-digest"})
     with pytest.raises(ValueError):
@@ -277,3 +310,158 @@ def test_a_confirmed_result_is_kept(app, capsys, monkeypatch):
     )
     assert code == 0 and result["rows"][0]["value"] == "3", result
     assert "expect_inputs" not in result["probe"]
+
+
+# Regressions from the #254 review: each passed on its first head.
+
+
+def test_a_result_without_the_sources_it_read_is_discarded(app, capsys, monkeypatch):
+    # Blocking 1: a missing inputs_sha256 was accepted.
+    code, result = probe_against(
+        monkeypatch,
+        capsys,
+        app,
+        lambda expected: completed(inputs_checked=sources.digest(expected)),
+    )
+    assert code == 1 and result["results_discarded"] is True and result["rows"] == []
+    assert result["error"]["code"] == "PROVENANCE_CHANGED"
+    assert "did not report which sources the run read" in result["error"]["message"]
+
+
+@pytest.mark.parametrize("operation", ["launch", "probe"])
+def test_an_empty_manifest_is_refused(served, operation):
+    # Blocking 2: `expect_inputs: {}` passed the guard, and /probe then compared nothing.
+    arguments = {"program": "main.py", "breakpoints": [{"line": 2}]}
+    if operation == "probe":
+        arguments = {"at": "main.py:2", "capture": ["x"]}
+    with pytest.raises(PeekyError) as refused:
+        served.call(operation, **arguments, expect_sha256={"program": sha(MAIN)}, expect_inputs={})
+    assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
+    assert "1 to 4096 source paths" in refused.value.payload["message"]
+
+
+class Built:
+    """A compiled target whose build reads its declared sources when it is prepared."""
+
+    verification_inputs = ("main.c", "page.h")
+    prepared = False
+
+    def validate_breakpoints(self, points):
+        pass
+
+    def prepare(self, program, root, **staging):
+        Built.prepared = True
+        return BuiltRuntime(root, self.verification_inputs)
+
+
+class BuiltRuntime:
+    def __init__(self, root, names):
+        self.source_manifest = sources.files(root, names)
+
+    def assert_current(self):
+        pass
+
+    def source_path(self, program):
+        return program
+
+    def close(self):
+        pass
+
+
+def test_a_source_changed_between_the_check_and_the_build_is_refused(tmp_path, monkeypatch):
+    # Blocking 3: the worker hashed the live sources, then built later; a change in
+    # between reached the debugger. The hook runs right after the check, before prepare.
+    from peeky.errors import classify
+
+    main_c, header = "int main(void) { return PAGE; }\n", "#define PAGE 3\n"
+    (tmp_path / "main.c").write_text(main_c)
+    (tmp_path / "page.h").write_text(header)
+    checked = sources.worker_sources
+
+    def then_changed(adapter, root):
+        own = checked(adapter, root)
+        (tmp_path / "page.h").write_text("#define PAGE 4\n")
+        return own
+
+    monkeypatch.setattr(sources, "worker_sources", then_changed)
+    worker = DebugWorker(tmp_path, adapter=Built())
+    with pytest.raises(Exception) as refused:
+        worker.dispatch(
+            "launch",
+            {
+                "program": "main.c",
+                "breakpoints": [{"line": 1}],
+                "expect_sha256": {"program": sha(main_c)},
+                "expect_inputs": {"main.c": sha(main_c), "page.h": sha(header)},
+            },
+        )
+    error = classify(refused.value)
+    assert Built.prepared and error["code"] == "PROVENANCE_CHANGED", error
+    assert "page.h (the copy on the worker host differs from your checkout)" in error["message"]
+    assert worker.dap is None  # the debugger was never started
+
+
+def write_record(name, **fields):
+    import os
+
+    from peeky.cli import _record
+
+    path = _record(name)
+    record = {
+        "name": name,
+        "url": "http://127.0.0.1:9",
+        "token": TOKEN,
+        "remote": True,
+        "session_id": "0" * 32,
+        "stop_id": None,
+        **fields,
+    }
+    path.write_text(json.dumps(record))
+    os.chmod(path, 0o600)
+
+
+def test_a_remote_session_from_before_protocol_2_is_refused(app, capsys):
+    # Blocking 4: a resumed remote session skipped the handshake.
+    write_record("legacy")
+    assert main(["session", "get", "x", "--name", "legacy", "--json"]) == 2
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+    assert "started without source provenance" in message and "start the session again" in message
+
+
+def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, capsys):
+    server = old_worker(1)
+    try:
+        write_record(
+            "resumed",
+            url=f"http://127.0.0.1:{server.server_port}",
+            protocol=PROTOCOL_VERSION,
+            inputs_checked="0" * 64,
+        )
+        assert main(["session", "get", "x", "--name", "resumed", "--json"]) == 2
+    finally:
+        server.shutdown()
+        server.server_close()
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+    assert "Worker speaks protocol 1, this session 2" in message
+
+
+def test_the_program_must_be_among_the_compared_sources(app):
+    # Blocking 6b: a program in a virtual environment was never compared, but ran.
+    (app / "tools").mkdir()
+    (app / "tools" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (app / "tools" / "run.py").write_text("x = 1\nprint(x)\n")
+    worker = DebugWorker(app)
+    try:
+        with pytest.raises(ValueError, match=r"the program tools/run.py \(not among the compared"):
+            worker.dispatch(
+                "launch",
+                {
+                    "program": "tools/run.py",
+                    "breakpoints": [{"line": 2}],
+                    "expect_sha256": {"program": sha("x = 1\nprint(x)\n")},
+                    "expect_inputs": dict(sources.python_sources(app)),
+                },
+            )
+        assert worker.dap is None
+    finally:
+        worker.close()

@@ -76,3 +76,36 @@ def test_a_header_that_differs_on_the_worker_host_is_refused_by_name(remote, cap
         in (result["error"]["message"])
     )
     assert result["refused_before_launch"] is True and result["rows"] == []
+
+
+@pytest.mark.timeout(120)
+def test_a_header_changed_between_the_check_and_the_build_is_refused(remote, monkeypatch):
+    # #254 review, blocking 3: the worker hashed the live sources, then built later. The
+    # hook changes the header right after the check, before the build.
+    from peeky import sources
+    from peeky.client import Client
+    from peeky.errors import PeekyError
+
+    host, local, url = remote
+    checked = sources.worker_sources
+
+    def then_changed(adapter, root):
+        own = checked(adapter, root)
+        (host / "page.h").write_text(HEADER.replace("3", "4"))
+        return own
+
+    monkeypatch.setattr(sources, "worker_sources", then_changed)
+    expected = sources.files(local, ["main.c", "page.h"])
+    with pytest.raises(PeekyError) as refused:
+        Client(url, TOKEN).call(
+            "launch",
+            program="main.c",
+            breakpoints=[{"line": 5}],
+            expect_sha256={"program": expected["main.c"]},
+            expect_inputs=expected,
+        )
+    assert refused.value.error_code == "PROVENANCE_CHANGED", refused.value.payload
+    assert (
+        "page.h (the copy on the worker host differs from your checkout)"
+        in (refused.value.payload["message"])
+    )

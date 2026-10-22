@@ -24,25 +24,35 @@ It doesn't attach to a running program, evaluate expressions, change a pointer, 
 debug server. It writes memory only to set a text
 ([C and C++ 7.1](lang/c-cpp-cookbook.md#change-a-text)).
 
-## Compare every source from another host
+## Compare the sources from another host
 
 A client on another host must show that its sources are the worker's. This is protocol 2.
 
 1. Call `version`. Its `sources` says which files to hash:
-   - `{"kind": "python"}`: every `.py` file under the root, outside hidden directories,
-     `__pycache__`, `venv`, `env`, `site-packages` and `node_modules`;
+   - `{"kind": "python"}`: every `.py` file under the root, except in `__pycache__`, `.git` and
+     virtual environments (a directory holding `pyvenv.cfg`);
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
-   `expect_inputs`: `{path: sha256}` for every one of those files.
-3. The worker refuses with `PROVENANCE_CHANGED` before launching, naming the first file that
-   differs or is on one side only. A request with `expect_sha256` but no `expect_inputs` is refused
+   `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
+3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
+   side only:
+   - before launching;
+   - for a compiled target, again after the build, before the debugger starts;
+   - for Python, before and after each later operation that resumes the program or returns
+     values. Then the session is closed.
+4. A request with `expect_sha256` but without `expect_inputs`, or with an empty one, is refused
    with `INVALID_REQUEST`.
-4. Check the answer's `inputs_checked`. It is the sha256 of
-   `json.dumps(sorted(expect_inputs.items()))`, with Python's default separators. If it is missing
-   or different, discard the result.
+5. Check the answer to `launch`, or the probe's result:
+   - `inputs_checked` is the sha256 of `json.dumps(sorted(expect_inputs.items()))`, with Python's
+     default separators;
+   - `inputs_sha256` must match your own digest of the sources. For Python, it is the sha256 of
+     `json.dumps` of the `[path, sha256]` pairs in walk order: a directory's files, sorted, then
+     its subdirectories, sorted. Otherwise, it is computed as `inputs_checked` is.
 
-`peeky probe --worker` and `peeky session start --worker` do all of this
-([REMOTE.md](REMOTE.md#source-identity)).
+   If either is missing or different, discard the result, or close the session.
+
+`peeky probe --worker` and `peeky session start --worker` do all of this. They also check the
+worker's protocol again on every later `session` command ([REMOTE.md](REMOTE.md#source-identity)).
 
 ## Start a C or C++ worker
 

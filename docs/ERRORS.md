@@ -110,10 +110,12 @@ file lists what it reads.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A client and a remote worker of different protocols: `Worker speaks protocol 1, this client 2`.
   Install the same Peeky version on both hosts.
-- A request that sends the program's hash, `expect_sha256`, without every source's,
-  `expect_inputs`. Use the same Peeky version on both hosts.
-- A Python directory too large to compare remotely: over 4096 `.py` files or 16 MiB, or one that
-  can't be read. Probe a smaller directory, or start the worker with a smaller `--root`.
+- A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
+  `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
+- A Python directory that can't be hashed in full for a remote run: more than 4096 `.py` files or
+  16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
+  directory, or start the worker with another `--root`.
+- A remote session started by an older Peeky, without source provenance. Start it again.
 
 ### PROVENANCE_CHANGED
 
@@ -124,8 +126,11 @@ file lists what it reads.
   `Worker source provenance differs for helper.py (the copy on the worker host differs from your
   checkout)`. Copy the file over, or remove it, then run again
   ([REMOTE.md](REMOTE.md#source-identity)).
+- A remote Python session whose sources changed on the worker host after launch is closed, and
+  no values come back: `helper.py changed on the worker host after launch`.
 - A remote result that the client can't confirm is discarded with this code:
-  `results_discarded: true`, with no rows and no output.
+  `results_discarded: true`, with no rows and no output. For example, the worker didn't report
+  which sources the run read.
 
 ## When a change is refused (`MUTATION_REJECTED`)
 

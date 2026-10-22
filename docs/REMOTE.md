@@ -104,9 +104,9 @@ kills it ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
 
 ### Source identity
 
-Before anything launches, the worker compares **every source the target reads** with your copy.
-If one differs, or is on one side only, it refuses with `PROVENANCE_CHANGED` and names the first
-such file. So a mismatched program is never built, run or changed.
+Before anything launches, the worker compares its copy of each source in the table below with
+yours. If one differs, or is on one side only, it refuses with `PROVENANCE_CHANGED`, and names the
+first such file. The program then never runs.
 
 ```
 $ peeky probe main.py --at 3 --capture x --worker http://127.0.0.1:18766
@@ -114,40 +114,76 @@ error [PROVENANCE_CHANGED]: Worker source provenance differs for helper.py (the 
 hint: Sources, build outputs or tools changed; start a new session on a fresh build.
 ```
 
-The worker's own trusted target decides which files count. The client hashes its copies of the
-same names, and sends them with the request.
+The worker's trusted target decides which files count. The client hashes its own copies of them,
+and sends the hashes with the request.
 
 | Target | The sources compared |
 | --- | --- |
-| Python | every `.py` file under the root, except in hidden directories, `__pycache__`, `venv`, `env`, `site-packages` and `node_modules` |
+| Python | every `.py` file under the root, except in `__pycache__`, `.git` and virtual environments (a directory holding `pyvenv.cfg`) |
 | Java, launched or attached | the config's `sources` |
 | C and C++ | the config's `sources` and `headers` |
 | Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
 
-- **Python counts every `.py` file,** because the program may import any of them. A stray file on
-  one side is refused too: `scratch.py (only in your checkout)`. Remove it, or copy it over.
-- **Python has a limit:** at most 4096 `.py` files and 16 MiB in all, each readable. Over it, the
-  remote probe is refused, on whichever side is over. Probe a smaller directory, or start the worker
-  with a smaller `--root`.
-- **Not compared:** installed packages, the interpreter and toolchain, and data files the program
-  reads. The program's output may still depend on them. An attached JVM's class files aren't
-  compared with yours either; the worker checks them against its own sources
-  ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
-- **The program and the `--run` script** are also compared by name, as before:
+- **Python counts every `.py` file,** hidden directories included, because the program may import
+  any of them. A stray file on one side is refused too: `scratch.py (only in your checkout)`.
+  Remove it, or copy it over.
+- **The Python program and its `--run` script** must be among the files compared. One in
+  `__pycache__`, `.git` or a virtual environment is refused.
+- **Python refuses what it can't hash in full:** more than 4096 `.py` files or 16 MiB in all, a
+  file that isn't a readable regular file, or a symlinked directory under the root. The side that
+  can't hash refuses. Probe another directory, or start the worker with another `--root`.
+- **The program and the `--run` script** are also compared on their own:
   `differs for the program pagination_bug.py`.
 
-The client checks the answer too:
+**Checked again while it runs.**
 
-- The worker must confirm that it compared every source (`inputs_checked`).
-- The sources the run read (`inputs_sha256`) must match yours.
-- The program's and the entry script's hashes must match yours.
+- **C, C++, Rust and launched Java:** the build's own copies are compared again, after the build
+  and before the debugger starts. So a source changed in between is refused, and doesn't run.
+- **Python:** the worker hashes its `.py` files again before and after every operation that
+  resumes the program or returns values: `continue`, `step`, `inspect` (and so `get`), `expand`,
+  `preview`, `set` and `report`. A change closes the session, and no values come back:
 
-A result that fails any of these is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, with
-no rows and no output. A remote session that fails them is closed.
+```
+$ peeky session continue --to-exit
+peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session: helper.py changed on the worker host after launch. The session was closed, and no values were returned. Sync sources, then start again
+```
 
-**Protocol 2.** This comparison needs protocol 2 on both hosts. A client refuses an older worker
-before sending anything: `Worker speaks protocol 1, this client 2: install the same Peeky version
-on both hosts`. A worker refuses a request that names the program's hash without every source's.
+- A Python probe runs these checks at each stop and at its end. A probe that fails one is
+  discarded: no rows and no output.
+- **The limit:** a file changed, then changed back, between two checks isn't seen.
+
+**Not compared:**
+
+- installed packages, outside the root or in a virtual environment inside it, and the standard
+  library;
+- compiled modules (`.so`), Python bytecode (`.pyc`), and data files the program reads;
+- the interpreter and the toolchain;
+- an attached JVM's class files. The worker checks them against its own sources instead
+  ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
+
+Peeky can't list the modules a Python program actually loaded. debugpy's `modules` request names
+only the modules it has seen in stack frames. So every remote Python result carries a note:
+`Remote Python: only the .py files under the target's directory are compared with yours;
+installed packages, the standard library and compiled modules are not.`
+
+**The client checks every answer:**
+
+- The worker must confirm that it compared the sources (`inputs_checked`).
+- It must report the sources the run read (`inputs_sha256`), and they must match yours.
+- The program's and the `--run` script's hashes must match yours.
+
+A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
+no output. A session that fails one at its start is closed.
+
+**Protocol 2.** These checks need protocol 2 on both hosts.
+
+- A client refuses an older worker before sending anything: `Worker speaks protocol 1, this
+  client 2: install the same Peeky version on both hosts`.
+- A worker refuses a request that sends the program's hash without the others, or an empty list.
+- A remote session keeps its protocol and its sources' digest. Every later `session` command checks
+  the worker's protocol again. A session started by an older Peeky is refused: start it again.
+
+A remote run writes no `__pycache__` into the worker's root.
 
 ### Why `ExitOnForwardFailure=yes`
 

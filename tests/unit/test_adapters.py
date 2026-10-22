@@ -19,6 +19,8 @@ def test_python_launch_configuration_preserves_existing_behavior(tmp_path):
         "redirectOutput": True,
         "justMyCode": True,
         "subProcess": False,
+        # #249: a debugged run writes no __pycache__ into the root.
+        "env": {"PYTHONDONTWRITEBYTECODE": "1"},
     }
 
 
