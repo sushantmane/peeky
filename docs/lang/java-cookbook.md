@@ -219,9 +219,22 @@ These rules also apply:
 - Field, char and String changes need an adapter bundle built by this version of
   `scripts/setup_java_adapter.py`.
 
-Rows mark what can be changed: `[settable]`. The mark on an element goes by the selector's path
-only. So an array that the JDK holds, reached under another name, may still be marked. It is
-refused only when the change is made ([rule](#arrays-the-jdk-holds)).
+Rows mark what can be changed: `[settable]`. A row of a type that `set` changes, which can't be
+changed there, says why instead:
+
+- `[not settable: not read again after this stop]`
+  ([rule](#locals-the-program-never-reads-again));
+- `[not settable: a constant javac compiles into its uses]`;
+- `[not settable: declared Object, not String]` ([rule](#the-declared-type-decides));
+- `[not settable: final]`;
+- `[not settable: in a caller's frame]`: only the stopped frame's values change;
+- `[not settable: declared by java.lang.String (the JDK's own state)]`
+  ([rule](#fields-the-jdk-declares));
+- `[not settable: its array is in a list held by …]` ([rule](#arrays-the-jdk-holds)).
+
+An element whose array Peeky couldn't check in time says `[maybe settable: …]`. Then `set` checks
+again when the change is made ([rule](#when-peeky-cant-tell-who-holds-an-array)). An object or
+array row has no mark: its type says it can't be set.
 
 ### Change a local
 
@@ -354,8 +367,30 @@ only exception is the backing array of the program's own `ArrayList`, `Vector`, 
   `HashMap<String, Object[]>`'s entry holds one:
   `inside an array held by java.util.HashMap$Node.value`.
 
-The `[settable]` mark on an element goes by the selector's path only. So an array the JDK holds,
-reached under another name, isn't marked as the JDK's. It is refused only when the change is made.
+An element's `[settable]` mark follows the same search. Before Peeky marks an array's elements, it
+asks the adapter what holds the array, whatever name reaches it. In this vote count, `main` passes
+`Collections.unmodifiableList(ballots)`, so each ballot's array is in a list that the view holds:
+
+```sh
+peeky session get ranking
+```
+
+```
+ranking: int[] = int[3]@59 [1, 2, 3]
+  ranking[0]: int = 1  [not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]
+  ranking[1]: int = 2  [not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]
+  ranking[2]: int = 3  [not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]
+```
+
+A change asks again, and is refused with the whole selector:
+
+```
+peeky: [MUTATION_REJECTED] The debugger refused to change `ranking[1]` (Peeky experimental Java adapter: the array is in a list held by java.util.Collections$UnmodifiableList.list, a JDK class's field; Peeky never changes the JDK's own state); it is unchanged
+  hint: Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger itself refused this write, which no [settable] mark can promise.
+```
+
+The program's own array, such as `choice`, stays `[settable]`. With a bundle built before this
+check, elements read `[maybe settable: …]`, which says to rebuild it.
 
 ### Which lists' arrays are the program's
 
@@ -387,6 +422,14 @@ So Peeky bounds its wait:
 - It keeps 1 s of the budget for the rest of the change:
   `only 0.6 s of the session's pause budget is left ...`. Then change the element at a fresh stop.
 - Past that, it refuses. The search itself runs on in the JVM until it ends.
+
+The same search runs when Peeky lists an array's elements, before it marks them. There it waits at
+most 0.5 s.
+
+- Where the referrers are too many or too deep, or the JVM can't list them, a change is refused
+  too. The row says why: `[not settable: more than 64 objects refer to the array …]`.
+- Where the wait runs out, a change may still be made. The row says
+  `` [maybe settable: Peeky could not tell within 500 ms …; `set` searches again, for up to 2 s] ``.
 
 ### Changes refused before the run
 
@@ -465,8 +508,8 @@ set name: "c" -> "z"
 ### The declared type decides
 
 What a variable is declared decides whether it takes a text, as java-debug's own check does.
-Peeky reads declared types from the class files. These hold a String, but take no text and are not
-marked `[settable]`:
+Peeky reads declared types from the class files. These hold a String, but take no text. Their rows
+say why: `[not settable: declared Object, not String]`.
 
 - `Object o = "x"`
 - `CharSequence cs`
@@ -476,9 +519,9 @@ marked `[settable]`:
 ### Locals the program never reads again
 
 Peeky refuses to change a local that the program never reads after the stop, of any type. Its row
-is not marked `[settable]`. Where Peeky can't follow the code, as at another kind of stop, it makes
-the change. A note then says that a lambda or inner class that captured the local before keeps the
-old value.
+says `[not settable: not read again after this stop]`. Where Peeky can't follow the code, as at
+another kind of stop, it makes the change. A note then says that a lambda or inner class that
+captured the local before keeps the old value.
 
 Peeky follows the method's bytecode from where the stop's line begins. A line breakpoint or a step
 stops there. Peeky refuses when no path reads the local before storing into it again. For example:

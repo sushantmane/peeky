@@ -293,6 +293,12 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
     (
+        # The debugger's own refusal, whatever it quotes (#261): a row's mark can't foresee it.
+        r"[Tt]he debugger refused to change",
+        "Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger "
+        "itself refused this write, which no [settable] mark can promise.",
+    ),
+    (
         r"has already copied (?:its value|`[^`]+`) into",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` "
         "there), or change the copy the message names instead.",

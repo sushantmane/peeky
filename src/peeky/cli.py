@@ -1742,8 +1742,10 @@ def _variables_text(snapshot, name="default"):
             if variable.get("settable"):
                 view += "  [settable]"
             elif variable.get("not_settable"):
-                # No stop of this build can change it (#138).
+                # No stop of this build can change it (#138), or this one (Java, #261).
                 view += f"  [not settable: {variable['not_settable']}]"
+            elif variable.get("maybe_settable"):
+                view += f"  [maybe settable: {variable['maybe_settable']}]"
             if variable.get("identity"):
                 view += f"  [id {variable['identity']}]"
             lines.append(
@@ -1858,6 +1860,7 @@ def _get_lines(row, session="default"):
             + ("  [stale]" if row.get("stale") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
+            + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
         ]
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
@@ -1882,6 +1885,8 @@ def _get_lines(row, session="default"):
             shown += "  [settable]"
         elif child.get("not_settable"):
             shown += f"  [not settable: {child['not_settable']}]"
+        elif child.get("maybe_settable"):
+            shown += f"  [maybe settable: {child['maybe_settable']}]"
         if child.get("note") and not child.get("unavailable"):
             # Read through a local shown with a note, given below (#148).
             shown += "  [note]"

@@ -815,7 +815,10 @@ in `session inspect`, and on fields and elements in probe rows and `session get`
 rule leaves nothing settable at a stop, `session inspect` says why in a note.
 
 In JSON, every root, field and element row that a change could name carries `settable: true` or
-`false`, Java's rows too. `false` includes two things that `set` refuses:
+`false`, Java's rows too. A Java row of a type that `set` changes says why it isn't settable in
+`not_settable`. A Java element whose mark can't be promised either way says why in
+`maybe_settable`: `[maybe settable: …]`.
+`false` includes two things that `set` refuses:
 
 - the internals of a standard-library type, such as `h.v.len` of a `Vec` field, raw where no view
   reads it;

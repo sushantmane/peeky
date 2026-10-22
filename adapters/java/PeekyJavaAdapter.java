@@ -33,7 +33,7 @@ import java.util.concurrent.TimeoutException;
 public final class PeekyJavaAdapter extends ProtocolServer {
     private static final Set<String> COMMANDS = Set.of("initialize", "launch", "attach", "setBreakpoints",
         "configurationDone", "threads", "stackTrace", "scopes", "variables", "setVariable",
-        "continue", "next", "stepIn", "stepOut", "disconnect");
+        "continue", "next", "stepIn", "stepOut", "disconnect", "peekyArrayHolder");
     private static final Set<String> STEPS = Set.of("next", "stepIn", "stepOut");
     /** The JDK's own class loaders besides the bootstrap one (Peeky #204). */
     private static final Set<String> JDK_LOADERS = Set.of(
@@ -44,6 +44,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     private static final int MAX_DEPTH = 4;
     /** The longest wait for the JVM's search for what refers to an array, and the least. */
     private static final long SEARCH_MS = 2000, MIN_SEARCH_MS = 250;
+    /** The same search's longest wait, and least, when a listing asks it (Peeky #261). */
+    private static final long LIST_SEARCH_MS = 500, MIN_LIST_SEARCH_MS = 50;
     /** What a write keeps of the session's pause budget for its other requests. */
     private static final long PAUSE_MARGIN_MS = 1000;
     /**
@@ -157,6 +159,13 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             if (request.command.equals("variables") && args!=null && args.has("variablesReference")
                 && args.get("variablesReference").isJsonPrimitive())
                 listings.put(request.seq, args.get("variablesReference").getAsInt());
+            if (request.command.equals("peekyArrayHolder")) {
+                // Peeky's own request (#261), never passed on to java-debug.
+                Messages.Response response=new Messages.Response(request.seq, request.command, true);
+                response.body=arrayHolder(args);
+                sendResponse(response);
+                return;
+            }
             super.dispatchRequest(request);
         } catch (Exception error) {
             sendResponse(new Messages.Response(request.seq, request.command, false,
@@ -218,30 +227,85 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         Object value=((VariableProxy) container).getProxiedVariable();
         if (!(value instanceof ArrayReference)) return;
         ArrayReference array=(ArrayReference) value;
-        if (!array.virtualMachine().canGetInstanceInfo())
-            throw new IllegalStateException("this JVM cannot list what refers to an array, so "
-                + "Peeky cannot tell whether a JDK class holds it");
+        requireInstanceInfo(array);
         long wait=pauseLeftMs<0 ? SEARCH_MS : Math.min(SEARCH_MS, pauseLeftMs - PAUSE_MARGIN_MS);
         if (wait<MIN_SEARCH_MS)
             throw new IllegalStateException("only " + String.format("%.1f", pauseLeftMs / 1000.0) + " s of the "
                 + "session's pause budget is left, too little to search for what refers to the "
                 + "array; change it at a fresh stop");
+        String holder=searchHolder(array, wait);
+        if (holder!=null)
+            throw new IllegalArgumentException("the array is " + holder
+                + ", a JDK class's field; Peeky never changes the JDK's own state");
+    }
+
+    private static void requireInstanceInfo(ArrayReference array) {
+        if (!array.virtualMachine().canGetInstanceInfo())
+            throw new IllegalStateException("this JVM cannot list what refers to an array, so "
+                + "Peeky cannot tell whether a JDK class holds it");
+    }
+
+    /** A search for what refers to an array that ran out of time: a longer one may tell. */
+    private static final class SearchTimeout extends IllegalStateException {
+        SearchTimeout(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Where a JDK class's field holds ``array`` (jdkHolder), or null where none does, from
+     * the JVM's search for what refers to it, waiting at most ``wait`` ms. Throws
+     * IllegalStateException where that cannot be told (SearchTimeout where time ran out).
+     */
+    private static String searchHolder(ArrayReference array, long wait) throws InterruptedException {
+        requireInstanceInfo(array);
         Future<String> search=SEARCH.submit(() -> jdkHolder(array, false, null, 0, new int[1], new HashSet<>()));
-        String holder;
         try {
-            holder=search.get(wait, TimeUnit.MILLISECONDS);
+            return search.get(wait, TimeUnit.MILLISECONDS);
         } catch (TimeoutException error) {
             search.cancel(true);
-            throw new IllegalStateException("Peeky could not tell within " + wait + " ms whether a JDK "
+            throw new SearchTimeout("Peeky could not tell within " + wait + " ms whether a JDK "
                 + "class holds the array (the JVM searches its heap for what refers to it)");
         } catch (ExecutionException error) {
             Throwable cause=error.getCause();
             throw new IllegalStateException(cause instanceof IllegalStateException ? cause.getMessage()
                 : "Peeky could not tell whether a JDK class holds the array (" + cause + ")");
         }
-        if (holder!=null)
-            throw new IllegalArgumentException("the array is " + holder
-                + ", a JDK class's field; Peeky never changes the JDK's own state");
+    }
+
+    /**
+     * Whether a JDK class's field holds the array whose elements a listing shows (Peeky
+     * #261), asked before Peeky marks them `[settable]`: the search a write makes
+     * (checkArrayTarget), with a shorter wait, so a mark promises only what a write does.
+     * Body: `holder` (where a JDK class's field holds it), or `unknown` (why that cannot
+     * be told) with `timedOut` (whether a longer search, as a write makes, may tell), or
+     * neither (no JDK class holds it).
+     */
+    private JsonObject arrayHolder(JsonObject args) throws Exception {
+        JsonElement reference=args==null ? null : args.get("variablesReference");
+        if (reference==null || !reference.isJsonPrimitive() || !reference.getAsJsonPrimitive().isNumber())
+            throw new IllegalArgumentException("peekyArrayHolder requires a numeric variablesReference");
+        Object container=debugContext().getRecyclableIdPool().getObjectById(reference.getAsInt());
+        Object value=container instanceof VariableProxy ? ((VariableProxy) container).getProxiedVariable() : null;
+        if (!(value instanceof ArrayReference))
+            throw new IllegalArgumentException("peekyArrayHolder takes an array's variablesReference");
+        long pauseLeftMs=args.has("peekyPauseLeftMs") ? Math.max(0, args.get("peekyPauseLeftMs").getAsLong()) : -1;
+        long wait=pauseLeftMs<0 ? LIST_SEARCH_MS : Math.min(LIST_SEARCH_MS, pauseLeftMs - PAUSE_MARGIN_MS);
+        JsonObject body=new JsonObject();
+        if (wait<MIN_LIST_SEARCH_MS) {
+            body.addProperty("unknown", "too little of the session's pause budget is left to search "
+                + "for what refers to the array");
+            body.addProperty("timedOut", true);
+            return body;
+        }
+        try {
+            String holder=searchHolder((ArrayReference) value, wait);
+            if (holder!=null) body.addProperty("holder", holder);
+        } catch (IllegalStateException error) {
+            body.addProperty("unknown", error.getMessage());
+            body.addProperty("timedOut", error instanceof SearchTimeout);
+        }
+        return body;
     }
 
     /**
@@ -401,6 +465,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             // And names each listed field's declaring class and whether the JDK loaded it,
             // never changing a JDK class's field or an array one holds (#204).
             caps.addProperty("peekyJdkOwners", true);
+            // And answers peekyArrayHolder: whether a JDK class's field holds an array, so
+            // its elements are marked [settable] only where a write is made (#261).
+            caps.addProperty("peekyArrayHolders", true);
             response.body=caps;
         }
         super.sendResponse(response);

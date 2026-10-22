@@ -114,7 +114,8 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
 @pytest.mark.parametrize(
     "assignment, code, message",
     [
-        ("current.id=1", "MUTATION_REJECTED", "'id' cannot be changed: it is final"),
+        # The whole selector (#261), not the debugger's name alone.
+        ("current.id=1", "MUTATION_REJECTED", "`current.id` cannot be changed: it is final"),
         ("current.label=1", "MUTATION_REJECTED", "label"),
         ("xs[0]=1", "MUTATION_REJECTED", "an ArrayList's elements are objects (boxed)"),
         ("current.end=1.5", "MUTATION_REJECTED", "requires an integer literal for int end"),
@@ -134,7 +135,7 @@ def test_set_refuses_java_members_it_cannot_change_exactly(
         message = (
             "requires text in double quotes for String label"
             if texts(fields)
-            else "'label' cannot be changed: it is String"
+            else "`current.label` cannot be changed: it is String"
         )
     assert message in result["error"]["message"]
 

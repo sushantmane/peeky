@@ -256,3 +256,85 @@ def test_a_launcher_that_names_no_declaring_class_changes_no_field():
 def test_a_string_or_boxed_number_is_shown_whole(type_, value, whole):
     session = JavaSession.__new__(JavaSession)
     assert session.whole_value({"type": type_, "value": value}) is whole
+
+
+class Launcher:
+    """A launcher's answers to peekyArrayHolder (#261)."""
+
+    def __init__(self, body=None, refusal=None):
+        self.body, self.refusal, self.calls = body, refusal, []
+
+    def request(self, command, arguments=None, **_):
+        from peeky.dap import RequestFailed
+
+        self.calls.append((command, arguments))
+        if self.refusal:
+            raise RequestFailed(self.refusal)
+        return self.body
+
+
+def test_an_elements_mark_asks_the_launcher_what_holds_its_array():
+    # #261: `ranking[1]` was marked [settable] by its path, then the write was refused.
+    session = owners()
+    session.array_holders = True
+    array = {"name": "ranking", "type": "int[]", "value": "int[3]@59", "variablesReference": 7}
+    held = Launcher({"holder": "in a list held by java.util.Collections$UnmodifiableList.list"})
+    assert session.array_holder(held, array, 4500.4) == (
+        "its array is in a list held by java.util.Collections$UnmodifiableList.list "
+        "(the JDK's own state)"
+    )
+    assert held.calls == [("peekyArrayHolder", {"variablesReference": 7, "peekyPauseLeftMs": 4500})]
+    assert not getattr(session.array_holder(held, array), "unproven", False)
+    assert session.array_holder(Launcher({}), array) is None
+    # Where the launcher cannot tell, a write is refused too, and the row says why.
+    many = Launcher({"unknown": "more than 64 objects refer to the array", "timedOut": False})
+    assert session.array_holder(many, array) == "more than 64 objects refer to the array"
+    assert not getattr(session.array_holder(many, array), "unproven", False)
+    # Where a longer search, as a write makes, may yet tell, neither mark is promised.
+    late = Launcher({"unknown": "Peeky could not tell within 500 ms", "timedOut": True})
+    reason = session.array_holder(late, array)
+    assert reason == "Peeky could not tell within 500 ms; `set` searches again, for up to 2 s"
+    assert reason.unproven is True
+    reason = session.array_holder(Launcher(refusal="unsupported command"), array)
+    assert "can't tell whether a JDK class holds" in reason and reason.unproven is True
+    # A launcher that cannot search before a change: neither, and it says to rebuild it.
+    session.array_holders = False
+    reason = session.array_holder(Launcher({}), array)
+    assert "rebuild it with scripts/setup_java_adapter.py" in reason and reason.unproven is True
+
+
+def test_a_row_set_does_not_change_says_why():
+    # #261: `counted: int = 9` showed neither [settable] nor why not.
+    session = owners()
+    session.text_set = session.char_set = session.field_set = True
+    locals_ = {
+        "base": [("I", False)],
+        "label": [("Ljava/lang/Object;", True)],
+        "text": [("Ljava/lang/String;", True)],
+        "n": [("I", True)],
+    }
+    session.declared_local = lambda frame, name: locals_.get(name)
+    frame = {"id": 1}
+    row = session.unsettable_row
+    assert row({"name": "base", "type": "int"}, frame) == "a constant javac compiles into its uses"
+    assert row({"name": "label", "type": "String"}, frame) == "declared Object, not String"
+    assert row({"name": "n", "type": "int"}, frame, unread=True) == "not read again after this stop"
+    assert row({"name": "text", "type": "String"}, frame, innermost=False) == "in a caller's frame"
+    assert row({"name": "n", "type": "int"}, frame) is None
+    # An object or an array: its type says it.
+    assert row({"name": "xs", "type": "int[]"}, frame) is None
+    attributes = {"presentationHint": {"attributes": ["readOnly"]}}
+    final = {**field("limit", "int", "app.Vote", False), **attributes}
+    assert row(final, frame, parent="Vote", member=True) == "final"
+    shared = {
+        **field("count", "int", "app.Vote", False),
+        "presentationHint": {"attributes": ["static"]},
+    }
+    assert row(shared, frame, parent="Vote", member=True) == "static"
+    # An Object[]'s element holding a String takes no text.
+    element = {"name": "0", "type": "String", "value": '"x"'}
+    assert row(element, frame, parent="Object[]", member=True) == "declared Object, not String"
+    own = field("total", "int", "app.Vote", False)
+    assert row(own, frame, parent="Vote", member=True, innermost=False) == "in a caller's frame"
+    session.field_set = False
+    assert "predates field and element changes" in row(own, frame, parent="Vote", member=True)

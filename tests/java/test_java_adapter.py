@@ -124,6 +124,10 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             **({"peekyCharSet": True} if b"peekyCharSet" in launcher.read_bytes() else {}),
             # And from #204 on, each listed field's declaring class.
             **({"peekyJdkOwners": True} if b"peekyJdkOwners" in launcher.read_bytes() else {}),
+            # And from #261 on, what holds an array, before its elements are marked.
+            **(
+                {"peekyArrayHolders": True} if b"peekyArrayHolders" in launcher.read_bytes() else {}
+            ),
         }
         # Steps are allowed with a positive integer thread only; step-in targets, step back
         # and goto are not.
@@ -136,6 +140,10 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
         for command in ("evaluate", "completions", "restart", "stepBack", "stepInTargets", "goto"):
             with pytest.raises(RuntimeError, match="unsupported command"):
                 dap.request(command, {})
+        if caps.get("peekyArrayHolders"):
+            # Peeky's own request takes an array's reference only, and never reaches java-debug.
+            with pytest.raises(RuntimeError, match="requires a numeric variablesReference"):
+                dap.request("peekyArrayHolder", {})
         for arguments, message in (
             ({}, "requires loopback"),
             ({"hostName": "10.0.0.5", "port": 5005}, "loopback-only"),
