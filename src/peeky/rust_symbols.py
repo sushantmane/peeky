@@ -1194,10 +1194,10 @@ def active_variant(variable, fetch, layouts):
     return {**view, "value": value, "rust_view": "active-variant"}
 
 
-# Why a caller frame's container is not read (rust.py's reasons say it in these words): a
-# call under way may be part-way through changing it, so a note never offers one of its
-# fields as its length (#260).
-CALLER_CHANGING = "the call under way may be changing"
+# Why a caller frame's container is not trusted (rust.py's reasons name it in these
+# words): the call under way may be part-way through changing it, so a note never offers
+# one of its fields as its length (#260).
+CALLER_CHANGING = "the call under way"
 MAX_ELEMENTS = 256
 MAX_TEXT_BYTES = 4096
 # A shown value stays well inside the worker's 2000-character value limit, so its

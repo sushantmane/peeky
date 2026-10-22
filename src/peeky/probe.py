@@ -1116,10 +1116,10 @@ def _raw_rust(variable, selector):
         what = kind
     step = _length_step(kind)
     if _changing(variable):
+        # The reason says its fields, its length too, are not trusted here.
         return (
             f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
-            f"{variable['raw_reason']}. Its own fields, its length too, may be mid-change "
-            "here. Check contents with `peeky verify`."
+            f"{variable['raw_reason']}. Check contents with `peeky verify`."
         )
     return (
         f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "

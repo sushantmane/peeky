@@ -294,7 +294,11 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
     finally:
         main(["session", "close"])
         capsys.readouterr()
-    reason = "`friends` is a `&mut` parameter of a caller frame: the call under way may be"
+    reason = (
+        "`friends` is a `&mut` parameter of a caller frame: Peeky doesn't check whether it was "
+        "lent to the call under way, which may be changing what it points at, so its fields "
+        "aren't trusted here"
+    )
     assert reason in rows["friends"]["note"] and rows["friends"].get("stale"), rows["friends"]
     assert "Capture" not in rows["friends"]["note"], rows["friends"]
     # Its own fields may be mid-change: `[stale]`, each saying why.
@@ -309,8 +313,9 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
     # Its own length, selected directly, says why too (review round 2 of #260).
     assert owned_length["value"] == "3" and owned_length.get("stale"), owned_length
     assert owned_length["note"].startswith(
-        "read through `friends`: `friends` is a local of a caller frame, which the call under "
-        "way may be changing"
+        "read through `friends`: `friends` is a local of a caller frame: Peeky doesn't check "
+        "whether it was lent to the call under way, which may be changing it, so its fields "
+        "aren't trusted here"
     ), owned_length
     # A shared reference's target cannot change during the call: it still reads.
     assert not rows["kept"].get("stale"), rows["kept"]

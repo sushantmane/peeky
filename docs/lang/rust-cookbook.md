@@ -354,8 +354,9 @@ In a crate with no unsafe code, Peeky reads reference parameters from memory: `&
 - A `&mut` parameter reads only in the innermost frame. In a caller, the call under way may be
   changing what it points at.
 - So in a caller frame, a `&mut` reference to a `Vec`, `String` or slice shows its raw fields
-  `[stale]`, each saying why. In `friends.retain_mut(decide)`, `friends.len` may be mid-change.
-  No note offers it as the length. A shared reference still reads there.
+  `[stale]`, each saying why. Peeky doesn't check whether the call under way was lent it. In
+  `friends.retain_mut(decide)`, `friends.len` may be mid-change. No note offers it as the length. A
+  shared reference still reads there.
 - A parameter that its function binds again, such as `let w = …;`, shows only its pointer in the
   whole function. The plain name could mean either binding. A `let w: &Vec<i64>;` that the
   function never assigns counts too.
@@ -705,7 +706,7 @@ marks them `[stale]`.
 | You see | Meaning |
 | --- | --- |
 | `no value yet:` and why | Withheld: the local may be unassigned, so its slot may hold leftovers. |
-| `[stale]` | The leftover bytes of a moved or dropped local. |
+| `[stale]` | Bytes that aren't a trustworthy value: a moved or dropped local's leftovers, or a caller's container that may be mid-change. The note says which. |
 | `[unproven]` | Only a pointer: Peeky can't prove that what it points at is still there. |
 | `<unverified ...>` | A value Peeky can't decode with certainty. |
 | an opaque enum | An enum Peeky can't decode with certainty. `describe` counts them as "other enum types". |
@@ -767,6 +768,16 @@ note: self.names shows LLDB's summary, not contents: Peeky does not read the ele
 
 #### Moved, dropped and partly moved values
 
+`[stale]` marks bytes that aren't a trustworthy value. They are either a local's leftovers, or a
+caller's container that may be mid-change. The note says which:
+
+- Leftovers: the local may be moved, dropped, partly moved or not yet assigned, or nothing proves it
+  (below).
+- Mid-change: a caller's `Vec`, `String` or slice that the call under way may have been lent
+  ([Reference parameters](#reference-parameters)). Peeky doesn't check whether it was.
+
+The details:
+
 - A local that may own memory through a pointer inside it is judged by the MIR's proof. That is a
   struct, tuple, array or enum that holds a `Box`, `Vec`, `String` or `Rc`. Any struct counts, but
   a tuple or array of only primitives and references doesn't.
@@ -782,8 +793,9 @@ note: self.names shows LLDB's summary, not contents: Peeky does not read the ele
   the callee may be part-way through replacing a `Box` it was lent. Where the call may move it, as
   `consume(h)` does, it is `[stale]`.
 - An owned `Vec` or `String` in a caller frame is different: the call under way may have it lent as
-  `&mut`. Its own fields, such as `v.len`, show `[stale]`, each saying why. So do those of one held
-  in a struct field, such as `h.v.len`. `v.retain_mut(…)` may be part-way through.
+  `&mut`, and Peeky doesn't check whether it does. Its own fields, such as `v.len`, show `[stale]`,
+  each saying why. So do those of one held in a struct field, such as `h.v.len`.
+  `v.retain_mut(…)` may be part-way through.
 - A field or element reassigned in place (`h.b = Box::new(..)`, `w.s = String::from(..)`,
   `arr[i] = ..`) leaves the local whole, if it was whole before. A field moved out and then stored
   again (`let d = h.b; h.b = ..`) still leaves it `[stale]`.

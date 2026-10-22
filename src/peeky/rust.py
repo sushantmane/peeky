@@ -1394,6 +1394,17 @@ def _top_level_parts(text, separator):
     return [*parts, text[start:]]
 
 
+def _caller_reason(name, held, changed="it"):
+    """Why a caller frame's container is not trusted (#260): ``held`` is what the frame
+    holds it as (`a local`). Whether the call under way was lent it is not checked, so
+    this holds whether it was or not."""
+    return (
+        f"`{name}` is {held} of a caller frame: Peeky doesn't check whether it was lent to "
+        f"{CALLER_CHANGING}, which may be changing {changed}, so its fields aren't trusted "
+        "here; Peeky reads it in the innermost frame"
+    )
+
+
 def _raw_container(why, taint=None):
     """A container left raw, saying ``why`` (view_variable). Where a call under way may be
     changing it (a caller frame's, owned or `&mut`), its own fields (`friends.len`) are not
@@ -2732,14 +2743,10 @@ class RustSession(NativeSession):
             # one reads in any frame, as a reference parameter's contents do.
             kinds = [proof["type"]] if proof else self._binding_types(variable, frame)
             if kinds and all(_MUT_CONTAINER.match(str(kind or "")) for kind in kinds):
-                return {
-                    "raw_reason": f"`{variable.get('name')}` is a `&mut` "
-                    f"{'parameter' if proof else 'reference'} of a caller frame: "
-                    f"{CALLER_CHANGING} what it points at; Peeky reads it in the innermost "
-                    "frame",
-                    "taint": "stale",
-                    "carry": True,
-                }
+                held = "a `&mut` " + ("parameter" if proof else "reference")
+                return _raw_container(
+                    _caller_reason(variable.get("name"), held, "what it points at")
+                )
         if (
             proof
             and self.target.opt_level == "0"
@@ -2968,12 +2975,11 @@ class RustSession(NativeSession):
                 # Box, so its own fields show, as a moved struct's do (#108); the pointers
                 # inside it show only their address.
                 name = variable.get("name")
+                if not provable:
+                    return _raw_container(_caller_reason(name, "a local"))
                 why = (
                     f"the build's MIR does not prove `{name}` initialized at this line: it "
                     "may be moved, dropped or not yet assigned around it"
-                    if provable
-                    else f"`{name}` is a local of a caller frame, which the call under way may "
-                    "be changing; Peeky reads it in the innermost frame"
                 )
                 element = str(kind).removeprefix("alloc::vec::Vec<")
                 if re.search(r"[&*]", element):
@@ -3062,10 +3068,7 @@ class RustSession(NativeSession):
         if self.target.opt_level != "0":
             return "Peeky reads a container's contents only in an unoptimized build"
         if not innermost:
-            return (
-                f"`{name}` is a local of a caller frame, which the call under way may be "
-                "changing; Peeky reads it in the innermost frame"
-            )
+            return _caller_reason(name, "a local")
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         if hashed is None or proofs is None:
             return "Peeky cannot match this frame to the build's MIR"
@@ -3139,21 +3142,14 @@ class RustSession(NativeSession):
 
         if proof and type(line) is int and line > proof["line"]:
             if proof["type"].startswith("&mut ") and not innermost:
-                return {
-                    "raw_reason": f"`{root}` is a `&mut` parameter of a caller frame: the call "
-                    "under way may be changing what it points at; Peeky reads it in the "
-                    "innermost frame",
-                    # Its own fields (`self.values.len`) may be mid-change too (#260).
-                    "taint": "stale",
-                    "carry": True,
-                }
+                # Its own fields (`self.values.len`) may be mid-change too (#260).
+                return _raw_container(
+                    _caller_reason(root, "a `&mut` parameter", "what it points at")
+                )
             through, dereference = "reference", True
         else:
             if taint == "pointers" or not innermost:
-                return _raw_container(
-                    f"`{root}` is a local of a caller frame, which the call under way may be "
-                    "changing; Peeky reads it in the innermost frame"
-                )
+                return _raw_container(_caller_reason(root, "a local"))
             if not proofs.proven(hashed[1], root, line, path):
                 return {
                     "raw_reason": f"the build's MIR does not prove `{root}` initialized at "

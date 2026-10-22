@@ -721,8 +721,9 @@ def test_a_container_a_call_may_be_changing_offers_no_field_as_its_length():
     from peeky.probe import _raw_rust, _resolve
 
     reason = (
-        "`friends` is a `&mut` parameter of a caller frame: the call under way may be "
-        "changing what it points at; Peeky reads it in the innermost frame"
+        "`friends` is a `&mut` parameter of a caller frame: Peeky doesn't check whether it "
+        "was lent to the call under way, which may be changing what it points at, so its "
+        "fields aren't trusted here; Peeky reads it in the innermost frame"
     )
     friends = {
         "name": "friends",
@@ -737,7 +738,7 @@ def test_a_container_a_call_may_be_changing_offers_no_field_as_its_length():
         {"name": "len", "type": "unsigned long", "value": "3", "variablesReference": 0},
     ]
     note = _raw_rust(friends, "friends")
-    assert reason in note and "may be mid-change" in note and "Capture" not in note, note
+    assert reason in note and "Capture" not in note, note
     with pytest.raises(ValueError) as caught:
         _resolve(Tree({1: fields}), {}, snapshot(friends), parse_selector("friends[0]"))
     assert reason in str(caught.value) and "friends.len" not in str(caught.value)
