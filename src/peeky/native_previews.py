@@ -37,6 +37,7 @@ element: LLDB's text of one ends at its first NUL.
 import re
 
 from peeky.cxx_strings import shorten
+from peeky.fields import CXX_CONTAINER
 
 ITEMS = 8
 DEPTH = 2
@@ -56,15 +57,35 @@ _WIDE = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _CHARACTER = re.compile(r"(?:u8|[LuU])?'(.+)'")
 _WIDE_LITERAL = re.compile(r"(?<=\s)(?:u8|[LuU])'(?:[^'\\]|\\[^']+|\\')'$")
 _ESCAPES = {"0": 0, "a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, "e": 27}
+# The standard containers previewed (#181), by how LLDB lists them: elements [0], [1], ...
+# in order (a sequence's, a set's, in iteration order) or a map's entries, each a pair.
+_CONTAINERS = {
+    "vector": "sequence",
+    "array": "sequence",
+    "deque": "sequence",
+    "list": "sequence",
+    "map": "map",
+    "unordered_map": "map",
+    "set": "set",
+    "multiset": "set",
+    "unordered_set": "set",
+    "unordered_multiset": "set",
+}
+_CXX_ARRAY = re.compile(r"std::(?:__\w+::)*array<")
+# LLDB's summary of a standard container: its element count.
+_SIZE = re.compile(r"size=(0|[1-9][0-9]{0,9})")
 
 
 class Typed:
     """What the build's debug information says a value is: a type in
     ``graph`` (fields.type_graph), with the array dimensions still to index (a
-    multi-dimensional array is one type) and, for a bitfield member, its width."""
+    multi-dimensional array is one type) and, for a bitfield member, its width. Or one
+    entry LLDB lists of a standard map (``entry``: its key's and value's Typed), which
+    the program's types do not name (#181)."""
 
-    def __init__(self, graph, offset, dims=None, bits=None):
+    def __init__(self, graph, offset, dims=None, bits=None, entry=None):
         self.graph, self.offset, self.dims, self.bits = graph, offset, dims, bits
+        self.entry = entry
 
     def node(self):
         """The type under typedefs and qualifiers, or None if the walk did not read it."""
@@ -103,7 +124,9 @@ class Typed:
 
     def kind(self):
         """ "record", "union", "array", "pointer", "reference", "scalar", "library",
-        "incomplete" or "unknown"."""
+        "entry" (a map's), "incomplete" or "unknown"."""
+        if self.entry:
+            return "entry"
         if self.dims:
             return "array"
         node = self.node()
@@ -186,8 +209,13 @@ class Typed:
 
     def child(self, name):
         """The type of the child the debugger names ``name`` (`end`, `[2]`, `*p`, a base
-        class), or None: the steps of a selector's path."""
+        class, a standard container's element or a map entry's `first`), or None: the
+        steps of a selector's path."""
         sort = self.kind()
+        if sort == "entry":
+            return {"first": self.entry[0], "second": self.entry[1]}.get(str(name))
+        if sort == "library":
+            return self._contained(str(name))
         if sort in ("pointer", "reference"):
             # The debugger lists what a pointer points at as its children (#102).
             target = self.target()
@@ -210,6 +238,79 @@ class Typed:
                 return None
             return (named or based)[0]
         return None
+
+    def container(self):
+        """A standard container's kind and what its elements are (#181), or None:
+        ("sequence", element) for `std::vector`, `std::deque`, `std::list` and
+        `std::array`; ("map", key, value) for `std::map` and `std::unordered_map`;
+        ("set", key) for the sets. The types are the class template's own arguments in
+        the build's debug information (`_Tp`, `_Key`), never LLDB's names."""
+        if self.dims or self.entry:
+            return None
+        node = self.node()
+        if node is None or node[0] != "record" or not node[9] or len(node) < 13:
+            return None
+        found = CXX_CONTAINER.match(node[11] or "")
+        if found is None:
+            return None
+        types = [p[2] for p in node[12] if p[0] == "type"]
+        sort = _CONTAINERS.get(found[1])
+        wanted = 2 if sort == "map" else 1
+        if sort is None or len(types) < wanted or any(t not in self.graph for t in types[:wanted]):
+            return None
+        return (sort, *(Typed(self.graph, offset) for offset in types[:wanted]))
+
+    def resolved(self):
+        """The offset of the type under typedefs and qualifiers (a multi-dimensional
+        array's element as it is), or None."""
+        if self.dims or self.entry:
+            return None
+        offset = self.offset
+        for _ in range(64):
+            node = self.graph.get(offset)
+            if node is None:
+                return None
+            if node[0] not in ("typedef", "qualifier"):
+                return offset
+            offset = node[2]
+        return None
+
+    def array_member(self):
+        """(name, Typed) of a `std::array`'s one member, the C array of its elements
+        (libc++'s `__elems_`, libstdc++'s `_M_elems`), which LLDB lists where it has no
+        formatter of its own for the class; or None."""
+        found = self.container()
+        node = self.node()
+        if found is None or found[0] != "sequence" or not _CXX_ARRAY.match(node[11] or ""):
+            return None
+        members, bases = self.members()
+        if len(members) != 1 or bases or not members[0][0]:
+            return None
+        name, member = members[0]
+        if member.kind() != "array" or member.count() is None:
+            return None
+        element = member.element()
+        size = [p[3] for p in node[12] if p[0] == "value"]
+        if element.dims or element.resolved() is None:
+            return None
+        if element.resolved() != found[1].resolved() or size[:1] != [member.count()]:
+            # Not an array of the class's `_Tp`, `_Size` of them (libc++'s
+            # `std::array<T, 0>` holds bytes).
+            return None
+        return name, member
+
+    def _contained(self, name):
+        """``child`` of a standard container (#181): an element (`[2]`), a map's entry
+        (its `first` and `second`), or a `std::array`'s C array."""
+        found = self.container()
+        if found is None:
+            return None
+        if _INDEX.fullmatch(name):
+            if found[0] == "map":
+                return Typed(self.graph, None, entry=(found[1], found[2]))
+            return found[1]
+        member = self.array_member()
+        return member[1] if member is not None and member[0] == name else None
 
 
 def _names(shown, base):
@@ -268,37 +369,66 @@ def _bits(code, bits, signed):
 
 
 class _Room:
-    """The characters a preview has left."""
+    """The characters a preview has left, and whether it may show a standard
+    container's elements (#181): ``containers``, a bool or a function asked only when a
+    container is met."""
 
-    def __init__(self, length):
-        self.left = length
+    def __init__(self, length, containers=True):
+        self.left, self.allows = length, containers
+
+    @property
+    def containers(self):
+        return self.allows() if callable(self.allows) else self.allows
+
+    def nested(self):
+        return _Room(self.left, self.allows)
 
 
 class _Unsure(Exception):
     """The debugger's children do not match the type: no preview."""
 
 
-def preview(variable, fetch, typed, text):
+def preview(variable, fetch, typed, text, containers=True):
     """The preview of a C or C++ value, or None to keep the debugger's text: a struct,
-    class or fixed-size array (a wide character array too), or a C++ reference to one
-    (`0x… {x = 1, y = 2}`, its address first, as for a string).
+    class, fixed-size array (a wide character array too) or standard container
+    (`size=2 [1, 2]`, #181), or a C++ reference to one (`0x… {x = 1, y = 2}`, its
+    address first, as for a string).
 
     ``typed``: its ``Typed``. ``fetch(reference, count)``: the first ``count`` children
     the debugger lists for a value; raises ValueError where it cannot (the preview
     budget is spent). ``text(child)``: a member's text as the worker shows it (a string
-    checked and spelled), or None for no value."""
+    checked and spelled), or None for no value. Without ``containers`` (a bool, or a
+    function asked when a container is met), a standard container keeps the debugger's
+    summary (`size=2`): a library call may be part-way through changing it."""
     reference = variable.get("variablesReference")
     if type(reference) is not int or reference <= 0 or typed is None:
         return None
     value = str(variable.get("value") or "")
     prefix = ""
     if typed.kind() == "reference":
-        if not _ADDRESS.fullmatch(value):
+        located, target = _ADDRESS.match(value), typed.target()
+        if located and target is not None and target.container() is not None:
+            # A reference to a standard container: its address, then the debugger's
+            # summary of the container (`0x… size=2`), if any (#181).
+            summary = value[located.end() :].strip()
+            shown = summary or f"{variable.get('type')} @ {located[0]}"
+            prefix, typed, variable = located[0] + " ", target, {**variable, "value": shown}
+        elif not _ADDRESS.fullmatch(value):
             return None
-        prefix, typed = value + " ", typed.target()
+        else:
+            prefix, typed = value + " ", target
         if typed is None:
             return None
     sort = typed.kind()
+    if sort == "library" and typed.container() is not None:
+        # A standard container (#181): `size=3 [1, 2, 3]`.
+        if not (containers() if callable(containers) else containers):
+            return None
+        try:
+            shown = _container(variable, typed, fetch, text, 1, _Room(LENGTH - len(prefix)))
+        except (ValueError, _Unsure):
+            return None
+        return prefix + shown
     if sort == "array" and typed.narrow():
         # A char array: LLDB's literal, bounded by the array's size.
         return None
@@ -310,7 +440,8 @@ def preview(variable, fetch, typed, text):
     # Any other array is shown element by element, whatever the debugger's text: LLDB
     # ends a wide character array's (`wchar_t`, `char16_t`, `char32_t`) at its first NUL.
     try:
-        shown = _open(variable, typed, fetch, text, 1, _Room(LENGTH - len(prefix)))
+        room = _Room(LENGTH - len(prefix), containers)
+        shown = _open(variable, typed, fetch, text, 1, room)
     except (ValueError, _Unsure):
         # The budget is spent, or the debugger's children are not the type's.
         return None
@@ -379,6 +510,64 @@ def _elements(variable, typed, fetch, text, depth, room):
     return "[" + ", ".join(shown + (["…"] if cut else [])) + "]"
 
 
+def _container(variable, typed, fetch, text, depth, room):
+    """`size=N [e0, e1, …]` of a standard sequence, `size=N {k0: v0, …}` of a map and
+    `size=N {e0, …}` of a set (#181), in the order LLDB lists them (a map's or set's
+    iteration order), from the debugger's children, which its formatter reads from the
+    container's own storage, `size()` of them: [0], [1], ... Each is shown as the class
+    template's argument in the build's debug information says (`_Tp`). A `std::array`
+    LLDB lists by its one member, the C array, shows that array's elements."""
+    found = typed.container()
+    value = str(variable.get("value") or "")
+    size = _SIZE.fullmatch(value)
+    if size is None:
+        member = typed.array_member()
+        if member is None or not _PLACEHOLDER.fullmatch(value):
+            raise _Unsure()
+        children = fetch(variable["variablesReference"], 2)
+        if [str(child.get("name")) for child in children] != [member[0]]:
+            raise _Unsure()
+        reference = children[0].get("variablesReference")
+        if type(reference) is not int or reference <= 0:
+            raise _Unsure()
+        head = f"size={member[1].count()} "
+        room.left -= len(head)
+        return head + _elements(children[0], member[1], fetch, text, depth, room)
+    count = int(size[1])
+    wanted = min(count, ITEMS)
+    children = fetch(variable["variablesReference"], wanted) if wanted else []
+    if [str(child.get("name")) for child in children] != [f"[{at}]" for at in range(wanted)]:
+        # Not the formatter's elements (the class's own members), or fewer than it says.
+        raise _Unsure()
+    head = f"size={count} "
+    room.left -= len(head)
+    shown, cut = [], count > wanted
+    for child in children:
+        if found[0] == "map":
+            item = _entry(child, found[1], found[2], fetch, text, depth, room)
+        else:
+            item = _member(child, found[1], fetch, text, depth, room)
+        if len(item) + 2 > room.left:
+            cut = True
+            break
+        room.left -= len(item) + 2
+        shown.append(item)
+    opening, closing = "[]" if found[0] == "sequence" else "{}"
+    return head + opening + ", ".join(shown + (["…"] if cut else [])) + closing
+
+
+def _entry(child, key, value, fetch, text, depth, room):
+    """`key: value` of one entry LLDB lists of a map: a pair of `first` and `second`."""
+    reference = child.get("variablesReference")
+    if type(reference) is not int or reference <= 0:
+        raise _Unsure()
+    parts = fetch(reference, 3)
+    if [str(part.get("name")) for part in parts] != ["first", "second"]:
+        raise _Unsure()
+    shown = _member(parts[0], key, fetch, text, depth, room)
+    return f"{shown}: {_member(parts[1], value, fetch, text, depth, room)}"
+
+
 def _member(child, typed, fetch, text, depth, room):
     """One member's or element's text."""
     from peeky.worker import is_unavailable
@@ -405,11 +594,23 @@ def _member(child, typed, fetch, text, depth, room):
             return "[…]"
         if depth >= DEPTH:
             return "[…]"
-        return _open(child, typed, fetch, text, depth + 1, _Room(room.left))
+        return _open(child, typed, fetch, text, depth + 1, room.nested())
     if sort == "record":
         if not expandable or not _PLACEHOLDER.fullmatch(value) or depth >= DEPTH:
             return "{…}"
-        return _open(child, typed, fetch, text, depth + 1, _Room(room.left))
+        return _open(child, typed, fetch, text, depth + 1, room.nested())
+    if (
+        sort == "library"
+        and expandable
+        and depth < DEPTH
+        and typed.container() is not None
+        and room.containers
+    ):
+        # A standard container inside (#181): its elements, or else its summary.
+        try:
+            return _container(child, typed, fetch, text, depth + 1, room.nested())
+        except _Unsure:
+            pass
     if sort in ("library", "incomplete", "unknown") and _PLACEHOLDER.fullmatch(value):
         return "{…}"
     if sort == "scalar" and expandable and _PLACEHOLDER.fullmatch(value):

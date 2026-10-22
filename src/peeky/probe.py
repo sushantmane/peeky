@@ -2313,8 +2313,12 @@ def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False)
 
 
 def _summary_size(variable):
-    """The entry count LLDB's summary of a container states (`size=3`), or None."""
-    found = re.search(r"(?:^|\s)size=([0-9]{1,9})$", str(variable.get("value") or ""))
+    """The entry count LLDB's summary of a container states (`size=3`), also before the
+    preview of its entries (`size=3 {1: 10, …}`, #181), or None."""
+    value = str(variable.get("value") or "")
+    found = re.search(r"(?:^|\s)size=([0-9]{1,9})$", value) or re.match(
+        r"size=([0-9]{1,9}) [\[{]", value
+    )
     return int(found[1]) if found else None
 
 
@@ -2623,9 +2627,9 @@ def _keyed_child(worker, stop, base, child, whole):
     ``whole``: LLDB's summary of a std::string shows all of it (libc++)."""
     if not child.get("variablesReference"):
         return None
-    shown = worker.dispatch("expand", {**stop, "handle": child["variablesReference"], "start": 0})[
-        "variables"
-    ]
+    # The value with its preview (#181), as other listings show theirs.
+    request = {**stop, "handle": child["variablesReference"], "start": 0, "previews": True}
+    shown = worker.dispatch("expand", request)["variables"]
     first = next((field for field in shown if field["name"] == "first"), None)
     second = next((field for field in shown if field["name"] == "second"), None)
     if first is None or second is None:

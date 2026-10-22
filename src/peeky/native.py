@@ -1247,7 +1247,10 @@ def function_scopes(
     if settable is not None:
         from peeky.fields import local_types, type_graph
 
-        typed = {root: local_types(dies, entry["bodies"]) for root, entry in functions.items()}
+        typed = {
+            root: local_types(dies, entry["bodies"], through=True)
+            for root, entry in functions.items()
+        }
         kinds = {
             kind
             for types in typed.values()
@@ -1482,8 +1485,9 @@ def local_declarations(info, line_text, workspace, declared):
     it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
     see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
     it runs, (address, source, line) by address. ``classes``: _local_classes.
-    ``types``: fields.local_types, the type and storage of each local (#105)."""
-    from peeky.fields import local_types
+    ``types``: fields.local_types, the type and storage of each local (#105);
+    ``referred``: fields.referred_locals, those the frame reaches through a pointer."""
+    from peeky.fields import local_types, referred_locals
 
     epilogues = set()
     dies, functions, _, files, runs, addresses = _function_entries(
@@ -1577,7 +1581,9 @@ def local_declarations(info, line_text, workspace, declared):
                 # Every row it runs, by address: (address, source, line).
                 "order": tuple(ordered),
                 "classes": classes.get(root, ()),
-                "types": local_types(dies, entry["bodies"]),
+                "types": local_types(dies, entry["bodies"], through=True),
+                # Its locals the frame reaches through a pointer (#181 review).
+                "referred": referred_locals(dies, entry["bodies"]),
                 "inlined": inlined,
                 # (name, source, line, automatic) -> the code ranges of the block declaring
                 # it (the function's for a parameter): where lldb-dap lists that local.
@@ -1746,6 +1752,40 @@ def _trampoline(name):
     return bare in _TRAMPOLINES
 
 
+# A function of the C++ standard library, by its name before its parameters (after a
+# function template's return type: `void std::_Destroy<Noisy>(Noisy*)`).
+_LIBRARY_FUNCTION = re.compile(r"(?:^|[\s*&])(?:::)?(?:std|__gnu_cxx|__gnu_debug)::")
+
+
+def _not_framed(name, storages):
+    """Why a local outside the frame's own memory is not changed: one the frame reaches
+    through a pointer or reference ("through", fields.local_types), or a static or a
+    value in registers."""
+    if "through" in storages:
+        return (
+            f"`{name}` is reached through a pointer or reference (the debug information "
+            "places it behind one: a C++ structured binding of a reference, `auto &[a, b] = "
+            "s`, a named return value, a C `__block` variable): Peeky changes only values the "
+            "frame holds itself and does not write through a pointer or reference; change "
+            "the value where it is owned"
+        )
+    return (
+        f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
+        "information places in registers)"
+    )
+
+
+def _library_frame(frame):
+    """Whether a frame runs a function of the C++ standard library (`std::__1::vector<…>
+    ::clear()`, libstdc++'s `std::_Rb_tree_insert_and_rebalance(…)`, a module's
+    `libc++.1.dylib`std::…`), which may be part-way through changing a container (#181);
+    a frame with no name counts as one."""
+    name = (frame or {}).get("name")
+    if not isinstance(name, str) or not name.strip():
+        return True
+    return bool(_LIBRARY_FUNCTION.search(name.rpartition("`")[2].split("(", 1)[0]))
+
+
 def _is_object(variable):
     """Whether a DAP variable is a class, struct, union or array: it has children and is
     no pointer or reference."""
@@ -1760,6 +1800,12 @@ def _is_object(variable):
 _CONSTRUCTOR_NAME = re.compile(
     r"(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
     r"|\{unnamed type#\d+\})(?:<[^()]*>)?::\1(?:<[^()]*>)?\("
+)
+# A C++ destructor's or assignment operator's frame name (`Noisy::~Noisy()`,
+# `ns::Box<int>::~Box()`, `E::operator=(E const&)`), as _CONSTRUCTOR_NAME's.
+_LIFETIME_NAME = re.compile(
+    r"(?:(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
+    r"|\{unnamed type#\d+\})(?:<[^()]*>)?::~\1(?:<[^()]*>)?|::operator=)\("
 )
 # A source whose statements are scanned (c_source) to place a caller's declaration.
 MAX_STATEMENT_SOURCE = 8_000_000
@@ -3251,23 +3297,53 @@ class NativeSession:
             return shown
         return {**(shown or {}), **tidied}
 
-    def preview_value(self, variable, fetch, read, pointee=False, frame=None, steps=None):
-        """A C or C++ struct's, class's or fixed-size array's preview (#136,
-        ``native_previews``), or None to keep the debugger's text. ``frame`` and
-        ``steps`` (the root local's name, then each child's the debugger gives) locate
-        the value, whose type the build's debug information gives; without it there is
-        no preview, nor in an optimized build (a struct with an address may hold values
-        the optimizer has not stored yet). ``fetch(reference, count)`` lists a value's
-        first children within the worker's preview budget; ``read`` reads memory (or is
-        None), for the strings among its members. With ``pointee``, the preview of
-        what the pointer ``variable`` points at, which a selector asked for (`p[0]`):
-        lldb-dap lists it as the pointer's children."""
+    def preview_value(
+        self,
+        variable,
+        fetch,
+        read,
+        pointee=False,
+        frame=None,
+        steps=None,
+        stack=None,
+        deeper=None,
+        threads=None,
+    ):
+        """A C or C++ struct's, class's, fixed-size array's or standard container's
+        preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
+        ``frame`` and ``steps`` (the root local's name, then each child's the debugger
+        gives) locate the value, whose type the build's debug information gives; without
+        it there is no preview, nor in an optimized build (a struct with an address may
+        hold values the optimizer has not stored yet). ``fetch(reference, count)`` lists
+        a value's first children within the worker's preview budget; ``read`` reads
+        memory (or is None), for the strings among its members. With ``pointee``, the
+        preview of what the pointer ``variable`` points at, which a selector asked for
+        (`p[0]`): lldb-dap lists it as the pointer's children. ``stack``: the stop's
+        frames as listed (innermost first), ``deeper()`` more of them, ``threads()`` how
+        many threads the program has: a container shows its elements only where no
+        standard-library call may be part-way through changing it
+        (``containers_settled``)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
             return None
-        typed = self._typed(frame, steps)
-        if typed is None:
+        walked = self._typed(frame, steps, walked=True)
+        if walked is None:
+            return None
+        typed, indirect, contained = walked
+        known = []
+
+        def settled():
+            # Asked only for a container (it reads the stop's threads and frames).
+            if not known:
+                known.append(
+                    self.containers_settled(frame, indirect or pointee, stack, deeper, threads)
+                )
+            return known[0]
+
+        if contained and not settled():
+            # An element of a standard container a library call may be changing (an
+            # element `clear()` has destroyed already): not previewed (#181).
             return None
         if getattr(self.target, "optimization", "O0") != "O0" and not (
             not pointee
@@ -3286,7 +3362,13 @@ class NativeSession:
             typed = typed.target()
             if typed is None or typed.kind() in ("pointer", "reference"):
                 return None
-            variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
+            summary = str(variable.get("value") or "")[address.end() :].strip()
+            if typed.container() is not None and summary:
+                # The debugger's summary of a standard container follows the address
+                # (`0x… size=3`), and it lists the container's elements (#181).
+                variable = {**variable, "value": summary}
+            else:
+                variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
 
         def text(child):
             shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
@@ -3294,7 +3376,47 @@ class NativeSession:
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")
 
-        return preview(variable, fetch, typed, text)
+        return preview(variable, fetch, typed, text, containers=settled)
+
+    def containers_settled(self, frame, indirect, stack, deeper=None, threads=None):
+        """Whether a standard container a value of ``frame`` holds is whole (#181): the
+        program runs one thread (a stop pauses any other wherever it is, perhaps inside
+        a `push_back` on a container this one shares); no standard-library function is
+        running between the stop and ``frame`` (a `push_back` or `clear` there may be
+        part-way through its change, with an element's constructor or destructor of the
+        program's on top), nor a constructor, destructor or assignment operator below
+        ``frame`` (the program's own `slot->~E(); ::new (slot) E(3);` ends and begins an
+        element's lifetime in place); and, where the value is reached through a pointer
+        or reference (``indirect``) or is no automatic of the frame, no such frame
+        anywhere on the stack (it may be what a caller's `clear` changes). ``stack``: the
+        frames as listed (innermost first); ``deeper()``: up to 64 of them, where the ten
+        listed may not be all; ``threads()``: how many threads the program has, or None
+        where that is not known for sure."""
+        if threads is None or threads() != 1:
+            return False
+        frames = list(stack or [])
+        ids = [each.get("id") for each in frames]
+        if frame is None or ids.count(frame.get("id")) != 1:
+            return False
+        index = ids.index(frame.get("id"))
+        if any(_library_frame(each) for each in frames[: index + 1]):
+            return False
+        if any(self._lifetime(each) for each in frames[:index]):
+            return False
+        if not indirect:
+            return True
+        if len(frames) >= 10:
+            frames = list(deeper() if deeper else [])
+            if not frames or len(frames) >= 64:
+                # More frames than are read: one of them may be the library's.
+                return False
+        return not any(_library_frame(each) or self._lifetime(each) for each in frames)
+
+    def _lifetime(self, frame):
+        """Whether a frame runs a C++ constructor, destructor or assignment operator,
+        which may be part-way through building, ending or replacing an element of a
+        container (#181 review): by its function's debug information or its name."""
+        return self._constructs(frame) or bool(_LIFETIME_NAME.search(str(frame.get("name") or "")))
 
     def member_value(self, variable, frame, steps):
         """How to show a field LLDB reads wrongly, or None to keep its text (#136): a
@@ -3320,11 +3442,15 @@ class NativeSession:
             return {"unavailable": True, "reason": reason}
         return {"value": shown}
 
-    def _typed(self, frame, steps):
+    def _typed(self, frame, steps, walked=False):
         """``native_previews.Typed`` of the value ``steps`` name in ``frame`` (its root
         local, then the debugger's child names), from the build's debug information, or
         None where it cannot be told (no debug information read, a name declared twice
-        with two types, a child the type does not have)."""
+        with two types, a child the type does not have). With ``walked``, (Typed,
+        whether the path goes through a pointer or reference, or starts at a local that
+        is no automatic or parameter of the frame or one it reaches through a pointer
+        (``fields.referred_locals``), whether it goes through a standard container's
+        element)."""
         from peeky.fields import Unsettable
         from peeky.native_previews import Typed
 
@@ -3335,14 +3461,31 @@ class NativeSession:
             return None
         try:
             shown = self._shown_where(steps[0], self._block_pc(frame))
-            offset, _ = self._declared_type(function["types"], steps[0], shown)
+            offset, framed = self._declared_type(function["types"], steps[0], shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
+        plain = re.fullmatch(r"(.+) @ [^:]+:[0-9]+", str(steps[0]))
+        referred = function.get("referred")
+        # A local the frame reaches through a pointer (a structured binding of a
+        # reference, `auto& [items, n] = *owner`, which the debug information types as
+        # the vector itself), or one whose locations were not all read, counts as one
+        # reached through a pointer (#181 review).
+        reached = referred is None or (plain[1] if plain else str(steps[0])) in referred
+        indirect, contained = not framed or reached, False
         for step in steps[1:]:
+            holder = typed
+            if typed.kind() in ("pointer", "reference"):
+                indirect = True
+                if not str(step).startswith("*"):
+                    # The debugger lists what it refers to as its own children (#102).
+                    holder = typed.target()
+            contained = contained or (holder is not None and holder.container() is not None)
             typed = typed.child(step)
             if typed is None:
                 return None
+        if walked:
+            return typed, indirect or typed.kind() in ("pointer", "reference"), contained
         return typed
 
     def _string_class(self, kind):
@@ -4166,8 +4309,9 @@ class NativeSession:
         ``lines`` of ``program`` in this build (#138), or None: a field or element whose
         path the debug information rules out (#105: through a pointer, in a union, a
         bitfield, a root not in the frame's own memory) in every function a stop there
-        can be in. A root local is judged at the stop (its type as the debugger names
-        it, its declaration's progress)."""
+        can be in, or a root local the frame reaches through a pointer or reference
+        there (a structured binding of a reference). Any other root local is judged at
+        the stop (its type as the debugger names it, its declaration's progress)."""
         from peeky.fields import Unsettable, debugger_steps, settable_member
         from peeky.probe import parse_selector
 
@@ -4179,8 +4323,6 @@ class NativeSession:
             try:
                 root, *steps = parse_selector(name)
             except ValueError:
-                continue
-            if not steps:
                 continue
             for line in lines:
                 # Each function a stop there can be in, and in it the declaration of the
@@ -4202,12 +4344,24 @@ class NativeSession:
                     continue
                 failures = []
                 for entry, shown in places:
+                    if not steps:
+                        # A root is judged at the stop (its type as the debugger names it,
+                        # its declaration's progress), but one the frame reaches through a
+                        # pointer or reference never changes.
+                        storages = self._declared_storages(entry.get("types") or {}, root, shown)
+                        if "through" not in storages:
+                            break
+                        failures.append(
+                            (entry.get("name") or "this function", _not_framed(root, storages))
+                        )
+                        continue
                     try:
                         if entry.get("types") is None:
                             raise Unsettable(
                                 "Peeky cannot match it to the build's debug information"
                             )
                         kind, framed = self._declared_type(entry["types"], root, shown)
+                        storages = self._declared_storages(entry["types"], root, shown)
                         # As the stop's walk reads the selector (`sp[-1]` is `sp[1]`).
                         named = debugger_steps(self.fields, kind, root, steps)
                         if named is None:
@@ -4220,10 +4374,7 @@ class NativeSession:
                             owner=lambda e=entry, n=named: self._caller_advice(e, root, n),
                         )
                         if not framed:
-                            raise Unsettable(
-                                f"`{root}` is not kept in this frame's own memory (a static, "
-                                "or a value the debug information places in registers)"
-                            )
+                            raise Unsettable(_not_framed(root, storages))
                     except Unsettable as exc:
                         failures.append((entry.get("name") or "this function", str(exc)))
                         continue
@@ -4706,7 +4857,11 @@ class NativeSession:
         carries the callee's lines and runs before
         the statement's own lowest row (`t = inl(&p) + p.y;`). Anything else, or anything
         Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
-        says it)."""
+        says it). A local the frame reaches through a pointer or reference (a structured
+        binding of a reference) is refused at every stop: a change would write through
+        it."""
+        if "through" in (storages := self._storages(frame, variable)):
+            return Everywhere(_not_framed(variable.get("name"), storages))
         if not getattr(self, "declarations", None) and (unread := self._unread_statements()):
             # No stop of this run is placed: no other stop would allow a change.
             return unread
@@ -4799,10 +4954,7 @@ class NativeSession:
                 owner=lambda: self._caller_advice(self._function_at(frame), name, steps),
             )
             if not framed:
-                raise Unsettable(
-                    f"`{name}` is not kept in this frame's own memory (a static, or a value "
-                    "the debug information places in registers)"
-                )
+                raise Unsettable(_not_framed(name, self._storages(frame, root)))
             self._root_holds(frame, root, stack=stack, deeper=deeper)
             low, high = integer_range(signed, bits)
             shown, debugger = variable.get("value"), variable.get("type")
@@ -5296,6 +5448,28 @@ class NativeSession:
             )
 
     @staticmethod
+    def _declared_storages(types, name, where=None):
+        """The storages of the declarations of ``name`` that ``_declared_type`` reads
+        (fields.local_types); empty where it declares none."""
+        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
+        declared = types.get(shown[1] if shown else name) or set()
+        if declared and shown:
+            declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+        if declared and where is not None and len(declared) > 1:
+            place = (Path(str(where[0])).name, where[1])
+            declared = {each for each in declared if each[2] == place} or declared
+        return {storage for _, storage, _ in declared}
+
+    def _storages(self, frame, root):
+        """``_declared_storages`` of the root local ``root`` of ``frame``."""
+        function = self._function_at(frame) if self.fields is not None else None
+        if function is None or not function.get("types"):
+            return set()
+        name = root.get("name")
+        shown = self._shown_where(name, self._unslid(frame))
+        return self._declared_storages(function["types"], name, shown)
+
+    @staticmethod
     def _declared_type(types, name, where=None):
         """(type offset, whether every declaration is an automatic or a parameter in the
         frame's memory) of the local ``name`` (`s`, or `s @ main.rs:81` as LLDB names one
@@ -5368,6 +5542,22 @@ class NativeSession:
             "debugger may read a struct, class or reference from the wrong place, so "
             "Peeky shows only scalar returns"
         )
+
+    @staticmethod
+    def listed_threads(dap):
+        """The thread IDs LLDB itself lists at this stop (`thread list`: `thread #2: tid =
+        0x3a7f3b5, …`), which lldb-dap's `threads` reply may not yet show (#181 review),
+        or None where it does not say."""
+        try:
+            text = dap.request(
+                "evaluate", {"expression": "`thread list", "context": "repl"}, timeout=2
+            ).get("result", "")
+        except Exception:
+            return None
+        if not isinstance(text, str) or len(text) > MAX_METADATA:
+            return None
+        found = re.findall(r"^\*?\s*thread #[0-9]+: tid = (0x[0-9a-fA-F]+|[0-9]+)\b", text, re.M)
+        return frozenset(int(tid, 0) for tid in found) or None
 
     @staticmethod
     def returned_by_command(dap, thread_id):
@@ -5661,8 +5851,10 @@ class NativeSession:
         ``variable`` (#138: `set` refuses a member of a root outside the frame's memory,
         as the check before the run does): `register` where the debug information gives
         it no stack slot in the frame's function (a register or a location list), `static`
-        where it is a static; else None. A root itself is left to the stop (the debugger
-        writes a register), as is an optimized build, where every change is refused."""
+        where it is a static, `reference` where the frame reaches it through a pointer or
+        reference (a structured binding of a reference); else None. A root itself is left
+        to the stop (the debugger writes a register), as is an optimized build, where
+        every change is refused."""
         target = getattr(self, "target", None)
         if not member or self.fields is None or getattr(target, "optimization", "O0") != "O0":
             return None
@@ -5674,9 +5866,22 @@ class NativeSession:
         if shown:
             declared = [each for each in declared if each[2] == shown[1:]]
         storages = {storage for _, storage, _ in declared}
+        if "through" in storages and not any(
+            self._is_array(kind) for kind, storage, _ in declared if storage == "through"
+        ):
+            # Reached through a pointer or reference: a structured binding of one (GCC's
+            # variable-length array is too, whose elements `set` refuses as such).
+            return "reference"
         if storages and storages <= {"register", "other"}:
             return "register"
         return "static" if storages == {"static"} else None
+
+    def _is_array(self, kind):
+        """Whether the type at offset ``kind`` is an array, under typedefs and qualifiers."""
+        from peeky.native_previews import Typed
+
+        node = Typed(self.fields or {}, kind).node()
+        return node is not None and node[0] == "array"
 
     def settable(self, variable, frame=None):
         """Whether a root local is a writable integer of a type Peeky can change."""

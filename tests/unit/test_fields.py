@@ -14,6 +14,7 @@ from peeky.fields import (
     Unsettable,
     debugger_steps,
     local_types,
+    referred_locals,
     settable_member,
     type_graph,
 )
@@ -695,3 +696,167 @@ def test_a_container_field_is_found_only_through_plain_records():
             held_container(graph, 1, "self", list(steps), dereference=True)
     with pytest.raises(Unsettable, match="`self` is a pointer"):
         held_container(graph, 1, "self", ["values"])
+
+
+CONTAINERS = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"c.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x14, 1, "DW_TAG_structure_type", {"DW_AT_name": '"Pt"', "DW_AT_byte_size": "0x04"}),
+    (0x18, 2, "DW_TAG_member", member("x", 0x10, 0)),
+    (0x20, 1, "DW_TAG_namespace", {"DW_AT_name": '"std"'}),
+    (0x24, 2, "DW_TAG_namespace", {"DW_AT_name": '"__1"'}),
+    (0x28, 3, "DW_TAG_class_type", {"DW_AT_name": '"vector<Pt>"', "DW_AT_byte_size": "0x18"}),
+    (
+        0x2C,
+        4,
+        "DW_TAG_template_type_parameter",
+        {"DW_AT_type": "0x00000014", "DW_AT_name": '"_Tp"'},
+    ),
+    (0x30, 4, "DW_TAG_member", member("__begin_", 0x40, 0)),
+    (0x34, 3, "DW_TAG_class_type", {"DW_AT_name": '"array<int, 3UL>"', "DW_AT_byte_size": "0x0c"}),
+    (
+        0x38,
+        4,
+        "DW_TAG_template_type_parameter",
+        {"DW_AT_type": "0x00000010", "DW_AT_name": '"_Tp"'},
+    ),
+    (
+        0x3C,
+        4,
+        "DW_TAG_template_value_parameter",
+        {"DW_AT_name": '"_Size"', "DW_AT_const_value": "3"},
+    ),
+    (0x40, 1, "DW_TAG_pointer_type", {"DW_AT_type": "0x00000014"}),
+    (0x44, 1, "DW_TAG_structure_type", {"DW_AT_name": '"Hold<Pt>"', "DW_AT_byte_size": "0x04"}),
+    (0x48, 2, "DW_TAG_template_type_parameter", {"DW_AT_type": "0x00000014", "DW_AT_name": '"T"'}),
+    (0x4C, 2, "DW_TAG_member", member("n", 0x10, 0)),
+)
+
+
+def test_a_standard_containers_template_arguments_type_its_elements():
+    # #181: a vector holds its elements through a pointer, so only its `_Tp` reaches them.
+    graph = type_graph(_parse_dies(CONTAINERS), (0x28, 0x34, 0x44), CPP_LIBRARIES)
+    vector, array = graph[0x28], graph[0x34]
+    assert vector[11] == "std::__1::vector<Pt>" and vector[12] == (("type", "_Tp", 0x14, None),)
+    assert array[12] == (("type", "_Tp", 0x10, None), ("value", "_Size", None, 3))
+    assert 0x14 in graph and graph[0x14][0] == "record"
+    # The program's own templates keep their arguments without walking them.
+    assert graph[0x44][12] == (("type", "T", 0x14, None),)
+    alone = type_graph(_parse_dies(CONTAINERS), (0x44,), CPP_LIBRARIES)
+    assert 0x14 not in alone
+
+
+REFERRED = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"r.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x20, 1, "DW_TAG_subprogram", {"DW_AT_name": '"f"'}),
+    (0x24, 2, "DW_TAG_formal_parameter", NAMED("plain") | {"DW_AT_location": "DW_OP_fbreg -8"}),
+    (
+        0x28,
+        2,
+        "DW_TAG_variable",
+        NAMED("items") | {"DW_AT_location": "DW_OP_fbreg -24, DW_OP_deref"},
+    ),
+    (0x2C, 2, "DW_TAG_lexical_block", {}),
+    (
+        0x30,
+        3,
+        "DW_TAG_variable",
+        NAMED("sized") | {"DW_AT_location": "DW_OP_breg29 W29-8, DW_OP_deref_size 0x8"},
+    ),
+    (0x34, 3, "DW_TAG_variable", NAMED("framed") | {"DW_AT_location": "DW_OP_breg29 W29-16"}),
+    (0x38, 2, "DW_TAG_variable", NAMED("global") | {"DW_AT_location": "DW_OP_addr 0x1000"}),
+    (0x3C, 2, "DW_TAG_variable", NAMED("gone")),
+)
+
+
+def test_locals_the_frame_reaches_through_a_pointer():
+    # Review of #181: `auto &[items, dropped] = *owner` is typed as the vector itself, at
+    # `DW_OP_fbreg -24, DW_OP_deref`: storage "automatic", so its container was taken for
+    # the frame's own. Anything but one frame offset is read through a pointer.
+    dies = _parse_dies(REFERRED)
+    assert referred_locals(dies, [0x20]) == {"items", "sized", "global", "gone"}
+    assert {k: {s for _, s, _ in v} for k, v in local_types(dies, [0x20]).items()}["items"] == {
+        "automatic"
+    }
+
+
+THROUGH = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"t.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),
+    (0x14, 1, "DW_TAG_array_type", {"DW_AT_type": "0x00000010"}),
+    (0x20, 1, "DW_TAG_subprogram", {"DW_AT_name": '"f"'}),
+    (
+        0x24,
+        2,
+        "DW_TAG_formal_parameter",
+        NAMED("big") | {"DW_AT_location": "DW_OP_fbreg +8, DW_OP_deref"},
+    ),
+    (
+        0x28,
+        2,
+        "DW_TAG_variable",
+        NAMED("dropped")
+        | {"DW_AT_location": "DW_OP_fbreg -16, DW_OP_deref, DW_OP_plus_uconst 0x18"},
+    ),
+    (
+        0x2C,
+        2,
+        "DW_TAG_variable",
+        NAMED("b") | {"DW_AT_location": "DW_OP_breg31 WSP+16, DW_OP_plus_uconst 0x4"},
+    ),
+    (
+        0x30,
+        2,
+        "DW_TAG_variable",
+        {
+            "DW_AT_name": '"vla"',
+            "DW_AT_type": "0x00000014",
+            "DW_AT_location": "DW_OP_fbreg -32, DW_OP_deref",
+        },
+    ),
+)
+
+
+def test_a_variable_read_through_a_pointer_is_stored_through_it():
+    # #186's review, after round 1: `dropped` of `auto &[at, dropped] = *owner` was an
+    # "automatic", so `--set dropped=50` wrote `o.dropped` through the reference. A
+    # by-value parameter the ABI passes by a hidden pointer is the call's own copy, and
+    # a by-value binding's constant offset is the frame's own storage.
+    dies = _parse_dies(THROUGH)
+    storages = {
+        name: {storage for _, storage, _ in kinds}
+        for name, kinds in local_types(dies, [0x20], through=True).items()
+    }
+    assert storages == {
+        "big": {"parameter"},
+        "dropped": {"through"},
+        "b": {"automatic"},
+        "vla": {"through"},
+    }
+    # Rust's walk keeps its own storages.
+    assert {s for _, s, _ in local_types(dies, [0x20])["dropped"]} == {"automatic"}
+    assert referred_locals(dies, [0x20]) == {"big", "dropped", "vla"}
+
+
+def test_a_local_read_through_a_pointer_is_refused_as_a_root_and_by_its_fields():
+    from peeky.errors import _MUTATION_HINTS
+    from peeky.native import Everywhere, _not_framed
+
+    session = NativeSession.__new__(NativeSession)
+    dies = _parse_dies(THROUGH)
+    types = local_types(dies, [0x20], through=True)
+    session.fields = type_graph(dies, {0x10, 0x14}, CPP_LIBRARIES)
+    session.declarations = [{"types": types}]
+    session._function_at = lambda frame: session.declarations[0]
+    session._shown_where = lambda name, pc: None
+    session._unslid = lambda frame: None
+    reason = session.mid_statement({"name": "dropped"}, {"id": 1})
+    assert isinstance(reason, Everywhere) and "is reached through a pointer or reference" in reason
+    assert reason == _not_framed("dropped", {"through"})
+    assert session.never_settable_row({"name": "dropped"}, {"id": 1}, member=True) == "reference"
+    # A variable-length array's elements are refused as such, never as a reference.
+    assert session.never_settable_row({"name": "vla"}, {"id": 1}, member=True) is None
+    assert "static" in _not_framed("g", {"static"})
+    hint = next(hint for pattern, hint in _MUTATION_HINTS if re.search(pattern, reason))
+    assert "structured binding" in hint, hint

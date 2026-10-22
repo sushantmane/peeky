@@ -878,7 +878,7 @@ def test_previews_are_made_only_where_asked_and_within_their_budget(tmp_path):
 
     located = []
 
-    def preview_value(variable, fetch, read, frame=None, steps=None):
+    def preview_value(variable, fetch, read, frame=None, steps=None, **stop):
         # Where the value is: its frame, and the path of names its type is found by.
         located.append((frame, steps))
         listed = fetch(variable["variablesReference"], 64)
@@ -1098,3 +1098,68 @@ def test_a_row_no_stop_can_change_says_why(tmp_path):
     assert width["settable"] is False and width["not_settable"] == "register"
     assert total["settable"] is True and "not_settable" not in total
     assert "not_settable" not in other
+
+
+class ThreadsDap:
+    """`threads` replies in turn; evaluate replies LLDB's `thread list`."""
+
+    def __init__(self, replies, listing, started=()):
+        self.replies, self.listing, self.started_threads = list(replies), listing, set(started)
+        self.asked = 0
+
+    def request(self, command, arguments=None, **_):
+        if command == "threads":
+            self.asked += 1
+            reply = self.replies.pop(0)
+            if reply is None:
+                raise TimeoutError("no reply")
+            return {"threads": [{"id": thread} for thread in reply]}
+        raise AssertionError(command)
+
+
+def test_the_threads_at_a_stop_are_every_source_s(tmp_path):
+    # Review of #181: two `threads` replies that both say one thread (stale) proved
+    # nothing; LLDB's own `thread list` and the `thread` events that said a thread
+    # started count too, and any source that does not answer leaves it unsure.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    def worker(replies, listing, started=()):
+        made = DebugWorker(tmp_path)
+        made.dap = ThreadsDap(replies, listing, started)
+        made.runtime = SimpleNamespace(listed_threads=lambda dap: dap.listing)
+        made.thread_count = None
+        return made
+
+    assert worker([[1], [1]], frozenset({1})).threads_at_stop() == 1
+    # Stale replies, but LLDB lists the worker thread.
+    assert worker([[1], [1]], frozenset({1, 2})).threads_at_stop() == 2
+    # Stale replies and list, but a thread said it started.
+    assert worker([[1], [1]], frozenset({1}), started={1, 7}).threads_at_stop() == 2
+    assert worker([[1], [1, 2]], frozenset({1})).threads_at_stop() == 2
+    # Unsure: a reply missing, LLDB not answering, a thread without an id.
+    assert worker([None, [1]], frozenset({1})).threads_at_stop() is None
+    assert worker([[1], [1]], None).threads_at_stop() is None
+    assert worker([[1], [1]], frozenset({1}), started={None}).threads_at_stop() is None
+    # Read once per inspection.
+    made = worker([[1], [1]], frozenset({1}))
+    assert made.threads_at_stop() == made.threads_at_stop() == 1 and made.dap.asked == 2
+
+
+def test_lldb_s_thread_list_is_read_for_its_thread_ids():
+    from types import SimpleNamespace
+
+    from peeky.native import NativeSession
+
+    text = (
+        "Process 8509 stopped\n* thread #1: tid = 0x3a7f386, 0x0000000100728568 program`main "
+        "at threads.cpp:9:25, stop reason = breakpoint 1.1\n  thread #2: tid = 0x3a7f3b5, "
+        "0x0000000190494c74 libsystem_kernel.dylib`swtch_pri + 8\n"
+    )
+    dap = SimpleNamespace(request=lambda *a, **k: {"result": text})
+    assert NativeSession.listed_threads(dap) == {0x3A7F386, 0x3A7F3B5}
+    assert (
+        NativeSession.listed_threads(SimpleNamespace(request=lambda *a, **k: {"result": ""}))
+        is None
+    )
