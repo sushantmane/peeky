@@ -241,7 +241,8 @@ revised after two adversarial reviews.
 ## Design documents
 
 - [Design](docs/DESIGN.md): boundaries, lifecycle, protocol, failures and extension points.
-- [MVP plan](docs/ROADMAP.md): incremental slices with acceptance criteria.
+- [Roadmap](docs/ROADMAP.md): the delivered slices with their acceptance criteria, what comes next
+  and what stays deferred.
 - [Testing and CI budget](docs/TESTING.md): parallel lanes and measured timings.
 - [Runtime performance](docs/PERFORMANCE.md): a repeatable HTTP and debugger benchmark, with raw
   latency samples.

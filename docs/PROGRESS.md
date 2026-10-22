@@ -597,6 +597,7 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
 - **#212: PERFORMANCE.md in plain English** (branch `docs/plain-performance`). Every number, date, table and raw-sample link kept, and the anchor `#where-a-probes-time-goes-2026-10-16` unchanged; the prose became short lists. Sentences: mean 13.8 words to 10.8, none over 25 (5 before, the longest 38).
 - **#212: history headers** (branch `docs/history-headers`). `RUST_PLAN.md` and `JAVA_SPIKE.md` open with a one-line "Historical" note that points at the current pages (`lang/rust.md`, `lang/java.md`, their cookbooks, RUST_AGENT, RUST_GATE, JAVA_AGENT, JAVA_ATTACH); their bodies are kept as they were.
 - **#212: MIXED_RUNTIME** (branch `docs/plain-mixed-runtime`). In plain English, still a design direction, not implemented support; links #61, ADR 0007 and ADR 0002.
+- **#212: ROADMAP** (branch `docs/plain-roadmap`). Rewritten as delivered slices (#6–#13, probes) with their scope, acceptance and links, then next (CUDA #61, mixed runtime, Kubernetes) and deferred work. AGENTS.md points at DESIGN's boundaries and ROADMAP's deferred list instead of "MVP boundaries".
 - **Dependabot:** #1, #3, #4 and #5 were merged. #2 (`upload-artifact` v7) was validated by dispatching `artifact.yml`, then fast-forwarded over SSH as `7308955`, because the API token lacks the `workflow` scope.
 
 **Closed issues:** #6, #7, #8, #9, #10, #11, #12, #13, #48, #49, #53, #55, #56, #57, #58, #59, #74, #75, #76, #77, #78, #79, #86.
