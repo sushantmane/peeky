@@ -3134,7 +3134,8 @@ class DebugWorker:
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage. Their
                 # decoded elements get a worker-owned handle that never reaches the
-                # debugger and never authorizes a write.
+                # debugger; only a struct or tuple preview's (view_writable) can lead to a
+                # change of a field, judged again from the debugger's own variable.
                 handle = 0
                 if view.get("children"):
                     self.reference_counter += 1

@@ -1,6 +1,11 @@
 # Rust engineering qualification
 
-Historical scope of the original engineering gate (PR #22): a dependency-free Cargo fixture, strict input preflight and a bounded raw-DAP compatibility probe. Later sections of this document describe the experimental Rust worker and verification added since; see [RUST_AGENT.md](RUST_AGENT.md) for the investigation loop.
+> **Historical:** the Rust engineering gate (PR #22, 2026-10-14) and the worker notes that
+> followed, kept as they were on 2026-10-22. Its current facts are in
+> [RUST_AGENT.md](../RUST_AGENT.md), which supersedes it. The rules, with examples, are in
+> [Rust](../lang/rust.md) and the [Rust cookbook](../lang/rust-cookbook.md).
+
+Historical scope of the original engineering gate (PR #22): a dependency-free Cargo fixture, strict input preflight and a bounded raw-DAP compatibility probe. Later sections of this document describe the experimental Rust worker and verification added since; see [RUST_AGENT.md](../RUST_AGENT.md) for the investigation loop.
 
 The fixture uses Rust/Cargo 1.96.0, edition2021, a request struct, mode enum, Some/None and a mutable i32 pagination offset. The probe builds a fresh copy offline, verifies the actual stopped source and loaded native module/symbol identity, inspects raw values, changes the scalar and checks changed output without rebuilding. It records tool/input hashes, bounded events and cleanup. No Rust Python formatters or project initialization scripts are loaded.
 
@@ -36,8 +41,8 @@ Real conformance (`tests/rust/test_rust_worker.py`) covers HTTP launch, `Some(3)
 
 **Mutations must reach the program.** At opt-level 0, rustc still keeps a local that is assigned once and never borrowed in a register. For the debugger it stores a copy (`<name>.dbg.spill`), which LLDB shows and writes but the program never reads. Builds therefore also emit LLVM IR (`--emit=link,llvm-ir`). A change is allowed only if every declaration of that local in the stopped function is a real memory slot; the function is matched by the symbol hash ending LLDB's frame name. Otherwise the change is refused rather than reported as applied. **Every compiled file is declared:** each file in rustc's dependency files for the application and test crates must be a declared source or test, so `#[path]` modules, `include!` and `include_str!` cannot bring in bytes that no check covers.
 
-Compiled Cargo tests and independent candidate verification are described in [AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates). Not yet delivered: separate-host use, live-model Rust evaluation, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.
+Compiled Cargo tests and independent candidate verification are described in [AGENT_LOOP.md](../AGENT_LOOP.md#rusts-two-gates). Not yet delivered: separate-host use, live-model Rust evaluation, and any Option payload other than i32. Raw probe traversal remains engineering evidence only.
 
 ## Optimized builds (opt-in)
 
-`opt_level` (`"0"` by default, or `"1"`/`"2"`) sets `CARGO_PROFILE_DEV_OPT_LEVEL`, which is recorded in the target identity's profile. Locals with no value are reported as `unavailable`. Every result carries `optimized` and a warning, because optimized code can show wrong values that LLDB doesn't flag. In a real run, `start` read `1` at `opt-level 2` versus `3` unoptimized. See [COOKBOOK 7.5](COOKBOOK.md#75-optimized-builds).
+`opt_level` (`"0"` by default, or `"1"`/`"2"`) sets `CARGO_PROFILE_DEV_OPT_LEVEL`, which is recorded in the target identity's profile. Locals with no value are reported as `unavailable`. Every result carries `optimized` and a warning, because optimized code can show wrong values that LLDB doesn't flag. In a real run, `start` read `1` at `opt-level 2` versus `3` unoptimized. See [COOKBOOK 7.5](../COOKBOOK.md#75-optimized-builds).

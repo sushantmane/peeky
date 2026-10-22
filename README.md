@@ -217,7 +217,7 @@ revised after two adversarial reviews.
   - C++: [how Peeky reads C and C++ values](docs/NATIVE_INTERNALS.md), the
     [worker](docs/WORKER.md#configure-a-c-target) and the
     [investigation loop](docs/AGENT_LOOP.md#c-pagination_bugcpp);
-  - Rust: the [worker](docs/RUST_GATE.md) and the [investigation loop](docs/AGENT_LOOP.md#rusts-two-gates).
+  - Rust: the [worker](docs/RUST_AGENT.md#the-cargo-build) and the [investigation loop](docs/AGENT_LOOP.md#rusts-two-gates).
 - **The worker:** one controller and one session per worker, with session and stop identities. It
   offers local launch, breakpoints, bounded inspection, variable changes, continuation and evidence
   reports.

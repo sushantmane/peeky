@@ -1,14 +1,90 @@
-# How Peeky proves Rust values
+# Rust internals: how Peeky builds, reads and proves Rust values
 
-This page is for maintainers. It explains how Peeky proves what it reads and changes in a Rust
-program. The rules themselves, with examples, are in [rust.md](lang/rust.md) and the
-[Rust cookbook](lang/rust-cookbook.md#72-rust-a-cargo-crate). The worker is in
-[RUST_GATE.md](RUST_GATE.md). The investigation loop is in
-[AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates).
+This page is for maintainers. It explains how Peeky builds a Rust target, reads its values, and
+proves what it reads and changes. The rules themselves, with examples, are in
+[rust.md](lang/rust.md) and the [Rust cookbook](lang/rust-cookbook.md#72-rust-a-cargo-crate). The
+investigation loop is in [AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates). The first engineering
+gate's record is in the [archive](archive/RUST_GATE.md).
+
+## The Cargo build
+
+`peeky.rust.RustTarget`, the worker's `--rust-config`, prepares one declared Cargo binary.
+
+**The crate's shape.** `rust_manifest` checks it before any tool runs:
+
+- one binary target: a `[[bin]]` table, or Cargo's default `src/main.rs`;
+- at most one integration test, explicit or discovered in `tests/*.rs`, which can't be edited;
+- no build script, library or other binaries. A discovery switch (`build`, `autolib`,
+  `autobins`, `autotests`) may be left out only where Cargo would find nothing more;
+- no dependencies, workspaces or profiles;
+- a matching version 4 lockfile.
+
+A separate check refuses implicit Cargo configuration, and parent manifests above the crate. That
+check alone isn't isolation: the build below adds the rest.
+
+**The tools.** The config names real `cargo` and `rustc` from the toolchain's own directory.
+rustup's proxies, and tools from mixed directories, are refused. The adapter, dwarfdump and the
+linker are absolute paths. The pinned rustc and cargo versions are read from the tools' own output
+before any Cargo command runs.
+
+**The build.**
+
+- It runs in a fresh workspace, under a parent directory Peeky owns. That parent's ancestry is
+  checked for Cargo configuration.
+- `CARGO_HOME` and `CARGO_TARGET_DIR` are relative, inside the workspace. `RUSTC` is explicit.
+- The rustflags ask for DWARF 4. Incremental builds are off, and the opt-level is 0 unless the
+  config asks for more ([Optimized builds](#optimized-builds)).
+- Symbols are packed on macOS and unsplit on Linux, and Linux gets an explicit build ID.
+- The command is fixed: `cargo build --offline --locked --bin <name>`.
+- Builds also emit LLVM IR (`--emit=link,llvm-ir`). A change is allowed only if every declaration
+  of that local in the stopped function is a real memory slot, not a `.dbg.spill` copy. The
+  function is the one whose symbol hash ends LLDB's frame name.
+
+**Before each toolchain probe and each Cargo command:**
+
+- the staged manifest and lockfile are checked again against the first check's result;
+- the workspace's ancestry is checked again;
+- every tool probed so far, and the original and staged sources, are hashed again;
+- on macOS, `PATH` must still find the `dsymutil` it found at the start. The declared tool must be
+  named `dsymutil`, and its directory comes first on `PATH`.
+
+An edit to a test, the manifest or the lockfile is refused before any tool runs.
+
+**What was built.**
+
+- `target/debug/deps` is a directory artifact: every file in it is hashed, and checked again.
+- It may hold exactly one hashed application executable, its `.d` file, and on macOS its dSYM.
+- Every file in rustc's dependency files, for the application and test crates, must be a declared
+  source or test. So a `#[path]` module, `include!` or `include_str!` can't bring in bytes that no
+  check covers.
+- Module identity uses the native worker's UUID and build-ID check.
+
+**Compiler errors.** Only a complete Cargo JSON failure is feedback a candidate can retry:
+
+- Cargo's ordinary stderr footer;
+- exactly one final `build-finished` failure;
+- only well-formed `compiler-message` errors: an object message, a list of span objects, not an
+  internal compiler error, with every primary span in a declared source.
+
+Every message is read before deciding. These are fatal instead:
+
+- a Cargo infrastructure failure, a timeout, or output over its bound;
+- a test target that doesn't compile;
+- a change in any tool probed so far.
+
+**Time and cleanup.**
+
+- Each launch has one 40 s deadline, below the client's 45 s HTTP timeout. Cleanup after it has
+  its own bounded grace.
+- Preparation, for Rust, C, C++ and Java, gets only the time that remains. So does every DAP launch
+  step: initialize, the launch write, the `initialized` event, breakpoints, `configurationDone`
+  and the launch response.
+- A compile failure, and `close`, remove the workspace and its parent. A removal that fails is
+  raised, or attached to the original error, never ignored.
 
 ## The MIR build
 
-Unoptimized builds compile the binary crate through a small rustc wrapper, set as
+Every build compiles the binary crate through a small rustc wrapper, set as
 `RUSTC_WORKSPACE_WRAPPER`. Peeky writes it into its own build directory, and rechecks its bytes
 before every command. For that crate only, the wrapper adds:
 
@@ -22,7 +98,9 @@ Around it:
 - The test target, and anything else Cargo compiles, gets no flags. Cargo reuses the one binary
   unit for both commands.
 - The dumps are a hashed build artifact.
-- Optimized builds use no wrapper, and read no owned locals.
+- Optimized builds run the wrapper too, and their MIR is parsed: their bindings' types decide
+  what a `Box` is. But no owned-local proof shows a container's contents there
+  ([Optimized builds](#optimized-builds)).
 
 ## The owned-local proof
 
@@ -358,6 +436,96 @@ The rules are in the cookbook's
   no type shows, and only `unsafe` code can read through it. The crate has no dependencies, so its
   sources are all the code but the standard library's.
 
+## Line tables
+
+`peeky.rust_symbols` is the boundary for symbols. `RustTarget` and the worker use it, and so does
+the engineering probe.
+
+- One bounded dwarfdump index, `--debug-info --recurse-depth=0`, lists the compile units.
+- A unit is the application's only if both are true:
+  - its `DW_AT_comp_dir` is the fresh workspace's canonical path, with aliases not resolved;
+  - its name is `<entrypoint>/@/<crate>.<hash>-cgu.<n>`.
+- A unit with only one of the two is ambiguous, and preparation fails.
+- Each selected unit must be DWARF 4, `DW_LANG_Rust` and produced by rustc, with its own line
+  table. There are at most 16.
+- All the dwarfdump calls share one time budget. The worker gives it at most 10 s, or less if the
+  launch's deadline is nearer. `application_symbols` accepts at most 30 s: its default, for direct
+  callers such as the engineering probe.
+- Each table is dumped by its exact `DW_AT_stmt_list` offset, and its header's offset must match.
+  The native worker's `parse_lines` then reads it, fail-closed.
+- For Rust, dwarfdump's output and the line parser are each bounded at 16 MiB. C and C++ keep
+  their own 2 MiB limit.
+- The standard library's tables are never read. Fewer lines can only refuse a breakpoint or a
+  stop: a standard-library line can't be taken for a declared file's.
+
+## Enum views
+
+The selected unit's DIE tree gives the layout the compiler emitted for each enum that carries
+data. Reading it is bounded:
+
+- depth comes from indentation;
+- every child list must end with an explicit `NULL`;
+- truncated and unknown rows are refused;
+- every entry must be inside the unit's offset range.
+
+**Only `core::option::Option<i32>` is qualified,** with exactly this layout:
+
+- one artificial discriminant, with distinct 32-bit `DW_AT_discr_value`s for `None` and `Some`;
+- a `None` with no fields;
+- a single `__0` payload.
+
+The discriminant's and the payload's types are resolved through the DIEs they reference: a
+four-byte `DW_ATE_unsigned` `u32` and a `DW_ATE_signed` `i32`. dwarfdump's labels are never used.
+Niche layouts, other payloads, `Result`, user enums, types outside a plain namespace, and
+conflicting definitions are unqualified.
+
+**Reading one.** `active_variant` accepts only LLDB's exact raw shape:
+
+1. `$variants$`;
+2. then `$variant$<DW_AT_discr_value>`, in DWARF order, typed for that variant;
+3. then `$discr$`, and a `value` of the same variant's type.
+
+- Every discriminant view must agree, and be a compiled value.
+- Only the active payload is read. The result is `Some(<i32>)` or `None`, with no expansion handle.
+- An inactive payload is never fetched.
+- An unqualified enum is opaque: its storage isn't read. A shape that doesn't match is
+  `<unverified Rust enum value>`, never a guess.
+- The session refuses to expand the raw `$variants$` and `$discr$` storage of an enum missing from
+  the application's layouts.
+
+## View reads
+
+`RustSession` uses the native session's stop and module checks. It also sets
+`settings set target.load-script-from-symbol-file false`, and reads back each value it writes.
+What it can change is in [Changing a value](#changing-a-value).
+
+- A view has a `view` label. A leaf view has `variablesReference: 0`.
+- A decoded view with children gets a worker-owned expansion handle, for at most 512 children. It
+  never reaches the debugger, and exposes no raw storage.
+- Only a struct or tuple preview's fields can change through such a handle. The handle keeps where
+  the debugger lists the value, and a field marked settable changes under the usual member rules.
+- A container's contents (a `Vec`'s, a `String`'s, a `Box`'s) and an enum's variant never change
+  through a view.
+- A request's view reads share one budget: 128 fetches, 10 s, 1,024 items and 1 MiB. One absolute
+  deadline covers each read's write and its response.
+- Running out is `budget-exhausted`, apart from a shape Peeky can't verify. That includes a read
+  whose reply misses the deadline. A write that doesn't complete is fatal.
+- After any view read, a change's handles are bound to scopes fetched again, and checked.
+- A debugger field whose name starts with `$` is refused, at every level.
+
+## Optimized builds
+
+The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
+
+- It sets `CARGO_PROFILE_DEV_OPT_LEVEL`, and the target identity's profile records it.
+- The [MIR build](#the-mir-build) still runs, and its MIR is parsed. But no owned-local proof
+  shows a container's contents. A `Vec` or a `String` stays raw, with the reason "Peeky reads a
+  container's contents only in an unoptimized build".
+- A local with no value is reported as `unavailable`.
+- Every result carries `optimized` and a warning, because optimized code can show wrong values
+  that LLDB doesn't flag. In a real run, `start` read `1` at opt-level 2, and `3` unoptimized.
+  See [COOKBOOK 7.5](COOKBOOK.md#75-optimized-builds).
+
 ## Limits and qualification
 
 - dwarfdump's octal escapes and the LLVM IR's hex escapes read back. rustc's MIR and Cargo's
@@ -366,3 +534,21 @@ The rules are in the cookbook's
   with its example crate switched to 2024.
 - Test processes share OS permissions with the checker, and are trusted code.
 - No live-model Rust evaluation has been recorded.
+- Not delivered yet: debugging a Rust program on a separate host, and any `Option` payload other
+  than `i32`.
+- `tests/rust/test_rust_worker.py` runs the worker on a real Cargo build and LLDB. It covers:
+  - launch over HTTP, `Some(3)` and `None`, struct expansion and a fieldless enum;
+  - refused changes: an `Option`, a value out of range, an expression;
+  - `start=0` giving the corrected first page, the report and cleanup;
+  - a changed source failing closed, and a compile failure or a test edit leaving no workspace.
+- The raw-DAP engineering probe, `scripts/probe_rust.py` (`tests/rust/test_rust_probe.py`), is
+  evidence for qualification only. It takes the `PEEKY_RUST_*` tool paths, or the same paths as
+  named arguments. CI resolves the tools with `rustup which --toolchain 1.96.0`, and uses LLVM 18.
+  The probe:
+  - records the tools' and inputs' hashes, and requires Rust and Cargo 1.96.0;
+  - builds a fresh copy of the crate, offline;
+  - imports no Rust formatter, turns LLDB's source-init files off, and loads no scripts from symbol
+    files. The worker's own initialize request also sends both `sourceInitFile` flags as false;
+  - checks the stopped source and line, and the loaded module's identity;
+  - changes a scalar, and shows that the output changes without a rebuild;
+  - checks that the inputs' hashes are unchanged, and keeps bounded events and cleanup.

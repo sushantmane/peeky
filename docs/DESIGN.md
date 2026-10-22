@@ -263,7 +263,8 @@ For Kubernetes, later:
 Java, C, C++ and Rust runtime debugging, and fresh candidate verification, are connected to the
 worker and controller. C++ adds qualified class, reference and array inspection, and candidate
 verification. Rust has a worker for one dependency-free Cargo binary
-([RUST_GATE.md](RUST_GATE.md)), and an investigation loop ([RUST_AGENT.md](RUST_AGENT.md)).
+([RUST_AGENT.md](RUST_AGENT.md#the-cargo-build)), and an investigation loop
+([AGENT_LOOP.md](AGENT_LOOP.md#rusts-two-gates)).
 [LANGUAGES.md](LANGUAGES.md) has the full acceptance criteria per language.
 
 How the languages plug in:
