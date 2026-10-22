@@ -1621,6 +1621,9 @@ class DebugWorker:
                 else:
                     prepared = self.adapter.prepare(program, self.root, **staging)
                 self.runtime = runtime = prepared
+                # A candidate's copy is written while it is prepared: it is what runs, so
+                # the sources' clock starts once it is written (#182).
+                self.launched_at = time.time()
                 runtime.assert_current()
                 staged = Path(runtime.source_path(program)) if edit else None
                 if edit and hashlib.sha256(staged.read_bytes()).hexdigest() != candidate_sha256:
@@ -2207,7 +2210,7 @@ class DebugWorker:
             elif validate_variable := getattr(runtime, "validate_variable", None):
                 validate_variable(variable, args["value"])
             if validate_target := getattr(runtime, "validate_mutation_target", None):
-                validate_target(variable, self.reference_frames.get(ref))
+                validate_target(variable, self.reference_frames.get(ref), **self.since_launch())
             unread_note = None
             if read_after := getattr(runtime, "read_after", None):
                 # Java (#164): a local the code never reads again is never changed.
@@ -2413,6 +2416,13 @@ class DebugWorker:
     @staticmethod
     def scope_identity(scope):
         return (scope.get("name"), scope.get("presentationHint"))
+
+    def since_launch(self):
+        """{"loaded_by": when the program started} for a runtime whose rules read its
+        sources (Python): one changed since may not be the code running."""
+        if getattr(self.runtime, "judges_sources", False):
+            return {"loaded_by": self.launched_at}
+        return {}
 
     def globals_proof(self, runtime, frame, own, names):
         """How the frame's function sees each of ``names`` missing from its locals (see
@@ -2623,6 +2633,14 @@ class DebugWorker:
         member_value = getattr(self.runtime, "member_value", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
+        # Python's module globals are no frame's own locals: none is judged as one.
+        is_global = getattr(self.runtime, "global_scope", None)
+        module = (
+            bool(is_global)
+            and isinstance(scope, tuple)
+            and len(scope) == 2
+            and is_global({"name": scope[0], "presentationHint": scope[1]})
+        )
         for variable in variables:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
@@ -2650,7 +2668,11 @@ class DebugWorker:
                 result.append(shown)
                 self.inspection_nodes += 1
                 continue
-            pending = getattr(self.runtime, "not_yet_declared", None) if not ancestry else None
+            pending = (
+                getattr(self.runtime, "not_yet_declared", None)
+                if not ancestry and not module
+                else None
+            )
             reason = (
                 pending(
                     variable,
@@ -2661,6 +2683,7 @@ class DebugWorker:
                     # The scope's other variables: rows a debugger shows under one name.
                     siblings=variables,
                     stop=self.stop_reason,
+                    **self.since_launch(),
                 )
                 if pending
                 else None
