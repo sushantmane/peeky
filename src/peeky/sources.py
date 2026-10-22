@@ -3,9 +3,9 @@ worker compare before anything launches (#249).
 
 The worker's trusted target names them: Java's `sources`; C and C++ `sources` and
 `headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`. A Python program may
-import any `.py` file under the root, so for Python they are all of those, except in
-`__pycache__`, `.git` and virtual environments (a directory holding `pyvenv.cfg`: installed
-packages). Both sides must hold the same set, file for file.
+import any `.py` file under the root, so for Python they are all of those, except in virtual
+environments (a directory holding `pyvenv.cfg`: installed packages). Both sides must hold the
+same set, file for file.
 """
 
 import hashlib
@@ -20,7 +20,6 @@ MAX_PYTHON_BYTES = 16 * 1024 * 1024
 # What crosses the wire: at most this many sources, each name at most this long.
 MAX_SOURCES = MAX_PYTHON_INPUTS
 MAX_NAME = 1024
-SKIPPED = frozenset({"__pycache__", ".git"})
 TOO_MANY = (
     f"at most {MAX_PYTHON_INPUTS} .py files and {MAX_PYTHON_BYTES // (1024 * 1024)} MiB in all, "
     "each a readable regular file, and no symlinked directory"
@@ -77,7 +76,7 @@ def python_sources(root):
         kept = []
         for name in sorted(names):
             path = os.path.join(directory, name)
-            if name in SKIPPED or environment(path):
+            if environment(path):
                 continue
             if os.path.islink(path):
                 relative = Path(path).relative_to(root).as_posix()

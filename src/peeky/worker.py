@@ -8,7 +8,9 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
+import tempfile
 import threading
 import time
 import uuid
@@ -158,7 +160,7 @@ class StackPage(list):
 # Operations that resume the program or return its values: a remote Python session's
 # sources are rechecked before and after each (#249).
 SOURCE_CHECKED = frozenset(
-    {"continue", "step", "inspect", "expand", "preview", "set_variable", "report"}
+    {"wait", "continue", "step", "inspect", "expand", "preview", "set_variable", "report"}
 )
 # A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
@@ -176,6 +178,8 @@ class DebugWorker:
         # A stack frame in a file under the root that was not compared (#249): it taints
         # the session until it is closed.
         self.foreign_frame = None
+        # A remote Python run's bytecode cache: outside the root, removed at close.
+        self.pycache = None
         self.capabilities = {}
         self.dap = None
         self.state = "idle"
@@ -1551,9 +1555,9 @@ class DebugWorker:
     def foreign_message(name):
         return (
             f"Worker source provenance: a stack frame is in {name}, under the worker's root "
-            "but not one of the .py files compared with yours (a compiled module, bytecode, or "
-            "a file in __pycache__ or .git). The session was closed, and no values were "
-            "returned"
+            "but not one of the .py files compared with yours (its code names a file the "
+            "worker did not compare, such as one loaded from a .pyc). The session was closed, "
+            "and no values were returned"
         )
 
     @staticmethod
@@ -1799,7 +1803,7 @@ class DebugWorker:
                             raise ValueError(
                                 refusal(
                                     f"the {role} {name} (not among the compared sources: it "
-                                    "is in __pycache__, .git or a virtual environment)"
+                                    "is in a virtual environment)"
                                 )
                             )
                     inputs_python = python_manifest_digest(own)
@@ -1884,6 +1888,14 @@ class DebugWorker:
                     if args.get("args")
                     else runtime.launch_args(entry or program, self.root)
                 )
+                if self.accepted_sources is not None:
+                    # A remote Python run reads no bytecode from the root (a stale .pyc is
+                    # not the compared source): its cache is a fresh, empty directory (#249).
+                    self.pycache = tempfile.mkdtemp(prefix="peeky-pycache-")
+                    launch_args["env"] = {
+                        **launch_args.get("env", {}),
+                        "PYTHONPYCACHEPREFIX": self.pycache,
+                    }
                 timeout = left(5)
                 # From here the program may run, even if the request then fails.
                 if self.launch_marker is not None:
@@ -4259,6 +4271,9 @@ class DebugWorker:
         """End the session; returns what became of the processes it started, if any."""
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
+        if self.pycache is not None:
+            shutil.rmtree(self.pycache, ignore_errors=True)
+            self.pycache = None
         self.state = "idle"
         self.stopped_at = None
         self.empty_thread_replies = 0

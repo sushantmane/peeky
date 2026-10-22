@@ -75,9 +75,9 @@ def test_a_python_worker_compares_every_module_under_its_root(app):
     assert worker.dap is None  # nothing was launched
 
 
-def test_only_caches_git_and_virtual_environments_are_left_out(app):
+def test_only_virtual_environments_are_left_out(app):
     # #254 review: hidden directories and names like `env` were skipped, so a program
-    # in .hidden/ imported a .hidden/helper.py that was never compared.
+    # in .hidden/ imported a .hidden/helper.py that was never compared; round 2: .git too.
     for directory in (".git", "__pycache__", ".hidden", "env", "site-packages", "node_modules"):
         (app / directory).mkdir()
         (app / directory / "mod.py").write_text("z = 3\n")
@@ -88,6 +88,8 @@ def test_only_caches_git_and_virtual_environments_are_left_out(app):
     assert {name for name, _ in sources.python_sources(app)} == {
         "helper.py",
         "main.py",
+        ".git/mod.py",
+        "__pycache__/mod.py",
         ".hidden/mod.py",
         "env/mod.py",
         "node_modules/mod.py",
@@ -481,12 +483,44 @@ def test_frames_in_uncompared_files_under_the_root_are_refused(app):
         return {"stackFrames": [{"source": {"path": str(path)}} for path in paths]}
 
     worker.check_frames(frames(app / "main.py", "/usr/lib/python3/json/__init__.py"))
-    worker.check_frames(frames(app / ".venv" / "lib" / "pkg.py", app / "helper.py"))
+    worker.check_frames(frames(app / ".venv" / "lib" / "pkg.py", app / ".git" / "hook.py"))
     assert worker.foreign_frame is None
-    with pytest.raises(RuntimeError, match=r"a stack frame is in \.git/hook\.py"):
-        worker.check_frames(frames(app / "main.py", app / ".git" / "hook.py"))
-    assert worker.foreign_frame == ".git/hook.py"
     # A module that exists only as bytecode names a .py the manifest doesn't have.
-    worker.foreign_frame = None
     with pytest.raises(RuntimeError, match=r"a stack frame is in compiled\.py"):
-        worker.check_frames(frames(app / "compiled.py"))
+        worker.check_frames(frames(app / "main.py", app / "compiled.py"))
+    assert worker.foreign_frame == "compiled.py"
+
+
+def test_your_checkout_changing_during_a_compiled_probe_discards_it(tmp_path, capsys, monkeypatch):
+    # Round 2: only Python results were checked against a fresh hash of your checkout.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "loop"
+    root.mkdir()
+    (root / "main.c").write_text('#include "page.h"\nint main(void) {\n  return PAGE;\n}\n')
+    (root / "page.h").write_text("#define PAGE 3\n")
+
+    class Worker:
+        sources = {"kind": "declared", "names": ["main.c", "page.h"]}
+
+        def probe(self, *args, **kwargs):
+            expected = kwargs["expect_inputs"]
+            (root / "page.h").write_text("#define PAGE 4\n")  # while the probe runs
+            return {
+                "status": "completed",
+                "hits": 1,
+                "rows": [{"hit": 1, "phase": "observed", "selector": "x", "value": "3"}],
+                "output": "",
+                "source_sha256": expected["main.c"],
+                "inputs_checked": sources.digest(expected),
+                "inputs_sha256": sources.digest(expected),
+            }
+
+    monkeypatch.setattr("peeky.cli._remote", lambda url: (Worker(), TOKEN))
+    argv = ["probe", str(root), "--at", "main.c:3", "--capture", "x", "--no-save", "--json"]
+    code = main([*argv, "--worker", "http://127.0.0.1:1"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["results_discarded"] is True and result["rows"] == [], result
+    assert (
+        "a source in your checkout changed after the worker compared it"
+        in (result["error"]["message"])
+    )

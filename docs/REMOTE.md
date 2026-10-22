@@ -119,16 +119,16 @@ and sends the hashes with the request.
 
 | Target | The sources compared |
 | --- | --- |
-| Python | every `.py` file under the root, except in `__pycache__`, `.git` and virtual environments (a directory holding `pyvenv.cfg`) |
+| Python | every `.py` file under the root, except in virtual environments (a directory holding `pyvenv.cfg`) |
 | Java, launched or attached | the config's `sources` |
 | C and C++ | the config's `sources` and `headers` |
 | Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
 
-- **Python counts every `.py` file,** hidden directories included, because the program may import
-  any of them. A stray file on one side is refused too: `scratch.py (only in your checkout)`.
-  Remove it, or copy it over.
-- **The Python program and its `--run` script** must be among the files compared. One in
-  `__pycache__`, `.git` or a virtual environment is refused.
+- **Python counts every `.py` file,** in hidden directories and `.git` too, because the program
+  may import any of them. A stray file on one side is refused too:
+  `scratch.py (only in your checkout)`. Remove it, or copy it over.
+- **The Python program and its `--run` script** must be among the files compared. One in a
+  virtual environment is refused.
 - **Python refuses what it can't hash in full:** more than 4096 `.py` files or 16 MiB in all, a
   file that isn't a readable regular file, or a symlinked directory under the root. The side that
   can't hash refuses. Probe another directory, or start the worker with another `--root`.
@@ -140,46 +140,56 @@ and sends the hashes with the request.
 - **C, C++, Rust and launched Java:** the build's own copies are compared again, after the build
   and before the debugger starts. So a source changed in between is refused, and doesn't run.
 - **Python:** the worker hashes its `.py` files again before and after every operation that
-  resumes the program or returns values: `continue`, `step`, `inspect` (and so `get`), `expand`,
-  `preview`, `set` and `report`. A change closes the session, and no values come back:
+  resumes the program or returns a stop or values: `wait` (and so `session start`), `continue`,
+  `step`, `inspect` (and so `get`), `expand`, `preview`, `set` and `report`. A change closes the
+  session, and no values come back:
 
 ```
 $ peeky session continue --to-exit
 peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session: helper.py changed on the worker host after launch. The session was closed, and no values were returned. Sync sources, then start again
 ```
 
-- **Python stack frames:** at each stop, the worker reads the whole stack. A frame in a file under
-  the root that isn't a compared `.py` file is refused. That covers bytecode, a compiled module,
-  and a file in `__pycache__` or `.git`. A frame in a virtual environment inside the root is
-  installed code: it isn't compared, and the note below says so.
+- **Python stack frames:** at each stop, the worker reads the whole stack. A frame whose code
+  names a file under the root that isn't a compared `.py` file is refused: for example, code
+  loaded from a `.pyc` beside the program. A frame whose code names a file outside the root isn't
+  caught. A frame in a virtual environment inside the root is installed code: it isn't compared,
+  and the note below says so.
+- **Python bytecode:** a remote Python run reads no `.pyc` from the root, and writes none there.
+  Its bytecode cache is a fresh, empty temporary directory, removed when the session ends. A
+  `.pyc` file with no `.py` beside it is still loaded. The frame check above refuses it when it is
+  on the stack.
 - A Python probe runs these checks at each stop and at its end. A probe that fails one is
   discarded: no rows and no output.
 - **The limit:** a file changed, then changed back, between two checks isn't seen.
 
 **Not compared:**
 
-- installed packages, outside the root or in a virtual environment inside it, and the standard
-  library;
-- compiled modules (`.so`), Python bytecode (`.pyc`), and data files the program reads;
+- installed packages, outside the root or in any directory holding a `pyvenv.cfg`, and the
+  standard library;
+- compiled modules (`.so`), `.pyc` files, and data files the program reads;
 - the interpreter and the toolchain;
 - an attached JVM's class files. The worker checks them against its own sources instead
   ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
 
 Peeky can't list every module a Python program loaded: debugpy's `modules` request names only the
-modules it has seen in stack frames. So code that ran without being on the stack at a stop isn't
-checked, and every remote Python result carries a note:
-`Remote Python: only the .py files under the target's directory are compared with yours. Not
-compared: installed packages (a virtual environment inside it included), the standard library,
-and compiled modules (.so, .pyc).`
+modules it has seen in stack frames. So code from these that ran without being on the stack at a
+stop isn't checked. Every remote Python result says so: probes, `session start`, and every later
+`session` command, in its text and in its JSON `warnings`:
+`Only the .py files under the target's directory are compared with yours. Not compared: installed
+packages, any directory holding a pyvenv.cfg, the standard library, and compiled modules (.so,
+.pyc).`
 
 **The client checks every answer:**
 
 - The worker must confirm that it compared the sources (`inputs_checked`).
 - It must report the sources the run read (`inputs_sha256`), and they must match yours.
 - The program's and the `--run` script's hashes must match yours.
+- Your own checkout must still be what was compared. The client hashes it again after a probe's
+  answer and after `session start`, for every language. For a session, it also hashes it before and
+  after every later command.
 
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
-no output. A session that fails one at its start is closed.
+no output. A session that fails one is closed, and its record is dropped.
 
 **Protocol 2.** These checks need protocol 2 on both hosts.
 
@@ -189,7 +199,6 @@ no output. A session that fails one at its start is closed.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
   the worker's protocol again. A session started by an older Peeky is refused: start it again.
 
-A remote run writes no `__pycache__` into the worker's root.
 
 ### Why `ExitOnForwardFailure=yes`
 

@@ -949,8 +949,33 @@ def _ranges(numbers):
     return ", ".join(spans)
 
 
+# Notes every result of this command carries: a remote Python session's (#249).
+_NOTES = []
+
+
 def _emit(value, as_json, text):
-    print(json.dumps(value, indent=2, default=str) if as_json else text(value))
+    if as_json:
+        print(json.dumps(_noted(value), indent=2, default=str))
+        return
+    shown = text(value)
+    for note in _NOTES:
+        if note not in shown:
+            shown = f"{shown}\nwarning: {note}"
+    print(shown)
+
+
+def _noted(value):
+    """``value`` with this command's notes in its `warnings` (each row's, for a list)."""
+    if not _NOTES:
+        return value
+
+    def add(item):
+        if not isinstance(item, dict):
+            return item
+        warnings = list(item.get("warnings") or [])
+        return {**item, "warnings": warnings + [n for n in _NOTES if n not in warnings]}
+
+    return [add(item) for item in value] if isinstance(value, list) else add(value)
 
 
 def _sets(items):
@@ -1418,8 +1443,8 @@ def _remote_session(name, record):
             f"with `peeky session close --forget --name {name}`; the worker ends the old "
             "session after its idle timeout"
         )
-    client = Client(record["url"], record["token"])
-    version = client.call("version")
+    client = _RemoteSession(record)
+    version = Client.call(client, "version")
     protocol = version.get("protocol") if isinstance(version, dict) else None
     if protocol != PROTOCOL_VERSION:
         raise ValueError(
@@ -1428,6 +1453,59 @@ def _remote_session(name, record):
         )
     client.sources = version.get("sources")
     return client
+
+
+class _RemoteSession(Client):
+    """A remote session's client: your checkout is rehashed before and after every
+    request, and must still be what the session compared at its start (#249)."""
+
+    def __init__(self, record):
+        super().__init__(record["url"], record["token"])
+        self.record = record
+        self.sources = None
+
+    def call(self, operation, **arguments):
+        if operation != "close":
+            self.unchanged()
+        result = super().call(operation, **arguments)
+        if operation != "close":
+            self.unchanged()
+        return result
+
+    def unchanged(self):
+        try:
+            _checkout_unchanged(Path(self.record["root"]), self.sources, self.record, saved=True)
+        except RuntimeError:
+            try:
+                Client.call(self, "close", session_id=self.record["session_id"])
+            except Exception:
+                pass
+            _release(self.record["name"])
+            raise
+
+
+def _checkout_unchanged(root, sources, expected, *, saved=False):
+    """Raise PROVENANCE_CHANGED if your checkout's sources are no longer the ones the
+    worker compared: ``expected`` is that manifest, or a saved session record."""
+    from peeky.sources import client_sources, digest
+
+    accepted = expected["inputs_checked"] if saved else digest(expected)
+    try:
+        current = digest(client_sources(root, sources))
+    except (ValueError, RuntimeError) as exc:
+        current, why = None, f" ({exc})"
+    else:
+        why = ""
+    if current != accepted:
+        raise RuntimeError(
+            "Worker source provenance: a source in your checkout changed after the worker "
+            f"compared it{why}. "
+            + (
+                "The session was closed, and no values were returned. Start it again"
+                if saved
+                else "Its results were discarded. Run it again"
+            )
+        )
 
 
 class _LocalClient(Client):
@@ -1833,6 +1911,7 @@ def _get_lines(row, session="default"):
 
 
 def session(args):
+    _NOTES.clear()
     if args.action in ("start", "wait", "continue", "step"):
         # Checked before anything runs: a bad --timeout must not follow a real action.
         _seconds(args.timeout)
@@ -1856,6 +1935,7 @@ def session(args):
         )
         return 0
     record, client = _load(args.name)
+    _NOTES[:] = [record["note"]] if record.get("note") else []
     if args.action == "wait":
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, lambda shown: _state_text(shown, args.name))
@@ -2115,9 +2195,9 @@ WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
 
 
 REMOTE_PYTHON_NOTE = (
-    "Remote Python: only the .py files under the target's directory are compared with yours. "
-    "Not compared: installed packages (a virtual environment inside it included), the standard "
-    "library, and compiled modules (.so, .pyc)."
+    "Only the .py files under the target's directory are compared with yours. Not compared: "
+    "installed packages, any directory holding a pyvenv.cfg, the standard library, and compiled "
+    "modules (.so, .pyc)."
 )
 
 
@@ -2288,6 +2368,8 @@ def _probe_remote(args, root, request, client, expected):
             _source_matches(root, request.entry, result.get("entry_sha256"), "entry script")
         if ran or result.get("source_sha256") is not None:
             _inputs_match(root, client, dict(request.expect_inputs), result)
+        # Your own checkout must still be what was compared (#249).
+        _checkout_unchanged(root, client.sources, dict(request.expect_inputs))
         if (getattr(client, "sources", None) or {}).get("kind") == "python":
             result["warnings"].append(REMOTE_PYTHON_NOTE)
     except RuntimeError as exc:
@@ -2326,6 +2408,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         if entry:
             _source_matches(root, entry, launch.get("entry_sha256"), "entry script")
         _inputs_match(root, client, inputs, launch)
+        _checkout_unchanged(root, client.sources, inputs)
         # A compiled target's launch names each source its build read: name the one that
         # differs.
         if isinstance(manifest := launch.get("source_manifest"), dict) and (
@@ -2342,6 +2425,8 @@ def _start_remote(args, root, program, line, language, max_pause):
     record.update(root=str(root), program=program, language=language)
     # What a later command checks again before it uses this session (#249).
     record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
+    if (client.sources or {}).get("kind") == "python":
+        record["note"] = REMOTE_PYTHON_NOTE
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
@@ -3507,6 +3592,7 @@ def main(argv=None, _job=False, _edits=None):
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, terminate)
+    _NOTES.clear()
     try:
         if getattr(args, "background", False) and not _job:
             _emit(

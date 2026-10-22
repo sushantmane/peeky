@@ -3002,8 +3002,8 @@ error [PROVENANCE_CHANGED]: Worker source provenance differs for the program job
 hint: Sources, build outputs or tools changed; start a new session on a fresh build.
 ```
 
-- Every source is compared: for Python, every `.py` file under the directory, except in
-  `__pycache__`, `.git` and virtual environments. A file on one side only is refused too, by name
+- Every source is compared: for Python, every `.py` file under the directory, except in virtual
+  environments. A file on one side only is refused too, by name
   ([REMOTE.md](REMOTE.md#source-identity)).
 - For Java, start the worker with `--java-config`, or `--java-attach-config` for a waiting JVM.
   Pass your own `--config` too ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).

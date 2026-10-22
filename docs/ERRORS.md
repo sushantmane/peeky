@@ -128,8 +128,10 @@ file lists what it reads.
   ([REMOTE.md](REMOTE.md#source-identity)).
 - A remote Python session whose sources changed on the worker host after launch is closed, and
   no values come back: `helper.py changed on the worker host after launch`.
-- A remote Python session with a stack frame in a file under the root that wasn't compared is
-  closed the same way: `a stack frame is in .git/hook.py`. A probe is discarded.
+- A remote Python session with a stack frame whose code names a file under the root that wasn't
+  compared is closed the same way: `a stack frame is in hook.py`. A probe is discarded.
+- A source in your own checkout that changed after the worker compared it: the probe is
+  discarded, or the session closed and its record dropped.
 - A remote result that the client can't confirm is discarded with this code:
   `results_discarded: true`, with no rows and no output. For example, the worker didn't report
   which sources the run read.

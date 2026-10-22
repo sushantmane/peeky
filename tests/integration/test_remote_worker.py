@@ -294,38 +294,165 @@ def test_a_remote_python_run_writes_no_bytecode_into_the_root(remote, capsys, mo
     )
     assert code == 0, out
     assert not (host / "__pycache__").exists()
-    assert "Not compared: installed packages (a virtual environment inside it included)" in out.out
+    assert "Not compared: installed packages, any directory holding a pyvenv.cfg" in out.out
 
 
-FRAMED = (
-    "import os, sys\n"
-    "sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '.git'))\n"
-    "import hook\n"
-    "def page():\n"
-    "    x = 3\n"
-    "    return x\n"
-    "print('PAGE', hook.run(page))\n"
-)
+FRAMED = "import hook\ndef page():\n    x = 3\n    return x\nprint('PAGE', hook.run(page))\n"
+
+
+def sourceless(root, text):
+    """hook.pyc beside main.py, with no hook.py: its code names root/hook.py."""
+    import py_compile
+
+    (root / "hook_src.py").write_text(text)
+    py_compile.compile(
+        str(root / "hook_src.py"), cfile=str(root / "hook.pyc"), dfile=str(root / "hook.py")
+    )
+    (root / "hook_src.py").unlink()
 
 
 def test_a_stack_frame_in_an_uncompared_file_under_the_root_is_refused(remote, capsys):
-    # #254 review round 1, 6(c) option A: hook.py under .git is never compared, but it is
-    # on the stack at the stop (it calls page()), so its code ran.
+    # #254 review round 1, 6(c) option A: hook is loaded from a .pyc, which is never
+    # compared, and its frame is on the stack at the stop (it calls page()).
     host, local, worker, relay = remote
     for root in (host, local):
         (root / "main.py").write_text(FRAMED)
-        (root / ".git").mkdir()
-        (root / ".git" / "hook.py").write_text("def run(f):\n    return f()\n")
+        sourceless(root, "def run(f):\n    return f()\n")
     _, port = worker()
     url = f"http://127.0.0.1:{port}"
-    args = ["probe", local / "main.py", "--at", "6", "--capture", "x", "--worker", url, "--json"]
+    args = ["probe", local / "main.py", "--at", "4", "--capture", "x", "--worker", url, "--json"]
     code, out = run(capsys, *args)
     result = json.loads(out.out)
     assert code == 1 and result["error"]["code"] == "PROVENANCE_CHANGED", result
-    assert "a stack frame is in .git/hook.py" in result["error"]["message"]
+    assert "a stack frame is in hook.py" in result["error"]["message"]
     assert result["rows"] == [] and not result.get("output") and result["results_discarded"]
-    code, out = run(capsys, "session", "start", local / "main.py", "--at", "6", "--worker", url)
-    assert code == 2 and "a stack frame is in .git/hook.py" in out.err, out.err
+    code, out = run(capsys, "session", "start", local / "main.py", "--at", "4", "--worker", url)
+    assert code == 2 and "a stack frame is in hook.py" in out.err, out.err
+
+
+# Round 2 of the #254 review: each passed on 7a37d9d.
+
+GIT_HOOKED = (
+    "import os, sys\n"
+    "sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '.git'))\n"
+    "import hook\n"
+    "x = hook.page()\n"
+    "print('PAGE', x)\n"
+)
+
+
+def test_code_under_git_is_compared_like_any_other(remote, capsys):
+    # .git was left out, and once hook.page() returned no frame of it was on the stack:
+    # the host's hook returned 4, and the probe printed 4 with exit 0.
+    host, local, worker, relay = remote
+    for root in (host, local):
+        (root / "main.py").write_text(GIT_HOOKED)
+        (root / ".git").mkdir()
+        (root / ".git" / "hook.py").write_text(HELPER)
+    (host / ".git" / "hook.py").write_text(HELPER.replace("3", "4"))
+    _, port = worker()
+    args = ["probe", local / "main.py", "--at", "5", "--capture", "x", "--json", "--worker"]
+    code, out = run(capsys, *args, f"http://127.0.0.1:{port}")
+    result = json.loads(out.out)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert ".git/hook.py (the copy on the worker host differs" in result["error"]["message"]
+
+
+def test_your_checkout_changing_after_the_start_closes_the_session(remote, capsys):
+    host, local, worker, relay = remote
+    for root in (host, local):
+        (root / "main.py").write_text(MAIN)
+        (root / "helper.py").write_text(HELPER)
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    code, out = run(capsys, "session", "start", local / "main.py", "--at", "3", "--worker", url)
+    assert code == 0, out.err
+    (local / "helper.py").write_text(HELPER.replace("3", "4"))
+    code, out = run(capsys, "session", "get", "x", "--json")
+    error = json.loads(out.out)["error"]
+    assert code == 2 and error["code"] == "PROVENANCE_CHANGED", error
+    assert "a source in your checkout changed after the worker compared it" in error["message"]
+    code, out = run(capsys, "session", "get", "x", "--json")
+    assert code == 2 and "No session named" in json.loads(out.out)["error"]["message"]
+
+
+def test_a_worker_source_changed_before_a_stop_is_refused_by_wait(remote):
+    # wait returned the second stop, and its hit, from the changed main.py.
+    from peeky.client import Client
+    from peeky.errors import PeekyError
+    from peeky.sources import python_sources
+
+    host, local, worker, relay = remote
+    program = "import time\nx = 1\ntime.sleep(1.5)\nx = 2\nprint(x)\n"
+    for root in (host, local):
+        (root / "main.py").write_text(program)
+    _, port = worker()
+    client = Client(f"http://127.0.0.1:{port}", TOKEN)
+    expected = dict(python_sources(local))
+    launch = client.call(
+        "launch",
+        program="main.py",
+        breakpoints=[{"line": 2}, {"line": 4}],
+        expect_sha256={"program": expected["main.py"]},
+        expect_inputs=expected,
+    )
+    session = {"session_id": launch["session_id"]}
+    try:
+        state = client.call("wait", **session, timeout=10)
+        assert state["state"] == "stopped" and state["location"].endswith("main.py:2"), state
+        client.call("continue", **session, stop_id=state["stop_id"])
+        (host / "main.py").write_text(program.replace("x = 2", "x = 9"))  # during the sleep
+        with pytest.raises(PeekyError) as refused:
+            client.call("wait", **session, timeout=10)
+        assert refused.value.error_code == "PROVENANCE_CHANGED", refused.value.payload
+        assert "main.py changed on the worker host" in refused.value.payload["message"]
+    finally:
+        try:
+            client.call("close", **session)
+        except PeekyError:
+            pass
+
+
+def test_later_session_commands_carry_the_note(remote, capsys):
+    host, local, worker, relay = remote
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    start = ["session", "start", local / "pagination_bug.py", "--at", "8", "--worker", url]
+    assert run(capsys, *start)[0] == 0
+    code, out = run(capsys, "session", "get", "start", "--json")
+    rows = json.loads(out.out)
+    assert code == 0 and "any directory holding a pyvenv.cfg" in rows[0]["warnings"][-1], rows
+    code, out = run(capsys, "session", "get", "start")
+    assert code == 0 and "warning: Only the .py files under the target's directory" in out.out
+    code, out = run(capsys, "session", "inspect", "--json")
+    assert code == 0 and any("pyvenv.cfg" in w for w in json.loads(out.out)["warnings"])
+    run(capsys, "session", "close")
+
+
+def test_a_stale_pyc_in_the_tree_is_never_used(remote, capsys):
+    # The worker host's __pycache__ holds a helper.pyc compiled from other code, marked
+    # unchecked: Python loads it without looking at helper.py.
+    import py_compile
+    import sys
+
+    host, local, worker, relay = remote
+    for root in (host, local):
+        (root / "main.py").write_text(MAIN)
+        (root / "helper.py").write_text(HELPER)
+    (host / "stale.py").write_text(HELPER.replace("3", "4"))
+    py_compile.compile(
+        str(host / "stale.py"),
+        cfile=str(host / "__pycache__" / f"helper.{sys.implementation.cache_tag}.pyc"),
+        dfile=str(host / "helper.py"),
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    (host / "stale.py").unlink()
+    _, port = worker()
+    args = ["probe", local / "main.py", "--at", "3", "--capture", "x", "--json", "--worker"]
+    code, out = run(capsys, *args, f"http://127.0.0.1:{port}")
+    result = json.loads(out.out)
+    assert code == 0 and result["rows"][0]["value"] == "3", result
+    assert "PAGE 3" in result["output"]
 
 
 def test_remote_session_survives_a_dropped_tunnel_and_closing_keeps_the_worker(remote, capsys):

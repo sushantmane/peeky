@@ -29,8 +29,8 @@ debug server. It writes memory only to set a text
 A client on another host must show that its sources are the worker's. This is protocol 2.
 
 1. Call `version`. Its `sources` says which files to hash:
-   - `{"kind": "python"}`: every `.py` file under the root, except in `__pycache__`, `.git` and
-     virtual environments (a directory holding `pyvenv.cfg`);
+   - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
+     directory holding `pyvenv.cfg`);
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
    `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
@@ -38,9 +38,10 @@ A client on another host must show that its sources are the worker's. This is pr
    side only:
    - before launching;
    - for a compiled target, again after the build, before the debugger starts;
-   - for Python, before and after each later operation that resumes the program or returns
-     values, and for each stack frame in a file under the root that isn't a compared `.py`
-     file (a virtual environment inside the root excepted). Then the session is closed.
+   - for Python, before and after each later operation that resumes the program or returns a
+     stop or values (`wait` included), and for each stack frame whose code names a file under
+     the root that isn't a compared `.py` file (a virtual environment inside the root
+     excepted). Then the session is closed.
 4. A request with `expect_sha256` but without `expect_inputs`, or with an empty one, is refused
    with `INVALID_REQUEST`.
 5. Check the answer to `launch`, or the probe's result:
@@ -52,8 +53,12 @@ A client on another host must show that its sources are the worker's. This is pr
 
    If either is missing or different, discard the result, or close the session.
 
-`peeky probe --worker` and `peeky session start --worker` do all of this. They also check the
-worker's protocol again on every later `session` command ([REMOTE.md](REMOTE.md#source-identity)).
+6. Hash your own sources again after each answer. If they changed, discard the result, or close
+   the session.
+
+`peeky probe --worker` and `peeky session start --worker` do all of this. On every later
+`session` command, they also check the worker's protocol again, and hash your sources before and
+after the request ([REMOTE.md](REMOTE.md#source-identity)).
 
 ## Start a C or C++ worker
 
