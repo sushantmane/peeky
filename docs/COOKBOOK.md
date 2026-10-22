@@ -1444,8 +1444,8 @@ first hit's value.
 line. It keeps every row either way.
 
 **When the runs stopped a different number of times,** the hits need not line up. For example, a
-sort calls its comparator on other pairs once one answer differs. Then every later hit shows as a
-difference. Two notes say so:
+sort calls its comparator on other pairs once one answer differs. Then pairing by hit number can
+show every later hit as a difference. Two notes say so:
 
 - The first names `queries join` ([3.5](#35-joining-two-runs-by-a-value)), which pairs hits by a
   selector's value instead: `--param key=a.name`. Several selectors work too:
@@ -1649,8 +1649,8 @@ other run's hit at the same stop.
 - Labels never change which runs are compared. Nor do they change which run a candidate's `compare:`
   line names.
 - A run that an older Peeky saved may lack its notes: its `runs.notes_kept` is NULL. It may then
-  show qualified values unmarked. Every query that shows its values says so in a `note:` line
-  (`notes` in JSON).
+  show qualified values unmarked. Every canned query that shows its values says so in a `note:`
+  line (`notes` in JSON). Your own `peeky sql` doesn't: check `runs.notes_kept` there.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
 
@@ -1731,8 +1731,10 @@ hit  phase     line  v  total  bins[3].hi  no_value  caveats  sets
   - SQLite ignores case in column names. So a selector that differs from an earlier column only by
     case gets a number: `--capture x,X` gives `x` and `X (2)`.
   - In your own SQL, quote such names with double quotes: `"bins[3].hi"`, `"X (2)"`.
-  - Up to 94 selectors fit, as a result has 100 columns at most. `wide` refuses a wider run: query
-    `captures` with `peeky sql` instead.
+  - A result has 100 columns at most. So `wide` fits 94 selectors, or 93 when it adds a `stop`
+    column. It adds one where the run's line has several stops.
+  - `wide` refuses a wider run. Use `peeky queries run` instead, or `peeky sql` with the selectors
+    you need.
 - **Cells** hold the values exactly as stored, as text. To compare numbers, use `num` in `captures`
   ([4.3](#43-numeric-filters)).
 - **NULL is never a value.** `no_value` is a JSON object. It names each cell with no value, and says
@@ -1795,9 +1797,11 @@ Run b saw `7` twice, so run a's hit 1 appears twice.
 - **Matching** is by the key's stored text, exactly. `join` uses the `observed` rows, unless you
   pass `--param phase=after-set`.
 - **Both runs must have captured the key.**
-- **A repeated key pairs every hit.** A value at 2 hits of run a and 3 of run b gives 6 rows. They
-  come in run a's hit order, then run b's. A `note:` line says so, with the first such value and how
-  many rows they make. To tell those hits apart, add a selector to the key: `key=v,i`.
+- **Repeated key values.** A plain one pairs every hit that has it in one run with every hit that
+  has it in the other. A qualified one matches nothing (see unmatched hits below).
+- A plain value at 2 hits of run a and 3 of run b gives 6 rows. They come in run a's hit order, then
+  run b's. A `note:` line says so, with the first such value and how many rows they make. To tell
+  those hits apart, add a selector to the key: `key=v,i`.
 - **Several selectors:** `key=a,b` pairs hits where every one of them has the same value. Each gets
   a column. A hit missing any of them is unmatched. You can give up to 8.
 - Commas outside brackets and quotes separate the selectors. So `m["a,b"]` is one selector.
