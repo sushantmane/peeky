@@ -62,51 +62,36 @@ def crate(tmp_path, monkeypatch):
 
 @pytest.mark.timeout(400)
 def test_a_probe_captures_and_sets_rust_names_in_unicode(crate, capsys):
+    # The IR names a non-ASCII local quoted (`%"\C3\B1"`), which #194 reads: `ñ` and
+    # `größe` are proven kept in memory, as ASCII twins are, and change for real.
     captures = (f"{NFC}.zähler", f"{NFC}.{NFC}", "ñ", f"holder.{NFC}", NFD, f"{NFC}.zahler")
+    sets = (f"{NFC}.zähler=30", "ñ=6", f"holder.{NFC}=40")
     code = main(
         ["probe", str(crate), "--at", f"src/main.rs:{STOP}", "--capture", ",".join(captures)]
-        + ["--set", f"holder.{NFC}=40", "--json", "--quiet"]
+        + [f"--set={each}" for each in sets]
+        + ["--json", "--quiet"]
     )
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
-    assert "AFTER 3 4 5 40 5" in result["output"], result["output"]
+    # `seen = ñ` runs after the stop: the program read the changed `ñ`.
+    assert "AFTER 30 4 6 40 6" in result["output"], result["output"]
+    assert [(c["name"], c["before"], c["after"]) for c in result["interventions"]] == [
+        (f"{NFC}.zähler", "3", "30"),
+        ("ñ", "5", "6"),
+        (f"holder.{NFC}", "2", "40"),
+    ]
     observed = {r["selector"]: r for r in result["rows"] if r["phase"] == "observed"}
     assert [observed[s].get("value") for s in captures[:4]] == ["3", "4", "5", "2"]
+    assert all(observed[s]["settable"] is True for s in captures[:4]), observed
     # rustc lists the NFC spelling of the source's NFD one: refused, naming it.
     assert f"the debugger lists {NFC!r} (written {ascii(NFC)})" in observed[NFD]["error"]
     assert "not found" in observed[f"{NFC}.zahler"]["error"]
     after = {r["selector"]: r for r in result["rows"] if r["phase"] == "after-set"}
-    assert after[f"holder.{NFC}"]["value"] == "40"
-    assert after[f"holder.{NFC}"]["settable"] is True
+    assert [after[s]["value"] for s in captures[:4]] == ["30", "4", "6", "40"]
 
 
 @pytest.mark.timeout(400)
-def test_a_session_reads_and_sets_rust_names_in_unicode(crate, capsys):
-    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{STOP}"]) == 0
-    capsys.readouterr()
-    try:
-        assert main(["session", "inspect"]) == 0
-        inspected = capsys.readouterr().out
-        assert f"(children: peeky session get {NFC})" in inspected, inspected
-        assert "not selectable" not in inspected, inspected
-        assert main(["session", "get", f"{NFC}.{NFC}", "ñ", "--json"]) == 0
-        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
-        assert rows[f"{NFC}.{NFC}"]["value"] == "4" and rows["ñ"]["value"] == "5"
-        assert main(["session", "set", f"holder.{NFC}=41"]) == 0
-        assert f"set holder.{NFC}: 2 -> 41" in capsys.readouterr().out
-        assert main(["session", "continue", "--to-exit"]) == 0
-        capsys.readouterr()
-        assert main(["session", "report", "--json"]) == 0
-        assert "AFTER 3 4 5 41 5" in json.loads(capsys.readouterr().out)["output"]
-    finally:
-        main(["session", "close"])
-
-
-@pytest.mark.timeout(400)
-def test_a_non_ascii_rust_root_is_never_said_to_be_in_a_register_without_proof(crate, capsys):
-    # LLVM quotes a non-ASCII name in the IR (`%"\C3\B1"`). Until Peeky's IR parser reads
-    # those (#191), a root it finds no binding of is refused as unknown, never claimed
-    # to be in a register; once it reads them, the change is made.
+def test_a_session_marks_reads_and_sets_rust_names_in_unicode(crate, capsys):
     assert main(["describe", str(crate)]) == 0
     described = capsys.readouterr().out
     assert "ñ" not in described.partition("Never settable")[2], described
@@ -114,17 +99,58 @@ def test_a_non_ascii_rust_root_is_never_said_to_be_in_a_register_without_proof(c
     capsys.readouterr()
     try:
         assert main(["session", "inspect"]) == 0
-        row = next(line for line in capsys.readouterr().out.splitlines() if "ñ: i64" in line)
-        assert "register" not in row, row
-        for assignment, before, after in (("ñ=6", "5", "6"), (f"{NFC}.zähler=30", "3", "30")):
-            code = main(["session", "set", assignment, "--json"])
-            result = json.loads(capsys.readouterr().out)
-            if code == 0:
-                assert (result["before"], result["after"]) == (before, after), result
-                continue
-            error = result["error"]
-            assert code == 2 and error["code"] == "MUTATION_REJECTED", result
-            assert "register" not in error["message"], error
-            assert "(LLVM writes a non-ASCII name quoted and escaped)" in error["message"]
+        inspected = capsys.readouterr().out
+        assert f"(children: peeky session get {NFC})" in inspected, inspected
+        assert "ñ: i64 = 5  [settable]" in inspected, inspected
+        assert "not selectable" not in inspected and "register" not in inspected, inspected
+        assert main(["session", "get", NFC]) == 0
+        listed = capsys.readouterr().out
+        assert f"{NFC}.zähler: i64 = 3  [settable]" in listed, listed
+        assert f"{NFC}.{NFC}: i64 = 4  [settable]" in listed, listed
+        for assignment, shown in (
+            ("ñ=7", "set ñ: 5 -> 7"),
+            (f"{NFC}.zähler=31", f"set {NFC}.zähler: 3 -> 31"),
+            (f"holder.{NFC}=41", f"set holder.{NFC}: 2 -> 41"),
+        ):
+            assert main(["session", "set", assignment]) == 0, assignment
+            assert shown in capsys.readouterr().out, assignment
+        assert main(["session", "get", "ñ", f"{NFC}.zähler", "--json"]) == 0
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        assert rows["ñ"]["value"] == "7" and rows[f"{NFC}.zähler"]["value"] == "31"
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        assert "AFTER 31 4 7 41 7" in json.loads(capsys.readouterr().out)["output"]
+    finally:
+        main(["session", "close"])
+
+
+PARAMETER = """#[inline(never)]
+fn f(größe: i64, n: i64) -> i64 {
+    größe + n // STOP
+}
+
+fn main() {
+    println!("R {}", f(3, 4));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_non_ascii_parameter_kept_in_a_register_is_said_so_as_its_ascii_twin(crate, capsys):
+    # By-value parameters stay in registers even at opt-level 0 (#138): read through
+    # the quoted IR name, `größe` gets `n`'s verdict, the true one.
+    (crate / "src/main.rs").write_text(PARAMETER, encoding="utf-8")
+    code = main(["probe", str(crate), "--at", "src/main.rs:3", "--set", f"{NFC}=9", "--json"])
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and error["code"] == "MUTATION_REJECTED", error
+    assert f"in names::f, `{NFC}` is a parameter kept in a register" in error["message"]
+    assert main(["session", "start", str(crate), "--at", "src/main.rs:3"]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "inspect"]) == 0
+        inspected = capsys.readouterr().out
+        assert f"{NFC}: i64 = 3  [not settable: register]" in inspected, inspected
+        assert "n: i64 = 4  [not settable: register]" in inspected, inspected
     finally:
         main(["session", "close"])
