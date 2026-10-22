@@ -1000,7 +1000,10 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
     return {**variable, "scope": "globals"} if module else variable
 
 
-_RUST_TEXT = frozenset({"&str", "&mut str", "&str *", "alloc::string::String *"})
+# Rust text, shown whole: an owned `String` too, and an element's `String` field (#260).
+_RUST_TEXT = frozenset(
+    {"&str", "&mut str", "&str *", "alloc::string::String *", "alloc::string::String", "String"}
+)
 
 
 # Owned Rust containers are raw: a moved or dropped local can still point at freed memory.

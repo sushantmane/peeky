@@ -153,7 +153,7 @@ def reads(row):
 def test_a_slice_of_structs_with_a_string_field_reads_each_element(crate, capsys):
     captures = (
         "friends,friends[1].name,friends[1].paid,friends[1].name.len,friends.data_ptr.name,"
-        "expenses,expenses[0].cents,expenses[0].payer,expenses[0].sharers"
+        "expenses,expenses[0].cents,expenses[0].payer,expenses[0].sharers,friends[1].name[0]"
     )
     rows = probe(capsys, crate, line_of("// CREDIT"), captures)
     row = {selector: found for (_, selector), found in rows.items()}
@@ -174,6 +174,7 @@ def test_a_slice_of_structs_with_a_string_field_reads_each_element(crate, capsys
     assert row["friends[1].name"]["view"] == "memory", row["friends[1].name"]
     assert row["friends[1].paid"]["value"] == "0", row["friends[1].paid"]
     assert row["friends[1].name.len"]["value"] == "6", row["friends[1].name.len"]
+    assert "text read from memory is shown whole" in row["friends[1].name[0]"]["error"]
     # Its elements are its children, not its data pointer.
     assert "children: length, [0], [1]" in row["friends.data_ptr.name"]["error"]
     # A struct with a raw pointer and a Vec<&str>: the integer reads; the rest says why.

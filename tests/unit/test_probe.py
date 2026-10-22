@@ -710,6 +710,15 @@ def test_rust_container_indexes_explain_what_is_unsupported():
         _resolve(Tree({1: length}), {}, snapshot(text), parse_selector("label[0]"))
     message = str(caught.value)
     assert "shown whole, not by element" in message and "reference parameters" not in message
+    # #260: so is an owned String's, and an element's String field's, never "beyond the
+    # debugger's visible window" of as many elements as it has bytes.
+    sizes = [{"name": "len", "type": "usize", "value": "2", "variablesReference": 0}]
+    for kind in ("alloc::string::String", "String"):
+        owned = {**text, "name": "name", "type": kind, "length": 2}
+        with pytest.raises(ValueError) as caught:
+            _resolve(Tree({1: sizes}), {}, snapshot(owned), parse_selector("name[0]"))
+        message = str(caught.value)
+        assert "shown whole, not by element" in message and "window" not in message, message
 
 
 def test_a_slice_of_structs_left_raw_is_never_told_to_be_read_as_a_slice():

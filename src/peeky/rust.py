@@ -2927,7 +2927,12 @@ class RustSession(NativeSession):
                     f"may have come since `{name}` was last used)",
                     "taint": "pointers",
                 }
-            if gated and lent_only and str(kind).startswith("alloc::vec::Vec<"):
+            if (
+                gated
+                and lent_only
+                and str(kind).startswith("alloc::vec::Vec<")
+                and not _holds_data_pointers(kind)
+            ):
                 # A Vec #110 does not show standing and the MIR does not prove initialized
                 # here (`sharers`, moved on this line), or in a caller frame (#260): not a
                 # Box, so its own fields show, as a moved struct's do (#108); the pointers
