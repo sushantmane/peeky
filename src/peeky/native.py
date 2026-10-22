@@ -42,6 +42,7 @@ from peeky.build import (
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
+from peeky.identifiers import changeable, looks_located, split_located
 from peeky.names import standard_type, unicode_escape
 from peeky.text_sets import text_kind
 from peeky.textlines import octal_string, read_source, source_lines, split_lines
@@ -1789,11 +1790,6 @@ def _library_frame(frame):
     return bool(_LIBRARY_FUNCTION.search(name.rpartition("`")[2].split("(", 1)[0]))
 
 
-_SHADOWED = re.compile(r"(.+) @ [^:]+:([0-9]+)")
-# The same, with the file: (name, file, line).
-_NAMED_AT = re.compile(r"(.+) @ ([^:]+):([0-9]+)")
-
-
 def _is_object(variable):
     """Whether a DAP variable is a class, struct, union or array: it has children and is
     no pointer or reference."""
@@ -1843,8 +1839,8 @@ def shown_declaration(table, name, pc, unstored=False):
     if not holding:
         return False
     function = table[min(holding)[1]]
-    shown = _SHADOWED.fullmatch(name)
-    base = shown[1] if shown else name
+    shown = split_located(name)
+    base = shown[0] if shown else name
     # lldb-dap lists a frame's automatic locals and parameters as its locals; a static
     # (clang may declare it in the function's scope, whatever block it is in) is listed
     # among globals.
@@ -1858,7 +1854,7 @@ def shown_declaration(table, name, pc, unstored=False):
         and (base, *where[:2]) in function.get("unstored", ())
     }
     if shown:
-        places = {where for where in places if where[1] == int(shown[2])}
+        places = {where for where in places if where[1] == shown[2]}
     if not places:
         return None
     visible = function.get("visible")
@@ -1909,8 +1905,8 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     on its elements' lines) counts by the code of its statement's lines, to where
     ``through(source, line, name)`` says it ends.
     """
-    shown = _SHADOWED.fullmatch(name)
-    base = shown[1] if shown else name
+    shown = split_located(name)
+    base = shown[0] if shown else name
     here = (source, line)
     found = shown_declaration(table, name, pc)
     if found is None:
@@ -1927,7 +1923,7 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
             and declared_in == source
             and type(at) is int
             and at > line
-            and (not shown or at == int(shown[2]))
+            and (not shown or at == shown[2])
         ]
         return (min(below), "unknown") if below else None
     function, (declared_in, at, automatic) = found
@@ -1987,8 +1983,8 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
     in the function (another block's `long t;` with no code withheld this one)."""
-    shown = _SHADOWED.fullmatch(name)
-    base = shown[1] if shown else name
+    shown = split_located(name)
+    base = shown[0] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
     running = [
         function
@@ -2006,7 +2002,7 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
         for declared_in, at, automatic in function["locals"].get(base, ()):
             if not automatic or type(at) is not int:
                 continue
-            if shown and at != int(shown[2]):
+            if shown and at != shown[2]:
                 continue
             if chosen is not None and (declared_in, at) != chosen:
                 continue
@@ -2029,8 +2025,8 @@ def _in_scope(table, name, source, line, address):
     ``source:line`` may be reading: those of the function running the address (unslid),
     else of every function with code on the line, else of every function with such a
     local; with the address known, only those whose block holds it."""
-    shown = _SHADOWED.fullmatch(name)
-    base = shown[1] if shown else name
+    shown = split_located(name)
+    base = shown[0] if shown else name
     owners = [function for function in table if (source, line) in function["rows"]]
     running = [
         function
@@ -2042,7 +2038,7 @@ def _in_scope(table, name, source, line, address):
     found = []
     for function in owners:
         for declared_in, at, automatic in function["locals"].get(base, ()):
-            if not automatic or type(at) is not int or (shown and at != int(shown[2])):
+            if not automatic or type(at) is not int or (shown and at != shown[2]):
                 continue
             block = function.get("scopes", {}).get((base, declared_in, at))
             if running and block and not any(low <= address < high for low, high in block):
@@ -2150,8 +2146,8 @@ def declared_on_line(table, name, source, line, address):
     """
     if address is None:
         return None
-    shown = _SHADOWED.fullmatch(name)
-    base = shown[1] if shown else name
+    shown = split_located(name)
+    base = shown[0] if shown else name
     found = shown_declaration(table, name, address)
     if found is None:
         return None
@@ -2919,13 +2915,10 @@ def _writable_integer(variable):
         variable.get("type") in INTEGER_RANGES
         and variable.get("variablesReference", 0) == 0
         and "readOnly" not in attributes
-        # A name a selector can give: also one LLDB gives with where it is declared,
-        # when several of that name are in scope (`n @ main.c:15`).
-        and bool(
-            re.fullmatch(
-                r"[A-Za-z_][A-Za-z0-9_]*(?: @ [^\s:@]+:[0-9]+)?", str(variable.get("name", ""))
-            )
-        )
+        # A name a change can give: also one LLDB gives with where it is declared, when
+        # several of that name are in scope (`n @ main.c:15`); the worker marks it
+        # [settable] only where a selector reaches it (identifiers.reachable).
+        and changeable(str(variable.get("name", "")))
     )
 
 
@@ -3476,13 +3469,19 @@ class NativeSession:
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
-        plain = re.fullmatch(r"(.+) @ [^:]+:[0-9]+", str(steps[0]))
+        root = str(steps[0])
+        plain = split_located(root)
         referred = function.get("referred")
         # A local the frame reaches through a pointer (a structured binding of a
         # reference, `auto& [items, n] = *owner`, which the debug information types as
         # the vector itself), or one whose locations were not all read, counts as one
-        # reached through a pointer (#181 review).
-        reached = referred is None or (plain[1] if plain else str(steps[0])) in referred
+        # reached through a pointer (#181 review); so does a row LLDB places where
+        # Peeky cannot read (#199 review).
+        reached = (
+            referred is None
+            or (plain is None and looks_located(root))
+            or (plain[0] if plain else root) in referred
+        )
         indirect, contained = not framed or reached, False
         for step in steps[1:]:
             holder = typed
@@ -3550,6 +3549,14 @@ class NativeSession:
         line = (frame or {}).get("line")
         if name == "this" and (building := self._under_construction(frame, stack, deeper)):
             return building
+        if looks_located(name) and split_located(name) is None:
+            # LLDB names it with where it is declared, in a form Peeky cannot read: which
+            # declaration it is cannot be told, so nothing judges it (#195 review).
+            return (
+                f"LLDB names it {str(name)[:200]!r}, with where it is declared, in a form "
+                "Peeky cannot read, so which declaration it is cannot be told: it may not "
+                "be initialized yet, and its storage may hold leftovers"
+            )
         if not self.declarations and self.__dict__.get("unjudged") and isinstance(name, str):
             return self._unjudged(name, frame)
         if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
@@ -3936,8 +3943,8 @@ class NativeSession:
     def _parameter(self, name, frame):
         """Whether ``name`` is a parameter (or static) of the frame's function only."""
         function = self._function_at(frame)
-        shown = _SHADOWED.fullmatch(name or "")
-        places = (function or {}).get("locals", {}).get(shown[1] if shown else name, ())
+        shown = split_located(name or "")
+        places = (function or {}).get("locals", {}).get(shown[0] if shown else name, ())
         return bool(places) and not any(automatic for _, _, automatic in places)
 
     def _included(self, source, line, name):
@@ -4166,10 +4173,11 @@ class NativeSession:
         lists that plain name itself, or another of the name that is no automatic local
         or parameter of the function (a block's `thread_local`), or Peeky cannot tell
         which one the code names: then `t` is refused, and the rows' names select."""
-        shown = _NAMED_AT.fullmatch(str(variable.get("name")))
+        shown_name = str(variable.get("name"))
+        shown = split_located(shown_name)
         if shown is None or not self.declarations:
             return None
-        base, names = shown[1], [str(sibling.get("name")) for sibling in siblings]
+        base, names = shown[0], [str(sibling.get("name")) for sibling in siblings]
         function = self._function_at(frame)
         if base in names or function is None:
             return None
@@ -4183,8 +4191,8 @@ class NativeSession:
             for where, at in function.get("parameters", {}).get(base, ())
         }
         for name in names:
-            other = _NAMED_AT.fullmatch(name)
-            if other and other[1] == base and (other[2], int(other[3])) not in known | parameters:
+            other = split_located(name)
+            if other and other[0] == base and other[1:] not in known | parameters:
                 return None
         where = self._named_where(base, self._block_pc(frame))
         if not where:
@@ -4196,7 +4204,9 @@ class NativeSession:
             place = next(iter(parameters))
         else:
             place = (Path(str(where[0])).name, where[1])
-        return base if place == (shown[2], int(shown[3])) else None
+        # Only an alias a change can also give (a selector's bounds): never one that
+        # reads a local whose change the worker would refuse.
+        return base if place == shown[1:] and changeable(shown_name) else None
 
     def _named_where(self, name, pc):
         """(source, line, automatic) of the declaration of the local ``name`` the code at
@@ -4214,7 +4224,7 @@ class NativeSession:
         another file than the line."""
         if pc is None or not self.declarations:
             return None
-        if _SHADOWED.fullmatch(name):
+        if split_located(name):
             return self._shown_where(name, pc)
         holding = [
             (high - low, index)
@@ -4410,8 +4420,8 @@ class NativeSession:
             root = parse_selector(name)[0]
         except ValueError:
             return ""
-        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", root)
-        plain = shown[1] if shown else root
+        shown = split_located(root)
+        plain = shown[0] if shown else root
         entries = [
             entry
             for line in lines
@@ -4527,7 +4537,7 @@ class NativeSession:
         if found is None:
             return None
         function = self._function_at(frame)
-        base = (_SHADOWED.fullmatch(name) or [None, name])[1]
+        base = (split_located(name) or (name,))[0]
         declared = found[1] if found else (None, None, False)
         verdicts, failure = set(), None
         for unit in self._units(source):
@@ -4751,8 +4761,8 @@ class NativeSession:
             ]
             if holding:
                 function = table[min(holding)[1]]
-                shown = _SHADOWED.fullmatch(name)
-                places = function["locals"].get(shown[1] if shown else name, ())
+                shown = split_located(name)
+                places = function["locals"].get(shown[0] if shown else name, ())
                 if places and not any(automatic for _, _, automatic in places):
                     return None
         text = _UNJUDGED[kind].format(detail)
@@ -5451,10 +5461,10 @@ class NativeSession:
     def _declared_storages(types, name, where=None):
         """The storages of the declarations of ``name`` that ``_declared_type`` reads
         (fields.local_types); empty where it declares none."""
-        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
-        declared = types.get(shown[1] if shown else name) or set()
+        shown = split_located(str(name))
+        declared = types.get(shown[0] if shown else name) or set()
         if declared and shown:
-            declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+            declared = {each for each in declared if each[2] == shown[1:]}
         if declared and where is not None and len(declared) > 1:
             place = (Path(str(where[0])).name, where[1])
             declared = {each for each in declared if each[2] == place} or declared
@@ -5479,11 +5489,11 @@ class NativeSession:
         (#158: a loop's `Task t`, and a later block's `const Task &t`)."""
         from peeky.fields import Unsettable
 
-        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(name))
-        declared = types.get(shown[1] if shown else name)
+        shown = split_located(str(name))
+        declared = types.get(shown[0] if shown else name)
         if declared and shown:
             # LLDB names a local by where it is declared when several share its name.
-            declared = {each for each in declared if each[2] == (shown[2], int(shown[3]))}
+            declared = {each for each in declared if each[2] == shown[1:]}
         place = None
         if declared and where is not None and len(declared) > 1:
             place = (Path(str(where[0])).name, where[1])
@@ -5861,10 +5871,10 @@ class NativeSession:
         function = self._function_at(frame)
         if function is None or not function.get("types"):
             return None
-        shown = re.fullmatch(r"(.+) @ ([^:]+):([0-9]+)", str(variable.get("name")))
-        declared = function["types"].get(shown[1] if shown else variable.get("name"), ())
+        shown = split_located(str(variable.get("name")))
+        declared = function["types"].get(shown[0] if shown else variable.get("name"), ())
         if shown:
-            declared = [each for each in declared if each[2] == (shown[2], int(shown[3]))]
+            declared = [each for each in declared if each[2] == shown[1:]]
         storages = {storage for _, storage, _ in declared}
         if "through" in storages and not any(
             self._is_array(kind) for kind, storage, _ in declared if storage == "through"

@@ -1317,3 +1317,23 @@ def test_a_static_kept_as_a_constant_is_its_own_rows_declaration():
     assert statements.block_storage(18, "r", 18, own=18) == ("static", 18)
     # A `typedef` declares no variable: never a row's own.
     assert statements.block_storage(21, "q", 20, own=20) == ("typedef", 20)
+
+
+def test_identifiers_in_any_script_are_read_as_names():
+    # #195: `ñ` and an NFD `größe` (a combining mark) are identifiers to Clang.
+    from peeky.c_source import storage_named
+
+    nfd = "gro\u0308\u00dfe"
+    source = f"int main(void) {{\n  int ñ = 5,\n      k = 1;\n  long {nfd} = ñ;\n  return 0;\n}}\n"
+    statements = Statements(source)
+    assert statements.declared_through(2, "ñ") == 3
+    assert statements.declared_through(4, nfd) == 4
+    # A name's bounds take every identifier character, a combining mark too.
+    assert storage_named(f"static long {nfd} = 2;", nfd)
+    assert not storage_named("static long gro\u0308\u00dfe\u0301 = 2;", nfd)
+    assert not storage_named("static long x·ñ = 2;", "ñ")
+    # Clang reads U+00A0 as a space, never as part of a name.
+    assert (
+        Statements("int f(void) {\n  int\u00a0q = 1;\n  return q;\n}\n").declared_through(2, "q")
+        == 2
+    )

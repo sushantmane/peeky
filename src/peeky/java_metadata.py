@@ -13,6 +13,7 @@ ambiguous owners. No nested/anonymous name is guessed from a '$' suffix.
 import re
 from pathlib import Path
 
+from peeky.identifiers import is_name
 from peeky.java_bytecode import decode
 from peeky.textlines import split_lines
 
@@ -21,8 +22,6 @@ MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ENTRIES = 16384
 MAX_CLASSES = 4096
 MAX_SOURCES = 4096
-# A name a Peeky selector can write (the probe's selector grammar).
-_SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
 
 class _Reader:
@@ -373,7 +372,7 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
                 ordered = [
                     name
                     for name in dict.fromkeys(name for _, _, name in sorted(names))
-                    if _SELECTABLE.fullmatch(name)
+                    if is_name(name)
                 ]
                 # Each name's declared type (#183), as Java writes it.
                 kinds = {}
