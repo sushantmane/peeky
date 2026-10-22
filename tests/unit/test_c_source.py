@@ -429,6 +429,7 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
   for (int i; ; ) sink(&i);
   for (int i = 0, j = 1; i < j; i++) g(i);
   for (int j = INIT, i = 0; i < j; i++) g(i);
+  for (X j = 0, *i = nullptr; ; ) g(i);
 }
 """
     statements = Statements(source)
@@ -453,6 +454,7 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
             (16, "i"),
             (16, "j"),
             (17, "i"),
+            (18, "i"),
         )
     }
     # Review round 2 of PR #214: each declarator is judged with those before it
@@ -475,9 +477,15 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
         (14, "j"): False,
         (15, "i"): False,
         (16, "i"): True,
-        (16, "j"): True,
+        (16, "j"): False,
         (17, "i"): False,
+        (18, "i"): False,
     }
+    # Review round 3: in C++ constructing a declarator before it may call (`X j = 0`
+    # runs `X::X(int)` before `i` is set), so only the first counts; C keeps each judged
+    # with those before it.
+    c = Statements(source, raw_strings=False)
+    assert [c.declaration(16, "j")[3], c.declaration(14, "j")[3]] == [True, False]
     # A macro of the program's own named `true` is no literal.
     hazards = macro_hazards(["#define true make_true()\n"])
     assert Statements(source, hazards=hazards).declaration(13, "b")[3] is False
@@ -534,6 +542,18 @@ int macrojump(void) {
     # A switch after the loop, and a label no `goto` names, cannot enter it; a macro
     # that may hold a label, or an `#include`, leaves it unknown.
     assert found == {4: False, 10: 10, 13: 13, 17: 17, 20: False, 24: None, 27: None, 32: 32}
+    # Review round 3: a GNU `asm goto` lists its labels as operands, which no `goto
+    # label` names: any label after the declaration counts then.
+    source = """int asmjump(void) {
+  for (int i = 0; ; ) { inside: g(&i); }
+  __asm__ volatile goto("" : : : : inside);
+}
+int plain(void) {
+  for (int i = 0; ; ) { inside: g(&i); }
+}
+"""
+    assert Statements(source).jumped_into(2, "i") == 2
+    assert Statements(source.replace("goto(", "(")).jumped_into(6, "i") is False
 
 
 def test_includes_and_the_labels_after_one():

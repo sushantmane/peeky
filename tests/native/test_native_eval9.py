@@ -228,6 +228,100 @@ def test_a_one_line_loops_variable_its_header_may_not_have_set_is_withheld_mid_l
         capsys.readouterr()
 
 
+ASMGOTO = """#include <stdio.h>
+
+static int done;
+
+static void sink(int *p) {
+    (void)p;
+    done++; /* SINK */
+}
+
+int main(void) {
+    __asm__ goto("" : : : : inside);
+    for (int k = 0; done < 3; ) { inside: sink(&k); } /* ASMGOTO */
+    printf("%d\\n", done);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_an_asm_goto_may_skip_a_one_line_loops_initialization(program, capsys):
+    # Review round 3 of PR #214: a GNU `asm goto` names its labels as operands, so no
+    # `goto inside` was seen and `k` read as live mid-line. This one never jumps, but
+    # the source cannot show that: `k` is withheld.
+    path = program.parent / "asmgoto.c"
+    path.write_text(ASMGOTO)
+    lines = {
+        marker: number
+        for number, text in enumerate(ASMGOTO.splitlines(), 1)
+        for marker in ("SINK", "ASMGOTO")
+        if f"/* {marker} */" in text
+    }
+    assert main(["session", "start", str(path), "--at", str(lines["SINK"])]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out", "--json"]) == 0
+        state = json.loads(capsys.readouterr().out)
+        assert state["location"].endswith(f":{lines['ASMGOTO']}"), state
+        code = main(["session", "get", "k", "--json"])
+        (row,) = json.loads(capsys.readouterr().out)
+        assert code == 1 and "value" not in row, json.dumps(row)
+        assert "part-way through that line" in row["error"], row
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+DECLARATORS = """#include <cstdio>
+
+struct X {
+    int v;
+    X(int n) : v(n) {
+        std::printf("made\\n"); /* CTOR */
+    }
+};
+
+int main() {
+    for (X j = 0, *i = nullptr; j.v < 1; j.v++) { std::printf("%p\\n", (void *)i); } /* DECL */
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_cpp_declarator_after_one_that_constructs_is_withheld_mid_line(program, capsys):
+    # Review round 3 of PR #214: `X j = 0` runs `X::X(int)` before `*i = nullptr` is
+    # set, so back from it (`step --out`) `i` is not set yet: in C++ only a header's
+    # first declarator counts as set by no call.
+    path = program.parent / "declarators.cpp"
+    path.write_text(DECLARATORS)
+    lines = {
+        marker: number
+        for number, text in enumerate(DECLARATORS.splitlines(), 1)
+        for marker in ("CTOR", "DECL")
+        if f"/* {marker} */" in text
+    }
+    assert main(["session", "start", str(path), "--at", str(lines["CTOR"])]) == 0
+    capsys.readouterr()
+    try:
+        # Out of the constructor clang emits as two (complete and base object).
+        for _ in range(3):
+            assert main(["session", "step", "--out", "--json"]) == 0
+            state = json.loads(capsys.readouterr().out)
+            if state["function"].startswith("main"):
+                break
+        assert state["location"].endswith(f":{lines['DECL']}"), state
+        code = main(["session", "get", "i", "--json"])
+        (row,) = json.loads(capsys.readouterr().out)
+        assert code == 1 and "value" not in row, json.dumps(row)
+        assert "part-way through that line" in row["error"], row
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 TEXTS = """#include <stdio.h>
 #include <string.h>
 

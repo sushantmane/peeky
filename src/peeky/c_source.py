@@ -28,6 +28,9 @@ _ID = r"[^\s\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
 _NAME = r"[^\s\x00-\x40\x5b-\x5e\x60\x7b-\x7f]" + _ID + "*"
 # An identifier, not the tail of a number or of another identifier (`1e5`).
 _IDENTIFIER = re.compile(f"(?<!{_ID}){_NAME}")
+# A GNU `asm goto` (`asm volatile goto`, `__asm__ goto`, `__asm goto`): it may jump to
+# any label it lists as an operand.
+_ASM_GOTO = re.compile(rf"(?<!{_ID})(?:asm|__asm__|__asm)(?!{_ID})[^(;]*?(?<!{_ID})goto(?!{_ID})")
 # Where a comment or a literal may start.
 _OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
 # A raw string's prefix and delimiter: `R"x(`, `u8R"(`.
@@ -854,11 +857,12 @@ class Statements:
         nothing), and it and each declarator before it may hold only literals and
         operators: a name may be a macro that calls (`#define INIT make_i()`, or a
         library's `errno`), which the text cannot rule out (review of PR #214). Those
-        after it run once it is set: `int i = 0, j = f` keeps `i`."""
+        after it run once it is set: `int i = 0, j = f` keeps `i`. In C++ only the first
+        declarator counts: constructing one before it may call."""
         part = self.blanked[start:end]
         if keyword == "while" or re.search(r"[({]|<%|(?<!:):(?![:>])", part):
             return False
-        for piece in part.split(","):
+        for index, piece in enumerate(part.split(",")):
             before, equals, initializer = piece.partition("=")
             if not all(
                 word[0] in ("true", "false", "nullptr") and word[0] not in self.expansions
@@ -867,7 +871,9 @@ class Statements:
                 return False
             declared = [word[0] for word in _IDENTIFIER.finditer(before)]
             if declared and declared[-1] == name:
-                return bool(equals)
+                # In C++ constructing one before it may call (`X j = 0, *i = nullptr`
+                # runs `X::X(int)` before `i` is set): only the first counts there.
+                return bool(equals) and (index == 0 or not self.raw_strings)
         return False
 
     def jumped_into(self, line, name, span=None):
@@ -1203,12 +1209,17 @@ class Statements:
         ``position``) without running the declaration: one before its end, or one
         outside its block in the same function, since a jump back into a block starts the
         local's lifetime anew (C11 6.2.4); for a header's variable, or with the braces
-        unknown, any. Also a macro that may `goto` named there, or a computed `goto`.
+        unknown, any. Also a macro that may `goto` named there, or a computed `goto`, or
+        a GNU `asm goto` anywhere in the source, whose labels are its operands
+        (`__asm__ goto("…" : : : : inside)`, review of PR #214): then any label counts.
         The function is its lines ``span`` (first, last) when given, else the outermost
         braces around the declaration (in C++ maybe a namespace's: more counts)."""
         blanked = self.blanked
         if "computed" not in self.__dict__:
-            self.computed = re.search(r"(?<!\w)goto\s*\*", blanked) is not None
+            self.computed = (
+                re.search(r"(?<!\w)goto\s*\*", blanked) is not None
+                or _ASM_GOTO.search(blanked) is not None
+            )
         if self.computed:
             return True
         block, function = self._enclosing(position)
