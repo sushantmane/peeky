@@ -22,8 +22,9 @@ from peeky.rust_mir import (
 )
 
 
-def mir(blocks, header="fn main() -> () {", bindings=""):
-    """A `-Zdump-mir` body: blocks are {number: [statement, ..., terminator]}."""
+def mir(blocks, header="fn main() -> () {", bindings="", files=None):
+    """A `-Zdump-mir` body: blocks are {number: [statement, ..., terminator]}; ``files``:
+    {(block, index): the file a statement's span is in}, else src/main.rs."""
     lines = [
         "// MIR for `main` after PreCodegen",
         "",
@@ -38,7 +39,8 @@ def mir(blocks, header="fn main() -> () {", bindings=""):
     for number, statements in blocks.items():
         lines.append(f"    bb{number}: {{")
         for index, statement in enumerate(statements):
-            lines.append(f"        {statement}  // scope 1 at src/main.rs:{10 + index}:5: 10:9")
+            file = (files or {}).get((number, index), "src/main.rs")
+            lines.append(f"        {statement}  // scope 1 at {file}:{10 + index}:5: 10:9")
         lines += ["    }", ""]
     return parse_body("\n".join([*lines, "}", ""]))
 
@@ -3182,12 +3184,11 @@ def test_what_a_statement_surely_does_to_a_part_of_a_local(text, projection, acc
     assert _root_access(text, 1, projection) == access
 
 
-def test_a_borrow_only_formatting_a_primitive_reads_counts_as_a_read():
-    # `println!("{}", x.a)` lends `&x.a` to formatting, which prints it.
-    bindings = (
-        "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
-        "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
-    )
+STD_MACROS = "/t/lib/rustlib/src/rust/library/std/src/macros.rs"
+
+
+def formatting(sink="std::io::_print", kind="i16", file=STD_MACROS, generics=()):
+    """`println!("{}", x.a)` as rustc 1.96 builds it, then `x = y` (`y` copied `x`)."""
     body = mir(
         {
             0: [
@@ -3196,24 +3197,65 @@ def test_a_borrow_only_formatting_a_primitive_reads_counts_as_a_read():
                 "_7 = (move _8,);",
                 "_10 = copy (_7.0: &i16);",
                 "_9 = &(*_10);",
-                "_6 = core::fmt::rt::Argument::<'_>::new_display::<i16>(move _9) -> [return: bb1, unwind continue];",
+                f"_6 = core::fmt::rt::Argument::<'_>::new_display::<{kind}>(move _9) -> [return: bb1, unwind continue];",
             ],
             1: [
-                "_12 = &_1;",
-                "_11 = core::fmt::rt::Argument::<'_>::new_debug::<Ab>(move _12) -> [return: bb2, unwind continue];",
+                "_5 = [move _6];",
+                '_12 = const b"\\x02A \\xc0\\x00";',
+                "_11 = &(*_12);",
+                "_14 = &_5;",
+                "_13 = &(*_14);",
+                "_4 = Arguments::<'_>::new::<5, 1>(move _11, move _13) -> [return: bb2, unwind continue];",
             ],
-            2: ["_1 = copy _2;", "StorageDead(_1);", "return;"],
+            2: [f"_3 = {sink}(move _4) -> [return: bb3, unwind continue];"],
+            3: ["_1 = copy _2;", "StorageDead(_1);", "return;"],
         },
-        bindings=bindings,
+        bindings=(
+            "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+            "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+        ),
+        files={(2, 0): file},
     )
-    assert body._format_reads() == {8}
-    assert _root_access("_8 = &(_1.0: i16);", 1, (("field", 0),), {8}) == "read"
-    # The `Debug` of a type of the crate's own may read any part, or none.
-    assert _root_access("_12 = &_1;", 1, (("field", 1),), {8}) is None
-    # From the start: `x.a` is printed, then `x = y` puts the old value back. For a
-    # change to `x.a` the program saw it; for one to `x.b` it never does.
+    body.generics = generics
+    return body
+
+
+def test_std_printing_a_borrowed_primitive_reads_it_at_the_print():
+    # `println!("{}", x.a)`: `_print` formats `&x.a`, so the program reads `x.a` there.
+    body = formatting()
+    sink = "_3 = std::io::_print(move _4) -> [return: bb3, unwind continue];"
+    assert body._format_reads() == {sink: {"&(_1.0: i16)"}}
+    assert _root_access(sink, 1, (("field", 0),), body._format_reads()) == "read"
+    # Not at the borrow: making a formatting argument reads nothing yet.
+    assert _root_access("_8 = &(_1.0: i16);", 1, (("field", 0),), body._format_reads()) is None
+    # For a change to `x.a` the program saw it; for one to `x.b`, `x = y` puts it back.
     assert not body.copy_undoes(2, 1, (0, 1), (("field", 0),))
     assert body.copy_undoes(2, 1, (0, 1), (("field", 1),))
+    # From past the print, nothing reads `x.a` before `x = y`.
+    assert body.copy_undoes(2, 1, (3, 0), (("field", 0),))
+
+
+@pytest.mark.parametrize(
+    ("sink", "kind", "file", "generics"),
+    [
+        # #192 review 3: built and given to a function of the crate's own, never formatted.
+        ("ignore", "i16", "src/main.rs", ()),
+        # A function the crate names `format`, or one in std's file that is no sink (a
+        # panic hook may never format its message).
+        ("format", "i16", "src/main.rs", ()),
+        ("core::panicking::panic_fmt", "i16", STD_MACROS, ()),
+        # A type parameter named like a primitive (its `Display` may read nothing), or a
+        # body whose type parameters are not known.
+        ("std::io::_print", "i16", STD_MACROS, ("i16",)),
+        ("std::io::_print", "i16", STD_MACROS, None),
+        # A type of the crate's own: its `Display` may read any part, or none.
+        ("std::io::_print", "Ab", STD_MACROS, ()),
+    ],
+)
+def test_a_formatting_argument_nothing_proven_to_format_is_no_read(sink, kind, file, generics):
+    body = formatting(sink, kind, file, generics)
+    assert body._format_reads() == {}
+    assert body.copy_undoes(2, 1, (0, 1), (("field", 0),))
 
 
 def test_a_borrow_given_to_a_call_shows_no_read():

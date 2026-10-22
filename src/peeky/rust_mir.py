@@ -239,12 +239,20 @@ _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
 # it returns, which must be the standard library's too.
 _FORMAT_CALL = re.compile(r"(?:(?:core|std)::fmt::(?:rt::)?)?Arguments?::<'_>::new\w*\b")
 _FORMAT_TYPE = re.compile(r"(?:core|std)::fmt::(?:rt::)?Arguments?<'_>")
-# A formatting argument made from a pointer (`_41 = core::fmt::rt::Argument::<'_>::
+# A call that formats the `fmt::Arguments` it is given, as std's own `print!`,
+# `println!`, `eprint!`, `eprintln!` and `format!` write it (#192 review 3): only from
+# their macros' file, where the name is `$crate`'s, never one of the crate's own.
+_FORMAT_SINK = re.compile(
+    r"^_[0-9]+ = (?:std::io::_e?print|(?:(?:alloc|std)::fmt::)?format)\((?:move|copy) _([0-9]+)\)"
+    r" -> "
+)
+_STD_MACROS = re.compile(r"/library/(?:std|alloc)/src/macros\.rs$")
+# A formatting argument made from a pointer (`core::fmt::rt::Argument::<'_>::
 # new_display::<i64>(move _42)`), and the primitives whose formatting reads the value.
 _FORMAT_ARGUMENT = re.compile(
-    r"^_[0-9]+ = (?:(?:core|std)::fmt::rt::)?Argument::<'_>::new_\w+::<([^<>]+)>"
-    r"\((?:move|copy) _([0-9]+)\)"
+    r"(?:(?:core|std)::fmt::rt::)?Argument::<'_>::new_\w+::<([^<>]+)>\((?:move|copy) _([0-9]+)\)"
 )
+_FORMAT_ARGUMENTS = re.compile(r"(?:(?:core|std)::fmt::)?Arguments::<'_>::new\w*(?:::<[^()]*>)?\(")
 _FORMATTED_PRIMITIVE = re.compile(r"[iu](?:8|16|32|64|128|size)|f32|f64|bool|char")
 _NOT_SHARED = re.compile(r"&(?:mut |raw |fake )")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
@@ -331,8 +339,8 @@ class Body:
     _copy_flows: dict | None = None
     # {local: ``_pointers_to``'s locals} (#192).
     _pointer_cache: dict | None = None
-    # ``_format_reads``'s locals (#192 review).
-    _format_cache: frozenset | None = None
+    # ``_format_reads``'s calls and the borrows they format (#192 review 3).
+    _format_cache: tuple | None = None
     _lent_from: dict | None = None
     _maybe: dict | None = None
     _moved_cache: set | None = None
@@ -900,9 +908,10 @@ class Body:
         ``root`` first, it sees the change there, whatever its copies hold (`let a = s.x;`
         keeps the old value, as the program's own). ``projection`` is the part changed
         (``_root_access``): only a read that surely covers part of it counts, `copy`,
-        `move`, or a shared borrow only formatting reads (``_format_reads``); a borrow
-        given to anything else may never be read through, so the path goes on (#192
-        review: `ignore(&x)`, `println!("{}", x.a)` for a change to `x.b`). A write
+        `move`, or std's printing or formatting of a borrow of it (``_format_reads``, at
+        that call); a borrow given to anything else may never be read through, so the
+        path goes on (#192 review: `ignore(&x)`, `println!("{}", x.a)` for a change to
+        `x.b`, `ignore(format_args!("{}", x))`). A write
         covering the whole part counts as an assignment, any other as nothing."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads()
         # (block, index, whether the copy was used on the way here).
@@ -934,43 +943,77 @@ class Body:
         return False
 
     def _format_reads(self):
-        """The locals a shared borrow is assigned to that only formatting a primitive
-        reads through (#192 review): `println!("{}", s.end)` borrows `_28 = &(_1.1: i64)`,
-        puts it in `_27 = (move _28, …)`, takes `_89 = copy (_27.0: &i64)` and `_42 =
-        &(*_89)` out, and gives that to `Argument::new_display::<i64>`, whose printing
-        reads it. Followed only through locals assigned once, by those shapes."""
-        if self._format_cache is None:
-            values, seeds = {}, []
+        """{a call that formats what it is given (``_FORMAT_SINK``, from std's macros'
+        own file): the shared borrows (`&(_1.1: i64)`) whose primitive it formats}, each
+        read at that call (#192 review 3: a borrow given to `Argument::new_display` is
+        read only if the `fmt::Arguments` made from it is formatted; `ignore(format_args!
+        (…))` and a dropped `format_args!` never are). From the call back through what
+        made its `fmt::Arguments`: `Arguments::new` (`_5 = Arguments::<'_>::new::<10, 2>(
+        move _14, move _16)`), the array of `Argument`s (`_16 = &(*_17)`, `_17 = &_9`,
+        `_9 = [move _10, move _12]`), one made from a pointer to a primitive (`_10 =
+        Argument::<'_>::new_display::<i64>(move _11)`, not a type parameter named like
+        one), and that pointer (`_11 = &(*_104)`, `_104 = copy (_6.0: &i64)`, `_6 =
+        (move _7, move _8)`, `_7 = &_1`): only through locals assigned once. Empty where
+        the body's type parameters are not known."""
+        if self._format_cache is None or self._format_cache[0] != self.generics:
+            values, sinks = {}, []
             for block in self.blocks.values():
-                for text, _, _ in block.statements:
+                for text, file, _ in block.statements:
                     text = _STRING.sub('""', text)
-                    if found := _FORMAT_ARGUMENT.match(text):
-                        if _FORMATTED_PRIMITIVE.fullmatch(found[1]):
-                            seeds.append((int(found[2]), None))
                     if whole := _WHOLE_ASSIGNMENT.match(text):
-                        values.setdefault(int(whole[1]), []).append(whole[2])
-            found, seen = set(), set()
-            while seeds:
-                local, member = seeds.pop()
-                if (local, member) in seen or len(values.get(local, ())) != 1:
-                    continue
-                seen.add((local, member))
-                value = values[local][0]
-                if member is not None:
-                    # The tuple of the arguments' pointers: its ``member``th operand.
-                    tuple_ = re.fullmatch(r"\((.*?),?\)", value)
-                    operands = tuple_[1].split(", ") if tuple_ else []
-                    if member < len(operands):
-                        if operand := re.fullmatch(r"(?:move|copy) _([0-9]+)", operands[member]):
-                            seeds.append((int(operand[1]), None))
-                elif step := re.fullmatch(r"(?:move |copy )?_([0-9]+)|&\(\*_([0-9]+)\)", value):
-                    seeds.append((int(step[1] or step[2]), None))
-                elif step := re.fullmatch(r"(?:move|copy) \(_([0-9]+)\.([0-9]+): [^()]*\)", value):
-                    seeds.append((int(step[1]), int(step[2])))
-                elif value.startswith("&") and not _NOT_SHARED.match(value):
-                    found.add(local)
-            self._format_cache = frozenset(found)
-        return self._format_cache
+                        values.setdefault(int(whole[1]), []).append(whole[2].split(" -> [")[0])
+                    sink = _FORMAT_SINK.match(text)
+                    if sink and _STD_MACROS.search(str(file or "").replace("\\", "/")):
+                        sinks.append((text, int(sink[1])))
+            found = {}
+            for text, arguments in sinks if self.generics is not None else ():
+                borrows, pending, seen = set(), [(arguments, "arguments", None)], set()
+                while pending:
+                    item = pending.pop()
+                    local, kind, member = item
+                    if item in seen or len(values.get(local, ())) != 1:
+                        continue
+                    seen.add(item)
+                    value = values[local][0]
+                    operands = [int(n) for n in re.findall(r"(?:move|copy) _([0-9]+)\b", value)]
+                    if member is not None:
+                        # The tuple of the arguments' pointers: its ``member``th operand.
+                        whole = re.fullmatch(r"\((.*?),?\)", value)
+                        parts = whole[1].split(", ") if whole else []
+                        part = (
+                            re.fullmatch(r"(?:move|copy) _([0-9]+)", parts[member])
+                            if (member < len(parts))
+                            else None
+                        )
+                        if part:
+                            pending.append((int(part[1]), "pointer", None))
+                    elif kind == "arguments":
+                        if argument := _FORMAT_ARGUMENT.fullmatch(value):
+                            if (
+                                _FORMATTED_PRIMITIVE.fullmatch(argument[1])
+                                and argument[1] not in self.generics
+                            ):
+                                pending.append((int(argument[2]), "pointer", None))
+                        elif _FORMAT_ARGUMENTS.match(value) or re.fullmatch(
+                            r"\[(?:(?:move|copy) _[0-9]+(?:, )?)*\]|&\(\*_[0-9]+\)|&_[0-9]+",
+                            value,
+                        ):
+                            refs = re.findall(r"(?<![\w])_([0-9]+)\b", value)
+                            pending.extend(
+                                (n, "arguments", None) for n in {*operands, *map(int, refs)}
+                            )
+                    elif step := re.fullmatch(r"&\(\*_([0-9]+)\)|(?:move |copy )?_([0-9]+)", value):
+                        pending.append((int(step[1] or step[2]), "pointer", None))
+                    elif step := re.fullmatch(
+                        r"(?:move|copy) \(_([0-9]+)\.([0-9]+): [^()]*\)", value
+                    ):
+                        pending.append((int(step[1]), "tuple", int(step[2])))
+                    elif value.startswith("&") and not _NOT_SHARED.match(value):
+                        borrows.add(value)
+                if borrows:
+                    found[text] = frozenset(borrows)
+            self._format_cache = (self.generics, found)
+        return self._format_cache[1]
 
     def _pointers_to(self, local):
         """The locals any borrow of ``local`` (or of a part, or of such a pointer's
@@ -2484,20 +2527,24 @@ def _reads_part(value, local, projection, formatted=False):
     return False
 
 
-def _root_access(text, local, projection=(), formats=frozenset()):
+def _root_access(text, local, projection=(), formats=None):
     """What the MIR statement ``text`` surely does to the part ``projection`` of
     ``local`` (#192 review: ``Body.copy_undoes``): "read" (a `copy` or `move` of a place
-    that overlaps it, or a borrow only formatting a primitive reads, ``formats``), "end"
-    (an assignment to the whole local or to a place covering the part, or the end of
-    its storage), or None (anything else: a borrow, a write to another part)."""
+    that overlaps it, or std's printing or formatting of a borrow of one: ``formats``,
+    ``Body._format_reads``), "end" (an assignment to the whole local or to a place
+    covering the part, or the end of its storage), or None (anything else: a borrow, a
+    write to another part)."""
     text = _STRING.sub('""', text)
     if text.startswith(f"StorageDead(_{local})"):
         return "end"
     if _NOT_A_USE.match(text) or _DROP.match(text):
         return None
+    formatted = (formats or {}).get(text, ())
+    if any(_reads_part(borrow, local, projection, True) for borrow in formatted):
+        return "read"
     if whole := _WHOLE_ASSIGNMENT.match(text):
         target = int(whole[1])
-        if _reads_part(whole[2], local, projection, target in formats):
+        if _reads_part(whole[2], local, projection):
             return "read"
         return "end" if target == local else None
     if written := re.match(rf"\(*_{local}\b", text):
