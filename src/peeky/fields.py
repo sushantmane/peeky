@@ -793,6 +793,69 @@ def member_type(graph, root, steps):
     return graph.get(offset)
 
 
+# Rust's names for its pointer types: a raw pointer's, and a reference's or a Box's.
+_RUST_RAW = re.compile(r"\*(?:const|mut) ")
+_RUST_LENT = re.compile(r"&|alloc::boxed::Box<")
+
+
+def _unqualified(graph, offset):
+    """(offset, node) of the type under typedefs and qualifiers; node None if unknown."""
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] not in ("typedef", "qualifier"):
+            return offset, node
+        offset = node[2]
+    return offset, None
+
+
+def _rust_raw(node, holder):
+    """True for a Rust raw pointer type's node, False for a reference's or a Box's, None
+    if unknown. The address inside a fat pointer (`data_ptr` of a `&str` or `*const
+    [u8]`, `pointer` of a `&dyn Trait`) has no name of its own: its ``holder``'s says."""
+    name = node[1] or (holder[1] if holder is not None else "")
+    if _RUST_RAW.match(name):
+        return True
+    return False if _RUST_LENT.match(name) else None
+
+
+def rust_raw_pointer(graph, root, steps):
+    """#255: for a pointer the debugger's child names ``steps`` reach from a Rust local
+    of type ``root``: True if it is a raw pointer (`*const T`, `*mut T`, or the address in
+    a fat one, `*const str`) or is read through one, False if it is a reference or a Box
+    (`&T`, `Box<T>`, or the address in a fat one, `&str`), None where the debug
+    information does not say. The steps are walked as LLDB lists them: a pointer to a
+    struct or array lists what it points at (`r.x`); one to anything else has one
+    child, `*p`. From a graph built with ``pointees``."""
+    offset, holder, through = root, None, False
+    for step in steps:
+        offset, node = _unqualified(graph, offset)
+        if node is not None and node[0] in ("pointer", "reference"):
+            raw = _rust_raw(node, holder)
+            if raw is None or node[2] is None:
+                return None
+            through, holder = through or raw, None
+            if step.startswith("*"):
+                offset = node[2]
+                continue
+            offset, node = _unqualified(graph, node[2])
+        if node is None:
+            return None
+        if node[0] == "record" and not node[7]:
+            found = [member for member in node[5] if member[0] == step]
+            if len(found) != 1:
+                return None
+            offset, holder = found[0][1], node
+        elif node[0] == "array" and _INDEX.fullmatch(step) and node[3] and len(node[3]) == 1:
+            offset, holder = node[2], None
+        else:
+            return None
+    _, node = _unqualified(graph, offset)
+    if node is None or node[0] not in ("pointer", "reference"):
+        return None
+    raw = _rust_raw(node, holder)
+    return True if through or raw else raw
+
+
 # Where a reason names its function (`in \x00, ...`).
 FUNCTION = "\x00"
 
