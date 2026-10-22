@@ -12,9 +12,9 @@ A C++ compiler that isn't clang is refused before anything runs.
 
 - Give a `.c` or `.cpp` file, or a directory that holds one program: `peeky probe ring/ --at 16`.
   If the directory holds several programs, name the file in `--at`: `--at ring.cpp:16`
-  ([C and C++ 7.1](c-cpp-cookbook.md#building)).
+  ([C and C++ 7.1](c-cpp-cookbook.md#build-a-program-from-several-files)).
 - The directory's other `.c` files that define no `main` are built with the target
-  ([C and C++ 7.1](c-cpp-cookbook.md#building)).
+  ([C and C++ 7.1](c-cpp-cookbook.md#build-a-program-from-several-files)).
 - `describe` lists each function's lines, and its names with their types. C writes a struct with
   no typedef as `struct ring`. C++ writes types as code does: `std::vector<std::string>`. The
   compiler's own locals, such as a range `for`'s `__range1`, are left out
@@ -35,18 +35,21 @@ A C++ compiler that isn't clang is refused before anything runs.
   ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - Structs, arrays and standard containers show their first members: `{lo = 0, hi = 2}`,
   `size=3 ["users", "42", ""]`. Unions and what a pointer points to are not read
-  ([C and C++ 7.1](c-cpp-cookbook.md#structs-and-arrays-of-structs)).
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-structs-arrays-and-standard-containers)).
 - A container that something may be changing right now shows only its size. Its elements are
   `not shown`, with the reason. That something can be a library call, a constructor or destructor,
-  or another thread ([C and C++ 7.1](c-cpp-cookbook.md#structs-and-arrays-of-structs)).
+  or another thread
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-structs-arrays-and-standard-containers)).
 - **`no value yet`** means the local isn't initialized at this stop. Read it below its
-  declaration; the row says where ([C and C++ 7.1](c-cpp-cookbook.md#locals-peeky-withholds)).
+  declaration; the row says where
+  ([C and C++ 7.1](c-cpp-cookbook.md#why-a-local-shows-no-value-yet)).
 - **A `note`** marks a value Peeky can't vouch for. Don't trust it, or anything read through it.
   On a line a loop returns to, such as a `do` body's first line, read it on the next line. Below a
   `setjmp` call, a local declared at or below the stop shows a `note`; read it below its
-  declaration ([C and C++ 7.1](c-cpp-cookbook.md#locals-peeky-withholds)).
+  declaration ([C and C++ 7.1](c-cpp-cookbook.md#why-a-local-shows-no-value-yet)).
 - **Same-named locals:** a plain name means the declaration the code names at the stop. To select
-  another one, write `name @ file:line` ([C and C++ 7.1](c-cpp-cookbook.md#what-set-checks)).
+  another one, write `name @ file:line`
+  ([C and C++ 7.1](c-cpp-cookbook.md#same-named-locals-which-one-a-name-means)).
 - **Several stops:** a line with several breakpoint locations stops at each one. Rows carry their
   `stop` number ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)):
   - a macro's code stops at each location on every pass: 1, 2, 1, 2;
@@ -69,20 +72,21 @@ A C++ compiler that isn't clang is refused before anything runs.
   ([C and C++ 7.1](c-cpp-cookbook.md#71-c-and-c)).
 - A text in double quotes goes into a `char[N]` or `std::string` local, within its size:
   `--set 'name="apple"'`. Peeky never reallocates. It never writes through a `char *` or a
-  reference, nor into a const local ([C and C++ 7.1](c-cpp-cookbook.md#changing-text)).
+  reference, nor into a const local ([C and C++ 7.1](c-cpp-cookbook.md#change-a-text)).
 - lldb-dap 21 (macOS) can write every case of text. Older versions write fewer
-  ([C and C++ 7.1](c-cpp-cookbook.md#changing-text)).
+  ([C and C++ 7.1](c-cpp-cookbook.md#change-a-text)).
 - Every `std::string` change warns about views taken before it. A `string_view`, a `c_str()` or
   `data()` pointer, or an iterator keeps the old size, and Peeky can't see them
-  ([C and C++ 7.1](c-cpp-cookbook.md#changing-text)).
+  ([C and C++ 7.1](c-cpp-cookbook.md#change-a-text)).
 - A field through a pointer can't be set: `r->tail` in `push(struct ring *r)`, or `this.count`.
   Nor can a structured binding of a reference: `n` and `at.x` in `auto &[at, n] = *owner`. To
   change one, set it in the frame that owns the struct, before the call
-  ([C and C++ 7.1](c-cpp-cookbook.md#what-set-checks)).
+  ([C and C++ 7.1](c-cpp-cookbook.md#change-a-field-behind-a-pointer)).
 - In C, when the program's sources call the function only once, the refusal names that call. It
   follows a pointer that a caller only passes on, such as `fits(lay, …)` in `wrap`. It names the
   frame that owns the struct, and its call: `main` at `wrap(&lay, …)`. If it can't, it says so
-  and points to `describe`'s `mutable:` line ([C and C++ 7.1](c-cpp-cookbook.md#what-set-checks)).
+  and points to `describe`'s `mutable:` line
+  ([C and C++ 7.1](c-cpp-cookbook.md#change-a-field-behind-a-pointer)).
 
 ## See what a function returned
 

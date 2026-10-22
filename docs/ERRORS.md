@@ -1,96 +1,362 @@
 # Error codes (protocol 1)
 
-Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) or the CLI (`--json` prints `{"error": {...}}`; stderr shows `[CODE] message` plus a hint), carries the fields below. Probe results use the same object in their `error` field, with a `status` of `failed`, `no-stop` or `timeout`.
+Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
+(`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
+Without it, stderr shows `[CODE] message` and a hint. A probe result uses the same object in its
+`error` field, with a `status` of `failed`, `no-stop` or `timeout`.
+
+## The fields of an error
 
 | Field | Meaning |
 | --- | --- |
-| `code` | Stable identifier to branch on. Messages may change; codes do not. |
+| `code` | A stable name to branch on. Messages may change; codes don't. |
 | `hint` | What to do next. |
 | `retryable` | Whether repeating the same request can succeed after the hinted step. |
-| `session_closed` | The worker discarded the session (provenance, debugger or time failures). Start a new one. |
-| `cleanup` | Present when the error ended a session: what became of the processes it started. `terminated pid N` (or `pids N, M`: the program and what it started), `nothing Peeky could identify was still running`, `detached; the attached program keeps running` (Peeky never ends a program it attached to), `pid N did not exit after SIGKILL …`, or why Peeky could not tell. When the debugger was gone before the end, it adds which processes may have escaped (below). |
+| `session_closed` | The worker discarded the session, after a provenance, debugger or time failure. Start a new one. |
+| `cleanup` | Present when the error ended a session: what became of the processes it started. See [What `cleanup` says](#what-cleanup-says). |
 
-| Code | Do next | Why, and more |
-| --- | --- | --- |
-| `STALE_STOP` | `wait` until stopped, then `inspect` | The program moved on; `stop_id` is old, or the stop was auto-resumed by `--max-pause`. On timed programs, prefer a probe |
-| `INSPECT_REQUIRED` | `inspect` again, use the new reference | Mutation without a fresh scope, or a value-view read still pending |
-| `STALE_HANDLE` | `inspect` again | Expansion handle revoked or frame/scope changed |
-| `NOT_FOUND` | Use a name from the message's `visible:` or `children:` list | Name/selector not visible (names match exactly as the debugger lists them: one spelled in another Unicode normalization form is refused, and the message gives the listed spelling), or (Python) a name missing from the locals that Peeky could not prove is a global there; before a probe runs, a `--set` name no function at its line declares (Rust, and Java from its class files' local variable tables). Or list names with `inspect`, `session get <value>`; dict entries are `d['key']`; C++/Java members are `this.x`; a caller's locals need `--frame N` |
-| `MUTATION_REJECTED` | Follow the hint: it names the one way around the rule | A change Peeky cannot make there; nothing was written. The rules, as lists: [MUTATION_REJECTED in detail](#mutation_rejected-in-detail) |
-| `BUDGET_EXHAUSTED` | Narrow the request | A bounded read limit was reached |
-| `INVALID_BREAKPOINT` | Use `peeky describe` lines | Line not executable or unsupported breakpoint field |
-| `NO_STOP` (probe result) | Pick an executed line | Program ended without reaching the line: the line never runs, or the program failed first (`exit_code` when the debugger reports it). After a failure, read the output and check the program's arguments |
-| `BUILD_FAILED` | Fix what the compiler reports and run again | The program did not compile, or its build timed out (with `--old/--new`: the edit does not build); the message has the compiler's output. Your files were not changed. A probe's failed build is a refusal before launch (exit 2, `refused_before_launch`, no run saved); `verify`'s is a failed verify (exit 1) |
-| `PROVENANCE_CHANGED` | New session on a fresh build | Sources, build outputs or tools changed |
-| `TIMEOUT` | Start again; never blindly retry a mutation | A time bound was hit; session discarded. `The debuggee did not start` means the program never reached the debugger during the launch. For a debuggee that did not start, check that it can read its own path and every directory above it (a hung file system or a pending macOS privacy prompt blocks it), then retry |
-| `DEBUGGER_ERROR` | Start again | Adapter/debugger failure: a broken protocol stream (for example a reply over 4 MiB), java-debug's event thread dying, or an attached JVM's stop the debugger never reported (`Lost stop:`); session discarded. Capture narrower selectors if values are huge; for Java, keep `debugger_events` (#27) |
-| `SESSION_ACTIVE` / `NO_SESSION` | Close / start a session | Session lifecycle misuse |
-| `BUSY` | Retry later | Another probe is running on this worker |
-| `UNSUPPORTED` | Do what the message names instead, or fix the setup it names | Operation or capability not offered (`--capture return` for Python), a Java adapter bundle built before a required java-debug patch, a C++ target whose compiler is not clang (`C++ targets need clang++ …`, refused before building: CPP.md), or inline assembly that can read a file (`Inline assembly that can read a file …`: `.incbin`, `.include` or an assembler macro in a C/C++ `asm` or a Rust `asm!`/`global_asm!`/`naked_asm!`, which no dependency file lists; refused before building, #180). Call `version`; rebuild the Java adapter with `scripts/setup_java_adapter.py`; set `PEEKY_NATIVE_CXX` to clang++; take the directive out of the inline assembly and put the data in a declared source or header |
-| `UNAUTHORIZED` | Use the worker's `DEBUG_TOKEN` | Missing or wrong bearer token |
-| `INVALID_REQUEST` | Fix the request | Malformed arguments (such as a `--frame` past the stack, whose message says how many frames there are), or an evidence store that cannot be used. For a store, move it aside or pass `--store` |
-| `INVALID_QUERY` | Fix the query | `peeky sql`/`peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound. `peeky sql --schema` lists tables, columns and canned queries |
-| `INTERNAL_ERROR` | Report it with the message; do not retry or change your request | A Peeky bug (unexpected exception type) |
-| `UNREACHABLE` | Restore the tunnel/worker and retry | No connection reached the worker (tunnel or worker down); nothing was applied. The session is kept |
-| `TRANSPORT_LOST` | Reconnect, then `inspect`/`wait`; never repeat a mutation blindly | The connection broke mid-request; outcome unknown |
-| `JOB_LOST` | Rerun the command | A `--background` job's process died before finishing |
+## What each code means
 
-## MUTATION_REJECTED in detail
+The last column is the `retryable` field.
 
-A refused change writes nothing. The hint names the one action the broken rule leaves (stop at the statement's first line, change it in its own frame, pass a value in range, ...); otherwise observe, or edit and `verify`.
+| Code | What happened | What to do | Retryable |
+| --- | --- | --- | --- |
+| `STALE_STOP` | The program moved on: the `stop_id` is old, or `--max-pause` resumed the stop. | `wait` until stopped, then `inspect`. On timed programs, prefer a probe. | no |
+| `INSPECT_REQUIRED` | A change came without a fresh scope, or a value-view read is still pending. | `inspect` again, and use the new reference. | yes |
+| `STALE_HANDLE` | An expansion handle was revoked, or the frame or scope changed. | `inspect` again. | yes |
+| `NOT_FOUND` | A name or selector isn't visible ([details](#not_found)). | Use a name from the message's `visible:` or `children:` list. | no |
+| `MUTATION_REJECTED` | Peeky can't make that change there. Nothing was written. | Follow the hint: it names the one way around the rule ([the rules](#when-a-change-is-refused-mutation_rejected)). | no |
+| `BUDGET_EXHAUSTED` | A bounded read limit was reached. | Narrow the request. | no |
+| `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
+| `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
+| `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
+| `PROVENANCE_CHANGED` | Sources, build outputs or tools changed. | Start a new session on a fresh build. | no |
+| `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
+| `DEBUGGER_ERROR` | The adapter or debugger failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
+| `SESSION_ACTIVE` | A session was misused: one is already open. | Close the session. | no |
+| `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
+| `BUSY` | Another probe is running on this worker. | Retry later. | yes |
+| `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
+| `UNAUTHORIZED` | The bearer token is missing or wrong. | Use the worker's `DEBUG_TOKEN`. | no |
+| `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
+| `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables, columns and canned queries. | no |
+| `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
+| `UNREACHABLE` | No connection reached the worker: the tunnel or the worker is down. Nothing was applied, and the session is kept. | Restore the tunnel or the worker, and retry. | yes |
+| `TRANSPORT_LOST` | The connection broke mid-request. The outcome is unknown. | Reconnect, then `inspect` or `wait`. Never repeat a change blindly. | no |
+| `JOB_LOST` | A `--background` job's process died before it finished. | Rerun the command. | no |
 
-**What can change.** Anything else is refused:
-- a root local of the stopped (innermost) frame;
-- Java: also a scalar field or array element that is not final or static, never a field a JDK class declares (`it is declared by java.lang.String, a JDK class`: one in a JDK module) or an element of an array one holds, or of an array inside it, under any name (`the array is held by java.lang.String.value, a JDK class's field`; refused too where more than 64 objects refer to it, or the search for them outlasts 2 s or the pause budget) (#204);
-- Rust, C, C++: also an integer field or element of a local the frame holds itself, reached without a pointer, reference or Box and outside unions, enums, packed and standard-library types;
-- the value must be a literal (Python) or a scalar (compiled).
+## Details by code
 
-**Where.** Only where no statement under way may hold a copy, else `cannot be changed here`:
-- C and C++: at a statement's first instruction;
-- Rust: at a breakpoint, or a step to its line's start, where the MIR proves none;
-- Rust: nor where a binding of the program's own holds a copy it goes on with, replacing or dropping the local unread (`the program has already copied `x` into `n``).
+### NOT_FOUND
 
-**Texts (#137).** A text in double quotes changes only a C `char[N]`, a C++ `std::string`, a Rust `String` local or a Java String. These are refused, nothing written:
-- one that does not fit its storage (`the text does not fit`);
-- one for a pointer, reference, `&str` or field (`does not write through`, `not into a field or element`);
-- a Rust `String` the MIR does not prove initialized, or that a live borrow reads (`a borrow of it ... is still used after the stop`);
-- any Rust `String` of a crate with unsafe code, a nightly feature or a source Peeky cannot read as rustc does (`the crate has unsafe code (in …)`, `the crate enables nightly features (in …)`, `Peeky cannot rule out unsafe code in …`);
-- a `const` or `volatile` string (`a const object`);
-- a Java variable not declared String;
-- one this debugger cannot write (`cannot write memory`: lldb-dap 21 can; or `cannot read memory` for a libstdc++ string with lldb-dap 18).
+- Names match exactly as the debugger lists them. A name spelled in another Unicode
+  normalization form is refused, and the message gives the listed spelling.
+- In Python, a name missing from the locals is `NOT_FOUND` when Peeky can't prove that it is a
+  global there.
+- Before a probe runs, a `--set` name that no function at its line declares is `NOT_FOUND`. Peeky
+  checks this for Rust, and for Java from its class files' local variable tables.
+- To list names, use `inspect` or `session get <value>`.
+- Dict entries are `d['key']`. C++ and Java members are `this.x`. A caller's locals need
+  `--frame N`.
 
-A Java bundle built before then says to rebuild it (`predates String changes`).
+### NO_STOP
 
-**Java locals the program does not read.**
-- Any Java local the program never reads (a constant javac folds into its uses) is refused (`the program never reads it`).
-- So is one no path from the stop reads again (`does not read it after this stop`: a lambda or inner class captured it before).
+- The line never runs, or the program failed first. `exit_code` is set when the debugger reports
+  it.
+- After a failure, read the output and check the program's arguments.
 
-**Python locals a loop's pass assigns before reading them (#182).** A local the current pass's code has not assigned before the stop's line, which every path through the rest of the pass assigns before reading it, is refused (`this function's code assigns it again (line N) before reading it`); the hint says to change it after that assignment.
+### BUILD_FAILED
 
-**Refused before the program runs.**
-- A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register or, at every place of the line, inside a statement that has already read it or copied into such a binding, a field through a pointer or of a type no change reaches, a Java local whose declared type no change reaches or cannot hold the value, a Java field of a value declared a type not among the program's classes that no class of the program which may be that value declares) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
-- For a register, the hint names a candidate edit with `std::hint::black_box` ([Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it)).
+- With `--old`/`--new`, it means that the edit doesn't build.
+- The message has the compiler's output. Your files weren't changed.
+- A probe's failed build is a refusal before launch: exit 2, `refused_before_launch`, and no run
+  saved.
+- `verify`'s failed build is a failed verify: exit 1.
 
-**A field through a C pointer parameter.** When the program calls the function once, the message names that call (``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``). Where that caller only passes its own pointer parameter on, it follows the calls to the frame that owns the struct (``fits has one caller: wrap.c:40 in wrap, which passes it on (`lay`, its own pointer parameter); wrap has one caller: wrap.c:75 in main, which passes `&lay`, where `lay.width` is settable``); where it cannot (several callers, a pointer kept or computed), it names no frame for the change and points to `describe`'s `mutable:` line.
+### TIMEOUT
 
-Two Java debugger failures (#27) end with `DEBUGGER_ERROR` at once instead of a timeout; see [JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27):
-- **`java-debug's event thread died (…)`.** The adapter's stderr showed its event thread failing, so nothing more can be reported. Peeky detaches or ends the program, as on any debugger failure, and keeps the session as a failed one. Later requests repeat the error. `report` returns its final state (`state: closed`, `adapter_failure`, history `adapter_failed`), and `close` ends it. Its `debugger_events.stderr` keeps the adapter's last 16 KiB of log; a failed probe carries `debugger_events` too.
-- **`Lost stop: …`.** An attached JVM's stop that the debugger never reported. The message names the suspended thread, its location, the session's breakpoint and how long the stop has gone unreported. Nothing is served from that stop, and Peeky detaches, so the JVM runs on. Later requests on the session repeat the error. `report` still returns the session as it was (`state: detached`, `lost_stop`, `history`, `debugger_events`), and `close` ends it. A failed probe carries `debugger_events` too; keep it for #27.
+- `The debuggee did not start` means that the program never reached the debugger during the
+  launch.
+- Then check that the program can read its own path and every directory above it. A hung file
+  system, or a pending macOS privacy prompt, blocks it. Then retry.
 
-When a session ends, on an error or not, Peeky ends every process it started (#143):
-- **What it knows.** While the session runs, Peeky lists its processes: every second, soon after each stop, when the adapter announces the program (DAP `process`, java-debug `processid`), and once more at the end. It records each by pid and start time:
-  - the adapter's descendants, and the descendants of every process recorded before that is still the same one, so a child whose parent died, and was reparented, stays known;
-  - every member of a recorded process's group (a group outlives its leader, and its id is never reused while it has members), except the adapter's group and Peeky's own;
-  - every process still in the adapter's session, with its group: the adapter leads a session of its own, and a process can only inherit a session, never join one, so it was started from the adapter, whatever became of its parents and whenever the listing comes (#168);
-  - the program the adapter announced, with its process group, while it is the same process (its start), even if it left that session (`setsid`).
-- **The adapter's own ids** (PR #170 review). Peeky never reaps the adapter before the end: a dead adapter stays a zombie, which keeps its pid, and so its group's and its session's ids, from naming anyone else's, and `close` reaps it last.
-  - Every Peeky command that starts adapters (`peeky`, `peeky-worker`, `peeky-probe`, `peeky-agent`) first sets an inherited ignored `SIGCHLD` back to the default; with it ignored, the kernel would reap the adapter itself.
-  - An adapter reaped anyway (by a caller, or by the kernel) counts as gone: its session and group no longer count, unless a process Peeky recorded, still the same one, is still in them.
-  - Where Peeky cannot read the process table and Python has no `waitid` (macOS before 3.13), the adapter's group is not signalled, and `cleanup` says `nothing was ended`.
-- **How it ends them.** It asks the debugger first (`disconnect` with `terminateDebuggee`). Then whatever it knows that still runs gets SIGTERM, along with those processes' groups and the adapter's group (a launched JVM shares it), and SIGKILL after 1 s. So a program in a process group of its own (debugpy's launcher puts it there), one that never reached the debugger, children in other groups and sessions, children a program left behind, and those of a program whose adapter died are all ended, and a JVM's shutdown hooks run.
-- **What it cannot know.** A process started after the last listing, in a session of its own (it called `setsid`), whose parent has exited, cannot be told from anyone else's. Once the debugger is gone, its tree is gone too, so `cleanup` then says so: `…; the debugger was gone: a process the program started in the last N s, in a session of its own and whose parent had exited, may survive`. It never claims more than it knows: `nothing Peeky could identify was still running`.
-- **When.** A failed or timed-out launch, a failed request, `close`, an idle worker and a probe's end all go through it. The error's `cleanup`, the `close` result and `peeky session close` say what happened. A session that failed with no request in flight (the pause guard, a lost stop, the adapter's fatal event) keeps it too: its repeated error, its `report` and its `close` carry the same `cleanup`. An attached program is only detached, never ended.
+### DEBUGGER_ERROR
 
-The CLI's exit status (`peeky probe` and the `peeky-probe` script alike): 0 success; 1 a completed command with a negative result (a probe that failed once the debugger's launch or attach request was sent, timed out or never stopped, a verify that did not pass, a `session get` with a failed selector); 2 an error, or a refusal: anything Peeky turned down, including any probe that ended before the debugger's launch or attach request was sent, whatever its code (`refused_before_launch`: a `--set` or `--set-at` its build rules out, a file outside the worker root, an outdated Java adapter, a build that failed, a debugger that did not start, a remote worker's refusal or a slow remote build; #190). The program was not started by Peeky (a build, or a Python candidate's interpreter, may have run), so its text is only the error and its hint, and no run is kept as evidence. A remote answer Peeky cannot read is `TRANSPORT_LOST` instead: its outcome is unknown; 3 not there yet (a background job still running, `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for); 4 a probe that completed but did not make a change it was asked for (`--set`, `--set-at`: its stop never came; `unapplied` in JSON), whose values are evidence of a run without that change.
+- The causes are:
+  - a broken protocol stream, for example a reply over 4 MiB;
+  - java-debug's event thread dying;
+  - an attached JVM's stop that the debugger never reported (`Lost stop:`).
+- If values are huge, capture narrower selectors.
+- For Java, keep `debugger_events` for java-debug's issue #27. See
+  [Two Java debugger failures](#two-java-debugger-failures).
 
-`POST /version` returns the protocol version, supported operations and the error codes. Every HTTP response carries `X-Peeky-Protocol: 1`.
+### UNSUPPORTED
+
+| Case | What to do |
+| --- | --- |
+| An operation or capability that isn't offered, such as `--capture return` for Python | Call `version` to see what is offered, or do what the message names |
+| A Java adapter bundle built before a required java-debug patch | Rebuild the adapter with `scripts/setup_java_adapter.py` |
+| A C++ target whose compiler isn't clang: `C++ targets need clang++ …`, refused before building ([CPP.md](CPP.md)) | Set `PEEKY_NATIVE_CXX` to clang++ |
+| Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
+
+Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
+applies to a C or C++ `asm`, and to a Rust `asm!`, `global_asm!` or `naked_asm!`. No dependency
+file lists what it reads.
+
+### INVALID_REQUEST
+
+- Malformed arguments, such as a `--frame` past the stack. The message says how many frames there
+  are.
+- An evidence store that can't be used. Move it aside, or pass `--store`.
+
+## When a change is refused (`MUTATION_REJECTED`)
+
+A refused change writes nothing. The hint names the one action that the broken rule leaves you.
+For example: stop at the statement's first line, change the value in its own frame, or pass a
+value in range. Otherwise, observe the value, or edit the source and `verify`.
+
+### What can change
+
+Anything not listed here is refused:
+
+- a root local of the stopped (innermost) frame: one of the stopped function's own variables;
+- in Java, also a scalar field or array element that isn't final or static;
+- in Rust, C and C++, also an integer field or element of a local that the frame holds itself. It
+  must be reached without a pointer, reference or `Box`, and lie outside unions, enums, packed
+  types and standard-library types.
+
+In Java, Peeky never changes a field that a JDK class declares, that is, one in a JDK module:
+`it is declared by java.lang.String, a JDK class`. Nor does it change an element of an array that
+such a field holds, or of an array inside it, under any name:
+`the array is held by java.lang.String.value, a JDK class's field`. Such an element is refused too
+where more than 64 objects refer to it. So is one where the search for them takes longer than 2 s,
+or longer than the pause budget.
+
+The value must be a literal in Python, and a scalar in a compiled language.
+
+### Where a change can be made
+
+A change is made only where no statement under way may hold a copy of the value. Elsewhere, the
+message says `cannot be changed here`.
+
+- C and C++: at a statement's first instruction.
+- Rust: at a breakpoint, or after a step to its line's start, where the MIR proves that no
+  statement is under way. The MIR is the compiler's mid-level representation of the function.
+- Rust: not where a binding of the program's own holds a copy that it goes on with. That binding
+  replaces or drops the local unread: ``the program has already copied `x` into `n` ``.
+
+### Texts
+
+A text in double quotes changes only a C `char[N]`, a C++ `std::string`, a Rust `String` local, or
+a Java String. These are refused, and nothing is written:
+
+| Refused | The message says |
+| --- | --- |
+| A text that doesn't fit its storage | `the text does not fit` |
+| A text for a pointer, a reference, a `&str` or a field | `does not write through`, `not into a field or element` |
+| A Rust `String` that the MIR doesn't prove initialized, or that a live borrow reads | `a borrow of it ... is still used after the stop` |
+| Any Rust `String` in a crate with unsafe code, a nightly feature, or a source that Peeky can't read as rustc does | `the crate has unsafe code (in …)`, `the crate enables nightly features (in …)`, `Peeky cannot rule out unsafe code in …` |
+| A `const` or `volatile` string | `a const object` |
+| A Java variable not declared String | |
+| A text that this debugger can't write | `cannot write memory` (lldb-dap 21 can write it); `cannot read memory` for a libstdc++ string with lldb-dap 18 |
+
+A Java adapter bundle built before String changes were supported says to rebuild it:
+`predates String changes`.
+
+### Java locals that the program doesn't read
+
+- A Java local that the program never reads is refused: `the program never reads it`. An example
+  is a constant that javac folds into its uses.
+- So is one that no path from the stop reads again: `does not read it after this stop`. For
+  example, a lambda or an inner class captured it before the stop.
+
+### Python locals that the current pass assigns before reading them
+
+Take a local that the current pass of a loop hasn't assigned before the stop's line. If every path
+through the rest of the pass assigns it before reading it, a change is refused:
+`this function's code assigns it again (line N) before reading it`. The hint says to change it
+after that assignment.
+
+### Refused before the program runs
+
+Sometimes the build rules out a probe's `--set` at its line, in every function there. Then the
+probe is refused before the program runs: `refused_before_launch`, no hits, no run saved, and exit
+status 2. The build rules a change out for:
+
+- any change in an optimized build;
+- a Rust local kept in a register;
+- a Rust local inside a statement that has already read it, or copied it into a binding of the
+  program's own. This must hold at every place of the line;
+- a field through a pointer, or a field of a type that no change reaches;
+- a Java local whose declared type no change reaches, or that can't hold the value;
+- a Java field of a value declared as a type outside the program's classes. It is ruled out when
+  no class of the program that may be that value declares the field.
+
+For a register, the hint names a candidate edit with `std::hint::black_box`
+([Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it)).
+
+### A field through a C pointer parameter
+
+When the program's sources call the function only once, the message names that call:
+
+```
+push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable
+```
+
+If that caller only passes its own pointer parameter on, the message follows the calls to the
+frame that owns the struct:
+
+```
+fits has one caller: wrap.c:40 in wrap, which passes it on (`lay`, its own pointer parameter); wrap has one caller: wrap.c:75 in main, which passes `&lay`, where `lay.width` is settable
+```
+
+Where it can't follow them, because of several callers, or a pointer kept or computed, it names no
+frame for the change. It points to `describe`'s `mutable:` line instead.
+
+## Two Java debugger failures
+
+Two java-debug failures end with `DEBUGGER_ERROR` at once, instead of a timeout. See
+[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27). java-debug's issue #27 tracks both.
+
+### `java-debug's event thread died (…)`
+
+The adapter's stderr showed its event thread failing, so nothing more can be reported.
+
+- Peeky detaches from the program or ends it, as on any debugger failure. It keeps the session as a
+  failed one.
+- Later requests repeat the error.
+- `report` returns the final state: `state: closed`, `adapter_failure`, and `adapter_failed` in the
+  history. `close` ends the session.
+- The session's `debugger_events.stderr` keeps the adapter's last 16 KiB of log. A failed probe
+  carries `debugger_events` too.
+
+### `Lost stop: …`
+
+An attached JVM made a stop that the debugger never reported. The message names the suspended
+thread, its location, the session's breakpoint, and how long the stop has gone unreported.
+
+- Nothing is served from that stop. Peeky detaches, and the JVM runs on.
+- Later requests on the session repeat the error.
+- `report` still returns the session as it was: `state: detached`, `lost_stop`, `history` and
+  `debugger_events`. `close` ends the session.
+- A failed probe carries `debugger_events` too. Keep it for issue #27.
+
+## How Peeky ends a session's processes
+
+When a session ends, on an error or not, Peeky ends every process it started. An attached program
+is only detached, never ended.
+
+### When it runs
+
+A failed or timed-out launch, a failed request, `close`, an idle worker, and a probe's end all go
+through it. The error's `cleanup`, the `close` result and `peeky session close` say what happened.
+
+A session can also fail with no request in flight: the pause guard, a lost stop, or the adapter's
+fatal event. Its repeated error, its `report` and its `close` then carry the same `cleanup`.
+
+### What `cleanup` says
+
+- `terminated pid N`, or `pids N, M`: the program, and what it started.
+- `nothing Peeky could identify was still running`.
+- `detached; the attached program keeps running`. Peeky never ends a program it attached to.
+- `pid N did not exit after SIGKILL …`.
+- Or why Peeky couldn't tell.
+
+When the debugger was gone before the end, `cleanup` adds which processes may have escaped. See
+[What Peeky can't know](#what-peeky-cant-know).
+
+### What Peeky knows
+
+While the session runs, Peeky lists its processes:
+
+- every second;
+- soon after each stop;
+- when the adapter announces the program (DAP `process`, java-debug `processid`);
+- once more at the end.
+
+It records each process by its pid and start time. It records:
+
+- the adapter's descendants, and the descendants of every process it recorded before that is
+  still the same process. So a child whose parent died, and which was reparented, stays known;
+- every member of a recorded process's group, except the adapter's group and Peeky's own. A group
+  outlives its leader, and its id is never reused while it has members;
+- every process still in the adapter's session, with its group. The adapter leads a session of
+  its own, and a process can only inherit a session, never join one. So such a process was started
+  from the adapter, whatever became of its parents, and whenever the listing comes;
+- the program that the adapter announced, with its process group, while it is the same process (by
+  its start time). This holds even if the program left that session (`setsid`).
+
+### The adapter's own ids
+
+Peeky never reaps the adapter before the end. A dead adapter stays a zombie, so its pid, and the
+ids of its group and session, can't name anyone else's process. `close` reaps it last.
+
+- Every Peeky command that starts adapters (`peeky`, `peeky-worker`, `peeky-probe`,
+  `peeky-agent`) first sets an inherited, ignored `SIGCHLD` back to the default. If it stayed
+  ignored, the kernel would reap the adapter itself.
+- An adapter reaped anyway, by a caller or by the kernel, counts as gone. Its session and group no
+  longer count, unless a process that Peeky recorded, still the same one, is still in them.
+- Where Peeky can't read the process table, and Python has no `waitid` (macOS before Python
+  3.13), the adapter's group isn't signalled. `cleanup` then says `nothing was ended`.
+
+### How Peeky ends them
+
+1. It asks the debugger first: `disconnect` with `terminateDebuggee`.
+2. Then each process it knows that still runs gets SIGTERM, along with those processes' groups and
+   the adapter's group. A launched JVM shares the adapter's group.
+3. SIGKILL follows after 1 s.
+
+So all of these are ended, and a JVM's shutdown hooks run:
+
+- a program in a process group of its own, where debugpy's launcher puts it;
+- a program that never reached the debugger;
+- children in other groups and sessions;
+- children that a program left behind;
+- the children of a program whose adapter died.
+
+### What Peeky can't know
+
+Peeky can't tell a process from anyone else's when all three of these hold:
+
+- it was started after the last listing;
+- it is in a session of its own: it called `setsid`;
+- its parent has exited.
+
+Once the debugger is gone, its process tree is gone too. `cleanup` then says so:
+
+```
+…; the debugger was gone: a process the program started in the last N s, in a session of its own and whose parent had exited, may survive
+```
+
+It never claims more than it knows: `nothing Peeky could identify was still running`.
+
+## Exit status
+
+The CLI's exit status is the same for `peeky probe` and the `peeky-probe` script:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | Success. |
+| 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass; a `session get` with a failed selector. |
+| 2 | An error, or a refusal: anything Peeky turned down. See below. |
+| 3 | Not there yet: a background job is still running, or `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for. |
+| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. JSON lists the change in `unapplied`. The values are evidence of a run without that change. |
+
+Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
+whatever its code. Its JSON says `refused_before_launch`. The causes include:
+
+- a `--set` or `--set-at` that its build rules out;
+- a file outside the worker root;
+- an outdated Java adapter;
+- a build that failed;
+- a debugger that didn't start;
+- a remote worker's refusal, or a slow remote build.
+
+Peeky didn't start the program then, though a build, or a Python candidate's interpreter, may have
+run. So the text is only the error and its hint, and no run is kept as evidence. A remote answer
+that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknown.
+
+## Protocol version
+
+`POST /version` returns the protocol version, the supported operations and the error codes. Every
+HTTP response carries `X-Peeky-Protocol: 1`.
