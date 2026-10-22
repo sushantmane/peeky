@@ -1126,6 +1126,8 @@ class PythonAdapter:
             "redirectOutput": True,
             "justMyCode": True,
             "subProcess": False,
+            # A debugged run writes no __pycache__ into the root (#249).
+            "env": {"PYTHONDONTWRITEBYTECODE": "1"},
         }
 
     # Listing nodes the worker walks through without counting them as a level of depth.

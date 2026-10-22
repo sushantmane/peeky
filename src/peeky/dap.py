@@ -529,11 +529,18 @@ class DAP:
                 self.condition.wait(remaining)
             return not self.abandoned and not self.error
 
+    # Called with every stackTrace answer before it is used (#249: a remote Python
+    # session's frames must come from the sources it compared).
+    frames_check = None
+
     def request(self, command, arguments=None, *, timeout=15, trace=True):
         """One absolute deadline covers both the write and the response."""
         deadline = time.monotonic() + timeout
         seq = self.send(command, arguments, timeout=max(0.001, min(5, timeout)), trace=trace)
-        return self.response(seq, timeout=max(0, deadline - time.monotonic()))
+        body = self.response(seq, timeout=max(0, deadline - time.monotonic()))
+        if command == "stackTrace" and self.frames_check is not None:
+            self.frames_check(body)
+        return body
 
     def wait_event(self, names, after=0, timeout=15, *, failed_request=None):
         deadline = time.monotonic() + timeout

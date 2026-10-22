@@ -105,6 +105,7 @@ class Client:
         expect_sha256=None,
         edit=None,
         set_at=(),
+        expect_inputs=None,
     ):
         """One stateless request: stop at `path:line`, capture, optionally set, report.
 
@@ -114,6 +115,9 @@ class Client:
         ``edit=(old, new)`` probes a candidate fix: the worker builds the program with
         ``old`` replaced once by ``new``; ``at`` is in the original's line numbering. A
         tuple of such pairs makes several edits, each quoting the original file.
+
+        ``expect_inputs`` maps every source the worker's target reads to its sha256: the
+        worker refuses before launching when any differs, or is on one side only (#249).
         """
         from peeky.probe import edit_pairs
 
@@ -125,6 +129,8 @@ class Client:
             options["args"] = list(args)
         if expect_sha256:
             options["expect_sha256"] = dict(expect_sha256)
+        if expect_inputs is not None:
+            options["expect_inputs"] = dict(expect_inputs)
         if set_at:
             options["set_at"] = [list(point) for point in set_at]
         return self.call(

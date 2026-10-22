@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
@@ -949,8 +949,33 @@ def _ranges(numbers):
     return ", ".join(spans)
 
 
+# Notes every result of this command carries: a remote Python session's (#249).
+_NOTES = []
+
+
 def _emit(value, as_json, text):
-    print(json.dumps(value, indent=2, default=str) if as_json else text(value))
+    if as_json:
+        print(json.dumps(_noted(value), indent=2, default=str))
+        return
+    shown = text(value)
+    for note in _NOTES:
+        if note not in shown:
+            shown = f"{shown}\nwarning: {note}"
+    print(shown)
+
+
+def _noted(value):
+    """``value`` with this command's notes in its `warnings` (each row's, for a list)."""
+    if not _NOTES:
+        return value
+
+    def add(item):
+        if not isinstance(item, dict):
+            return item
+        warnings = list(item.get("warnings") or [])
+        return {**item, "warnings": warnings + [n for n in _NOTES if n not in warnings]}
+
+    return [add(item) for item in value] if isinstance(value, list) else add(value)
 
 
 def _sets(items):
@@ -970,7 +995,7 @@ def probe(args):
     try:
         root, request, edit, original, language, adapter = _probe_request(args)
         if args.worker is not None:
-            client, expected = _remote_probe(args, root, request)
+            client, request, expected = _remote_probe(args, root, request)
     except Exception as exc:
         # Refused before the probe request was sent (here, or in the worker's version
         # handshake; #190): the debugger's launch or attach request was not sent.
@@ -994,6 +1019,7 @@ def probe(args):
             progress=_progress(args),
             launch_budget=args.launch_budget,
             launch_marker=args.launch_marker,
+            pycache_base=args.pycache_dir,
         )
     return _probe_result(args, root, result, edit, original, request.program, language)
 
@@ -1025,9 +1051,20 @@ def _probe_request(args):
         expect_sha256=tuple(tuple(item.split("=", 1)) for item in args.expect_sha256),
         edit=edit,
         set_at=set_at,
+        expect_inputs=_expect_inputs(args),
     )
     adapter = adapter_for(language, data) if args.worker is None else None
     return root, request, edit, original, language, adapter
+
+
+def _expect_inputs(args):
+    path = getattr(args, "expect_inputs_file", None)
+    if path is None:
+        return None
+    expected = json.loads(Path(path).read_text())
+    if not isinstance(expected, dict):
+        raise ValueError("--expect-inputs-file holds a JSON object of path: sha256")
+    return tuple(sorted(expected.items()))
 
 
 def _progress(args):
@@ -1056,31 +1093,13 @@ def _probe_result(args, root, result, edit, original, program, language):
     return probe_exit_code(result)
 
 
-MAX_PYTHON_INPUTS = 4096
-MAX_PYTHON_BYTES = 16 * 1024 * 1024
-
-
 def _python_inputs(root):
     """A digest of the `.py` files under ``root`` (outside hidden, cache and environment
     directories), the sources a Python program may import, or None where there are too
     many or one cannot be read."""
-    found, total = [], 0
-    skipped = {"__pycache__", "node_modules", "site-packages", "venv", "env"}
-    for directory, names, files in os.walk(root):
-        names[:] = sorted(n for n in names if not n.startswith(".") and n not in skipped)
-        for name in sorted(files):
-            if not name.endswith(".py"):
-                continue
-            path = Path(directory) / name
-            try:
-                data = path.read_bytes()
-            except OSError:
-                return None
-            total += len(data)
-            if len(found) >= MAX_PYTHON_INPUTS or total > MAX_PYTHON_BYTES:
-                return None
-            found.append((path.relative_to(root).as_posix(), hashlib.sha256(data).hexdigest()))
-    return hashlib.sha256(json.dumps(found).encode()).hexdigest() if found else None
+    from peeky.sources import python_digest
+
+    return python_digest(root)
 
 
 def _misplaced_options(args):
@@ -1408,8 +1427,85 @@ def _load(name):
     ):
         raise ValueError(f"Session record {path} is malformed; remove it")
     if record.get("remote"):
-        return record, Client(record["url"], record["token"])
+        return record, _remote_session(name, record)
     return record, _LocalClient(record["url"], record["token"], record.get("pid"))
+
+
+def _remote_session(name, record):
+    """A remote session's client, once the worker still speaks the protocol the session
+    was started with: one that compares every source (#249)."""
+    if record.get("protocol") != PROTOCOL_VERSION or not isinstance(
+        record.get("inputs_checked"), str
+    ):
+        raise ValueError(
+            f"Remote session {name!r} was started without source provenance (by a Peeky "
+            f"before protocol {PROTOCOL_VERSION}): start the session again. Drop this record "
+            f"with `peeky session close --forget --name {name}`; the worker ends the old "
+            "session after its idle timeout"
+        )
+    client = _RemoteSession(record)
+    version = Client.call(client, "version")
+    protocol = version.get("protocol") if isinstance(version, dict) else None
+    if protocol != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Worker speaks protocol {protocol}, this session {PROTOCOL_VERSION}: start the "
+            "session again on a worker of the same Peeky version"
+        )
+    client.sources = version.get("sources")
+    return client
+
+
+class _RemoteSession(Client):
+    """A remote session's client: your checkout is rehashed before and after every
+    request, and must still be what the session compared at its start (#249)."""
+
+    def __init__(self, record):
+        super().__init__(record["url"], record["token"])
+        self.record = record
+        self.sources = None
+
+    def call(self, operation, **arguments):
+        if operation != "close":
+            self.unchanged()
+        result = super().call(operation, **arguments)
+        if operation != "close":
+            self.unchanged()
+        return result
+
+    def unchanged(self):
+        try:
+            _checkout_unchanged(Path(self.record["root"]), self.sources, self.record, saved=True)
+        except RuntimeError:
+            try:
+                Client.call(self, "close", session_id=self.record["session_id"])
+            except Exception:
+                pass
+            _release(self.record["name"])
+            raise
+
+
+def _checkout_unchanged(root, sources, expected, *, saved=False):
+    """Raise PROVENANCE_CHANGED if your checkout's sources are no longer the ones the
+    worker compared: ``expected`` is that manifest, or a saved session record."""
+    from peeky.sources import client_sources, digest
+
+    accepted = expected["inputs_checked"] if saved else digest(expected)
+    try:
+        current = digest(client_sources(root, sources))
+    except (ValueError, RuntimeError) as exc:
+        current, why = None, f" ({exc})"
+    else:
+        why = ""
+    if current != accepted:
+        raise RuntimeError(
+            "Worker source provenance: a source in your checkout changed after the worker "
+            f"compared it{why}. "
+            + (
+                "The session was closed, and no values were returned. Start it again"
+                if saved
+                else "Its results were discarded. Run it again"
+            )
+        )
 
 
 class _LocalClient(Client):
@@ -1815,6 +1911,7 @@ def _get_lines(row, session="default"):
 
 
 def session(args):
+    _NOTES.clear()
     if args.action in ("start", "wait", "continue", "step"):
         # Checked before anything runs: a bad --timeout must not follow a real action.
         _seconds(args.timeout)
@@ -1838,6 +1935,7 @@ def session(args):
         )
         return 0
     record, client = _load(args.name)
+    _NOTES[:] = [record["note"]] if record.get("note") else []
     if args.action == "wait":
         state = _wait(record, client, args.timeout)
         _emit(state, args.json, lambda shown: _state_text(shown, args.name))
@@ -2096,6 +2194,13 @@ def _pause_text(state):
 WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
 
 
+REMOTE_PYTHON_NOTE = (
+    "Only the .py files under the target's directory are compared with yours. Not compared: "
+    "installed packages, any directory holding a pyvenv.cfg, the standard library, and compiled "
+    "modules (.so, .pyc)."
+)
+
+
 def _remote(url):
     """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
     if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
@@ -2113,7 +2218,13 @@ def _remote(url):
     version = client.call("version")
     protocol = version.get("protocol") if isinstance(version, dict) else None
     if protocol != PROTOCOL_VERSION:
-        raise ValueError(f"Worker speaks protocol {protocol}, this client {PROTOCOL_VERSION}")
+        raise ValueError(
+            f"Worker speaks protocol {protocol}, this client {PROTOCOL_VERSION}: install the "
+            "same Peeky version on both hosts (a protocol 2 worker compares every source with "
+            "yours before launching; an older one cannot)"
+        )
+    # Which sources the worker's target reads: their local copies are hashed and sent.
+    client.sources = version.get("sources")
     return client, token
 
 
@@ -2138,10 +2249,42 @@ def _expected(root, program, entry):
 
 
 def _remote_probe(args, root, request):
-    """(client, the sources' expected hashes) for a remote probe, checked before it is
-    sent."""
+    """(client, the request with every source's expected hash, the program's and entry
+    script's expected hashes) for a remote probe, checked before it is sent."""
+    from peeky.sources import client_sources
+
     client, _ = _remote(args.worker)
-    return client, _expected(root, request.program, request.entry)
+    inputs = client_sources(root, client.sources)
+    request = replace(request, expect_inputs=tuple(sorted(inputs.items())))
+    return client, request, _expected(root, request.program, request.entry)
+
+
+def _inputs_match(root, client, expected, reported):
+    """Raise unless the worker confirms it compared every source with ours before
+    launching (``inputs_checked``), and read the same sources (``inputs_sha256``)."""
+    from peeky.sources import digest
+
+    own = digest(expected)
+    if reported.get("inputs_checked") != own:
+        raise RuntimeError(
+            "Worker source provenance is unconfirmed: the worker did not report comparing "
+            "every source with yours before launching. Install the same Peeky version on both "
+            "hosts"
+        )
+    read = reported.get("inputs_sha256")
+    if read is None:
+        raise RuntimeError(
+            "Worker source provenance is unconfirmed: the worker did not report which sources "
+            "the run read (inputs_sha256). Install the same Peeky version on both hosts"
+        )
+    if (getattr(client, "sources", None) or {}).get("kind") == "python":
+        own = _python_inputs(root)
+    if read != own:
+        raise RuntimeError(
+            f"Worker source provenance differs: the sources the worker read (inputs_sha256 "
+            f"{str(read)[:12]}) are not yours ({str(own)[:12]}). Sync sources before debugging "
+            "remotely"
+        )
 
 
 def _probe_remote(args, root, request, client, expected):
@@ -2157,6 +2300,7 @@ def _probe_remote(args, root, request, client, expected):
         args=request.args,
         # The worker refuses before launching when its sources differ.
         expect_sha256=expected,
+        expect_inputs=dict(request.expect_inputs),
         edit=request.edit,
         set_at=request.set_at,
     )
@@ -2191,7 +2335,7 @@ def _probe_remote(args, root, request, client, expected):
         (
             "probe",
             {
-                **asdict(request),
+                **{k: v for k, v in asdict(request).items() if k != "expect_inputs"},
                 "set": [list(change) for change in request.set],
                 "set_at": [list(point) for point in request.set_at],
             },
@@ -2222,6 +2366,12 @@ def _probe_remote(args, root, request, client, expected):
             _source_matches(root, request.program, result.get("source_sha256"), "program")
         if request.entry and (ran or result.get("entry_sha256") is not None):
             _source_matches(root, request.entry, result.get("entry_sha256"), "entry script")
+        if ran or result.get("source_sha256") is not None:
+            _inputs_match(root, client, dict(request.expect_inputs), result)
+        # Your own checkout must still be what was compared (#249).
+        _checkout_unchanged(root, client.sources, dict(request.expect_inputs))
+        if (getattr(client, "sources", None) or {}).get("kind") == "python":
+            result["warnings"].append(REMOTE_PYTHON_NOTE)
     except RuntimeError as exc:
         from peeky.errors import classify
 
@@ -2239,7 +2389,10 @@ def _probe_remote(args, root, request, client, expected):
 
 
 def _start_remote(args, root, program, line, language, max_pause):
+    from peeky.sources import client_sources, difference
+
     client, token = _remote(args.worker)
+    inputs = client_sources(root, client.sources)
     launch = client.call(
         "launch",
         program=program,
@@ -2248,16 +2401,32 @@ def _start_remote(args, root, program, line, language, max_pause):
         **({"entry": entry} if (entry := _entry(root, args.run, language)) else {}),
         **({"args": list(args.arg)} if args.arg else {}),
         expect_sha256=_expected(root, program, _entry(root, args.run, language)),
+        expect_inputs=inputs,
     )
     try:
         _source_matches(root, program, launch.get("source_sha256"), "program")
         if entry:
             _source_matches(root, entry, launch.get("entry_sha256"), "entry script")
+        _inputs_match(root, client, inputs, launch)
+        _checkout_unchanged(root, client.sources, inputs)
+        # A compiled target's launch names each source its build read: name the one that
+        # differs.
+        if isinstance(manifest := launch.get("source_manifest"), dict) and (
+            what := difference(inputs, manifest)
+        ):
+            raise RuntimeError(
+                f"Worker source provenance differs for {what}: the session was closed. Sync "
+                "sources before debugging remotely"
+            )
     except Exception:
         client.call("close", session_id=launch["session_id"])
         raise
     record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
     record.update(root=str(root), program=program, language=language)
+    # What a later command checks again before it uses this session (#249).
+    record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
+    if (client.sources or {}).get("kind") == "python":
+        record["note"] = REMOTE_PYTHON_NOTE
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
@@ -2269,6 +2438,8 @@ def _start_remote(args, root, program, line, language, max_pause):
         state["warnings"] = launch["warnings"]
     if misplaced := _misplaced_options(args):
         state["warnings"] = [*state.get("warnings", []), misplaced]
+    if (client.sources or {}).get("kind") == "python":
+        state["warnings"] = [*state.get("warnings", []), REMOTE_PYTHON_NOTE]
     _emit(
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,
@@ -3173,10 +3344,14 @@ def main(argv=None, _job=False, _edits=None):
         "from $PEEKY_WORKER_TOKEN; local and worker sources must match",
     )
     sub.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
+    # A worker's probe child: a JSON {path: sha256} of every source its client holds (#249).
+    sub.add_argument("--expect-inputs-file", type=Path, help=argparse.SUPPRESS)
     # A worker's probe child (#190 review): a launch budget below the worker's watchdog,
     # and a file written just before the debugger is asked to start the program.
     sub.add_argument("--launch-budget", type=float, help=argparse.SUPPRESS)
     sub.add_argument("--launch-marker", type=Path, help=argparse.SUPPRESS)
+    # A worker's probe child: where a remote Python run's bytecode cache goes (#249).
+    sub.add_argument("--pycache-dir", type=Path, help=argparse.SUPPRESS)
     sub.add_argument(
         "--arg",
         action="append",
@@ -3419,6 +3594,7 @@ def main(argv=None, _job=False, _edits=None):
         raise SystemExit(128 + signum)
 
     signal.signal(signal.SIGTERM, terminate)
+    _NOTES.clear()
     try:
         if getattr(args, "background", False) and not _job:
             _emit(

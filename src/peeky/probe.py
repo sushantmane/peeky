@@ -361,6 +361,9 @@ class Probe:
     # once at that hit of that line of `program` (its own stops counted, in the original's
     # numbering), whether or not it is the capture line; `set`/`set_hit` stay as they are.
     set_at: tuple[tuple[int, int, str, str], ...] = ()
+    # Remote clients (#249): (path, sha256) of every source the target reads; the worker
+    # refuses before launching when its own set differs.
+    expect_inputs: tuple[tuple[str, str], ...] | None = None
 
     @property
     def limit(self):
@@ -495,6 +498,14 @@ class Probe:
             for pair in self.expect_sha256
         ):
             raise ValueError("Probe expect_sha256 holds (program|entry, sha256) pairs")
+        if self.expect_inputs is not None:
+            if not isinstance(self.expect_inputs, tuple) or not all(
+                isinstance(pair, tuple) and len(pair) == 2 for pair in self.expect_inputs
+            ):
+                raise ValueError("Probe expect_inputs holds (path, sha256) pairs")
+            from peeky.sources import check_expected
+
+            check_expected(dict(self.expect_inputs))
 
 
 def parse_hits(text):
@@ -3201,13 +3212,24 @@ def _expected_line(breakpoint, state, requested):
     return line
 
 
-def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, launch_marker=None):
+def run_probe(
+    root,
+    probe,
+    *,
+    adapter=None,
+    progress=None,
+    launch_budget=None,
+    launch_marker=None,
+    pycache_base=None,
+):
     """Run one self-contained probe; the worker is always closed before returning.
 
     ``progress(message)`` receives human-readable milestones (never parsed). A worker's
     probe child passes ``launch_budget`` (seconds, at most the worker's own) so its
-    launch ends before the worker's watchdog, and ``launch_marker``, a file written just
-    before the debugger is asked to start the program (#190 review).
+    launch ends before the worker's watchdog, ``launch_marker``, a file written just
+    before the debugger is asked to start the program (#190 review), and
+    ``pycache_base``, in its parent's scratch, for a remote Python run's bytecode cache
+    (#249: the parent removes it, even after killing the child).
     """
     say = progress or (lambda message: None)
     if launch_budget is not None and not launch_budget > 0:
@@ -3216,6 +3238,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
     if launch_budget is not None:
         worker.launch_deadline_s = min(worker.launch_deadline_s, launch_budget)
     worker.launch_marker = launch_marker
+    worker.pycache_base = pycache_base
     started = time.monotonic()
     deadline = started + probe.timeout
     result = {
@@ -3225,9 +3248,12 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
             "set_at": [list(point) for point in probe.set_at],
         }
     }
-    # The edit's texts are not evidence of the run; the CLI adds the diff.
+    # The edit's texts are not evidence of the run; the CLI adds the diff. The sources'
+    # hashes are compared before launching, and kept as inputs_sha256.
     result["probe"].pop("edit")
+    result["probe"].pop("expect_inputs")
     rows, changes, hits, warnings, relocated, pauses = [], [], 0, [], False, []
+    discard = False
     # Pauses at stops that only apply a --set-at (no capture there).
     set_pauses = []
     unreported = None
@@ -3290,6 +3316,11 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 **({"entry": probe.entry} if probe.entry else {}),
                 **({"args": list(probe.args)} if probe.args else {}),
                 **({"expect_sha256": dict(probe.expect_sha256)} if probe.expect_sha256 else {}),
+                **(
+                    {"expect_inputs": dict(probe.expect_inputs)}
+                    if probe.expect_inputs is not None
+                    else {}
+                ),
                 # What no stop of the build can change is refused before it runs (#138).
                 # Each with the line whose stops make it: a --set-at's own (#137).
                 **(
@@ -3313,6 +3344,12 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if launch.get("inputs_checked"):
+            result["inputs_checked"] = launch["inputs_checked"]
+        if launch.get("inputs_sha256"):
+            # The sources the worker accepted and built from (a remote Python run's: its
+            # root's .py files at launch, rechecked at every stop and at the end).
+            result["inputs_sha256"] = launch["inputs_sha256"]
         if isinstance(manifest := launch.get("source_manifest"), dict) and manifest:
             # Every source and header the build read, as they were on disk (a candidate's
             # before its edit): which runs read the same program (seventh evaluation,
@@ -3826,6 +3863,8 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
         from peeky.errors import classify
 
         result.update(status="failed", error=classify(exc, session_closed=True))
+        # Values and output from sources that changed during the run are not evidence.
+        discard = result["error"].get("code") == "PROVENANCE_CHANGED"
         if getattr(exc, "before_launch", False) or not launching:
             # The debugger's launch or attach request was not sent (#138, #190): no
             # run to keep as evidence, and no table.
@@ -3836,7 +3875,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 report = worker.dispatch("report", session)
             except Exception:
                 report = {}
-            if isinstance(report.get("output"), str) and report["output"]:
+            if isinstance(report.get("output"), str) and report["output"] and not discard:
                 result.update(
                     output=report["output"],
                     output_truncated=report.get("output_truncated", False),
@@ -3999,6 +4038,9 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                     f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
                     f"{point['hit']} never came."
                 )
+    if discard:
+        rows, changes = [], []
+        result.update(output="", results_discarded=True)
     result.update(
         warnings=warnings,
         hits=hits,

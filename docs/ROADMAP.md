@@ -128,8 +128,9 @@ extend it. Kubernetes stays deferred.
   - [#248][i248]: Java on the second host, for a launched JVM and an attached one, in the same CI
     job ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
 - **Not yet:** C, C++ and Rust have no separate-host run.
-- **Open:** before launching, only the breakpoint's file and the entry script are compared with
-  the client's ([#249][i249]).
+- [#249][i249]: before launching, the worker compares the target's sources with the client's,
+  not only the breakpoint's file (protocol 2). [REMOTE.md](REMOTE.md#source-identity) lists
+  which files count, and what isn't compared.
 
 ### Language slices P1 to P5
 

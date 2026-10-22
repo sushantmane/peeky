@@ -123,31 +123,32 @@ Requests are JSON objects with `Authorization: Bearer <token>`.
 
 - The worker binds only to `127.0.0.1`.
 - The token authorizes control of that worker. It is not a per-target policy.
-- Request sizes are bounded.
+- Request sizes are bounded: at most 4 MiB, enough for a remote client's source hashes.
 - Errors are JSON with a stable `code`, a `hint`, `retryable` and `session_closed`. Every response
   carries the protocol version. [ERRORS.md](ERRORS.md) lists the codes.
 - The HTTP status and the code tell invalid requests apart from uncertain adapter failures.
 
-`POST /version` returns the protocol version, the operations and the error codes:
+`POST /version` returns the protocol version, the sources a remote client hashes, the operations
+and the error codes:
 
 ```
 $ curl -s -i -X POST -H 'Authorization: Bearer …' -d '{}' http://127.0.0.1:18766/version
 HTTP/1.0 200 OK
 ...
-X-Peeky-Protocol: 1
+X-Peeky-Protocol: 2
 ...
-{"protocol": 1, "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
+{"protocol": 2, "sources": {"kind": "python"}, "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
 ```
 
 Without the token, the reply is `401`:
 
 ```
-{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 1}
+{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 2}
 ```
 
 | Operation | Required input | Result |
 | --- | --- | --- |
-| launch | worker-relative program, breakpoint list | session ID, source hash, capabilities, verified locations |
+| launch | worker-relative program, breakpoint list; remote clients: `expect_sha256` and `expect_inputs` | session ID, source hash, capabilities, verified locations; `inputs_checked` and `inputs_sha256` |
 | wait | session ID, bounded timeout | stopped, terminated, or still running |
 | inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity` |
 | expand | session ID, stop ID, opaque child handle, start/count | bounded read-only children |
@@ -159,7 +160,7 @@ Without the token, the reply is `401`:
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |
 | probe | one stateless request: `at`, `capture`, optional `set` and the probe's other options ([ADR 0004](adr/0004-stateless-probes.md)) | the probe's result |
-| version | none | protocol version, operations, error codes |
+| version | none | protocol version, the sources a client hashes, operations, error codes |
 | shutdown | none | the worker closes its session and stops |
 
 - Client-visible IDs mean nothing across sessions or stops.
