@@ -36,7 +36,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
 | probe | One complete run that stops at a line, captures values and can change them ([2](#2-asking-questions-with-probes)) |
 | hit | One stop at the probe's line |
 | selector | What to capture: a name, a dotted path, an index or a string key ([2.1](#21-fields-and-indexes)) |
-| intervention | A change made with `--set` during a run ([2.3](#23-test-a-hypothesis-by-changing-a-value)) |
+| intervention | A change made with `--set` or `--set-at` during a run ([2.3](#23-test-a-hypothesis-by-changing-a-value)) |
 | run | A probe's saved results, which `peeky queries` and `peeky sql` read ([4](#4-sql-over-saved-runs)) |
 | session | A program kept stopped, for several looks at one stop ([5](#5-step-by-step-sessions)) |
 | worker | The process that runs the debugger next to the program ([9](#9-a-program-on-another-host)) |
@@ -458,9 +458,9 @@ qualified:
 
 #### Every stop: `--hits all`
 
-`--hits all` captures every stop, up to 100, without counting iterations first. With more than 20
-selectors the cap is lower, so that every hit fits the probe's budget of 2000 rows. The summary
-says `hits: 3 (all)`:
+`--hits all` captures every stop, up to 100, without counting iterations first. The cap is
+lowered so that every hit fits the probe's budget of 2,000 rows. Each hit takes one row per
+selector, and after-set rows count toward the budget too. The summary says `hits: 3 (all)`:
 
 ```sh
 peeky probe examples/corpus/running_max/program.py --at 6 --capture value,best --hits all
@@ -2809,8 +2809,8 @@ program.
 
 ## 7. C, C++, Rust and Java
 
-The commands are the same for every language. Only the target changes. Each language's own
-sections are in its cookbook.
+The core command pattern is shared; targets and supported operations differ by language. Each
+language's own sections are in its cookbook.
 
 ### 7.1 C and C++
 
@@ -2837,8 +2837,8 @@ To debug the optimized program, set its level in a `--config`:
 | C, C++ | `optimization` | `"optimization": "O2"` |
 | Rust | `opt_level` | `"opt_level": "2"` |
 
-[NATIVE.md](NATIVE.md) lists the other levels. A C or C++ config also names the tools, as
-NATIVE.md shows. For example, this `examples/c/optimized.json`:
+[NATIVE.md](NATIVE.md) lists the other levels. A C or C++ config may also name explicit tool
+paths, as NATIVE.md shows. For example, this `examples/c/optimized.json` names them:
 
 ```json
 {"sources": ["pagination_bug.c"], "headers": ["pagination.h"], "optimization": "O2", "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang", "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap", "dwarfdump": "/usr/bin/dwarfdump", "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil", "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}
@@ -2865,10 +2865,11 @@ What changes in an optimized build:
 
 - Locals may be `unavailable`.
 - Values that are shown can be stale.
-- The `function` column marks the frame `[opt]`.
+- In this macOS C example, the `function` column marks the frame `[opt]`. Only lldb-dap on macOS
+  adds that mark. Linux's never does, and Rust function names have it removed.
 - Every result carries `optimized` and a warning.
-- Changes are refused. A probe's `--set` is refused before the program runs, and the error says
-  where the debug information keeps the local only in registers:
+- Changes are refused. A probe's `--set` is refused before the program runs. The error says when
+  the debug information gives the local no stack slot (a register or a location list):
 
 ```sh
 peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:25 \
@@ -2925,7 +2926,7 @@ Other bounds:
 | --- | --- | --- | --- |
 | A probe's `--timeout S` | 60 s | 300 s | Bounds the whole probe, build included |
 | A `session` command's `--timeout S`, `session start` included | 30 s | 300 s | Bounds how long the command waits for the program. A program still running is left running, and `session wait` waits again |
-| `--hits N` | | 100 | `--hits all` captures every stop, up to 100, or fewer with more than 20 selectors ([2.2](#22-every-iteration-of-a-loop)) |
+| `--hits N` | | 100 | `--hits all` captures every stop, up to 100, lowered so every hit fits the 2,000-row budget. After-set rows count toward it ([2.2](#22-every-iteration-of-a-loop)) |
 | `--until hits` | | | Skips waiting for the program to exit |
 | `peeky job wait`'s `--timeout S` | 20 s | 300 s | Bounds how long it waits for the job |
 
