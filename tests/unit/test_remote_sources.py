@@ -75,6 +75,120 @@ def test_a_python_worker_compares_every_module_under_its_root(app):
     assert worker.dap is None  # nothing was launched
 
 
+def test_the_worker_names_only_the_compared_sources_in_a_remote_result(tmp_path):
+    # #268 review: paths were mapped by prefix, so `..`, links, virtual environments and
+    # files never compared were shown as the client's.
+    from peeky.worker import _source_names
+
+    root, outside = tmp_path / "app", tmp_path / "outside"
+    for name in ("main.py", "a/util.c", "b/util.c", "gen.py", ".venv/lib/pkg.py"):
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("x = 1\n")
+    (root / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    outside.mkdir()
+    (outside / "x.py").write_text("x = 1\n")
+    (root / "link").symlink_to(outside)
+    (root / "alias.py").symlink_to(root / "main.py")
+    root = root.resolve()
+    # gen.py and the virtual environment were not compared; the links were named, but
+    # lead elsewhere.
+    names = frozenset({"main.py", "a/util.c", "b/util.c", "link/x.py", "alias.py"})
+    at = f"{root}/"
+    answer = {
+        "location": f"{at}b/util.c:7",
+        "innermost": {"location": f"{at}main.py"},
+        "frames": [
+            {"source": {"path": f"{at}a/util.c"}},
+            {"source": {"path": f"{at}../outside/x.py"}},
+            {"source": {"path": f"{at}a/../main.py"}},
+            {"source": {"path": f"{at}.venv/lib/pkg.py"}},
+            {"source": {"path": f"{at}gen.py"}},
+            {"source": {"path": f"{at}link/x.py"}},
+            {"source": {"path": f"{at}alias.py"}},
+            {"source": {"path": f"{at}missing.py"}},
+            {"source": {"path": f"{at}main.py`main"}},
+            {"source": {"path": "main.py"}},
+        ],
+        "path": f"{at}main.py",
+        "output": f"{at}main.py:3",
+    }
+    shown = _source_names(answer, root, names)
+    assert shown["location"] == "source:b/util.c:7"
+    assert shown["innermost"]["location"] == "source:main.py"
+    paths = [frame["source"]["path"] for frame in shown["frames"]]
+    assert paths[0] == "source:a/util.c"
+    # Each of the others stays this host's path, as it was.
+    assert paths[1:] == [frame["source"]["path"] for frame in answer["frames"][1:]]
+    # Only locations and the paths of sources: other text keeps its paths.
+    assert shown["path"] == answer["path"] and shown["output"] == answer["output"]
+
+
+def test_the_client_shows_its_own_copy_only_of_a_compared_source(tmp_path):
+    from peeky.cli import _client_paths
+
+    mine = tmp_path / "mine"
+    for name in ("main.py", "a/util.c", "b/util.c"):
+        (mine / name).parent.mkdir(parents=True, exist_ok=True)
+        (mine / name).write_text("x = 1\n")
+    (mine / "link.py").symlink_to(mine / "main.py")
+    names = frozenset({"main.py", "a/util.c", "b/util.c", "gone.py", "link.py", "../x.py"})
+    answer = {
+        "location": "source:b/util.c:7",
+        "frames": [
+            {"source": {"path": "source:a/util.c"}},
+            # Hashed here once, but absent now; never hashed; a link; out of the root.
+            {"source": {"path": "source:gone.py"}},
+            {"source": {"path": "source:other.py"}},
+            {"source": {"path": "source:link.py"}},
+            {"source": {"path": "source:../x.py"}},
+            # Not named as a compared source, or from an older worker.
+            {"source": {"path": "/srv/app/.venv/lib/pkg.py"}},
+            {"source": {"path": "/srv/app/main.py"}},
+            {"source": {"path": "worker:/srv/app/gen.py"}},
+            {"source": {"name": "main"}},
+        ],
+        "innermost": {"location": "/srv/app/main.py:3"},
+        "diagnosis": {"location": "main.c:7"},
+        "output": "/srv/app/main.py",
+    }
+    shown = _client_paths(answer, "/srv/app", mine, names)
+    assert shown["location"] == f"{mine}/b/util.c:7"
+    assert [frame["source"].get("path") for frame in shown["frames"]] == [
+        f"{mine}/a/util.c",
+        "worker:/srv/app/gone.py",
+        "worker:/srv/app/other.py",
+        "worker:/srv/app/link.py",
+        "worker:/srv/app/../x.py",
+        "worker:/srv/app/.venv/lib/pkg.py",
+        "worker:/srv/app/main.py",
+        "worker:/srv/app/gen.py",
+        None,
+    ]
+    assert shown["innermost"]["location"] == "worker:/srv/app/main.py:3"
+    # A relative name is no path of either host's; other text is left alone.
+    assert shown["diagnosis"] == answer["diagnosis"] and shown["output"] == answer["output"]
+    # Without the names you hashed, nothing is shown as yours.
+    unknown = _client_paths(answer, "/srv/app", mine, None)
+    assert unknown["location"] == "worker:/srv/app/b/util.c:7"
+
+
+def test_a_program_that_differs_is_named_by_its_path_under_the_root(app):
+    # #252: a crate's src/main.rs was named `main.rs`, which other directories may hold.
+    (app / "src").mkdir()
+    (app / "src" / "main.py").write_text(MAIN)
+    worker = DebugWorker(app)
+    with pytest.raises(ValueError, match=r"differs for the program src/main\.py: refused"):
+        worker.dispatch(
+            "launch",
+            {
+                "program": "src/main.py",
+                "breakpoints": [{"line": 2}],
+                "expect_sha256": {"program": sha(MAIN + "# changed\n")},
+            },
+        )
+    assert worker.dap is None
+
+
 def test_only_virtual_environments_are_left_out(app):
     # #254 review: hidden directories and names like `env` were skipped, so a program
     # in .hidden/ imported a .hidden/helper.py that was never compared; round 2: .git too.
@@ -159,7 +273,7 @@ def test_the_version_says_which_sources_a_client_hashes(served, tmp_path):
     from peeky.java import JavaTarget
 
     version = served.call("version")
-    assert version["protocol"] == PROTOCOL_VERSION == 2
+    assert version["protocol"] == PROTOCOL_VERSION == 3
     assert version["sources"] == {"kind": "python"}
     target = JavaTarget(bundle=tmp_path, sources=("demo/A.java", "demo/B.java"), main_class="A")
     server = make_server(tmp_path, TOKEN, 0, adapter=target)
@@ -198,6 +312,7 @@ def test_a_manifest_larger_than_the_old_request_limit_reaches_the_comparison(ser
             breakpoints=[{"line": 2}],
             expect_sha256={"program": sha(MAIN)},
             expect_inputs=expected,
+            protocol=PROTOCOL_VERSION,
         )
     assert refused.value.error_code == "PROVENANCE_CHANGED"
     assert "for helper.py (only on the worker host)" in refused.value.payload["message"]
@@ -245,8 +360,11 @@ def old_worker(protocol):
     return server
 
 
-def test_a_worker_that_cannot_compare_every_source_is_refused_before_anything_runs(app, capsys):
-    server = old_worker(1)
+@pytest.mark.parametrize("protocol", [1, 2])
+def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, capsys, protocol):
+    # Protocol 1 compared only the program; protocol 2 named paths as this client can't
+    # tell from its own (#252).
+    server = old_worker(protocol)
     try:
         url = f"http://127.0.0.1:{server.server_port}"
         code = main(["probe", str(app / "main.py"), "--at", "2", "--worker", url, "--json"])
@@ -255,8 +373,53 @@ def test_a_worker_that_cannot_compare_every_source_is_refused_before_anything_ru
         server.server_close()
     result = json.loads(capsys.readouterr().out)
     assert code == 2 and result["refused_before_launch"] is True, result
-    assert "protocol 1, this client 2" in result["error"]["message"]
+    assert f"protocol {protocol}, this client 3" in result["error"]["message"]
     assert "install the same Peeky version" in result["error"]["message"]
+
+
+def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, monkeypatch):
+    # #268 review: a protocol 2 client accepted this worker, and showed its `source:`
+    # names as paths. That client refuses at `version`, as a protocol 2 client does:
+    monkeypatch.setattr("peeky.cli.PROTOCOL_VERSION", 2)
+    server = make_server(app, TOKEN, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        code = main(["probe", str(app / "main.py"), "--at", "2", "--worker", url, "--json"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 2 and result["refused_before_launch"] is True, result
+        assert (
+            "Worker speaks protocol 3, this client 2: install the same Peeky version"
+            in (result["error"]["message"])
+        )
+        # And the worker refuses what a protocol 2 client sends after its handshake: every
+        # hash, and no protocol.
+        own = dict(sources.python_sources(app))
+        requests = {
+            "launch": {"program": "main.py", "breakpoints": [{"line": 2}]},
+            "probe": {"at": "main.py:2", "capture": ["x"]},
+        }
+        for (operation, arguments), (declared, spoken) in zip(
+            [*requests.items(), *requests.items()], [({}, 2), ({}, 2), (4, 4), (4, 4)]
+        ):
+            if declared:
+                arguments = {**arguments, "protocol": declared}
+            with pytest.raises(PeekyError) as refused:
+                Client(url, TOKEN).call(
+                    operation, **arguments, expect_sha256={"program": sha(MAIN)}, expect_inputs=own
+                )
+            assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
+            assert (
+                f"Client speaks protocol {spoken}, this worker 3: install the same Peeky version"
+                in refused.value.payload["message"]
+            )
+        assert server.worker.dap is None  # nothing was launched
+    finally:
+        server.worker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def probe_against(monkeypatch, capsys, app, answer):
@@ -337,7 +500,13 @@ def test_an_empty_manifest_is_refused(served, operation):
     if operation == "probe":
         arguments = {"at": "main.py:2", "capture": ["x"]}
     with pytest.raises(PeekyError) as refused:
-        served.call(operation, **arguments, expect_sha256={"program": sha(MAIN)}, expect_inputs={})
+        served.call(
+            operation,
+            **arguments,
+            expect_sha256={"program": sha(MAIN)},
+            expect_inputs={},
+            protocol=PROTOCOL_VERSION,
+        )
     assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
     assert "1 to 4096 source paths" in refused.value.payload["message"]
 
@@ -430,8 +599,17 @@ def test_a_remote_session_from_before_protocol_2_is_refused(app, capsys):
     assert "started without source provenance" in message and "start the session again" in message
 
 
-def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, capsys):
-    server = old_worker(1)
+def test_a_remote_session_from_another_protocol_is_refused(app, capsys):
+    write_record("previous", protocol=2, inputs_checked="0" * 64)
+    assert main(["session", "get", "x", "--name", "previous", "--json"]) == 2
+    message = json.loads(capsys.readouterr().out)["error"]["message"]
+    assert "was started with protocol 2, this client 3: start the session again" in message
+    assert "peeky session close --forget --name previous" in message
+
+
+@pytest.mark.parametrize("protocol", [1, 2])
+def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, capsys, protocol):
+    server = old_worker(protocol)
     try:
         write_record(
             "resumed",
@@ -444,7 +622,7 @@ def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, caps
         server.shutdown()
         server.server_close()
     message = json.loads(capsys.readouterr().out)["error"]["message"]
-    assert "Worker speaks protocol 1, this session 2" in message
+    assert f"Worker speaks protocol {protocol}, this session 3" in message
 
 
 def test_the_program_must_be_among_the_compared_sources(app):

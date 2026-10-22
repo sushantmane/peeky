@@ -26,14 +26,17 @@ debug server. It writes memory only to set a text
 
 ## Compare the sources from another host
 
-A client on another host must show that its sources are the worker's. This is protocol 2.
+A client on another host must show that its sources are the worker's. This is protocol 3.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
      directory holding `pyvenv.cfg`);
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
-2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
-   `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
+
+   Its `root` is the worker's `--root`.
+2. With `launch` or `probe`, send `protocol`: 3, `expect_sha256` (`program`, and `entry` for a
+   `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
+   one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
    side only:
    - before launching;
@@ -45,7 +48,7 @@ A client on another host must show that its sources are the worker's. This is pr
 
    After a Python refusal, the session is closed.
 4. A request with `expect_sha256` but without `expect_inputs`, or with an empty one, is refused
-   with `INVALID_REQUEST`.
+   with `INVALID_REQUEST`. So is one with `expect_inputs` and another `protocol`, or none.
 5. Check the answer to `launch`, or the probe's result:
    - `inputs_checked` is the sha256 of `json.dumps(sorted(expect_inputs.items()))`, with Python's
      default separators;
@@ -57,6 +60,11 @@ A client on another host must show that its sources are the worker's. This is pr
 
 6. Hash your own sources again after each answer. If they changed, discard the result, or close
    the session.
+7. Read the paths in each answer. After a request with `expect_inputs`, a `location`, or a
+   `source`'s `path`, that is one of those files is `source:NAME`, with its `:LINE`. NAME is
+   relative to the root. Show your copy of NAME only if you hashed a file of that name, and it is
+   still a regular file under your root. Mark any other path as the worker host's
+   ([REMOTE.md](REMOTE.md#paths-in-results)).
 
 `peeky probe --worker` and `peeky session start --worker` do all of this. On every later
 `session` command, they also check the worker's protocol again. They hash your sources before
@@ -109,6 +117,10 @@ RESULT=success value=5000 array=4 pointer=5000
 
 - LLDB may first return a breakpoint as pending. Use the verified breakpoint events and the actual
   stopped frame and location as evidence. The worker keeps those events bounded.
+- A compiled target runs from a private build copy of its sources. Breakpoints, `location` and
+  `frames` name your source file instead of the copy, where the copy is unchanged. A candidate's
+  edited file, and a file only the build has, keep the copy's path, since their lines are the
+  copy's.
 - Registers aren't treated as local variables.
 - The worker turns off LLDB's init files, shell expansion of the program's arguments, and LLDB's
   automatic variable summaries. That removes hidden configuration and behavior. It isn't isolation

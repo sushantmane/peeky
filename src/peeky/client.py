@@ -8,7 +8,7 @@ import socket
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from peeky.errors import PeekyError
+from peeky.errors import PROTOCOL_VERSION, PeekyError
 
 
 class WorkerUnreachable(OSError):
@@ -131,6 +131,8 @@ class Client:
             options["expect_sha256"] = dict(expect_sha256)
         if expect_inputs is not None:
             options["expect_inputs"] = dict(expect_inputs)
+            # The worker refuses a client of another protocol: they read paths differently.
+            options["protocol"] = PROTOCOL_VERSION
         if set_at:
             options["set_at"] = [list(point) for point in set_at]
         return self.call(

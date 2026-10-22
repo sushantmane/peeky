@@ -2661,6 +2661,7 @@ status: completed  hits: 1  seconds: 0.99  max pause: 66.9 ms
 output:
   PAGE:[40, 50, 60]
 candidate: values are from a fresh build with this edit; your files are unchanged
+candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
 --- pagination_bug.c
 +++ pagination_bug.c
 @@ -21,7 +21,7 @@
@@ -2690,7 +2691,12 @@ line after an edit that adds or removes lines is moved to match:
 
 ```
 candidate: values are from a copy of your tree with this edit; your files are unchanged (line 8 is line 9 of the candidate)
+candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
 ```
+
+In the edited file, locations, frames and the breakpoint name the candidate's copy, so that they
+agree with these line numbers. A compiled target's other files are shown as yours. A Python
+candidate's are in its copy of your tree.
 
 Some lines have no faithful match. Peeky refuses them before anything is built:
 
@@ -2802,6 +2808,7 @@ status: completed  hits: 1  seconds: 1.639  max pause: 142.2 ms
 output:
   MERGED:1-10
 candidate: values are from a fresh build with this edit; your files are unchanged
+candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
 ...
 ```
 
@@ -2977,7 +2984,9 @@ peeky session start ./app/job.py --at 42 --worker http://127.0.0.1:8765
 ```
 
 The worker's `--root` holds the host's copy of the target's directory. So `./app/job.py` on your
-machine is `/srv/app/job.py` on the host.
+machine is `/srv/app/job.py` on the host. A stop in a compared source names your copy:
+`/srv/app/job.py:42` shows as `app/job.py:42`. Any other path is the host's, marked `worker:`
+([REMOTE.md](REMOTE.md#paths-in-results)).
 
 The probe's output looks as it does locally. For example, with `job.py` a copy of
 `examples/pagination_bug.py`, and the worker on the same machine without a tunnel:
@@ -3007,6 +3016,8 @@ hint: Sources, build outputs or tools changed; start a new session on a fresh bu
   ([REMOTE.md](REMOTE.md#source-identity)).
 - For Java, start the worker with `--java-config`, or `--java-attach-config` for a waiting JVM.
   Pass your own `--config` too ([REMOTE.md](REMOTE.md#java-on-the-worker-host)).
+- For C and C++, start the worker with `--native-config`; for Rust, with `--rust-config`. You need
+  no `--config` on your machine ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)).
 - A dropped tunnel gives `UNREACHABLE`. Reconnect and continue: the worker keeps the session.
 - To try this without a second machine, run `PEEKY_E2E_DOCKER=1 pytest tests/remote -v`. It runs
   against a Linux container, and needs Docker or OrbStack.
