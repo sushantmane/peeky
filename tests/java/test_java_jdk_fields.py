@@ -205,7 +205,12 @@ def test_the_programs_own_fields_stay_settable_beside_the_jdks(stock, capsys):
 ALIAS = """package shop;
 
 import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import javax.foo.Box;
+import jdk.jshell.JShell;
 import sun.misc.Unsafe;
 
 public class Alias {
@@ -226,9 +231,30 @@ public class Alias {
         holder.bytes = alias;
         byte[] own = {1, 2, 3};
         Box box = new Box();
-        System.out.println("before"); // OBSERVE
+        // A JDK module the application class loader loads.
+        JShell shell = JShell.builder().executionEngine("local").build();
+        // An array inside an Object[] a HashMap holds, and one an ArrayList holds.
+        Map<String, Object[]> cache = new HashMap<>();
+        int[] cached = {4, 5};
+        cache.put("k", new Object[] {cached});
+        List<int[]> rows = new ArrayList<>();
+        int[] row = {6, 7};
+        rows.add(row);
+        // A list a HashMap's entry holds: its elements are the map's state.
+        Map<String, List<int[]>> lists = new HashMap<>();
+        List<int[]> listed = new ArrayList<>();
+        int[] deep = {3};
+        listed.add(deep);
+        lists.put("k", listed);
+        // An iterator over `rows` is alive at the stop: a view, not a holder.
+        for (int[] each : rows) {
+            System.out.println("before " + each.length); // OBSERVE
+        }
         System.out.println("AFTER " + text + " " + (text.hashCode() == before) + " " + own[0]
-            + " " + holder.count + " " + box.value + " " + box.cells[0]);
+            + " " + holder.count + " " + box.value + " " + box.cells[0] + " " + cached[0]
+            + " " + row[0] + " " + row[1] + " " + deep[0] + " "
+            + shell.eval("1 + 1").get(0).value());
+        shell.close();
     }
 }
 """
@@ -291,7 +317,7 @@ def test_an_array_a_jdk_field_holds_is_refused_under_any_name(alias, capsys):
         assert main(["session", "report", "--json"]) == 0
         output = json.loads(capsys.readouterr().out)["output"]
         # The text and its cached hash are what they were.
-        assert "AFTER Bolt true 9 5 1 1" in output
+        assert "AFTER Bolt true 9 5 1 1 4 6 7 3 2" in output
     finally:
         main(["session", "close"])
 
@@ -313,6 +339,57 @@ def test_a_program_class_in_a_jdk_looking_package_is_the_programs(alias, capsys)
         assert main(["session", "continue", "--to-exit"]) == 0
         capsys.readouterr()
         assert main(["session", "report", "--json"]) == 0
-        assert "AFTER Bolt true 1 1 2 7" in json.loads(capsys.readouterr().out)["output"]
+        output = json.loads(capsys.readouterr().out)["output"]
+        assert "AFTER Bolt true 1 1 2 7 4 6 7 3 2" in output
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(300)
+def test_a_jdk_module_the_application_loader_loads_is_the_jdks(alias, capsys):
+    # PR #210 review round 2: jdk.jshell loads through the application class loader; its
+    # module, not its loader, makes it the JDK's.
+    root, config, at = alias
+    try:
+        assert main(["session", "start", str(root), "--config", str(config), "--at", at]) == 0
+        capsys.readouterr()
+        for selector in ("shell.nextKeyIndex", "shell.closed"):
+            row = get(capsys, selector)
+            assert row["settable"] is False and "jdk.jshell.JShell" in row["not_settable"], row
+        assert main(["session", "set", "shell.nextKeyIndex=0"]) == 2
+        error = capsys.readouterr().err
+        assert "declared by jdk.jshell.JShell, a JDK class" in error, error
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        assert "AFTER Bolt true 1 1 1 1 4 6 7 3 2" in json.loads(capsys.readouterr().out)["output"]
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(300)
+def test_an_array_inside_an_object_array_the_jdk_holds_is_the_jdks(alias, capsys):
+    # PR #210 review round 2: an Object[] is no proof of whose its arrays are. One a
+    # HashMap's entry holds is the JDK's state; a list's backing array holds the program's.
+    root, config, at = alias
+    try:
+        assert main(["session", "start", str(root), "--config", str(config), "--at", at]) == 0
+        capsys.readouterr()
+        assert main(["session", "set", "cached[0]=9"]) == 2
+        error = capsys.readouterr().err
+        assert "inside an array held by java.util.HashMap$Node.value" in error, error
+        assert main(["session", "set", "deep[0]=9"]) == 2
+        error = capsys.readouterr().err
+        assert "in a list held by java.util.HashMap$Node.value" in error, error
+        # The loop's iterator over `rows` views the list; the program's rows still change.
+        assert main(["session", "set", "each[1]=8"]) == 0
+        assert "set each[1]: 7 -> 8" in capsys.readouterr().out
+        assert get(capsys, "rows[0][0]")["settable"] is True
+        assert main(["session", "set", "rows[0][0]=9"]) == 0
+        assert "set rows[0][0]: 6 -> 9" in capsys.readouterr().out
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        assert "AFTER Bolt true 1 1 1 1 4 9 8 3 2" in json.loads(capsys.readouterr().out)["output"]
     finally:
         main(["session", "close"])

@@ -170,11 +170,33 @@ def test_an_element_is_judged_by_the_field_that_holds_its_array():
     table = field("table", "int[][]", "java.util.Fake", True)
     holder = {"name": "x", "type": "Fake"}
     assert session.internal_member(byte, parent="int[]", trail=[holder, table, row])
-    # ... but an array an Object[] holds (an ArrayList's elementData) is the program's.
-    data = field("elementData", "Object[]", "java.util.ArrayList", True)
+    # ... and so is one inside an Object[] a JDK field holds (a cache's): an Object[] is
+    # no proof of whose its elements are (PR #210 review round 2) ...
+    cache = field("cache", "Object[]", "sun.util.resources.Fake", True)
+    assert session.internal_member(byte, parent="int[]", trail=[holder, cache, row])
+    # ... but for a JDK list's backing array, whose elements are the program's values.
     list_ = {"name": "xs", "type": "ArrayList"}
-    assert session.internal_member(byte, parent="int[]", trail=[list_, data, row]) is None
-    assert session.internal_member(row, parent="Object[]", trail=[list_, data])
+    for owner, name in (
+        ("java.util.ArrayList", "elementData"),
+        ("java.util.Vector", "elementData"),
+        ("java.util.ArrayDeque", "elements"),
+        ("java.util.Arrays$ArrayList", "a"),
+    ):
+        data = field(name, "Object[]", owner, True)
+        assert session.internal_member(byte, parent="int[]", trail=[list_, data, row]) is None
+        # The backing array's own slots are the list's.
+        assert session.internal_member(row, parent="Object[]", trail=[list_, data])
+    # A list the JDK itself holds is no proof: its elements are its holder's state.
+    box = {"name": "box", "type": "Box"}
+    mine = field("items", "ArrayList", "app.Box", False)
+    theirs = field("items", "ArrayList", "java.util.Fake", True)
+    assert session.internal_member(byte, "int[]", trail=[box, mine, data, row]) is None
+    reason = session.internal_member(byte, "int[]", trail=[box, theirs, data, row])
+    assert "inside what `items` holds, a field the JDK class java.util.Fake" in reason
+    # Rows of rows of a list's element are the program's too.
+    deeper = {"name": "0", "type": "int[][]"}
+    data = field("elementData", "Object[]", "java.util.ArrayList", True)
+    assert session.internal_member(byte, "int[]", trail=[list_, data, deeper, row]) is None
     # Without the way to it, nothing is offered.
     assert "cannot tell" in session.internal_member(byte, parent="byte[]", trail=[])
 

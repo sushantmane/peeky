@@ -153,6 +153,18 @@ _JDK_WHY = (
     "Peeky never changes a JDK class's fields (a String's cached hash, an ArrayList's size): "
     "other code relies on them, so a change could corrupt the program's state behind its back"
 )
+# The JDK fields whose array holds the program's own values as its elements (#204): the
+# backing arrays of ArrayList, Vector and ArrayDeque, and Arrays.asList's (the caller's own
+# array); as the launcher's USER_ELEMENTS.
+_USER_ELEMENTS = frozenset(
+    {
+        "java.util.ArrayList.elementData",
+        "java.util.Vector.elementData",
+        "java.util.ArrayDeque.elements",
+        "java.util.Arrays$ArrayList.a",
+        "java.util.Arrays$ArrayItr.a",
+    }
+)
 # Values shown whole, their fields listed only when selected by name (#204): a String
 # (java-debug shows its text) and the boxed primitives (`Integer@57 {value=1001}`).
 _BOXED = ("Integer", "Long", "Short", "Byte", "Character", "Boolean", "Float", "Double")
@@ -193,6 +205,42 @@ def _may_declare(declared, holder, field):
                 return True
             current = declared[current].get("super")
     return False
+
+
+def _jdk_field(variable):
+    """(declaring class, field, True) for a field the JDK declares, as the launcher
+    names it; None for the program's; what is not known, as text."""
+    owner, jdk = variable.get("peekyOwner"), variable.get("peekyJdkOwner")
+    if not isinstance(owner, str) or not owner or type(jdk) is not bool:
+        return f"`{variable.get('name')}`"
+    return (owner, variable.get("name"), True) if jdk else None
+
+
+def _jdk_state(trail, index):
+    """Whether the value at ``trail[index]`` (the debugger's variables from a root local)
+    is a JDK class's state (#204): (declaring class, field, whether that field holds it
+    directly) of the JDK field holding it, or an array holding it, whatever that array's
+    type (an Object[] is no proof of whose its elements are); None where it is the
+    program's: a root local's, a field of the program's, or a JDK list's element (its
+    backing array, _USER_ELEMENTS) where the list itself is the program's. What is not
+    known, as text."""
+    direct = True
+    while index > 0:
+        holder = trail[index - 1]
+        if not str(holder.get("type") or "").endswith("]"):
+            # A field of an object: whose the field is.
+            found = _jdk_field(trail[index])
+            return (*found[:2], direct) if isinstance(found, tuple) else found
+        # An element of the array ``holder``: whose that array is.
+        direct = False
+        if index > 1 and not str(trail[index - 2].get("type") or "").endswith("]"):
+            found = _jdk_field(holder)
+            if isinstance(found, tuple) and f"{found[0]}.{found[1]}" in _USER_ELEMENTS:
+                # A JDK list's element: the program's, where the list is.
+                index -= 2
+                continue
+        index -= 1
+    return None
 
 
 class JdkState(str):
@@ -584,6 +632,9 @@ class JavaSession:
     knows_every_class = True
     # Set from the launcher's capabilities: whether it names fields' declaring classes.
     field_owners = False
+    # A field or element change tells the launcher what is left of the pause budget, for
+    # its search of what refers to an array (#204).
+    pause_budget_writes = True
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
     liveness_by_threads = True
     # java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps and
@@ -989,32 +1040,24 @@ class JavaSession:
     def internal_member(self, variable, parent=None, trail=()):
         """Why `set` never changes this field or element (#204), else None: a field a JDK
         class declares (a String's `hash`, an ArrayList's `size`, inherited or not), as
-        the launcher names its declaring class and whether the JDK's own class loaders
-        loaded it, or an element of an array such a field holds (a String's bytes), or
-        of a row of an array of arrays held so. ``parent``: the type of what holds it;
-        ``trail``: the debugger's variable for each step from the root local to it.
-        Also why it cannot be told (a launcher that names no declaring class). Judged by
-        the way a selector reaches it: the launcher refuses an array a JDK field holds
-        under any other name when the change is made."""
-        held, element = variable, str(parent or "").endswith("]")
+        the launcher names its declaring class and whether it is the JDK's (its module
+        or class loader), or an element of an array that is the JDK's state (_jdk_state:
+        a String's bytes). ``parent``: the type of what holds it; ``trail``: the
+        debugger's variable for each step from the root local to it. Also why it cannot
+        be told (a launcher that names no declaring class). Judged by the way a selector
+        reaches it: the launcher refuses an array a JDK field holds under any other name
+        when the change is made."""
+        element = str(parent or "").endswith("]")
         if element:
-            # An element: judged by the field holding its array, or the array of arrays
-            # (`int[][]`) its array is a row of; an Object[]'s arrays (an ArrayList's
-            # elementData) are the program's own.
             trail = list(trail or ())
             if not trail:
                 return "Peeky cannot tell what holds its array"
-            index = len(trail) - 1
-            while index > 0 and str(trail[index - 1].get("type") or "").endswith("]"):
-                if not str(trail[index - 1].get("type")).endswith("[][]"):
-                    return None
-                index -= 1
-            if index == 0:
-                # The root local's own array.
-                return None
-            held = trail[index]
-        owner, jdk = held.get("peekyOwner"), held.get("peekyJdkOwner")
-        if not isinstance(owner, str) or not owner or type(jdk) is not bool:
+            found = _jdk_state(trail, len(trail) - 1)
+        else:
+            found = _jdk_field(variable)
+        if found is None:
+            return None
+        if isinstance(found, str):
             if not getattr(self, "field_owners", False):
                 return (
                     "this adapter bundle predates telling the JDK's own fields from the "
@@ -1022,19 +1065,17 @@ class JavaSession:
                     "scripts/setup_java_adapter.py"
                 )
             return "Peeky cannot tell which class declares " + (
-                f"`{held.get('name')}`, which holds its array" if element else "it"
+                f"{found}, which holds its array" if element else "it"
             )
-        if not jdk:
-            return None
+        owner, field, direct = found
         scalar = variable.get("type") in (*_JAVA_INTEGER_BITS, "char", "boolean", "float")
         scalar = scalar or variable.get("type") in ("double", *_JAVA_STRINGS)
         if element:
+            where = "an array that" if direct else "an array inside what"
             return JdkState(
-                f"it is in an array that `{held.get('name')}` holds, a field the JDK class "
-                f"{owner} declares: {_JDK_WHY}",
-                f"in an array {owner}'s `{held.get('name')}` holds (the JDK's own state)"
-                if scalar
-                else None,
+                f"it is in {where} `{field}` holds, a field the JDK class {owner} "
+                f"declares: {_JDK_WHY}",
+                f"in an array {owner}'s `{field}` holds (the JDK's own state)" if scalar else None,
             )
         return JdkState(
             f"it is declared by {owner}, a JDK class: {_JDK_WHY}",

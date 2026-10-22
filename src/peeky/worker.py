@@ -3684,15 +3684,17 @@ class DebugWorker:
         runtime.validate_variable(variable, value)
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
+        request = {
+            "variablesReference": reference,
+            "name": name,
+            "value": literal(value, variable=variable) if literal else value,
+        }
+        if getattr(runtime, "pause_budget_writes", False) and self.max_pause and self.stopped_at:
+            # What the launcher may spend searching what refers to an array (#204).
+            left = self.max_pause - (time.monotonic() - self.stopped_at)
+            request["peekyPauseLeftMs"] = max(0, int(left * 1000))
         try:
-            changed = self.dap.request(
-                "setVariable",
-                {
-                    "variablesReference": reference,
-                    "name": name,
-                    "value": literal(value, variable=variable) if literal else value,
-                },
-            )
+            changed = self.dap.request("setVariable", request)
         except RequestFailed as exc:
             raise ValueError(
                 f"The debugger refused to change {name!r} ({str(exc)[:200]}); it is unchanged"

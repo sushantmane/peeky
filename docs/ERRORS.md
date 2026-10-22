@@ -41,7 +41,7 @@ A refused change writes nothing. The hint names the one action the broken rule l
 
 **What can change.** Anything else is refused:
 - a root local of the stopped (innermost) frame;
-- Java: also a scalar field or array element that is not final or static, never a field a JDK class declares (`it is declared by java.lang.String, a JDK class`: loaded by the JDK's own class loaders) or an element of an array one holds, under any name (`the array is held by java.lang.String.value, a JDK class's field`; refused too where more than 64 objects refer to the array) (#204);
+- Java: also a scalar field or array element that is not final or static, never a field a JDK class declares (`it is declared by java.lang.String, a JDK class`: one in a JDK module) or an element of an array one holds, or of an array inside it, under any name (`the array is held by java.lang.String.value, a JDK class's field`; refused too where more than 64 objects refer to it, or the search for them outlasts 2 s or the pause budget) (#204);
 - Rust, C, C++: also an integer field or element of a local the frame holds itself, reached without a pointer, reference or Box and outside unions, enums, packed and standard-library types;
 - the value must be a literal (Python) or a scalar (compiled).
 
