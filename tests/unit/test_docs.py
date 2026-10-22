@@ -176,10 +176,8 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
     python = " ".join((DOCS / "lang/python-cookbook.md").read_text().split())
     assert "Then all of them are listed and every repr runs" in python
     c_cpp = " ".join((DOCS / "lang/c-cpp-cookbook.md").read_text().split())
-    assert (
-        "A `for` or `while` loop's own variable (`for (int i = 0; …)`) is withheld too while the body calls, on one line or several"
-        in c_cpp
-    )
+    assert "a `for` or `while` loop's variable, as in `for (int i = 0; …)`, is withheld" in c_cpp
+    assert "too while the body calls, on one line or several" in c_cpp
 
 
 def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
