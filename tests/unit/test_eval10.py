@@ -160,20 +160,39 @@ def test_a_python_sessions_field_set_hint_names_no_settable_rows():
     assert "[settable]" in old["hint"], old
 
 
-def test_a_local_pointers_refusal_gives_no_call_advice():
+@pytest.mark.parametrize(
+    ("kind", "said", "hint"),
+    [
+        ("local", "`e` is a local here, not a parameter, so no call passed it", "If what it"),
+        (None, "`e` isn't proven a parameter here, so Peeky names no call", "If what it"),
+        ("element", "an element of a slice or Vec, which Peeky never changes", "Edit the source"),
+    ],
+)
+def test_only_a_proven_parameters_refusal_names_a_call(kind, said, hint):
     # prep 9: `--set e.payer=0` on a `for` item over a slice said "change the value where
     # it is owned, before the call that passed it", and its hint named `--at <call line>`.
-    from peeky.fields import local_pointer_advice
+    # Review of #276: that advice needs a parameter proven at the stop; a local's says
+    # what to do only if what it points at is a root local somewhere.
+    from peeky.fields import pointer_advice
 
+    advice = pointer_advice("e", kind)
     message = (
         "`e.payer` cannot be changed: `e` is a pointer: Peeky does not write through a "
-        f"pointer, since what it reaches may be freed or moved; {local_pointer_advice('e')}"
+        f"pointer, since what it reaches may be freed or moved; {advice}"
     )
-    assert "before the call" not in message and "no call passed it" in message
+    assert said in message and "call that passed it" not in message, message
     error = classify(ValueError(message))
     assert error["code"] == "MUTATION_REJECTED", error
-    assert "call" not in error["hint"] and "--old" in error["hint"], error
+    assert error["hint"].startswith(hint) and "call" not in error["hint"], error
     assert len(error["hint"]) <= 150
+    # A proven parameter keeps the call advice, and its hint.
+    called = classify(
+        ValueError(
+            "`e.payer` cannot be changed: `e` is a pointer: Peeky does not write through a "
+            f"pointer, since what it reaches may be freed or moved; {pointer_advice('e', 'parameter')}"
+        )
+    )
+    assert "--at <call line> --hits N --set-hit N" in called["hint"], called
 
 
 MIR = """// MIR for `parse` after PreCodegen
@@ -235,7 +254,7 @@ def _try_bindings(tmp_path, source=SOURCE, mir=MIR):
 def test_a_questions_marks_bindings_are_told_by_where_their_spans_end(tmp_path):
     # prep 7: `describe` listed `residual @ main.rs:47` and `val @ main.rs:47` beside the
     # program's own names. The DWARF doesn't mark them artificial; the MIR's span of each
-    # ends at the `?`.
+    # ends right after the `?` (`residual` spans only it, `val` the expression it tries).
     desugared = _try_bindings(tmp_path)
     assert desugared("residual", 2) and desugared("val", 2)
     # The program's own `val`, and its other names, end with their names: listed.

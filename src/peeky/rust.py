@@ -52,6 +52,7 @@ from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inpu
 from peeky.rust_mir import (
     _BORROWING,
     _FN_POINTER,
+    _MENTIONED,
     OwnedLocals,
     frame_shape,
     ir_functions,
@@ -969,14 +970,72 @@ class _Copied(str):
         return made
 
 
-def _local(body, name):
-    """Whether the MIR ``body`` binds ``name`` only to whole locals, none a parameter (a
-    `for` loop's item, `let r = &mut x;`); False where it can't tell (no body, a
-    closure's capture)."""
-    bindings = body.bindings.get(name, ()) if body is not None else ()
-    return bool(bindings) and all(
-        binding[0] is not None and binding[0] not in body.arguments for binding in bindings
-    )
+# A `for` loop's item from a standard slice iterator's `next()` (`for e in expenses`,
+# `.iter()`, `.iter_mut()`), and that call: such an item points at a slice's or Vec's
+# element. MIR prints the iterator's whole path (`std::slice::Iter`); an adapter's
+# (`Enumerate<…>`) is shortened, so it could be the crate's own, and isn't counted.
+_FOR_ITEM = re.compile(r"(?:copy|move) \(\(_([0-9]+) as Some\)\.0: &.+\)")
+_SLICE_NEXT = re.compile(
+    r"<std::slice::Iter(?:Mut)?<'_, .+> as Iterator>::next\((?:move|copy) _[0-9]+\) -> "
+)
+
+
+def _binding_at(proofs, body, root, line, path):
+    """The MIR local of the binding of ``root`` (`p`, or `p @ main.rs:3`) that code on
+    ``line`` of ``path`` names, or None. OwnedLocals._local's, where one binding is in
+    scope there. Where several are (a `let p` shadowing a parameter `p`), the innermost
+    of those declared above the line, if their scopes nest: a `let` on the stop's own
+    line hasn't run at a line breakpoint, and Rust names the innermost binding. A
+    selector naming its declaration, or bindings in scopes that don't nest, give
+    None."""
+    local = proofs._local(body, root, line, path)
+    name, at, _ = root.partition(" @ ")
+    if local is not None or at:
+        return local
+    bindings = body.bindings.get(name, [])
+    visible = proofs._visible(body, line, path, None, None, bindings)
+    shown = str(path).replace("\\", "/")
+    above = [
+        binding
+        for binding in bindings
+        if visible is not None
+        and binding[4] in visible
+        and binding[2] < line
+        and (shown == binding[1] or shown.endswith("/" + binding[1]))
+    ]
+    if not above or any(binding[0] is None for binding in above):
+        return None
+
+    def enclosing(scope):
+        found = set()
+        for _ in range(4096):
+            scope = body.scopes.get(scope)
+            if scope is None:
+                break
+            found.add(scope)
+        return found
+
+    inner = [
+        binding
+        for binding in above
+        if all(other is binding or other[4] in enclosing(binding[4]) for other in above)
+    ]
+    return inner[0][0] if len(inner) == 1 else None
+
+
+def _slice_element(proofs, body, assigned):
+    """Whether the values ``assigned`` to a reference local (``body._assignments()``'s)
+    are all a standard slice iterator's items, in a crate whose `std` paths are the
+    standard library's (OwnedLocals._std_compares)."""
+    found = [_FOR_ITEM.fullmatch(value) for value in assigned]
+    if not found or not all(found):
+        return False
+    every = body._assignments()
+    for match in found:
+        calls = every.get(int(match[1]), ())
+        if not calls or not all(_SLICE_NEXT.match(call) for call in calls):
+            return False
+    return bool(proofs._std_compares())
 
 
 def _names(names):
@@ -1660,8 +1719,8 @@ class RustSession(NativeSession):
         `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Also the
         bindings a `?` desugars to (`residual`, `val`: tenth evaluation, prep 7), which
         the DWARF does not mark artificial: every binding the body places on that line
-        under that name has a span ending at a `?` of the source, where a binding the
-        program writes ends with its name (``_try_bindings``). Shown when unsure: a
+        under that name has a span ending right after a `?` of the source, where a
+        binding the program writes spans its name (``_try_bindings``). Shown when unsure: a
         function with no body matched, and anything without the MIR (an optimized
         build)."""
         proofs = getattr(self, "owned", None)
@@ -1703,8 +1762,8 @@ class RustSession(NativeSession):
     def _try_bindings(self, bodies, source, name, line, texts):
         """Whether ``bodies`` (the MIR of one function's copies) bind ``name`` on
         ``line`` of ``source`` only as a `?` desugars it: each such binding's span ends
-        at a `?` in the source (`residual`'s is the `?`, `val`'s the expression it ends),
-        which an identifier never does. False where any span is missing or the source
+        right after a `?` in the source (`residual` spans only the `?`, `val` the
+        expression the `?` tries), which an identifier's never does. False where any span is missing or the source
         can't be read as rustc read it. ``texts``: {source: its lines}, read once."""
         if source is None or source not in self.lines:
             return False
@@ -2208,8 +2267,8 @@ class RustSession(NativeSession):
         from peeky.fields import (
             Unsettable,
             debugger_steps,
-            local_pointer_advice,
             member_indexes,
+            pointer_advice,
             settable_member,
         )
 
@@ -2267,8 +2326,10 @@ class RustSession(NativeSession):
                     kind,
                     root,
                     named,
-                    # No call passed a local reference: the call advice would lead nowhere.
-                    owner=lambda: local_pointer_advice(root) if _local(body, plain) else None,
+                    # The call advice only for a proven parameter (tenth evaluation).
+                    owner=lambda: pointer_advice(
+                        root, self._pointer_kind(hashed, root, line, source)
+                    ),
                 )
                 projection = member_indexes(graph, kind, root, named)
                 if not framed:
@@ -2639,14 +2700,37 @@ class RustSession(NativeSession):
         return self._rows
 
     def _pointer_advice(self, frame, root, steps):
-        """At a stop: local_pointer_advice where the build's MIR binds ``root`` only to
-        locals of the frame's function, none a parameter; else None (the general
-        advice: change it before the call that passed it)."""
-        from peeky.fields import local_pointer_advice
+        """At a stop: fields.pointer_advice for the binding of ``root`` the frame's line
+        shows (``_pointer_kind``)."""
+        from peeky.fields import pointer_advice
 
-        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
-        body = proofs.body(hashed[1]) if hashed and proofs is not None else None
-        return local_pointer_advice(root) if _local(body, _plain(root)) else None
+        hashed, place = _frame_hash(frame), frame or {}
+        path = (place.get("source") or {}).get("path")
+        kind = self._pointer_kind(hashed[1], root, place.get("line"), path) if hashed else None
+        return pointer_advice(root, kind)
+
+    def _pointer_kind(self, hashed, root, line, path):
+        """What the reference or raw pointer root local ``root`` (`e`, or `e @
+        main.rs:64`) of the function ``hashed`` is at ``line`` of ``path``: the MIR's
+        binding in scope there (OwnedLocals._local), compared with the body's
+        arguments. "parameter"; "element", a local proven to be a standard slice
+        iterator's item (``_slice_element``); "local", one whose value comes from no
+        argument; or None where Peeky can't tell (no single whole-local binding in
+        scope, a closure's capture, a copy or a pattern of a parameter)."""
+        proofs = getattr(self, "owned", None)
+        body = proofs.body(hashed) if proofs is not None and hashed else None
+        if body is None or type(line) is not int or not path:
+            return None
+        local = _binding_at(proofs, body, str(root), line, path)
+        if local is None:
+            return None
+        if local in body.arguments:
+            return "parameter"
+        assigned = body._assignments().get(local, ())
+        mentioned = {int(n) for value in assigned for n in _MENTIONED.findall(value)}
+        if not assigned or mentioned & body.arguments:
+            return None
+        return "element" if _slice_element(proofs, body, assigned) else "local"
 
     def _root_type(self, frame, root):
         """(type offset, whether the frame keeps it in its own memory, type graph) of the

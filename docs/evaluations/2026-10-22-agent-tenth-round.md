@@ -113,8 +113,8 @@ or explained by the PR that adds this report.
 | L10 | `--set-at LINE@HIT` was hard to find. | kitty | Done: the Rust cookbook's "What `--set` can change" and "Change a value behind a reference" show it, with `kitty`'s own example. AGENT_GUIDE, at its size cap, already names it in rule 4. |
 | L11 | Python's field refusal hint mentioned `[settable]` rows, which Python never shows. It printed `peeky: [MUTATION_REJECTED]` on stderr, where other languages print `error [MUTATION_REJECTED]:`. | prep | Done: the hint says to set a local, or add one with a candidate edit. The probe's refusal prints as the other languages' do. |
 | L12 | C pointer refusals don't end with `settable here:`, as AGENT_GUIDE promised. | prep | AGENT_GUIDE narrowed: Rust's refusals before the run end with it. Java's don't either. A C refusal through a pointer names the frame where the field is settable instead. |
-| L13 | Rust `describe` listed the `?` operator's `residual` and `val` bindings. | prep | Done: the DWARF doesn't mark them as the compiler's, but the MIR places each at the `?`. A binding you write sits at its name, so your own `val` stays listed. |
-| L14 | Rust `--set e.payer=0` advised changing it "before the call that passed it". `e` is a `for` item, which no call passed. | prep | Done: a reference or pointer local that isn't a parameter, in Rust, C or C++, says so, and to change the value where a frame holds it, or edit the source. |
+| L13 | Rust `describe` listed the `?` operator's `residual` and `val` bindings. | prep | Done: the DWARF doesn't mark them as the compiler's, but in the MIR each one's span ends right after the `?`. `residual` spans only the `?`, and `val` the expression it tries, through the `?`. A binding you write spans its name, so your own `val` stays listed. |
+| L14 | Rust `--set e.payer=0` advised changing it "before the call that passed it". `e` is a `for` item, which no call passed. | prep | Done: only a pointer proven to be a parameter at the stop gets the call advice, in Rust, C or C++. A local, one shadowing a parameter too, says no call passed it. A Rust slice's or Vec's loop item says to edit the source. Anything else, such as a static, names no call. |
 | L15 | `--json`'s `output` has `\r\n`. | prep | Documented: a C, C++ or Rust program writes through a terminal that LLDB opens, which adds the `\r`. The evidence store keeps it too. Peeky can't tell that `\r` from one the program wrote. |
 | L16 | The C cookbook's "Change a field behind a pointer" ran about 130 lines. | debounce | Done: it starts with the refusal and what to do, and keeps every condition, in 109 lines. |
 
@@ -156,6 +156,13 @@ Each fix PR had review rounds. They found these problems, none of which an agent
   - The moved-breakpoint warning came without a stop.
   - A stack of 20,000 frames passed the debug protocol's 4 MiB limit and closed the session. At
     most 256 frames are read now.
+
+- **#276 (this report's Lows):**
+  - The first fix kept the call advice for any pointer not proven a local. A `let p` shadowing a
+    parameter `p`, and a C static, were still told to change the value "before the call that
+    passed it".
+  - Now the call advice needs a parameter proven at the stop. Rust reads the binding in scope
+    from the MIR, and C and C++ the declaration that applies at the stop.
 
 ## What worked
 

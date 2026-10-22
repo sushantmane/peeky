@@ -345,9 +345,14 @@ _MUTATION_HINTS = (
         "Change the value in the caller the message names, before that call, as the message says.",
     ),
     (
-        r"not a parameter, so no call passed it",
-        "Change the value in the frame that holds it as a local, or edit the source with "
-        "`--old`/`--new`.",
+        r"an element of a slice or Vec, which Peeky never changes",
+        "Edit the source with `--old`/`--new`: Peeky never changes a slice's or Vec's elements.",
+    ),
+    (
+        # A pointer not proven a parameter (tenth evaluation): no call is named.
+        r"not a parameter, so no call passed it|proven a parameter here, so Peeky names no call",
+        "If what it points at is a root local in some frame, change it there; otherwise edit "
+        "the source with `--old`/`--new`.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",

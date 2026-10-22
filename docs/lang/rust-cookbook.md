@@ -56,9 +56,10 @@ names in peeky_pagination::main (src/main.rs:22-41): args (Vec<String>, lines 24
 A macro of your own crate keeps its bindings, even with `#[collapse_debuginfo(yes)]`.
 
 `describe` also leaves out the bindings that the compiler makes for a `?`: `residual` and `val`.
-The debug information lists them as locals, without marking them as the compiler's. The build's
-MIR places each one at the `?` itself, where a binding you write sits at its name. So a local
-that you name `val` or `residual` is still listed. Where Peeky can't tell, the binding is listed.
+The debug information lists them as locals, without marking them as the compiler's. In the
+build's MIR, each one's span ends right after the `?`: `residual` spans only the `?`, and `val`
+the expression it tries, through the `?`. A binding you write spans its name. So a local that you name
+`val` or `residual` is still listed. Where Peeky can't tell, the binding is listed.
 
 ### Read types as the program spells them
 
@@ -1311,11 +1312,17 @@ These don't reach the stop you need:
 - `session continue --to` the call's line reaches only the next call.
 - `session step --out` returns part-way through the line, where changes are refused.
 
-A reference that is a local, not a parameter, came from no call. Examples are a `for` loop's item
-over a slice, `e` in `for e in expenses`, and `let r = &mut x;`. The refusal says so. Change the
-value in the frame that holds it as its own local, where rows mark it `[settable]`. What a
-`Vec` or a slice holds is never settable, so for `e.cents`, edit the source with
-`--old`/`--new`.
+The refusal gives this call advice only where the build's MIR proves the reference is the
+function's parameter at the stop. Otherwise it names no call:
+
+- A local came from no call: `let r = &mut x;`, or a `let p` that shadows a parameter `p`. If
+  what it points at is also a root local in some frame, change it there, where its row is
+  `[settable]`. Otherwise edit the source with `--old`/`--new`.
+- A `for` loop's item over a slice or `Vec`, such as `e` in `for e in expenses`, points at an
+  element. Peeky never changes a slice's or `Vec`'s elements, so the refusal says to edit the
+  source.
+- Where the MIR doesn't prove either, the refusal says the reference isn't proven a parameter.
+  Examples are a closure's capture, and a local that reborrows a parameter (`let q = &*p;`).
 
 ### Set a String to a text
 

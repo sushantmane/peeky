@@ -47,6 +47,21 @@ fn credit(e: &Expense) -> i64 {
     e.cents + 1 // PARAM
 }
 
+struct Pair {
+    x: i64,
+    y: i64,
+}
+
+fn shadow(p: &mut Pair) -> i64 { // SIGNATURE
+    p.y += 1; // PARAM_USE
+    let q = &*p;
+    let seen = q.x; // COPY
+    let mut own = Pair { x: seen, y: 0 };
+    let p = &mut own; // INNER
+    p.y += 2; // SHADOWED
+    p.x + p.y
+}
+
 fn settle(expenses: &[Expense]) -> i64 {
     let mut total = 0;
     for e in expenses {
@@ -62,7 +77,9 @@ fn main() {
         Expense { payer: &one, cents: both("x").unwrap_or(7) },
     ];
     let paid = settle(&expenses);
-    println!("{} {}", paid, expenses[0].payer == expenses[1].payer);
+    let mut pair = Pair { x: 3, y: 4 };
+    let shadowed = shadow(&mut pair);
+    println!("{} {} {} {}", paid, expenses[0].payer == expenses[1].payer, shadowed, pair.y);
 }
 """
 
@@ -82,7 +99,7 @@ def crate(tmp_path, monkeypatch):
 
 
 def line_of(marker):
-    return next(i for i, line in enumerate(MAIN.splitlines(), 1) if f"// {marker}" in line)
+    return next(i for i, line in enumerate(MAIN.splitlines(), 1) if line.endswith(f"// {marker}"))
 
 
 @pytest.mark.timeout(400)
@@ -113,29 +130,74 @@ def _refused(capsys, crate, marker, assignment):
 @pytest.mark.timeout(400)
 def test_a_loop_items_field_gives_no_call_advice(crate, capsys):
     # kitty: `--set e.payer=0` in `settle` said "change the value where it is owned,
-    # before the call that passed it: `--at <call line> …`"; `e` is a `for` item.
+    # before the call that passed it: `--at <call line> …`"; `e` is a `for` item over a
+    # slice, whose elements Peeky never changes.
     error = _refused(capsys, crate, "ITEM", "e.cents=0")
     assert error["code"] == "MUTATION_REJECTED", error
     message = error["message"]
-    assert "`e` is a local here, not a parameter, so no call passed it" in message, message
+    assert (
+        "`e` is a local here, not a parameter, so no call passed it: it points at an element "
+        "of a slice or Vec, which Peeky never changes, so edit the source with `--old`/`--new`"
+    ) in message, message
     assert "before the call that passed it" not in message, message
-    assert "call" not in error["hint"], error["hint"]
+    assert error["hint"].startswith("Edit the source with `--old`/`--new`"), error["hint"]
     # A reference parameter keeps the advice: a call passed it.
     error = _refused(capsys, crate, "PARAM", "e.cents=0")
     assert "before the call that passed it" in error["message"], error
     assert "not a parameter" not in error["message"], error
 
 
+NO_CALL = "if what it points at is also a root local in some frame, change it there"
+
+
 @pytest.mark.timeout(400)
-def test_a_sessions_set_through_a_loop_item_gives_no_call_advice(crate, capsys):
-    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line_of('ITEM')}"]) == 0
+def test_a_local_shadowing_a_parameter_is_not_taken_for_it(crate, capsys):
+    # Review of #276: `let p = &mut own;` shadows the parameter `p`; the MIR binds `p`
+    # twice, and pooling them called the inner one a parameter.
+    error = _refused(capsys, crate, "SHADOWED", "p.y=0")
+    message = error["message"]
+    assert f"`p` is a local here, not a parameter, so no call passed it: {NO_CALL}" in message
+    assert "before the call" not in message and "call" not in error["hint"], error
+    # The parameter, above the `let`, and named by its declaration below it.
+    assert (
+        "before the call that passed it" in _refused(capsys, crate, "PARAM_USE", "p.y=0")["message"]
+    )
+    named = f"p @ main.rs:{line_of('SIGNATURE')}.y=0"
+    assert "before the call that passed it" in _refused(capsys, crate, "SHADOWED", named)["message"]
+    # A reborrow of the parameter is a local, but what it points at was passed: no claim
+    # either way.
+    error = _refused(capsys, crate, "COPY", "q.x=0")
+    assert (
+        f"`q` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in error["message"]
+    ), error
+    assert "before the call" not in error["message"], error
+
+
+@pytest.mark.timeout(400)
+@pytest.mark.parametrize(
+    ("marker", "assignment", "said"),
+    [
+        ("ITEM", "e.cents=0", "an element of a slice or Vec, which Peeky never changes"),
+        # LLDB names each `p` by its declaration where both are in scope.
+        ("SHADOWED", "INNER", "is a local here, not a parameter, so no call passed it"),
+        ("SHADOWED", "SIGNATURE", "before the call that passed it"),
+        ("PARAM_USE", "p.y=0", "before the call that passed it"),
+    ],
+)
+def test_a_sessions_set_through_a_pointer_says_what_the_binding_is(
+    crate, capsys, marker, assignment, said
+):
+    assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line_of(marker)}"]) == 0
     capsys.readouterr()
+    if assignment in ("INNER", "SIGNATURE"):
+        assignment = f"p @ main.rs:{line_of(assignment)}.y=0"
     try:
-        assert main(["session", "set", "e.cents=0", "--json"]) == 2
+        assert main(["session", "set", assignment, "--json"]) == 2
         error = json.loads(capsys.readouterr().out)["error"]
         assert error["code"] == "MUTATION_REJECTED", error
-        assert "not a parameter, so no call passed it" in error["message"], error
-        assert "before the call that passed it" not in error["message"], error
+        assert said in error["message"], error
+        if "before the call" not in said:
+            assert "before the call" not in error["message"], error
     finally:
         main(["session", "close"])
         capsys.readouterr()

@@ -1,6 +1,8 @@
 """The tenth agent evaluation's C finding (prep 9, seen in Rust): a refused field change
 through a pointer that is a local, not a parameter, said to change it "before the call
-that passed it", though no call passed it."""
+that passed it", though no call passed it. Review of #276: only a pointer proven a
+parameter at the stop gets call advice; a local shadowing a parameter, or a static, gets
+none."""
 
 import json
 import os
@@ -16,9 +18,23 @@ struct acc {
     int count;
 };
 
+static struct acc global;
+
 static int add(struct acc *a, int v) {
     a->total += v; /* PARAM */
     return a->total;
+}
+
+static int shadow(struct acc *a) { /* SIGNATURE */
+    a->count += 1; /* PARAM_USE */
+    struct acc own = {0, 0};
+    {
+        struct acc *a = &own; /* INNER */
+        a->count += 2; /* SHADOWED */
+    }
+    static struct acc *kept = &global;
+    kept->count += 1; /* STATIC */
+    return a->count + own.count + kept->count;
 }
 
 int main(int argc, char **argv) {
@@ -28,6 +44,7 @@ int main(int argc, char **argv) {
         p->count += 1; /* LOCAL */
     }
     printf("%d %d\\n", add(&box, argc), box.count); /* CALL */
+    printf("%d\\n", shadow(&box)); /* SHADOW_CALL */
     return 0;
 }
 """
@@ -82,3 +99,57 @@ def test_a_pointer_parameter_still_names_its_caller(program, capsys):
     message = error["message"]
     assert f"add has one caller: acc.c:{line_of('CALL')} in main" in message, message
     assert "not a parameter" not in message, message
+
+
+NO_CALL = "if what it points at is also a root local in some frame, change it there"
+
+
+@pytest.mark.timeout(120)
+def test_a_local_shadowing_a_parameter_is_not_taken_for_it(program, capsys):
+    error = refusal(program, capsys, "SHADOWED", "a.count=5")
+    message = error["message"]
+    assert f"`a` is a local here, not a parameter, so no call passed it: {NO_CALL}" in message
+    assert "one caller" not in message and "before the call" not in message, message
+    # The parameter above the inner block, and named by its declaration inside it: the
+    # call advice. Not the caller's line: the function declares another `a`, which the
+    # chain's reading of the source would not tell apart.
+    for marker, root in (("PARAM_USE", "a"), ("SHADOWED", f"a @ acc.c:{line_of('SIGNATURE')}")):
+        message = refusal(program, capsys, marker, f"{root}.count=5")["message"]
+        assert "before the call that passed it" in message, (marker, message)
+        assert "not a parameter" not in message and "proven" not in message, message
+
+
+@pytest.mark.timeout(120)
+def test_a_static_pointer_gets_no_call_claim(program, capsys):
+    error = refusal(program, capsys, "STATIC", "kept.count=5")
+    message = error["message"]
+    assert f"`kept` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in message
+    assert "before the call" not in message and "call" not in error["hint"], error
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize(
+    ("marker", "named", "said"),
+    [
+        ("SHADOWED", "INNER", "is a local here, not a parameter, so no call passed it"),
+        ("SHADOWED", "SIGNATURE", "before the call that passed it"),
+        ("LOCAL", None, "`p` is a local here, not a parameter, so no call passed it"),
+    ],
+)
+def test_a_sessions_set_through_a_pointer_says_what_the_binding_is(
+    program, capsys, marker, named, said
+):
+    at = str(line_of(marker))
+    assert main(["session", "start", str(program), "--at", at, "--arg", "x"]) == 0
+    capsys.readouterr()
+    root = f"a @ acc.c:{line_of(named)}" if named else "p"
+    try:
+        assert main(["session", "set", f"{root}.count=5", "--json"]) == 2
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["code"] == "MUTATION_REJECTED", error
+        assert said in error["message"], error
+        if "before the call" not in said:
+            assert "before the call" not in error["message"], error
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

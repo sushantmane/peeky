@@ -296,8 +296,8 @@ class Body:
     places: dict = field(default_factory=dict)
     # {(name, file, line): [(end line, end column)]}: where each binding's span ends, as
     # the MIR prints it (characters, 1-based, past the end). A `?`'s desugared bindings
-    # (`residual`, `val`) end at the `?` itself; a binding the program writes ends with
-    # its name.
+    # end right after the `?` (`residual` spans only it, `val` the expression it tries);
+    # a binding the program writes spans its name.
     binding_ends: dict = field(default_factory=dict)
     scopes: dict = field(default_factory=lambda: {0: None})  # {scope: its parent}
     # {(file, line): the scopes of the statements with a span on that line}

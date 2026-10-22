@@ -1075,10 +1075,15 @@ before that call. Repeat it for more stops. Other refusals say:
   ([below](#when-the-refusal-says-settable-c)).
 - `Peeky cannot single out one call of wrap`: `describe`'s `mutable:` line lists the fields each
   function can set.
-- `` `p` is a local here, not a parameter, so no call passed it ``: change the value where a frame
-  holds it as its own local, or edit the source.
-- `change the value where it is owned, before the call that passed it`. C++ says this for a
-  parameter, because overloads and member calls make a call's target unclear from the text. Use
+- `` `p` is a local here, not a parameter, so no call passed it ``, for an automatic local, one
+  that shadows a parameter too: if what it points at is also a root local in some frame, change
+  it there. Otherwise edit the source.
+- `` `kept` isn't proven a parameter here, so Peeky names no call ``, for a static, or where Peeky
+  can't single out the declaration that applies at the stop: the same advice.
+- `change the value where it is owned, before the call that passed it`, for a pointer proven to
+  be the function's parameter at the stop. C++ says this for every parameter, because overloads
+  and member calls make a call's target unclear from the text. So does C for a parameter that
+  shares its name with another local of the function. Use
   `--set-at <call line>@N`, a probe `--at` the call's line with `--hits N --set-hit N`, or
   `session start --at` that line with `--hit N`.
 
