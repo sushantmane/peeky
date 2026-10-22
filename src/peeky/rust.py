@@ -776,8 +776,10 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
         for name in sources
         for text in [(Path(workspace) / name).read_text(errors="replace")]
     )
+    # Every function the dump holds, to tell the crate's own `std::ptr::eq` (#259).
+    defined = set()
     return OwnedLocals(
-        load_bodies(Path(workspace) / MIR_DIR, crate),
+        load_bodies(Path(workspace) / MIR_DIR, crate, defined),
         ir_functions(ir, sources),
         sources,
         precise=not collapsed,
@@ -786,6 +788,7 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
             name: (Path(workspace) / name).read_bytes().decode("utf-8", errors="replace")
             for name in sources
         },
+        defined=defined,
     )
 
 

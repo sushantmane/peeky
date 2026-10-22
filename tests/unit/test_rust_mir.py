@@ -16,21 +16,27 @@ from peeky.rust_mir import (
     _segments,
     frame_shape,
     ir_functions,
+    load_bodies,
     may_invoke_macro,
     parse_body,
     stop_block,
 )
 
 
-def mir(blocks, header="fn main() -> () {", bindings="", files=None):
+def mir(blocks, header="fn main() -> () {", bindings="", files=None, types=None):
     """A `-Zdump-mir` body: blocks are {number: [statement, ..., terminator]}; ``files``:
-    {(block, index): the file a statement's span is in}, else src/main.rs."""
+    {(block, index): the file a statement's span is in}, else src/main.rs; ``types``:
+    {local: its type}, declared after `_1`."""
     lines = [
         "// MIR for `main` after PreCodegen",
         "",
         header,
         "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:10: 1:10",
         "    let _1: std::vec::Vec<i32>;          // in scope 0 at src/main.rs:2:9: 2:10",
+        *(
+            f"    let mut _{local}: {kind};   // in scope 0 at src/main.rs:3:9: 3:10"
+            for local, kind in (types or {}).items()
+        ),
         "    scope 1 {",
         *(f"        {line}" for line in bindings.splitlines() if line),
         "    }",
@@ -1252,11 +1258,15 @@ COMPARED = {
 }
 
 
-def compared(call, *more):
+# What the dump declares them (`let mut _31: *const Friend;`).
+POINTERS = {29: "&Friend", 30: "bool", 31: "*const Friend", 32: "*const Friend"}
+
+
+def compared(call, *more, types=POINTERS):
     blocks = {number: list(statements) for number, statements in COMPARED.items()}
     blocks[0][3] = blocks[0][3].format(call)
     blocks[2] = [*more, *blocks[2]]
-    return mir(blocks)
+    return mir(blocks, types=types)
 
 
 @pytest.mark.parametrize(
@@ -1273,6 +1283,7 @@ def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(cal
     # points at still stands, since the call only compares two addresses. The raw pointer
     # it was made into is no use of `f`.
     body = compared(call)
+    assert body.types[31] == "*const Friend"
     assert not body.used_ahead(29, (1, 0))
     assert body.used_before(29, (0, 3)) and body.used_before(29, (0, 3), compares=True)
     assert not body.used_before(29, (1, 0))
@@ -1290,12 +1301,26 @@ def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(cal
         "eq::<Friend>(move _31, move _32)",
         "ptr::eq::<Friend>(move _31, move _32)",
         "kitty::std::ptr::eq::<Friend>(move _31, move _32)",
+        # Not two raw pointers (#272 review: a crate's own `std::ptr::eq` taking a Box,
+        # which it drops), or a constant.
+        "std::ptr::eq::<Friend>(move _31, move _32, const ())",
+        "std::ptr::eq::<Friend>(move _31, copy _1)",
+        "std::ptr::eq::<Friend>(move _31)",
+        "std::ptr::eq::<Friend>(move _31, const 0_usize as *const Friend)",
     ],
 )
 def test_another_call_after_a_reference_s_last_use_still_ends_its_proof(call):
     body = compared(call)
     assert not body.used_before(29, (1, 0), compares=True)
     assert body.gaps_before(29, (1, 0), compares=True) == {(0, 3)}
+
+
+def test_a_comparison_of_values_not_declared_raw_pointers_is_a_call():
+    for kind in ("std::boxed::Box<Friend>", "&Friend", "usize"):
+        body = compared("std::ptr::eq::<Friend>(move _31, move _32)", types={**POINTERS, 32: kind})
+        assert not body.used_before(29, (1, 0), compares=True), kind
+    body = compared("std::ptr::eq::<Friend>(move _31, move _32)", types={})
+    assert not body.used_before(29, (1, 0), compares=True)
 
 
 def test_a_comparison_s_result_stored_into_a_borrowed_local_is_a_write():
@@ -1326,8 +1351,8 @@ def test_every_gap_since_the_last_use_is_found_on_every_path_back():
     assert body.gaps_before(3, (4, 0)) == {(3, 0), (3, 1)}
 
 
-def owned_crate(text):
-    return OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": text})
+def owned_crate(text, defined=()):
+    return OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": text}, defined=defined)
 
 
 @pytest.mark.parametrize(
@@ -1336,10 +1361,14 @@ def owned_crate(text):
         "use std::ptr;\nfn main() { ptr::eq(a, b); std::ptr::addr_eq(a, b); }\n",
         'use std::ptr;\n// fn addr_eq\nfn main() { let s = "mod std"; ptr::addr_eq(a, b); }\n',
         "fn main() { core :: ptr :: addr_eq(a, b); }\n",
+        # A path through `std` in a macro's arguments declares nothing.
+        'fn main() { assert!(std::ptr::eq(a, b)); println!("{}", core :: mem::size_of::<u8>()); }\n',
+        "extern crate core;\nfn main() { let stdout = 1; m!(stdout); }\n",
     ],
 )
 def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
-    assert owned_crate(text)._std_compares() is True
+    owned = owned_crate(text, defined={"main", "<impl at src/main.rs:3:1: 3:9>::eq", "x::eq"})
+    assert owned._std_compares() is True
 
 
 @pytest.mark.parametrize(
@@ -1354,10 +1383,45 @@ def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
         "use std::ptr::addr_eq;\nfn main() { addr_eq(a, b); }\n",
         # A source that does not lex.
         'fn main() { let s = "open; }\n',
+        # A macro may declare `mod std` from its argument (#272 review), and `extern
+        # crate` may take the name.
+        "macro_rules! make_mod { ($n:ident) => { mod $n {} } }\nmake_mod!(std);\n",
+        "make_mod! { core }\n",
+        "make_mod![r#std];\n",
+        "outer!(inner!(std));\n",
+        "extern crate core as std;\n",
+        "extern  crate alloc as core;\n",
     ],
 )
 def test_a_crate_that_may_name_them_itself_trusts_none(text):
     assert owned_crate(text)._std_compares() is False
+
+
+@pytest.mark.parametrize(
+    "name", ["std::ptr::eq", "core::ptr::eq", "std::ptr::addr_eq", "inner::addr_eq", "addr_eq"]
+)
+def test_a_crate_whose_dump_holds_its_own_comparison_trusts_none(name):
+    # #272 review: `make_mod!(std)` declared `mod std { pub mod ptr { fn eq } }`, dumped
+    # as `fn std::ptr::eq(…)`, and its calls as `std::ptr::eq::<Friend>(…)`. The
+    # standard library's bodies are never in the crate's dump.
+    assert owned_crate("fn main() {}\n", defined={"main", name})._std_compares() is False
+    assert owned_crate("fn main() {}\n", defined={"main"})._std_compares() is True
+    body = mir({0: ["return;"]}, header=f"fn {name}(_1: *const T) -> bool {{")
+    assert body.path == name
+    owned = OwnedLocals([body], {}, ("src/main.rs",), texts={"src/main.rs": "fn main() {}\n"})
+    assert owned._std_compares() is False
+
+
+def test_every_function_dumped_is_named_parsed_or_not(tmp_path):
+    (tmp_path / "kitty.main.3-2-007.PreCodegen.after.mir").write_text(
+        "// MIR for `main` after PreCodegen\n\nfn main() -> () {\n}\n"
+    )
+    (tmp_path / "kitty.std#1-ptr-eq.3-2-007.PreCodegen.after.mir").write_text(
+        "fn std::ptr::eq(_1: *const T, _2: Box<T>, _3: ()) unparsed\n"
+    )
+    defined = set()
+    load_bodies(tmp_path, "kitty", defined)
+    assert defined == {"main", "std::ptr::eq"}
 
 
 def test_the_note_names_what_may_have_run_since_a_reference_s_last_use():

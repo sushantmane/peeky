@@ -1475,7 +1475,8 @@ class Body:
         call, drop, write to a place's part or a borrowed local, nor end of a borrowed
         local's storage. At a use the borrow checker has kept its target; only branches,
         assertions and whole assignments to locals nothing borrows run between, and with
-        ``compares``, the standard library's address comparisons (``_harmless``)."""
+        ``compares``, the standard library's address comparisons of two raw pointers
+        (``_harmless``)."""
         return not self.gaps_before(local, start, compares, every=False)
 
     def gaps_before(self, local, start, compares=False, every=True, limit=16):
@@ -1506,7 +1507,9 @@ class Body:
                 if event == "use" or (assigned and int(assigned[1]) == local):
                     stopped = True
                     break
-                if event == "end" or not _harmless(text, borrowed, compares):
+                if event == "end" or not _harmless(
+                    text, borrowed, self.types if compares else None
+                ):
                     found.add((number, back))
                     if not every or len(found) >= limit:
                         return found
@@ -2717,6 +2720,17 @@ def _closings(code):
     return closing
 
 
+def _passes_std(code):
+    """True if a macro invocation in ``code`` (comments and strings blanked) has `std` or
+    `core` among its arguments other than as a path's start (`make_mod!(std)`)."""
+    closing = _closings(code)
+    for opening in _MACRO_OPENING.finditer(code):
+        start = opening.start(1)
+        if _BARE_STD.search(code, start + 1, closing.get(start, len(code))):
+            return True
+    return False
+
+
 def _named_own(code, names):
     """Which of ``names`` the source ``code`` (comments and strings blanked) may give an
     item of its own (see OwnedLocals._untrusted_names), in one pass over its words."""
@@ -3039,9 +3053,18 @@ def _scope(block, index):
 # alone: many items are), and `addr_eq` alone where no other item is so named
 # (``OwnedLocals._std_compares`` says when those names are the standard library's).
 _ADDRESS_COMPARISON = re.compile(
-    r"^_([0-9]+) = (?:(?:std|core)::ptr::eq|(?:(?:std|core)::ptr::)?addr_eq)::<.+>\(.*\)"
+    r"^_([0-9]+) = (?:(?:std|core)::ptr::eq|(?:(?:std|core)::ptr::)?addr_eq)::<.+>\((.*)\)"
     r" -> \[return: bb[0-9]+(?:, unwind(?:: bb[0-9]+| \w+(?:\(\w+\))?))?\];$"
 )
+# A function of the crate's own that a call could be dumped under one of those names
+# (`fn std::ptr::eq`, `fn inner::addr_eq`): its header's path, any prefix.
+_COMPARISON_NAME = re.compile(r"(?:^|::)(?:ptr::eq|addr_eq)$")
+# An invocation's opening, as ``_MACRO_CALL``, and a `std` or `core` in its arguments
+# that is not a path's start (`make_mod!(std)` may declare `mod std`); and an `extern
+# crate` renamed so.
+_MACRO_OPENING = re.compile(r"(?<![\w:])(?:(?:::)?(?:\w+::)*\w+)\s*!\s*([(\[{])")
+_BARE_STD = re.compile(r"\b(?:std|core)\b(?!\s*::)")
+_EXTERN_AS_STD = re.compile(r"\bextern\s+crate\s+\w+\s+as\s+(?:std|core)\b")
 
 
 def _false(why, reason):
@@ -3068,21 +3091,29 @@ def _gap(body, function, number, index):
     return ("write", line)
 
 
-def _harmless(text, borrowed, compares=False):
+def _harmless(text, borrowed, types=None):
     """True if the statement cannot move, drop, free or write what a reference points
     into: a branch, an assertion, a storage marker of a local never borrowed itself, a
-    whole assignment (not a call) to a local never borrowed itself; with ``compares``
-    (the dump's `std::ptr::eq` and `addr_eq` are the standard library's), a call of one
-    of them whose result goes to such a local (#259: `ptr::eq(f, e.payer)` only
-    compares the addresses it is given)."""
+    whole assignment (not a call) to a local never borrowed itself; with ``types`` (the
+    body's {local: type}, given where the dump's `std::ptr::eq` and `addr_eq` are the
+    standard library's), a call of one of them on two raw pointer locals whose result
+    goes to such a local (#259: `ptr::eq(f, e.payer)` only compares two addresses)."""
     if _BRANCHES.match(text) or text.startswith("goto ") or _NOT_A_USE.match(text):
         return True
     if storage := re.match(r"^StorageDead\(_([0-9]+)\);$", text):
         return int(storage[1]) not in borrowed
     if text == "nop;":
         return True
-    if compares and (found := _ADDRESS_COMPARISON.match(text)):
-        return int(found[1]) not in borrowed
+    if types is not None and (found := _ADDRESS_COMPARISON.match(text)):
+        operands = [re.fullmatch(r"(?:move|copy) _([0-9]+)", o) for o in _top_level(found[2])]
+        return (
+            len(operands) == 2
+            and all(
+                operand and re.match(r"\*(?:const|mut) ", types.get(int(operand[1]), ""))
+                for operand in operands
+            )
+            and int(found[1]) not in borrowed
+        )
     found = _WHOLE_ASSIGNMENT.match(text)
     return bool(found) and "->" not in text and int(found[1]) not in borrowed
 
@@ -3328,8 +3359,10 @@ def _finish(block):
     return True
 
 
-def load_bodies(directory, crate):
-    """Every `PreCodegen` body rustc dumped for ``crate``; empty when over budget."""
+def load_bodies(directory, crate, defined=None):
+    """Every `PreCodegen` body rustc dumped for ``crate``; empty when over budget. The
+    path of every function dumped, parsed or not, is added to the set ``defined`` if
+    given (OwnedLocals._std_compares)."""
     directory = Path(directory)
     files = sorted(directory.glob(f"{crate}.*.PreCodegen.after.mir"))
     if sum(path.stat().st_size for path in files) > MAX_MIR_BYTES:
@@ -3337,10 +3370,17 @@ def load_bodies(directory, crate):
     bodies = []
     for path in files:
         # As rustc wrote it: no newline translation, and no byte read as another (#188).
-        body = parse_body(path.read_bytes().decode("utf-8", errors="surrogateescape"))
+        text = path.read_bytes().decode("utf-8", errors="surrogateescape")
+        if defined is not None:
+            defined.update(found[1] for found in _FUNCTION_HEADER.finditer(text))
+        body = parse_body(text)
         if body is not None:
             bodies.append(body)
     return bodies
+
+
+# A dumped function's header, up to its parameters: `fn std::ptr::eq(`.
+_FUNCTION_HEADER = re.compile(r"^fn (.+?)\(", re.MULTILINE)
 
 
 _DEFINE = re.compile(r'^define .*?@("?)([^"(\s]+)\1\(.*!dbg (![0-9]+) \{$')
@@ -3971,8 +4011,10 @@ class OwnedLocals:
     # `prepare`): a call there that formats reads what it is given (#192 review 4).
     std_macros = frozenset()
 
-    def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None):
+    def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None, defined=()):
         self.bodies = list(bodies)
+        # The path of every function the crate's MIR dump holds (load_bodies).
+        self.defined = frozenset(defined)
         # Statement-level positions rely on local macro code keeping its own lines in
         # debug info; `#[collapse_debuginfo]` changes that, and then whole blocks count.
         self.precise = precise
@@ -4990,24 +5032,38 @@ class OwnedLocals:
 
     def _std_compares(self):
         """Whether the calls the dump names `std::ptr::eq`, `core::ptr::eq` and `addr_eq`
-        (``_ADDRESS_COMPARISON``) are the standard library's (#259): the crate names no
-        item or import `std` or `core` of its own (a `mod std` would be dumped so too),
-        and its code names `addr_eq` only as a path's last part after `ptr::`, so it
-        declares no `addr_eq` (which the dump would name alone). A crate whose sources do
-        not lex trusts none."""
+        (``_ADDRESS_COMPARISON``) are the standard library's (#259). A `mod std` of the
+        crate's own, a macro's too (`make_mod!(std)`), is dumped `std::ptr::eq` as well,
+        so all of these must hold:
+
+        - no function the crate's MIR dump holds is named so, with any prefix
+          (`fn std::ptr::eq`, `fn inner::addr_eq`): the standard library's bodies are
+          never among them, and a function called has a body there;
+        - its sources lex, and none names an item or import `std` or `core` of its own
+          (`_named_own`: `mod std`, `use x as core`, a `macro_rules!` body naming it),
+          renames an `extern crate` so, or passes `std` or `core` to a macro other than
+          as a path's start (`println!("{}", std::process::id())` is fine);
+        - its code names `addr_eq` only after `ptr::`, so it declares none."""
         if "_std_compares_known" not in self.__dict__:
             from peeky.rust_lexer import code_only
 
+            names = {body.path for body in self.bodies} | self.defined
             codes = [
                 code_only(self.texts[source]) if source in self.texts else None
                 for source in self.sources
             ]
-            self._std_compares_known = bool(codes) and all(
-                code is not None
-                and not _named_own(code, {"std", "core"})
-                and len(re.findall(r"\baddr_eq\b", code))
-                == len(re.findall(r"\bptr\s*::\s*addr_eq\b", code))
-                for code in codes
+            self._std_compares_known = (
+                bool(codes)
+                and not any(_COMPARISON_NAME.search(name) for name in names)
+                and all(
+                    code is not None
+                    and not _named_own(code, {"std", "core"})
+                    and not _EXTERN_AS_STD.search(code)
+                    and not _passes_std(code)
+                    and len(re.findall(r"\baddr_eq\b", code))
+                    == len(re.findall(r"\bptr\s*::\s*addr_eq\b", code))
+                    for code in codes
+                )
             )
         return self._std_compares_known
 

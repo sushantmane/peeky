@@ -179,3 +179,54 @@ def test_a_reference_whose_target_may_be_freed_names_the_call(crate, capsys):
     # No issue numbers in what Peeky prints (#259).
     for row in rows.values():
         assert not re.search(r"#[0-9]", json.dumps(row)), row
+
+
+# #272 review: a crate's own `mod std`, which a macro declares from its argument, is
+# dumped `std::ptr::eq` as the standard library's is. Its `eq` takes `owner` and drops
+# it, so `f` points at freed memory past the call: nothing in it may be read.
+SHADOWED = """macro_rules! make_mod {
+    ($n:ident) => {
+        mod $n {
+            pub mod ptr {
+                #[inline(always)]
+                pub fn eq<T>(_: *const T, owner: Box<T>, _: ()) -> bool {
+                    drop(owner);
+                    true
+                }
+            }
+        }
+    };
+}
+make_mod!(std);
+
+pub struct Friend {
+    name: String,
+}
+
+fn main() {
+    let owner = Box::new(Friend { name: String::from("Ana") });
+    let f = &*owner;
+    if std::ptr::eq::<Friend>(f, owner, ()) { // SHADOWED
+        let other = Box::new(Friend { name: String::from("Bo") });
+        println!("{}", other.name.len());
+    }
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_a_crate_s_own_std_ptr_eq_is_no_comparison(crate, capsys):
+    (crate / "src/main.rs").write_text(SHADOWED)
+    at = f"src/main.rs:{line_of_in(SHADOWED, '// SHADOWED')}"
+    code = main(["probe", str(crate), "--at", at, "--capture", "f,f.name", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["f"].get("view") == "unproven", rows["f"]
+    assert "error" in rows["f.name"] and "value" not in rows["f.name"], rows["f.name"]
+    assert rows["f.name"].get("view") != "memory", rows["f.name"]
+    assert "may be past a call on this line" in rows["f"]["note"], rows["f"]
+
+
+def line_of_in(text, marker):
+    return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
