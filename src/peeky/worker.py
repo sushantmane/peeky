@@ -8,7 +8,9 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
+import tempfile
 import threading
 import time
 import uuid
@@ -155,12 +157,31 @@ class StackPage(list):
         )
 
 
+# Operations that resume the program or return its values: a remote Python session's
+# sources are rechecked before and after each (#249).
+SOURCE_CHECKED = frozenset(
+    {"wait", "continue", "step", "inspect", "expand", "preview", "set_variable", "report"}
+)
+# A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
+MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
         # Adapter configuration is trusted startup input, never HTTP request data.
         self.adapter = adapter if adapter is not None else PythonAdapter()
         self.runtime = None
+        # A remote Python session's sources as accepted at launch (#249): rechecked around
+        # every later operation, since the program may import any of them at any time.
+        self.accepted_sources = None
+        # A stack frame in a file under the root that was not compared (#249): it taints
+        # the session until it is closed.
+        self.foreign_frame = None
+        # A remote Python run's bytecode cache: outside the root, removed at close; a probe
+        # child makes it under its parent's scratch (`pycache_base`).
+        self.pycache = None
+        self.pycache_base = None
         self.capabilities = {}
         self.dap = None
         self.state = "idle"
@@ -1096,7 +1117,14 @@ class DebugWorker:
             self.last_cleanup = None
             try:
                 try:
+                    if operation in SOURCE_CHECKED:
+                        self.check_sources()
                     result = self._dispatch(operation, args)
+                    if operation in SOURCE_CHECKED or operation == "launch":
+                        # Values from sources that changed meanwhile are not returned.
+                        self.check_sources()
+                    if operation != "close":
+                        self.check_stack()
                 except (TimeoutError, RuntimeError, OSError) as exc:
                     failure = self.abandon(exc)
                     if failure is exc:
@@ -1463,6 +1491,109 @@ class DebugWorker:
                 return event
         return None
 
+    def check_sources(self):
+        """Raise (closing the session) if a remote Python session's sources changed on
+        this host since launch (#249). A file changed and restored between two checks is
+        not seen."""
+        accepted = self.accepted_sources
+        if accepted is None or not self.dap:
+            return
+        if self.foreign_frame is not None:
+            raise RuntimeError(self.foreign_message(self.foreign_frame))
+        from peeky.sources import Unhashable, drift, python_sources
+
+        try:
+            current = dict(python_sources(self.root))
+        except Unhashable as exc:
+            raise RuntimeError(
+                f"Worker source provenance can no longer be checked ({exc}): the session was "
+                "closed, and no values were returned. Start again"
+            ) from None
+        if changed := drift(accepted, current):
+            raise RuntimeError(
+                f"Worker source provenance changed during the session: {changed} on the "
+                "worker host after launch. The session was closed, and no values were "
+                "returned. Sync sources, then start again"
+            )
+
+    def check_frames(self, body):
+        """Raise (closing the session) for a stack frame in a file under the root that is
+        not a compared .py file (#249). Frames outside the root, and in a virtual
+        environment inside it (installed packages), are not compared."""
+        accepted = self.accepted_sources
+        if accepted is None:
+            return
+        from peeky.sources import in_environment
+
+        for frame in (body or {}).get("stackFrames") or []:
+            path = (frame.get("source") or {}).get("path") if isinstance(frame, dict) else None
+            if not isinstance(path, str) or not os.path.isabs(path):
+                continue
+            name = None
+            for candidate in (Path(os.path.normpath(path)), Path(path).resolve()):
+                try:
+                    name = candidate.relative_to(self.root).as_posix()
+                    break
+                except ValueError:
+                    continue
+            if name is None or name in accepted or in_environment(self.root, name):
+                continue
+            self.foreign_frame = name
+            raise RuntimeError(self.foreign_message(name))
+
+    def make_pycache(self):
+        """A fresh, empty directory for a remote Python run's bytecode (#249): never in the
+        target's root, or under ~/Documents. A probe child's is in its parent's scratch;
+        otherwise the system's temporary directory, then the worker's own scratch."""
+        documents = (Path.home() / "Documents").resolve()
+        if self.pycache_base is not None:
+            bases = [Path(self.pycache_base)]
+        else:
+            from peeky.cli import _private_dir
+
+            bases = [None, _private_dir("scratch")]
+        for base in bases:
+            if base is not None:
+                base.mkdir(parents=True, exist_ok=True, mode=0o700)
+            made = Path(tempfile.mkdtemp(prefix="peeky-pycache-", dir=base)).resolve()
+            if not (made.is_relative_to(self.root) or made.is_relative_to(documents)):
+                return made
+            shutil.rmtree(made, ignore_errors=True)
+        raise RuntimeError(
+            "No place for a remote Python run's bytecode cache outside the target's root and "
+            "~/Documents: set TMPDIR (or PEEKY_STATE_DIR) to a directory outside them"
+        )
+
+    def check_stack(self):
+        """At a stop of a remote Python session, read the whole stack: check_frames
+        refuses a frame in a file that was not compared (#249)."""
+        if self.accepted_sources is None or not self.dap or self.state != "stopped":
+            return
+        if self.thread_id is None:
+            return
+        self.dap.request(
+            "stackTrace", {"threadId": self.thread_id, "startFrame": 0, "levels": 0}, timeout=10
+        )
+
+    @staticmethod
+    def foreign_message(name):
+        return (
+            f"Worker source provenance: a stack frame is in {name}, under the worker's root "
+            "but not one of the .py files compared with yours (its code names a file the "
+            "worker did not compare, such as one loaded from a .pyc). The session was closed, "
+            "and no values were returned"
+        )
+
+    @staticmethod
+    def built_digest(runtime):
+        """A compiled run's inputs_sha256: over the sources its build read."""
+        built = getattr(runtime, "source_manifest", None)
+        if not isinstance(built, dict) or not built:
+            return None
+        from peeky.sources import digest
+
+        return digest(built)
+
     @staticmethod
     def validate(operation, args):
         if not isinstance(args, dict):
@@ -1503,6 +1634,10 @@ class DebugWorker:
                 )
             ):
                 raise ValueError("expect_sha256 maps program/entry to sha256 hex digests")
+        if operation == "launch" and args.get("expect_inputs") is not None:
+            from peeky.sources import check_expected
+
+            check_expected(args["expect_inputs"])
         if operation == "launch" and args.get("args") is not None:
             from peeky.probe import _check_args
 
@@ -1667,6 +1802,36 @@ class DebugWorker:
                         f"Worker source provenance differs for the {role} {path.name}: refused "
                         "before launching. Sync sources before debugging remotely"
                     )
+            # And every other source the target reads (#249): what this worker's trusted
+            # target names, or every .py file under the root for Python.
+            inputs_checked = inputs_python = None
+            self.accepted_sources = self.foreign_frame = None
+            if (expected_inputs := args.get("expect_inputs")) is not None:
+                from peeky.sources import (
+                    declared,
+                    difference,
+                    digest,
+                    python_manifest_digest,
+                    refusal,
+                    worker_sources,
+                )
+
+                own = worker_sources(self.adapter, self.root)
+                if what := difference(expected_inputs, own):
+                    raise ValueError(refusal(what))
+                if declared(self.adapter) is None:
+                    # Python: what runs first must be among the files compared.
+                    for role, path in (("program", program), ("entry script", entry)):
+                        name = None if path is None else path.relative_to(self.root).as_posix()
+                        if name is not None and name not in own:
+                            raise ValueError(
+                                refusal(
+                                    f"the {role} {name} (not among the compared sources: it "
+                                    "is in a virtual environment)"
+                                )
+                            )
+                    inputs_python = python_manifest_digest(own)
+                inputs_checked = digest(expected_inputs)
             edit, candidate_sha256 = self.candidate_edit(program, args.get("edit"))
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
@@ -1712,6 +1877,16 @@ class DebugWorker:
                 # the sources' clock starts once it is written (#182).
                 self.launched_at = time.time()
                 runtime.assert_current()
+                built = getattr(runtime, "source_manifest", None)
+                if expected_inputs is not None and isinstance(built, dict):
+                    # What the build read, compared again before the debugger's launch
+                    # request: a source changed after the check above is refused (#249).
+                    from peeky.sources import difference, refusal
+
+                    if what := difference(expected_inputs, built):
+                        raise RuntimeError(refusal(what))
+                if inputs_python is not None:
+                    self.accepted_sources = own
                 staged = Path(runtime.source_path(program)) if edit else None
                 if edit and hashlib.sha256(staged.read_bytes()).hexdigest() != candidate_sha256:
                     raise RuntimeError(
@@ -1726,6 +1901,8 @@ class DebugWorker:
                     fatal_stderr=getattr(runtime, "fatal_stderr", None),
                     provoked_exit=getattr(runtime, "provoked_exit", None),
                 )
+                if self.accepted_sources is not None:
+                    self.dap.frames_check = self.check_frames
                 capabilities = self.dap.request(
                     "initialize", runtime.initialize_args(), timeout=left()
                 )
@@ -1735,6 +1912,14 @@ class DebugWorker:
                     if args.get("args")
                     else runtime.launch_args(entry or program, self.root)
                 )
+                if self.accepted_sources is not None:
+                    # A remote Python run reads no bytecode from the root (a stale .pyc is
+                    # not the compared source): its cache is a fresh, empty directory (#249).
+                    self.pycache = str(self.make_pycache())
+                    launch_args["env"] = {
+                        **launch_args.get("env", {}),
+                        "PYTHONPYCACHEPREFIX": self.pycache,
+                    }
                 timeout = left(5)
                 # From here the program may run, even if the request then fails.
                 if self.launch_marker is not None:
@@ -1811,6 +1996,12 @@ class DebugWorker:
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
+                    **({"inputs_checked": inputs_checked} if inputs_checked else {}),
+                    **(
+                        {"inputs_sha256": inputs_sha256}
+                        if (inputs_sha256 := inputs_python or self.built_digest(runtime))
+                        else {}
+                    ),
                     "target_identity": identity,
                     **({"program_args": program_args} if launched else {}),
                     **({"optimized": level} if (level := self.optimized()) else {}),
@@ -4107,6 +4298,7 @@ class DebugWorker:
         """End the session; returns what became of the processes it started, if any."""
         adapter, self.dap = self.dap, None
         runtime, self.runtime = self.runtime, None
+        pycache, self.pycache = self.pycache, None
         self.state = "idle"
         self.stopped_at = None
         self.empty_thread_replies = 0
@@ -4143,8 +4335,13 @@ class DebugWorker:
                 final = getattr(adapter, "final", None)
                 self.last_final = final if isinstance(final, dict) else None
         finally:
-            if runtime:
-                runtime.close()
+            try:
+                if runtime:
+                    runtime.close()
+            finally:
+                # Once the adapter and the debuggee are gone (#249).
+                if pycache is not None:
+                    shutil.rmtree(pycache, ignore_errors=True)
         return self.last_cleanup if adapter else None
 
 
@@ -4337,10 +4534,15 @@ def make_server(root, token, port=8765, *, adapter=None):
             "entry",
             "args",
             "expect_sha256",
+            "expect_inputs",
             "edit",
             "set_at",
         }:
             raise ValueError("Unknown probe field")
+        from peeky.sources import check_expected
+
+        if args.get("expect_inputs") is not None:
+            check_expected(args["expect_inputs"])
         set_at = args.get("set_at", [])
         if not isinstance(set_at, list) or not all(
             isinstance(point, list)
@@ -4390,6 +4592,9 @@ def make_server(root, token, port=8765, *, adapter=None):
             if isinstance(edit, dict)
             else tuple((item["old"], item["new"]) for item in edits),
             set_at=tuple(tuple(point) for point in set_at),
+            expect_inputs=None
+            if args.get("expect_inputs") is None
+            else tuple(sorted(args["expect_inputs"].items())),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -4425,8 +4630,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                 # errors, never "session closed".
                 try:
                     size = int(self.headers.get("Content-Length", 0))
-                    if not 0 < size <= 65536:
-                        raise ValueError("Request body must be 1..65536 bytes")
+                    if not 0 < size <= MAX_REQUEST_BYTES:
+                        raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
                     self.connection.settimeout(10)
                     body = self.rfile.read(size)
                     if len(body) != size:
@@ -4439,9 +4644,25 @@ def make_server(root, token, port=8765, *, adapter=None):
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
+                if (
+                    operation in ("launch", "probe")
+                    and args.get("expect_sha256") is not None
+                    and args.get("expect_inputs") is None
+                ):
+                    # A remote client that checks only the program would get values from
+                    # other code without a note (#249).
+                    raise ValueError(
+                        "This client sent no sha256 for the target's other sources "
+                        "(expect_inputs), so the worker cannot compare them: install the same "
+                        "Peeky version on both hosts"
+                    )
                 if operation == "version":
+                    from peeky.sources import describe
+
                     result = {
                         "protocol": PROTOCOL_VERSION,
+                        # Which sources a client hashes for expect_inputs (#249).
+                        "sources": describe(worker.adapter),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(
                             {rule[1] for rule in _RULES}
@@ -4507,7 +4728,8 @@ def _run_probe_process(root, request, adapter, cap):
         "import sys; sys.path.insert(0, sys.argv.pop(1)); "
         "from peeky.cli import main; sys.exit(main(sys.argv[1:]))"
     )
-    command = [sys.executable, "-I", "-c", bootstrap, package_parent, "probe", str(root)]
+    # -B: a remote probe never writes bytecode into the worker's root.
+    command = [sys.executable, "-I", "-B", "-c", bootstrap, package_parent, "probe", str(root)]
     # The client records evidence; the worker host keeps none (stateless probes).
     command += ["--json", "--quiet", "--no-save"]
     command += ["--at", f"{request.program}:{request.line}", "--hits", str(request.hits)]
@@ -4536,11 +4758,21 @@ def _run_probe_process(root, request, adapter, cap):
                     path.write_bytes(text.encode())
                     path.chmod(0o600)
                     command += [flag, str(path)]
+        if request.expect_inputs is not None:
+            expected = Path(scratch) / "expect-inputs.json"
+            expected.write_text(json.dumps(dict(request.expect_inputs)))
+            expected.chmod(0o600)
+            command += ["--expect-inputs-file", str(expected)]
         if adapter is not None:
             config = Path(scratch) / "target.json"
             config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))
             config.chmod(0o600)
             command += ["--config", str(config)]
+        # A remote Python run's bytecode cache, removed with the scratch whatever ends the
+        # child (#249).
+        pycache = Path(scratch) / "pycache"
+        pycache.mkdir(mode=0o700)
+        command += ["--pycache-dir", str(pycache)]
         marker = Path(scratch) / "launch-requested"
         command += ["--launch-budget", str(cap - PROBE_LAUNCH_MARGIN_S)]
         command += ["--launch-marker", str(marker)]

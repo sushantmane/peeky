@@ -1,4 +1,4 @@
-# Error codes (protocol 1)
+# Error codes (protocol 2)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -30,7 +30,7 @@ The last column is the `retryable` field.
 | `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
-| `PROVENANCE_CHANGED` | Sources, build outputs or tools changed. | Start a new session on a fresh build. | no |
+| `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
 | `DEBUGGER_ERROR` | The adapter or debugger failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
 | `SESSION_ACTIVE` | A session was misused: one is already open. | Close the session. | no |
@@ -108,6 +108,33 @@ file lists what it reads.
 - Malformed arguments, such as a `--frame` past the stack. The message says how many frames there
   are.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
+- A client and a remote worker of different protocols: `Worker speaks protocol 1, this client 2`.
+  Install the same Peeky version on both hosts.
+- A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
+  `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
+- A Python directory that can't be hashed in full for a remote run: more than 4096 `.py` files or
+  16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
+  directory, or start the worker with another `--root`.
+- A remote session started by an older Peeky, without source provenance. Start it again.
+
+### PROVENANCE_CHANGED
+
+- A source, a build output or a tool changed during the session. Start a new session on a fresh
+  build.
+- Through a remote worker, a source differs from yours, or is on one side only. The message names
+  the first such file:
+  `Worker source provenance differs for helper.py (the copy on the worker host differs from your
+  checkout)`. Copy the file over, or remove it, then run again
+  ([REMOTE.md](REMOTE.md#source-identity)).
+- A remote Python session whose sources changed on the worker host after launch is closed, and
+  no values come back: `helper.py changed on the worker host after launch`.
+- A remote Python session with a stack frame whose code names a file under the root that wasn't
+  compared is closed the same way: `a stack frame is in hook.py`. A probe is discarded.
+- A source in your own checkout that changed after the worker compared it: the probe is
+  discarded, or the session closed and its record dropped.
+- A remote result that the client can't confirm is discarded with this code:
+  `results_discarded: true`, with no rows and no output. For example, the worker didn't report
+  which sources the run read.
 
 ## When a change is refused (`MUTATION_REJECTED`)
 
@@ -360,4 +387,8 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 1`.
+HTTP response carries `X-Peeky-Protocol: 2`.
+
+- **Protocol 2** adds the source comparison for remote clients
+  ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
+- A client and a worker of different protocols refuse each other before anything runs.

@@ -24,6 +24,45 @@ It doesn't attach to a running program, evaluate expressions, change a pointer, 
 debug server. It writes memory only to set a text
 ([C and C++ 7.1](lang/c-cpp-cookbook.md#change-a-text)).
 
+## Compare the sources from another host
+
+A client on another host must show that its sources are the worker's. This is protocol 2.
+
+1. Call `version`. Its `sources` says which files to hash:
+   - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
+     directory holding `pyvenv.cfg`);
+   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
+2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
+   `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
+3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
+   side only:
+   - before launching;
+   - for a compiled target, again after the build, before the debugger starts;
+   - for Python, before and after each later operation that resumes the program or returns a
+     stop or values, `wait` included;
+   - for Python, at a stack frame whose code names a file under the root that isn't a compared
+     `.py` file. A virtual environment inside the root is excepted.
+
+   After a Python refusal, the session is closed.
+4. A request with `expect_sha256` but without `expect_inputs`, or with an empty one, is refused
+   with `INVALID_REQUEST`.
+5. Check the answer to `launch`, or the probe's result:
+   - `inputs_checked` is the sha256 of `json.dumps(sorted(expect_inputs.items()))`, with Python's
+     default separators;
+   - `inputs_sha256` must match your own digest of the sources. For Python, it is the sha256 of
+     `json.dumps` of the `[path, sha256]` pairs in walk order: a directory's files, sorted, then
+     its subdirectories, sorted. Otherwise, it is computed as `inputs_checked` is.
+
+   If either is missing or different, discard the result, or close the session.
+
+6. Hash your own sources again after each answer. If they changed, discard the result, or close
+   the session.
+
+`peeky probe --worker` and `peeky session start --worker` do all of this. On every later
+`session` command, they also check the worker's protocol again. They hash your sources before
+each request except `close`, and again after each one that succeeds
+([REMOTE.md](REMOTE.md#source-identity)).
+
 ## Start a C or C++ worker
 
 The worker takes the same config file as the CLI's `--config`

@@ -75,7 +75,7 @@ The worker's own trusted config decides what runs. Its paths are relative to `--
 - The host needs a JDK, and an adapter bundle built there with `scripts/setup_java_adapter.py`.
 - On your machine, pass your own `--config` of the same kind. With `--worker`, the client uses it
   only to tell a launched JVM from an attached one.
-- The breakpoint's `.java` file must match yours: see [Source identity](#source-identity).
+- Every file in `sources` must match yours: see [Source identity](#source-identity).
 
 A probe through the worker:
 
@@ -104,24 +104,103 @@ kills it ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
 
 ### Source identity
 
-The client sends the sha256 of the local program, and of the `--run` entry script. If the worker's
-copies differ, it refuses with `PROVENANCE_CHANGED` **before launching**. So a mismatched program
-is never run or changed. For Java, the program is the breakpoint's `.java` file. The refusal
-comes before the JVM is launched, or before a waiting JVM is attached:
+Before anything launches, the worker compares its copy of each source in the table below with
+yours. If one differs, or is on one side only, it refuses with `PROVENANCE_CHANGED`, and names the
+first such file. The program then never runs.
 
 ```
-$ peeky probe pagination_bug.py --at 8 --capture start --set start=0 --worker http://127.0.0.1:18765
-error [PROVENANCE_CHANGED]: Worker source provenance differs for the program pagination_bug.py: refused before launching. Sync sources before debugging remotely
+$ peeky probe main.py --at 3 --capture x --worker http://127.0.0.1:18766
+error [PROVENANCE_CHANGED]: Worker source provenance differs for helper.py (the copy on the worker host differs from your checkout): refused before launching. Sync sources before debugging remotely
 hint: Sources, build outputs or tools changed; start a new session on a fresh build.
 ```
 
-As a second check, the client compares the hashes the worker reports. A result it can't confirm
-is discarded: `results_discarded: true`, with no rows and no output.
+The worker's trusted target decides which files count. The client hashes its own copies of them,
+and sends the hashes with the request.
 
-**Only those two files are compared.** The worker's other sources are not: other Python modules,
-the other files in a config's `sources`, C and C++ headers, and a crate's other files. Keep them in
-sync with yours ([#249](https://github.com/sushantmane/peeky/issues/249)). A saved run's
-`inputs_sha256` records what the worker read.
+| Target | The sources compared |
+| --- | --- |
+| Python | every `.py` file under the root, except in virtual environments (a directory holding `pyvenv.cfg`) |
+| Java, launched or attached | the config's `sources` |
+| C and C++ | the config's `sources` and `headers` |
+| Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
+
+- **Python counts every `.py` file,** in hidden directories and `.git` too, because the program
+  may import any of them. A stray file on one side is refused too:
+  `scratch.py (only in your checkout)`. Remove it, or copy it over.
+- **The Python program and its `--run` script** must be among the files compared. One in a
+  virtual environment is refused.
+- **Python refuses what it can't hash in full:** more than 4096 `.py` files or 16 MiB in all, a
+  file that isn't a readable regular file, or a symlinked directory under the root. The side that
+  can't hash refuses. Probe another directory, or start the worker with another `--root`.
+- **The program and the `--run` script** are also compared on their own:
+  `differs for the program pagination_bug.py`.
+
+**Checked again while it runs.**
+
+- **C, C++, Rust and launched Java:** the build's own copies are compared again, after the build
+  and before the debugger starts. So a source changed in between is refused, and doesn't run.
+- **Python:** the worker hashes its `.py` files again before and after every operation that
+  resumes the program or returns a stop or values: `wait` (and so `session start`), `continue`,
+  `step`, `inspect` (and so `get`), `expand`, `preview`, `set` and `report`. A change closes the
+  session, and no values come back:
+
+```
+$ peeky session continue --to-exit
+peeky: [PROVENANCE_CHANGED] Worker source provenance changed during the session: helper.py changed on the worker host after launch. The session was closed, and no values were returned. Sync sources, then start again
+```
+
+- **Python stack frames:** at each stop, the worker reads the whole stack. A frame whose code
+  names a file under the root that isn't a compared `.py` file is refused: for example, code
+  loaded from a `.pyc` beside the program. A frame whose code names a file outside the root isn't
+  caught. A frame in a virtual environment inside the root is installed code: it isn't compared,
+  and the note below says so.
+- **Python bytecode:** a remote Python run reads no `.pyc` from the root, and writes none there.
+  Its bytecode cache is a fresh, empty temporary directory, never inside the root or under
+  `~/Documents`. It is removed once the program and the debugger have ended.
+- A `.pyc` file with no `.py` beside it is still loaded. The frame check above refuses it when it
+  is on the stack.
+- A Python probe runs these checks at each stop and at its end. A probe that fails one is
+  discarded: no rows and no output.
+- **The limit:** a file changed, then changed back, between two checks isn't seen.
+
+**Not compared:**
+
+- installed packages, outside the root or in any directory holding a `pyvenv.cfg`, and the
+  standard library;
+- compiled modules (`.so`), `.pyc` files, and data files the program reads;
+- the interpreter and the toolchain;
+- an attached JVM's class files. The worker checks them against its own sources instead
+  ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
+
+Peeky can't list every module a Python program loaded: debugpy's `modules` request names only the
+modules it has seen in stack frames. So code from these that ran without being on the stack at a
+stop isn't checked. Every remote Python result says so: probes, `session start`, and every later
+`session` command, in its text and in its JSON `warnings`:
+`Only the .py files under the target's directory are compared with yours. Not compared: installed
+packages, any directory holding a pyvenv.cfg, the standard library, and compiled modules (.so,
+.pyc).`
+
+**The client checks every answer:**
+
+- The worker must confirm that it compared the sources (`inputs_checked`).
+- It must report the sources the run read (`inputs_sha256`), and they must match yours.
+- The program's and the `--run` script's hashes must match yours.
+- Your own checkout must still be what was compared. The client hashes it again after a probe's
+  answer and after `session start`, for every language. For a session, it also hashes it before
+  each later command except `close`, and again after each one that succeeds. A command that fails
+  returns no values.
+
+A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
+no output. A session that fails one is closed, and its record is dropped.
+
+**Protocol 2.** These checks need protocol 2 on both hosts.
+
+- A client refuses an older worker before sending anything: `Worker speaks protocol 1, this
+  client 2: install the same Peeky version on both hosts`.
+- A worker refuses a request that sends the program's hash without the others, or an empty list.
+- A remote session keeps its protocol and its sources' digest. Every later `session` command checks
+  the worker's protocol again. A session started by an older Peeky is refused: start it again.
+
 
 ### Why `ExitOnForwardFailure=yes`
 
@@ -170,6 +249,8 @@ TCP relay as a third. Its tests cover:
 - probes through the forwarded port;
 - remote probe evidence saved by the client only, none on the worker host;
 - a source-identity mismatch, where results are discarded;
+- an imported module that differs on the host, and a module on one side only: refused before
+  launching, by name;
 - a dropped tunnel giving `UNREACHABLE`, without losing the session;
 - reconnecting on the same port, and continuing the session;
 - closing without stopping the worker;
@@ -178,7 +259,10 @@ TCP relay as a third. Its tests cover:
 - the token never appearing in output.
 
 The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), Python and Java, is
-repeated by CI on every change.
+repeated by CI on every change. A differing C header and a differing Rust module file are refused
+by name in the C and Rust lanes (`tests/native/test_native_remote_sources.py`,
+`tests/rust/test_rust_remote_sources.py`). `tests/unit/test_remote_sources.py` covers the
+protocol.
 
 ## Recorded separate-host run (2026-10-22)
 
@@ -238,6 +322,8 @@ The Java steps are saved beside it, in `remote-run-java.json`.
 | Read, change, run to the end | `peeky session get start`, `session set start=0`, `session continue --to-exit` | 0 | 0.02 each | `3`; 3 → 0; terminated |
 | Program output, close | `peeky session report`, `session close` | 0 | 0.01 | `PAGE:[10, 20, 30]`; closed |
 | The host's source differs | `peeky probe … --config launch.json … --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
+| A second source differs (`demo/Helper.java`) | `peeky probe … --config two.json … --worker URL` | 2 | 0.06 | `PROVENANCE_CHANGED`, naming `demo/Helper.java`; refused before launching |
+| Both sources the same | the same probe | 0 | 0.60 | completed; output `PAGE:[10, 20, 30]` |
 | The host's source differs, attached JVM | `peeky probe … --config attach.json … --worker URL` | 2 | 0.07 | `PROVENANCE_CHANGED`; the JVM still waited, not attached |
 | Attached JVM, probe with a change | `peeky probe … --config attach.json … --worker URL` | 0 | 0.25 | `start` 3 → 0; `ended: hits`. The JVM stayed alive, printed `PAGE:[10, 20, 30]` and blocked on its sentinel file |
 | The sentinel file created | `touch release`, on the host | — | — | the JVM printed `DONE` and exited with status 0 |

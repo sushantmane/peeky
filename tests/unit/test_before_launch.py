@@ -275,7 +275,8 @@ def answering(status, body):
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
             version = self.path == "/version"
-            answer = json.dumps({"protocol": PROTOCOL_VERSION}).encode() if version else body
+            hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
+            answer = json.dumps(hello).encode() if version else body
             self.send_response(200 if version else status)
             self.send_header("Content-Length", str(len(answer)))
             self.end_headers()
