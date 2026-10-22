@@ -323,9 +323,19 @@ _MUTATION_HINTS = (
         "--hits N --set-hit N`, N counting that line's stops (`--capture <x> --hits all`).",
     ),
     (
+        r"lists the fields each function can set",
+        "Change the field in the function that holds the struct itself (`describe`'s "
+        "`mutable:` line names it), at a stop before the calls that lead here: a probe's "
+        "`--set-at LINE@N`.",
+    ),
+    (
+        r"which Peeky does not change \(it changes only locals a frame holds\)",
+        "Change what sets it with a candidate edit (`--old`/`--new`).",
+    ),
+    (
         r"has one caller: \S+:[0-9]+ in ",
-        "Change the value where it is owned, before the call the message names: as it "
-        "says where the value is settable there, else at a statement's first line before it.",
+        "Change the value where it is owned, before the call the message names there: as it "
+        "says where the value is settable, else at a statement's first line before it.",
     ),
     (
         r"is a (?:pointer|reference)\b(?!;)",

@@ -168,7 +168,8 @@ def test_callers_peeky_cannot_single_out_keep_the_general_advice(c_program, caps
         )  # fmt: skip
         assert code == 2 and "before the call that passed it" in out, (marker, out)
         assert "one caller" not in out, (marker, out)
-    # One call, but of a pointer the caller does not own: the line, and no claim.
+    # One call, but of a pointer the caller does not own: no frame named for the change
+    # (#202), only where to find the one that owns it.
     code, out = run(
         capsys, "probe", source, "--at", line_of(CALLERS, "PASSED"), "--capture", "b.n",
         "--set", "b.n=7",
@@ -176,7 +177,10 @@ def test_callers_peeky_cannot_single_out_keep_the_general_advice(c_program, caps
     called = line_of(CALLERS, "int sum = ")
     assert code == 2, out
     assert (
-        f"passed has one caller: callers.c:{called} in main, which passes `p`; change the value"
+        f"passed has one caller: callers.c:{called} in main, which passes on `p`, and Peeky "
+        "cannot tell what that points to; change the value in the frame that owns the struct, "
+        "before the calls that lead here: `describe`'s `mutable:` line lists the fields each "
+        "function can set"
     ) in out, out
     assert "settable" not in out.splitlines()[0].split("one caller")[1], out
 
@@ -352,6 +356,12 @@ HEADER_H = RING_H.replace(
     "int helper(void);",
     "static inline int via(struct ring *r) { return push(r, 7); }\nint helper(void);",
 )
+# via owns the ring it passes, in a header only main.c includes.
+OWNED_MAIN = OTHER_MAIN.replace(
+    '#include "ring.h"\n', '#include "ring.h"\n#include "via.h"\n'
+).replace("int total = helper();", "int total = via() + helper();")
+OWNED_OTHER = '#include "ring.h"\nint helper(void) { return 0; }\n'
+VIA_H = "static inline int via(void) { struct ring q = { 0, 0, { 0 } }; return push(&q, 7); }\n"
 
 
 @pytest.mark.timeout(240)
@@ -383,17 +393,34 @@ def test_a_caller_in_another_file_is_changed_by_a_probe_there(c_program, capsys)
 
 @pytest.mark.timeout(240)
 def test_a_caller_in_a_header_gets_no_advice_a_probe_cannot_follow(c_program, capsys):
-    # Low 2: push's one call is in ring.h's `via`, where no probe stops.
+    # Low 2: push's call is in ring.h's `via`, where no probe stops. Main.c and other.c
+    # each compile their own via (review of PR #211): two calls, so the general advice.
     root = c_program("main.c", HEADER_MAIN).parent
     c_program("other.c", HEADER_OTHER)
     c_program("ring.h", HEADER_H)
     code, out = run(
         capsys, "probe", root, "--at", "main.c:4", "--capture", "v", "--set", "r.tail=0"
     )
+    message = out.splitlines()[0]
+    assert code == 2 and "before the call that passed it" in message, out
+    assert "one caller" not in message, out
+    # Where via, in a header only main.c includes, owns the ring, the call is named
+    # alone: no probe stops in via.h.
+    c_program("main.c", OWNED_MAIN)
+    c_program("other.c", OWNED_OTHER)
+    c_program("ring.h", RING_H)
+    c_program("via.h", VIA_H)
+    at = line_of(OWNED_MAIN, "/* AT */")
+    code, out = run(
+        capsys, "probe", root, "--at", f"main.c:{at}", "--capture", "v", "--set", "r.tail=0"
+    )
     assert code == 2, out
-    assert "push has one caller: ring.h:3 in via, which passes `r`; change the value" in out
-    assert "a probe stops only in the program's source files, not in ring.h" in out, out
-    assert "--set-at" not in out.split("has one caller")[1], out
+    assert (
+        "push has one caller: via.h:1 in via, which passes `&q`; change the value where it "
+        "is owned, before that call: a probe stops only in the program's source files, not "
+        "in via.h"
+    ) in out, out
+    assert "--set-at" not in out.split("has one caller")[1].splitlines()[0], out
 
 
 # Round 2 of PR #165: what a stop on the call's line cannot see changes the value first.
