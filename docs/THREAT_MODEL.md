@@ -1,30 +1,81 @@
 # MVP trust and failure model
 
-Peeky is a developer tool for trusted code. This document describes the current Python implementation; additional language adapters need equivalent conformance before claiming support. It is not a container boundary, hostile-code sandbox, credential vault, or production authorization system.
+Peeky is a developer tool for trusted code. This document started with the Python implementation.
+Each additional language adapter needs equivalent conformance before Peeky claims its support.
+
+Peeky is not:
+
+- a container boundary;
+- a sandbox for hostile code;
+- a credential vault;
+- a production authorization system.
 
 ## Assets and boundaries
 
-- Worker token: authorizes all operations on one worker; remove it from debugger/verification child environments and never print it in evidence.
-- Target memory and source: can contain secrets; debugger outputs and model context are intentional data flows.
-- User code and assignment expressions: execute with the worker's OS permissions. Root-path checks are entrypoint checks only.
-- Model: receives task data and emits proposed structured decisions; controller validation governs execution.
-- Verifier: supplied and trusted, runs candidate code; completion envelope detects accidental/premature exit, not malicious native tampering.
-- Provenance hashes (sources, build outputs, toolchain binaries, adapter bundles): detect accidental change during a session (rebuilds, edits, toolchain upgrades), not a same-user adversary. Within one process a file's digest is reused while its device, inode, size, mtime and ctime are unchanged and its timestamps are more than 2 s old (`src/peeky/digest.py`). Any write, replacement or rename changes those. Set `PEEKY_NO_DIGEST_CACHE=1` to rehash every time, for example on filesystems whose timestamps are unreliable. Compiled builds also record every file the compiler read: Rust fails closed on any file that is not a declared source, and C/C++ hash the headers they read outside the workspace and recheck them before every operation.
+**Worker token**
+
+- It authorizes all operations on one worker.
+- Remove it from the environments of debugger and verification children.
+- Never print it in evidence.
+
+**Target memory and source**
+
+- They can contain secrets.
+- Debugger output and the model's context are intentional data flows.
+
+**User code and assignment expressions**
+
+- They run with the worker's OS permissions.
+- Root-path checks only check the entry point.
+
+**Model**
+
+- It receives task data, and emits proposed structured decisions.
+- The controller's validation governs what runs.
+
+**Verifier**
+
+- It is supplied and trusted, and runs candidate code.
+- Its completion envelope detects an accidental or premature exit, not malicious native tampering.
+
+**Provenance hashes** of sources, build outputs, toolchain binaries and adapter bundles
+
+- They detect accidental change during a session, such as rebuilds, edits and toolchain upgrades.
+  They don't detect an adversary running as the same user.
+- Within one process, a file's digest is reused while its device, inode, size, mtime and ctime are
+  unchanged. Its timestamps must also be more than 2 s old (`src/peeky/digest.py`).
+- Any write, replacement or rename changes those.
+- To rehash every time, set `PEEKY_NO_DIGEST_CACHE=1`. Do this, for example, on filesystems whose
+  timestamps are unreliable.
+- Compiled builds also record every file the compiler read:
+  - Rust fails closed on any file that isn't a declared source.
+  - C and C++ hash the headers they read outside the workspace, and recheck them before every
+    operation.
 
 ## Failure handling
 
 | Failure | MVP behavior |
 | --- | --- |
-| Stale session/stop/scope | Reject request |
-| Mutation reply lost | Invalidate/close session; no automatic retry |
-| Adapter dies or malformed frame | Fail transport and close owned execution |
-| No breakpoint/event in budget | Return timeout/evidence; controller closes when experiment budget ends |
-| Output flood | Bounded output separate from control events |
-| Model fails or budget expires | Save incomplete/failed evidence; close session |
-| Candidate exits zero before checks | Reject absent verifier completion |
-| Original/check changes mid-run | Do not accept candidate |
-| Remote source differs | Reject experiment and close |
+| Stale session, stop or scope | Reject the request. |
+| A mutation's reply is lost | Invalidate or close the session. No automatic retry. |
+| The adapter dies, or sends a malformed frame | Fail the transport, and close the owned execution. |
+| No breakpoint or event within the budget | Return a timeout and the evidence. The controller closes when the experiment's budget ends. |
+| Output flood | Output is bounded, and kept apart from control events. |
+| The model fails, or the budget expires | Save the incomplete or failed evidence. Close the session. |
+| A candidate exits zero before the checks | Reject it: the verifier's completion is absent. |
+| The original or the check changes mid-run | Don't accept the candidate. |
+| The remote source differs | Reject the experiment, and close. |
 
-Loopback is the only listener configuration in the MVP. SSH is the remote transport. There is no public HTTP service, TLS termination service, Kubernetes RBAC integration, outbound relay, tenant isolation, or production write policy yet.
+## Transport
 
-Use synthetic fixtures in CI and avoid uploading real application reports. A same-user process may still inspect environment/process state; stripping a token from child env is defense in depth, not same-user isolation. Reports are not tamper-proof attestations.
+- Loopback is the only listener configuration in the MVP.
+- SSH is the remote transport.
+- There is no public HTTP service, TLS termination service, Kubernetes RBAC integration, outbound
+  relay, tenant isolation, or production write policy yet.
+
+## Data and limits
+
+- Use synthetic fixtures in CI. Avoid uploading real application reports.
+- A process of the same user may still inspect the environment and process state. Stripping a
+  token from a child's environment is defense in depth, not isolation from the same user.
+- Reports are not tamper-proof attestations.

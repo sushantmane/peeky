@@ -1,20 +1,50 @@
-# Peeky design — Python alpha and five-language direction
+# Peeky design
 
-Status: implemented Python, Java, C and C++ investigation loops and explicit limitations. Product MVP requires Python, Java, C, C++, and Rust; see LANGUAGES.md for the implementation order and remaining language and remote acceptance work. This document specifies the intended MVP contract; the roadmap distinguishes delivered foundations from remaining acceptance work.
+Status: Python, Java, C, C++ and Rust each have an experimental investigation loop, with explicit
+limits. The product MVP needs all five. [LANGUAGES.md](LANGUAGES.md) has the implementation order,
+and the language and remote acceptance work that remains. This document specifies the intended MVP
+contract. The [roadmap](ROADMAP.md) tells delivered foundations from remaining acceptance work.
 
 ## Problem and outcome
 
-Agents often edit source solely to add print statements, rebuild, restart, and infer runtime behavior from logs. Peeky lets an agent inspect execution and conduct a small causal experiment through a debugger. The desired output is a reproducible diagnosis plus a candidate patch and the results of an independent check.
+Agents often edit source only to add print statements. They rebuild, restart, and infer runtime
+behavior from logs. Peeky lets an agent inspect execution through a debugger, and run a small
+causal experiment. The output is a reproducible diagnosis, a candidate patch, and the results of
+an independent check.
 
-An intervention that improves behavior is evidence, not a permanent repair. A patch is accepted only after a fresh execution of the configured verifier completes successfully and the original source/verifier hashes are unchanged.
+- An intervention that improves behavior is evidence, not a permanent repair.
+- A patch is accepted only after a fresh run of the configured verifier completes successfully.
+  The original source's and verifier's hashes must also be unchanged.
 
 ## Boundaries
 
-Current alpha: trusted, standalone Python scripts; one worker session; one controller; local launch; loopback HTTP or SSH forwarding. Debugpy handles Python runtime semantics. DAP is the adapter boundary. The model selects experiments; ordinary code enforces IDs, time limits, operation ordering, and verification requirements.
+In scope:
 
-Out of scope: hostile-code isolation, arbitrary production mutation, multi-user tenancy, general multi-file automatic edits, Kubernetes installation, outbound gateway, reverse debugging, replay, and attaching to unprepared processes.
+- trusted programs, not hostile ones;
+- one session per worker, and one controller;
+- local launch, or attaching to a Java VM that waits for a debugger
+  ([JAVA_ATTACH.md](JAVA_ATTACH.md));
+- loopback HTTP, or SSH forwarding.
 
-## Current Python alpha components
+Who does what:
+
+- The debugger handles each language's runtime semantics: debugpy for Python. DAP is the adapter
+  boundary.
+- The model selects experiments.
+- Ordinary code enforces IDs, time limits, the order of operations, and verification
+  requirements.
+
+Out of scope:
+
+- isolating hostile code;
+- arbitrary production mutation;
+- multi-user tenancy;
+- general automatic edits across files;
+- Kubernetes installation, and an outbound gateway;
+- reverse debugging and replay;
+- attaching to processes that weren't prepared for a debugger.
+
+## Components
 
 ```mermaid
 flowchart LR
@@ -26,6 +56,8 @@ flowchart LR
   V --> R[Evidence report and candidate diff]
 ```
 
+The diagram shows Python. Java, C, C++ and Rust use their own adapters behind the same worker.
+
 | Module | Responsibility | Must not own |
 | --- | --- | --- |
 | `agent` | Model decisions, investigation budget, experiment sequencing, candidate proposal | Debugger protocol parsing |
@@ -36,7 +68,13 @@ flowchart LR
 | `build` | Fresh copied workspaces, explicit trusted build recipes, source/artifact integrity manifests | Automatic language selection or proof of loaded-image identity |
 | verification support | Trusted verifier completion and isolated fresh execution | Editing the verifier |
 
-The current model provider is Codex CLI. The controller takes an injected decision callable, which deterministic tests replace. Extract a provider protocol when a second provider is added; do not build a registry before it has users.
+The table lists the core modules. Others add the command line (`cli`), stateless probes (`probe`),
+the evidence store (`evidence`), error codes (`errors`), and each language's support (`java*`,
+`native*`, `rust*`, `python_*`).
+
+The model provider is Codex CLI. The controller takes an injected decision callable, which
+deterministic tests replace. Extract a provider protocol when a second provider is added. Don't
+build a registry before it has users.
 
 ## Session model
 
@@ -55,20 +93,57 @@ stateDiagram-v2
   Terminated --> Idle: close
 ```
 
-- A new launch creates a random session ID and a source fingerprint.
-- Each consumed stop creates a new stop ID. Frame IDs are valid only at that stop. The worker issues opaque scope handles and translates them to adapter references; every new inspection revokes all earlier scope handles, including within the same stop. This prevents raw adapter scope ID reuse from selecting the wrong frame.
-- Inspection and mutation require the current session and stop. Reports require session identity.
-- Continue invalidates all frame/scope references.
-- A request timeout can mean an operation already executed. Close/invalidate the session; never transparently retry a mutation.
-- A worker serializes operations. `wait` uses short bounded polling to limit how long polling delays another request; other adapter operations still have their own request deadlines.
-- The CLI worker expires inactive sessions. Graceful disconnect is followed by owned process-group cleanup on supported POSIX hosts.
-- Lifecycle events are separate from output buffers, so noisy stdout cannot evict stop/termination events.
+**Identities:**
 
-Current state is event-consumption based: the controller calls wait to observe asynchronous transitions. A future event stream may replace polling without changing identity semantics.
+- A new launch creates a random session ID, and a source fingerprint.
+- Each consumed stop creates a new stop ID. Frame IDs are valid only at that stop.
+- The worker issues opaque scope handles, and translates them to adapter references.
+- Every new inspection revokes all earlier scope handles, even within the same stop. This stops a
+  reused raw adapter scope ID from selecting the wrong frame.
+- Inspection and mutation need the current session and stop. Reports need the session's identity.
+- Continue invalidates all frame and scope references.
+
+**Failures and timing:**
+
+- A request timeout can mean that the operation already ran. Close or invalidate the session.
+  Never retry a mutation transparently.
+- A worker serializes operations. `wait` polls in short, bounded steps, which limits how long
+  polling delays another request. Other adapter operations keep their own request deadlines.
+- The CLI worker expires inactive sessions. A graceful disconnect is followed by cleanup of the
+  owned process group, on supported POSIX hosts.
+- Lifecycle events are kept apart from output buffers, so noisy stdout can't push out a stop or
+  termination event.
+
+State changes are consumed as events: the controller calls `wait` to observe asynchronous
+transitions. A future event stream may replace polling, without changing what the identities mean.
 
 ## HTTP contract
 
-Requests are JSON objects with `Authorization: Bearer <token>`. The worker binds only to 127.0.0.1. The token authorizes control of that worker; it is not a per-target policy. Request sizes are bounded. Errors distinguish invalid requests from uncertain adapter failures through HTTP status and error text. A stable machine-readable error code/version field is a subsequent protocol slice before third-party integrations.
+Requests are JSON objects with `Authorization: Bearer <token>`.
+
+- The worker binds only to `127.0.0.1`.
+- The token authorizes control of that worker. It is not a per-target policy.
+- Request sizes are bounded.
+- Errors are JSON with a stable `code`, a `hint`, `retryable` and `session_closed`. Every response
+  carries the protocol version. [ERRORS.md](ERRORS.md) lists the codes.
+- The HTTP status and the code tell invalid requests apart from uncertain adapter failures.
+
+`POST /version` returns the protocol version, the operations and the error codes:
+
+```
+$ curl -s -i -X POST -H 'Authorization: Bearer …' -d '{}' http://127.0.0.1:18766/version
+HTTP/1.0 200 OK
+...
+X-Peeky-Protocol: 1
+...
+{"protocol": 1, "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
+```
+
+Without the token, the reply is `401`:
+
+```
+{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 1}
+```
 
 | Operation | Required input | Result |
 | --- | --- | --- |
@@ -76,64 +151,165 @@ Requests are JSON objects with `Authorization: Bearer <token>`. The worker binds
 | wait | session ID, bounded timeout | stopped, terminated, or still running |
 | inspect | session ID, stop ID; optional `frame` (index into `frames`, 0 the innermost) or `frame_id`; optional `names` (up to 32 names also listed past the 50-entry bound; a shadowed local's as LLDB names it, `s @ main.rs:81`); optional `globals` (Python: `true` lists the module's globals; a list of names lists them only if the function provably reads one of those names from them, with `globals_proof`) | stack and bounded locals (`frame`, `innermost` for a caller, `globals_available`); Python values carry `identity` |
 | expand | session ID, stop ID, opaque child handle, start/count | bounded read-only children |
+| preview | session ID, stop ID, child handle; optional `pointee` | the value's preview, as `inspect` shows it, or none |
 | set_variable | session ID, stop ID, scope reference, name, expression value (the innermost frame's only) | before/after |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |
-| continue | session ID, stop ID | running |
+| continue | session ID, stop ID; optional `to_line` or `to_exit` | running |
+| step | session ID, stop ID; `kind`: `over`, `in` or `out` | running |
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |
+| probe | one stateless request: `at`, `capture`, optional `set` and the probe's other options ([ADR 0004](adr/0004-stateless-probes.md)) | the probe's result |
+| version | none | protocol version, operations, error codes |
+| shutdown | none | the worker closes its session and stops |
 
-Client-visible IDs have no meaning across sessions/stops. DAP capabilities must be checked before adding optional operations. Breakpoint line relocation must be returned to the agent, not silently treated as the requested line.
+- Client-visible IDs mean nothing across sessions or stops.
+- Check DAP capabilities before adding an optional operation.
+- When a breakpoint's line is relocated, return the actual line to the agent. Never treat it
+  silently as the requested line.
 
-## Current Python alpha agent loop
+## The agent loop (`peeky-agent`)
 
-The model receives numbered source, a plain-language issue, baseline execution/check failures, and prior observations. It returns a structured action:
+The model receives the numbered source, a plain-language issue, the baseline run's and checks'
+failures, and earlier observations. It returns one structured action:
 
-1. `observe(line)` launches a fresh process and inspects a chosen stop.
-2. `intervene(variable, value)` changes an observed local, removes breakpoints, resumes, and returns the runtime outcome.
+1. `observe(line)` launches a fresh process, and inspects a chosen stop.
+2. `intervene(variable, value)` changes an observed local, removes breakpoints, resumes, and returns
+   the runtime outcome.
 3. `finish(old, new, reason)` proposes one exact replacement in the source.
 
-The controller rejects a finish before runtime intervention. It writes a separate candidate, never silently overwrites the original, and verifies in a fresh process. A failed check returns to the model for another decision. The total number of decisions and per-call/runtime deadlines are bounded. Transport failures are fatal to the active session. Model failures produce a failed report, not a fabricated diagnosis.
+The controller:
 
-This vocabulary is intentionally small. The worker also supports bounded read-only object expansion; the current model decision vocabulary does not yet select expansion actions. Stepping and multiple hypotheses remain later additions with their own contract tests. Conditional breakpoints, hit conditions and logpoints are refused for every language: they are expressions the debuggee would evaluate, and Peeky never runs agent-supplied code in the program.
+- rejects a `finish` before a runtime intervention;
+- writes a separate candidate, and never overwrites the original silently;
+- verifies the candidate in a fresh process. A failed check goes back to the model for another
+  decision;
+- bounds the total number of decisions, and each call's and run's deadlines;
+- treats a transport failure as fatal to the active session;
+- turns a model failure into a failed report, never a made-up diagnosis.
+
+This vocabulary is small on purpose:
+
+- The worker also supports bounded read-only expansion, and stepping. The agent's vocabulary
+  selects neither yet.
+- Multiple hypotheses remain a later addition, with their own contract tests.
+- Conditional breakpoints, hit conditions and logpoints are refused for every language. They are
+  expressions the debuggee would evaluate, and Peeky never runs agent-supplied code in the program.
 
 ## Verification and evidence
 
-The configured verifier accepts the candidate path in argv[1], must fail on the original, and must return normally after checking the candidate. An explicit sys.exit(0) is intentionally rejected. A trusted wrapper requires explicit completion rather than interpreting every zero process exit as success. Catching premature `SystemExit` prevents the demonstrated exit-zero bypass. Hash checks gate acceptance, not just report annotations.
+The configured verifier gets the candidate's path in `argv[1]`.
 
-This is not adversarially secure verification: target and verifier execute with local OS permissions; malicious native code or deliberate process tampering is outside the trusted-code contract. Strong isolation needs a separate environment and verifier service later.
+- It must fail on the original.
+- It must return normally after checking the candidate. An explicit `sys.exit(0)` is rejected on
+  purpose.
+- A trusted wrapper requires explicit completion, instead of taking every zero exit as success.
+  Catching a premature `SystemExit` prevents the exit-zero bypass that was demonstrated.
+- Hash checks gate acceptance. They are not only notes in the report.
 
-Evidence includes source/check hashes, actual breakpoint, observed local state, requested intervention, returned value, runtime output, decision reason, proposed edit, and checker completion. A statement that a bug is generally fixed is only as broad as the supplied verifier; test output must not be replaced with model claims.
+This is not adversarially secure verification. The target and the verifier run with local OS
+permissions. Malicious native code, or deliberate process tampering, is outside the trusted-code
+contract. Strong isolation needs a separate environment and verifier service, later.
 
-Reports may include application data. They stay local unless the user explicitly sends them or uses the model runner, which sends selected evidence to the configured model. CI uses synthetic fixtures only and retains test diagnostics in job logs.
+Evidence includes:
+
+- source and check hashes;
+- the actual breakpoint, and the observed local state;
+- the requested intervention, and the returned value;
+- the runtime output;
+- the decision's reason, the proposed edit, and the checker's completion.
+
+A claim that a bug is fixed in general is only as broad as the supplied verifier. Model claims must
+never replace test output.
+
+Reports may include application data. They stay local, unless the user sends them, or uses the
+model runner, which sends selected evidence to the configured model. CI uses synthetic fixtures
+only, and keeps test diagnostics in job logs.
 
 ## Remote development
 
-The same worker runs on the target host and the reasoning client stays outside. SSH forwards loopback traffic and supplies transport confidentiality/authentication. The bearer token remains an additional worker credential. Source identity must match before line-based debugging.
+The same worker runs on the target host, and the reasoning client stays outside
+([REMOTE.md](REMOTE.md)).
 
-The root directory constrains entrypoint selection, not filesystem access by the program. Evaluating variable assignments and even rendering objects can invoke user code. Strip the worker control credential from debugger and verification child environments, while retaining normal runtime dependencies needed by trusted programs.
+- SSH forwards loopback traffic, and supplies transport confidentiality and authentication.
+- The bearer token remains an additional worker credential.
+- Source identity must match before line-based debugging.
+- The root directory constrains which entry point is chosen, not what files the program can reach.
+- Evaluating variable assignments, and even rendering objects, can run user code.
+- Strip the worker's control credential from the environments of debugger and verification
+  children. Keep the normal runtime dependencies that trusted programs need.
 
-For Kubernetes later: add a per-workload worker with explicit deployment permissions, then an authenticated outbound relay. Define reconnect semantics and allowed data egress before claiming secure production support. Native debugger access may require capabilities or process namespace sharing; a sidecar alone does not establish attachability.
+For Kubernetes, later:
+
+- Add a per-workload worker with explicit deployment permissions, then an authenticated outbound
+  relay.
+- Define reconnect semantics, and what data may leave, before claiming secure production support.
+- Native debugger access may need capabilities, or a shared process namespace. A sidecar alone
+  doesn't make a process attachable.
 
 ## Delivery strategy
 
-Each roadmap slice includes a runnable example and tests. Required CI is deterministic and parallel: style, unit, real-debugpy integration across two Python versions, and installed-wheel smoke. Real-model evaluations are manual and report separate cost/latency; they never block every PR. Build private artifacts on manual delivery. Public distribution and cluster deployment require separate product decisions.
+- Each roadmap slice includes a runnable example and tests.
+- Required CI is deterministic and parallel: style, unit, real-debugpy integration on two Python
+  versions, and an installed-wheel smoke test. Each language adds its own lane
+  ([TESTING.md](TESTING.md)).
+- Real-model evaluations are manual, and report cost and latency separately. They never block a
+  PR.
+- Private artifacts are built on manual delivery.
+- Public distribution and cluster deployment need separate product decisions.
 
 ## Language expansion
 
-Java and C runtime debugging and fresh candidate verification are connected to the worker/controller. C++ adds qualified class/reference/array inspection and candidate verification; Rust qualification remains outstanding. See LANGUAGES.md for full per-language acceptance criteria.
+Java, C, C++ and Rust runtime debugging, and fresh candidate verification, are connected to the
+worker and controller. C++ adds qualified class, reference and array inspection, and candidate
+verification. Rust has a worker for one dependency-free Cargo binary
+([RUST_GATE.md](RUST_GATE.md)), and an investigation loop ([RUST_AGENT.md](RUST_AGENT.md)).
+[LANGUAGES.md](LANGUAGES.md) has the full acceptance criteria per language.
 
-Launch/scope configuration lives behind trusted startup adapter objects. HTTP clients cannot provide adapter commands. JavaTarget prepares fresh copied inputs, compiles debug classes and generates source mappings directly from class metadata. JavaSession checks build, bundle and mapping identities before guarded operations, validates selected stopped frames and cleans its workspace after debugger teardown. The worker retains session/stop ownership and exposes eventual breakpoint verification events. Java and C candidate acceptance use the shared CompiledVerification lifecycle, with thin language wrappers, fresh prepared builds and the unchanged trusted checker. See [Java 7.3](lang/java-cookbook.md#what-peeky-checks-about-a-java-build) for restrictions and trusted-development provenance limits.
+How the languages plug in:
+
+- Launch and scope configuration live behind trusted startup adapter objects. HTTP clients can't
+  supply adapter commands.
+- `JavaTarget` prepares fresh copies of the inputs, compiles debug classes, and generates source
+  mappings straight from class metadata.
+- `JavaSession` checks the build, bundle and mapping identities before guarded operations. It
+  validates selected stopped frames, and cleans its workspace after the debugger's teardown.
+- The worker keeps ownership of sessions and stops, and exposes the debugger's later
+  breakpoint-verification events.
+- Java and C candidate acceptance use the shared `CompiledVerification` lifecycle, with thin
+  language wrappers, fresh prepared builds and the unchanged trusted checker.
+
+[Java 7.3](lang/java-cookbook.md#what-peeky-checks-about-a-java-build) has the restrictions, and the
+limits of provenance for trusted development.
 
 ## Open questions
 
-- How should compiled candidate verification extend the current source-patch controller?
-- Should a future agent receive stable evidence IDs alongside opaque worker scope handles?
-- What needs to remain inside customer infrastructure before remote production use?
-- Which regression corpus provides evidence beyond synthetic examples?
-- Is latency improved more by batching observations or by keeping one model session?
+- How should compiled candidate verification extend the source-patch controller? (Answered for
+  Java and C by `CompiledVerification`, above.)
+- Should a future agent receive stable evidence IDs, beside opaque worker scope handles?
+- What needs to stay inside customer infrastructure before remote production use?
+- Which regression corpus gives evidence beyond synthetic examples?
+- Is latency improved more by batching observations, or by keeping one model session?
 
 ## Bounded child inspection
 
-Inspection returns opaque child handles in variablesReference, distinct from writable scope references. Expansion revalidates the stopped frame/source/module and resolves a unique scope and exact name/type ancestry afresh. Reinspection, mutation attempts, stop transitions, continuation and close revoke child handles. Expansion revokes earlier writable scope handles because resolving children can change backend scope context; inspect again before mutation.
+Inspection returns opaque child handles in `variablesReference`, distinct from writable scope
+references.
 
-Pages contain at most 64 values, with depth at most four and a 512-node budget per inspection including initial locals. Individual collections beyond 512 entries are rejected; backend paging cannot silently bypass these limits. Values and identity strings are bounded. Child handles never authorize mutation. These reads do not invoke arbitrary evaluate commands, but trusted debugger formatting may have runtime side effects. General C++ project/formatter support is not implied by the qualified fixture.
+- Expansion revalidates the stopped frame, source and module. It resolves a unique scope, and the
+  exact ancestry of names and types, afresh.
+- Reinspection, mutation attempts, stop transitions, continuation and close revoke child handles.
+- Expansion revokes earlier writable scope handles, because resolving children can change the
+  backend's scope context. Inspect again before a mutation.
+
+Limits:
+
+- A page holds at most 64 values. Depth is at most four.
+- An inspection has a 512-node budget, which includes the initial locals.
+- A collection beyond 512 entries is rejected. Backend paging can't silently get around these
+  limits.
+- Values and identity strings are bounded.
+- Child handles never authorize mutation.
+
+These reads don't call arbitrary evaluate commands. But a trusted debugger's formatting may have
+runtime side effects. The qualified fixture doesn't imply general support for C++ projects or
+formatters.
