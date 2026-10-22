@@ -305,6 +305,11 @@ _MUTATION_HINTS = (
         "there), or change the copy the message names instead.",
     ),
     (
+        r"assigns it again \(lines? [0-9, ]+\) before reading it",
+        "Change it after that assignment has run: a later `--at`, or `session continue "
+        "--to LINE` to the line after it.",
+    ),
+    (
         r"cannot be changed here",
         "Change it at the statement's first instruction: a breakpoint on the statement's "
         "first line (`--at`, `session continue --to LINE`), or a `session step` that lands "

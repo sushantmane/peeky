@@ -65,6 +65,8 @@ A Java bundle built before then says to rebuild it (`predates String changes`).
 - Any Java local the program never reads (a constant javac folds into its uses) is refused (`the program never reads it`).
 - So is one no path from the stop reads again (`does not read it after this stop`: a lambda or inner class captured it before).
 
+**Python locals a loop's pass assigns before reading them (#182).** A local the current pass's code has not assigned before the stop's line, which every path through the rest of the pass assigns before reading it, is refused (`this function's code assigns it again (line N) before reading it`); the hint says to change it after that assignment.
+
 **Refused before the program runs.**
 - A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register or, at every place of the line, inside a statement that has already read it or copied into such a binding, a field through a pointer or of a type no change reaches, a Java local whose declared type no change reaches or cannot hold the value) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
 - For a register, the hint names a candidate edit with `std::hint::black_box` (COOKBOOK 6.6).

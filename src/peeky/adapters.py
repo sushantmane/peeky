@@ -1146,6 +1146,47 @@ class PythonAdapter:
             return None
         return reference
 
+    # The worker passes when the program started (`loaded_by`, a time.time()) to the
+    # rules that read its sources: a source changed after it proves nothing.
+    judges_sources = True
+
+    def not_yet_declared(
+        self,
+        variable,
+        frame,
+        innermost=True,
+        stack=None,
+        deeper=None,
+        siblings=None,
+        stop=None,
+        loaded_by=None,
+    ):
+        """A local shown with a note (#182): one the code of the current pass of the loop
+        around the frame's line has not assigned before the line, and assigns on every
+        path through the rest of the pass before reading it, so its value is likely an
+        earlier pass's (see python_passes); else None. Its string says why a change to
+        it is refused. Judged only where the program's interpreter compiles as this one
+        does; a breakpoint's stop is where its line begins."""
+        from peeky.python_passes import same_compiler, stale_note
+
+        frame = frame or {}
+        if not same_compiler(self.interpreter):
+            return None
+        return stale_note(
+            (frame.get("source") or {}).get("path"),
+            str(frame.get("name") or ""),
+            frame.get("line"),
+            variable.get("name"),
+            loaded_by=loaded_by,
+            entered=innermost and stop == "breakpoint",
+        )
+
+    def validate_mutation_target(self, variable, frame, loaded_by=None):
+        """Refuse a change the code overwrites before reading it (#182), judged as at any
+        stop on the line (a set is never told where the stop is)."""
+        if (stale := self.not_yet_declared(variable, frame, loaded_by=loaded_by)) is not None:
+            raise ValueError(f"{variable.get('name')!r} cannot be changed at this stop: {stale}")
+
     @staticmethod
     def globals_proof(frame, listed, names, loaded_by=None):
         """How the frame's function sees each of ``names``, missing from its locals:
