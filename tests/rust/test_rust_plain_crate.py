@@ -3833,7 +3833,10 @@ def test_a_generic_bodys_types_are_never_taken_for_the_frames(plain, capsys):
     at = f"src/main.rs:{line_of(GENERIC_PREVIEWS, '// GP_KEEP')}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "h,h.b.x", "--quiet")
     whole, field = result["rows"]
-    assert whole.get("stale") and "value" not in field and "777" not in str(field), result["rows"]
+    # Nothing read through the freed Box in any part of the row but `function`, whose Rust
+    # symbol hash changes with each build and held `777` once in ~300 (#193).
+    read = {key: value for key, value in field.items() if key != "function"}
+    assert whole.get("stale") and "value" not in field and "777" not in str(read), result["rows"]
 
 
 ODD_STRUCTS = """#[derive(Debug, Clone, Copy)]
