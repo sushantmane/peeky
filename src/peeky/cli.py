@@ -30,6 +30,7 @@ from pathlib import Path
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
+from peeky.identifiers import is_name, look_alike, reachable
 from peeky.probe import (
     CANDIDATE_NEEDS_BUILD,
     MAX_EDITS,
@@ -1446,11 +1447,11 @@ def _variables_text(snapshot, name="default"):
         lines.append(
             f"[{scope['name']}]" + (" (module globals, read-only)" if scope.get("globals") else "")
         )
+        alike = look_alike([variable["name"] for variable in scope["variables"]])
         for variable in scope["variables"]:
             more = (
                 f" (children: peeky session get {variable['name']}{reads})"
-                if variable.get("variablesReference")
-                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable["name"])
+                if variable.get("variablesReference") and is_name(variable["name"])
                 else ""
             )
             if variable.get("unavailable"):
@@ -1458,9 +1459,15 @@ def _variables_text(snapshot, name="default"):
             elif variable["name"] in PYDEVD_GROUPS and not variable.get("type"):
                 lines.append(f"  ({variable['name']}: debugpy's group; select its members by name)")
                 continue
-            elif not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*( @ .+)?", variable["name"]):
+            elif not reachable(variable):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
+            if variable["name"] in alike:
+                # Two rows that look the same: which spelling each is (#195).
+                more += (
+                    f" [written {ascii(variable['name'])}: another name here differs from it "
+                    "only by Unicode normalization]"
+                )
             view = f"  [{variable['view']}]" if variable.get("view") else ""
             if variable.get("stale"):
                 # May be moved or dropped: its fields are what it left behind (#108).
