@@ -406,9 +406,9 @@ That is the case for:
 - a map's entry, such as `m[#0]`, a `std::pair`;
 - what a standard-library type other than a container holds;
 - a class with a member named like one of its base classes: `struct B2 : A2 { int A2; }`;
-- every value of an optimized build. A struct there may hold values that the optimizer hasn't
-  stored yet: GCC `-O2` showed `t = {x = 64, y = 0, z = 0}` where the program printed `{5, 6, 7}`.
-  Only a wide character array still shows element by element there.
+- an optimized build. Optimized builds have no previews, except wide character arrays, which are
+  shown element by element. A struct there may hold values that the optimizer hasn't stored yet:
+  GCC `-O2` showed `t = {x = 64, y = 0, z = 0}` where the program printed `{5, 6, 7}`.
 
 #### Standard containers
 
