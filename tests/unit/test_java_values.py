@@ -63,3 +63,63 @@ def test_values_that_would_change_are_refused(kind, value):
     with pytest.raises(ValueError) as caught:
         check(kind, value)
     assert classify(caught.value)["code"] == "MUTATION_REJECTED"
+
+
+def charred(value, char_set=True):
+    session = JavaSession.__new__(JavaSession)
+    session.char_set, session.text_set = char_set, True
+    return session
+
+
+@pytest.mark.parametrize(
+    "value, char",
+    [
+        ("'+'", "+"),
+        ("'\\n'", "\n"),
+        ("'\\''", "'"),
+        ("'\\\\'", "\\"),
+        ("'\\u0041'", "A"),
+        ("'\\101'", "A"),
+        ("43", "+"),
+        ("0", "\x00"),
+        ("65535", "\uffff"),
+    ],
+)
+def test_a_char_takes_a_char_literal_or_a_code_point(value, char):
+    # #183: java-debug sets a char; Peeky sends it the char itself between single quotes.
+    session = charred(value)
+    variable = {"name": "op", "type": "char"}
+    session.validate_variable(variable, value)
+    assert session.mutation_literal(value, variable=variable) == f"'{char}'"
+    session.confirm_mutation("op", value, "-", char, variable=variable)
+    with pytest.raises(RuntimeError):
+        session.confirm_mutation("op", value, "-", "?" if char != "?" else "!", variable=variable)
+
+
+@pytest.mark.parametrize("value", ["65536", "-1", "'ab'", "'\U0001f600'", "1.5", "true", '"+"'])
+def test_a_char_refuses_what_is_no_single_char(value):
+    with pytest.raises(ValueError) as caught:
+        charred(value).validate_variable({"name": "op", "type": "char"}, value)
+    assert classify(caught.value)["code"] == "MUTATION_REJECTED"
+
+
+def test_the_type_is_judged_before_the_value_and_names_the_rule():
+    # #183: `op='+'` on a char was refused as "requires a numeric or boolean scalar
+    # literal" (with a hint about C, C++ and Rust); the real rule came only on a retry.
+    session = charred("'+'", char_set=False)
+    with pytest.raises(ValueError) as caught:
+        session.validate_variable({"name": "op", "type": "char"}, "'+'")
+    message = str(caught.value)
+    assert message.startswith("op is char; only byte, short, int, long, boolean"), message
+    assert "a char too with an adapter bundle built by this version" in message
+    assert "Rebuild the Java adapter bundle" in classify(caught.value)["hint"]
+    # A type no bundle changes says only what can change.
+    with pytest.raises(ValueError) as caught:
+        charred("1").validate_variable({"name": "b", "type": "java.lang.StringBuilder"}, "1")
+    assert str(caught.value) == (
+        "b is java.lang.StringBuilder; only byte, short, int, long, char, boolean, float, "
+        "double and String (to a text) values can be changed"
+    )
+    # A literal of another type names the variable's own.
+    with pytest.raises(ValueError, match=r"requires a literal of left's type \(long\)"):
+        charred("'+'").validate_variable({"name": "left", "type": "long"}, "'+'")

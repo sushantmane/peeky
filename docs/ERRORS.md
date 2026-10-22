@@ -15,7 +15,7 @@ Every Peeky failure, from the HTTP worker, the SDK (`peeky.errors.PeekyError`) o
 | `STALE_STOP` | `wait` until stopped, then `inspect` | The program moved on; `stop_id` is old, or the stop was auto-resumed by `--max-pause`. On timed programs, prefer a probe |
 | `INSPECT_REQUIRED` | `inspect` again, use the new reference | Mutation without a fresh scope, or a value-view read still pending |
 | `STALE_HANDLE` | `inspect` again | Expansion handle revoked or frame/scope changed |
-| `NOT_FOUND` | Use a name from the message's `visible:` or `children:` list | Name/selector not visible (names match exactly as the debugger lists them: one spelled in another Unicode normalization form is refused, and the message gives the listed spelling), or (Python) a name missing from the locals that Peeky could not prove is a global there; before a probe runs, a `--set` name no function at its line declares (Rust). Or list names with `inspect`, `session get <value>`; dict entries are `d['key']`; C++/Java members are `this.x`; a caller's locals need `--frame N` |
+| `NOT_FOUND` | Use a name from the message's `visible:` or `children:` list | Name/selector not visible (names match exactly as the debugger lists them: one spelled in another Unicode normalization form is refused, and the message gives the listed spelling), or (Python) a name missing from the locals that Peeky could not prove is a global there; before a probe runs, a `--set` name no function at its line declares (Rust, and Java from its class files' local variable tables). Or list names with `inspect`, `session get <value>`; dict entries are `d['key']`; C++/Java members are `this.x`; a caller's locals need `--frame N` |
 | `MUTATION_REJECTED` | Follow the hint: it names the one way around the rule | A change Peeky cannot make there; nothing was written. The rules, as lists: [MUTATION_REJECTED in detail](#mutation_rejected-in-detail) |
 | `BUDGET_EXHAUSTED` | Narrow the request | A bounded read limit was reached |
 | `INVALID_BREAKPOINT` | Use `peeky describe` lines | Line not executable or unsupported breakpoint field |
@@ -47,7 +47,8 @@ A refused change writes nothing. The hint names the one action the broken rule l
 
 **Where.** Only where no statement under way may hold a copy, else `cannot be changed here`:
 - C and C++: at a statement's first instruction;
-- Rust: at a breakpoint, or a step to its line's start, where the MIR proves none.
+- Rust: at a breakpoint, or a step to its line's start, where the MIR proves none;
+- Rust: nor where a binding of the program's own holds a copy it goes on with, replacing or dropping the local unread (`the program has already copied `x` into `n``).
 
 **Texts (#137).** A text in double quotes changes only a C `char[N]`, a C++ `std::string`, a Rust `String` local or a Java String. These are refused, nothing written:
 - one that does not fit its storage (`the text does not fit`);
@@ -67,7 +68,7 @@ A Java bundle built before then says to rebuild it (`predates String changes`).
 **Python locals a loop's pass assigns before reading them (#182).** A local the current pass's code has not assigned before the stop's line, which every path through the rest of the pass assigns before reading it, is refused (`this function's code assigns it again (line N) before reading it`); the hint says to change it after that assignment.
 
 **Refused before the program runs.**
-- A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register, a field through a pointer or of a type no change reaches) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
+- A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register or, at every place of the line, inside a statement that has already read it or copied into such a binding, a field through a pointer or of a type no change reaches, a Java local whose declared type no change reaches or cannot hold the value) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
 - For a register, the hint names a candidate edit with `std::hint::black_box` (COOKBOOK 6.6).
 
 **A field through a C pointer parameter.** When the program calls the function once, the message names that call (``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``).

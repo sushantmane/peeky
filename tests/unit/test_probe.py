@@ -1444,7 +1444,7 @@ def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     worker = Refusing()
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("x", "2"),)))
-    assert worker.calls[0] == ("launch", [{"line": 8, "name": "x"}])
+    assert worker.calls[0] == ("launch", [{"line": 8, "name": "x", "value": "2"}])
     assert worker.calls[-1] == "close"
     assert result["status"] == "failed" and result["refused_before_launch"] is True
     assert result["error"]["code"] == "MUTATION_REJECTED" and result["hits"] == 0
@@ -1502,7 +1502,11 @@ def test_the_launch_names_each_change_with_its_own_line(monkeypatch):
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     request = Probe("main.py", 8, ("x",), (("x", "2"),), set_at=((9, 1, "w.start", "5"),))
     probe_module.run_probe("/w", request)
-    assert launched["sets"] == [{"line": 8, "name": "x"}, {"line": 9, "name": "w.start"}]
+    # With each value, which a Java local's declared type judges before the run (#183).
+    assert launched["sets"] == [
+        {"line": 8, "name": "x", "value": "2"},
+        {"line": 9, "name": "w.start", "value": "5"},
+    ]
     assert launched["breakpoints"] == [{"line": 8}, {"line": 9}]
 
 

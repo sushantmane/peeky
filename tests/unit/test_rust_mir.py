@@ -11,6 +11,7 @@ from peeky.rust_mir import (
     OwnedLocals,
     _event,
     _mir_name,
+    _root_access,
     _same_path,
     _segments,
     frame_shape,
@@ -21,8 +22,9 @@ from peeky.rust_mir import (
 )
 
 
-def mir(blocks, header="fn main() -> () {", bindings=""):
-    """A `-Zdump-mir` body: blocks are {number: [statement, ..., terminator]}."""
+def mir(blocks, header="fn main() -> () {", bindings="", files=None):
+    """A `-Zdump-mir` body: blocks are {number: [statement, ..., terminator]}; ``files``:
+    {(block, index): the file a statement's span is in}, else src/main.rs."""
     lines = [
         "// MIR for `main` after PreCodegen",
         "",
@@ -37,7 +39,8 @@ def mir(blocks, header="fn main() -> () {", bindings=""):
     for number, statements in blocks.items():
         lines.append(f"    bb{number}: {{")
         for index, statement in enumerate(statements):
-            lines.append(f"        {statement}  // scope 1 at src/main.rs:{10 + index}:5: 10:9")
+            file = (files or {}).get((number, index), "src/main.rs")
+            lines.append(f"        {statement}  // scope 1 at {file}:{10 + index}:5: 10:9")
         lines += ["    }", ""]
     return parse_body("\n".join([*lines, "}", ""]))
 
@@ -3093,3 +3096,250 @@ def test_the_names_a_crate_gives_its_own_items_are_found_in_one_pass():
     passed = code.replace("m!(7999)", "m!(String)")
     owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": passed})
     assert owned._untrusted_names() == {"String"}
+
+
+def test_a_temporary_set_before_the_local_took_its_value_holds_no_copy_of_it():
+    # #183: `for entry in args` stops at the body's first line after `entry` was moved
+    # out of `next()`'s result, a temporary a call given a pointer made, which the next
+    # pass reads (`discriminant`). That temporary held an earlier value, never this one:
+    # a change to `entry` there was refused as "a statement under way has read it".
+    bindings = "debug entry => _14;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    body = mir(
+        {
+            0: [
+                "_11 = &mut _6;",
+                "_10 = &mut (*_11);",
+                "_9 = next(move _10) -> [return: bb1, unwind continue];",
+            ],
+            1: [
+                "_12 = discriminant(_9);",
+                "switchInt(move _12) -> [0: bb5, 1: bb2, otherwise: bb5];",
+            ],
+            2: [
+                "StorageLive(_14);",
+                "_14 = move ((_9 as Some).0: std::string::String);",
+                "_21 = &_14;",
+                "_20 = deref(move _21) -> [return: bb3, unwind continue];",
+            ],
+            3: [
+                "_13 = copy (_14.1: usize);",
+                "drop(_14) -> [return: bb4, unwind continue];",
+            ],
+            4: ["StorageDead(_14);", "_15 = copy _13;", "_16 = discriminant(_9);", "goto -> bb0;"],
+            5: ["return;"],
+        },
+        bindings=bindings,
+    )
+    # Taken as a whole, a call given any pointer may return a copy of it.
+    assert 9 in body.copies_of(14)
+    # In the order the code runs, `entry`'s assignment leaves no copy of its new value.
+    after = (2, 2)
+    assert 9 not in body.copies_at(14, after)
+    assert body.live_ahead(after) >> 9 & 1
+    # What is read from it after that is a copy (`_13`), until its storage ends.
+    assert 13 in body.copies_at(14, (3, 1))
+    assert 13 not in body.copies_at(14, (4, 1)) and 13 not in body.copies_at(14, (2, 2))
+
+
+@pytest.mark.parametrize(
+    ("text", "projection", "access"),
+    [
+        # A copy or move of the part, of a place holding it or inside it, reads it.
+        ("_5 = copy _1;", ((("field", 1),)), "read"),
+        ("_5 = Add(copy (_1.1: i64), const 1_i64);", (("field", 1),), "read"),
+        ("_5 = copy ((_1.1: Inner).0: i32);", (("field", 1),), "read"),
+        ("_5 = copy (_1.2: [u32; 3])[2 of 3];", (("field", 2), ("index", 2)), "read"),
+        ("_3 = consume(move _1) -> [return: bb1, unwind continue];", ((("field", 0),)), "read"),
+        # Another field, an element whose index is not known, or another element: not.
+        ("_5 = copy (_1.0: i16);", (("field", 1),), None),
+        ("_5 = copy (_1.2: [u32; 3])[_7];", (("field", 2), ("index", 2)), None),
+        ("_5 = copy (_1.2: [u32; 3])[1 of 3];", (("field", 2), ("index", 2)), None),
+        # A borrow may never be read through; a length or a dereference is no read.
+        ("_5 = &_1;", (), None),
+        ("_5 = &mut (_1.1: i64);", (("field", 1),), None),
+        ("_5 = Len(_1);", (), None),
+        # Assigning the whole local, or a place covering the part, ends it; another part
+        # or reading it first does not.
+        ("_1 = copy _2;", (("field", 1),), "end"),
+        ("_1 = Add(copy _1, const 1_i32);", (), "read"),
+        ("(_1.1: i64) = const 5_i64;", (("field", 1),), "end"),
+        ("(_1.0: i16) = copy _6;", (("field", 1),), None),
+        ("(_1.0: i16) = copy (_1.1: i64) as i16 (IntToInt);", (("field", 1),), "read"),
+        ("StorageDead(_1);", (), "end"),
+        ("drop(_1) -> [return: bb2, unwind continue];", (), None),
+        # A projection not known: only the whole local is read for sure.
+        ("_5 = copy (_1.1: i64);", None, None),
+        ("_5 = copy _1;", None, "read"),
+        # A type holding brackets, arrows and braces in the place's annotation.
+        (
+            "_5 = copy ((_1.0: (fn(i32) -> i32, [u8; 2])).1: [u8; 2])[0 of 2];",
+            (("field", 0), ("field", 1), ("index", 0)),
+            "read",
+        ),
+    ],
+)
+def test_what_a_statement_surely_does_to_a_part_of_a_local(text, projection, access):
+    # #192 review: only a read that surely covers the changed part shows the program saw
+    # the change.
+    assert _root_access(text, 1, projection) == access
+
+
+STD_MACROS = "/t/lib/rustlib/src/rust/library/std/src/macros.rs"
+# What OwnedLocals.std_macros holds for this toolchain, and the crate's function paths.
+SINKS = (frozenset({STD_MACROS}), frozenset({"main"}))
+
+
+def formatting(sink="std::io::_print", kind="i16", file=STD_MACROS, generics=()):
+    """`println!("{}", x.a)` as rustc 1.96 builds it, then `x = y` (`y` copied `x`)."""
+    body = mir(
+        {
+            0: [
+                "_2 = copy _1;",
+                "_8 = &(_1.0: i16);",
+                "_7 = (move _8,);",
+                "_10 = copy (_7.0: &i16);",
+                "_9 = &(*_10);",
+                f"_6 = core::fmt::rt::Argument::<'_>::new_display::<{kind}>(move _9) -> [return: bb1, unwind continue];",
+            ],
+            1: [
+                "_5 = [move _6];",
+                '_12 = const b"\\x02A \\xc0\\x00";',
+                "_11 = &(*_12);",
+                "_14 = &_5;",
+                "_13 = &(*_14);",
+                "_4 = Arguments::<'_>::new::<5, 1>(move _11, move _13) -> [return: bb2, unwind continue];",
+            ],
+            2: [f"_3 = {sink}(move _4) -> [return: bb3, unwind continue];"],
+            3: ["_1 = copy _2;", "StorageDead(_1);", "return;"],
+        },
+        bindings=(
+            "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+            "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+        ),
+        files={(2, 0): file},
+    )
+    body.generics = generics
+    return body
+
+
+@pytest.mark.parametrize("sink", ["std::io::_print", "std::fmt::format", "format"])
+def test_std_printing_a_borrowed_primitive_reads_it_at_the_print(sink):
+    # `println!("{}", x.a)`: `_print` formats `&x.a`, so the program reads `x.a` there; as
+    # `format!` does (`format` alone where no other item is so named).
+    body = formatting(sink)
+    call = f"_3 = {sink}(move _4) -> [return: bb3, unwind continue];"
+    assert body._format_reads(*SINKS) == {call: {"&(_1.0: i16)"}}
+    assert _root_access(call, 1, (("field", 0),), body._format_reads(*SINKS)) == "read"
+    # Not at the borrow: making a formatting argument reads nothing yet.
+    borrow = "_8 = &(_1.0: i16);"
+    assert _root_access(borrow, 1, (("field", 0),), body._format_reads(*SINKS)) is None
+    # For a change to `x.a` the program saw it; for one to `x.b`, `x = y` puts it back.
+    assert not body.copy_undoes(2, 1, (0, 1), (("field", 0),), SINKS)
+    assert body.copy_undoes(2, 1, (0, 1), (("field", 1),), SINKS)
+    # From past the print, nothing reads `x.a` before `x = y`.
+    assert body.copy_undoes(2, 1, (3, 0), (("field", 0),), SINKS)
+
+
+@pytest.mark.parametrize(
+    ("sink", "kind", "file", "generics", "crate"),
+    [
+        # #192 review 3: built and given to a function of the crate's own, never formatted.
+        ("ignore", "i16", STD_MACROS, (), {"main", "ignore"}),
+        # #192 review 4: a call written in a file of the crate's own that only ends as
+        # std's does (`src/library/std/src/macros.rs`), or in another toolchain's.
+        ("format", "i16", "src/library/std/src/macros.rs", (), {"main"}),
+        ("std::io::_print", "i16", "/w/src/library/std/src/macros.rs", (), {"main"}),
+        (
+            "std::io::_print",
+            "i16",
+            "/u/lib/rustlib/src/rust/library/std/src/macros.rs",
+            (),
+            {"main"},
+        ),
+        # A function of the crate's own named `format` (std's is then `std::fmt::format`).
+        ("format", "i16", STD_MACROS, (), {"main", "format"}),
+        # A call in std's file that formats nothing for sure (a panic hook may not).
+        ("core::panicking::panic_fmt", "i16", STD_MACROS, (), {"main"}),
+        # A type parameter named like a primitive (its `Display` may read nothing), or a
+        # body whose type parameters are not known.
+        ("std::io::_print", "i16", STD_MACROS, ("i16",), {"main"}),
+        ("std::io::_print", "i16", STD_MACROS, None, {"main"}),
+        # A type of the crate's own: its `Display` may read any part, or none.
+        ("std::io::_print", "Ab", STD_MACROS, (), {"main"}),
+    ],
+)
+def test_a_formatting_argument_nothing_proven_to_format_is_no_read(
+    sink, kind, file, generics, crate
+):
+    body = formatting(sink, kind, file, generics)
+    sinks = (SINKS[0], frozenset(crate))
+    assert body._format_reads(*sinks) == {}
+    assert body.copy_undoes(2, 1, (0, 1), (("field", 0),), sinks)
+
+
+def test_a_borrow_given_to_a_call_shows_no_read():
+    # #192 review: `ignore(&x)` may never read `x`; `x = y` then puts the old value back.
+    bindings = (
+        "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+        "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+    )
+    body = mir(
+        {
+            0: [
+                "_2 = copy _1;",
+                "_4 = &_1;",
+                "_3 = ignore(move _4) -> [return: bb1, unwind continue];",
+            ],
+            1: ["_1 = copy _2;", "_5 = copy _1;", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert body.copy_undoes(2, 1, (0, 1))
+    # Where the program reads `x` first, it sees the change.
+    read = mir(
+        {
+            0: [
+                "_2 = copy _1;",
+                "_4 = copy _1;",
+                "_3 = ignore2(move _4) -> [return: bb1, unwind continue];",
+            ],
+            1: ["_1 = copy _2;", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert not read.copy_undoes(2, 1, (0, 1))
+
+
+def test_a_block_the_code_cannot_reach_adds_no_copy_to_a_join():
+    # #192 review 2: every parsed block seeded the flow, so a block no path reaches
+    # (bb2) put its copy into bb3's entry.
+    bindings = "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    body = mir(
+        {
+            0: ["_1 = const 1_i32;", "goto -> bb1;"],
+            1: ["goto -> bb3;"],
+            2: ["_7 = copy _1;", "goto -> bb3;"],
+            3: ["_8 = copy _7;", "return;"],
+        },
+        bindings=bindings,
+    )
+    assert body._reachable() == {0, 1, 3}
+    assert 7 not in body.copies_at(1, (3, 0))
+    assert 7 not in body.direct_copies_at(1, (3, 0))
+
+
+def test_std_macro_files_are_exactly_the_toolchains_own(tmp_path):
+    # #192 review 4: where std's printing is written, as this toolchain's MIR names it:
+    # its sysroot's sources, or `/rustc/<commit-hash>/` where they are not installed.
+    from peeky.build import ProbeResult
+    from peeky.rust import std_macro_files
+
+    rustc, commit = "/opt/tc/bin/rustc", "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96"
+    probes = (ProbeResult((rustc, "-vV"), f"rustc 1.96.0\ncommit-hash: {commit}\n", ""),)
+    assert std_macro_files(rustc, probes, (tmp_path,)) == {
+        f"/opt/tc/lib/rustlib/src/rust/library/{name}/src/macros.rs" for name in ("std", "alloc")
+    } | {f"/rustc/{commit}/library/{name}/src/macros.rs" for name in ("std", "alloc")}
+    # No commit hash read: the sysroot's only. A toolchain inside the crate: none.
+    assert len(std_macro_files(rustc, (), (tmp_path,))) == 2
+    inside = str(tmp_path / "tc/bin/rustc")
+    assert std_macro_files(inside, (), (tmp_path,)) == frozenset()

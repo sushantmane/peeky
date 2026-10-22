@@ -34,7 +34,7 @@ def scopes(classes):
     for path in sorted(Path(classes).rglob("*.class")):
         methods = []
         _class_metadata(path.read_bytes(), scopes=methods)
-        for method, descriptor, first, last, names in methods:
+        for method, descriptor, first, last, names, _ in methods:
             found[f"{path.stem}.{method}{descriptor}"] = ([first, last], names)
     return found
 

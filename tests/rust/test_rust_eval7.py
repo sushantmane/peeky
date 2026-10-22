@@ -109,7 +109,8 @@ def test_describe_says_which_rust_locals_have_settable_fields(crate, capsys):
     # that `w.k` is settable.
     assert main(["describe", str(crate)]) == 0
     (mutable,) = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
-    assert ". Locals with such fields or elements: movavg::main: w. Never settable" in mutable
+    # #183: the paths themselves (`w.values`' elements are not settable).
+    assert ": movavg::main: w.k, w.sum. Never settable" in mutable, mutable
     # `self` is a reference: its fields are not changed through it.
     assert "push: self" not in mutable.split("Never settable")[0], mutable
 

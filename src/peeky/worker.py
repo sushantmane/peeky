@@ -1500,8 +1500,10 @@ class DebugWorker:
                 or len(changes) > 8
                 or not all(
                     isinstance(change, dict)
-                    and set(change) in ({"line", "name"}, {"line", "name", "text"})
+                    and {"line", "name"} <= set(change) <= {"line", "name", "text", "value"}
                     and change.get("text", True) is True
+                    and isinstance(change.get("value", ""), str)
+                    and len(change.get("value", "")) <= 10000
                     and type(change["line"]) is int
                     and change["line"] > 0
                     and isinstance(change["name"], str)
@@ -1511,7 +1513,7 @@ class DebugWorker:
             ):
                 raise ValueError(
                     "sets must be a list of at most 8 {line, name} changes (a positive line; "
-                    "text: true for a text)"
+                    "text: true for a text; value: the value, a string)"
                 )
             from peeky.probe import parse_selector
 
@@ -2319,7 +2321,9 @@ class DebugWorker:
                     {
                         "variablesReference": adapter_ref,
                         "name": args["name"],
-                        "value": literal(args["value"]) if literal else args["value"],
+                        "value": literal(args["value"], variable=variable)
+                        if literal
+                        else args["value"],
                     },
                 )
             except RequestFailed as exc:
@@ -2333,7 +2337,7 @@ class DebugWorker:
             normalize_value = getattr(runtime, "mutation_value", None)
             after = normalize_value(changed) if normalize_value else changed.get("value")
             if confirm := getattr(runtime, "confirm_mutation", None):
-                confirm(args["name"], args["value"], before, after)
+                confirm(args["name"], args["value"], before, after, variable=variable)
             return {
                 "name": args["name"],
                 "before": before,
@@ -3398,7 +3402,9 @@ class DebugWorker:
         if mid is None:
             return None
         key = ("root", self.mark_place(), str(root.get("name")), str(root.get("type")))
-        return self.remember(key, lambda: mid(root, frame, self.stop_reason))
+        # A copy of the program's own is judged per member (#192 review).
+        every = {"members": True} if getattr(runtime, "projected_copies", False) else {}
+        return self.remember(key, lambda: mid(root, frame, self.stop_reason, **every))
 
     def preview_kinds(self, record, runtime):
         """{field: the type the debugger lists it with} for a value shown as a preview
@@ -3489,8 +3495,13 @@ class DebugWorker:
             return lambda variable, steps: False
         stack = getattr(self, "listed_frames", None)
         place = (self.mark_place(), str(root.get("name")), str(root.get("type")))
+        # A copy of the program's own is judged by the part a change makes (#192 review).
+        projected = getattr(runtime, "projected_copies", False)
+        mid = getattr(runtime, "mid_statement", None) if projected else None
 
         def judged(variable, steps):
+            if mid is not None and mid(root, frame, self.stop_reason, steps=list(steps)):
+                return False
             try:
                 # The value it holds: in range, so only the member itself is judged.
                 validate(
@@ -3610,7 +3621,7 @@ class DebugWorker:
                 {
                     "variablesReference": reference,
                     "name": name,
-                    "value": literal(value) if literal else value,
+                    "value": literal(value, variable=variable) if literal else value,
                 },
             )
         except RequestFailed as exc:
@@ -3628,7 +3639,7 @@ class DebugWorker:
                 f"{str(reread[0].get('value'))[:80] if len(reread) == 1 else 'nothing'}"
             )
         if confirm := getattr(runtime, "confirm_mutation", None):
-            confirm(name, value, before, after)
+            confirm(name, value, before, after, variable=variable)
         return {"name": name, "before": before, "after": after}
 
     def _set_scalar_member(
@@ -3666,7 +3677,7 @@ class DebugWorker:
         selector = ancestry[0][0] + "".join(
             step if step.startswith("[") else f".{step}" for step in steps
         )
-        self.refuse_mid_statement(runtime, root, frame, selector)
+        self.refuse_mid_statement(runtime, root, frame, selector, steps)
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         try:
@@ -3675,7 +3686,7 @@ class DebugWorker:
                 {
                     "variablesReference": reference,
                     "name": name,
-                    "value": literal(value) if literal else value,
+                    "value": literal(value, variable=variable) if literal else value,
                 },
             )
         except RequestFailed as exc:
@@ -3702,7 +3713,7 @@ class DebugWorker:
             )
         after = found[0]["value"]
         # Exactly the value asked, or an error: never a change reported that is not made.
-        runtime.confirm_mutation(name, value, before, after)
+        runtime.confirm_mutation(name, value, before, after, variable=variable)
         if previewed:
             self._confirm_preview(record, runtime, name, after)
         return {"name": name, "before": before, "after": after}
@@ -3904,6 +3915,11 @@ class DebugWorker:
                 + ((note(program, [first["line"]], first["name"]) or "") if note else "")
                 + ". Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build"
             )
+        elif check := getattr(runtime, "launch_refusal", None):
+            # Java (#183): each change from the class files' declared types, its value too.
+            for change in changes:
+                if refusal := check(program, change["line"], change["name"], change.get("value")):
+                    break
         elif check := getattr(runtime, "never_settable", None):
             lines, texts = {}, {}
             for change in changes:
@@ -3926,12 +3942,17 @@ class DebugWorker:
             refused.before_launch = True
             raise refused
 
-    def refuse_mid_statement(self, runtime, root, frame, selector):
-        """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it)
-        where the runtime says a statement under way at the stop may hold a copy of its
-        old value (#105): the change would miss that statement. The session is kept."""
+    def refuse_mid_statement(self, runtime, root, frame, selector, steps=None):
+        """Refuse a change to the root local ``root`` (or what ``selector`` reaches in it:
+        the debugger's child names ``steps``) where the runtime says a statement under
+        way at the stop may hold a copy of its old value (#105): the change would miss
+        that statement. The session is kept."""
         check = getattr(runtime, "mid_statement", None)
-        if check and (reason := check(root, frame or {}, self.stop_reason)):
+        part = {"steps": list(steps)} if steps and getattr(runtime, "projected_copies", 0) else {}
+        if check and (reason := check(root, frame or {}, self.stop_reason, **part)):
+            if advice := getattr(reason, "advice", None):
+                # The program's own binding holds the copy (#192): its own way around.
+                raise ValueError(f"{selector!r} cannot be changed here: {reason}. {advice}")
             if getattr(reason, "everywhere", False):
                 # No stop of this run allows one: no advice to stop elsewhere.
                 raise ValueError(f"{selector!r} cannot be changed: {reason}")

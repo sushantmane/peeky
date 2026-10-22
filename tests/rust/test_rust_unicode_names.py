@@ -68,8 +68,9 @@ def test_a_reference_parameter_named_in_unicode_reads_as_its_ascii_twin(crate, c
     parameter = variables["größe"]
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or parameter.get("view") == "memory":
         assert parameter["value"] == "[3, 4, 5]" and parameter["view"] == "memory", parameter
-        # Its Rust type, as for a reference parameter the IR proves.
-        assert parameter["type"] == "&alloc::vec::Vec<i64, alloc::alloc::Global>", parameter
+        # Its Rust type, as for a reference parameter the IR proves, spelled as Rust
+        # writes it (#183).
+        assert parameter["type"] == "&Vec<i64>", parameter
         # An owned Vec so named read already: the MIR names it as the source does.
         owned = variables["stücke"]
         assert owned["value"] == "[6, 8, 10]" and owned["view"] == "memory", owned
