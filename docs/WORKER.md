@@ -26,7 +26,7 @@ debug server. It writes memory only to set a text
 
 ## Compare the sources from another host
 
-A client on another host must show that its sources are the worker's. This is protocol 2.
+A client on another host must show that its sources are the worker's. This is protocol 3.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
@@ -34,8 +34,9 @@ A client on another host must show that its sources are the worker's. This is pr
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 
    Its `root` is the worker's `--root`.
-2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
-   `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
+2. With `launch` or `probe`, send `protocol`: 3, `expect_sha256` (`program`, and `entry` for a
+   `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
+   one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
    side only:
    - before launching;
@@ -47,7 +48,7 @@ A client on another host must show that its sources are the worker's. This is pr
 
    After a Python refusal, the session is closed.
 4. A request with `expect_sha256` but without `expect_inputs`, or with an empty one, is refused
-   with `INVALID_REQUEST`.
+   with `INVALID_REQUEST`. So is one with `expect_inputs` and another `protocol`, or none.
 5. Check the answer to `launch`, or the probe's result:
    - `inputs_checked` is the sha256 of `json.dumps(sorted(expect_inputs.items()))`, with Python's
      default separators;

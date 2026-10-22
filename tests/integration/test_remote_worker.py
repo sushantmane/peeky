@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from peeky.cli import main
+from peeky.errors import PROTOCOL_VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "remote-worker-token-1234567890abcdef"
@@ -226,6 +227,7 @@ def test_a_python_session_launch_reports_the_sources_it_accepted(remote):
         breakpoints=[{"line": 8}],
         expect_sha256={"program": expected["pagination_bug.py"]},
         expect_inputs=expected,
+        protocol=PROTOCOL_VERSION,
     )
     try:
         assert launch["inputs_checked"] == digest(expected)
@@ -395,6 +397,7 @@ def test_a_worker_source_changed_before_a_stop_is_refused_by_wait(remote):
         breakpoints=[{"line": 2}, {"line": 4}],
         expect_sha256={"program": expected["main.py"]},
         expect_inputs=expected,
+        protocol=PROTOCOL_VERSION,
     )
     session = {"session_id": launch["session_id"]}
     try:
@@ -626,8 +629,6 @@ def test_results_without_the_entry_hash_are_discarded(remote, capsys, monkeypatc
         }
 
     monkeypatch.setattr(client_module.Client, "probe", old_worker_probe)
-    from peeky.errors import PROTOCOL_VERSION
-
     hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
     monkeypatch.setattr(client_module.Client, "call", lambda self, op, **kw: hello)
     code, out = run(

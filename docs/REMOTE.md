@@ -273,13 +273,16 @@ packages, any directory holding a pyvenv.cfg, the standard library, and compiled
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 2.** These checks need protocol 2 on both hosts.
+**Protocol 3.** These checks, and the [paths in results](#paths-in-results), need protocol 3 on
+both hosts. A client and a worker of different protocols refuse each other:
 
-- A client refuses an older worker before sending anything: `Worker speaks protocol 1, this
-  client 2: install the same Peeky version on both hosts`.
+- A client refuses a worker of another protocol before sending anything: `Worker speaks protocol 2,
+  this client 3: install the same Peeky version on both hosts`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 3: `Client
+  speaks protocol 2, this worker 3: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
-  the worker's protocol again. A session started by an older Peeky is refused: start it again.
+  the worker's protocol again. A session started with another protocol is refused: start it again.
 
 
 ### Why `ExitOnForwardFailure=yes`

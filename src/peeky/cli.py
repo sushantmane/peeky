@@ -1443,15 +1443,23 @@ def _load(name):
 
 def _remote_session(name, record):
     """A remote session's client, once the worker still speaks the protocol the session
-    was started with: one that compares every source (#249)."""
-    if record.get("protocol") != PROTOCOL_VERSION or not isinstance(
+    was started with: one that compares every source (#249), and marks which paths are
+    yours (#252)."""
+    forget = (
+        f"Drop this record with `peeky session close --forget --name {name}`; the worker ends "
+        "the old session after its idle timeout"
+    )
+    if not isinstance(record.get("protocol"), int) or not isinstance(
         record.get("inputs_checked"), str
     ):
         raise ValueError(
             f"Remote session {name!r} was started without source provenance (by a Peeky "
-            f"before protocol {PROTOCOL_VERSION}): start the session again. Drop this record "
-            f"with `peeky session close --forget --name {name}`; the worker ends the old "
-            "session after its idle timeout"
+            f"before protocol 2): start the session again. {forget}"
+        )
+    if record["protocol"] != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Remote session {name!r} was started with protocol {record['protocol']}, this "
+            f"client {PROTOCOL_VERSION}: start the session again. {forget}"
         )
     client = _RemoteSession(record)
     version = Client.call(client, "version")
@@ -2310,8 +2318,8 @@ def _remote(url):
     if protocol != PROTOCOL_VERSION:
         raise ValueError(
             f"Worker speaks protocol {protocol}, this client {PROTOCOL_VERSION}: install the "
-            "same Peeky version on both hosts (a protocol 2 worker compares every source with "
-            "yours before launching; an older one cannot)"
+            f"same Peeky version on both hosts (protocol {PROTOCOL_VERSION} compares every "
+            "source with yours before launching, and marks which paths in a result are yours)"
         )
     # Which sources the worker's target reads: their local copies are hashed and sent.
     client.sources = version.get("sources")
@@ -2497,6 +2505,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         **({"args": list(args.arg)} if args.arg else {}),
         expect_sha256=_expected(root, program, _entry(root, args.run, language)),
         expect_inputs=inputs,
+        protocol=PROTOCOL_VERSION,
     )
     try:
         _source_matches(root, program, launch.get("source_sha256"), "program")

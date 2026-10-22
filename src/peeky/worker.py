@@ -4739,6 +4739,16 @@ def make_server(root, token, port=8765, *, adapter=None):
                         "(expect_inputs), so the worker cannot compare them: install the same "
                         "Peeky version on both hosts"
                     )
+                if operation in ("launch", "probe"):
+                    declared = args.pop("protocol", None)
+                    if args.get("expect_inputs") is not None and declared != PROTOCOL_VERSION:
+                        # A client of protocol 2 sends expect_inputs and no protocol; it would
+                        # show this worker's `source:` names as paths (#252).
+                        spoken = declared if type(declared) is int else 2
+                        raise ValueError(
+                            f"Client speaks protocol {spoken}, this worker {PROTOCOL_VERSION}: "
+                            "install the same Peeky version on both hosts"
+                        )
                 if operation == "version":
                     from peeky.sources import describe
 
