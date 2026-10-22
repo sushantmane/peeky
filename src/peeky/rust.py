@@ -965,15 +965,39 @@ def _names(names):
     return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + f" and {shown[-1]}"
 
 
-def _line_list(places):
+def _line_list(places, home=None):
     """`line 60`, `lines 3 and 4`, `lines 3, 4 and 7`: the lines of ``places`` ({(file,
-    line)}) for a message; empty if none."""
-    lines = sorted({number for _, number in places})
-    if not lines:
-        return ""
-    if len(lines) == 1:
-        return f"line {lines[0]}"
-    return "lines " + ", ".join(map(str, lines[:-1])) + f" and {lines[-1]}"
+    line)}) for a message; empty if none. A line of a file other than ``home`` (the
+    function's) is named with its file (#222: `format!`'s code is at
+    `alloc/src/macros.rs:113`, which `line 113` read as the program's own)."""
+    own = sorted({number for file, number in places if home is None or _same_file(file, home)})
+    others = sorted(
+        {
+            f"{_short_file(file)}:{number}"
+            for file, number in places
+            if home is not None and not _same_file(file, home)
+        }
+    )
+    shown = []
+    if len(own) == 1:
+        shown.append(f"line {own[0]}")
+    elif own:
+        shown.append("lines " + ", ".join(map(str, own[:-1])) + f" and {own[-1]}")
+    if others:
+        shown.append(", ".join(others))
+    return " and ".join(shown)
+
+
+def _same_file(file, home):
+    file, home = str(file).replace("\\", "/"), str(home).replace("\\", "/")
+    return file == home or file.endswith("/" + home) or home.endswith("/" + file)
+
+
+def _short_file(file):
+    """A MIR span's file as a message names it: the standard library's from its crate
+    (`/rustc/<hash>/library/alloc/src/macros.rs` is `alloc/src/macros.rs`)."""
+    text = str(file).replace("\\", "/")
+    return text.partition("/library/")[2] if "/library/" in text else text
 
 
 def _never_rank(why):
@@ -2069,9 +2093,9 @@ class RustSession(NativeSession):
         held = check(hashed, plain, line, path, projection=projection)
         if not held:
             return None
-        made = _line_list(proofs.copy_lines(hashed, held))
+        made = _line_list(proofs.copy_lines(hashed, held), source)
         if names := proofs.copy_names(hashed, held):
-            made = _line_list(proofs.copy_lines(hashed, held, named_only=True))
+            made = _line_list(proofs.copy_lines(hashed, held, named_only=True), source)
             # #192: a binding of the program's own holds the old value it goes on with.
             return (
                 "statement",
@@ -2313,10 +2337,11 @@ class RustSession(NativeSession):
         if found:
             # #183: where the copy was made, not an example of where one may be.
             held = frozenset().union(*dict(found).values())
-            made = _line_list(proofs.copy_lines(hashed[1], held))
+            home = (place.get("source") or {}).get("path")
+            made = _line_list(proofs.copy_lines(hashed[1], held), home)
             if names := proofs.copy_names(hashed[1], held):
                 # #192: the program's own binding goes on with the old value.
-                made = _line_list(proofs.copy_lines(hashed[1], held, named_only=True))
+                made = _line_list(proofs.copy_lines(hashed[1], held, named_only=True), home)
                 name = variable.get("name")
                 return _Copied(
                     f"the program has already copied its value into {_names(names)}"
@@ -2327,10 +2352,17 @@ class RustSession(NativeSession):
                     f"Change it before {_names(names)} copies it (a stop on an earlier line), "
                     f"or change {_names(names)} instead",
                 )
-            return (
+            # The stop is where its line's code starts (a line breakpoint's, or a step's
+            # landing there): the statement under way began before it, on an earlier
+            # line or at an earlier stop of this one, never at this stop (#222).
+            return _Copied(
                 "a statement under way at the stop has already read it into a temporary"
                 + (f" (at {made})" if made else "")
-                + ", which it uses after the stop"
+                + ", which it uses after the stop",
+                "That statement may already hold a copy of the old value and would not see "
+                "the change. Change it before that statement starts: at a stop on an earlier "
+                f"line than {line}, or at an earlier stop of line {line} (a probe's "
+                "`--set-hit`), where `inspect` marks it [settable]",
             )
         return (
             "Peeky cannot tell from the build's MIR whether a statement under way at the "
