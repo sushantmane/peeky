@@ -448,3 +448,26 @@ def test_an_intervention_on_another_functions_variable_never_hides_a_reorder(sto
     )
     found = alignment(notes(store, 3, 4))
     assert not any("line up" in note and "`x`" in note.split(":")[0] for note in found), found
+
+
+def test_selectors_that_differ_together_withhold_the_claim(store):
+    # Review 3 of PR #209: `key` 1 to 6, alike and different at every hit; `p` and `q`
+    # each line up best hit by hit, and differ at only 3 of 6 hits, but (p, q) together
+    # pair 4 hits elsewhere against 3 hit by hit. Combinations are not checked, so where
+    # two selectors differ the claim is withheld.
+    pairs_a = ["00", "00", "01", "11", "10", "22"]
+    pairs_b = ["11", "00", "01", "10", "00", "22"]
+    for pairs in (pairs_a, pairs_b):
+        saved(store, [{"key": str(n), "p": pq[0], "q": pq[1]} for n, pq in enumerate(pairs, 1)])
+    (note,) = alignment(notes(store, 1, 2))
+    assert note == (
+        "the hits line up by `key` as far as each selector alone shows: it reads the same at "
+        "each of the 6 hits in both runs, and differently at every hit, and no single "
+        "selector's values line up better at other hits; `p` and `q` differ, and how they "
+        "line up together was not checked"
+    )
+    # One differing selector: as before.
+    saved(store, [{"key": str(n), "p": pq[0]} for n, pq in enumerate(pairs_a, 1)])
+    saved(store, [{"key": str(n), "p": pq[0]} for n, pq in enumerate(pairs_b, 1)])
+    (note,) = alignment(notes(store, 3, 4))
+    assert note.startswith("the hits line up by `key`: it reads the same"), note

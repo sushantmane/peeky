@@ -2057,8 +2057,15 @@ def _agreement(shown, keys, count, changes, differing, runs):
     one = len(shown) == 1
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
+    # Selectors are checked one at a time: two that differ could line up better together
+    # (review 3 of PR #209), which is not checked, so then nothing is said categorically.
+    together = (
+        f"; {_quoted(differing)} differ, and how they line up together was not checked"
+        if len(differing) > 1
+        else ""
+    )
     if not reached:
-        if keys:
+        if keys and not together:
             one = len(keys) == 1
             return (
                 f"the hits line up by {_quoted(keys)}: {'it reads' if one else 'they read'} "
@@ -2066,11 +2073,18 @@ def _agreement(shown, keys, count, changes, differing, runs):
                 f"hit, and {single}, so pairing hits by number pairs them as `queries join` "
                 f"by {'it' if one else 'them'} would"
             )
+        if keys:
+            one = len(keys) == 1
+            return (
+                f"the hits line up by {_quoted(keys)} as far as each selector alone shows: "
+                f"{'it reads' if one else 'they read'} the same at each of the {count} hits "
+                f"in both runs, and differently at every hit, and {single}{together}"
+            )
         return (
             f"the hits line up as far as {_quoted(shown)} {'shows' if one else 'show'}: "
             f"{'it reads' if one else 'they read'} the same at each of the {count} hits in "
             f"both runs, and {single}; but {'it reads' if one else 'they read'} alike at "
-            "some hits, which could still trade places"
+            f"some hits, which could still trade places{together}"
         )
     # After an intervention, what follows from it is unknown (review of PR #209): what
     # agrees, what does not, and no more.
