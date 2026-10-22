@@ -1650,6 +1650,9 @@ def _capture(
                     row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
+            if variable.get("unproven_pointer") in ("raw", "unknown"):
+                # A raw pointer, or one the build does not tell from one (#255).
+                row["unproven_pointer"] = variable["unproven_pointer"]
             if variable.get("stale"):
                 row["stale"] = True
             if variable.get("scope") == "globals":

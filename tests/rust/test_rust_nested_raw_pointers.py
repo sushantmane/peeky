@@ -176,6 +176,8 @@ def address_only(row):
     assert not row.get("children") and "777" not in str(row), brief(row)
     assert row.get("view") == "unproven", brief(row)
     assert re.fullmatch(r"0x[0-9a-fA-F]+", row.get("value") or ""), brief(row)
+    # The row itself says it is a raw pointer, as a listing's child does (#256 round 2).
+    assert row.get("unproven_pointer") == "raw", brief(row)
     assert row.get("note") == NOTE, row.get("note")
     for claim in ("reference", "moved", "dropped", "MIR", "may be"):
         assert claim not in row["note"], claim
