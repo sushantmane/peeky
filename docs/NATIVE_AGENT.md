@@ -33,7 +33,7 @@ Negative tests reject finishing before runtime evidence, plus changes during ver
 
 ## Optional live-model execution
 
-Prepare a native target configuration like the one in [NATIVE.md](NATIVE.md), changing its declared files to:
+Prepare a native target configuration like the one in [C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config), changing its declared files to:
 
 ```json
 {
@@ -58,6 +58,26 @@ peeky-agent \
 Use a new output directory. Without `--url`, the command starts the configured worker locally. An existing worker can be selected by URL and its token; source and frozen-header manifests must match. The supplied checker executes on the controller host, which therefore needs the declared inputs and native toolchain. The regression proves different source-root paths over real HTTP on one host, not a remote-host or Kubernetes deployment.
 
 Live model runs send selected code and runtime evidence to the model and consume model usage. Required CI uses injected decisions only.
+
+## The C++ fixture
+
+`examples/cpp/pagination_bug.cpp` calculates the first item with `page * page_size`, on purpose.
+At its `OBSERVE` line, the first page by default has `start == 3`. Changing this local integer to
+`0` tests the hypothesis without changing the source or rebuilding the running executable.
+
+The deterministic agent test, `tests/cpp/test_cpp_agent.py`, then rejects a compile error and an
+overfit `start = 0` patch. It accepts `(request.page - 1) * request.page_size` against an
+independent checker.
+
+- The checker starts fresh processes for 12 valid cases and 10 invalid argument cases.
+- It parses numeric inputs with `strtol`, and bounds them before arithmetic.
+- The test uses separate, identical controller and worker source directories on one host, and the
+  authenticated HTTP interface.
+- Decision fixtures replace the model call in required CI.
+- This shows path independence, not a deployment on a separate host.
+
+To run it with a model, save a C++ config ([WORKER.md](WORKER.md#configure-a-c-target)), then run
+`peeky-agent --native-config config.json --program pagination_bug.cpp --check verify_pagination.py`.
 
 ## Checker contract and limits
 
