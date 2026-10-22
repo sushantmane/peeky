@@ -27,6 +27,7 @@ with no code found) gives no answer.
 import re
 
 from peeky.java_bytecode import decode
+from peeky.textlines import split_lines
 
 MAX_INSTRUCTIONS = 50_000
 
@@ -77,7 +78,7 @@ def disassembly(text):
     """[(address, kind, targets)] of LLDB's `disassemble` text, in address order, or
     None where it lists no instruction or more than MAX_INSTRUCTIONS."""
     found = []
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         match = _INSTRUCTION.match(raw)
         if match is None:
             continue
@@ -106,7 +107,7 @@ def line_table(text):
     """[(start, end, line, column)] of LLDB's `source info` text, by start: which line
     (and column, 0 where none) each range of code is."""
     rows = []
-    for raw in text.splitlines():
+    for raw in split_lines(text):
         match = _RANGE.match(raw.strip())
         if match:
             rows.append((int(match[1], 16), int(match[2], 16), int(match[3]), int(match[4] or 0)))

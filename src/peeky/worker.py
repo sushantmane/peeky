@@ -228,6 +228,9 @@ class DebugWorker:
         # and, while a step out runs, what watches its caller (NativeSession.watch_return).
         self.step_origin = None
         self.return_watch = None
+        # The stop a step out began at, where this stop interrupted it and its watch
+        # proves the caller's frame is the one the step was returning to (#174).
+        self.step_held = None
         self.forget_places()
         # {line: stops}: the launch's breakpoint lines that are loop headers stopping
         # only before their loop, so many times each time it starts (#161).
@@ -726,6 +729,22 @@ class DebugWorker:
             return False
         return all(new == old for new, old in zip(after[1:], before[2:]))
 
+    def same_call(self, frames):
+        """The stop a step out began at, where this breakpoint stop interrupted it in the
+        call it was leaving (#174): its watch held (`end_return_watch`), the stopped
+        function is the one it was leaving, and the frames under it are as they were when
+        the step began. Else None."""
+        origin = self.step_origin
+        if not self.step_held or not origin or self.stop_reason != "breakpoint":
+            return None
+        if origin["thread"] != self.thread_id:
+            return None
+        before = origin["frames"]
+        after = [_frame_identity(f) for f in frames[:ORIGIN_LEVELS]]
+        if len(before) < 2 or len(after) != len(before) or after[0][0] != before[0][0]:
+            return None
+        return self.step_held if after[1:] == list(before[1:]) else None
+
     def returned_value(self, runtime, frames, entry):
         """What the function a step just left returned (#155), as the debugger lists it in
         the frame it returned to (`(Return Value)`, java-debug's `->name()`): {function,
@@ -815,13 +834,21 @@ class DebugWorker:
         caller's, means the call never returned: the caller went on without it. That stop
         ends the step (it is no breakpoint of the session's, unless one of those is there
         too). A step's end anywhere the stack pointer is not the caller's is not the
-        call's return either."""
+        call's return either.
+
+        A breakpoint on its thread that interrupts the step (not at a watched instruction)
+        is in the call the step was leaving when the watch was kept whole, the stopped
+        frame's caller is at the stack pointer the call's caller had, and the frames are
+        that call's (`inspect` compares them): another call returning to the same place
+        in a caller frame there would have had to run the watched call instruction there
+        first (#174). `step_held` names the stop the step began at."""
         ids, reason = (event.get("body") or {}).get("hitBreakpointIds"), self.stop_reason
         # lldb-dap names one breakpoint of those at an address: where it is, decides.
         seen = runtime.unwatch_return(
             self.dap,
             watch,
             self.thread_id if self.stop_id and reason in ("step", "breakpoint") else None,
+            **({"caller": True} if reason == "breakpoint" else {}),
         )
         origin = self.step_origin
         if seen is None or not origin or origin["thread"] != self.thread_id:
@@ -842,6 +869,14 @@ class DebugWorker:
                 "during the step (a recursion through its caller), so the watch was "
                 "dropped to keep the step's cost bounded"
             )
+        elif (
+            reason == "breakpoint"
+            and seen["pc"] not in watch["addresses"]
+            and seen.get("caller_sp") is not None
+            and seen["caller_sp"] == watch["sp"]
+            and origin.get("stop_id")
+        ):
+            self.step_held = origin["stop_id"]
 
     def stack_depth(self):
         """The number of frames on the stopped thread's stack (every one listed)."""
@@ -1375,7 +1410,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
-        self.step_origin = None
+        self.step_origin = self.step_held = None
         self.stop_hit = self.stop_line = self.stop_place = None
         self.state = "running"
         self.stopped_at = None
@@ -1615,7 +1650,7 @@ class DebugWorker:
             self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
-            self.step_origin = self.return_watch = None
+            self.step_origin = self.return_watch = self.step_held = None
             self.stop_all_threads = False
             self.reset_lost_stops()
             self.max_pause = args.get("max_pause")
@@ -1846,6 +1881,7 @@ class DebugWorker:
             was_stepping = set(self.stepping)
             self.stepping.discard(self.thread_id)
             self.candidate = None
+            self.step_held = None
             if self.return_watch is not None:
                 watch, self.return_watch = self.return_watch, None
                 self.end_return_watch(runtime, watch, event)
@@ -2112,6 +2148,10 @@ class DebugWorker:
                 # How many frames the thread has: a probe tells a recursive call from
                 # the same call's next stop by it (#155).
                 snapshot["depth"] = self.stack_depth()
+                if index == 0 and (began := self.same_call(frames)):
+                    # This stop is in the call a step out that began at `began` was
+                    # leaving, proven by that step's watch (#174).
+                    snapshot["same_call_as"] = began
             if index:
                 # Where the program is stopped, which a caller frame's location is not.
                 stopped = (frames[0].get("source") or {}).get("path")
@@ -2372,6 +2412,8 @@ class DebugWorker:
             listed = origin.pop("listed") if origin else []
             if origin:
                 origin["kind"] = kind
+                # Where it began: a stop that interrupts it may be proven in the same call.
+                origin["stop_id"] = self.stop_id
             if before_step := getattr(runtime, "before_step", None):
                 # LLDB: a step out leaves one frame, not the library frames above (#155).
                 before_step(self.dap)

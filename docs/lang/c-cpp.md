@@ -27,7 +27,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 
 ## Returns
 
-- `--capture return` shows integers, `bool`, characters, floats and pointers exactly; a struct, a string or any return in an optimized build is withheld, saying why ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- `--capture return` shows integers, `bool`, characters, floats and pointers exactly; a struct, a string or any return in an optimized build is withheld, saying why. A line that stops again in the same call before it returns (a loop's next pass, a macro's block) gives each of those hits the call's return where the step out's watch proves that stop is in the same call, else withholds the earlier one ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 - `session step --out` shows with the stop what the function returned (`(return): int = 42`), or a withheld row saying why, as `--capture return` does (an exception or `longjmp` that ended the call included); nothing where another stop interrupted the step first, or the program ended. `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
 ## Builds

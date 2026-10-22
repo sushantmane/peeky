@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -128,7 +128,11 @@ TABLES = {
             "stop": "Which of the line's breakpoint locations in its function the hit was at, "
             "1 to N in address order, where the line has several there (a macro's or a "
             "block's own code, a loop header's): a pass stops at each, so hits count stops, "
-            "not passes. NULL for a line with one (and for runs saved before schema 14)",
+            "not passes. A `(return)` row has its hit's (where its call was stopped, not the "
+            "line it returned to; from schema 15, filled in for earlier runs from the hit's "
+            "other rows where each has one and all agree). NULL for a line with one (and for "
+            "runs saved before schema 14, and an earlier run's `(return)` row whose hit's "
+            "other rows give no stop or disagree)",
         },
     ),
     "interventions": (
@@ -231,7 +235,10 @@ _DDL = (
 # stop); version 11 adds interventions.function, version 12 interventions.instance, and
 # version 13 captures.instance (a closure's or generic instance's label, NULL before);
 # version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
-# locations a hit or a change was at. Views name columns of the newest tables, so earlier steps only drop them and the
+# locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop
+# (#174), from that hit's other rows where they agree (NULL where they give none, as with
+# `--capture return` alone, or disagree).
+# Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
 
@@ -280,6 +287,25 @@ def _integer_identity(connection):
         connection.execute(statement)
 
 
+def _one_stop(column="stop"):
+    """SQL aggregate: the one stop of a group of rows, only where each has one and all
+    agree, else NULL (none labelled, or contradictory evidence): a stop is never picked
+    from several (#174)."""
+    return (
+        f"CASE WHEN COUNT(DISTINCT {column}) = 1 AND COUNT({column}) = COUNT(*) THEN "
+        f"MIN({column}) END"
+    )
+
+
+def _hits_stop(row):
+    """SQL: the stop of the hit of the captures row aliased ``row``, as its rows other
+    than `(return)` rows give it (`_one_stop`)."""
+    return (
+        f"(SELECT {_one_stop('o.stop')} FROM captures o WHERE o.run_id = {row}.run_id AND "
+        f"o.hit = {row}.hit AND o.phase != 'returned')"
+    )
+
+
 _MIGRATIONS = {
     1: ("ALTER TABLE runs ADD COLUMN edit TEXT",),
     2: _DROP_VIEWS,
@@ -317,6 +343,13 @@ _MIGRATIONS = {
         *_DROP_VIEWS,
         _add_columns(("stop", "INTEGER")),
         _add_columns(("stop", "INTEGER"), table="interventions"),
+    ),
+    # Every row of a hit is from one stop: its observed and after-set rows say which,
+    # where they agree.
+    14: (
+        *_DROP_VIEWS,
+        f"UPDATE captures SET stop = {_hits_stop('captures')} WHERE phase = 'returned' AND "
+        "stop IS NULL",
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -370,12 +403,10 @@ _SAME = (
 # function), a hit is also its stop: the same hit at another stop is another row.
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
-# A row's stop, or its hit's (a `(return)` row has none of its own, #155: the observed
-# rows of its hit say where the call began).
-_HIT_STOP = (
-    "COALESCE(s.stop, (SELECT MIN(o.stop) FROM captures o WHERE o.run_id = s.run_id AND "
-    "o.hit = s.hit))"
-)
+# A row's stop, or its hit's: a `(return)` row has its hit's own since schema 15 (#174);
+# one saved without it (#155) takes it from the other rows of its hit where they agree,
+# as a store's upgrade to 15 does, else has none.
+_HIT_STOP = f"COALESCE(s.stop, {_hits_stop('s')})"
 
 
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
@@ -1305,10 +1336,12 @@ _CAVEATS = "NULLIF(json_group_object(selector, caveat) FILTER (WHERE caveat IS N
 def _cells(where):
     """SQL for one row per hit, phase and selector of the captures matching ``where``:
     ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
-    other than how it was read, else `note` where the row has a note). A selector
-    captured twice at a hit read the same both times (``_captured`` checks): one cell."""
+    other than how it was read, else `note` where the row has a note); ``stop``, where
+    its rows agree on one (`_one_stop`). A selector captured twice at a hit read the same
+    both times (``_captured`` checks): one cell."""
     return (
-        "SELECT hit, phase, selector, MIN(line) AS line, MIN(stop) AS stop, MAX(value) AS value,\n"
+        f"SELECT hit, phase, selector, MIN(line) AS line, {_one_stop()} AS stop, "
+        "MAX(value) AS value,\n"
         "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
         f"    MAX({_caveat()}) AS caveat\n"
         f"  FROM captures WHERE {where} GROUP BY hit, phase, selector"
@@ -1410,7 +1443,7 @@ def _wide(path, params):
     run, phase = _run_id(path, params.get("run")), _phase(params)
     selectors = _captured(path, run, phase)
     # Which of the line's breakpoint locations each hit was at (#157), for a run whose
-    # line has several in one function.
+    # line has several in one function: NULL where its cells do not agree on one (#174).
     stops = query(
         path,
         "SELECT 1 AS n FROM captures WHERE run_id = :run AND stop IS NOT NULL LIMIT 1",
@@ -1434,7 +1467,7 @@ def _wide(path, params):
     )
     sql = (
         f"SELECT w.*, {sets} AS sets FROM (\n"
-        f"SELECT hit,{' MIN(stop) AS stop,' if stops else ''} phase, MIN(line) AS line,"
+        f"SELECT hit,{f' {_one_stop()} AS stop,' if stops else ''} phase, MIN(line) AS line,"
         f"{_picked(selectors, names, '  ')}\n"
         f"  {_NO_VALUE} AS no_value,\n  {_CAVEATS} AS caveats\n"
         f"FROM ({_cells(where)})\nGROUP BY hit, phase) w ORDER BY w.hit, "
@@ -1764,22 +1797,25 @@ def _aligned(a, b):
 
 
 def _unplaced_returns(path, run):
-    """A note where a run's line stops several times per pass (#157's warning) and its
-    `(return)` rows (#155) have no observed row at their hit to say at which stop their
-    call began (`--capture return` alone): pairing them by hit number cannot be checked."""
+    """A note where a run's line stops several times per pass (#157's warning) and a
+    `(return)` row (#155) has no stop, and its hit's other rows give none, or disagree
+    (`--capture return` alone, before schema 15 gave a `(return)` row its hit's stop,
+    #174; no stop recorded; contradictory evidence): pairing them by hit number cannot
+    be checked."""
     found = query(
         path,
         "SELECT r.run_id FROM runs r WHERE r.run_id IN (:a, :b) AND r.warnings LIKE "
         "'%times per pass%' AND EXISTS (SELECT 1 FROM captures c WHERE c.run_id = r.run_id "
-        "AND c.phase = 'returned' AND NOT EXISTS (SELECT 1 FROM captures o WHERE o.run_id "
-        "= c.run_id AND o.hit = c.hit AND o.stop IS NOT NULL)) ORDER BY r.run_id LIMIT 1",
+        f"AND c.phase = 'returned' AND c.stop IS NULL AND {_hits_stop('c')} IS NULL) "
+        "ORDER BY r.run_id LIMIT 1",
         {"a": run["a"], "b": run["b"]},
     )["rows"]
     if not found:
         return []
     return [
         f"run {found[0]['run_id']}'s line stops several times per pass, and its `(return)` "
-        "rows do not say at which stop their call began (nothing else was captured there), "
+        "rows do not say at which stop their call began (no row of their hit records one, "
+        "or its rows disagree), "
         "so a hit need not be the same call in both runs: capture a selector with `return` "
         "to pair them by stop, or pair them by a value, `peeky queries join --param "
         f"a={run['a']} --param b={run['b']} --param key=<selector>`"

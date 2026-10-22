@@ -257,6 +257,28 @@ def test_rust_launch_disables_symbol_file_scripts(monkeypatch):
     assert bare_session().launch_args("p", "r", ["2"])["args"] == ["2"]
 
 
+def test_lldb_waits_for_its_debug_server_as_long_as_peeky_waits_for_lldb(tmp_path):
+    # #193: under load, lldb-server answered after LLDB's 5 s packet timeout, and a value
+    # it could read came back as `invalid load address` (`p.a` unavailable). LLDB now
+    # waits longer than Peeky's own 15 s request bound, which decides.
+    from types import SimpleNamespace
+
+    session = object.__new__(RustSession)
+    session.assert_current = lambda: None
+    session.source_path = lambda program: program
+    session.binary = tmp_path / "app"
+    session.prepared = SimpleNamespace(workspace=tmp_path)
+    session.target = SimpleNamespace(arguments=())
+    timeout = "settings set plugin.process.gdb-remote.packet-timeout 30"
+    native = NativeSession.launch_args(session, "p", "r")
+    assert native["initCommands"] == [timeout], native
+    rust = session.launch_args("p", "r")
+    assert rust["initCommands"] == [
+        timeout,
+        "settings set target.load-script-from-symbol-file false",
+    ], rust
+
+
 def test_load_rust_target_requires_explicit_known_fields(tmp_path):
     config = {**toolchain(tmp_path)}
     config["sources"], config["tests"] = list(config["sources"]), list(config["tests"])

@@ -622,6 +622,25 @@ def test_a_header_clang_prints_with_an_empty_step_is_refused(tmp_path, native_co
         outside_build(tmp_path, native_config, headers, [real])
 
 
+@pytest.mark.parametrize("name", ["main\u2028x.c", "größe.c"])
+def test_a_source_named_with_any_character_is_debugged(tmp_path, native_config, name):
+    # #179: dwarfdump and clang print a non-ASCII name in octal (`main\342\200\250x.c`), and
+    # dwarfdump `DW_AT_decl_file` as it is; Peeky split their output at the U+2028 and
+    # read the octal as JSON, so the program could not be debugged.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    (tmp_path / name).write_text(
+        "#include <stdio.h>\n\nint main(void) {\n  int limit = 3;\n  int twice = limit * 2;\n"
+        '  printf("%d\\n", twice);\n  return 0;\n}\n'
+    )
+    target = NativeTarget(**{**native_config, "sources": (name,)})
+    result = run_probe(tmp_path, Probe(name, 6, ("limit", "twice")), adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    assert [row.get("value") for row in result["rows"]] == ["3", "6"], result["rows"]
+    assert "6" in result["output"]
+
+
 def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsys):
     from peeky.cli import main
 
