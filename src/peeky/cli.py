@@ -453,11 +453,15 @@ def _python_scopes(path):
 
     Static: lists parameters and assigned locals, not values or attributes, and the
     module globals a function reads that the module assigns (`globals`: a probe reads them,
-    `[module global]`; ninth evaluation). Methods are qualified by class
+    `[module global]`; ninth evaluation): names the module binds (`MAX_GAP = 30`, not
+    `globals()["x"] = 1`) that the function's compiled code loads as globals, so not in
+    code the compiler drops (`if False:`); nothing runs. Methods are qualified by class
     (`IPv6Address.is_private`); listed in source order, first MAX_SCOPES only.
     """
     import ast
+    import dis
     import symtable
+    import warnings
 
     text = path.read_text()
     try:
@@ -465,8 +469,9 @@ def _python_scopes(path):
         table = symtable.symtable(text, str(path), "exec")
     except SyntaxError as exc:
         raise _parse_error(path, exc) from exc
-    # Names the module itself assigns (`MAX_GAP = 30`), not its functions, classes or
-    # imports: what a function may read as a module global.
+    # Names the module itself binds (`MAX_GAP = 30`), not its functions, classes or
+    # imports, nor a name a target only reads (`globals()["x"] = 1`, `counts[0] = 1`):
+    # what a function may read as a module global.
     assigned = set()
     for node in tree.body:
         targets = (
@@ -478,12 +483,37 @@ def _python_scopes(path):
         )
         for target in targets:
             for name in ast.walk(target):
-                if isinstance(name, ast.Name):
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
                     assigned.add(name.id)
-    spans = {}
+    # The globals each function's compiled code loads, by (name, first line) as the
+    # compiler numbers it: a decorated function's code starts at its first decorator.
+    try:
+        with warnings.catch_warnings():
+            # A program's own syntax warnings (`"\d"`) are not describe's to print.
+            warnings.simplefilter("ignore")
+            compiled = compile(text, str(path), "exec", dont_inherit=True)
+    except (SyntaxError, ValueError):
+        compiled = None
+    loads, codes = {}, [compiled] if compiled is not None else []
+    while codes:
+        code = codes.pop()
+        codes.extend(each for each in code.co_consts if hasattr(each, "co_code"))
+        loads.setdefault((code.co_name, code.co_firstlineno), []).append(
+            {
+                instruction.argval
+                for instruction in dis.get_instructions(code)
+                if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS")
+            }
+        )
+    spans, starts = {}, {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            spans.setdefault((node.lineno, getattr(node, "name", "lambda")), node.end_lineno)
+            name = getattr(node, "name", "lambda")
+            spans.setdefault((node.lineno, name), node.end_lineno)
+            first = min([d.lineno for d in getattr(node, "decorator_list", ())] + [node.lineno])
+            starts.setdefault(
+                (node.lineno, name), ("<lambda>" if name == "lambda" else name, first)
+            )
     found, stack = [], [(table, "")]
     while stack and len(found) < 20000:
         item, prefix = stack.pop()
@@ -510,13 +540,12 @@ def _python_scopes(path):
             or s.is_assigned()
             or (item.get_type() == "module" and s.is_imported())
         )
+        # One code object of that name and first line, else none listed: two lambdas on
+        # a line cannot be told apart.
+        matched = loads.get(starts.get((item.get_lineno(), item.get_name())), [])
         read = (
-            sorted(
-                s.get_name()
-                for s in item.get_symbols()
-                if s.is_global() and s.is_referenced() and s.get_name() in assigned
-            )
-            if item.get_type() != "module"
+            sorted(matched[0] & assigned)
+            if item.get_type() != "module" and len(matched) == 1
             else []
         )
         scope = {

@@ -58,6 +58,34 @@ def test_describe_lists_the_module_globals_a_function_reads(tmp_path, capsys):
     assert "globals" not in scopes["<module>"]
 
 
+def test_describe_lists_only_globals_the_module_binds_and_the_code_loads(tmp_path, capsys):
+    # Review of PR #214: `globals()["CACHE"] = {}` counted `globals` as a module global a
+    # function read (its target names it, but only to call it), a subscript target's
+    # name (`counts[0] = 1`) counted as bound, and a name in code the compiler drops
+    # (`if False:`) counted as read.
+    path = tmp_path / "globs.py"
+    path.write_text(
+        "from collections import Counter as counts\n"
+        "LIMIT = 3\n"
+        "QUIET = True\n"
+        'globals()["CACHE"] = {}\n'
+        "counts[0] = 1\n"
+        "\n"
+        "def wrapped(f):\n"
+        "    return f\n"
+        "\n"
+        "@wrapped\n"
+        "def check(n):\n"
+        "    if False:\n"
+        "        print(QUIET)\n"
+        "    return len(globals()) + counts[0] + n + LIMIT\n"
+    )
+    assert main(["describe", str(path), "--json"]) == 0
+    scopes = {s["scope"]: s for s in json.loads(capsys.readouterr().out)["scopes"]}
+    assert scopes["check"].get("globals") == ["LIMIT"], scopes["check"]
+    assert scopes["check"]["names"] == ["n", "LIMIT"], scopes["check"]
+
+
 def test_session_get_hints_quote_a_selector_as_people_would():
     # sessions 6: `peeky session get 'history['"'"'alice'"'"'][0]'`.
     row = {
