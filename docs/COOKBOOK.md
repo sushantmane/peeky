@@ -350,7 +350,7 @@ output:
 
 ### 2.6 Stop Right After the Last Hit
 
-**What it answers:** I only need the values, not the output. Can it be faster?
+**What it answers:** I only need the values, not the output. Can it be faster? It saves the most where the program is slow to exit (JVMs, Python).
 
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --until hits
