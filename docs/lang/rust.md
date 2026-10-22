@@ -20,6 +20,7 @@ What is particular to Rust targets (a Cargo crate), one rule per line, each with
 ## Changing values
 
 - `--set` changes a 16- to 64-bit integer local kept in memory, or such a field or element of a struct, tuple or array local the frame owns (`--set w.start=10`), where the MIR proves it initialized and nothing under way has read it ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
+- A non-ASCII name is selected as rustc lists it, NFC-normalized (`größe.zähler`), and is proven kept in memory, or in a register, as an ASCII one is: `--set ñ=6` and `--set größe.zähler=30` change a local and a field the frame keeps in memory ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - A local kept in a register is `[not settable: register]` (`describe`'s `mutable:` line lists them): a candidate edit adding `std::hint::black_box(&mut x);` after its `let` keeps it in memory, and the same probe can set it ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).
 - A `String` takes a text in double quotes (`--set 'name="pear"'`) within its capacity, where no borrow of it (`&s[..2]`, `s.chars()`) is used after the stop, with lldb-dap 21 (macOS); never a `&str`, nor in a crate with `unsafe` code or a nightly feature ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).
 - Never through a reference or a `Box`: for `w.start` where `w: &mut Window`, set it in the caller that owns `w`, at the call's line ([7.2](../COOKBOOK.md#72-rust-a-cargo-crate)).

@@ -11,6 +11,7 @@ be a 16-, 32- or 64-bit integer that is neither const nor volatile.
 
 import re
 
+from peeky.identifiers import is_name
 from peeky.native import _AUTOMATIC, _REFERENCE, _chain, _first, _qualified, _text
 
 MAX_TYPES = 20_000
@@ -42,7 +43,6 @@ _PARAMETERS = {
 }
 # Integer-encoded character types: a debugger shows their values as characters.
 _CHARACTERS = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
-_SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INDEX = re.compile(r"\[(0|[1-9][0-9]{0,9})\]")
 # A location that is one offset in the frame, nothing more but constants added to it
 # (a by-value structured binding's `DW_OP_breg31 WSP+16, DW_OP_plus_uconst 0x8`): a
@@ -499,7 +499,7 @@ def held_container(graph, root, name, steps, dereference=False):
                 if _packed(graph, node):
                     raise Unsettable(f"`{path}` is a packed {kind} ({shown})")
                 found = [member for member in members if member[0] == step]
-                if len(found) != 1 or not _SELECTABLE.fullmatch(step):
+                if len(found) != 1 or not is_name(step):
                     raise Unsettable(
                         f"the debug information lists no field `{step}` in {shown}, the "
                         f"type of `{path}`"
@@ -579,7 +579,7 @@ def settable_member(graph, root, name, steps, owner=None):
                         f"`{path}` is a packed {kind} ({shown}): its fields may be misaligned"
                     )
                 found = [member for member in members if member[0] == step]
-                if len(found) != 1 or not _SELECTABLE.fullmatch(step):
+                if len(found) != 1 or not is_name(step):
                     raise Unsettable(
                         f"the debug information lists no field `{step}` in {shown}, the "
                         f"type of `{path}` (base classes and anonymous members are not "

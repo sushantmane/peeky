@@ -18,9 +18,11 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from unicodedata import is_normalized
 
 from peeky.adapters import PythonAdapter
 from peeky.errors import Refused, classify
+from peeky.identifiers import invisible, is_name, name_end, twin_hint
 from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function, function_labels, shortened_note
 from peeky.textlines import split_lines
@@ -46,20 +48,16 @@ _INDEX = re.compile(r"\[?([0-9]{1,6})\]?")
 # Escapes Python accepts without a warning; anything else (`\d`, `\777`) is refused.
 _ESCAPE = r"""\\(?:[\\'"abfnrtv]|[0-3][0-7]{2}|[0-7]{1,2}(?![0-7])|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|N\{[A-Z0-9 -]{1,88}\})"""
 _KEY_LITERAL = rf"'(?:[^'\\\n]|{_ESCAPE}){{0,256}}'" + "|" + rf'"(?:[^"\\\n]|{_ESCAPE}){{0,256}}"'
-# One selector step: `.name`, `[3]`, `[-1]`, `[#3]` (a C++ map's or set's entry by
-# position), or a quoted string key `['id']` / `["id"]`.
+# One selector step: `.name` (a name: identifiers.name_end), `[3]`, `[-1]`, `[#3]` (a
+# C++ map's or set's entry by position), or a quoted string key `['id']` / `["id"]`.
 _STEP = re.compile(
-    r"\.(?P<name>[A-Za-z_][A-Za-z0-9_]{0,127})"
-    r"|\[(?P<index>-?[0-9]{1,6})\]"
+    r"\[(?P<index>-?[0-9]{1,6})\]"
     r"|\[#(?P<entry>[0-9]{1,6})\]"
     rf"|\[(?P<key>{_KEY_LITERAL})\]"
 )
-_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
-# A local LLDB shows with where it is declared, when several of that name are in scope
-# (`s @ main.rs:81`, `p @ s1.c:38`): the spaces around `@` may be left out.
-_SHADOWED_ROOT = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_]{0,127}) ?@ ?([^\s:@\[\]'\"]{1,255}):([0-9]{1,9})"
-)
+# Where LLDB says a local is declared, after its name, when several of that name are in
+# scope (`s @ main.rs:81`, `p @ s1.c:38`): the spaces around `@` may be left out.
+_SHADOWED_PLACE = re.compile(r" ?@ ?([^\s:@\[\]'\"]{1,255}):([0-9]{1,9})")
 
 
 # The selector for what a function returned (#155): `--capture return` (or `(return)`).
@@ -80,15 +78,22 @@ def parse_selector(text):
     all fit in the bounded inspection window. A quoted key reads one entry of a
     mapping; it is kept in its canonical Python form, `[` + repr(key) + `]`. `[#N]` is
     the Nth entry of a C++ map or set in iteration order, where `[N]` is key N (#119).
+    A name is a Unicode identifier (`größe`), matched exactly as the debugger lists it
+    (identifiers.py, #195).
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
-    first = _SHADOWED_ROOT.match(text) or _NAME.match(text)
-    if not first:
-        raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}")
-    root = f"{first[1]} @ {first[2]}:{int(first[3])}" if first.re is _SHADOWED_ROOT else first[0]
-    segments, position = [root], first.end()
+    if not (position := name_end(text)):
+        raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}{_invisible_hint(text)}")
+    root = text[:position]
+    if place := _SHADOWED_PLACE.match(text, position):
+        root, position = f"{root} @ {place[1]}:{int(place[2])}", place.end()
+    segments = [root]
     while position < len(text):
+        if text[position] == "." and (end := name_end(text, position + 1)) > position + 1:
+            segments.append(text[position + 1 : end])
+            position = end
+            continue
         step = _STEP.match(text, position)
         if not step:
             # A C pointer's members are read with `.`, as the debugger shows them.
@@ -103,10 +108,10 @@ def parse_selector(text):
                     "; a tuple's fields are .__0, .__1 in Rust (as LLDB names them) and "
                     "[0] in Python: " + re.sub(r"[.]([0-9]+)", r".__\1", text)
                 )
-            raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}{arrow}")
-        if step["name"]:
-            segments.append(step["name"])
-        elif step["index"]:
+            raise ValueError(
+                f"Invalid selector: {text}{_SELECTOR_HELP}{arrow}{_invisible_hint(text)}"
+            )
+        if step["index"]:
             segments.append(f"[{step['index']}]")
         elif step["entry"]:
             segments.append(f"[#{step['entry']}]")
@@ -129,6 +134,16 @@ _SELECTOR_HELP = (
     " a[#0] is a C++ map's or set's first entry; 's @ main.rs:81.a' starts at a local the"
     " debugger names with where it is declared)"
 )
+
+
+def _invisible_hint(text):
+    """`; it contains U+200B, an invisible ...` when the selector holds one."""
+    if (char := invisible(text)) is None:
+        return ""
+    return (
+        f"; it contains {char}, an invisible (format or default-ignorable) character: a "
+        "name that holds one cannot be selected"
+    )
 
 
 def split_selectors(text):
@@ -707,9 +722,13 @@ def _root(worker, stop, snapshot, name):
             f"not found among the names listed (visible: {_visible(snapshot)}): {name!r} "
             "may be past them"
         )
-    if not snapshot.get("globals_available"):
+    twin = twin_hint(name, [v["name"] for scope in own for v in scope["variables"]])
+    # Python reads a module global by its NFKC-normalized name, never by another.
+    if not snapshot.get("globals_available") or (twin and not is_normalized("NFKC", name)):
         raise ValueError(
-            f"not found; visible: {_visible(snapshot)}" + _member_hint(worker, stop, snapshot, name)
+            f"not found; visible: {_visible(snapshot)}"
+            + _member_hint(worker, stop, snapshot, name)
+            + twin
         )
     proof = snapshot.get("globals_proof") or {}
     if "unproven" not in proof and name not in (proof.get("names") or {}):
@@ -1209,7 +1228,8 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + ", and check contents with `peeky verify`"
             )
         return message
-    return f"{_shown(segment)} not found in {label}; children: {shown or 'none'}"
+    twin = "" if segment.startswith("[") else twin_hint(segment, names)
+    return f"{_shown(segment)} not found in {label}; children: {shown or 'none'}{twin}"
 
 
 def _names(child, segment):
@@ -1831,6 +1851,7 @@ def apply_set(worker, stop, name, value):
                 + _member_hint(worker, stop, snapshot, name).replace(
                     "select it as", "it can be read as"
                 )
+                + twin_hint(name, [v["name"] for scope in own for v in scope["variables"]])
                 + "; only the stopped function's own locals can be changed",
             )
         # The debugger's own name for it (`t @ two.c:20` for `t`, #158).
@@ -2718,7 +2739,7 @@ def _child_selector(parent, name):
         return f"{parent}[{key!r}]" if isinstance(key, str) else None
     if match := _INDEX.fullmatch(name):
         return f"{parent}[{int(match[1])}]"
-    if _NAME.fullmatch(name):
+    if is_name(name):
         return f"{parent}.{name}"
     return None
 

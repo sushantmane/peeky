@@ -18,6 +18,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
+from peeky.identifiers import changeable, is_located, is_name, member_name, reachable
 from peeky.names import display_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
@@ -1512,6 +1513,14 @@ class DebugWorker:
                     "sets must be a list of at most 8 {line, name} changes (a positive line; "
                     "text: true for a text)"
                 )
+            from peeky.probe import parse_selector
+
+            for change in changes:
+                # Each name is a selector, as a probe's --set and --set-at take it.
+                try:
+                    parse_selector(change["name"])
+                except ValueError as exc:
+                    raise ValueError(f"sets: {exc}") from None
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
@@ -1582,6 +1591,13 @@ class DebugWorker:
                 raise ValueError("reference must be an integer")
             if not isinstance(args.get("name"), str) or not isinstance(args.get("value"), str):
                 raise ValueError("name and value must be strings")
+            # Only what a selector can name (#195): a change never reaches a variable the
+            # CLI could not select, such as one whose name holds an invisible character.
+            name = args["name"]
+            if "reference" in args and not changeable(name):
+                raise ValueError(_SET_NAME)
+            if "handle" in args and not member_name(name):
+                raise ValueError(_SET_MEMBER)
 
     def _dispatch(self, operation, args):
         runtime = self.runtime or self.adapter
@@ -2892,7 +2908,7 @@ class DebugWorker:
                     output["note"] = note[:500]
                 if not ancestry and (marked := self.view_settable(variable, frame)) is not None:
                     # A Rust String's text (#137), shown as read from memory.
-                    output["settable"] = marked
+                    output["settable"] = marked and reachable({"name": name, "selected_as": plain})
                 if plain:
                     output["selected_as"] = plain
                 result.append(output)
@@ -2911,6 +2927,9 @@ class DebugWorker:
                     and not self.optimized()
                     and self.has_memory_location(variable)
                     and (bool(check(variable, frame)) or self.text_settable(variable, frame))
+                    # Marked only where a selector reaches it (#195): `t` for LLDB's
+                    # `t @ my file.c:3`, never a row no selector names.
+                    and reachable({"name": name, "selected_as": plain})
                 )
                 # Not a value shown with a note whose declaration still runs here (#140),
                 # nor one a statement under way may hold a copy of (#105); why, for
@@ -4055,22 +4074,34 @@ _BEFORE_LAUNCH = (
 
 
 def _name_list(value):
-    """A request's list of at most 32 Python-style names, or names LLDB gives a local
-    with where it is declared (`s @ main.rs:81`, when several of that name are in
-    scope)."""
+    """A request's list of at most 32 names a selector can write (a Unicode identifier
+    with no invisible character, #195), or names LLDB gives a local with where it is
+    declared (`s @ main.rs:81`, when several of that name are in scope)."""
     return (
         isinstance(value, list)
         and len(value) <= 32
         and all(
             isinstance(name, str)
             and len(name) <= 400
-            and (name.isidentifier() or bool(_SHADOWED_NAME.fullmatch(name)))
+            and (is_name(name) or is_located(name, _SHADOWED_PLACE))
             for name in value
         )
     )
 
 
-_SHADOWED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127} @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
+_SHADOWED_PLACE = re.compile(r" @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
+_NAMED = (
+    "a Unicode identifier of at most 128 characters with no invisible character (U+200B, "
+    "U+200D, a bidi control)"
+)
+_SET_NAME = (
+    f"set_variable's name must be a local's name a selector can write: {_NAMED}, or one "
+    "LLDB gives with where it is declared (`s @ main.rs:81`)"
+)
+_SET_MEMBER = (
+    f"set_variable's name must be a field's name a selector can write ({_NAMED}) or an "
+    "element's index as the debugger names it (`[3]`, `3`)"
+)
 
 
 def _display_path(runtime, path):

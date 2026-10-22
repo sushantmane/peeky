@@ -36,6 +36,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.compiled_verification import CompiledVerification
+from peeky.identifiers import is_located, is_name
 from peeky.names import display_function
 from peeky.native import (
     NativeSession,
@@ -2602,7 +2603,7 @@ class RustSession(NativeSession):
         if (
             not _FIELD_CONTAINER.fullmatch(kind)
             or taint == "stale"
-            or not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", root)
+            or not (is_name(root, limit=None) or is_located(root, r" @ .+", limit=None))
         ):
             return None
         steps = [str(step) for step, _ in ancestry[1:]] + [str(variable.get("name"))]
@@ -2750,7 +2751,8 @@ class RustSession(NativeSession):
             # crate with unsafe code, the pointers in what it points at show only their
             # address (`self.b`, a Box unsafe code may have freed, #156).
             return "pointers" if getattr(self, "unsafe_code", None) else None
-        if not re.fullmatch(r"[^\W\d]\w*(?: @ .+)?", str(variable.get("name"))):
+        name = str(variable.get("name"))
+        if not (is_name(name, limit=None) or is_located(name, r" @ .+", limit=None)):
             # LLDB's own values, not a local the code moves: an async body's `<null>`
             # (its `Pin<&mut>` self), the `(Return Value)` a step out shows.
             return None
