@@ -155,6 +155,10 @@ class StackPage(list):
         )
 
 
+# A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
+MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
@@ -1504,6 +1508,10 @@ class DebugWorker:
                 )
             ):
                 raise ValueError("expect_sha256 maps program/entry to sha256 hex digests")
+        if operation == "launch" and args.get("expect_inputs") is not None:
+            from peeky.sources import check_expected
+
+            check_expected(args["expect_inputs"])
         if operation == "launch" and args.get("args") is not None:
             from peeky.probe import _check_args
 
@@ -1668,6 +1676,15 @@ class DebugWorker:
                         f"Worker source provenance differs for the {role} {path.name}: refused "
                         "before launching. Sync sources before debugging remotely"
                     )
+            # And every other source the target reads (#249): what this worker's trusted
+            # target names, or every .py file under the root for Python.
+            inputs_checked = None
+            if (expected_inputs := args.get("expect_inputs")) is not None:
+                from peeky.sources import difference, digest, refusal, worker_sources
+
+                if what := difference(expected_inputs, worker_sources(self.adapter, self.root)):
+                    raise ValueError(refusal(what))
+                inputs_checked = digest(expected_inputs)
             edit, candidate_sha256 = self.candidate_edit(program, args.get("edit"))
             self.adapter.validate_breakpoints(args.get("breakpoints", []))
             self.session = uuid.uuid4().hex
@@ -1812,6 +1829,7 @@ class DebugWorker:
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
+                    **({"inputs_checked": inputs_checked} if inputs_checked else {}),
                     "target_identity": identity,
                     **({"program_args": program_args} if launched else {}),
                     **({"optimized": level} if (level := self.optimized()) else {}),
@@ -4335,10 +4353,15 @@ def make_server(root, token, port=8765, *, adapter=None):
             "entry",
             "args",
             "expect_sha256",
+            "expect_inputs",
             "edit",
             "set_at",
         }:
             raise ValueError("Unknown probe field")
+        from peeky.sources import check_expected
+
+        if args.get("expect_inputs") is not None:
+            check_expected(args["expect_inputs"])
         set_at = args.get("set_at", [])
         if not isinstance(set_at, list) or not all(
             isinstance(point, list)
@@ -4388,6 +4411,7 @@ def make_server(root, token, port=8765, *, adapter=None):
             if isinstance(edit, dict)
             else tuple((item["old"], item["new"]) for item in edits),
             set_at=tuple(tuple(point) for point in set_at),
+            expect_inputs=tuple(sorted((args.get("expect_inputs") or {}).items())),
         )
         if not probes.acquire(blocking=False):
             raise ValueError("Another probe is running; retry later")
@@ -4423,8 +4447,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                 # errors, never "session closed".
                 try:
                     size = int(self.headers.get("Content-Length", 0))
-                    if not 0 < size <= 65536:
-                        raise ValueError("Request body must be 1..65536 bytes")
+                    if not 0 < size <= MAX_REQUEST_BYTES:
+                        raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
                     self.connection.settimeout(10)
                     body = self.rfile.read(size)
                     if len(body) != size:
@@ -4437,9 +4461,25 @@ def make_server(root, token, port=8765, *, adapter=None):
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
+                if (
+                    operation in ("launch", "probe")
+                    and args.get("expect_sha256") is not None
+                    and args.get("expect_inputs") is None
+                ):
+                    # A remote client that checks only the program would get values from
+                    # other code without a note (#249).
+                    raise ValueError(
+                        "This client sent no sha256 for the target's other sources "
+                        "(expect_inputs), so the worker cannot compare them: install the same "
+                        "Peeky version on both hosts"
+                    )
                 if operation == "version":
+                    from peeky.sources import describe
+
                     result = {
                         "protocol": PROTOCOL_VERSION,
+                        # Which sources a client hashes for expect_inputs (#249).
+                        "sources": describe(worker.adapter),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(
                             {rule[1] for rule in _RULES}
@@ -4534,6 +4574,11 @@ def _run_probe_process(root, request, adapter, cap):
                     path.write_bytes(text.encode())
                     path.chmod(0o600)
                     command += [flag, str(path)]
+        if request.expect_inputs:
+            expected = Path(scratch) / "expect-inputs.json"
+            expected.write_text(json.dumps(dict(request.expect_inputs)))
+            expected.chmod(0o600)
+            command += ["--expect-inputs-file", str(expected)]
         if adapter is not None:
             config = Path(scratch) / "target.json"
             config.write_text(json.dumps(dataclasses.asdict(adapter), default=str))

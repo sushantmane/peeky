@@ -75,7 +75,7 @@ The worker's own trusted config decides what runs. Its paths are relative to `--
 - The host needs a JDK, and an adapter bundle built there with `scripts/setup_java_adapter.py`.
 - On your machine, pass your own `--config` of the same kind. With `--worker`, the client uses it
   only to tell a launched JVM from an attached one.
-- The breakpoint's `.java` file must match yours: see [Source identity](#source-identity).
+- Every file in `sources` must match yours: see [Source identity](#source-identity).
 
 A probe through the worker:
 
@@ -104,24 +104,50 @@ kills it ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
 
 ### Source identity
 
-The client sends the sha256 of the local program, and of the `--run` entry script. If the worker's
-copies differ, it refuses with `PROVENANCE_CHANGED` **before launching**. So a mismatched program
-is never run or changed. For Java, the program is the breakpoint's `.java` file. The refusal
-comes before the JVM is launched, or before a waiting JVM is attached:
+Before anything launches, the worker compares **every source the target reads** with your copy.
+If one differs, or is on one side only, it refuses with `PROVENANCE_CHANGED` and names the first
+such file. So a mismatched program is never built, run or changed.
 
 ```
-$ peeky probe pagination_bug.py --at 8 --capture start --set start=0 --worker http://127.0.0.1:18765
-error [PROVENANCE_CHANGED]: Worker source provenance differs for the program pagination_bug.py: refused before launching. Sync sources before debugging remotely
+$ peeky probe main.py --at 3 --capture x --worker http://127.0.0.1:18766
+error [PROVENANCE_CHANGED]: Worker source provenance differs for helper.py (the copy on the worker host differs from your checkout): refused before launching. Sync sources before debugging remotely
 hint: Sources, build outputs or tools changed; start a new session on a fresh build.
 ```
 
-As a second check, the client compares the hashes the worker reports. A result it can't confirm
-is discarded: `results_discarded: true`, with no rows and no output.
+The worker's own trusted target decides which files count. The client hashes its copies of the
+same names, and sends them with the request.
 
-**Only those two files are compared.** The worker's other sources are not: other Python modules,
-the other files in a config's `sources`, C and C++ headers, and a crate's other files. Keep them in
-sync with yours ([#249](https://github.com/sushantmane/peeky/issues/249)). A saved run's
-`inputs_sha256` records what the worker read.
+| Target | The sources compared |
+| --- | --- |
+| Python | every `.py` file under the root, except in hidden directories, `__pycache__`, `venv`, `env`, `site-packages` and `node_modules` |
+| Java, launched or attached | the config's `sources` |
+| C and C++ | the config's `sources` and `headers` |
+| Rust | `Cargo.toml`, `Cargo.lock`, and the config's `sources` and `tests` |
+
+- **Python counts every `.py` file,** because the program may import any of them. A stray file on
+  one side is refused too: `scratch.py (only in your checkout)`. Remove it, or copy it over.
+- **Python has a limit:** at most 4096 `.py` files and 16 MiB in all, each readable. Over it, the
+  remote probe is refused, on whichever side is over. Probe a smaller directory, or start the worker
+  with a smaller `--root`.
+- **Not compared:** installed packages, the interpreter and toolchain, and data files the program
+  reads. The program's output may still depend on them. An attached JVM's class files aren't
+  compared with yours either; the worker checks them against its own sources
+  ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
+- **The program and the `--run` script** are also compared by name, as before:
+  `differs for the program pagination_bug.py`.
+
+The client checks the answer too:
+
+- The worker must confirm that it compared every source (`inputs_checked`).
+- The sources the run read (`inputs_sha256`) must match yours.
+- The program's and the entry script's hashes must match yours.
+
+A result that fails any of these is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, with
+no rows and no output. A remote session that fails them is closed.
+
+**Protocol 2.** This comparison needs protocol 2 on both hosts. A client refuses an older worker
+before sending anything: `Worker speaks protocol 1, this client 2: install the same Peeky version
+on both hosts`. A worker refuses a request that names the program's hash without every source's.
 
 ### Why `ExitOnForwardFailure=yes`
 
@@ -170,6 +196,8 @@ TCP relay as a third. Its tests cover:
 - probes through the forwarded port;
 - remote probe evidence saved by the client only, none on the worker host;
 - a source-identity mismatch, where results are discarded;
+- an imported module that differs on the host, and a module on one side only: refused before
+  launching, by name;
 - a dropped tunnel giving `UNREACHABLE`, without losing the session;
 - reconnecting on the same port, and continuing the session;
 - closing without stopping the worker;
@@ -178,7 +206,10 @@ TCP relay as a third. Its tests cover:
 - the token never appearing in output.
 
 The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), Python and Java, is
-repeated by CI on every change.
+repeated by CI on every change. A differing C header and a differing Rust module file are refused
+by name in the C and Rust lanes (`tests/native/test_native_remote_sources.py`,
+`tests/rust/test_rust_remote_sources.py`). `tests/unit/test_remote_sources.py` covers the
+protocol.
 
 ## Recorded separate-host run (2026-10-22)
 
@@ -238,6 +269,8 @@ The Java steps are saved beside it, in `remote-run-java.json`.
 | Read, change, run to the end | `peeky session get start`, `session set start=0`, `session continue --to-exit` | 0 | 0.02 each | `3`; 3 → 0; terminated |
 | Program output, close | `peeky session report`, `session close` | 0 | 0.01 | `PAGE:[10, 20, 30]`; closed |
 | The host's source differs | `peeky probe … --config launch.json … --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
+| A second source differs (`demo/Helper.java`) | `peeky probe … --config two.json … --worker URL` | 2 | 0.06 | `PROVENANCE_CHANGED`, naming `demo/Helper.java`; refused before launching |
+| Both sources the same | the same probe | 0 | 0.60 | completed; output `PAGE:[10, 20, 30]` |
 | The host's source differs, attached JVM | `peeky probe … --config attach.json … --worker URL` | 2 | 0.07 | `PROVENANCE_CHANGED`; the JVM still waited, not attached |
 | Attached JVM, probe with a change | `peeky probe … --config attach.json … --worker URL` | 0 | 0.25 | `start` 3 → 0; `ended: hits`. The JVM stayed alive, printed `PAGE:[10, 20, 30]` and blocked on its sentinel file |
 | The sentinel file created | `touch release`, on the host | — | — | the JVM printed `DONE` and exited with status 0 |

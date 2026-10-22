@@ -276,8 +276,10 @@ def _serving(tmp_path_factory, make, before_worker=None, record_suffix=""):
 
 @pytest.fixture
 def program(tmp_path):
-    """The client's checkout: the same source as the worker host's copy."""
-    shutil.copyfile(ROOT / "examples/pagination_bug.py", tmp_path / "pagination_bug.py")
+    """The client's checkout: the same sources as the worker host's copy (#249: every .py
+    file under the root, not only the program)."""
+    for name in ("pagination_bug.py", "verify_pagination.py"):
+        shutil.copyfile(ROOT / "examples" / name, tmp_path / name)
     return tmp_path / "pagination_bug.py"
 
 
@@ -610,6 +612,46 @@ def test_a_different_java_source_on_the_host_is_refused_before_it_runs(
         _refused(java_host, result, code, **{"program ran on the host": False})
     finally:
         java_host.ssh(f"cd java && mv .original {JAVA_SOURCE}")
+
+
+def test_a_second_java_source_that_differs_on_the_host_is_refused_by_name(
+    java_host, capsys, java_checkout
+):
+    # #249: only the breakpoint's file was compared, so the host compiled another
+    # Helper.java and the probe completed without a note.
+    helper = "package demo;\npublic class Helper { static int size() { return 3; } }\n"
+    config = dict(JAVA_LAUNCH, sources=[JAVA_SOURCE, "demo/Helper.java"])
+    (java_checkout / "demo/Helper.java").write_text(helper)
+    (java_checkout / "two.json").write_text(json.dumps(config))
+    assert java_host.ssh("cat > java/two.json", input=json.dumps(config)).returncode == 0
+    changed = helper.replace("return 3", "return 4")
+    assert java_host.ssh("cat > java/demo/Helper.java", input=changed).returncode == 0
+    java_host.restart_worker(
+        "--root", "/home/peeky/java", "--java-config", "/home/peeky/java/two.json"
+    )
+    try:
+        code, result = java_probe(
+            java_host,
+            capsys,
+            "Java probe with a second source that differs on the host",
+            java_checkout,
+            "two.json",
+        )
+        assert (
+            "for demo/Helper.java (the copy on the worker host differs from your checkout)"
+            in (result["error"]["message"])
+        )
+        _refused(java_host, result, code, **{"named": "demo/Helper.java"})
+        assert java_host.ssh("cat > java/demo/Helper.java", input=helper).returncode == 0
+        code, result = java_probe(
+            java_host, capsys, "Java probe with both sources the same", java_checkout, "two.json"
+        )
+        assert code == 0 and "PAGE:[10, 20, 30]" in result["output"], result
+    finally:
+        java_host.ssh("rm -f java/demo/Helper.java java/two.json")
+        java_host.restart_worker(
+            "--root", "/home/peeky/java", "--java-config", "/home/peeky/java/launch.json"
+        )
 
 
 @pytest.fixture

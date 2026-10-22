@@ -24,6 +24,26 @@ It doesn't attach to a running program, evaluate expressions, change a pointer, 
 debug server. It writes memory only to set a text
 ([C and C++ 7.1](lang/c-cpp-cookbook.md#change-a-text)).
 
+## Compare every source from another host
+
+A client on another host must show that its sources are the worker's. This is protocol 2.
+
+1. Call `version`. Its `sources` says which files to hash:
+   - `{"kind": "python"}`: every `.py` file under the root, outside hidden directories,
+     `__pycache__`, `venv`, `env`, `site-packages` and `node_modules`;
+   - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
+2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
+   `expect_inputs`: `{path: sha256}` for every one of those files.
+3. The worker refuses with `PROVENANCE_CHANGED` before launching, naming the first file that
+   differs or is on one side only. A request with `expect_sha256` but no `expect_inputs` is refused
+   with `INVALID_REQUEST`.
+4. Check the answer's `inputs_checked`. It is the sha256 of
+   `json.dumps(sorted(expect_inputs.items()))`, with Python's default separators. If it is missing
+   or different, discard the result.
+
+`peeky probe --worker` and `peeky session start --worker` do all of this
+([REMOTE.md](REMOTE.md#source-identity)).
+
 ## Start a C or C++ worker
 
 The worker takes the same config file as the CLI's `--config`

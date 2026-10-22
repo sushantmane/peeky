@@ -111,7 +111,9 @@ def test_worker_calls_never_use_an_http_proxy(served, monkeypatch):
     for name in ("no_proxy", "NO_PROXY"):
         monkeypatch.delenv(name, raising=False)
     client = Client(f"http://127.0.0.1:{served.server_port}", TOKEN)
-    assert client.call("version")["protocol"] == 1
+    from peeky.errors import PROTOCOL_VERSION
+
+    assert client.call("version")["protocol"] == PROTOCOL_VERSION
 
 
 def test_malformed_requests_are_request_errors(served):
@@ -250,6 +252,8 @@ def test_relative_java_bundles_follow_the_configuration_file(tmp_path, monkeypat
 )
 def test_partial_remote_probe_replies_keep_their_error(workspace, capsys, monkeypatch, reply):
     class Worker:
+        sources = {"kind": "python"}
+
         def probe(self, *args, **kwargs):
             return json.loads(json.dumps(reply))
 

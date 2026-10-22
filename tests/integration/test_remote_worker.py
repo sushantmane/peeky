@@ -156,6 +156,59 @@ def test_probe_through_a_forwarded_port_checks_source_identity(remote, capsys):
     assert code == 2 and "PROVENANCE_CHANGED" in out.err and not (host / "RAN").exists()
 
 
+MAIN = "import helper\nx = helper.page()\nprint('PAGE', x)\n"
+HELPER = "def page():\n    return 3\n"
+
+
+def test_an_imported_module_that_differs_on_the_host_is_refused_before_launch(remote, capsys):
+    # #249: only the program's file was compared, so the host ran another helper.py and
+    # the values came from it without a note.
+    host, local, worker, relay = remote
+    for root in (host, local):
+        (root / "main.py").write_text(MAIN)
+        (root / "helper.py").write_text(HELPER)
+    _, worker_port = worker()
+    _, port = relay(worker_port)
+    url = f"http://127.0.0.1:{port}"
+    args = ["probe", local / "main.py", "--at", "3", "--capture", "x", "--json"]
+    code, out = run(capsys, *args, "--worker", url)
+    result = json.loads(out.out)
+    assert code == 0 and result["rows"][0]["value"] == "3", result
+    (host / "helper.py").write_text("open('RAN', 'w').close()\n" + HELPER.replace("3", "4"))
+    code, out = run(capsys, *args, "--worker", url)
+    result = json.loads(out.out)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert (
+        "for helper.py (the copy on the worker host differs from your checkout)"
+        in (result["error"]["message"])
+    )
+    assert result["refused_before_launch"] is True and result["rows"] == []
+    assert not (host / "RAN").exists()
+    code, out = run(capsys, "session", "start", local / "main.py", "--at", "3", "--worker", url)
+    assert code == 2 and "helper.py (the copy on the worker host differs" in out.err, out.err
+    assert not (host / "RAN").exists()
+
+
+def test_a_module_on_one_side_only_is_refused_before_launch(remote, capsys):
+    host, local, worker, relay = remote
+    _, worker_port = worker()
+    url = f"http://127.0.0.1:{worker_port}"
+    args = ["probe", local / "pagination_bug.py", "--at", "8", "--json", "--worker", url]
+    (local / "pagination_helpers.py").write_text("STEP = 1\n")
+    code, out = run(capsys, *args)
+    result = json.loads(out.out)
+    assert code == 2 and result["error"]["code"] == "PROVENANCE_CHANGED", result
+    assert "pagination_helpers.py (only in your checkout)" in result["error"]["message"]
+    (local / "pagination_helpers.py").unlink()
+    (host / "sitecustom").mkdir()
+    (host / "sitecustom" / "hook.py").write_text("STEP = 2\n")
+    code, out = run(capsys, *args)
+    result = json.loads(out.out)
+    assert (
+        code == 2 and "sitecustom/hook.py (only on the worker host)" in (result["error"]["message"])
+    )
+
+
 def test_remote_session_survives_a_dropped_tunnel_and_closing_keeps_the_worker(remote, capsys):
     host, local, worker, relay = remote
     worker_process, worker_port = worker()
@@ -272,7 +325,10 @@ def test_results_without_the_entry_hash_are_discarded(remote, capsys, monkeypatc
         }
 
     monkeypatch.setattr(client_module.Client, "probe", old_worker_probe)
-    monkeypatch.setattr(client_module.Client, "call", lambda self, op, **kw: {"protocol": 1})
+    from peeky.errors import PROTOCOL_VERSION
+
+    hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
+    monkeypatch.setattr(client_module.Client, "call", lambda self, op, **kw: hello)
     code, out = run(
         capsys,
         "probe",
@@ -339,8 +395,13 @@ def test_worker_side_evidence_never_reaches_the_client_result(remote, capsys, mo
     digest = hashlib.sha256((local / "pagination_bug.py").read_bytes()).hexdigest()
 
     class Worker:
+        sources = {"kind": "python"}
+
         def probe(self, *args, **kwargs):
+            from peeky.sources import digest as inputs_digest
+
             return {
+                "inputs_checked": inputs_digest(kwargs["expect_inputs"]),
                 "probe": {"program": "pagination_bug.py", "line": 8},
                 "status": "completed",
                 "hits": 1,
