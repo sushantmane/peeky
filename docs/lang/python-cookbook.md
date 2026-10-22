@@ -4,11 +4,18 @@ What is particular to Python in Peeky's recipes. Read the [COOKBOOK](../COOKBOOK
 
 ## Contents
 
+- [1.1 What Can I Ask?](#11-what-can-i-ask)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
 - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it)
 - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
 - [6.6 See What a Fix Does Before Making It](#66-see-what-a-fix-does-before-making-it)
+
+## 1.1 What Can I Ask?
+
+Adds to [COOKBOOK 1.1](../COOKBOOK.md#11-what-can-i-ask).
+
+A function's names also list the module globals its compiled code reads (its generator expressions' and comprehensions' too) that the module binds by name (`MAX_GAP = 30`, not `globals()["x"] = 1`), not in code the compiler drops (`if False:`); nothing runs (`MAX_GAP (module global)`; `globals` in JSON). A probe there reads them, marked `[module global]`.
 
 ## 2.1 Fields and Indexes
 

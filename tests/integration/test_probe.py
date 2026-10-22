@@ -205,7 +205,11 @@ def test_interventions_can_target_a_later_hit_and_results_group_by_hit(tmp_path)
     )
     assert result["interventions"] == [] and "BEST 7" in result["output"]
     assert any("--set best=100 was not applied" in warning for warning in result["warnings"])
-    with pytest.raises(ValueError, match="set_hit"):
+    # Ninth evaluation: the message names the option and the way to reach that hit.
+    with pytest.raises(
+        ValueError,
+        match=r"^--set-hit 3 is past the last hit this probe captures \(2, --hits 2\): raise --hits to 3",
+    ):
         Probe("loop.py", 4, hits=2, set_hit=3)
 
 

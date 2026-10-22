@@ -249,7 +249,10 @@ def test_a_failing_verify_shows_its_only_output_line_once():
         "diff": "-a\n+b",
     }
     text = _verify_text(result)
-    assert text.count(line) == 1 and "output: the reason above, its only line" in text, text
+    assert (
+        text.count(line) == 1
+        and "output: the checker printed only the `reason:` line above" in text
+    ), text
     # With more output than the reason, the output is shown whole.
     text = _verify_text({**result, "stdout": "case 1 ok\n" + line + "\n"})
     assert text.count(line) == 2 and "case 1 ok" in text, text

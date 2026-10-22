@@ -313,7 +313,11 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
     )
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
-        (None, "(sets)", "the runs made different interventions (--set, --set-at)"),
+        (
+            None,
+            "(sets)",
+            "the runs requested different interventions (--set, --set-at), or made different ones",
+        ),
         ("after-set", "r.tail", "intervention only in run b"),
     ]
     # A `--set-at` at the captured line's 4th stop (#137) gets the same after-set rows.
@@ -327,7 +331,11 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
     saved(store, at_rows, set_at=[[36, 4, "r.tail", "3"]])
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [
-        (None, "(sets)", "the runs made different interventions (--set, --set-at)"),
+        (
+            None,
+            "(sets)",
+            "the runs requested different interventions (--set, --set-at), or made different ones",
+        ),
         ("after-set", "r.tail", "intervention only in run b"),
     ]
     # Both runs set something: an after-set value equal to its run's observed value is

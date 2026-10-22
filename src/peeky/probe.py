@@ -441,8 +441,22 @@ class Probe:
                 "give a number of hits"
             )
         if type(self.set_hit) is not int or not 1 <= self.set_hit <= self.limit:
+            past = type(self.set_hit) is int and self.set_hit > self.limit
             raise ValueError(
-                f"Probe set_hit must be within 1..{self.limit}"
+                (
+                    f"--set-hit {self.set_hit} is past the last hit this probe captures "
+                    f"({self.limit}"
+                    + (
+                        ", the --hits all cap for these selectors): capture fewer selectors"
+                        if self.hits == "all"
+                        else f", --hits {self.hits}): raise --hits to {self.set_hit} or more, "
+                        "or use --hits all"
+                    )
+                    + f"; or --set-at {self.line}@{self.set_hit} NAME=VALUE changes it at that "
+                    "hit without capturing there"
+                )
+                if past
+                else f"--set-hit must be within 1..{self.limit}"
                 + (" (the --hits all cap for these selectors)" if self.hits == "all" else "")
             )
         if self.entry is not None and (not isinstance(self.entry, str) or not self.entry):
@@ -1654,7 +1668,15 @@ def _capture(
                         listing["note"] = f"{row['note']}; {listing['note']}"
                     row.update(listing)
                 except ValueError as exc:
-                    row["children_error"] = str(exc)
+                    if not (
+                        "exceeds bounded expansion" in str(exc)
+                        and str(row.get("value") or "").startswith('"')
+                        and _CHAR_ARRAY.fullmatch(str(row.get("type") or "").strip())
+                    ):
+                        row["children_error"] = str(exc)
+                    # Else a long `char[N]` shown as its text: its characters are the
+                    # text, each still selectable (`text[5]`), so no listing is no loss
+                    # (ninth evaluation: `<children: … exceeds bounded expansion limit>`).
                 listed = row.get("children", ())
                 if "note" not in row and any(c.get("view") == "unproven" for c in listed):
                     # A caller's struct reads, but not what its pointers reach (#108).
@@ -2045,6 +2067,11 @@ _KEY_NAME = re.compile(_KEY_LITERAL)
 
 
 _C_QUALIFIERS = r"(?:\s*\b(?:const|volatile|restrict|__restrict|__restrict__)\b)*"
+# A narrow character array's type, as LLDB names it (`char[8192]`), as native.CHAR_ARRAY.
+_CHAR_ARRAY = re.compile(
+    r"(?:(?:const|volatile)\s+)*(?:(?:signed|unsigned)\s+)?char(?:\s+(?:const|volatile))*"
+    r"\s*\[[0-9]+\]"
+)
 
 
 def _c_pointee_type(kind):

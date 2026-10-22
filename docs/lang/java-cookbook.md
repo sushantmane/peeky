@@ -48,6 +48,8 @@ hit  best                   list_a                 same
 
 `object_ref(value)` is the object a Java value is. Within one run, equal means the same object. Across runs the numbers differ (`queries diff` masks them), so compare objects only inside a run. To test the hypothesis, give the list's worker the load it should have had: `--set 'workers[1].load=5' --set-hit 1` turns `a a a a` into `a b b b`.
 
+- **Identity, not value:** where the code compares objects with `==` (two `Integer`s, two Strings), capture both sides and read `object_ref`: equal values with different objects (`Integer@60 {value=1001}` and `Integer@106 {value=1001}`) are what `==` sees as different. To test the hypothesis, set what the comparison produced, a `boolean` local the code reads next (`--set-at 56@4 gleich=true`), not the objects: the program then runs as if they compared equal.
+
 ## 5.2 Stepping and Running to a Line
 
 Adds to [COOKBOOK 5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line).
@@ -104,7 +106,7 @@ hit  phase      line  function                 selector  type               valu
 2    observed   26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=5, start=1}
 2    observed   26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
 2    after-set  26    MergeBug.main(String[])  current   MergeBug$Interval  MergeBug$Interval@57 {end=10, start=1}
-after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+2    after-set  26    MergeBug.main(String[])  next      MergeBug$Interval  MergeBug$Interval@63 {end=14, start=12}
 set current.end: 5 -> 10
 output:
   MERGED:[[1,10], [12,14]]

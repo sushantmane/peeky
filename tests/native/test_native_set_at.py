@@ -132,9 +132,10 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
     # diff against the run without them: their (sets) row, then their effect.
     diff = queried(capsys, "diff", "--param", "a=1", "--param", "b=2")
     assert [row["selector"] for row in diff[:2]] == ["(output)", "(sets)"]
+    # runs.sets holds requests: each says where it was asked for (review of PR #214).
     assert json.loads(diff[1]["value_b"]) == [
-        ["width", "100", f"{ADD}@3"],
-        ["width", "3", f"{REUSE}@3"],
+        ["width", "100", f"requested at {ADD}@3"],
+        ["width", "3", f"requested at {REUSE}@3"],
     ]
     shown = [
         (row["hit"], row["phase"], row["selector"], row["value_a"], row["value_b"], row["note"])
@@ -166,8 +167,12 @@ def test_a_set_at_its_line_never_reaches_is_reported_not_dropped(linked, capsys)
     # The probe ran past its captured hits for it: line REUSE's stops were all counted.
     assert result["hits"] == 2 and len(result.get("set_pauses_ms", [])) == 4
     runs = queried(capsys, "outputs", "--param", "b=1", "--param", "a=1")
-    assert json.loads(runs[0]["sets"]) == [["width", "1", f"{REUSE}@7"]]
-    assert runs[0]["set_hit"] is None and queried(capsys, "set_effect") == []
+    # A request whose hit never came says so (review of PR #214); `outputs` no longer
+    # has `set_hit` (ninth evaluation).
+    assert json.loads(runs[0]["sets"]) == [
+        ["width", "1", f"requested at {REUSE}@7, not made: that hit never came"]
+    ]
+    assert "set_hit" not in runs[0] and queried(capsys, "set_effect") == []
 
 
 @pytest.mark.timeout(240)

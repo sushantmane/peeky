@@ -152,7 +152,7 @@ The `mutable:` line (C, C++, Rust) also names, per function, the integer fields 
 - A local listed with block lines (`i (int, lines 23, 28)`) is read only inside them; on the block's closing `}`, Java has already dropped it, so read it on the line before.
 - Use `describe`'s breakpoint lines for `--at` and `continue --to`; a step goes wherever the compiled code goes next.
 
-**Per language:** [C and C++ 1.1](lang/c-cpp-cookbook.md#11-what-can-i-ask) (C and C++ types), [Rust 1.1](lang/rust-cookbook.md#11-what-can-i-ask) (block lines, type names, nothing settable), [Java 1.1](lang/java-cookbook.md#11-what-can-i-ask) (declared types, `mutable:`).
+**Per language:** [Python 1.1](lang/python-cookbook.md#11-what-can-i-ask) (module globals in a function's names), [C and C++ 1.1](lang/c-cpp-cookbook.md#11-what-can-i-ask) (C and C++ types), [Rust 1.1](lang/rust-cookbook.md#11-what-can-i-ask) (block lines, type names, nothing settable), [Java 1.1](lang/java-cookbook.md#11-what-can-i-ask) (declared types, `mutable:`).
 
 ### 1.2 First Probe
 
@@ -437,7 +437,7 @@ output:
 - **Captures:** The probe stops at every `--set-at` line as well as at `--at`, but captures values only at `--at`. A change at a captured stop gets `after-set` rows, as `--set` does. `--set` and `--set-hit` work as before, and together with `--set-at` make at most 8 changes.
 - **How long it runs:** The probe keeps each breakpoint until the changes on that line are made, past `--hits` if need be. With `--until hits` it ends once both are done (an attached JVM, which never exits, waits for them until `--timeout`). A change whose stop never comes (`23@9` where line 23 stops 4 times) is not made, and the result says so: `status: completed (1 requested change not made)`, a warning, `unapplied` in JSON, and exit code 4. So is a `--set` whose `--set-hit` never comes.
 - **Rules:** Each change follows the same rules as `--set` at its own stop (a statement under way, a local not yet initialized, a value with a note, a field through a pointer: see 2.3). Before the program runs, each `--set-at` is judged against the functions on its own line, as a `--set` is against the `--at` line's: one that no stop of its line could make (a Rust local kept in a register, a field through a pointer) is refused there, naming the line, and nothing runs (6.6; exit code 2, with only the error and its hint). One refusal fails the whole probe, naming its line and hit and how many changes were already made: half of a linked change is not the experiment you asked for. A line with no code of its own is refused, never moved to the next line.
-- **Evidence:** `runs.sets` lists each change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`), so `queries diff`'s `(sets)` row tells runs apart by them. The `interventions` table gives each change's `line`, `hit`, `capture_hit`, `function` and `instance` (schema 12; `captures.instance`, schema 13, labels captured values the same way). `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
+- **Evidence:** `runs.sets` lists each requested change as `[name, value, "LINE@HIT"]` (a `--set` stays `[name, value]`, with its hit in `runs.set_hit`). `queries diff`'s `(sets)` row and `queries outputs` show each as `[name, value, "requested at LINE@HIT"]`, a `--set`'s too (`["gleich", "true", "requested at 56@4"]`), and add `, not made: that hit never came` where the probe warned so; runs whose changes differ only in their hit, or in which were made, tell apart. The `interventions` table gives each change made: its `line`, `hit`, `capture_hit`, `function` and `instance` (schema 12; `captures.instance`, schema 13, labels captured values the same way). `queries set_effect` lists the changes in the order they were made, and `queries wide` puts each one in the `sets` column of the row it comes before.
 
 **Per language:** [Python 2.8](lang/python-cookbook.md#28-change-a-value-then-restore-it) (two lambdas on one line).
 
@@ -524,7 +524,7 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 
 `diff` keeps only the rows that differ, in this order:
 
-1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the probes' `--at` lines differ (their values then differ partly because of where they were read; a candidate's `--at` keeps the original's numbering, so `--at 33` is the same line where the candidate's rows show its line 34); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions. Check these rows before crediting an edit with a difference.
+1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the probes' `--at` lines differ (their values then differ partly because of where they were read; a candidate's `--at` keeps the original's numbering, so `--at 33` is the same line where the candidate's rows show its line 34); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions, each as `[name, value, "LINE@HIT"]`, a `--set` at its `--at` line's hit. Check these rows before crediting an edit with a difference.
 2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
 3. Values that only one run's `--set` changed (`intervention only in run b`). An `after-set` value equal to its run's `observed` value at that hit, in each run that has one, is left out: the intervention did not touch it (`r.buf` when only `r.tail` was set), and the `observed` row shows any difference.
 4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note. Whatever else a row says, a qualified value's note says so too, and the row ranks here: `missing in run b; qualified (run a: note)`, `intervention only in run a; qualified (run a: note)`.
@@ -556,12 +556,12 @@ peeky queries outputs
 ```
 
 ```
-run_id  label           args                 sets  set_hit  status     error_code  output
-1       mapped-public   ["::ffff:8.8.8.8"]   []    NULL     completed  NULL        ::ffff:8.8.8.8: private\n
-2       mapped-private  ["::ffff:10.0.0.1"]  []    NULL     completed  NULL        ::ffff:10.0.0.1: private\n
+run_id  label           args                 sets  status     error_code  output
+1       mapped-public   ["::ffff:8.8.8.8"]   []    completed  NULL        ::ffff:8.8.8.8: private\n
+2       mapped-private  ["::ffff:10.0.0.1"]  []    completed  NULL        ::ffff:10.0.0.1: private\n
 ```
 
-Both are labelled private: the public one is the bug. `set_hit` is the hit a run's `--set` was applied at.
+Both are labelled private: the public one is the bug. `sets` lists each run's requested changes as `[name, value, "requested at LINE@HIT"]`: a `--set`'s at its `--at` line's `--set-hit` (`["gap", "20", "requested at 34@4"]`), a `--set-at`'s at its own. One whose hit never came ends `, not made: that hit never came`, as the probe warned.
 
 ### 3.3 What My Intervention Changed
 
@@ -733,7 +733,7 @@ Use a session when you want several looks at one stop. Every command is a separa
 - `session start` stops once; `inspect` lists the locals, `get` reads values and lists their children, `set` changes one, and `close` ends the session (always close it).
 - Pass `--name` to every later command when the session is not `default`.
 - Session states and `inspect` name the stopped function (`in Ring::push(int)`, `in topk::insert_sorted::{{closure}}`).
-- `get` of a name that is not there prints why and names the stop; any failed selector makes the exit status 1.
+- `get` of a name that is not there prints why and names the stop; any selector with no value makes the exit status 1, and a last line on stderr names them (`peeky: no value for nosuch (each row above says why), so the exit status is 1`).
 - `--frame N` reads caller frame N; a caller's values cannot be changed.
 
 ```sh
