@@ -34,6 +34,11 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   `--arg` ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 - `verify` also runs the crate's integration test, if it has one
   ([6.5](../COOKBOOK.md#65-writing-a-checker)).
+- To debug a crate on another host, run a worker there with `--rust-config`. Then add
+  `--worker URL` ([REMOTE](../REMOTE.md#c-c-and-rust-on-the-worker-host)).
+- Through a worker, `Cargo.toml`, `Cargo.lock` and every file in the config's `sources` and `tests`
+  are compared with yours before the build. One that differs is refused by name
+  ([REMOTE](../REMOTE.md#source-identity)).
 - If the build fails, the probe is refused before launch with `BUILD_FAILED`. It exits 2, with no
   table and no run saved. A candidate edit that doesn't compile counts too. In `verify`, it is a
   failed verify, which exits 1 ([ERRORS](../ERRORS.md)).

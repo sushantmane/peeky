@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 
 from peeky.textlines import split_lines
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (

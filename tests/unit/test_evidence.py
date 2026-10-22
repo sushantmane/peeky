@@ -657,7 +657,9 @@ def test_comparisons_need_two_runs_that_exist(store):
     assert evidence.run_query(store, "diff", {"a": 1, "b": 2})["row_count"] == 1
 
 
-def test_values_changed_by_an_intervention_rank_after_real_differences(store):
+def test_values_changed_by_an_intervention_rank_before_real_differences(store):
+    # Tenth evaluation (debounce): the intervention's own rows came after 70 rows of
+    # what may follow from it.
     evidence.record(store, captured([(1, "observed", "x", "1"), (2, "observed", "x", "5")]))
     evidence.record(
         store,
@@ -677,8 +679,8 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
             None,
             "the runs requested different interventions (--set, --set-at), or made different ones",
         ),
-        (2, "observed", None),
         (1, "after-set", "intervention only in run b"),
+        (2, "observed", None),
     ]
 
 
