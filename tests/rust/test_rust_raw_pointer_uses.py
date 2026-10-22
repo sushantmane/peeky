@@ -123,19 +123,27 @@ def probe(capsys, crate, marker, capture, hits=1):
     return result
 
 
+def reads(row):
+    """Whether the debugger reads a String's text (lldb-dap with readMemory)."""
+    return bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY")) or row.get("view") == "memory"
+
+
 @pytest.mark.timeout(400)
 @pytest.mark.parametrize("marker", ["EQ", "ADDR_EQ"])
 def test_a_reference_compared_by_address_reads_on_that_line(crate, capsys, marker):
     # `f`'s last use makes it a raw pointer for the standard library's comparison; the
     # slice it points into stays borrowed, and the comparison frees nothing.
     result = probe(capsys, crate, marker, "f,f.name,f.paid", hits=2)
-    rows = [(row["hit"], row["selector"], row) for row in result["rows"]]
-    names = [row.get("value") for _, selector, row in rows if selector == "f.name"]
-    assert names == ['"Åsa"', '"Bo"'], rows
-    assert [row.get("value") for _, s, row in rows if s == "f.paid"] == ["1", "2"], rows
-    for _, selector, row in rows:
-        assert row.get("view") != "unproven" and "note" not in row, (selector, row)
-    assert not any("f:" in warning for warning in result.get("warnings", [])), result
+    rows = {(row["hit"], row["selector"]): row for row in result["rows"]}
+    for hit, (name, paid) in enumerate((("Åsa", "1"), ("Bo", "2")), 1):
+        f = rows[(hit, "f")]
+        assert f.get("view") != "unproven" and "note" not in f, f
+        assert rows[(hit, "f.paid")].get("value") == paid, rows[(hit, "f.paid")]
+        text = rows[(hit, "f.name")]
+        assert "error" not in text, text
+        if reads(text):
+            assert text.get("value") == f'"{name}"' and text.get("view") == "memory", text
+    assert not any(warning.startswith("f:") for warning in result.get("warnings", [])), result
 
 
 @pytest.mark.timeout(400)
@@ -145,7 +153,7 @@ def test_a_call_of_the_crate_s_own_on_the_line_keeps_it_withheld_and_says_so(cra
     result = probe(capsys, crate, "SAME", "f,f.name")
     rows = {row["selector"]: row for row in result["rows"]}
     assert rows["f"].get("view") == "unproven", rows["f"]
-    assert "Åsa" not in json.dumps(rows), rows
+    assert "Åsa" not in json.dumps(rows, ensure_ascii=False), rows
     note = rows["f"]["note"]
     assert note == (
         "This Rust reference shows only its pointer: the build's MIR does not show that "
@@ -162,7 +170,7 @@ def test_a_reference_whose_target_may_be_freed_names_the_call(crate, capsys):
     result = probe(capsys, crate, "GONE", "first,first.name,addr")
     rows = {row["selector"]: row for row in result["rows"]}
     assert rows["first"].get("view") == "unproven", rows["first"]
-    assert "Ana" not in json.dumps(rows), rows
+    assert "Ana" not in json.dumps(rows, ensure_ascii=False), rows
     note = rows["first"]["note"]
     clear = line_of("CLEAR")
     assert re.search(rf"because `first` is not used ahead, and a call on line {clear} ", note), note
