@@ -149,6 +149,35 @@ def test_each_language_has_a_page_and_a_cookbook_numbered_as_the_cookbook():
             assert heading in cookbook, (lang, heading)
 
 
+def _contents(path):
+    """A page's contents list, as (text, anchor) links in order, and its `##`/`###`
+    headings other than the list's own, as (text, anchor) pairs."""
+    text = _without_fences(path.read_text())
+    listed = re.search(r"^## (?:Table of )?Contents\n(.*?)^## ", text, flags=re.M | re.S)
+    links = re.findall(r"\[((?:[^\]`]|`[^`]*`)+)\]\(#([^)]+)\)", listed.group(1))
+    headings = _headings(path)
+    levels = re.findall(r"^ {0,3}(#{1,6}) .+$", text, flags=re.M)
+    shown = [
+        (heading, slug)
+        for heading, slug, level in zip(headings, _slugs(headings), levels)
+        if level in ("##", "###") and not re.match(r"(Table of )?Contents$", heading)
+    ]
+    return links, shown
+
+
+def test_each_contents_list_matches_the_headings():
+    # #212: the rewrites renamed and added headings; COOKBOOK's table of contents and each
+    # language cookbook's list name every `##` and `###` heading, in order, by its anchor.
+    for path in [DOCS / "COOKBOOK.md", *sorted((DOCS / "lang").glob("*-cookbook.md"))]:
+        links, shown = _contents(path)
+        assert [anchor for _, anchor in links] == [slug for _, slug in shown], path.name
+        for (text, _), (heading, _) in zip(links, shown):
+            assert re.sub(r"^\d+\. ", "", heading) == text, (path.name, heading)
+        # No two headings share a slug, so no anchor needs GitHub's `-1` suffix.
+        bases = [next(_slugs([heading])) for heading in _headings(path)]
+        assert len(set(bases)) == len(bases), path.name
+
+
 def test_every_part_of_the_cookbooks_fits_one_read():
     # #207: the 181 KB COOKBOOK could not be read in pieces. Each part between two headings,
     # and each language's summary page whole, fits one 20 KB read.
