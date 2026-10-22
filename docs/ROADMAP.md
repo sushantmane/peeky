@@ -152,8 +152,9 @@ extend it. Kubernetes stays deferred.
   [ADR 0005](adr/0005-tool-not-agent.md) unified them with `peeky session`. Session mode is
   unchanged.
 - **Remaining:** step 5, a prepared-build cache. Build it only if measured probe latency needs it.
-- **Rule:** new worker features should be expressible as a declared probe step: a location, a
-  selector and a bounded change. They shouldn't depend on long-lived state held by the client.
+- **Design guideline:** keep worker operations composable and declarative. A new worker feature
+  should be expressible as a declared probe step: a location, a selector and a bounded change. It
+  shouldn't depend on long-lived state held by the client.
 
 ## What comes next
 
