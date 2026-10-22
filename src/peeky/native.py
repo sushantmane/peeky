@@ -887,9 +887,16 @@ _CALL_LEAD = re.compile(
 # Inline assembly, which may write any memory or register it reaches, operands or not
 # (`__asm__("" : "=r"(p->width))`, a store through a register holding a pointer).
 _ASSEMBLY = re.compile(r"(?<![\w$])(?:asm|__asm|__asm__)(?![\w$])")
-# Builtins that take an address no `&` shows: of a value (`__builtin_addressof(x)`), or
-# of a frame, from which any local of it, or of its callers, is reached (review of #211).
-_ADDRESSES = re.compile(r"(?<![\w$])__builtin_(?:addressof|frame_address|stack_address)(?![\w$])")
+# Builtins may take an address no `&` shows: of a value (`__builtin_addressof(x)`), or of
+# a frame (`__builtin_frame_address`, `__builtin_dwarf_cfa`), from which any local of it,
+# or of its callers, is reached (review of #211). Every builtin counts but those known to
+# reach no memory.
+_ADDRESSES = re.compile(
+    r"(?<![\w$])__builtin_(?!(?:expect|expect_with_probability|unreachable|assume|trap|"
+    r"constant_p|types_compatible_p|choose_expr|offsetof|clzs?|clzl{0,2}|ctzs?|ctzl{0,2}|"
+    r"popcountl{0,2}|parityl{0,2}|ffsl{0,2}|bswap(?:16|32|64)|"
+    r"(?:add|sub|mul)_overflow|object_size|dynamic_object_size|__\w+_chk)(?![\w$]))[\w$]+"
+)
 # Operators whose operand is not evaluated: `sizeof x.buf` takes no address.
 _UNEVALUATED_BEFORE = re.compile(
     r"(?<![\w$])(?:sizeof|_Alignof|alignof|typeof|__typeof__|__typeof)\s*\(?\s*$"
