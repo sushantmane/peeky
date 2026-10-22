@@ -1,6 +1,22 @@
 # Peeky Cookbook
 
-Recipes for debugging running programs from your terminal. Each one is copy-paste ready from the repository root and shows real output (macOS, Python 3.13, recorded 2026-10-16). Agents use the same commands; see [AGENT_GUIDE.md](AGENT_GUIDE.md). Each language's rules, with pointers into this book: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md). What is particular to one language is in its cookbook, under the number of the section here it adds to: [Python](lang/python-cookbook.md), [Java](lang/java-cookbook.md), [C and C++](lang/c-cpp-cookbook.md), [Rust](lang/rust-cookbook.md).
+Recipes for debugging running programs from your terminal. Agents use the same commands: see
+[AGENT_GUIDE.md](AGENT_GUIDE.md).
+
+- **Real output:** the output shown is real, recorded on macOS with Python 3.13, from 2026-10-16
+  on.
+- **Copy and paste:** run the commands from the repository root. A recipe that uses a small program
+  of its own shows that program.
+- **Languages:** this book covers what every language shares. Each language has a one-page summary
+  of its rules, and a cookbook for what is particular to it. A language cookbook's sections have
+  the numbers of the sections here that they add to.
+
+| Language | Its rules | Its cookbook |
+| --- | --- | --- |
+| Python | [python.md](lang/python.md) | [python-cookbook.md](lang/python-cookbook.md) |
+| Java | [java.md](lang/java.md) | [java-cookbook.md](lang/java-cookbook.md) |
+| C and C++ | [c-cpp.md](lang/c-cpp.md) | [c-cpp-cookbook.md](lang/c-cpp-cookbook.md) |
+| Rust | [rust.md](lang/rust.md) | [rust-cookbook.md](lang/rust-cookbook.md) |
 
 **The loop:** ask a question, keep the answer, check the fix.
 
@@ -12,17 +28,36 @@ peeky session start <target> --at <file>:<line>                        # several
 peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # proof, on a fresh build
 ```
 
-> **Tip:** a breakpoint stops **before** its line runs. To see a value a line assigns, stop on the next line.
+**Words used here:**
 
-> **Tip:** an intervention (`--set`) is an experiment on one run. It tells you whether a hypothesis explains the output. Only `peeky verify` says a source fix works.
+| Word | Meaning |
+| --- | --- |
+| target | The program to debug: a file or a directory, with a `--config` where needed ([0](#0-setup)) |
+| probe | One complete run that stops at a line, captures values and can change them ([2](#2-asking-questions-with-probes)) |
+| hit | One stop at the probe's line |
+| selector | What to capture: a name, a dotted path, an index or a string key ([2.1](#21-fields-and-indexes)) |
+| intervention | A change made with `--set` or `--set-at` during a run ([2.3](#23-test-a-hypothesis-by-changing-a-value)) |
+| run | A probe's saved results, which `peeky queries` and `peeky sql` read ([4](#4-sql-over-saved-runs)) |
+| session | A program kept stopped, for several looks at one stop ([5](#5-step-by-step-sessions)) |
+| worker | The process that runs the debugger next to the program ([9](#9-a-program-on-another-host)) |
+
+> **Tip:** a breakpoint stops **before** its line runs. To see a value that a line assigns, stop on
+> the next line.
+
+> **Tip:** an intervention is an experiment on one run. It tells you whether a hypothesis explains
+> the output. Only `peeky verify` says that a source fix works.
 
 ---
 
 ## Table of Contents
 
 0. [Setup](#0-setup): install Peeky and the debugger or toolchain each language needs
+   - [Install Peeky](#install-peeky): Python 3.11 or later; `pip install` brings debugpy
+   - [What each language also needs](#what-each-language-also-needs): the tools for C, C++, Rust and Java, and how Peeky finds them
+   - [Keep a task's runs apart](#keep-a-tasks-runs-apart): `PEEKY_STATE_DIR`
+   - [How Peeky tells the language](#how-peeky-tells-the-language): from the target's path, or `--config`
 1. [First Look](#1-first-look): what a target offers, and a first probe
-   - [1.1 What Can I Ask?](#11-what-can-i-ask): `describe`: breakpoint lines, each function's names and types, what `--set` can change; lines and stepping
+   - [1.1 What Can I Ask?](#11-what-can-i-ask): `describe`: breakpoint lines, each function's names and their types (not in Python), what `--set` can change; lines and stepping
    - [1.2 First Probe](#12-first-probe): values at one line, and the program's output
 2. [Asking Questions with Probes](#2-asking-questions-with-probes): one run per question: values, changes, returns
    - [2.1 Fields and Indexes](#21-fields-and-indexes): selectors: fields, indexes, keys; names in any script
@@ -33,14 +68,14 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [2.6 Stop Right After the Last Hit](#26-stop-right-after-the-last-hit): `--until hits`: stop once the values are in
    - [2.7 JSON for Scripts](#27-json-for-scripts): `--json` and `jq`
    - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another
-   - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what each call returned
+   - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what a call returned, in C, C++, Rust and Java
 3. [Comparing Runs](#3-comparing-runs): what differs between saved runs
    - [3.1 Two Inputs Side by Side](#31-two-inputs-side-by-side): `queries diff`: what else differed, then the first divergence
    - [3.2 Inputs, Outcomes and Outputs of the Last Two Runs](#32-inputs-outcomes-and-outputs-of-the-last-two-runs): `queries outputs`: arguments, changes, status and output per run
    - [3.3 What My Intervention Changed](#33-what-my-intervention-changed): `queries set_effect`: values before and after a change
    - [3.4 One Row per Hit](#34-one-row-per-hit): `queries wide`: a row per hit, a column per selector
    - [3.5 Joining Two Runs by a Value](#35-joining-two-runs-by-a-value): `queries join`: pair two runs' hits by a value
-4. [SQL over Saved Runs](#4-sql-over-saved-runs): your own SQL over every probe ever run
+4. [SQL over Saved Runs](#4-sql-over-saved-runs): your own SQL over saved runs
    - [4.1 What Is in the Store?](#41-what-is-in-the-store): tables, views and SQL functions (`no_addresses`, `object_ref`)
    - [4.2 The Newest Run](#42-the-newest-run): `last_run`
    - [4.3 Numeric Filters](#43-numeric-filters): `num`: numbers, not text
@@ -427,9 +462,9 @@ qualified:
 
 #### Every stop: `--hits all`
 
-`--hits all` captures every stop, up to 100, without counting iterations first. With more than 20
-selectors the cap is lower, so that every hit fits the probe's budget of 2000 rows. The summary
-says `hits: 3 (all)`:
+`--hits all` captures every stop, up to 100, without counting iterations first. The cap is
+lowered so that every hit fits the probe's budget of 2,000 rows. Each hit takes one row per
+selector, and after-set rows count toward the budget too. The summary says `hits: 3 (all)`:
 
 ```sh
 peeky probe examples/corpus/running_max/program.py --at 6 --capture value,best --hits all
@@ -1297,18 +1332,49 @@ globals (`__pydevd_ret_val_dict`), which the program could see. So Peeky refuses
 
 ## 3. Comparing Runs
 
-Every probe not refused before launch is saved with a run id (`--no-save` skips that). `--label` tags a run so you can find it later.
+Peeky saves each probe's run with a run id, unless it refused the probe before launch or you passed
+`--no-save`. `--label` tags a run, so you can find it later.
+
+These words come up often here:
+
+| Word | Meaning |
+| --- | --- |
+| hit | One stop at the probe's `--at` line, numbered from 1. |
+| stop | One of a line's breakpoint locations, where the line has several ([2.2](#22-every-iteration-of-a-loop)). |
+| phase | When a value was read: `observed` before that hit's changes, `after-set` after them, `returned` for a `(return)` row ([2.9](#29-what-a-function-returned)). |
+| selector | A name you capture, such as `self._ip` or `bins[3].hi`. |
+| intervention | A change a probe makes with `--set` or `--set-at`. |
+| view | How Peeky decoded a value that needs care, such as a moved Rust local's bytes (`stale`). |
+| note | What Peeky says about a value it can't vouch for, or shows raw, such as a C local's leftovers. |
+| caveat | A view or a note that qualifies a value. Read the value with it, never as a plain value. |
+| candidate | A run of an edited copy of your source, from `probe --old/--new` ([6.6](#66-see-what-a-fix-does-before-making-it)). |
+| schema | The store's tables and columns. Its version number goes up when they change. |
+
+Some examples use `bins`, a small C program. Save it as `bins/bins.c`:
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+struct bin { int lo, hi; };
+int main(int argc, char **argv) {
+    struct bin bins[4] = {{0, 1}, {1, 2}, {2, 3}, {3, 4}};
+    int total = 0;
+    for (int i = 1; i < argc; i++) {
+        int v = atoi(argv[i]);
+        total += v * bins[v % 4].hi;
+    }
+    printf("total: %d\n", total);
+    return 0;
+}
+```
 
 ### 3.1 Two Inputs Side by Side
 
 **What it answers:** Where do two runs diverge?
 
-**Common cases**
-
-- Probe each input once (`--label` each), then `peeky queries diff`: it compares the last two runs unless you name them (`--param a=1 --param b=5`).
-- Read the `(status)`, `(output)`, `(edit)`, `(source)`, `(line)`, `(args)` and `(sets)` rows first: they say how the runs differed before you credit an edit.
-- Then come real divergences, the first one first; address-only and qualified values come after them.
-- Hits pair by number: where the runs stopped a different number of times (a sort's comparator), or as often but where hits may not be the same moments (an edit that changes the calls), a `note:` says so: use `queries join` (3.5) with a value that names the call, or several (`key=a,b`). Where values read the same at every hit in both runs and nothing suggests another pairing, a `note:` says so, and with no intervention in either run, that the hits line up by them.
+Probe each input once, with its own `--label`. Then run `peeky queries diff`. It compares the last
+two saved runs. To compare two others, name them: `--param a=1 --param b=5`. `compare`, `outputs`
+and `join` take the same two parameters.
 
 ```sh
 p() { peeky probe examples/real/ipaddress_mapped --at ipaddress39.py:2008 --run classify.py --capture self,self._ip "$@"; }
@@ -1323,36 +1389,309 @@ run_a  run_b  hit   phase     selector  value_a                        value_b  
 1      2      NULL  NULL      (args)    ["::ffff:8.8.8.8"]             ["::ffff:10.0.0.1"]          1        the runs had different program arguments: values also differ by input
 1      2      1     observed  self      IPv6Address('::ffff:808:808')  IPv6Address('::ffff:a00:1')  1        NULL
 1      2      1     observed  self._ip  281470816487432                281470849515521              1        NULL
+note: labels: run 1 is 'mapped-public'; run 2 is 'mapped-private'
+(4 rows)
 ```
 
-`diff` keeps only the rows that differ, in this order:
+The first two rows say how the runs differed: their output and their arguments. The next two are the
+values that differ at hit 1.
 
-1. **What the runs did and how they differed**, one row each where it applies: `(status)` and `(output)` when the runs' outcomes or outputs differ; `(edit)` when one run built a candidate edit; `(source)` when two runs that are not candidates ran different source text (another copy of the file); `(line)` when the probes' `--at` lines differ (their values then differ partly because of where they were read; a candidate's `--at` keeps the original's numbering, so `--at 33` is the same line where the candidate's rows show its line 34); `(args)` when they ran with different program arguments; `(sets)` when they made different interventions, each as `[name, value, "LINE@HIT"]`, a `--set` at its `--at` line's hit. Check these rows before crediting an edit with a difference.
-2. **Real differences**, in hit order and then in `--capture` order: the first of them is the first divergence.
-3. Values that only one run's `--set` changed (`intervention only in run b`). An `after-set` value equal to its run's `observed` value at that hit, in each run that has one, is left out: the intervention did not touch it (`r.buf` when only `r.tail` was set), and the `observed` row shows any difference.
-4. Values a view or a note qualifies in either run (`note: qualified (run a: note, run b: note): not evidence by itself`): a C local's leftovers on a `do` body's first line, a moved Rust local's bytes (`stale`). Two runs' leftovers differ with anything that touched the stack before, so such a row is not a divergence of the program; `queries run` shows each note. Whatever else a row says, a qualified value's note says so too, and the row ranks here: `missing in run b; qualified (run a: note)`, `intervention only in run a; qualified (run a: note)`.
-5. Values that differ only in heap or stack addresses (`note: addresses only`, for example a C string's pointer; NULL is never treated as an address), one row per selector: its first hit's, saying at how many hits (`addresses only, at 4 hits (one row per selector: its first hit)`), and per stop where both runs label stops (`at 2 hits at stop 1 (one row per selector and stop: its first hit)`). Text inside quotes is the program's data, never an address: `"0x00000001deadbeef"` in a `char[32]` is a real difference.
-6. Last, one row per selector that only one run asked for (`only in run a`, with its first hit's value).
+Comparing needs two saved runs. With fewer, the query says so. `peeky queries runs` lists the saved
+runs.
 
-The `(output)` row shows up to 200 characters of each output, from 60 before the first character that differs (from the start when it differs within its first 60; `…` marks a cut), and says where (`output differs at line 4, column 13`, counted from 1), so after a `--set` it shows the intervention's effect. Hits that one run never reached say `missing in run b`. A value whose type changed (an edit to `long long`) says `type unsigned int -> long long`.
+#### The rows `diff` shows, in order
 
-- **Which runs:** `diff` compares the last two runs unless you name them: `--param a=1 --param b=5`. Comparing needs two saved runs; with fewer, the query says so.
-- **Pairing by hit:** `diff` pairs hits by number: where the runs stopped at their line a different number of times, the hits need not line up (a sort's comparator is called on other pairs once one answer differs, so every later hit shows as a difference), and a `note:` line says so and names `queries join` (3.5), which pairs them by a selector's value instead (`--param key=a.name`, or several, `key=p.name,n.name`). A second note says how many rows come after the first hit that differs (`the first difference at a hit is at hit 4; 19 of the 20 rows at a hit come after it`): those may compare different calls. Every row is kept. Where both stopped as often, an edit can still change which call a hit is (eighth evaluation, M6), and the note gives the first sign it finds:
-  - **Places:** each hit's function, instance (a closure, a generic's copy) and line in one run must pair with one place in the other at every hit. A function renamed, or lines an edit moved, pair the same way at every hit and count as the same place. Otherwise: `at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24, but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24`.
-  - **Values at other hits:** a selector's values (addresses and Java object numbers masked, as `no_addresses` does) line up better at other hits than hit by hit: the same values in another order (a calculator's recursive `parseExpr` against a loop: ``runs 1 and 2 saw the same values of `op` in another order (run 2's hit 4 matches run 1's hit 5: -)``), or `[A, B, C]` against `[A, C, D]` (``saw `k`'s values at other hits``). The note says the calls *may* have come in another order or number: a fix that changes which value each moment sees gives the same, so read the rows.
-  - **Nothing to tell:** where the hits' values differ, selector by selector (those both runs captured), at more than half of them (at least 2), they cannot show that the hits pair, and the note says so (`the runs' values differ at 4 of 5 hits, so they cannot show that a hit is the same moment in both`).
+`diff` keeps only the rows that differ. They come in this order:
 
-  Each note names `queries join` with a value that names the call and that the edit leaves alone (an argument, an index), not one the edit changed. No note does not prove the hits line up.
-- **What counts:** Only plain values tell. One a view or a note qualifies (a moved Rust local's bytes, a C local's leftovers) is no evidence either way. A value read after a `--set` or `--set-at` in its run on a like name (the same name, a part of it, or what holds it: `lay.width` after `--set-at 75@1 lay.width=16`) may follow from the change, but a name does not prove the same variable (`x` in `helper` is not `main`'s `x`, nor one call's local another's). So such a value never counts toward saying the hits line up, nor toward the count of hits whose values differ. It still counts where it lines up better at other hits, and the note then says that an intervention on a like name may account for it. The same selector read before the change counts as any other, and `after-set` rows never count. Each selector is checked on its own; then:
-  - **Another pairing suggested:** where any selector's values line up better at other hits, the note says so, whatever else agrees. Where other values read the same at every hit, it says both, and that the values do not settle it, never that the hits line up: `` `word` reads the same at each of the 8 hits in both runs, but runs 1 and 3 saw `column`'s values at other hits (run 3's hit 6 matches run 1's hit 7: 14): the values do not settle whether a hit is the same moment in both ``. Peeky cannot tell which of them names the call: a value alike by chance (a counter), or one that follows from the edit, reads the same either way.
-  - **Most hits differ:** where values differ at more than half the hits (at least 2), the note says so before anything that agrees, and that the values do not show the hits are the same moments: `` `key` reads the same at each of the 2 hits in both runs, but `call` differs at 2 of them: the values do not show that a hit is the same moment in both ``.
-  - **No intervention in either run:** where values reading the same at every hit tell the hits apart (each hit reads differently): ``the hits line up by `title`: … and no single selector's values line up better at other hits, so pairing hits by number pairs them as `queries join` by it would``. Where they read alike at some hits: ``the hits line up as far as `word` shows: …; but it reads alike at some hits, which could still trade places``. Either holds only as far as those values name the call. Selectors are checked one at a time, and two that differ could line up better together, so where two or more differ, no note says the hits line up outright: ``the hits line up by `key` as far as each selector alone shows: …; `p` and `q` differ, and how they line up together was not checked``.
-  - **After an intervention:** what follows from it is unknown, so the note says only what agrees, what differs and which interventions there were: `` `column` and `word` read the same at each of the 8 hits in both runs, and no single selector's values line up better at other hits; `lay.width` differs; but the interventions (run 2's on `lay.width`) can change other values and which calls reach the line, so this does not show that each hit is the same moment in both ``.
-  - **Nothing reads the same at every hit** (or only a constant does): the signs above.
-- **Stops:** On a line with several breakpoint locations (#157), where both runs label their stops, a hit pairs only with the other run's hit at the same stop: one at another stop is two rows (`missing in run b (run a: stop 2)`, `missing in run a (run b: stop 1)`), and where the stops part (an edit that changes how often the line stops per pass, or a run saved before stops were labelled), the note says at which hit and names `join`. A `(return)` row pairs by its hit's stop, which it records (schema 15; upgrading a store fills it in for earlier runs from that hit's other rows, where each has one and all agree). Where an earlier run's `(return)` row has none (`--capture return` alone on such a line, or rows of its hit at different stops), nothing says where its call began: it pairs with no other run's row at a stop, and the note says pairing by hit cannot be checked.
-- **Other queries:** `queries compare` shows every value side by side with the same notes. Labels are free text, stored as given: `diff` and `compare` name them in a `note:` line (`labels: run 1 is 'mapped-public'; run 2 has no label`), and they never change which runs are compared, nor which run a candidate's `compare:` line names. A run saved before Peeky kept notes (`runs.notes_kept` NULL) may show such values unmarked, and every query showing its values says so in a `note:` line (`notes` in JSON).
+| Order | Rows | What they are |
+| ---: | --- | --- |
+| 1 | `(status)`, `(output)`, `(edit)`, `(source)`, `(line)`, `(args)`, `(sets)` | How the runs differed |
+| 2 | values that differ | Real differences, in hit order |
+| 3 | `intervention only in run b` | Values that only one run's `--set` changed |
+| 4 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
+| 5 | `addresses only` | Values that differ only in addresses |
+| 6 | `only in run a` | Selectors only one run captured |
+
+**1. How the runs differed.** Check these rows before you credit an edit with a difference. Each
+appears only where it applies:
+
+- `(status)` and `(output)`: the runs' outcomes or outputs differ.
+- `(edit)`: the runs built different edits, such as a candidate edit in one run only.
+- `(source)`: two runs that are not candidates ran different source text, such as another copy of
+  the file.
+- `(line)`: the probes' `--at` lines differ. Their values then differ partly because of where they
+  were read.
+- `(args)`: the runs had different program arguments.
+- `(sets)`: the runs requested or made different interventions. Each is
+  `[name, value, "requested at LINE@HIT"]`, as in
+  [3.2](#32-inputs-outcomes-and-outputs-of-the-last-two-runs).
+
+A candidate's `--at` keeps the original's line numbers. So `--at 33` is the same line, even where
+the candidate's rows show its line 34. It gives no `(line)` row.
+
+The `(output)` row shows up to 200 characters of each output. Each window starts 60 characters
+before the first character that differs. It starts at the beginning when the difference is within
+the first 60. `…` marks a cut. The note says where the outputs differ, counted from 1:
+`output differs at line 4, column 13`. So after a `--set`, this row shows the intervention's effect.
+
+**2. Real differences** come in hit order, then in `--capture` order. The first of them is the first
+divergence.
+
+- A hit that one run never reached says `missing in run b`.
+- A value whose type changed says so, for example after an edit to `long long`:
+  `type unsigned int -> long long`.
+
+**3. Values that only one run's `--set` changed** say `intervention only in run b`. Peeky leaves out
+an `after-set` row where, in each run that has one, it equals that run's `observed` value at that
+hit. The intervention didn't touch it, as `r.buf` when only `r.tail` was set. The `observed` row
+shows any difference.
+
+**4. Qualified values.** A value that a view or a note qualifies, in either run, ranks here. Its
+note says `qualified (run a: note, run b: note): not evidence by itself`.
+
+- Examples are a C local's leftovers on a `do` body's first line, or a moved Rust local's bytes
+  (`stale`).
+- Two runs' leftovers can differ because of anything that touched the stack before. So such a row is
+  not a divergence of the program.
+- Whatever else the row says, its note says the value is qualified, and the row ranks here:
+  `missing in run b; qualified (run a: note)`,
+  `intervention only in run a; qualified (run a: note)`.
+- `queries run` shows each note.
+
+**5. Address-only differences** say `addresses only`. These values differ only in heap or stack
+addresses, such as a C string's pointer.
+
+- NULL is never treated as an address.
+- Text inside quotes is the program's data, never an address. So `"0x00000001deadbeef"` in a
+  `char[32]` is a real difference.
+- There is one row per selector: its first hit's. The note says at how many hits:
+  `addresses only, at 4 hits (one row per selector: its first hit)`.
+- Where both runs label stops, there is one row per selector and stop:
+  `at 2 hits at stop 1 (one row per selector and stop: its first hit)`.
+
+**6. Selectors that only one run asked for** come last. Each has one row, `only in run a`, with its
+first hit's value.
+
+#### How `diff` pairs hits
+
+`diff` pairs hits by number: hit 3 of one run with hit 3 of the other. That is right only where hit
+3 is the same moment in both runs. Where Peeky finds a sign that it may not be, it adds a `note:`
+line. It keeps every row either way.
+
+**When the runs stopped a different number of times,** the hits need not line up. For example, a
+sort calls its comparator on other pairs once one answer differs. Then pairing by hit number can
+show every later hit as a difference. Two notes say so:
+
+- The first names `queries join` ([3.5](#35-joining-two-runs-by-a-value)), which pairs hits by a
+  selector's value instead: `--param key=a.name`. Several selectors work too:
+  `--param key=p.name,n.name`.
+- The second says how many rows come after the first hit that differs. Those rows may compare
+  different calls.
+
+These runs were recorded in a fresh state directory ([0](#0-setup)), so they are runs 1 to 5:
+
+```sh
+b() { peeky probe bins --at bins.c:9 --hits all "$@"; }
+b --capture v,total -- 7 2 5
+b --capture v,total -- 2 7 7 8
+peeky queries diff
+```
+
+```
+run_a  run_b  hit   phase     selector  value_a          value_b               differs  note
+1      2      NULL  NULL      (output)  total: 44\n     total: 70\n          1        output differs at line 1, column 8
+1      2      NULL  NULL      (args)    ["7", "2", "5"]  ["2", "7", "7", "8"]  1        the runs had different program arguments: values also differ by input
+1      2      1     observed  v         7                2                     1        NULL
+1      2      2     observed  v         2                7                     1        NULL
+1      2      2     observed  total     28               6                     1        NULL
+1      2      3     observed  v         5                7                     1        NULL
+1      2      4     observed  v         NULL             8                     1        missing in run a
+1      2      4     observed  total     NULL             62                    1        missing in run a
+note: run 1 stopped 3 times at its line and run 2 4, so a hit need not be the same moment in both (a sort's comparator is called on other pairs once one answer differs), and pairing by hit number can show every later hit as a difference: pair them by a value instead, `peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`
+note: the first difference at a hit is at hit 1; 5 of the 6 rows at a hit come after it, where pairing by hit number may compare different calls: read those with `join`
+(8 rows)
+```
+
+**When the runs stopped as often,** an edit can still change which call a hit is. The note then
+gives the first sign it finds, of these three:
+
+1. **Places don't pair.** A hit's place is its function, its instance and its line. An instance is a
+   closure, or a generic's copy. Each place in one run must pair with one place in the other, the
+   same way at every hit. A function renamed, or lines an edit moved, pair the same way at every
+   hit. So they count as the same place. Otherwise the note says where the pairing breaks:
+
+   ```
+   at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24, but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24
+   ```
+
+2. **Values line up better at other hits.** Peeky masks addresses and Java object numbers first, as
+   `no_addresses` does. Then it checks whether a selector's values line up better at other hits than
+   hit by hit:
+   - The same values can come in another order. A calculator's recursive `parseExpr` against a loop
+     gives:
+
+     ```
+     runs 1 and 2 saw the same values of `op` in another order (run 2's hit 4 matches run 1's hit 5: -)
+     ```
+
+   - `[A, B, C]` against `[A, C, D]` gives ``saw `k`'s values at other hits``.
+
+   The note says the calls *may* have come in another order or number. A fix that changes which
+   value each moment sees gives the same sign. So read the rows.
+3. **Most hits differ.** A hit differs where any selector that both runs captured reads differently
+   there. Where more than half the hits differ, and at least 2, the values can't show that the hits
+   pair. The note says so:
+
+   ```
+   the runs' values differ at 4 of 5 hits, so they cannot show that a hit is the same moment in both
+   ```
+
+Each of these three notes names `queries join`. Join by a value that names the call and that the
+edit leaves alone, such as an argument or an index. Don't join by a value the edit changed.
+
+**No note does not prove that the hits line up.**
+
+#### Which values count when pairing hits
+
+Only plain values count in these checks. Peeky checks each selector on its own.
+
+- A value that a view or a note qualifies is not plain. It is no evidence either way. Examples are a
+  moved Rust local's bytes and a C local's leftovers.
+- A value read after an intervention in its run, on a like name, may follow from the change. A like
+  name is the same name, a part of it, or what holds it: `lay.width` after
+  `--set-at 75@1 lay.width=16`.
+- But a name doesn't prove the same variable. `x` in `helper` is not `main`'s `x`, and one call's
+  local is not another's.
+- So such a value never counts toward saying that the hits line up. Nor does it count toward the
+  hits whose values differ.
+- It still counts where it lines up better at other hits. The note then says that an intervention on
+  a like name may account for it.
+- The same selector read before the change counts like any other value.
+- `after-set` rows never count.
+
+#### When values agree at every hit
+
+Some values may read the same in both runs, at every hit. Where nothing suggests another pairing, a
+note says so. With no intervention in either run, it may also say that the hits line up by them. The
+cases below say when. A constant, a value that never changes from hit to hit, doesn't count here.
+
+Here a candidate edit changes `total` at hit 4 only. `i` tells the hits apart, so the hits line up
+by it:
+
+```sh
+b --capture i,v,total -- 0 0 7 8
+b --capture i,v,total --old 'bins[v % 4].hi' --new 'bins[v % 4].lo' -- 0 0 7 8
+peeky queries diff
+```
+
+```
+run_a  run_b  hit   phase     selector  value_a       value_b       differs  note
+3      4      NULL  NULL      (output)  total: 36\n  total: 21\n  1        output differs at line 1, column 8
+3      4      NULL  NULL      (edit)    none          candidate     1        the runs built different edits (runs.edit has each diff)
+3      4      4     observed  total     28            21            1        NULL
+note: the hits line up by `i`: it reads the same at each of the 4 hits in both runs, and differently at every hit, and no single selector's values line up better at other hits, so pairing hits by number pairs them as `queries join` by it would
+(3 rows)
+```
+
+After an intervention, the same values show less:
+
+```sh
+b --capture i,v,total --set total=5 --set-hit 4 -- 0 0 7 8
+peeky queries diff --param a=3 --param b=5
+```
+
+```
+run_a  run_b  hit   phase      selector  value_a       value_b                             differs  note
+3      5      NULL  NULL       (output)  total: 36\n  total: 13\n                        1        output differs at line 1, column 8
+3      5      NULL  NULL       (sets)    []            [["total","5","requested at 9@4"]]  1        the runs requested different interventions (--set, --set-at), or made different ones
+3      5      4     after-set  total     NULL          5                                   1        intervention only in run b
+note: `i`, `v` and `total` read the same at each of the 4 hits in both runs, and differently at every hit, and no single selector's values line up better at other hits; but the interventions (run 5's on `total`) can change other values and which calls reach the line, so this does not show that each hit is the same moment in both
+(3 rows)
+```
+
+What the note says depends on the case:
+
+- **Another pairing is suggested.** Where any selector's values line up better at other hits, the
+  note says so, whatever else agrees. Where other values read the same at every hit, it says both.
+  It says the values don't settle it, and never that the hits line up:
+
+  ```
+  `word` reads the same at each of the 8 hits in both runs, but runs 1 and 3 saw `column`'s values at other hits (run 3's hit 6 matches run 1's hit 7: 14): the values do not settle whether a hit is the same moment in both
+  ```
+
+  Peeky can't tell which of them names the call. A value alike by chance, such as a counter, reads
+  the same either way. So does a value that follows from the edit.
+- **Most hits differ.** Where values differ at more than half the hits, and at least 2, the note
+  says so before anything that agrees. It says the values don't show that the hits are the same
+  moments:
+
+  ```
+  `key` reads the same at each of the 2 hits in both runs, but `call` differs at 2 of them: the values do not show that a hit is the same moment in both
+  ```
+
+- **No intervention in either run.** The note says what the agreeing values show:
+  - The values tell the hits apart, as each hit reads differently, and at most one selector differs.
+    Then the note says the hits line up by them, as in the `i` example above.
+  - The values read alike at some hits. The note says the hits line up as far as they show, but
+    alike hits could still trade places:
+
+    ```
+    the hits line up as far as `word` shows: …; but it reads alike at some hits, which could still trade places
+    ```
+
+  - Two or more selectors differ. Peeky checks selectors one at a time, and two that differ could
+    line up better together. So no note then says the hits line up outright. It says they line up as
+    far as each selector alone shows:
+
+    ```
+    the hits line up by `key` as far as each selector alone shows: …; `p` and `q` differ, and how they line up together was not checked
+    ```
+
+  In each case, this holds only as far as those values name the call.
+- **After an intervention** in either run, what follows from it is unknown. So the note says only
+  what agrees, what differs and which interventions there were. The `total=5` example above is one.
+  In this one, `lay.width` was changed and differs:
+
+  ```
+  `column` and `word` read the same at each of the 8 hits in both runs, and no single selector's values line up better at other hits; `lay.width` differs; but the interventions (run 2's on `lay.width`) can change other values and which calls reach the line, so this does not show that each hit is the same moment in both
+  ```
+
+- **No value agrees at every hit,** or only a constant does. Then only the three signs above give a
+  note.
+
+#### Pairing hits on lines with several stops
+
+Some lines have several breakpoint locations, so one pass stops there more than once
+([2.2](#22-every-iteration-of-a-loop)). Where both runs label their stops, a hit pairs only with the
+other run's hit at the same stop.
+
+- A hit at another stop gives two rows: `missing in run b (run a: stop 2)` and
+  `missing in run a (run b: stop 1)`.
+- The runs' stops can part. An edit may change how often the line stops per pass. Or an older Peeky
+  saved one run, before it labelled stops. The note then says at which hit, and names `join`.
+- A `(return)` row ([2.9](#29-what-a-function-returned)) pairs by its hit's stop, which it records
+  from schema 15 on. Upgrading an older store fills it in for earlier runs. It takes the stop from
+  that hit's other rows, where each has one and all agree.
+- An earlier run's `(return)` row may have no stop. That happens with `--capture return` alone on
+  such a line, or with rows of its hit at different stops. Then nothing says where its call began.
+  It pairs with no other run's row at a stop, and the note says pairing by hit can't be checked.
+
+#### Labels, `compare` and older runs
+
+- `queries compare` shows every value of the two runs side by side, with the same notes.
+- Labels are free text, stored as given. `diff` and `compare` name them in a `note:` line:
+  `labels: run 1 is 'mapped-public'; run 2 has no label`.
+- Labels never change which runs are compared. Nor do they change which run a candidate's `compare:`
+  line names.
+- A run that an older Peeky saved may lack its notes: its `runs.notes_kept` is NULL. It may then
+  show qualified values unmarked. Every canned query that shows its values says so in a `note:`
+  line (`notes` in JSON). Your own `peeky sql` doesn't: check `runs.notes_kept` there.
 
 ### 3.2 Inputs, Outcomes and Outputs of the Last Two Runs
+
+**What it answers:** What went into each run, and what came out?
+
+`queries outputs` shows each run's label, arguments, requested changes, status and output:
 
 ```sh
 peeky queries outputs
@@ -1362,11 +1701,23 @@ peeky queries outputs
 run_id  label           args                 sets  status     error_code  output
 1       mapped-public   ["::ffff:8.8.8.8"]   []    completed  NULL        ::ffff:8.8.8.8: private\n
 2       mapped-private  ["::ffff:10.0.0.1"]  []    completed  NULL        ::ffff:10.0.0.1: private\n
+(2 rows)
 ```
 
-Both are labelled private: the public one is the bug. `sets` lists each run's requested changes as `[name, value, "requested at LINE@HIT"]`: a `--set`'s at its `--at` line's `--set-hit` (`["gap", "20", "requested at 34@4"]`), a `--set-at`'s at its own. One whose hit never came ends `, not made: that hit never came`, as the probe warned.
+Both outputs say `private`. But `::ffff:8.8.8.8` is public, so its output is the bug.
+
+`sets` lists each run's requested changes. Each is `[name, value, "requested at LINE@HIT"]`:
+
+- A `--set` is at its `--at` line's `--set-hit`: `["gap", "20", "requested at 34@4"]`.
+- A `--set-at` is at its own `LINE@HIT`.
+- A change whose hit never came ends with `, not made: that hit never came`. The probe warned about
+  it too.
 
 ### 3.3 What My Intervention Changed
+
+**What it answers:** What did my changes do to the captured values?
+
+`queries set_effect` shows each selector before and after the run's interventions:
 
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --set start=0
@@ -1374,19 +1725,27 @@ peeky queries set_effect
 ```
 
 ```
-hit  line  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
-1    8     start     3         0          NULL             NULL              start: 3 -> 0
+hit  line  function  selector  observed  after_set  caveat_observed  caveat_after_set  interventions
+1    8     get_page  start     3         0          NULL             NULL              start: 3 -> 0
+(1 row)
 ```
 
-`caveat_observed` and `caveat_after_set` name a view or `note` that qualifies either value, as `hits` does. Rows come in the order the changes were made. A change at a stop where nothing was captured (a `--set-at` line, 2.8) is one row: what it changed, before and after.
-
-Pass `--param a=<run> --param b=<run>` to `diff`, `compare`, `outputs` and `join` to pick specific runs.
+- Rows come in the order the changes were made.
+- `caveat_observed` and `caveat_after_set` name a view or a note that qualifies either value, as
+  `hits` does.
+- A change at a stop where nothing was captured is one row, with what it changed before and after. A
+  `--set-at` on a line other than `--at` gives such a stop
+  ([2.8](#28-change-a-value-then-restore-it)).
 
 ### 3.4 One Row per Hit
 
 **What it answers:** What were all the captured values at each hit, side by side?
 
-`bins.c` loops over its arguments, and line 9 reads `total += v * bins[v % 4].hi;`:
+`queries wide` gives one row per hit and phase, and one column per selector. It shows the newest
+run, unless you name another.
+
+`bins.c` ([3](#3-comparing-runs)) loops over its arguments. Line 9 reads
+`total += v * bins[v % 4].hi;`.
 
 ```sh
 peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 2 7 7 8
@@ -1399,24 +1758,57 @@ hit  phase     line  v  total  bins[3].hi  no_value  caveats  sets
 2    observed  9     7  6      4           NULL      NULL     NULL
 3    observed  9     7  34     4           NULL      NULL     NULL
 4    observed  9     8  62     4           NULL      NULL     NULL
+(4 rows)
 ```
 
 - **Columns:** one per selector, named exactly as captured, in `--capture` order.
-  - A selector named like a fixed column (`line`) becomes `line (selector)`.
-  - SQLite ignores case in column names, so a selector that differs from an earlier column only by case gets a number: `--capture x,X` gives `x` and `X (2)`.
+  - A selector named like a fixed column, such as `line`, becomes `line (selector)`.
+  - SQLite ignores case in column names. So a selector that differs from an earlier column only by
+    case gets a number: `--capture x,X` gives `x` and `X (2)`.
   - In your own SQL, quote such names with double quotes: `"bins[3].hi"`, `"X (2)"`.
-- **Cells** are the values exactly as stored (text; use `num` in `captures` to compare numbers).
-- **NULL is never a value.** `no_value` is a JSON object naming each cell with no value (optimized out, withheld, an error) and why: `{"name":"no value yet: declared at line 7, below this stop, …"}`. A selector not captured at that hit is NULL and not named.
-- **`caveats`** is a JSON object naming each cell whose value is qualified. Read such a cell with its caveat, never as a plain value.
-  - `stale`, `unproven`, `opaque` or `budget-exhausted`: the row's view (`peeky sql --schema` explains `view`). `stale` is a moved or dropped Rust local's leftover bytes, whatever view decoded them.
-  - `note`: the probe marked the row `[note]` (for example a C local declared on a `do` body's first line: `{"k":"note"}`, "may be the last pass's value, or leftovers"), or gave it one of the Rust notes among its warnings. `peeky queries run` shows each row's note.
-- **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. `--param phase=observed` (or `after-set`) keeps one.
-- **`sets`** lists the changes made since the previous row's values were read (a JSON list, `["colon: 7 -> 6 (line 22, hit 3)"]`): on an `after-set` row, those made at that stop; on an `observed` row, those made at other lines' stops after the previous hit (`--set-at`, 2.8). A change after the last hit precedes no row; `queries set_effect` lists them all.
-- **`--json`** also gives the SQL it ran (`sql`): refine it with `peeky sql`, e.g. `SELECT * FROM (<sql>) WHERE "v" = '7'`. Up to 94 selectors fit (100 columns at most); a wider run is refused.
+  - A result has 100 columns at most. So `wide` fits 94 selectors, or 93 when it adds a `stop`
+    column. It adds one where the run's line has several stops.
+  - `wide` refuses a wider run. Use `peeky queries run` instead, or `peeky sql` with the selectors
+    you need.
+- **Cells** hold the values exactly as stored, as text. To compare numbers, use `num` in `captures`
+  ([4.3](#43-numeric-filters)).
+- **NULL is never a value.** `no_value` is a JSON object. It names each cell with no value, and says
+  why: optimized out, withheld, or an error. For example:
+  `{"name":"no value yet: declared at line 7, below this stop, …"}`.
+- A selector not captured at that hit is NULL, and `no_value` doesn't name it.
+- **`caveats`** is a JSON object. It names each cell whose value is qualified. Read such a cell with
+  its caveat, never as a plain value. The caveat is one of these:
+  - The row's view, such as `stale`, `unproven`, `opaque` or `budget-exhausted`.
+    `peeky sql --schema` explains `view`. `stale` is a moved or dropped Rust local's leftover bytes,
+    whatever view decoded them.
+  - `note`, where the probe marked the row `[note]`. A C local declared on a `do` body's first line
+    gives `{"k":"note"}`: "may be the last pass's value, or leftovers".
+  - `note` too, where the probe gave the row one of the Rust notes among its warnings.
+
+  `peeky queries run` shows each row's note.
+- **Phases:** a run with `--set` has an `after-set` row after its hit's `observed` row. To keep one
+  phase, pass `--param phase=observed` or `--param phase=after-set`.
+- **`sets`** is a JSON list of the changes made since the previous row's values were read:
+  `["colon: 7 -> 6 (line 22, hit 3)"]`.
+  - On an `after-set` row, it lists the changes made at that stop.
+  - On an `observed` row, it lists the changes made at other lines' stops after the previous hit
+    (`--set-at`, [2.8](#28-change-a-value-then-restore-it)).
+  - A change after the last hit comes before no row. `queries set_effect` lists them all
+    ([3.3](#33-what-my-intervention-changed)).
+- **`--json`** also gives the SQL it ran, as `sql`. Refine it with `peeky sql`:
+  `SELECT * FROM (<sql>) WHERE "v" = '7'`.
 
 ### 3.5 Joining Two Runs by a Value
 
-**What it answers:** For the same value of `v`, what did each run see? `diff` pairs runs by hit number, which says little when the inputs come in a different order, or when the runs took different paths (a sort's comparator: `--param key=a.name` pairs its calls on the same element). Where no one selector names a call, several do together: `--param key=a.name,b.name` pairs hits where each has the same value.
+**What it answers:** For the same value of `v`, what did each run see?
+
+`diff` pairs hits by number. That says little when the inputs come in a different order, or when the
+runs took different paths. `queries join --param key=v` pairs the hits that have the same value of
+`v` instead.
+
+- For a sort's comparator, `--param key=a.name` pairs its calls on the same element.
+- Where no one selector names a call, several can together. `--param key=a.name,b.name` pairs hits
+  where each has the same value.
 
 ```sh
 peeky probe bins --at bins.c:9 --capture 'v,total,bins[3].hi' --hits all -- 7 2 5
@@ -1431,43 +1823,101 @@ v  hit_a  hit_b  a:total  a:bins[3].hi  b:total  b:bins[3].hi  no_value_a  no_va
 2  2      1      28       4             0        4             NULL        NULL        NULL       NULL       both
 5  3      NULL   34       4             NULL     NULL          NULL        NULL        NULL       NULL       only in run a
 8  NULL   4      NULL     NULL          62       4             NULL        NULL        NULL       NULL       only in run b
+note: the key repeats: run 6's hits 2 and 3 both have `v` 7, and such a value pairs every hit that has it in one run with every one in the other (2 rows, from 1 value): to tell those hits apart, add a selector that names the call to the key (key=v,<selector>)
+(5 rows)
 ```
 
-- **Matching** is by the key's stored text, exactly. It joins the `observed` rows unless you pass `--param phase=after-set`.
-- **Addresses:** a key whose values carry one (a pointer, a C string `0x16fbcbb1e "apple"`) rarely matches, as addresses differ between runs. The result then says so in a `note:` line (`notes` in JSON). `--param masked=1` matches the keys with addresses masked (`no_addresses`), showing each run's own value as `a:<key>` and `b:<key>`. Masked, any address matches any other, so a bare pointer pairs with every other bare pointer; NULL is not masked, and neither is text inside quotes (`"0x00000001deadbeef"` in a `char[32]` is data).
-- **A repeated key pairs every hit:** a value at 2 hits of run a and 3 of run b gives 6 rows, in run a's hit order and then run b's. Here run b saw `7` twice, so run a's hit 1 appears twice. A `note:` line says so, with the first such value and how many rows they make (``the key repeats: run 2's hits 2 and 3 both have `v` 7, …``): add a selector that tells those hits apart (`key=v,i`).
-- **Several selectors:** `key=a,b` (commas outside brackets and quotes separate them: `m["a,b"]` is one) pairs hits where every one of them has the same value, with a column for each; a hit missing any of them is unmatched. Up to 8.
-- **Unmatched hits** come last, one row each: `only in run a` (or `b`) when the other run never had that key value, or when the hit has no key value (the key cell is NULL, and `no_value_a` says why), or a key value a view or a note qualifies (the key cell is NULL, and `caveats_a` says why): such a value pairs nothing.
-- **Columns:** the key (each of its selectors), each run's hit, then each run's other selectors as `a:<selector>` and `b:<selector>` (numbered as in `wide` where only case differs), and `no_value`/`caveats` per run as in `wide`. The key's own caveat is among them, on an unmatched hit: no pair is made on a value Peeky cannot vouch for. Both runs must have captured the key.
-- **`--json`** gives the SQL too (`sql`).
+Run b saw `7` twice, so run a's hit 1 appears twice.
+
+- **Matching** is by the key's stored text, exactly. `join` uses the `observed` rows, unless you
+  pass `--param phase=after-set`.
+- **Both runs must have captured the key.**
+- **Repeated key values.** A plain one pairs every hit that has it in one run with every hit that
+  has it in the other. A qualified one matches nothing (see unmatched hits below).
+- A plain value at 2 hits of run a and 3 of run b gives 6 rows. They come in run a's hit order, then
+  run b's. A `note:` line says so, with the first such value and how many rows they make. To tell
+  those hits apart, add a selector to the key: `key=v,i`.
+- **Several selectors:** `key=a,b` pairs hits where every one of them has the same value. Each gets
+  a column. A hit missing any of them is unmatched. You can give up to 8.
+- Commas outside brackets and quotes separate the selectors. So `m["a,b"]` is one selector.
+- **Unmatched hits** come last, one row each, as `only in run a` or `only in run b`. A hit is
+  unmatched in three cases:
+  - The other run never had that key value.
+  - The hit has no key value. The key cell is NULL, and `no_value_a` says why.
+  - A view or a note qualifies the hit's key value. The key cell is NULL, and `caveats_a` says why.
+    Such a value pairs nothing.
+- **Columns:** first the key, one column per selector, then each run's hit. Then each run's other
+  selectors, as `a:<selector>` and `b:<selector>`. Names that differ only by case are numbered, as
+  in `wide`. Last, `no_value` and `caveats` for each run, as in `wide`.
+- On an unmatched hit, `caveats` includes the key's own caveat. Peeky makes no pair on a value it
+  can't vouch for.
+- **`--json`** gives the SQL too, as `sql`.
+
+**Keys with addresses.** A key whose values carry an address rarely matches, as addresses differ
+between runs. Examples are a pointer, or a C string: `0x16fbcbb1e "apple"`. The result then says so
+in a `note:` line (`notes` in JSON).
+
+- `--param masked=1` matches the keys with addresses masked, as `no_addresses` does. It shows each
+  run's own value as `a:<key>` and `b:<key>`.
+- Masked, any address matches any other. So a bare pointer pairs with every other bare pointer.
+- NULL is not masked. Neither is text inside quotes: `"0x00000001deadbeef"` in a `char[32]` is data.
 
 ---
 
 ## 4. SQL over Saved Runs
 
-The store is SQLite. Queries are read-only and bounded, and they need no rerun.
+Peeky keeps saved runs in a SQLite database, the store. Your queries on it are read-only and
+bounded. They need no rerun.
 
 ### 4.1 What Is in the Store?
+
+**What it answers:** Which tables, functions and canned queries can I use?
 
 ```sh
 peeky sql --schema          # tables, columns, views, canned queries, examples
 peeky queries               # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, wide, join, unreadable, failures
 ```
 
-| Table or view | One row per |
-| --- | --- |
-| `runs` | probe run: inputs, interventions, status, output, build identity |
-| `captures` | selector × hit × phase; `num` holds the value as a number; `view` and `note` qualify a value (read it with them) |
-| `interventions`, `pauses` | applied `--set`, pause per hit |
-| `evidence` (view) | captures joined with their run (with its `language`): no JOIN needed; output is `runs.output` |
-| `last_run` (view) | the evidence rows of the newest run |
+A canned query is a question Peeky has ready, such as `peeky queries diff`.
 
-**Functions.** `no_addresses(value)` masks heap and stack addresses (never NULL, short hex or quoted text) to compare runs in your own SQL; `no_addresses(value, language)` (the `evidence` view has `language`; the program's output is `runs.output`) also masks Java object numbers in Java runs. `object_ref(value)` is the Java object a value is (`Balance$Worker@100`): equal within one run means the same object (`object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element; [Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)); Python's is the `identity` column.
+| Table or SQL view | One row per |
+| --- | --- |
+| `runs` | probe run: its inputs, interventions, status, output and build identity |
+| `captures` | selector, hit and phase. `num` holds the value as a number. `view` and `note` qualify a value: read it with them. |
+| `interventions` | applied `--set` or `--set-at` |
+| `pauses` | pause, one per hit |
+| `evidence` (SQL view) | capture, joined with its run and the run's `language`. You need no JOIN. |
+| `last_run` (SQL view) | `evidence` row of the newest run |
+
+The program's output is not in `evidence`. Read it from `runs.output`.
+
+**Functions** for your own SQL:
+
+| Function | What it gives |
+| --- | --- |
+| `no_addresses(value)` | The value with heap and stack addresses masked, to compare runs. It never masks NULL, short hex or quoted text. |
+| `no_addresses(value, language)` | The same, and it also masks Java object numbers in Java runs. `evidence` has `language`. |
+| `object_ref(value)` | The Java object a value is, such as `Balance$Worker@100`. Within one run, equal means the same object. |
+
+`object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element
+([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)). Python records which
+object a value is in the `identity` column instead.
 
 ### 4.2 The Newest Run
 
+**What it answers:** What did the newest run capture?
+
 ```sh
+peeky probe examples/corpus/running_max/program.py --at 6 --capture value --hits all
 peeky sql "SELECT hit, selector, value FROM last_run"
+```
+
+```
+hit  selector  value
+1    value     -3
+2    value     -1
+3    value     -2
+(3 rows)
 ```
 
 ### 4.3 Numeric Filters
@@ -1475,51 +1925,100 @@ peeky sql "SELECT hit, selector, value FROM last_run"
 **What it answers:** On which hits was a value out of range?
 
 ```sh
-peeky sql "SELECT hit, value, num FROM evidence WHERE run_id = 3 AND selector = 'value' AND num < -1"
+peeky sql "SELECT hit, value, num FROM evidence WHERE run_id = 7 AND selector = 'value' AND num < -1"
 ```
 
 ```
 hit  value  num
-1    -3     -3.0
-3    -2     -2.0
+1    -3     -3
+3    -2     -2
+(2 rows)
 ```
 
-`value` is the debugger's text; `num` is that value as a number, and NULL when it isn't one. An integer that fits 64 bits is exact (`600`, not `600.0`); a larger one, such as a `u64` near its maximum, is approximate in `num`, so compare those through `value`. As in any SQL, integer division truncates (`num * 1.0 / 1000` keeps the fraction) and `SUM` of integers fails past 64 bits (`TOTAL(num)` returns a REAL). Older stores are upgraded in place, with `num` recomputed from `value`.
+- `value` is the debugger's text.
+- `num` is that value as a number. It is NULL when the value isn't a number.
+- An integer that fits 64 bits is exact in `num`: `600`, not `600.0`.
+- A larger integer, such as a `u64` near its maximum, is approximate in `num`. Compare those through
+  `value`.
+- As in any SQL, integer division truncates. Write `num * 1.0 / 1000` to keep the fraction.
+- `SUM` of integers fails past 64 bits. Use `TOTAL(num)`, which returns a REAL.
+- Peeky upgrades older stores in place, and recomputes `num` from `value`.
 
 ### 4.4 Values Seen Across All Runs
 
+**What it answers:** Which values did a selector take, in all saved runs?
+
 ```sh
-peeky queries values --param selector=start   # qualified: how many sightings a view or note qualifies
+peeky queries values --param selector=v
+```
+
+```
+program  line  value  seen  qualified  runs  first_run  last_run
+bins.c   9     7      5     0          3     4          6
+bins.c   9     2      3     0          3     4          6
+bins.c   9     8      2     0          2     4          6
+bins.c   9     5      1     0          1     5          5
+(4 rows)
+```
+
+`qualified` counts the sightings that a view or a note qualifies. Candidate runs are left out.
+
+For anything else, write the SQL:
+
+```sh
 peeky sql "SELECT program, COUNT(*) AS runs, SUM(status = 'completed') AS completed FROM runs GROUP BY program"
 ```
 
 ```
 program            runs  completed
+bins.c             3     3
 ipaddress39.py     2     2
-pagination_bug.py  2     2
+pagination_bug.py  1     1
 program.py         1     1
+(4 rows)
 ```
 
 ### 4.5 Parameters and Export
+
+**What it answers:** How do I pass a value into a query, and save the result?
 
 ```sh
 peeky sql "SELECT * FROM evidence WHERE run_id = :run" --param run=3 --json > run3.json
 sqlite3 -readonly -csv -header ~/.peeky/evidence/evidence.db "SELECT * FROM evidence" > evidence.csv
 ```
 
-Limits: one `SELECT` per call, 200 rows by default (`--limit` up to 10000), 10 s, 16 MB of JSON. The newest 500 runs are kept. Writes, `ATTACH` and settings are refused (`INVALID_QUERY`).
+`:run` in the SQL takes the value of `--param run=3`. `sqlite3` reads the store file directly:
+`evidence/evidence.db` in the state directory.
 
----
+`peeky sql` has these limits:
+
+| Limit | Value |
+| --- | --- |
+| Statements | one `SELECT`, or `WITH … SELECT`, per call |
+| Rows | 200 by default; `--limit` up to 10000 |
+| Time | 10 s |
+| JSON result | 16 MB |
+| Runs kept | the newest 500 |
+
+Peeky refuses writes, `ATTACH` and settings with `INVALID_QUERY`. The store holds evidence already
+captured. For a new question about the program, run a new probe.
 
 ### 4.6 Same Object, or a Copy? (Java, Python)
 
 **What it answers:** Is this variable the list's own element, or a copy whose changes go nowhere?
 
-Java compares objects with `object_ref` ([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)); Python with the `identity` column ([Python 4.6](lang/python-cookbook.md#46-same-object-or-a-copy-java-python)).
+- Java compares objects with `object_ref`: see
+  [Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python).
+- Python compares them with the `identity` column: see
+  [Python 4.6](lang/python-cookbook.md#46-same-object-or-a-copy-java-python).
 
 ### 4.7 C++ References and Pointers in SQL
 
-**What it answers:** Which arguments did `trim_left` change? A `const std::string &` (or a pointer) is saved as the debugger shows it, its address first: `0x000000016d78b298 "apple"`. It never equals a plain string's `"apple"`, so take the text after the address before comparing.
+**What it answers:** Which arguments did `trim_left` change?
+
+A `const std::string &`, or a pointer, is saved as the debugger shows it, with its address first:
+`0x000000016d78b298 "apple"`. It never equals a plain string's `"apple"`. So take the text after the
+address before you compare.
 
 The recipe is in [C and C++ 4.7](lang/c-cpp-cookbook.md#47-c-references-and-pointers-in-sql).
 
@@ -1527,17 +2026,23 @@ The recipe is in [C and C++ 4.7](lang/c-cpp-cookbook.md#47-c-references-and-poin
 
 ## 5. Step-by-Step Sessions
 
-Use a session when you want several looks at one stop. Every command is a separate shell call; a private worker keeps the program paused in between.
+Use a session when you want several looks at one stop. Each command is a separate shell call. A
+private worker keeps the program paused in between.
 
 ### 5.1 Stop, Look, Change, Finish
 
-**Common cases**
+**What it answers:** What do the values look like at this stop, and what happens if I change one?
 
-- `session start` stops once; `inspect` lists the locals, `get` reads values and lists their children, `set` changes one, and `close` ends the session (always close it).
-- Pass `--name` to every later command when the session is not `default`.
-- Session states and `inspect` name the stopped function (`in Ring::push(int)`, `in topk::insert_sorted::{{closure}}`).
-- `get` of a name that is not there prints why and names the stop; any selector with no value makes the exit status 1, and a last line on stderr names them (`peeky: no value for nosuch (each row above says why), so the exit status is 1`).
-- `--frame N` reads caller frame N; a caller's values cannot be changed.
+`session start` stops the program once. Then use these commands, and always close the session:
+
+| Command | What it does |
+| --- | --- |
+| `session inspect` | Lists the locals. |
+| `session get NAME …` | Reads values, and lists their children. |
+| `session set NAME=VALUE` | Changes one value. |
+| `session continue --to-exit` | Runs the program to its end. |
+| `session report` | Shows the state and the program's output. |
+| `session close` | Ends the session. |
 
 ```sh
 peeky session start examples/pagination_bug.py --at 8
@@ -1551,8 +2056,8 @@ peeky session close
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
-stopped at .../pagination_bug.py:8 in get_page, hit 1 (paused 0.06 s)
+session default (python): state: stopped at examples/pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
+stopped at examples/pagination_bug.py:8 in get_page, hit 1 (paused 0.12 s)
 [Locals]
   items: list = [10, 20, 30, 40, 50, 60]  [id 6] (children: peeky session get items)
   page: int = 1
@@ -1575,14 +2080,52 @@ state: terminated
 output:
 PAGE: [10, 20, 30]
 closed default
+cleanup: nothing Peeky could identify was still running
 ```
 
-- **Scope headers:** Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java.
-- **Long scopes:** A scope lists at most 50 entries (debugpy's groups count) and says how many more it has; `session get NAME` reads one past them by name.
-- **`session get`:** `session get` on a list, dict or struct lists one level of children, each with the selector that reads it, and `(children: ...)` on a child that has children of its own. A name that is not there prints only why (`x: <not found; visible: ...>`), and a last line names the stop it was read at (`note: this stop is in main at sched.cpp:30`: a comparator's `a` is not `main`'s); JSON gives such a row the stop's `location`. If any selector fails, every row is still printed and the exit status is 1.
-- **`continue`:** `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
+#### What `inspect` and `get` show
 
-**Caller frames.** `--frame N` reads frame N of the stack, as `session inspect --json` lists `frames` (0, the default, is where the program stopped; 1 its caller; at most 10):
+- Session states and `inspect` name the stopped function: `in Ring::push(int)`,
+  `in topk::insert_sorted::{{closure}}`.
+- Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java.
+- A scope lists at most 50 entries, and says how many more it has. debugpy's groups count as
+  entries. To read one past them, name it: `session get NAME`.
+- `session get` on a list, dict or struct lists one level of children. Each child shows the
+  selector that reads it.
+- A child that has children of its own shows `(children: ...)`.
+
+#### When a name has no value
+
+`get` of a name that isn't there prints only why, such as `x: <not found; visible: ...>`. A note
+at the end names the stop it was read at.
+
+Any selector with no value makes the exit status 1. Every row is still printed, and a last line on
+stderr names the selectors with no value:
+
+```
+$ peeky session get nosuch start
+nosuch: <not found: 'nosuch' is neither a local nor a module global here; visible: items, page, page_size, start; module globals: the names in debugpy's function variables, special variables (select them by name)>
+start: int = 3
+note: this stop is in get_page at pagination_bug.py:8
+peeky: no value for nosuch (each row above says why), so the exit status is 1
+```
+
+The note tells you where you are. For example, this note says that a comparator's `a` is not
+`main`'s: `note: this stop is in main at sched.cpp:30`. In JSON, such a row has the stop's
+`location`.
+
+#### Go on to the next stop, or use another session
+
+- `session continue`, without `--to-exit`, runs to the next stop at the session's breakpoint
+  ([5.2](#52-stepping-and-running-to-a-line)).
+- A session that isn't `default` needs `--name` on every later command
+  ([5.3](#53-several-sessions-at-once)).
+
+#### Read a caller's frame
+
+`--frame N` reads frame N of the stack. Frame 0, the default, is where the program stopped. Frame 1
+is its caller. At most 10 frames are listed, and `session inspect --json` lists them under
+`frames`.
 
 ```sh
 peeky session start examples/corpus/mutable_default/program.py --at 3
@@ -1592,33 +2135,45 @@ peeky session inspect --frame 2
 ```
 
 ```
-stopped at .../program.py:3 in add_tag, hit 1 (paused 0.1 s)
-frame 1: <module> (.../program.py:7)
+session default (python): state: stopped at examples/corpus/mutable_default/program.py:3 in add_tag, hit 1 (paused 0.0 s)
+stopped at examples/corpus/mutable_default/program.py:3 in add_tag, hit 1 (paused 0.12 s)
+frame 1: <module> (examples/corpus/mutable_default/program.py:7)
 [Locals]
   (special variables: debugpy's group; select its members by name)
   (function variables: debugpy's group; select its members by name)
-frame 1: <module> (.../program.py:7)
+frame 1: <module> (examples/corpus/mutable_default/program.py:7)
 add_tag.__defaults__: tuple = (['a'],)  [id 24]
   add_tag.__defaults__[0]: list = ['a']  [id 79] (children: peeky session get 'add_tag.__defaults__[0]' --frame 1)
   len() [not selectable]: int = 1
 peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 to 1 (0 is the innermost; at most 10 are listed)
+  hint: Fix the request arguments; see `peeky <command> --help`.
 ```
 
-- **Caller frames:** A frame past the stack is `INVALID_REQUEST`, naming how many frames there are. Rust's owned-local and Box proofs hold only in the innermost frame, so a caller's `Vec` keeps its raw fields with a note.
-- **Changes:** A caller's values cannot be changed (`MUTATION_REJECTED`), so caller listings never say `[settable]`.
+- A frame past the stack is refused with `INVALID_REQUEST`, which says how many frames there are.
+- A caller's values can't be changed. `session set` takes no `--frame`, and a change to a caller's
+  value is refused with `MUTATION_REJECTED`. So caller listings never say `[settable]`.
+- Rust's proofs for owned locals and `Box`es hold only in the innermost frame. So a caller's `Vec`
+  keeps its raw fields, with a note.
 
-**Per language:** [Python 5.1](lang/python-cookbook.md#51-stop-look-change-finish) (globals, a name missing from the locals, a pass's own value, module level), [C and C++ 5.1](lang/c-cpp-cookbook.md#51-stop-look-change-finish) (a caller's local still being initialized).
+**Per language:**
+
+- [Python 5.1](lang/python-cookbook.md#51-stop-look-change-finish): globals, a name missing from
+  the locals, a pass's own value, module level.
+- [C and C++ 5.1](lang/c-cpp-cookbook.md#51-stop-look-change-finish): a caller's local still being
+  initialized.
 
 ### 5.2 Stepping and Running to a Line
 
 **What it answers:** What happens line by line from here, inside a call, or a few lines further on?
 
-**Common cases**
-
-- `step` runs to the next line, `step --into` into a call, `step --out` until the function returns; `continue` runs to the next stop, `--to LINE` once to a line, `--to-exit` to the end.
-- **`continue --to LINE` does not skip the session's breakpoint:** when a stop there comes first, the state says so and the exit status is 3; repeat it.
-- A step can land on a closing `}`, a loop header, or back on an `if`'s line (1.1); read a block's locals before stepping past it.
-- A step that leaves your sources says `outside the program's sources`: `step --out` or `continue`.
+| Command | Runs |
+| --- | --- |
+| `session step` | to the next line, over calls |
+| `session step --into` | into the call on this line |
+| `session step --out` | until this function returns |
+| `session continue` | to the next stop |
+| `session continue --to LINE` | once, to a line |
+| `session continue --to-exit` | to the program's end |
 
 ```sh
 peeky session start examples/pagination_bug.py --at 13
@@ -1631,50 +2186,196 @@ peeky session continue --to-exit
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
-state: stopped at .../pagination_bug.py:5 in get_page (paused 0.0 s)
-state: stopped at .../pagination_bug.py:7 in get_page (paused 0.0 s)
-state: stopped at .../pagination_bug.py:8 in get_page (paused 0.0 s)
+session default (python): state: stopped at examples/pagination_bug.py:13 in <module>, hit 1 (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:5 in get_page (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:7 in get_page (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:8 in get_page (paused 0.0 s)
 start: int = 3
-state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:13 in <module> (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
-- **Hit numbers:** State lines number the stops at the session's breakpoint (`…:8 in get_page, hit 3`), and say which of the line's breakpoint locations a stop is at where it has several in the function (`hit 4, stop 1 of 3`; see `--hits` in 2.2). `session start --hit 5` runs on to the 5th stop, and `session continue --count 3` to the 3rd breakpoint stop from here, each within one `--timeout`. They never run past anything else: a crash, a finished step or the program's exit ends them there, with a note saying why and the last hit reached, and exit status 3 (as when `--timeout` ends them first).
-- **`continue --to`:** `peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. If another stop comes first, such as the session's own breakpoint in a loop, the state says so and the exit status is 3 (`note: stopped at the session's breakpoint (line 30, hit 2) before reaching line 17; `session continue --to 17` again`); so does a program that exits first (`the program exited without reaching line 17`). There is no option to skip the session's breakpoint: repeating `--to` reaches the line with every stop counted. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop.
-- **Leaving your sources:** A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed, except what your function returned when the step left it (2.9). In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes.
-- **The session's breakpoint during a step:** A step whose code reaches the session's breakpoint first (a recursive call on the line, or the rest of the function under `step --out`) stops there, and the state says so (`hit 2` and `note: the session's breakpoint (hit 2) stopped the step before it ended, and the step is over`); `step --out` then shows no return, since the function has not returned.
-- **Threads:** When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. A step that a breakpoint (or a crash) stops first is over: in C, C++ and Rust, the next `continue` runs to the next breakpoint, not to where the step would have ended. When another thread's stop catches the stepping thread mid-step (LLDB may report it as a step's end anywhere it was, inside `usleep`), the state says `the step was interrupted here` and `continue` serves that thread's stop.
+A step can land on a closing `}`, on a loop's header, or back on an `if`'s line
+([1.1](#11-what-can-i-ask)). So read a block's locals before you step past it.
 
-**Per language:** [Java 5.2](lang/java-cookbook.md#52-stepping-and-running-to-a-line) (`--into` and `--out` skip JDK classes).
+#### Run to a line with `continue --to`
+
+`session continue --to 9` stops once at line 9 of the session's file. The extra breakpoint is
+removed at the next stop. Then the session's own breakpoint applies again.
+
+`--to` doesn't skip the session's breakpoint. If a stop there comes first, as in a loop, the state
+says so and the exit status is 3. Repeat the command: every stop is counted. There is no option to
+skip the session's breakpoint.
+
+For example, in `examples/corpus/running_max/program.py`, line 5 is in a loop and line 7 is after
+it:
+
+```
+$ peeky session start examples/corpus/running_max/program.py --at 5
+session default (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 1 (paused 0.0 s)
+$ peeky session continue --to 7
+state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 2 (paused 0.0 s)
+note: stopped at the session's breakpoint (line 5, hit 2) before reaching line 7; `session continue --to 7` again
+$ echo $?
+3
+```
+
+- A program that exits first gives exit status 3 too, with this note:
+  `the program exited without reaching line 17`.
+- `continue --to` refuses a line the debugger would move, because it has no code. The session keeps
+  its stop, so you can choose another line:
+
+  ```
+  $ peeky session continue --to 8
+  peeky: [INVALID_BREAKPOINT] Line 8 has no code to stop at (the debugger would use line 7); choose a line from `peeky describe`
+    hint: Choose a line from `peeky describe` breakpoint_lines.
+  $ peeky session continue --to 7
+  state: stopped at examples/corpus/running_max/program.py:7 in running_max (paused 0.0 s)
+  ```
+
+#### Count stops with `--hit` and `--count`
+
+- State lines number the stops at the session's breakpoint: `…:8 in get_page, hit 3`.
+- A line can have several breakpoint locations in the function. State lines then also say which
+  one a stop is at: `hit 4, stop 1 of 3` (see `--hits` in [2.2](#22-every-iteration-of-a-loop)).
+- `session start --hit 5` runs on to the 5th stop.
+- `session continue --count 3` runs on to the 3rd breakpoint stop from here.
+- Both run within one `--timeout`.
+
+They never run past anything else. A crash, a finished step or the program's exit ends them there.
+A note says why, and names the last hit reached, if any. The exit status is 3, as when `--timeout`
+ends them first:
+
+```
+$ peeky session start examples/corpus/running_max/program.py --at 5 --hit 5
+session default (python): state: terminated (program exited; `peeky session report` shows output)
+note: the program exited before hit 5; last hit 3
+```
+
+#### When a step leaves your sources
+
+A step can leave your sources: into a library, into Rust's standard library, or past the end of
+`main`. Then:
+
+- The state says `outside the program's sources`.
+- Nothing there is read or changed. The one exception is what your function returned when the step
+  left it ([2.9](#29-what-a-function-returned)).
+- To get back, use `step --out` or `continue`.
+- In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code
+  is still on the stack, `step --out` returns to it.
+- Past `main`, the state says so, and `continue` finishes.
+
+#### When the session's breakpoint stops a step
+
+A step's code can reach the session's breakpoint first. Examples are a recursive call on the line,
+or the rest of the function under `step --out`. The step then stops there, and the state says so
+with `hit 2` and this note:
+
+```
+note: the session's breakpoint (hit 2) stopped the step before it ended, and the step is over
+```
+
+`step --out` then shows no return, because the function hasn't returned.
+
+#### Steps with several threads
+
+- Other threads may be stopped at the breakpoint too. LLDB stops them together; Java stops each one
+  separately. Then `step` waits until `continue` has served them.
+- A step that a breakpoint or a crash stops first is over. In C, C++ and Rust, the next `continue`
+  runs to the next breakpoint, not to where the step would have ended.
+- Another thread's stop can catch the stepping thread mid-step. LLDB may then report a step's end
+  anywhere the thread was, such as inside `usleep`. The state says `the step was interrupted here`,
+  and `continue` serves that thread's stop.
+
+**Per language:** [Java 5.2](lang/java-cookbook.md#52-stepping-and-running-to-a-line) (`--into`
+and `--out` skip JDK classes).
 
 ### 5.3 Several Sessions at Once
 
+**What it answers:** How do I keep two stops open at once?
+
+Give each session a name with `--name`, and pass the same `--name` to every later command:
+`inspect`, `get`, `set`, `step`, `continue`, `report` and `close`.
+
 ```sh
-peeky session start app.py --at 12 --name a
-peeky session start app.py --at 40 --name b
-peeky session get total --name b
+peeky session start examples/pagination_bug.py --at 8 --name a
+peeky session start examples/corpus/running_max/program.py --at 5 --name b
+peeky session get start --name a
+peeky session get best --name b
 peeky session list
+peeky session close --name a
+peeky session close --name b
 ```
 
-A second `session start` with a name that is already taken fails with "exists". It never takes over the other session.
+```
+session a (python): state: stopped at examples/pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
+session b (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 1 (paused 0.0 s)
+start: int = 3
+best: int = 0
+a
+b
+closed a
+cleanup: terminated pid 63598
+closed b
+cleanup: terminated pid 63628
+```
 
-Every later command needs the same `--name`, `inspect`, `get`, `set`, `step`, `continue`, `report` and `close` alike: without it, a command acts on the session named `default` (or says there is none). `peeky session list` shows the names in use. With one session at a time, leave `--name` out everywhere.
+- `peeky session list` shows the names in use.
+- A command without `--name` acts on the session named `default`, or says there is none:
+
+  ```
+  $ peeky session get best
+  peeky: [NO_SESSION] No session named 'default'; start one with `peeky session start`
+    hint: Start a new session (launch or `peeky session start`).
+  ```
+
+- A second `session start` with a name already taken fails, and never takes over that session:
+
+  ```
+  $ peeky session start examples/pagination_bug.py --at 7 --name a
+  peeky: [INVALID_REQUEST] Session 'a' exists; close it or pass --name
+    hint: Fix the request arguments; see `peeky <command> --help`.
+  ```
+
+- With one session at a time, leave `--name` out everywhere.
 
 ### 5.4 Programs with Timeouts
 
-Tests with timeouts, heartbeats and RPC deadlines keep their clocks running while the program is paused. Prefer probes, which pause for milliseconds per hit, or give sessions a pause budget:
+**What it answers:** How do I debug a program whose clocks keep running while it is paused?
+
+Tests with timeouts, heartbeats and RPC deadlines keep their clocks running while the program is
+paused. Prefer probes, which pause for milliseconds per hit. Or give a session a pause budget with
+`--max-pause`:
 
 ```sh
 peeky session start app.py --at 12 --max-pause 5      # auto-resume after 5 s
-peeky session inspect                                   # shows paused_s and resume_in_s
+peeky session inspect                                   # shows how long it has been paused
 ```
 
-A breakpoint or step stop older than the budget is resumed; your next call says so (`STALE_STOP`). Crash and exception stops are never auto-resumed.
+The state shows the time left, and JSON has `paused_s` and `resume_in_s`. A breakpoint or step stop
+older than the budget is resumed, and your next call says so (`STALE_STOP`). For example, with
+`--max-pause 3`:
+
+```
+$ peeky session start examples/corpus/running_max/program.py --at 5 --max-pause 3
+session default (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 1 (paused 0.0 s, auto-resume in 3.0 s)
+$ sleep 4
+$ peeky session get best
+peeky: [STALE_STOP] Stale stop_id: the program was auto-resumed after its 3.0 s pause budget (--max-pause); wait for the next stop or use a probe
+  hint: Call wait until state is stopped, then inspect the latest stop.
+```
+
+Crash and exception stops are never auto-resumed.
 
 ### 5.5 Cleaning Up
 
-A session's worker ends with `session close`, when its start fails or is interrupted, and after 5 idle minutes. `peeky session close --forget` drops a record whose worker is gone for good.
+A session's worker ends:
+
+- with `session close`;
+- when its start fails or is interrupted;
+- after 5 idle minutes.
+
+`peeky session close --forget` drops a record whose worker is gone for good.
 
 ---
 
@@ -1684,40 +2385,142 @@ A session's worker ends with `session close`, when its start fails or is interru
 
 **What it answers:** Does this change pass the independent checks, on a clean copy?
 
+`verify` applies the edit to a scratch copy, builds it fresh, and runs your checker on it. Your
+files don't change.
+
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
   --old 'start = page * page_size' --new 'start = (page - 1) * page_size'
 ```
 
 ```
-passed: True  stage: verification
+passed: True  stage: verification  seconds: 0.035
 checker exit: 0
 output:
 PASS: 12 independent pagination checks
 
 diff:
+--- pagination_bug.py
++++ pagination_bug.py
+@@ -4,7 +4,7 @@
+ def get_page(items, page, page_size):
+     if page < 1 or page_size < 1:
+         raise ValueError("page and page_size must be positive")
 -    start = page * page_size
 +    start = (page - 1) * page_size
+     end = start + page_size
+     return items[start:end]
 ```
 
-Your files are not changed. The edit is applied to a scratch copy; `--keep` keeps the edited file (build artifacts are always removed) in the system's temporary directory, at the `kept:` path the result prints; delete it when you are done. To see what an edit does before verifying, a candidate probe (6.6) is simpler. For a Cargo crate, its compiled tests run too, and a failure names each failed test with how it failed (`compiled tests: failed (1 failed)`, then `first_page_starts_at_zero: thread … panicked at tests/pagination.rs:10:5: assertion `left == right` failed …`). `--json` identifies the checker's descriptor and build by hash (`descriptor_sha256`, `artifact_manifest_id`); `--details` adds both in full.
+- To see what an edit does before you verify it, a candidate probe is simpler
+  ([6.6](#66-see-what-a-fix-does-before-making-it)).
+- To keep the edited file, add `--keep`. It stays in the system's temporary directory, with a
+  compiled program's build evidence beside it. Build artifacts are always removed.
+- The result prints the file's path after `candidate:`, and JSON names its directory in `kept`.
+  Delete it when you are done.
+- For a compiled program, `--json` identifies the checker's descriptor and the build by hash:
+  `descriptor_sha256` and `artifact_manifest_id`. `--details` adds both in full.
 
-**Does the checker catch the bug?** Before trusting `passed: True`, run the checker against the unedited program with `--baseline` (no `--old`/`--new`). It builds and checks the program as it is, like any verify, and should fail:
+#### A Cargo crate's tests
+
+For a Cargo crate, its compiled tests run too. A failure names each failed test, and how it
+failed:
+
+```
+$ peeky verify examples/rust --check examples/rust/verify_pagination.py --baseline
+passed: False  stage: verification  seconds: 1.379
+compiled tests: failed (1 failed)
+  first_page_starts_at_zero: thread 'first_page_starts_at_zero' (67900711) panicked at tests/pagination.rs:10:5:
+    assertion `left == right` failed
+      left: "PAGE:[40, 50, 60]\n"
+     right: "PAGE:[10, 20, 30]\n"
+reason: AssertionError: (1, 3, 8, [40, 50, 60], [10, 20, 30])
+checker exit: 1
+baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
+```
+
+#### Does the checker catch the bug?
+
+Before you trust `passed: True`, run the checker on the unedited program with `--baseline`, and no
+`--old`/`--new`. It builds and checks the program as it is, like any verify. It should fail:
 
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py --baseline
 ```
 
 ```
-passed: False  stage: verification
+passed: False  stage: verification  seconds: 0.033
 reason: AssertionError: (1, 3, [10, 20, 30], [40, 50, 60])
 checker exit: 1
 baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
 ```
 
-A checker that passes here cannot tell a fix from the bug. `reason` is the checker's exception, or, for a checker that only exited nonzero (`print("FAIL ..."); sys.exit(1)`), the first output line that starts like a failure (`FAIL`, `FAILED`, pytest's `E`, `…Error:`, `…Exception:`, `assert`; unittest's `FAIL:` header with the exception it reports, not its `FAILED (failures=1)`), with up to two indented lines after it (`reason: FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'`; `FAIL first case; expected 3; got 2`), else the last line (`mismatch: wrap got 6 want 7`); from stdout, or stderr when stdout is empty, with `(SystemExit: N)` added when N is not the `checker exit` status; `checker.error` in JSON keeps `SystemExit: 1`. An `--old`/`--new` pair that changes nothing is refused (`--new equals --old`); `--baseline` is the way to check the original.
+A checker that passes here can't tell a fix from the bug.
+
+An `--old`/`--new` pair that changes nothing is refused. `--baseline` is the way to check the
+original:
+
+```
+peeky: [INVALID_REQUEST] --new equals --old, so the edit changes nothing (to run the unedited program, leave out --old/--new; to check it, `verify --baseline`)
+  hint: Fix the request arguments; see `peeky <command> --help`.
+```
+
+#### Where `reason` comes from
+
+`reason` says why the checker failed:
+
+- If the checker raised an exception, `reason` is that exception, as above.
+- If it only exited non-zero (`print("FAIL ..."); sys.exit(1)`), `reason` is the first output line
+  that starts like a failure. Up to two indented lines after it are added.
+- If no line starts like a failure, `reason` is the last line: `mismatch: wrap got 6 want 7`.
+- Peeky reads stdout, or stderr when stdout is empty.
+
+A line starts like a failure when it starts with one of these:
+
+| Start | Note |
+| --- | --- |
+| `FAIL`, `FAILED` | |
+| `E` | pytest's |
+| `…Error:`, `…Exception:` | |
+| `assert` | |
+| unittest's `FAIL:` header | with the exception it reports; not its `FAILED (failures=1)` |
+
+For example, `reason: FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'`, or
+`FAIL first case; expected 3; got 2`. This `fail_check.py` prints two lines and exits 1:
+
+```python
+import runpy
+import sys
+
+get_page = runpy.run_path(sys.argv[1])["get_page"]
+got = get_page([10, 20, 30, 40], 1, 2)
+if got != [10, 20]:
+    print("checking page 1")
+    print(f"FAIL page 1: got {got} want [10, 20]")
+    sys.exit(1)
+print("PASS")
+```
+
+```
+$ peeky verify examples/pagination_bug.py --check fail_check.py --baseline
+passed: False  stage: verification  seconds: 0.033
+reason: FAIL page 1: got [30, 40] want [10, 20]
+checker exit: 1
+output:
+checking page 1
+FAIL page 1: got [30, 40] want [10, 20]
+
+baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
+```
+
+A checker's `SystemExit` code N can differ from the `checker exit` status. Then `reason` adds
+`(SystemExit: N)`. In JSON, `checker.error` keeps the exception itself, such as `SystemExit: 1`.
 
 ### 6.2 An Overfit Fix Is Rejected
+
+**What it answers:** Does a fix that only covers the reported case pass?
+
+No: the checker's other cases fail.
 
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
@@ -1725,22 +2528,44 @@ peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
 ```
 
 ```
-passed: False  stage: verification
+passed: False  stage: verification  seconds: 0.034
 reason: AssertionError: (2, 3, [40, 50, 60], [70])
 checker exit: 1
+diff:
+...
+-    start = page * page_size
++    start = 0 if page == 1 else page * page_size
+...
 ```
 
 ### 6.3 Multi-Line Edits
+
+**What it answers:** How do I pass an edit that spans lines?
+
+Put the texts in files, and pass them with `--old-file` and `--new-file`:
 
 ```sh
 peeky verify app/ --at lib/parse.py --check checks/parse_check.py --old-file old.txt --new-file new.txt
 ```
 
-`--old` must match the source exactly once; the error says how many times it matched, and where. Files are read byte for byte, whereas shell `$(cat file)` drops trailing newlines. On the command line, pass real newlines for multi-line text (bash: `--old $'a\n    b'`).
+`--old` must match the source exactly once. Otherwise the error says how many times it matched,
+and where:
+
+```
+peeky: [INVALID_REQUEST] --old matched 5 times (lines 4, 5, 6, 7, 8); it must match exactly once: include more surrounding text
+  hint: Fix the request arguments; see `peeky <command> --help`.
+```
+
+- Peeky reads the files byte for byte. Shell `$(cat file)` drops trailing newlines, so use the
+  `-file` options instead.
+- On the command line, pass real newlines for multi-line text. In bash: `--old $'a\n    b'`.
 
 ### 6.4 Several Edits at Once
 
-A general fix often touches more than one place: a new field and the function that uses it. Repeat the pair, once per edit:
+**What it answers:** How do I check a fix that touches more than one place?
+
+A general fix often touches more than one place, such as a new field and the function that uses
+it. Repeat the `--old`/`--new` pair, once per edit:
 
 ```sh
 peeky verify bucket.c --check check.py \
@@ -1749,24 +2574,65 @@ peeky verify bucket.c --check check.py \
   --old 'long refill = elapsed / 1000 * b->rate;' --new 'long refill = (b->milli + elapsed * b->rate) / 1000;'
 ```
 
-Each `--old` quotes the original file and must match it exactly once; the edits must not overlap, and their order does not matter. The `-file` forms repeat the same way (`--old-file a.txt --new-file b.txt --old-file c.txt --new-file d.txt`). Up to 32 edits; an error names the edit by its number (`(edit 2)`). Candidate probes take the same pairs, and `--at` keeps the original's numbering, mapped through every edit.
+- Each `--old` quotes the original file, and must match it exactly once.
+- Their order doesn't matter.
+- Edits must not overlap:
+
+  ```
+  peeky: [INVALID_REQUEST] Edits 1 and 2 overlap: each --old must quote its own part of the original file
+  ```
+
+- The `-file` forms repeat the same way:
+  `--old-file a.txt --new-file b.txt --old-file c.txt --new-file d.txt`.
+- Up to 32 edits are allowed. An error names the edit by its number:
+
+  ```
+  peeky: [INVALID_REQUEST] --old matched 0 times (edit 2); it must match exactly once: copy the exact text, including indentation
+  ```
+
+- Candidate probes take the same pairs. `--at` keeps the original's numbering, mapped through every
+  edit ([6.6](#66-see-what-a-fix-does-before-making-it)).
 
 ### 6.5 Writing a Checker
 
-A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++, Rust and Java its argument is the path of a JSON descriptor of the fresh build: run each case as `[*spec["command"], *case_arguments]` with `env=spec["environment"]` (`spec["language"]` names the language; see `examples/c/verify_pagination.py`; optional background: [NATIVE_AGENT.md](NATIVE_AGENT.md)). For Rust, the crate's integration test, when it has one, must pass too.
+**What it answers:** What must a checker do?
+
+A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when
+the behavior is right.
+
+- Test the general rule, not the one input from the bug report. See
+  `examples/verify_pagination.py`.
+- For Python, the argument is the edited file. `examples/verify_pagination.py` loads it with
+  `runpy.run_path`.
+- For C, C++, Rust and Java, the argument is the path of a JSON descriptor of the fresh build.
+  `spec["language"]` names the language.
+- Run each case as `[*spec["command"], *case_arguments]`, with `env=spec["environment"]`. From
+  `examples/c/verify_pagination.py`:
+
+  ```python
+  spec = json.loads(Path(sys.argv[1]).read_text())
+  ...
+  result = subprocess.run(
+      [*command, str(page), str(size), str(total)],
+      capture_output=True,
+      text=True,
+      timeout=5,
+      check=False,
+      env=spec["environment"],
+  )
+  ```
+
+- For Rust, the crate's integration test must pass too, if it has one.
+
+Optional background: [NATIVE_AGENT.md](NATIVE_AGENT.md).
 
 ### 6.6 See What a Fix Does Before Making It
 
-**What it answers:** With this edit, what would the program compute at the same line, and what would it print?
+**What it answers:** With this edit, what would the program compute at the same line, and what would
+it print?
 
-**Common cases**
-
-- Run the same probe twice, once as it is and once with `--old`/`--new`: the second builds a fresh copy with the edit; your files are not changed.
-- `--at` keeps the original's line numbers; a line inside an edit that adds or removes lines is refused.
-- The candidate's `compare:` line names the `queries diff` against the same probe without the edit when such a run is saved; otherwise it says how to make one.
-- It is evidence, not verification: `verify` checks the fix.
-
-Run the same probe twice: once as it is, once with `--old`/`--new`. The second builds a fresh copy with the edit; your files are not changed.
+Run the same probe twice: once as it is, and once with `--old`/`--new`. The second builds a fresh
+copy with the edit. Your files don't change. Then compare the two runs with `queries diff`.
 
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture start --arg 2
@@ -1777,55 +2643,178 @@ peeky queries diff
 
 ```
 hit  phase     line  function  selector  type  value
-1    observed  25    main      start     int   3
-status: completed  hits: 1  seconds: 0.665  max pause: 13.7 ms
+1    observed  25    main      start     int   6  [settable]
+status: completed  hits: 1  seconds: 1.013  max pause: 56.9 ms
+output:
+  PAGE:[70, 80]
+evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
+hit  phase     line  function  selector  type  value
+1    observed  25    main      start     int   3  [settable]
+status: completed  hits: 1  seconds: 0.99  max pause: 66.9 ms
 output:
   PAGE:[40, 50, 60]
 candidate: values are from a fresh build with this edit; your files are unchanged
 --- pagination_bug.c
 +++ pagination_bug.c
 @@ -21,7 +21,7 @@
-...
+         (argc > 3 && !parse_count(argv[3], 0, &total))) return 2;
+     int items[MAX_PAGE_ITEMS];
+     for (int i = 0; i < total; i++) items[i] = (i + 1) * PAGE_ITEM_MULTIPLIER;
 -    int start = page * page_size;
 +    int start = (page - 1) * page_size;
      int end = start + page_size; /* OBSERVE */
-
+     if (end > total) end = total;
+     printf("PAGE:[");
+evidence: saved as run 2; query it with `peeky queries run --param run=2` or `peeky sql` (see `peeky sql --schema`)
+compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)
 run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
 1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at line 1, column 7
 1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
 1      2      1     observed  start     6                 3                     1        NULL
+(3 rows)
 ```
 
-- **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). Some lines have no faithful match and are refused before anything is built:
-  - a line inside such an edit;
-  - the line right after an edit whose `--old` ends with a newline but whose `--new` does not, because the candidate joins that line onto the edit.
-- **Build errors:** an edit that does not compile fails with `BUILD_FAILED` and the compiler's message. A Python edit with a syntax error fails with `NO_STOP`, with the `SyntaxError` in the output.
-- **Evidence:**
-  - The run's `edit` column holds the diff, and its `source_sha256` is the edited text's.
-  - `queries runs` marks the run `(candidate)`, and the `evidence` and `last_run` views have a `candidate` column. Captured `line`s are in the candidate's own numbering.
-  - `queries values` leaves candidate runs out, so they never mix with values the real program produced.
-  - `queries diff` pairs values by hit and selector, so a candidate whose lines moved still compares.
-  - A plain `queries diff` compares the newest run with the one before it, whatever that was. So after a candidate probe a `compare:` line names the newest saved run that is the same probe without the edit (the same target, `--at`, `--capture` and program arguments; the same build, by its target identity: compiler options, optimization, sources; every source the build read as it was when the edit was made, headers, `Cargo.toml` and `Cargo.lock` too, and in Python every `.py` file under the target; no edit, no `--set` or `--set-at`; a `--label` does not count): `compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)`, or says how to make one (after a candidate with `--set` or `--set-at`, run it without them too) (`evidence.compare` in JSON).
-  - A run whose hits are at other breakpoint locations of the line (#157: `stop` differs at a hit both reached, as when the edit changes how often the line stops per pass) is not named: the line says so and names `queries join`, which pairs by value. Runs saved before Peeky recorded what they read are never named, nor are any where it cannot tell (a Python tree past 4096 `.py` files or 16 MB): run the probe without the edit then.
-- **Not a verification:** this is evidence about one run. Only `peeky verify` checks a fix.
-- **Intervening where no local can be set:** in Java, Rust, C and C++, `--set` changes a scalar field or element directly (`--set s.end=10` where `s` is a struct local; see [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c) and [Rust 7.2](lang/rust-cookbook.md#72-rust-a-cargo-crate) for which ones). `--set` also works in the same probe as `--old`/`--new`. Where the value you want to change cannot be set (a Python field, or one reached through a pointer, a reference or a `Box`, as `last.end` is when `last` is a `&mut Span`), add a local holding it with the edit, on an earlier line (a local is visible only after its declaration), and set that local. In Rust, at the line `last.end = s.end;` that follows `if s.start <= last.end {`:
+This is evidence about one run, not a verification. Only `peeky verify` checks a fix.
 
-  ```sh
-  peeky probe spans --at src/main.rs:23 --capture end,last.end --arg 1-10,2-3 \
-    --old 'if s.start <= last.end {' \
-    --new 'let mut end = s.end; std::hint::black_box(&mut end); if s.start <= last.end {' \
-    --old 'last.end = s.end;' --new 'last.end = end;' --set end=10
+#### Which line a candidate stops at
+
+`--at` uses the original file's numbering, so the same command works before and after the edit. A
+line after an edit that adds or removes lines is moved to match:
+
+```
+candidate: values are from a copy of your tree with this edit; your files are unchanged (line 8 is line 9 of the candidate)
+```
+
+Some lines have no faithful match. Peeky refuses them before anything is built:
+
+- a line inside an edit that adds or removes lines:
+
+  ```
+  peeky: [INVALID_REQUEST] Line 7 is inside the edit (line 7, which becomes lines 7-8 of the candidate). An edit that changes the number of lines has no matching line inside it: probe a line before or after the edit
   ```
 
-  This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
+- the line right after an edit whose `--old` ends with a newline but whose `--new` doesn't. The
+  candidate joins that line onto the edit.
 
-**Per language:** [Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it) (a local kept in a register), [Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it) (what a Python candidate's copy holds).
+#### When the edit doesn't build or run
+
+- An edit that doesn't compile fails with `BUILD_FAILED` and the compiler's message.
+- A Python edit with a syntax error fails with `NO_STOP`, with the `SyntaxError` in the output.
+
+#### Compare with the same probe without the edit
+
+A plain `queries diff` compares the newest run with the one before it, whatever that was. So after
+a candidate probe, a `compare:` line names the newest saved run that is the same probe without the
+edit, as above. JSON has it in `evidence.compare`.
+
+"The same probe" means all of these:
+
+- the same target, `--at`, `--capture` and program arguments;
+- the same build, by its target identity: compiler options, optimization and sources;
+- every source the build read, as it was when the edit was made. That includes headers,
+  `Cargo.toml` and `Cargo.lock`, and in Python every `.py` file under the target;
+- no edit, and no `--set` or `--set-at`.
+
+A `--label` doesn't count. When no such run is saved, the line says how to make one:
+
+```
+compare: no saved run is this probe without the edit (the same --at, --capture, program arguments and build, of the sources as they are now, with no --set or --set-at): run it without --old/--new, then `peeky queries diff`
+```
+
+After a candidate with `--set` or `--set-at`, run it without them too.
+
+The line names no run in these cases:
+
+- **Other breakpoint locations:** the run's hits are at other breakpoint locations of the line.
+  `stop` differs at a hit both runs reached, as when the edit changes how often the line stops per
+  pass. The line says so, and names `queries join`, which pairs by value.
+- **Older runs:** runs saved before Peeky recorded what they read are never named.
+- **When Peeky can't tell:** a run where Peeky can't tell what it read is never named either. An
+  example is a Python tree past 4096 `.py` files or 16 MB.
+
+In the last two cases, run the probe without the edit again.
+
+#### How candidate runs are stored
+
+- The run's `edit` column holds the diff. Its `source_sha256` is the edited text's.
+- `queries runs` marks the run `(candidate)`. The `evidence` and `last_run` views have a
+  `candidate` column.
+- Captured `line`s are in the candidate's own numbering.
+- `queries values` leaves candidate runs out, so they never mix with values the real program
+  produced.
+- `queries diff` pairs values by hit and selector, so a candidate whose lines moved still
+  compares.
+
+#### Change a value that `--set` can't reach
+
+In Java, Rust, C and C++, `--set` changes a scalar field or element directly: `--set s.end=10`,
+where `s` is a struct local. See [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c) and
+[Rust 7.2](lang/rust-cookbook.md#72-rust-a-cargo-crate) for which ones. `--set` also works in the
+same probe as `--old`/`--new`.
+
+Some values can't be set: a Python field, or one reached through a pointer, a reference or a `Box`.
+Then add a local that holds the value, with the edit, on an earlier line, and set that local. A
+local is visible only after its declaration.
+
+For example, in this Rust `spans` crate, `last.end` can't be set on line 23, because `last` is a
+`&mut Span`:
+
+```rust
+fn merge(spans: &[Span]) -> Vec<Span> {
+    let mut sorted = spans.to_vec();
+    sorted.sort_by_key(|s| s.start);
+    let mut out: Vec<Span> = Vec::new();
+    for s in sorted {
+        if let Some(last) = out.last_mut() {
+            if s.start <= last.end {
+                last.end = s.end;
+                continue;
+            }
+        }
+        out.push(s);
+    }
+    out
+}
+```
+
+So the edit adds `end`, and the probe sets it:
+
+```sh
+peeky probe spans --at src/main.rs:23 --capture end --arg 1-10,2-3 \
+  --old 'if s.start <= last.end {' \
+  --new 'let mut end = s.end; std::hint::black_box(&mut end); if s.start <= last.end {' \
+  --old 'last.end = s.end;' --new 'last.end = end;' --set end=10
+```
+
+```
+hit  phase      line  function      selector  type  value
+1    observed   23    spans::merge  end       u32   3  [settable]
+1    after-set  23    spans::merge  end       u32   10  [settable]
+set end: 3 -> 10
+status: completed  hits: 1  seconds: 1.639  max pause: 142.2 ms
+output:
+  MERGED:1-10
+candidate: values are from a fresh build with this edit; your files are unchanged
+...
+```
+
+This reports `set end: 3 -> 10`, and the program prints `MERGED:1-10`. Without the change, it
+prints `MERGED:1-3`. `black_box` keeps the new Rust local in memory, where a change reaches the
+program.
+
+**Per language:**
+
+- [Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it): a local kept in a
+  register.
+- [Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it): what a Python
+  candidate's copy holds.
 
 ---
 
 ## 7. C, C++, Rust and Java
 
-The commands are the same for every language; only the target changes. Each language's own sections are in its cookbook.
+The core command pattern is shared; targets and supported operations differ by language. Each
+language's own sections are in its cookbook.
 
 ### 7.1 C and C++
 
@@ -1845,67 +2834,230 @@ In [Java 7.4](lang/java-cookbook.md#74-java-tests-already-running-gradle---debug
 
 ### 7.5 Optimized Builds
 
-Set `"optimization": "O2"` (C/C++) or `"opt_level": "2"` (Rust) in a `--config` to debug the optimized program. Locals may then be `unavailable`, shown values can be stale, and changes are refused (a probe's `--set` before the program runs, saying where the debug information keeps the local only in registers); every result carries `optimized` and a warning.
+To debug the optimized program, set its level in a `--config`:
+
+| Language | Key | Example |
+| --- | --- | --- |
+| C, C++ | `optimization` | `"optimization": "O2"` |
+| Rust | `opt_level` | `"opt_level": "2"` |
+
+[NATIVE.md](NATIVE.md) lists the other levels. A C or C++ config may also name explicit tool
+paths, as NATIVE.md shows. For example, this `examples/c/optimized.json` names them:
+
+```json
+{"sources": ["pagination_bug.c"], "headers": ["pagination.h"], "optimization": "O2", "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang", "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap", "dwarfdump": "/usr/bin/dwarfdump", "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil", "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}
+```
+
+```sh
+peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:25 \
+  --capture page,page_size,start
+```
+
+```
+hit  phase     line  function    selector   type  value
+1    observed  25    main [opt]  page       int   1
+1    observed  25    main [opt]  page_size  int   3
+1    observed  25    main [opt]  start      int   3
+status: completed  hits: 1  seconds: 0.994  max pause: 37.7 ms
+warning: Optimized build (-O2): values that are shown can still be stale or wrong (the debugger cannot tell). Confirm with an unoptimized build before trusting them.
+output:
+  PAGE:[40, 50, 60]
+...
+```
+
+What changes in an optimized build:
+
+- Locals may be `unavailable`.
+- Values that are shown can be stale.
+- In this macOS C example, the `function` column marks the frame `[opt]`. Only lldb-dap on macOS
+  adds that mark. Linux's never does, and Rust function names have it removed.
+- Every result carries `optimized` and a warning.
+- Changes are refused. A probe's `--set` is refused before the program runs. The error says when
+  the debug information gives the local no stack slot (a register or a location list):
+
+```sh
+peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:25 \
+  --capture page,page_size,start --set start=0
+```
+
+```
+error [MUTATION_REJECTED]: `start` cannot be changed: changing values is refused in an optimized build (-O2), where the program may keep using other copies of a value; here the debug information gives `start` no stack slot (a register or a location list), so a change could not reach every copy. Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build
+hint: Use an unoptimized build to change values.
+```
 
 ---
 
 ## 8. Slow Programs and Tool Timeouts
 
+If a probe or a `verify` may outlast your tool's timeout, add `--background`. Then collect the
+result with `peeky job wait`:
+
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --background
-# job 3f2c... started; collect it with `peeky job wait 3f2c...`
-peeky job wait 3f2c... --timeout 20     # exit 3 while still running; then the exact output
-peeky job list
 ```
 
-`--background` works for `probe` and `verify`. Other bounds:
-- `--timeout S`: per probe (default 60 s, at most 300);
-- a `session` command's `--timeout S` (`session start` included): how long it waits for the program (default 30 s, at most 300); a program still running is left running, and `session wait` waits again;
-- `--hits N`: at most 100 (`--hits all` captures every stop up to 100);
-- `--until hits`: skips waiting for the program to exit.
+```
+job e85df1538ef6ffc0 started; collect it with `peeky job wait e85df1538ef6ffc0`
+```
+
+```sh
+peeky job wait e85df1538ef6ffc0 --timeout 20
+```
+
+```
+peeky: started; breakpoint pagination_bug.py:8 verified
+peeky: waiting for the program to reach it...
+peeky: hit 1/1 at pagination_bug.py:8; capturing
+peeky: all requested hits captured; letting the program finish
+peeky: program finished after 1 hit(s)
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: completed  hits: 1  seconds: 1.069  max pause: 10.7 ms
+output:
+  PAGE: [40, 50, 60]
+...
+```
+
+- `--background` works for `probe` and `verify` only.
+- While the job is still running, `peeky job wait` exits with status 3. Once the job has finished,
+  it prints the job's exact output.
+- `peeky job list` lists the jobs from the last 24 hours:
+  `e85df1538ef6ffc0  probe  finished  1.1 s`.
+
+Other bounds:
+
+| Bound | Default | At most | What it does |
+| --- | --- | --- | --- |
+| A probe's `--timeout S` | 60 s | 300 s | Bounds the whole probe, build included |
+| A `session` command's `--timeout S`, `session start` included | 30 s | 300 s | Bounds how long the command waits for the program. A program still running is left running, and `session wait` waits again |
+| `--hits N` | | 100 | `--hits all` captures every stop, up to 100, lowered so every hit fits the 2,000-row budget. After-set rows count toward it ([2.2](#22-every-iteration-of-a-loop)) |
+| `--until hits` | | | Skips waiting for the program to exit |
+| `peeky job wait`'s `--timeout S` | 20 s | 300 s | Bounds how long it waits for the job |
 
 ---
 
 ## 9. A Program on Another Host
 
-Run the worker next to the program and reach it through SSH:
+Run the worker next to the program, and reach it through an SSH tunnel.
+
+On the host, make a token and start the worker:
 
 ```sh
-# on the host
 export DEBUG_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 python3 -m peeky.worker --root /srv/app --port 8765
+```
 
-# on your machine (same sources)
+On your machine, with the same sources, open the tunnel and give the same token:
+
+```sh
 ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 you@host &
 export PEEKY_WORKER_TOKEN='<the token>'
 peeky probe ./app/job.py --at 42 --capture rows --worker http://127.0.0.1:8765
 peeky session start ./app/job.py --at 42 --worker http://127.0.0.1:8765
 ```
 
-If the host's source differs from yours, the worker refuses before running anything (`PROVENANCE_CHANGED`). A dropped tunnel gives `UNREACHABLE`; reconnect and continue, because the worker keeps the session. To try this without a second machine, `PEEKY_E2E_DOCKER=1 pytest tests/remote -v` runs it against a Linux container (needs Docker or OrbStack). The recorded run is in [REMOTE.md](REMOTE.md).
+The worker's `--root` holds the host's copy of the target's directory. So `./app/job.py` on your
+machine is `/srv/app/job.py` on the host.
+
+The probe's output looks as it does locally. For example, with `job.py` a copy of
+`examples/pagination_bug.py`, and the worker on the same machine without a tunnel:
+
+```sh
+peeky probe ./app/job.py --at 8 --capture start --worker http://127.0.0.1:8765
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: completed  hits: 1  seconds: 1.058  max pause: 6.3 ms
+output:
+  PAGE: [40, 50, 60]
+...
+```
+
+If the host's source differs from yours, the worker refuses before running anything:
+
+```
+error [PROVENANCE_CHANGED]: Worker source provenance differs for the program job.py: refused before launching. Sync sources before debugging remotely
+hint: Sources, build outputs or tools changed; start a new session on a fresh build.
+```
+
+- A dropped tunnel gives `UNREACHABLE`. Reconnect and continue: the worker keeps the session.
+- To try this without a second machine, run `PEEKY_E2E_DOCKER=1 pytest tests/remote -v`. It runs
+  against a Linux container, and needs Docker or OrbStack.
+- [REMOTE.md](REMOTE.md) has the recorded run.
 
 ---
 
 ## 10. When Something Goes Wrong
 
-Errors carry a stable `code`, a `hint`, and whether retrying can help (`--json` shows all fields).
+An error carries a stable `code`, a `hint`, and whether retrying can help. `--json` shows all the
+fields.
 
-| You see | Meaning | Do this |
+| You see | What it means | What to do |
 | --- | --- | --- |
-| `NO_STOP` | The line never ran (e.g. `--at 6`, the `raise` that valid input never reaches), or the program failed before it (the message gives the exit code when the debugger reports one, and the output says why) | Pick a line the run executes; `describe` lists lines with code, not lines that run. After a failure, check the program's arguments: everything after `--` goes to the program, and the hint names any of Peeky's own options found there |
-| `warning: The debugger moved the breakpoint ...` | The line has no code of its own; values come from the line named in the warning | Use a line from `describe` |
-| `<not found; visible: items, page, ...>` in a row | The name is not visible at that stop, or is not assigned yet (a breakpoint stops before its line) | Use a listed name, or stop one line later |
-| `MUTATION_REJECTED` | Not a literal (`--set start=min(1, 2)`), wrong type or range, or a Rust local held in a register | Use a literal of the right type, or edit the source and `verify` |
-| `INVALID_BREAKPOINT` | Conditions and logpoints are refused (they run code), or a Java line has no code | Unconditional lines only; probe with `--hits` and filter in SQL |
-| `PROVENANCE_CHANGED` | Sources, build outputs, tools or headers changed during the session | Start again on a fresh build |
-| `STALE_STOP` | The program moved on, possibly auto-resumed by `--max-pause` | `session wait`, then `inspect` |
-| `NO_SESSION` | No session under that name, or its start was interrupted | `session start` again (it takes the name over) |
-| `TIMEOUT` / `DEBUGGER_ERROR` | A bound was hit, or the debugger failed; the session is closed | Start again; never repeat a `set` blindly |
-| `UNREACHABLE` / `TRANSPORT_LOST` | The worker or the SSH tunnel is down / broke mid-request | Restore the tunnel; after `TRANSPORT_LOST`, `inspect` before anything else |
-| `INVALID_QUERY` | Bad SQL, or a write | `peeky sql --schema` |
-| A path you did not type (`/private/tmp/case/app.py` for `/tmp/case/app.py`) | Peeky prints real paths: on macOS `/tmp` is a link to `/private/tmp`, so both name the same file | Match files by the part after `/tmp` |
+| `NO_STOP` | The line never ran, such as `--at 6`: the `raise` that valid input never reaches. Or the program failed before it. Then the message gives the exit code if the debugger reports one, and the output says why | Pick a line that the run executes. `describe` lists lines with code, not lines that run. After a failure, check the program's arguments. Everything after `--` goes to the program, and the hint names any of Peeky's own options found there |
+| `warning: The debugger moved the breakpoint ...` | The line has no code of its own. Values come from the line that the warning names | Use a line from `describe` |
+| `<not found; visible: items, page, ...>` in a row | The name is not visible at that stop. Or it is not assigned yet: a breakpoint stops before its line | Use a listed name, or stop one line later |
+| `MUTATION_REJECTED` | A change was refused. For example: not a literal (`--set start=min(1, 2)`), a wrong type or range, or a Rust local held in a register | Use a literal of the right type. Or edit the source, and `verify` the edit |
+| `INVALID_BREAKPOINT` | Conditions and logpoints are refused, because they run code. Or a Java line has no code | Use unconditional lines only. Probe with `--hits`, and filter in SQL |
+| `PROVENANCE_CHANGED` | Sources, build outputs, tools or headers changed during the session. Or a worker's copy differs from yours ([9](#9-a-program-on-another-host)) | Start again on a fresh build |
+| `STALE_STOP` | The program moved on. `--max-pause` may have resumed it | Run `session wait`, then `inspect` |
+| `NO_SESSION` | No session has that name, or its start was interrupted | Run `session start` again. It takes the name over |
+| `TIMEOUT` or `DEBUGGER_ERROR` | A bound was hit, or the debugger failed. The session is closed | Start again. Never repeat a `set` blindly |
+| `UNREACHABLE` | The worker or the SSH tunnel is down | Restore the tunnel |
+| `TRANSPORT_LOST` | The worker or the SSH tunnel broke mid-request | Restore the tunnel, then run `inspect` before anything else |
+| `INVALID_QUERY` | Bad SQL, or a write | Run `peeky sql --schema` |
+| A path you did not type, such as `/private/tmp/case/app.py` for `/tmp/case/app.py` | Peeky prints real paths. On macOS, `/tmp` is a link to `/private/tmp`, so both name the same file | Match files by the part after `/tmp` |
 
-All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with unreliable timestamps, `PEEKY_NO_DIGEST_CACHE=1` rehashes every file on every check.
+For example, line 6 of `examples/pagination_bug.py` is a `raise` that this run never reaches:
+
+```sh
+peeky probe examples/pagination_bug.py --at 6 --capture page
+```
+
+```
+hit  phase  line  function  selector  type  value
+status: no-stop  hits: 0  seconds: 1.094
+error [NO_STOP]: The program finished without stopping at pagination_bug.py:6; check `peeky describe` for executable lines
+hint: Pick a line the program executes; see `peeky describe`.
+cleanup: nothing Peeky could identify was still running
+output:
+  PAGE: [40, 50, 60]
+...
+```
+
+Line 10 is blank, so the debugger moves the breakpoint:
+
+```sh
+peeky probe examples/pagination_bug.py --at 10 --capture start
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  9     get_page  start     int   3
+status: completed  hits: 1  seconds: 1.086  max pause: 6.3 ms
+warning: The debugger moved the breakpoint from line 10 to line 9 (line 10 has no code of its own); values are from line 9. Choose a line from `peeky describe`.
+...
+```
+
+An expression is not a literal:
+
+```sh
+peeky probe examples/pagination_bug.py --at 8 --capture start --set 'start=min(1, 2)'
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: failed  hits: 1 before it failed  seconds: 0.342
+error [MUTATION_REJECTED]: Python --set values must be a literal (number, string, bytes, True/False/None, or a list/tuple/dict/set of literals); expressions are not evaluated
+hint: Pass a literal value of the variable's type (C, C++ and Rust: a decimal integer, or text in double quotes for a string).
+...
+```
+
+[ERRORS.md](ERRORS.md) lists all the codes. If you suspect a filesystem with unreliable timestamps,
+set `PEEKY_NO_DIGEST_CACHE=1`: Peeky then rehashes every file on every check.
 
 ---
 
@@ -1913,19 +3065,19 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 
 | You would type | Peeky | Notes |
 | --- | --- | --- |
-| `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run, nothing left running |
-| `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only; no expressions. Quote selectors with `[...]` (zsh globs them) |
-| `print m[1]` (a C++ `std::map`) | `--capture "m[1],m[#0].first"` | `m[1]` is the value for key 1, as in C++; `m[#0]` is the first entry in iteration order ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-c-map-or-set-by-key)) |
-| `set var x = 0`, `continue` | `--set x=0` | Applied once, at `--set-hit N`; the output shows the effect |
-| `ignore 1 9`, `continue` ×10 | `--hits 10` (or `--hits all`), then `peeky queries hits` | Every hit is captured and saved |
+| `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run. Nothing is left running |
+| `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only, no expressions. Quote selectors with `[...]`: zsh globs them |
+| `print m[1]` (a C++ `std::map`) | `--capture "m[1],m[#0].first"` | `m[1]` is the value for key 1, as in C++. `m[#0]` is the first entry in iteration order ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-c-map-or-set-by-key)) |
+| `set var x = 0`, `continue` | `--set x=0` | Only where the language allows the change ([2.3](#23-test-a-hypothesis-by-changing-a-value)). Applied once, at `--set-hit N`. The output shows the effect |
+| `ignore 1 9`, `continue` ×10 | `--hits 10` (or `--hits all`), then `peeky queries hits` | Every hit up to N is captured and saved |
 | `commands 1 / silent / print x / end` | `--hits N --capture x` | Logging without breaking into the run |
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
-| `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
-| `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
-| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals (frame N as `frames` lists them) |
-| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++, Rust and Java `session inspect` shows what the function returned under `[Returned]` (also when the step stopped in a library), and `session get return` reads it; withheld unless exact (2.9). Python: not available |
-| `finish` at every call (`Run till exit ... Value returned is`) | `peeky probe target --at <function's first line> --capture return --hits all` | One `(return)` row per call, recursion and library callers included (2.9) |
-| `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays, and stopping there first says so (exit 3) |
-| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
+| `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children, with their selectors |
+| `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop. Values come from the top frame |
+| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals. Frame N is as `frames` lists them |
+| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java's `--into` and `--out` skip JDK code. After `step --out` in C, C++, Rust and Java, `session inspect` shows what the function returned, under `[Returned]`. It does so also when the step stopped in a library. `session get return` reads it. The value is withheld unless it is exact ([2.9](#29-what-a-function-returned)). Python: not available |
+| `finish` at every call (`Run till exit ... Value returned is`) | `peeky probe target --at <function's first line> --capture return --hits all` | One `(return)` row per call, recursion and library callers included ([2.9](#29-what-a-function-returned)). Python refuses it ([Python](lang/python.md#see-what-a-function-returned)) |
+| `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot. The session's own breakpoint stays. If the program stops there first, Peeky says so, with exit status 3 |
+| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop, or to the exit |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The `(output)`, `(args)`, ... rows come first, then the first divergence |
-| "I think this fixes it" | `peeky verify --old ... --new ...` | Fresh build plus an independent checker |
+| "I think this fixes it" | `peeky verify --old ... --new ...` | A fresh build, and an independent checker |
