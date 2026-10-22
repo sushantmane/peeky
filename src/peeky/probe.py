@@ -1716,7 +1716,7 @@ def _settle_output(result, final, known_end):
     stream the adapter kept open, text it sent from the disconnect on (its own, or the
     program's: `output_after_disconnect`), or an adapter that exited with a status other
     than 0 (`adapter_exit`, and the warning returned; save the one exit Peeky is known to
-    provoke: DAP._provoked) leaves it partial, and `program_ended` says the program had
+    provoke, its signature on stderr: DAP._provoked_signature) leaves it partial, and `program_ended` says the program had
     ended all the same."""
     warning = None
     if isinstance(final, dict) and final.get("ended"):
@@ -1732,6 +1732,10 @@ def _settle_output(result, final, known_end):
         if type(final.get("exit_code")) is int:
             result["exit_code"] = final["exit_code"]
         status = final.get("adapter_exit")
+        if final.get("exit_provoked") is True:
+            # The adapter's exit was the one Peeky provokes, its signature on stderr: no
+            # sign of output it dropped, so no warning (DAP._provoked_signature).
+            result["exit_provoked"] = True
         if final.get("stream_drained") and not final.get("drained"):
             # Its stream ended cleanly, but the adapter then failed: output it held may
             # never have been sent.

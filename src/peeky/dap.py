@@ -30,6 +30,9 @@ TERMINATE_GRACE = 1.0
 # waits at most this long for the adapter to end its output stream (#203): only that end
 # proves no more of the program's output can come. A wait that runs out says so.
 DRAIN_TIMEOUT = 2.0
+# How long close() waits for the stderr of an adapter it reaped to end, when its exit
+# may be the one Peeky provokes: what it printed then is read whole (#213).
+STDERR_SETTLE = 1.0
 # How soon after the adapter answered `disconnect` Peeky ending its input still counts
 # as "just answered", for the one exit Peeky is known to provoke (#213).
 JUST_ANSWERED = 0.25
@@ -103,9 +106,9 @@ class DAP:
         """``fatal_stderr`` maps a regex to a message: an adapter stderr line matching it
         means the adapter can no longer work (e.g. a dead event thread), and fails the
         transport with that message (``{excerpt}``: the line and its stack frames).
-        ``provoked_exit``: the status this adapter is known to exit with when Peeky ends
-        its input as it answers `disconnect` (debugpy: 1, #213), which close() then does
-        not take for a crash."""
+        ``provoked_exit``: (status, signature) of the exit this adapter is known to make
+        when Peeky ends its input as it answers `disconnect` (debugpy: 1, #213), and the
+        lines its stderr then shows: close() does not take that exit for a crash."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -822,7 +825,11 @@ class DAP:
                 except Exception:
                     pass
             clean, own_exit, input_ended = self._drain(mark) if ended else (False, False, None)
-            if stop := getattr(self, "stderr_stop", None):
+            # An adapter with a known provoked exit (debugpy) says so on stderr as it exits:
+            # its stderr is read until the adapter is reaped (_provoked).
+            settle = getattr(self, "provoked_exit", None) is not None
+            stop = getattr(self, "stderr_stop", None)
+            if stop and not settle:
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
                 stop.set()
             if terminate:
@@ -838,9 +845,16 @@ class DAP:
             self.process.wait(timeout=3)
             # An adapter that failed as it exited may have dropped output it held.
             status = self.process.returncode
-            provoked = self._provoked(status, own_exit, asked, answered, input_ended)
+            timely = self._provoked_when(status, own_exit, asked, answered, input_ended)
+            stderr_reader = getattr(self, "stderr_reader", None)
+            if timely and stderr_reader is not None:
+                # It is gone: its stderr ends, with what it printed as it failed.
+                stderr_reader.join(timeout=STDERR_SETTLE)
+            if stop and settle:
+                stop.set()
+            provoked = timely and self._provoked_signature()
             self.reader.join(timeout=3)
-            if stderr_reader := getattr(self, "stderr_reader", None):
+            if stderr_reader is not None:
                 stderr_reader.join(timeout=1)
             self.process.stdin.close()
             self.process.stdout.close()
@@ -898,13 +912,24 @@ class DAP:
             clean = self.stream_ended.is_set() and self.output_count == mark
         return clean, own_exit, input_ended
 
-    def _provoked(self, status, own_exit, asked, answered, input_ended):
-        """Whether the adapter's non-zero exit is the one Peeky is known to provoke (#213):
-        debugpy's adapter (``provoked_exit``), exactly that status, still running when
-        Peeky ended its input, and that while its `disconnect` was unanswered, or at
-        most JUST_ANSWERED after its answer: its disconnect handler then fails writing to
-        the channel the end of its input closed. Any other non-zero exit is a crash."""
+    def _provoked_when(self, status, own_exit, asked, answered, input_ended):
+        """Whether the adapter's non-zero exit came as the one Peeky is known to provoke
+        (#213) does: debugpy's adapter (``provoked_exit``), exactly that status, still
+        running when Peeky ended its input, and that while its `disconnect` was
+        unanswered, or at most JUST_ANSWERED after its answer. Its disconnect handler then
+        fails writing to the channel the end of its input closed. Not enough alone: a
+        crash of its own can come then too (_provoked_signature)."""
         known = getattr(self, "provoked_exit", None)
-        if known is None or status != known or own_exit or not asked or input_ended is None:
+        if known is None or status != known[0] or own_exit or not asked:
+            return False
+        if input_ended is None:
             return False
         return answered is None or input_ended - answered <= JUST_ANSWERED
+
+    def _provoked_signature(self):
+        """Whether the adapter's stderr shows that very failure: every line of its known
+        signature (``provoked_exit``). Without it, the exit is unexplained: a crash."""
+        known = getattr(self, "provoked_exit", None)
+        with self.condition:
+            text = "\n".join(self.stderr_tail)
+        return bool(known and known[1]) and all(part in text for part in known[1])

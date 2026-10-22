@@ -1059,8 +1059,21 @@ def locals_only(scopes):
 class PythonAdapter:
     interpreter: str = sys.executable
     # debugpy's adapter exits 1 when Peeky ends its input as it answers `disconnect`: its
-    # handler then writes to the closed channel (#213). No sign of output it dropped.
-    provoked_exit = 1
+    # handler goes on to report its sockets (debugpy's own event) on the channel that end
+    # closed, and fails (#213). Its stderr (debugpy 1.8.22) shows each of these lines;
+    # with all of them, the message it could not send was its own, not the program's.
+    provoked_exit = (
+        1,
+        (
+            "couldn't handle #",
+            'request "disconnect" from Client',
+            "in disconnect_request",
+            "in report_sockets",
+            "debugpy.common.messaging.NoMoreMessages: No more messages",
+            "assert self.response is None",
+            "AssertionError",
+        ),
+    )
 
     environment = None
     manifest_id = None

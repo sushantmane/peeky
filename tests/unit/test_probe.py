@@ -219,6 +219,10 @@ NOISY = {**OPEN, "after_disconnect": "free(): invalid pointer\n"}
 # Its stream ended cleanly, but the adapter then failed (#213 review).
 CRASHED = {**OPEN, "stream_drained": True, "adapter_exit": 2}
 KILLED = {**OPEN, "stream_drained": True, "adapter_exit": -6}
+# A status 1 from debugpy without the signature of the exit Peeky provokes: a crash.
+UNEXPLAINED = {**OPEN, "stream_drained": True, "adapter_exit": 1, "exit_provoked": False}
+# With it: Peeky's own doing (#213 review).
+PROVOKED = {**WHOLE, "stream_drained": True, "adapter_exit": 1, "exit_provoked": True}
 RAN_ON = "output so far (the program ran on after the last hit, so this can include text "
 
 
@@ -321,7 +325,12 @@ def test_truncated_output_is_never_called_all_of_it(after):
 
 
 @pytest.mark.parametrize(
-    "final, how", [(CRASHED, "exited with status 2"), (KILLED, "was ended by signal 6")]
+    "final, how",
+    [
+        (CRASHED, "exited with status 2"),
+        (KILLED, "was ended by signal 6"),
+        (UNEXPLAINED, "exited with status 1"),
+    ],
 )
 def test_an_adapter_that_failed_as_it_exited_leaves_the_output_partial(monkeypatch, final, how):
     import peeky.probe as probe_module
@@ -337,6 +346,20 @@ def test_an_adapter_that_failed_as_it_exited_leaves_the_output_partial(monkeypat
     text = _table(result)
     assert "the program ended, but its output may still have been arriving" in text
     assert "warning: " + warning in text
+
+
+def test_the_exit_peeky_provokes_is_said_in_json_and_never_warned(monkeypatch):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    worker = Ending("terminated", PROVOKED)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert (result["output_complete"], result["exit_provoked"]) == (True, True)
+    assert not result["warnings"] and "adapter_exit" not in result
+    assert "program_ended" not in result
+    text = _table(result)
+    assert "output:\n  at the hit\n  after it" in text and "warning" not in text
 
 
 def test_only_the_last_twenty_lines_of_output_are_shown_and_it_says_so():
