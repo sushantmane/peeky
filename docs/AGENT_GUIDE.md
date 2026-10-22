@@ -205,10 +205,12 @@ and slow or unrepeatable runs.
 
 - `peeky sql --schema` lists the tables, views and canned queries (4.1). Read it before writing
   SQL.
-- `peeky queries` needs no SQL. Its queries: `run`, `wide` (a row per hit), `hits`, `compare`, and
-  `join` (two runs' hits paired by values: `key=v` or `key=a,b`). Also `diff` (what differs, first
-  divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable` and `failures`. `--param
-  a=1 --param b=5` (default: the last two) or `run=3` picks runs.
+- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (hits
+  paired by values: `key=v` or `key=a,b`; its table drops selectors that agree at every paired
+  hit), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`,
+  `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
+  `diff`, `compare` and `set_effect` tables show long values from where they differ (`--json`:
+  whole).
 - Compare numbers with `num`; `value` is the debugger's text. Mask addresses with
   `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to 4.6). `--label`
   tags a run with free text, stored as given; it never changes which runs `diff` or `compare:`

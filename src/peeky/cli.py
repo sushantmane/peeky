@@ -1372,10 +1372,11 @@ def queries(args):
             ),
         )
         return 0
-    result = evidence.run_query(
-        path, args.name, evidence.parse_params(args.param), limit=args.limit
+    # The rows, their notes and the text table come from one snapshot of the store.
+    result, text = evidence.canned(
+        path, args.name, evidence.parse_params(args.param), limit=args.limit, table=not args.json
     )
-    _emit({**result, "query": args.name, "store": str(path)}, args.json, evidence.table)
+    _emit({**result, "query": args.name, "store": str(path)}, args.json, lambda _: text)
     return 0
 
 
