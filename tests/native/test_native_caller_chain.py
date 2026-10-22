@@ -168,7 +168,7 @@ def test_no_frame_is_named_for_the_change_where_the_calls_cannot_be_followed(
     if case == "two_callers":
         assert f"{onward}Peeky cannot single out one call of wrap; {elsewhere}" in message, out
         assert "in main" not in message, out
-        assert "hint: Change the field in the function that holds the struct itself" in out
+        assert "hint: Change the field where the struct is held" in out
         # Where it points: main's own fields.
         code, out = run(capsys, "describe", source)
         (mutable,) = [line for line in out.splitlines() if line.startswith("mutable:")]

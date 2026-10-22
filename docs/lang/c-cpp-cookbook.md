@@ -1069,7 +1069,7 @@ moved. That covers every local whose storage the debug information reaches throu
 The refusal says:
 
 ```
-`dropped` is reached through a pointer or reference …: Peeky changes only values the frame holds itself and does not write through a pointer or reference
+`dropped` is reached through a pointer or reference …. Change the value where it is owned: Peeky changes only values the frame holds itself
 ```
 
 These change as usual, because the frame holds them itself: a by-value structured binding

@@ -248,3 +248,61 @@ def test_the_docs_peeky_prints_exist():
     for page, number in sections:
         path = DOCS / ("COOKBOOK.md" if page == "COOKBOOK" else f"lang/{page}.md")
         assert any(h.startswith(number + " ") for h in _headings(path)), (page, number)
+
+
+# #212: the docs are written in short sentences. A sentence here is prose outside code blocks,
+# tables, headings and quotes, split at a full stop, colon or semicolon and at each list item;
+# inline code counts as one word. History records (PROGRESS, evaluations, reviews, ADRs, and
+# pages marked historical) are kept as written.
+LONGEST_SENTENCE = 40
+# Not yet rewritten: RUST_GATE's current internals move into RUST_AGENT, and CPP_PLAN is
+# archived.
+NOT_YET_PLAIN = {"RUST_GATE.md", "CPP_PLAN.md"}
+
+
+def _sentences(text):
+    text = re.sub(r"^```.*?^```", "", text, flags=re.M | re.S)
+    for block in re.split(r"\n\s*\n", text):
+        if block.lstrip().startswith(("|", "#", ">", "<")):
+            continue
+        prose = " ".join(line.strip() for line in block.splitlines())
+        prose = re.sub(r"`[^`]*`", "X", prose)
+        prose = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", prose)
+        for item in re.split(r"(?:^|\s)(?:[-*]|\d+\.)\s", prose):
+            for sentence in re.split(r"(?<=[.!?:;])\s+", item):
+                if sentence.split():
+                    yield sentence
+
+
+def _long_sentences(paths):
+    return [
+        (path.name, len(sentence.split()), sentence[:80])
+        for path in paths
+        for sentence in _sentences(path.read_text())
+        if len(sentence.split()) > LONGEST_SENTENCE
+    ]
+
+
+def test_the_docs_are_written_in_short_sentences():
+    pages = [DOCS.parent / "README.md", *sorted(DOCS.glob("*.md")), *sorted(DOCS.glob("lang/*.md"))]
+    pages = [
+        page
+        for page in pages
+        if page.name not in NOT_YET_PLAIN | {"PROGRESS.md"}
+        and "> **Historical:**" not in page.read_text()[:2000]
+    ]
+    assert len(pages) > 20
+    assert _long_sentences(pages) == []
+
+
+def test_the_sentence_check_finds_a_long_sentence(tmp_path):
+    words = " ".join(["word"] * LONGEST_SENTENCE)
+    page = tmp_path / "a.md"
+    page.write_text(
+        f"# {words} heading\n\n{words}. Short one.\n\n- {words} more\n- ok\n\n"
+        f"| {words} more |\n\n```\n{words} more\n```\n\nUse `{words}` here, {words}.\n"
+    )
+    # The list item (41 words) and the last line (43, with `…` as one word) are too long; the
+    # 40-word sentence, the heading, the table and the code block are not checked or pass.
+    found = _long_sentences([page])
+    assert [count for _, count, _ in found] == [LONGEST_SENTENCE + 1, LONGEST_SENTENCE + 3]

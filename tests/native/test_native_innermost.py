@@ -354,7 +354,7 @@ def test_a_local_read_in_an_included_case_is_withheld(directory, capsys):
         capsys, path, line_of(SWITCH_INCLUDED, "return w;"), "p", "k", out=True, steps=1
     )
     assert rows["p"]["line"] == line_of(CASES, "// read"), rows["p"]
-    assert withheld(rows["p"], "this frame runs cases.h:3, outside its function's own lines")
+    assert withheld(rows["p"], "frame runs cases.h:3, outside its function's own lines")
     assert rows["k"]["value"] == "1"
 
 
@@ -399,7 +399,7 @@ def test_an_object_a_default_member_initializer_builds_is_withheld(directory, ca
     member = line_of(MEMBERS, "// member b")
     rows = shown_at(capsys, path, member, "cfg", "cfg.b", "seed")
     assert rows["cfg"]["function"] == "run()" and rows["seed"]["value"] == "6"
-    assert withheld(rows["cfg"], f"this frame runs members.cpp:{member}, outside its function's")
+    assert withheld(rows["cfg"], f"frame runs members.cpp:{member}, outside its function's")
     assert withheld(rows["cfg.b"], "'cfg' has no value here")
     rows = shown_at(capsys, path, line_of(MEMBERS, "return w;"), "cfg", "seed", hit=3, frame=1)
     assert withheld(rows["cfg"]) and rows["seed"]["value"] == "6"
@@ -1037,7 +1037,7 @@ def test_a_local_below_the_stop_in_a_function_with_a_label_is_withheld(directory
         assert "value" in rows["total"], rows
         # On its own line, where control enters it, likewise.
         rows = shown_at(capsys, path, line_of(LABELLED, "// own line"), "q", "total", hit=hit)
-        assert withheld(rows["q"], "a `goto` return here", "may not be"), rows
+        assert withheld(rows["q"], "can return here with it live", "may not be"), rows
         assert "value" in rows["total"], rows
 
 

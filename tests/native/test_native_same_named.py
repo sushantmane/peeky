@@ -929,5 +929,5 @@ def test_a_multi_stop_lines_refusal_says_its_later_stops_make_no_change(director
     assert code == 2 and error["code"] == "MUTATION_REJECTED", result
     assert result.get("refused_before_launch") is True, result
     assert "`t` has no fields" in error["message"], error
-    assert "later stops in main, in other blocks, name another `t`" in error["message"], error
+    assert "change the `t` of another block (the line's later stops in main)" in error["message"]
     assert "part-way through the line" in error["message"], error

@@ -564,17 +564,14 @@ def settable_member(graph, root, name, steps, owner=None):
             if node[0] in ("pointer", "reference"):
                 advice = owner() if owner is not None and path == name else None
                 raise Unsettable(
-                    f"`{path}` is a {node[0]}: Peeky changes only values the frame holds "
-                    f"itself and does not write through a {node[0]} (what it reaches may be "
-                    "freed or moved); "
+                    f"`{path}` is a {node[0]}: Peeky does not write through a {node[0]}, "
+                    "since what it reaches may be freed or moved; "
                     + (
                         advice
                         or "change the value where it is owned, before the call that passed "
-                        "it: a probe `--at` that call's line with `--hits N --set-hit N`, or "
-                        "`session start --at` it with `--hit N`, where N counts that line's "
-                        "own stops, not the called function's (find it with `peeky probe ... "
-                        "--at <call line> --capture <argument> --hits all`); `session "
-                        "continue --to` the call's line reaches only the next call"
+                        "it: `--at <call line> --hits N --set-hit N`, where N counts that "
+                        "line's own stops, not the called function's (find N with `--capture "
+                        "<argument> --hits all` there)"
                     )
                 )
             if node[0] == "record":

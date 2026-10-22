@@ -334,7 +334,7 @@ def test_a_line_shared_with_a_closure_names_each_function_it_stops_in(crate, cap
         "3",
     )
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
-    assert "'score' in peeky_pagination::ranked::{{closure}}" in result["error"]["message"]
+    assert "In peeky_pagination::ranked::{{closure}}, 'score' is kept" in result["error"]["message"]
     # An owned container live at the line is read (#53); without readMemory it stays
     # raw and says why (that, not a move: #156), and how to read it.
     at = next(i for i, line in enumerate(lines, 1) if "// BEST" in line)

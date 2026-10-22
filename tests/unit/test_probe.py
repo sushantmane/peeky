@@ -566,6 +566,43 @@ def test_keys_missing_from_a_partial_mapping_are_not_called_absent(listing):
         _resolve(Tree({1: listing}), {}, snapshot(ORDER), parse_selector("order['zzz']"))
 
 
+def test_each_rust_note_names_every_gate_on_what_peeky_reads():
+    # Review of the #212 rewrite: a shorter note must still name each condition Peeky
+    # reads under (MIR-proven, at the stop line, innermost frame, unoptimized, live, no
+    # unsafe code, a raw pointer never), so no row reads as vouched for where it is not.
+    from peeky import probe
+
+    gates = {
+        "_OWNED_RUST": ("the MIR proves it initialized at the stop line", "innermost frame"),
+        "_FIELD_RUST": (
+            "a reference parameter the IR proves live",
+            "the MIR proves initialized at the stop line",
+            "only in the innermost frame",
+        ),
+        "_COMPOSITE_RUST": (
+            "every field is an integer, bool, float or char",
+            "the MIR proves it initialized at this stop, in the innermost frame",
+        ),
+        "_UNPROVEN_RUST": (
+            "never follows a raw pointer",
+            "a value the MIR proves live",
+            "in the innermost frame of an unoptimized build",
+            "no unsafe code",
+            "can reach freed memory",
+        ),
+        "_STALE_RUST": (
+            "The MIR does not prove it initialized here",
+            "Peeky has no proof here: an optimized build, a caller frame, or unmatched MIR",
+            "moved-from copy",
+        ),
+        "_UNREAD_RUST": ("structs of them your crate defines",),
+    }
+    for name, needed in gates.items():
+        note = getattr(probe, name)
+        for gate in needed:
+            assert gate in note, (name, gate)
+
+
 def test_rust_container_indexes_explain_what_is_unsupported():
     from peeky.probe import _resolve
 
@@ -585,7 +622,9 @@ def test_rust_container_indexes_explain_what_is_unsupported():
     assert "has no indexed elements" in message and "children: buf, len" in message
     assert "Peeky reads Rust contents only for reference parameters" in message
     assert "MIR proves initialized" in message and "This one stays raw" in message
-    assert "Capture ordered.len" in message
+    assert "at the stop line (innermost frame)" in message and "readMemory" in message
+    assert "structs your crate defines" in message, message
+    assert "capture ordered.len" in message
     # Text read from memory has only its length as children: no element hint.
     text = {
         "name": "label",

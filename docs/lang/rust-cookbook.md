@@ -160,7 +160,7 @@ peeky probe limiter --at src/main.rs:10 --arg 2 --arg 10 --arg 0,1,10,11 --captu
 ```
 
 ```
-Error [MUTATION_REJECTED]: `width` cannot be changed at src/main.rs:10, at any stop of this build: in limiter::allow, `width` is a parameter kept in a register (the debugger only shows a copy of it, so a change would not affect the program). Refused before the program runs: the debugger's launch request was not sent. A candidate edit keeps it in memory, in the same probe (rust-cookbook 6.6): `mut width` in the signature and `std::hint::black_box(&mut width);` as the function's first statement, by `--old`/`--new`, with this `--set`; settable here: no root locals (fields where rows mark them [settable])
+Error [MUTATION_REJECTED]: `width` cannot be changed at src/main.rs:10, at any stop of this build: in limiter::allow, `width` is a parameter kept in a register (the debugger only shows a copy of it, so a change would not affect the program). Refused before the program runs: nothing ran. A candidate edit keeps it in memory, in the same probe (rust-cookbook 6.6): `mut width` in the signature and `std::hint::black_box(&mut width);` as the function's first statement, by `--old`/`--new`, with this `--set`; settable here: no root locals (fields where rows mark them [settable])
 hint: Keep it in memory with a candidate edit (`std::hint::black_box(&mut x);` after its `let`, by `--old`/`--new`) and `--set` it in that same probe.
 ```
 
@@ -490,7 +490,7 @@ hit  phase     line  function        selector     type     value
 2    observed  4     cells::longest  cell.length  usize    6  [memory]
 2    observed  4     cells::longest  cells        &[&str]  &[&str] @ 0x16b0faf20
 ...
-warning: cells: Peeky reads Rust contents only for String, &str and containers of integer, bool, float and char elements (or of tuples of them, and structs of them your crate defines); this value is LLDB's summary (its type and address), not the contents. Its `&str` items read as text where the code binds one (`for cell in cells`: `cell`). Capture cells.length for the length. Check contents with `peeky verify`.
+warning: cells: This value is LLDB's summary (its type and address), not its contents: check contents with `peeky verify`. Its `&str` items read as text where the code binds one (`for cell in cells`: `cell`). Capture cells.length for the length. Peeky reads Rust contents only for String, &str, and containers of integer, bool, float or char elements, or of tuples of them and structs of them your crate defines.
 ```
 
 The details:
@@ -1099,7 +1099,7 @@ peeky probe examples/rust --at 36 --capture request.page --set request.page=2
 ```
 
 ```
-Error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, the program has already copied `request` into `start` (at line 35) and goes on with that copy, replacing or dropping `request` with no read of the changed part Peeky can prove first (a reference lent to a call, or `{:?}`, is not one), so a change there may never be seen. Refused before the program runs: the debugger's launch request was not sent. Change it before the program copies it (`--set-at` an earlier line), or change the copy instead; settable here: start (root locals; fields too where rows mark them [settable])
+Error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, the program has already copied `request` into `start` (at line 35) and goes on with that copy, so a change there may never be seen: Peeky proves no read of the changed part first (a reference lent to a call, or `{:?}`, is not one). Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line), or change the copy instead; settable here: start (root locals; fields too where rows mark them [settable])
 hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there), or change the copy the message names instead.
 ```
 
@@ -1284,7 +1284,7 @@ peeky probe label --at src/main.rs:6 --capture name --set 'name="pear"'
 hit  phase     line  function     selector  type    value
 1    observed  6     label::main  name      String  "apple"  [memory]
 status: failed  hits: 1 before it failed  seconds: 1.244
-error [MUTATION_REJECTED]: `name` cannot be changed to a text at this stop: a borrow of it (a `&str` of its text, a reference, an iterator over it) is still used after the stop, and it would keep the old length: it would read a mix of old and new text, or bytes that are not UTF-8. Change it before such a borrow is taken, or after its last use; settable here: none
+error [MUTATION_REJECTED]: `name` cannot be changed to a text at this stop: change it before a borrow of it is taken, or after the borrow's last use. A borrow of it (a `&str`, a reference or an iterator) is still used after the stop, and a borrow keeps the old length: it would read old and new text mixed, or bytes that are not UTF-8; settable here: none
 hint: Observe the value instead, or change the source with a candidate edit (`--old`/`--new`) and verify it; rows marked [settable] can be changed here.
 ...
 ```

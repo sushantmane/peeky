@@ -166,7 +166,7 @@ def test_a_str_loop_item_reads_through_its_reference(tmp_path, state, capsys):
     assert "Capture cells.length for the length" in cells["note"], cells
     assert "`.len`" not in cells["note"] and "for cell in cells" in cells["note"], cells
     assert "its length is cells.length" in rows[(1, "cells.len")]["error"], rows
-    assert any(w.startswith("cells: Peeky reads Rust contents") for w in result["warnings"])
+    assert any(w.startswith("cells: This value is LLDB's summary") for w in result["warnings"])
 
 
 @pytest.mark.timeout(400)

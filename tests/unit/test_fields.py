@@ -924,4 +924,4 @@ def test_a_local_read_through_a_pointer_is_refused_as_a_root_and_by_its_fields()
     assert session.never_settable_row({"name": "vla"}, {"id": 1}, member=True) is None
     assert "static" in _not_framed("g", {"static"})
     hint = next(hint for pattern, hint in _MUTATION_HINTS if re.search(pattern, reason))
-    assert "structured binding" in hint, hint
+    assert "the frame that owns it" in hint, hint

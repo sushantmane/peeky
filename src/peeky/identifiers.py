@@ -187,8 +187,7 @@ def twin_hint(name, listed):
         return ""
     shown = ", ".join(f"{twin!r} (written {ascii(twin)})" for twin in twins[:4])
     return (
-        f"; the debugger lists {shown}, which {'differs' if len(twins) == 1 else 'differ'} "
-        f"from {ascii(name)} only by Unicode normalization: names are matched exactly as "
-        "the debugger lists them (Peeky never normalizes one), so select "
-        f"{'it' if len(twins) == 1 else 'one'} as listed if that is the one you mean"
+        f"; select {'it' if len(twins) == 1 else 'one'} as listed if that is the one you mean: "
+        f"the debugger lists {shown}, which {'differs' if len(twins) == 1 else 'differ'} from "
+        f"{ascii(name)} only by Unicode normalization, and Peeky never normalizes a name"
     )
