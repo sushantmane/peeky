@@ -10,6 +10,7 @@ source lines between classes remain explicit; breakpoint selection must reject
 ambiguous owners. No nested/anonymous name is guessed from a '$' suffix.
 """
 
+import bisect
 import re
 from pathlib import Path
 
@@ -141,9 +142,10 @@ def descriptor_name(descriptor):
 
 def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=None):
     """(binary internal name, SourceFile, sorted executable lines). With ``scopes`` (a
-    list), also appends (method, descriptor, first line, last line, local names) for each
-    method with code, its names from the LocalVariableTable (`javac -g`). With ``codes``
-    (a list), also appends (method, descriptor, bytecode, {pc: line}, [(start, end,
+    list), also appends (method, descriptor, first line, last line, local names, details)
+    for each method with code, its names from the LocalVariableTable (`javac -g`);
+    ``details``: the scope's "types", and its block locals' lines (_block_lines). With
+    ``codes`` (a list), also appends (method, descriptor, bytecode, {pc: line}, [(start, end,
     handler)]) for each method with code, in class-file order (#161). With ``shared`` (a
     dict), also records {line: {"stops": method, "never": [methods]}} for lines that
     several methods of the class share (a lambda body on its enclosing method's line, a
@@ -387,8 +389,12 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
                 types = {
                     local: " or ".join(sorted(kinds[local])) for local in ordered if local in kinds
                 }
+                details = {
+                    **({"types": types} if types else {}),
+                    **_block_lines(declared, method_lines, code_length, ordered),
+                }
                 scopes.append(
-                    (method_name, descriptor, first, max(found), ordered, flags, found, types)
+                    (method_name, descriptor, first, max(found), ordered, flags, found, details)
                 )
             for line in sorted(set(method_lines.values())):
                 # Class-file order, which is the order java-debug considers them in.
@@ -423,18 +429,100 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
     return internal, source, sorted(lines)
 
 
+# Past this many blocks, one span covers them all (as native._MAX_SPANS).
+_MAX_SPANS = 8
+
+
+def _block_lines(declared, method_lines, code_length, names):
+    """{"spans": {name: [[first, last], ...]}} for the locals a method declares only
+    inside blocks (#264: a `for` loop's `b`, declared again in a later loop), from the
+    LocalVariableTable: a declaration whose scope ends before the method's code does
+    (javac ends a method-level local's there). Its lines are those of the code in its
+    scope (start_pc and length), where a stop sees it, so not its declaration's line,
+    whose code runs before its scope starts. One declaration's lines are one span,
+    split where a line between two of them runs other code; overlapping spans are
+    joined, and past _MAX_SPANS one covers them all. Where the blocks declare a name
+    with different types, also {"typed_spans": {name: [{"type", "spans"}, ...]}}, each
+    type's own. ``declared``: (name, descriptor, slot, start, length) per entry."""
+    starts = sorted(method_lines)
+    running = sorted(set(method_lines.values()))
+    whole, blocks = set(), {}
+    for local, descriptor_of, _, start, length in declared:
+        if local not in names:
+            continue
+        if start + length >= code_length:
+            whole.add(local)
+            continue
+        covered = {method_lines[pc] for pc in starts if start <= pc < start + length}
+        before = [pc for pc in starts if pc <= start]
+        if before:
+            # The line its scope starts in: a step can stop part-way through it.
+            covered.add(method_lines[before[-1]])
+        if covered:
+            blocks.setdefault(local, []).append((descriptor_of, _runs(covered, running)))
+    spans, typed = {}, {}
+    for local in names:
+        if local in whole or local not in blocks:
+            continue
+        spans[local] = _joined(span for _, found in blocks[local] for span in found)
+        descriptors = list(dict.fromkeys(descriptor_of for descriptor_of, _ in blocks[local]))
+        if len(descriptors) > 1:
+            # In the order of their lines, as the source declares them.
+            typed[local] = sorted(
+                (
+                    {
+                        "type": descriptor_name(each),
+                        "spans": _joined(
+                            span for kind, found in blocks[local] if kind == each for span in found
+                        ),
+                    }
+                    for each in descriptors
+                ),
+                key=lambda each: each["spans"][0],
+            )
+    return {**({"spans": spans} if spans else {}), **({"typed_spans": typed} if typed else {})}
+
+
+def _runs(covered, running):
+    """One declaration's lines ``covered`` as spans [[first, last], ...]: split only
+    where a line between two of them runs code (``running``, sorted) that is not in its
+    scope."""
+    ordered = sorted(covered)
+    found = [[ordered[0], ordered[0]]]
+    for line in ordered[1:]:
+        at = bisect.bisect_right(running, found[-1][1])
+        if at < len(running) and running[at] < line:
+            found.append([line, line])
+        else:
+            found[-1][1] = line
+    return found
+
+
+def _joined(spans):
+    """Sorted spans, overlapping ones joined; past _MAX_SPANS, one over them all."""
+    joined = []
+    for first, last in sorted(spans):
+        if joined and first <= joined[-1][1]:
+            joined[-1][1] = max(joined[-1][1], last)
+        else:
+            joined.append([first, last])
+    if len(joined) > _MAX_SPANS:
+        return [[joined[0][0], max(last for _, last in joined)]]
+    return joined
+
+
 def _own_constructor_lines(scopes):
     """A constructor without a body of its own (implicit, or an anonymous class's), and a
     static initializer, end on their last field initializer: end them before the next
     method declared after them, so they never span methods between fields. Synthetic
     methods (a lambda) do not count."""
     starts = sorted(first for _, _, first, _, _, flags, _, _ in scopes if not flags & 0x1000)
-    for index, (method, descriptor, first, last, names, flags, found, types) in enumerate(scopes):
+    for index, (method, descriptor, first, last, names, flags, found, details) in enumerate(scopes):
         following = [start for start in starts if start > first]
         if method in ("<init>", "<clinit>") and following:
             own = [line for line in found if line < following[0]]
             last = max(own) if own else last
-        scopes[index] = (method, descriptor, first, last, names, types)
+        scopes[index] = (method, descriptor, first, last, names, details)
 
 
 def java_declarations(mapping, classes_dir, workspace):
@@ -474,15 +562,16 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
             else source.name
         )
         owner = internal.rsplit("/", 1)[-1]
-        for method, _, first, last, names, types in methods:
+        for method, _, first, last, names, details in methods:
             found.append(
                 {
                     "scope": f"{owner}.{method}",
                     "source": source,
                     "lines": [first, last],
                     "names": names,
-                    # Declared types, as other languages' scopes give them (#183).
-                    **({"types": types} if types else {}),
+                    # Declared types, as other languages' scopes give them (#183), and
+                    # the lines of the blocks declaring a block's local (#264).
+                    **details,
                 }
             )
     found.sort(key=lambda scope: (scope["source"], scope["lines"][0], scope["scope"]))

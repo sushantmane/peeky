@@ -55,3 +55,47 @@ def test_session_set_help_names_every_language_that_changes_fields(capsys):
     text = " ".join(capsys.readouterr().out.split())
     assert "Java also" not in text
     assert "(Java, Rust, C, C++: current.end=10, xs[0]=1, t.__0=3)" in text
+
+
+def test_describe_lists_a_java_block_locals_lines_and_each_type_its_own():
+    # #264: `ranking (int[], lines 51-53, 78-79)`; one name two blocks declare with
+    # different types is listed once per type, each with its lines.
+    from peeky.cli import _describe_text
+
+    text = _describe_text(
+        {
+            "language": "java",
+            "root": "/app",
+            "breakpoint_lines": {},
+            "scopes": [
+                {
+                    "scope": "Runoff.count",
+                    "source": "app/Runoff.java",
+                    "lines": [43, 79],
+                    "names": ["n", "b", "ranking", "x", "i"],
+                    "types": {"n": "int", "b": "int", "ranking": "int[]", "x": "String or int"},
+                    "spans": {
+                        "b": [[49, 53], [76, 79]],
+                        "ranking": [[51, 53], [78, 79]],
+                        "x": [[60, 60], [70, 71]],
+                        "i": [[60, 60]],
+                    },
+                    "typed_spans": {
+                        "x": [
+                            {"type": "int", "spans": [[60, 60]]},
+                            {"type": "String", "spans": [[70, 71]]},
+                        ]
+                    },
+                }
+            ],
+            "mutable_types": "int",
+            "commands": {},
+            "timing": {"advice": "fast"},
+        }
+    )
+    [line] = [line for line in text.splitlines() if line.startswith("names in Runoff.count")]
+    assert line == (
+        "names in Runoff.count (app/Runoff.java:43-79): n (int), b (int, lines 49-53, 76-79), "
+        "ranking (int[], lines 51-53, 78-79), x (int, line 60), x (String, lines 70-71), "
+        "i (line 60)"
+    )

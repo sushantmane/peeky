@@ -788,6 +788,7 @@ def _describe_text(manifest):
         else:
             where = f" (lines {span})" if span else ""
         types, spans = scope.get("types", {}), scope.get("spans", {})
+        typed = scope.get("typed_spans") or {}
         shown = []
         ambiguous = scope.get("ambiguous") or {}
         for name in scope["names"]:
@@ -796,12 +797,17 @@ def _describe_text(manifest):
                 count = ambiguous[name]
                 shown.append(f"{name} ({count} bindings on this line: not selectable by line)")
                 continue
+            if isinstance(typed.get(name), list):
+                # Blocks declaring one name with different types (#264): each its own.
+                shown += [
+                    f"{name} ({spell(each['type'])}, {_block_span_text(each['spans'])})"
+                    for each in typed[name]
+                ]
+                continue
             # A local declared only in nested blocks is visible on their lines alone.
             parts = [spell(types[name])] if name in types else []
             if name in spans:
-                listed = [f"{a}-{b}" if b > a else str(a) for a, b in spans[name]]
-                single = len(listed) == 1 and "-" not in listed[0]
-                parts.append(("line " if single else "lines ") + ", ".join(listed))
+                parts.append(_block_span_text(spans[name]))
             if name in scope.get("globals", ()):
                 parts.append("module global")
             shown.append(f"{name} ({', '.join(parts)})" if parts else name)
@@ -919,6 +925,13 @@ def _describe_text(manifest):
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
     return "\n".join(lines)
+
+
+def _block_span_text(spans):
+    """`line 23`, `lines 23, 28`, `lines 51-53, 78-79`: a block local's lines."""
+    listed = [f"{a}-{b}" if b > a else str(a) for a, b in spans]
+    single = len(listed) == 1 and "-" not in listed[0]
+    return ("line " if single else "lines ") + ", ".join(listed)
 
 
 def _shown_paths(paths, limit=8):

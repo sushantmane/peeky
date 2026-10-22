@@ -12,6 +12,7 @@ through JDI, the JDK's debugger API. For these words and a few more, see
 
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See each name's declared type](#see-each-names-declared-type)
+  - [See where a local is visible](#see-where-a-local-is-visible)
 - [2.9 What a Function Returned](#29-what-a-function-returned)
   - [When a method threw](#when-a-method-threw)
 - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python)
@@ -57,11 +58,37 @@ peeky describe examples/java --config examples/java/merge.json
 ```
 language: java
 ...
-names in MergeBug.main (demo/MergeBug.java:22-35): args (String[]), input (java.util.List), merged (java.util.List), current (demo.MergeBug$Interval), next (demo.MergeBug$Interval)
+names in MergeBug.main (demo/MergeBug.java:22-35): args (String[]), input (java.util.List), merged (java.util.List), current (demo.MergeBug$Interval), next (demo.MergeBug$Interval, lines 26-30)
 mutable: root locals, fields (not final or static) and array elements (current.end, xs[0]) of type byte, short, int, long, char, boolean, float or double, and String ones; a char takes a char in single quotes ('+') or a code point (43), a String a text in double quotes (--set 'name="apple"'); never a boxed value (Integer), another object or an ArrayList's elements, nor a field a JDK class declares (a String's hash, an ArrayList's size) or an element of an array one holds. Field, char and String changes need an adapter bundle built by this version of scripts/setup_java_adapter.py. Rows mark what can change [settable]
 probe: peeky probe examples/java --config examples/java/merge.json --at demo/MergeBug.java:<line> [--arg A ...] --capture <a,b.c> [--set name=value] [--set-hit N] [--set-at LINE@HIT name=value] [--hits N] [--json]
 ...
 ```
+
+### See where a local is visible
+
+A local declared only inside blocks, such as a loop's, also shows the lines where it is visible
+([COOKBOOK 1.1](../COOKBOOK.md#block-lines)). For [examples/java](../../examples/java):
+
+```sh
+peeky describe examples/java --config examples/java/balance.json
+```
+
+```
+...
+names in BalanceBug.assign (demo/BalanceBug.java:19-32): workers (java.util.List), tasks (int[]), order (java.util.List), task (int, lines 21-30), best (demo.BalanceBug$Worker, lines 22-30), w (demo.BalanceBug$Worker, lines 23-26)
+...
+```
+
+- The lines come from the class file's LocalVariableTable. They are the lines of the code in the
+  local's scope, where a stop sees it.
+- So they start after the line that declares it. `best` is declared on line 21, and a stop there
+  doesn't see it yet.
+- A local declared for the rest of the method, such as `order`, gets no lines. So does one whose
+  scope runs to the method's end, such as an endless loop's counter.
+- Two blocks that declare one name give it the lines of both. In a vote count that declares
+  `ranking` in two loops: `ranking (int[], lines 51-53, 78-79)`.
+- Blocks that declare one name with different types list it once per type, each with its lines:
+  `x (int, line 34), x (String, line 38)`.
 
 ## 2.9 What a Function Returned
 
