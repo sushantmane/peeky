@@ -409,12 +409,16 @@ def test_the_binding_kept_in_a_register_is_named(tmp_path, state, capsys):
     assert "black_box(&mut y)" not in message and "Inlining prevents" in result["error"]["hint"]
     code = main(["probe", str(crate), "--at", f"src/other.rs:{far}", "--capture", "y", "--json"])
     assert json.loads(capsys.readouterr().out)["rows"][0]["not_settable"] == "inlined"
-    # `describe` gives the same reasons (review round 3), not "kept in a register".
+    # `describe` gives the same reasons (review round 3), not "kept in a register", to
+    # each binding, by its selector as the rows name it (#206).
     assert main(["describe", str(crate)]) == 0
     out = capsys.readouterr().out
     mutable = next(line for line in out.splitlines() if line.startswith("mutable:"))
-    assert "keeps one in memory, COOKBOOK 6.6): bind::shadow: n; bind::twins: n." in mutable
-    assert "every one in memory, COOKBOOK 6.6): bind::shadow: x (line 4)." in mutable, mutable
+    assert (
+        "keeps one in memory, COOKBOOK 6.6): bind::shadow: n, x @ main.rs:4; bind::twins: n."
+        in mutable
+    ), mutable
+    assert "every one in memory, COOKBOOK 6.6): bind::shadow: x @ main.rs:6 (line 4)." in mutable
     assert "change the value in the caller): bind::other::far: a, y. A Vec's" in mutable, mutable
 
 

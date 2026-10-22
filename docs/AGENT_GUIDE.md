@@ -23,14 +23,14 @@ Report the observation, the intervention and its effect, the edit and the verify
 4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at that line's hit, the `--at` line's too; repeat it per hit (2.4, 2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can stop several times per pass: read `warnings`, each row's `stop` and `function`. A loop header may stop only before its loop: probe the body's first line (2.2).
 6. **A `note`, `no value yet:` or `unavailable: true` is not a value.** C and C++: read a local below its declaration, and a `note` on a line a loop returns to (a `do` body's first) on the next line; below a `setjmp` call, a `note` replaces `no value yet`: read it below its declaration too. Python: a `note` marks a local the pass assigns below (5.1). Rust: `[stale]` is a moved local's leftover bytes, and raw fields with a note are contents Peeky could not prove (7.1, 7.2).
-7. **Rust reads `Vec`/`String` contents it can prove alive:** owned locals, reference parameters of plain elements, and such fields of either (`self.values`; `&mut` and owned: innermost frame only). A crate with `unsafe` code or a nightly feature gets none of these: raw fields with a note why (7.2).
+7. **Rust reads `Vec`/`String` contents it can prove alive:** owned locals, reference parameters of plain elements, `&str` loop items, and such fields (`self.values`, `entry.name`; `&mut`/owned: innermost frame only). A crate with `unsafe` code or a nightly feature gets none: raw fields noting why (7.2).
 8. **Members need `this.`** in C++ and Java (`this.head_`: 7.1, 7.3); Python dict entries are `d['key']` (2.1).
 9. **`continue --to LINE` does not skip the session's breakpoint:** a stop there comes first (exit 3, with a note); repeat it (5.2).
 10. **Steps land where the code jumps:** a closing `}`, a loop header, back on an `if`'s line. Read a block's locals before stepping past its last statement (1.1, 5.2).
 11. **Sessions need `--name` on every command** (unless `default`) and a `close`; their programs' clocks run while you think, so prefer probes for timed code (5.3, 5.4).
 12. **`queries diff` pairs the last two runs by hit number.** Name runs (`--param a=1 --param b=5`); check the `(output)`, `(args)`, `(edit)` and `(sets)` rows before crediting an edit; after a candidate, run its `compare:` command; when hits do not line up (a sort's comparator), use `queries join` (3.1, 3.5).
 13. **`--old` must match the source exactly once**, with real newlines (`--old-file` for long text: 6.3), and goes before `--`, as everything after it goes to the program (2.5, 10).
-14. **Same-named locals (C, C++):** a plain name means the one the code names at the stop; `name @ file:line` selects another (7.1). Rust lists a shadowed `let` only as `x @ main.rs:6`.
+14. **Same-named locals (C, C++):** a plain name means the one the code names at the stop; `name @ file:line` selects another (7.1). Rust: as `describe` lists it (`x @ main.rs:6`).
 15. **Respect opaque values.** `<unqualified Rust enum layout>`, `<unverified ...>` or `budget-exhausted` mean peeky refused to guess. Do not invent their contents.
 
 ## Principles

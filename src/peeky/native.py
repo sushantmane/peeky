@@ -810,11 +810,12 @@ def _balanced(name):
     return not depth
 
 
-def _locals(dies, offset, hidden=None):
+def _locals(dies, offset, hidden=None, label=None):
     """{name: {types}} for the parameters and variables of one function body, including
     nested blocks but not the bodies of calls inlined into it. A type is the name
     dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`). ``hidden(offset)``:
-    a binding left out (a macro's own, see function_scopes)."""
+    a binding left out (a macro's own, see function_scopes). ``label(offset, name)``:
+    the name to list it by (see function_scopes)."""
     names, pending = {}, list(dies[offset]["children"])
     while pending and len(names) < 512:
         child = pending.pop()
@@ -832,6 +833,7 @@ def _locals(dies, offset, hidden=None):
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
+                name = label(child, name) if label else name
                 reference = _first(dies, chain, "DW_AT_type")
                 kind = _c_tagged(dies, reference, _type_name(dies, reference))
                 names.setdefault(name, set()).update({kind} if kind else set())
@@ -997,7 +999,7 @@ def _bindings(dies, offset):
 _MAX_SPANS = 8
 
 
-def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
+def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None, label=None):
     """({name: {(first, last)}}, {names visible in the whole function}), or None when
     the declarations were too many to read all: the lines of the blocks declaring each
     local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
@@ -1009,7 +1011,8 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
     them has code only outside the block: C++ puts a block's cleanup, which runs when an
     exception leaves it, on the function's closing line, so a `while` body's locals are
     visible on its lines and on that one (`17-26, 35`), not on the lines between (the
-    eval-6 review). ``source_of`` names the declared source of a DW_AT_call_file."""
+    eval-6 review). ``source_of`` names the declared source of a DW_AT_call_file.
+    ``label(offset, name)``: the name to list a binding by (see function_scopes)."""
     rows = sorted(
         (address, source, line) for (source, line), found in addresses.items() for address in found
     )
@@ -1055,7 +1058,9 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
         if hidden and hidden(child):
             return None
         name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
-        return None if not name or name.startswith("$") else name
+        if not name or name.startswith("$"):
+            return None
+        return label(child, name) if label else name
 
     # The concrete copies carry the code; an abstract or declaring DIE only says which
     # names are the function's own.
@@ -1344,11 +1349,20 @@ def function_scopes(
         for body in (*entry["bodies"], root):
             for local, kinds in _locals(dies, body, skip).items():
                 names.setdefault(local, set()).update(kinds)
+        label, ambiguous = (
+            _shadow_labels(dies, (*entry["bodies"], root), skip, position) if rust else (None, {})
+        )
+        shown = {}
+        for body in (*entry["bodies"], root):
+            for local, kinds in _locals(dies, body, skip, label).items():
+                shown.setdefault(local, set()).update(kinds)
         scope = {
             "scope": name,
             "source": source,
             "lines": [min(numbers), max(numbers)],
-            "names": sorted(names),
+            "names": sorted(shown),
+            # A selector names none of several bindings on one line (#215 review).
+            **({"ambiguous": dict(sorted(ambiguous.items()))} if ambiguous else {}),
         }
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
@@ -1356,7 +1370,7 @@ def function_scopes(
         merged = found.setdefault(
             json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None], [None])
         )
-        for local, kinds in names.items():
+        for local, kinds in shown.items():
             merged[1].setdefault(local, set()).update(kinds)
         if graph is not None:
             parts = _settable_parts(
@@ -1368,7 +1382,15 @@ def function_scopes(
             )
         if never is not None:
             # Never settable in the scope only if in every copy (a generic's instances).
-            unchanged = dict(never(linkages_of(entry, root), names) or {})
+            # By the names the scope lists (`x @ main.rs:6` for one of several, #206);
+            # never one no selector names.
+            unchanged = dict(
+                never(
+                    linkages_of(entry, root),
+                    {n: k for n, k in shown.items() if n not in ambiguous},
+                )
+                or {}
+            )
             held = merged[4][0]
             merged[4][0] = (
                 unchanged
@@ -1387,7 +1409,7 @@ def function_scopes(
             declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
         )
         blocks = (
-            _block_spans(dies, entry, root, ran, numbers, source_of, skip)
+            _block_spans(dies, entry, root, ran, numbers, source_of, skip, label)
             if macros[source] is not None and not in_macro
             else None
         )
@@ -1427,6 +1449,48 @@ def function_scopes(
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes
+
+
+def _shadow_labels(dies, bodies, hidden, position):
+    """The test ``label(offset, name)`` that names a Rust binding as lldb-dap does where
+    another of its name is in scope too (`points @ main.rs:81`), for each name the
+    function declares more than once (#206): `describe` lists each by it. A binding
+    declared outside the declared sources keeps its plain name. With it, {label: how
+    many bindings} for each label several bindings share (two `let x` on one line, or
+    files of one name in two directories): a selector cannot tell them apart."""
+    places, pending = (
+        {},
+        [child for body in dict.fromkeys(bodies) for child in dies[body]["children"]],
+    )
+    while pending and len(places) < 512:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        if hidden and hidden(child):
+            continue
+        source, name, line = position(child)
+        if name and not name.startswith("$"):
+            # One binding, however many DIEs complete it (an abstract origin's copies).
+            places.setdefault(name, {})[_chain(dies, child)[-1]] = (source, line)
+
+    def label(offset, name):
+        if len(places.get(name, ())) < 2:
+            return name
+        source, _, line = position(offset)
+        return f"{name} @ {Path(source).name}:{line}" if source and line else name
+
+    shared = {}
+    for name, bindings in places.items():
+        if len(bindings) > 1:
+            for source, line in bindings.values():
+                if source and line:
+                    key = f"{name} @ {Path(source).name}:{line}"
+                    shared[key] = shared.get(key, 0) + 1
+    return label, {key: count for key, count in shared.items() if count > 1}
 
 
 def _settable_parts(graph, types, names, in_memory, linkages):

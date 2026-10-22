@@ -2867,6 +2867,11 @@ class DebugWorker:
             # with where it is declared (`t @ two.c:20`, #158).
             alias = getattr(self.runtime, "selected_as", None) if not ancestry else None
             plain = alias(variable, frame, variables) if alias else None
+            # Where a local the debugger lists by its plain name is declared, where its
+            # function declares several of that name (`entry @ main.rs:81`, #206): the
+            # selector `describe` lists it by reads it too.
+            located = getattr(self.runtime, "declared_at", None) if not ancestry else None
+            declared_at, sharing = (located(variable, frame) if located else None) or (None, 0)
             # A value shown though the runtime cannot vouch for it: a note on its row, and
             # on everything read through it (#148), which says through what.
             note = getattr(reason, "note", None)
@@ -2896,6 +2901,11 @@ class DebugWorker:
                     output["withheld_as"] = label[:100]
                 if plain:
                     output["selected_as"] = plain
+                if declared_at:
+                    output["declared_at"] = declared_at
+                    if sharing > 1:
+                        # Bindings on one line it cannot tell apart (#215 review).
+                        output["declared_at_shared"] = sharing
                 if kind is not None:
                     output["type"] = kind
                     shown = getattr(self.runtime, "display_type", None)
@@ -2922,10 +2932,11 @@ class DebugWorker:
                 if view_variable
                 else None
             )
-            raw_reason = None
+            raw_reason, tainted = None, None
             if view is not None and "rust_view" not in view:
-                # Left as the debugger shows it, with why (a Rust Vec or String, #156).
-                raw_reason, view = view.get("raw_reason"), None
+                # Left as the debugger shows it, with why (a Rust Vec or String, #156), and
+                # how much of what it holds reads (a Vec of references, #205).
+                raw_reason, tainted, view = view.get("raw_reason"), view.get("taint"), None
             if view is not None:
                 # Interpreted values never carry expansion handles to raw storage. Their
                 # decoded elements get a worker-owned handle that never reaches the
@@ -2954,6 +2965,9 @@ class DebugWorker:
                 }
                 if type(view.get("length")) is int:
                     output["length"] = view["length"]
+                if view["rust_view"] == "unproven" and isinstance(view.get("why"), str):
+                    # Why only the pointer shows, where the runtime says (#205).
+                    output["unproven_reason"] = view["why"][:500]
                 if taint == "stale" and view["rust_view"] != "unproven":
                     # A decoded enum inside a moved-from value: its stack bytes (#108).
                     output["stale"] = True
@@ -2970,6 +2984,11 @@ class DebugWorker:
                     output["settable"] = marked and reachable({"name": name, "selected_as": plain})
                 if plain:
                     output["selected_as"] = plain
+                if declared_at:
+                    output["declared_at"] = declared_at
+                    if sharing > 1:
+                        # Bindings on one line it cannot tell apart (#215 review).
+                        output["declared_at_shared"] = sharing
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
@@ -3042,6 +3061,8 @@ class DebugWorker:
             if not ancestry and aggregate_taint and type(raw) is int and raw > 0:
                 # #108: a struct, tuple or array local that may be moved or dropped.
                 own = aggregate_taint(variable, frame, innermost=innermost)
+            if tainted in ("pointers", "stale") and own != "stale":
+                own = tainted
             if type(raw) is int and raw > 0 and depth < 4:
                 self.reference_counter += 1
                 handle = self.reference_counter
@@ -3178,6 +3199,10 @@ class DebugWorker:
                 output["settable"] = settable
             if plain:
                 output["selected_as"] = plain
+            if declared_at:
+                output["declared_at"] = declared_at
+                if sharing > 1:
+                    output["declared_at_shared"] = sharing
             if never:
                 output["not_settable"] = never
             if own == "stale":

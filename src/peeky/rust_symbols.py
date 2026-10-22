@@ -493,6 +493,9 @@ REFERENCE_PARAMETERS = {
     },
     "&str": (("&str",), "&str", False),
     "&mut str": (("&mut str",), "&mut str", False),
+    # A `for cell in cells` item of a `&[&str]` (#205): LLDB's `&str *`. What the `&str`
+    # borrows outlives the reference to it (`&'b &'a str` needs `'a: 'b`).
+    "&&str": (("&str *",), "&str", True),
     "&alloc::string::String": (("alloc::string::String *",), "alloc::string::String", True),
     "&mut alloc::string::String": (
         ("alloc::string::String *",),
