@@ -7,6 +7,8 @@ program is a new probe. Queries are read-only, one statement at a time, and boun
 in rows, time and value size; SQL never reaches a debugger or a debuggee.
 """
 
+import contextlib
+import contextvars
 import json
 import math
 import os
@@ -483,9 +485,10 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # before the first character that differs (an intervention's effect shows there), and
 # what else told the runs apart: their edits, source, stop lines, arguments and
 # interventions (sixth evaluation, finding 9: the decisive (output) row came after rows
-# for selectors only one run captured). Then real divergences, in hit and capture order
-# (a hit only one run reached is one); then values changed by an intervention only one
-# run made; then values a view or a note qualifies in either run (a C local's leftovers
+# for selectors only one run captured). Then values changed by an intervention only one
+# run made, before what may follow from them (tenth evaluation: they came after 70 rows
+# of its effects); then real divergences, in hit and capture order (a hit only one run
+# reached is one); then values a view or a note qualifies in either run (a C local's leftovers
 # on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
 # their note says (`missing in run b; qualified (run a: note)`); then values
 # that differ only in memory addresses; last, one row per selector only one run asked
@@ -499,7 +502,7 @@ SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
-  UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
@@ -694,10 +697,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     "diff": (
         "Only the values that differ between two runs. First (status), (output), (edit), "
         "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
-        "source, stop lines, program arguments or interventions differ; then real "
-        "differences in hit and capture order (the first is the first divergence); then "
-        "values only one run's intervention changed (an after-set value equal to its "
-        "hit's observed one is left out); then values a view or a note qualifies in "
+        "source, stop lines, program arguments or interventions differ; then values only "
+        "one run's intervention changed (an after-set value equal to its hit's observed "
+        "one is left out); then real differences in hit and capture order (the first is "
+        "the first divergence); then values a view or a note qualifies in "
         "either run (note: qualified (run a: note), not evidence by itself: leftovers, a "
         "moved Rust local's bytes); then address-only differences, one row per selector "
         "(and stop); last, selectors only one run captured. Hits pair by number, and by "
@@ -705,9 +708,15 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "where the runs stopped a different number of times, or a hit at another stop, a "
         "note names `join`, which pairs by value (and, for the first case, says how many "
         "rows come after the first hit that differs); where they stopped as often, a note "
-        "says what suggests the hits do not line up, or what plain values read the same at "
-        "every hit (that the hits line up by them only where nothing suggests otherwise and "
-        "neither run made an intervention)",
+        "says what suggests the hits do not line up, or what plain values agree between "
+        "the runs at every hit (that the hits line up by them only where nothing suggests "
+        "otherwise, neither run made an intervention, and no selector was left out). A "
+        "selector that differs after an intervention or an edit may follow from it, so it "
+        "is left out of what agrees; where its values line up better at other hits, the note "
+        "says so, that the change may account for it, and that the hits are not said to "
+        "line up. The text "
+        "table shows a long value from just before where it first differs from the other "
+        "run's, and (sets) as a count and the first change; --json has them whole",
         _DIFF,
         _PAIR_PARAMS,
         (),
@@ -728,7 +737,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "A change at a stop with no capture (a --set-at line) is one row: selector is what "
         "it changed, observed and after_set its value before and after (the set's own "
         "read-back), function whose variable it was. stop says which of the line's breakpoint "
-        "locations the stop was at, where it has several (hit counts each)",
+        "locations the stop was at, where it has several (hit counts each). The text table "
+        "shows a long value, and each change in interventions, from just before where its "
+        "two values first differ; --json has them whole",
         f"""SELECT hit, stop, line, function, selector, observed, after_set, caveat_observed,
   caveat_after_set, interventions FROM (
   SELECT o.hit, o.stop, o.line, o.function, o.selector, {_shown("o")} AS observed,
@@ -787,7 +798,9 @@ ORDER BY seq, pos""",
         "stored text; a value at several hits pairs every hit of a with every hit of b, "
         "and a note says so; a key value a view or a note qualifies matches nothing), with "
         "each run's other selectors "
-        "(columns a:<selector>, b:<selector>); then the hits of each run whose key value "
+        "(columns a:<selector>, b:<selector>; the text table leaves out those that agree "
+        "between the runs at every paired hit, value, no value and caveat alike, and a "
+        "note names them; --json has them all); then the hits of each run whose key value "
         "the other run never had, or that have none (matched: only in run a / b). "
         "no_value_a/b and caveats_a/b are wide's, per run (the key's own included). A key "
         "whose values carry addresses gets a note; masked=1 matches them masked. --json "
@@ -800,6 +813,9 @@ ORDER BY seq, pos""",
             "phase": "observed (default), after-set or returned",
             "masked": "1: match key values with addresses masked (no_addresses), for a "
             "pointer or a C string; any address then matches any other",
+            "unchanged": "1: the text table keeps the selectors that agree between the runs "
+            "at every paired hit (by default it leaves them out, and a note names them; "
+            "--json always has them)",
         },
         ("key",),
     ),
@@ -1235,22 +1251,20 @@ def _open_read_only(path):
     return connection
 
 
-def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
-    """Run one read-only SQL statement over the store; rows are capped at ``limit``."""
-    if not isinstance(sql, str) or not sql.strip():
-        raise ValueError("Evidence query failed: the SQL is empty")
-    if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
-        raise ValueError(f"Evidence query failed: --limit must be within 1..{MAX_ROWS}")
+def _reader(path, *, snapshot=False):
+    """(connection, clock): a read-only connection to the store, bounded as queries are,
+    whose SQL functions and progress handler stop at ``clock["deadline"]`` (each query
+    sets its own). With ``snapshot``, it holds one read transaction from here on."""
     connection = _open_read_only(path)
     # Each value, each row's width and the whole result are bounded.
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
-    deadline = time.monotonic() + seconds
+    clock = {"deadline": time.monotonic() + QUERY_SECONDS}
 
     def no_addresses(value, language=None):
         # SQLite checks the deadline only between VM steps, never inside a Python
         # function: a query calling it many times per row checks here too.
-        if time.monotonic() > deadline:
+        if time.monotonic() > clock["deadline"]:
             raise sqlite3.OperationalError("interrupted: query deadline")
         return _no_addresses(value, language)
 
@@ -1259,7 +1273,7 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
 
     def bounded(function):
         def call(*values):
-            if time.monotonic() > deadline:
+            if time.monotonic() > clock["deadline"]:
                 raise sqlite3.OperationalError("interrupted: query deadline")
             return function(*values)
 
@@ -1274,8 +1288,62 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
+    if snapshot:
+        try:
+            # Before the authorizer, which allows reads only. The store keeps SQLite's
+            # rollback journal: the first read takes a shared lock, held until the
+            # connection closes, so no save commits meanwhile (it waits, as for any
+            # reader), and every read sees the store as it was then.
+            connection.execute("BEGIN")
+            connection.execute("SELECT COUNT(*) FROM runs").fetchall()
+        except BaseException:
+            connection.close()
+            raise
     connection.set_authorizer(_authorize)
-    connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
+    connection.set_progress_handler(lambda: time.monotonic() > clock["deadline"], 10000)
+    return connection, clock
+
+
+# The connection a canned query reads through (path, connection, clock): one read
+# transaction for its rows, its notes and its text table (review 3 of PR #269: a probe
+# that saved run 501 evicted run 1 between `diff`'s rows and its notes, and the
+# alignment note vanished).
+_SNAPSHOT = contextvars.ContextVar("peeky_evidence_snapshot", default=None)
+
+
+@contextlib.contextmanager
+def _snapshot(path):
+    """Every ``query`` on ``path`` in this block reads one snapshot of the store."""
+    path = Path(path).absolute()
+    held = _SNAPSHOT.get()
+    if held is not None and held[0] == path:
+        yield
+        return
+    connection, clock = _reader(path, snapshot=True)
+    token = _SNAPSHOT.set((path, connection, clock))
+    try:
+        yield
+    finally:
+        _SNAPSHOT.reset(token)
+        # Closing ends the read transaction.
+        connection.close()
+
+
+def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
+    """Run one read-only SQL statement over the store; rows are capped at ``limit``.
+    Inside ``_snapshot``, it reads that snapshot."""
+    if not isinstance(sql, str) or not sql.strip():
+        raise ValueError("Evidence query failed: the SQL is empty")
+    if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
+        raise ValueError(f"Evidence query failed: --limit must be within 1..{MAX_ROWS}")
+    held = _SNAPSHOT.get()
+    if held is not None and held[0] == Path(path).absolute():
+        _, connection, clock = held
+        owned = False
+    else:
+        connection, clock = _reader(path)
+        owned = True
+    deadline = clock["deadline"] = time.monotonic() + seconds
     rows, size, cut = [], 0, None
     try:
         cursor = connection.execute(sql, params or {})
@@ -1320,7 +1388,8 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
             )
         raise ValueError(f"Evidence query failed: {message}") from exc
     finally:
-        connection.close()
+        if owned:
+            connection.close()
     shaped = {
         "columns": columns,
         "rows": [dict(zip(columns, map(_cell, row))) for row in rows],
@@ -1543,11 +1612,10 @@ def _keys(text):
     return keys
 
 
-def _join(path, params):
-    """(SQL, params, notes) of `queries join`: two runs' hits paired where ``key`` has
-    the same value (stored text; with ``masked``, addresses masked), every pair where it
-    repeats; then each run's unpaired hits. ``key`` may name several selectors (`a,b`):
-    hits pair where each has the same value (#201)."""
+def _join_layout(path, params):
+    """`queries join`'s runs a and b, keys, phase, whether ``masked``, its fixed columns,
+    the keys' column names, each side's (run, other selectors, their column names, key
+    match expression) by side name, and the SQL that pairs two hits."""
     _require_runs(path, params)
     found = query(
         path,
@@ -1557,8 +1625,9 @@ def _join(path, params):
     )["rows"][0]
     a, b = found["a"], found["b"]
     keys, phase = _keys(params["key"]), _phase(params, "observed")
-    if params.get("masked") not in (None, 0, 1):
-        raise ValueError("Evidence query failed: masked is 1 (or 0)")
+    for flag in ("masked", "unchanged"):
+        if params.get(flag) not in (None, 0, 1):
+            raise ValueError(f"Evidence query failed: {flag} is 1 (or 0)")
     masked = params.get("masked") == 1
     fixed = {"hit_a", "hit_b", "no_value_a", "no_value_b", "caveats_a", "caveats_b", "matched"}
     taken = set(fixed)
@@ -1576,10 +1645,20 @@ def _join(path, params):
         others = [selector for selector in captured if masked or selector not in keys]
         matched = "value" if not masked else f"no_addresses(value, {_literal(language)})"
         sides[name] = (run, others, _columns(others, taken, f"{name}:"), matched)
+    same = " AND ".join(f"a.k{i} = b.k{i}" for i in range(len(keys)))
+    return a, b, keys, phase, masked, fixed, key_names, sides, same
+
+
+def _join(path, params):
+    """(SQL, params, notes) of `queries join`: two runs' hits paired where ``key`` has
+    the same value (stored text; with ``masked``, addresses masked), every pair where it
+    repeats; then each run's unpaired hits. ``key`` may name several selectors (`a,b`):
+    hits pair where each has the same value (#201)."""
+    a, b, keys, phase, masked, fixed, key_names, sides, same = _join_layout(path, params)
+    notes = []
     _too_wide(
         len(fixed) + len(keys) + len(sides["a"][1]) + len(sides["b"][1]), f"{a} and {b}", "join"
     )
-    notes = []
     for key in keys if not masked else ():
         carried = query(
             path,
@@ -1595,18 +1674,11 @@ def _join(path, params):
                 f"({carried[0]['value'][:60]}), which differ between runs even where what they "
                 "point at is equal, so such hits rarely pair"
             )
-    same = " AND ".join(f"a.k{i} = b.k{i}" for i in range(len(keys)))
 
     def side(name):
         run, others, names, matched = sides[name]
         where = f"run_id = {run} AND phase = {_literal(phase)}"
-        # A key value a view or a note qualifies matches nothing (review of PR #209):
-        # the hit is unmatched, and caveats names why.
-        picked = "".join(
-            f"MAX(CASE WHEN selector = {_literal(key)} AND caveat IS NULL THEN {matched} "
-            f"END) AS k{i},"
-            for i, key in enumerate(keys)
-        )
+        picked = "".join(f"{column}," for column in _key_cells(keys, matched))
         return (
             f"{name} AS (SELECT hit, {picked}{_picked(others, names, '    ')}\n"
             f"    {_NO_VALUE} AS no_value,\n"
@@ -1648,6 +1720,52 @@ def _join(path, params):
     )
     notes += _repeated(path, f"WITH {side('a')},\n{side('b')}", keys, a, b)
     return sql, {}, notes
+
+
+def _key_cells(keys, matched):
+    """A join side's key columns, k0, k1, ...: each key's value (``matched``: as stored,
+    or masked). A key value a view or a note qualifies matches nothing (review of PR
+    #209): the hit is unmatched, and caveats names why."""
+    return [
+        f"MAX(CASE WHEN selector = {_literal(key)} AND caveat IS NULL THEN {matched} END) AS k{i}"
+        for i, key in enumerate(keys)
+    ]
+
+
+def _unchanged(path, keys, phase, sides, same):
+    """(selectors, unpaired) for `join`: the selectors both runs show, keys aside, whose
+    cell (its value, why it has none, and its caveat) is the same in run a's and run b's
+    hit of every pair the key makes, which `join`'s table leaves out (tenth evaluation:
+    runoff's join was 400 columns wide, each unchanged selector twice); none where no
+    hits pair. ``unpaired`` counts the hits that pair with none, whose values of them go
+    too."""
+    shared = [s for s in sides["a"][1] if s in sides["b"][1] and s not in keys]
+    if not shared or len(keys) + len(shared) + 1 > MAX_COLUMNS:
+        return [], 0
+
+    def side(name):
+        run, _, _, matched = sides[name]
+        where = f"run_id = {run} AND phase = {_literal(phase)}"
+        cells = [
+            f"MAX(CASE WHEN selector = {_literal(selector)} THEN json_array(value, reason, "
+            f"caveat) END) AS s{i}"
+            for i, selector in enumerate(shared)
+        ]
+        return (
+            f"{name} AS (SELECT hit, {', '.join([*_key_cells(keys, matched), *cells])} "
+            f"FROM ({_cells(where)}) GROUP BY hit)"
+        )
+
+    found = query(
+        path,
+        f"WITH {side('a')},\n{side('b')}\nSELECT "
+        + "".join(f"MIN(a.s{i} IS b.s{i}) AS s{i}, " for i in range(len(shared)))
+        + f"(SELECT COUNT(*) FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE {same})) + "
+        f"(SELECT COUNT(*) FROM b WHERE NOT EXISTS (SELECT 1 FROM a WHERE {same})) AS unpaired "
+        f"FROM a JOIN b ON {same}",
+    )["rows"][0]
+    dropped = [selector for i, selector in enumerate(shared) if found[f"s{i}"] == 1]
+    return dropped, found["unpaired"]
 
 
 def _repeated(path, sides, keys, a, b):
@@ -1697,27 +1815,106 @@ def _listed(items):
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
-    """Run a canned query by name with optional parameters."""
+def _checked(name, params):
+    """``params`` for canned query ``name``, checked before the store is read."""
     if name not in QUERIES:
         raise ValueError(
             f"Evidence query failed: no canned query {name!r}; one of: {', '.join(QUERIES)}"
         )
-    _, sql, accepted, required = QUERIES[name]
+    _, _, accepted, required = QUERIES[name]
     params = dict(params or {})
     if unknown := sorted(set(params) - set(accepted)):
         raise ValueError(
             f"Evidence query failed: {name} does not take {', '.join(unknown)}; it takes: "
             + (", ".join(accepted) or "no parameters")
         )
-    if name in _PAIRS:
-        _require_runs(path, params)
     if missing := [param for param in required if params.get(param) is None]:
         raise ValueError(
             f"Evidence query failed: {name} needs "
             + " ".join(f"--param {param}=<value>" for param in missing)
         )
+    return params
+
+
+def prepare(path, name, params=None):
+    """``params`` checked for canned query ``name``, with the runs it reads named: `run`
+    (default: the newest), or `a` and `b` (default: the run before b, and the newest).
+    Each is resolved once, so that the query, its notes and its text table read the same
+    runs, though a probe may save a newer one meanwhile (review 2 of PR #269: `join`'s
+    table compared runs 2 and 3 for a result of runs 1 and 2). A run that does not
+    resolve stays unnamed, so the query says why."""
+    params = _checked(name, params)
+    accepted = QUERIES[name][2]
+    with _snapshot(path):
+        if name in _PAIRS:
+            _require_runs(path, params)
+        if {"a", "b"} <= set(accepted):
+            named = {"a": _A, "b": _B}
+        elif "run" in accepted:
+            named = {"run": _RUN}
+        else:
+            return params
+        if all(params.get(run) is not None for run in named):
+            return params
+        found = query(
+            path,
+            "SELECT " + ", ".join(f"{sql} AS {run}" for run, sql in named.items()),
+            {**dict.fromkeys(named), **params},
+        )["rows"][0]
+    return {
+        **params,
+        **{run: found[run] for run in named if params.get(run) is None and found[run] is not None},
+    }
+
+
+def _present(path, runs):
+    """Which of ``runs`` (run ids) the store holds."""
+    if not runs:
+        return []
+    found = query(path, f"SELECT run_id FROM runs WHERE run_id IN ({', '.join(map(str, runs))})")[
+        "rows"
+    ]
+    held = {row["run_id"] for row in found}
+    return [run for run in runs if run in held]
+
+
+# What a query checks after reading its rows, for the note where a run went meanwhile.
+_CHECKS = {
+    "diff": "alignment, labels and older-run warnings",
+    "compare": "labels and older-run warnings",
+}
+
+
+def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
+    """Run a canned query by name with optional parameters (see ``prepare``): its rows
+    and notes from one snapshot of the store."""
+    params = _checked(name, params)
+    with _snapshot(path):
+        return _run(path, name, params, limit)[0]
+
+
+def canned(path, name, params=None, *, limit=DEFAULT_ROWS, table=False):
+    """(result, text): ``run_query``'s result and, with ``table``, its text table
+    (``query_table``), all read in one snapshot of the store."""
+    params = _checked(name, params)
+    with _snapshot(path):
+        result, params = _run(path, name, params, limit)
+        text = query_table(path, {**result, "query": name}, params) if table else None
+    return result, text
+
+
+def _run(path, name, params, limit):
+    """(result, params): a canned query's rows and notes, and the params naming its
+    runs. Run inside ``_snapshot``, which keeps every run it reads; should a run it
+    named go before its notes are read all the same, a note says what they could not
+    check, never nothing (review 3 of PR #269)."""
+    params = prepare(path, name, params)
+    _, sql, accepted, _ = QUERIES[name]
     bound = {**dict.fromkeys(accepted), **params}
+    named = list(
+        dict.fromkeys(params[run] for run in ("a", "b", "run") if type(params.get(run)) is int)
+    )
+    held = _present(path, named)
     if callable(sql):
         # Built for the runs named (a column per selector): shown, to refine with peeky sql.
         built, extra, notes = sql(path, params)
@@ -1732,6 +1929,13 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
         notes += unaligned
         if counted:
             notes += _after_first(path, sql, bound)
+    if gone := [run for run in held if run not in _present(path, held)]:
+        one = len(gone) == 1
+        notes.append(
+            f"{_CHECKS.get(name, 'older-run warnings')} could not be checked: "
+            f"run{'' if one else 's'} {_listed([str(run) for run in gone])} "
+            f"{'was' if one else 'were'} removed after the rows were read; run the query again"
+        )
     if "stop" in result["columns"] and all(row.get("stop") is None for row in result["rows"]):
         # No row was at one of several breakpoint locations of its line (Python and Java
         # never are): the column would be empty (eighth evaluation, L7).
@@ -1740,7 +1944,7 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             "columns": [column for column in result["columns"] if column != "stop"],
             "rows": [{k: v for k, v in row.items() if k != "stop"} for row in result["rows"]],
         }
-    return {**result, "notes": notes} if notes else result
+    return ({**result, "notes": notes} if notes else result), params
 
 
 def _labels(path, params):
@@ -1834,9 +2038,8 @@ def _changes(path, a, b):
     """{run: [(name, after, where)]}: what each run's interventions (--set, --set-at)
     changed, after how many hits of its line had been captured (#201), and in which
     function (its instance where it has one). A value read at a later hit may follow
-    from the change; one read at that hit or before cannot (a stop's observed rows come
-    before its own changes). A name alone never proves the same storage (review 2 of
-    PR #209: `x` in `helper` is not `main`'s `x`, nor is one call's local another's)."""
+    from the change, whatever its name; one read at that hit or before cannot (a stop's
+    observed rows come before its own changes)."""
     found = {a: [], b: []}
     for row in query(
         path,
@@ -1852,22 +2055,26 @@ def _changes(path, a, b):
     return found
 
 
-def _touched(selector, name):
-    """Whether an intervention on ``name`` changed ``selector``'s value itself: the same
-    name, a part of it (`lay.width` of `lay`) or what holds it (`lay` of `lay.width`).
-    What follows from it in the program is not known."""
-    for inner, outer in ((selector, name), (name, selector)):
-        if inner == outer or inner.startswith((outer + ".", outer + "[", outer + "->")):
-            return True
-    return False
-
-
 def _quoted(selectors):
     """`a`, `a` and `b`, `a`, `b` and `c` (and N more, past three)."""
     named = [f"`{selector}`" for selector in selectors[:3]]
     if len(selectors) > 3:
         named.append(f"{len(selectors) - 3} more")
     return _listed(named)
+
+
+def _edited(path, a, b):
+    """Whether runs ``a`` and ``b`` ran different code: a candidate edit in one of them,
+    or different edits, or (neither a candidate) different source text."""
+    found = query(
+        path,
+        "SELECT ra.edit IS NOT rb.edit OR (ra.edit IS NULL AND rb.edit IS NULL AND "
+        "ra.source_sha256 IS NOT NULL AND rb.source_sha256 IS NOT NULL AND "
+        "ra.source_sha256 != rb.source_sha256) AS edited FROM runs ra, runs rb "
+        "WHERE ra.run_id = :a AND rb.run_id = :b",
+        {"a": a, "b": b},
+    )["rows"]
+    return bool(found and found[0]["edited"])
 
 
 def _structure_apart(path, run):
@@ -1880,18 +2087,26 @@ def _structure_apart(path, run):
       hits (a renamed function, or lines an edit moved, pair consistently);
     - a selector's values, addresses and Java object numbers masked, line up better
       other than hit by hit (`[A, B, C]` against `[A, C, D]`; the same values in another
-      order), each selector on its own: where others read the same at every hit, the
-      note says both, and that the values do not settle it;
+      order), each selector on its own: where others agree between the runs at every
+      hit, the note says both, and that the values do not settle it;
     - the hits' values differ at most of them, so they cannot show that the hits pair.
 
     Only plain values tell (#201): a value a view or a note qualifies is no evidence
-    either way, nor is one read after an intervention changed it (the same name, a part
-    or a holder of it), though the same selector read before still is.
+    either way. A value that differs between the runs after a change, an edit (in either
+    run: from the first hit) or an intervention (after the hits captured before the
+    first), may follow from it (tenth evaluation: debounce's reset count moved
+    `db.stable`'s values, which then lined up better at other hits). Such a selector is
+    left out from then on of what agrees and of the hits that differ, and the note names
+    it; its values before still tell. Where its values line up better at other hits,
+    the note says so, and that the change may account for it: that still vetoes saying
+    the hits line up (review of PR #269).
 
-    Where nothing above is found and some values read the same at every hit in both
-    runs, the note says what agrees: that the hits line up by them, or as far as they
-    show, with no intervention in either run; else only that they agree, since an
-    intervention can change other values and which calls reach the line."""
+    Where nothing above is found and some values agree between the runs at every hit,
+    the note says what agrees: that the hits line up by them, or as far as they show,
+    with no intervention in either run and nothing left out; else only that they agree,
+    and what pairing by number amounts to, since a change can change other values and
+    which calls reach the line. `join` is named only where some captured selectors
+    together tell each run's hits apart, so that it could pair them."""
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
@@ -1901,12 +2116,13 @@ def _structure_apart(path, run):
         limit=MAX_ROWS,
     )["rows"]
     a, b = run["a"], run["b"]
-    changes = _changes(path, a, b)
+    changes, edited = _changes(path, a, b), _edited(path, a, b)
+    # Values read after this many hits may follow from a change.
+    since = 0 if edited else min((n for r in (a, b) for _, n, _ in changes[r]), default=None)
     places, values, captured = {a: {}, b: {}}, {a: {}, b: {}}, {a: [], b: []}
     # Every value as read, of any phase: only whether anything differs at all. And the
-    # observed values that cannot show alignment: qualified (in no check at all), or read
-    # after an intervention on a name like theirs (review 2 of PR #209: that need not be
-    # their storage, so they still count where they suggest another pairing).
+    # observed values that cannot show alignment: qualified (in no check at all), or
+    # differing after a change (below).
     cells, untold = {a: {}, b: {}}, {a: set(), b: set()}
     for row in rows:
         here = row["run_id"]
@@ -1922,17 +2138,35 @@ def _structure_apart(path, run):
         if row["caveat"] is not None:
             untold[here].add((row["selector"], row["hit"]))
             continue
-        if any(
-            row["hit"] > after and _touched(row["selector"], name)
-            for name, after, _ in changes[here]
-        ):
-            untold[here].add((row["selector"], row["hit"]))
         values[here].setdefault(row["selector"], {})[row["hit"]] = (masked, row["value"])
-    join = (
-        "if so, pair hits by a value that names the call and that the edit leaves alone (an "
-        f"argument, an index): `peeky queries join --param a={a} --param b={b} {_JOIN_KEY}`"
-    )
     common = sorted(set(places[a]) & set(places[b]))
+    selectors = [selector for selector in captured[a] if selector in captured[b]]
+    missing, skipped = object(), object()
+
+    def seen(run, selector, hit):
+        if (selector, hit) in untold[run]:
+            return skipped
+        return values[run].get(selector, {}).get(hit, (missing,))[0]
+
+    # Whether `join` could pair the hits: the plain values of the selectors both runs
+    # read at every hit tell each run's hits apart, taken together (tenth evaluation:
+    # debounce's `settle` has no value that names its call, so `join` cannot help).
+    plain = [
+        s
+        for s in selectors
+        if all(seen(r, s, hit) not in (missing, skipped) for r in (a, b) for hit in common)
+    ]
+    keyable = bool(plain) and all(
+        len({tuple(seen(r, s, hit) for s in plain) for hit in common}) == len(common)
+        for r in (a, b)
+    )
+    join = (
+        "; if so, pair hits by a value that names the call and that the edit leaves alone "
+        f"(an argument, an index): `peeky queries join --param a={a} --param b={b} "
+        f"{_JOIN_KEY}`"
+        if keyable
+        else "; no captured selector tells the hits apart, so `queries join` could not pair them"
+    )
     # Each place of one run pairs with one place of the other, and the pair's first hit.
     forward, backward = {}, {}
     for hit in common:
@@ -1951,21 +2185,29 @@ def _structure_apart(path, run):
         return [
             f"at hit {hit} run {a} stopped {_place(here_a)} and run {b} {_place(here_b)}, "
             f"but at hit {earlier} run {a} {_place(then[0])} paired with run {b} "
-            f"{_place(then[1])}: a hit need not be the same moment in both; {join}"
+            f"{_place(then[1])}: a hit need not be the same moment in both{join}"
         ], True
-    missing, skipped = object(), object()
-    selectors = [selector for selector in captured[a] if selector in captured[b]]
-
-    def seen(run, selector, hit):
-        if (selector, hit) in untold[run]:
-            return skipped
-        return values[run].get(selector, {}).get(hit, (missing,))[0]
 
     def unlike(selector, hit):
         """Read differently at ``hit``, both values telling (no value is one)."""
         one, other = seen(a, selector, hit), seen(b, selector, hit)
         return skipped not in (one, other) and one != other
 
+    # Every selector's plain values as read, before any is left out (review of PR #269:
+    # a value a change may have moved still vetoes saying the hits line up).
+    whole = {r: {selector: dict(seen) for selector, seen in values[r].items()} for r in (a, b)}
+    # A selector that differs after a change may differ because of it: from then on
+    # its values tell nothing of how the hits pair.
+    left_out = [
+        selector
+        for selector in selectors
+        if since is not None and any(unlike(selector, hit) for hit in common if hit > since)
+    ]
+    for selector in left_out:
+        for r in (a, b):
+            for hit in [hit for hit in values[r].get(selector, {}) if hit > since]:
+                del values[r][selector][hit]
+                untold[r].add((selector, hit))
     # Plain at every hit in both runs, and alike; `shown` those that vary.
     agreeing = [
         selector
@@ -1977,55 +2219,52 @@ def _structure_apart(path, run):
         )
     ]
     shown = [s for s in agreeing if len({seen(a, s, hit) for hit in common}) > 1]
-    # Every selector on its own, whatever others say (review of PR #209: a value alike
-    # at every hit by chance, or one that follows from a change, must not hide another
-    # pairing that a differing selector suggests).
-    moved = None
-    for selector in selectors:
-        seen_a, seen_b = values[a].get(selector), values[b].get(selector)
-        if not seen_a or not seen_b:
-            continue
-        hits_a, hits_b = sorted(seen_a), sorted(seen_b)
-        order_a = [seen_a[hit][0] for hit in hits_a]
-        order_b = [seen_b[hit][0] for hit in hits_b]
-        if len(set(order_a)) < 2 or len(set(order_b)) < 2:
-            continue
-        same = sum(1 for hit in set(hits_a) & set(hits_b) if seen_a[hit][0] == seen_b[hit][0])
-        pairs = _aligned(order_a, order_b)
-        if len(pairs) <= same:
-            continue
-        i, j = next((i, j) for i, j in pairs if hits_a[i] != hits_b[j])
-        hit_a, hit_b = hits_a[i], hits_b[j]
-        if order_a != order_b and sorted(order_a) == sorted(order_b):
-            found = f"runs {a} and {b} saw the same values of `{selector}` in another order"
-        else:
-            found = f"runs {a} and {b} saw `{selector}`'s values at other hits"
-        moved = f"{found} (run {b}'s hit {hit_b} matches run {a}'s hit {hit_a}: {seen_b[hit_b][1]})"
-        near = [
-            f"run {where}'s on `{name}`" + (f" in {place}" if place else "")
-            for where in (a, b)
-            for name, _, place in changes[where]
-            if _touched(selector, name)
-        ]
-        if near:
-            # Shown, though perhaps another variable's (another function's, another
-            # call's): a name alone cannot say.
-            moved += (
-                f", though an intervention on a like name ({_listed(near)}) may account for that"
+
+    def moved_in(found, among):
+        """(selector, what it saw) for the first of ``among`` whose values in ``found``
+        line up better other than hit by hit, else None."""
+        for selector in among:
+            seen_a, seen_b = found[a].get(selector), found[b].get(selector)
+            if not seen_a or not seen_b:
+                continue
+            hits_a, hits_b = sorted(seen_a), sorted(seen_b)
+            order_a = [seen_a[hit][0] for hit in hits_a]
+            order_b = [seen_b[hit][0] for hit in hits_b]
+            if len(set(order_a)) < 2 or len(set(order_b)) < 2:
+                continue
+            same = sum(1 for hit in set(hits_a) & set(hits_b) if seen_a[hit][0] == seen_b[hit][0])
+            pairs = _aligned(order_a, order_b)
+            if len(pairs) <= same:
+                continue
+            i, j = next((i, j) for i, j in pairs if hits_a[i] != hits_b[j])
+            hit_a, hit_b = hits_a[i], hits_b[j]
+            if order_a != order_b and sorted(order_a) == sorted(order_b):
+                text = f"runs {a} and {b} saw the same values of `{selector}` in another order"
+            else:
+                text = f"runs {a} and {b} saw `{selector}`'s values at other hits"
+            return selector, (
+                f"{text} (run {b}'s hit {hit_b} matches run {a}'s hit {hit_a}: {seen_b[hit_b][1]})"
             )
-        break
+        return None
+
+    # Every selector on its own, whatever others say (review of PR #209: a value alike
+    # at every hit by chance must not hide another pairing that a differing selector
+    # suggests). First on the values no change can have moved.
+    moved = moved_in(values, selectors)
     if moved and shown:
-        one = len(shown) == 1
         return [
-            f"{_quoted(shown)} {'reads' if one else 'read'} the same at each of the "
-            f"{len(common)} hits in both runs, but {moved}: the values do not settle "
-            f"whether a hit is the same moment in both; {join}"
+            f"{_agrees(shown, len(common))}, but {moved[1]}: the values do not settle "
+            f"whether a hit is the same moment in both{join}"
         ], True
     if moved:
         return [
-            f"{moved}: the calls may have come in another order or number, so a hit need "
-            f"not be the same moment in both; {join}"
+            f"{moved[1]}: the calls may have come in another order or number, so a hit need "
+            f"not be the same moment in both{join}"
         ], True
+    # Then on those left out: the change may account for it, but it still vetoes saying
+    # the hits line up (review of PR #269: `call` A, B, C against B, A, C after an edit,
+    # beside `key` 1, 2, 3 in both, gave "the hits line up by `key`").
+    hedged = moved_in(whole, left_out) if left_out else None
     both = {key[2] for key in cells[a]} & {key[2] for key in cells[b]}
     differs = any(
         cells[a].get(key, missing) != cells[b].get(key, missing)
@@ -2034,60 +2273,147 @@ def _structure_apart(path, run):
     )
     # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
     # differs (review 2 of PR #189). Only selectors both runs captured (`diff` lists the
-    # others once), plain and not read after an intervention on a like name; one with no
-    # such value at a hit is `missing`, which no text equals. Checked before anything
-    # agreeing is said (review 2 of PR #209: `key` 1, 2 in both runs said nothing about
-    # `call` A, B against C, D).
+    # others once), plain and not left out; one with no such value at a hit is
+    # `missing`, which no text equals. Checked before anything agreeing is said (review 2
+    # of PR #209: `key` 1, 2 in both runs said nothing about `call` A, B against C, D).
     differ = [hit for hit in common if any(unlike(selector, hit) for selector in selectors)]
     if len(differ) >= 2 and 2 * len(differ) > len(common):
+        calls = (
+            f"; if the edit changed which calls reach the line, {join[len('; if so, ') :]}"
+            if keyable
+            else join
+        )
         if shown:
             apart = [
                 selector for selector in selectors if any(unlike(selector, hit) for hit in common)
             ]
-            one, many = len(shown) == 1, len(apart) > 1
             return [
-                f"{_quoted(shown)} {'reads' if one else 'read'} the same at each of the "
-                f"{len(common)} hits in both runs, but {_quoted(apart)} "
-                f"{'differ' if many else 'differs'} at {len(differ)} of them: the values do "
-                "not show that a hit is the same moment in both; if the edit changed which "
-                f"calls reach the line, {join[len('if so, ') :]}"
+                f"{_agrees(shown, len(common))}, but {_quoted(apart)} "
+                f"{'differ' if len(apart) > 1 else 'differs'} at {len(differ)} of them: the "
+                f"values do not show that a hit is the same moment in both{calls}"
             ], True
         return [
             f"the runs' values differ at {len(differ)} of {len(common)} hits, so they cannot "
-            "show that a hit is the same moment in both; if the edit changed which calls "
-            f"reach the line, {join[len('if so, ') :]}"
+            f"show that a hit is the same moment in both{calls}"
         ], True
+    if len(common) < 2 or not differs:
+        return [], False
     keys = _telling_apart(shown, [[seen(a, s, hit) for s in shown] for hit in common])
-    agreed = (
-        _agreement(
-            shown,
-            keys,
-            len(common),
-            changes,
-            [
-                selector
-                for selector in selectors
-                if any(
-                    cells[a].get((hit, "observed", selector), missing)
-                    != cells[b].get((hit, "observed", selector), missing)
-                    for hit in common
-                )
-            ],
-            (a, b),
+    if left_out:
+        return [
+            _after_change(shown, keys, len(common), changes, edited, left_out, hedged, join)
+        ], hedged is not None
+    if not shown:
+        return [], False
+    differing = [
+        selector
+        for selector in selectors
+        if any(
+            cells[a].get((hit, "observed", selector), missing)
+            != cells[b].get((hit, "observed", selector), missing)
+            for hit in common
         )
-        if shown and differs and len(common) >= 2
-        else None
-    )
-    return ([agreed], False) if agreed else ([], False)
+    ]
+    return [_agreement(shown, keys, len(common), changes, differing, (a, b))], False
+
+
+def _cause(changes, edited, detail=True):
+    """`the edit`, `the interventions (run 2's on `x` in main)`, or both: what changed
+    between two runs, with what each run's interventions changed where ``detail``."""
+    reached = [run for run in changes if changes[run]]
+    causes = ["the edit"] if edited else []
+    if reached:
+        causes.append(
+            f"the interventions ({_interventions(changes, reached)})"
+            if detail
+            else "the interventions"
+        )
+    return " and ".join(causes)
+
+
+def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
+    """The note where a change left selectors out (tenth evaluation): what agrees, never
+    that the hits line up (review of PR #269); what was left out, and why; and a sign
+    that the hits may not line up among those left out (``hedged``: the selector and
+    what it saw), which the change may account for, but which still stands."""
+    cause = _cause(changes, edited)
+    it = "them" if any(changes.values()) else "it"
+    others = [selector for selector in left_out if not hedged or selector != hedged[0]]
+    parts = []
+    if not shown and not hedged:
+        one = len(left_out) == 1
+        return (
+            f"the values cannot show whether the hits line up: {_quoted(left_out)} "
+            f"{'differs' if one else 'differ'} after {cause} and may follow from {it}, and no "
+            "other selector both agrees between the runs and changes from hit to hit"
+        )
+    if keys:
+        by = "it" if len(keys) == 1 else "them"
+        parts.append(
+            f"{_agrees(keys, count, distinct=True)}, so pairing hits by number pairs them as "
+            f"`queries join` by {by} would, though that does not prove the hits are the same "
+            "moments"
+        )
+    elif shown:
+        one = len(shown) == 1
+        parts.append(
+            f"{_agrees(shown, count)}, but {'it reads' if one else 'they read'} alike at some "
+            "hits, which could still trade places"
+        )
+    if others:
+        one = len(others) == 1
+        parts.append(
+            f"{_quoted(others)} {'differs' if one else 'differ'} after {cause} and may follow "
+            f"from {it}, so this check leaves {'it' if one else 'them'} out"
+        )
+    if hedged:
+        selector, saw = hedged
+        because = _cause(changes, edited, detail=not others)
+        parts.append(
+            f"{'but ' if parts else ''}{saw}: `{selector}` may differ because of {because}, so "
+            "this does not prove a reorder, but it keeps Peeky from saying the hits line up"
+            + ("" if keys else join)
+        )
+    return "; ".join(parts)
+
+
+def _interventions(changes, reached):
+    """`run 5's on `total` in main`: what each run's interventions changed, and in which
+    function (a name alone is not the variable: `x` in `helper` is not `main`'s)."""
+    named = []
+    for run in reached:
+        made = dict.fromkeys(
+            f"`{name}`" + (f" in {place}" if place else "") for name, _, place in changes[run]
+        )
+        shown = [*list(made)[:3], *([f"{len(made) - 3} more"] if len(made) > 3 else [])]
+        named.append(f"run {run}'s on {_listed(shown)}")
+    return _listed(named)
+
+
+def _agrees(selectors, count, *, pronoun=False, distinct=False):
+    """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), and
+    with ``distinct`` `, and its value is different at every hit`."""
+    one = len(selectors) == 1
+    subject = ("it" if one else "they") if pronoun else _quoted(selectors)
+    text = f"{subject} {'agrees' if one else 'agree'} between the runs at each of the {count} hits"
+    if distinct:
+        text += f", and {'its value is' if one else 'their values are'} different at every hit"
+    return text
 
 
 def _agreement(shown, keys, count, changes, differing, runs):
-    """What agrees where nothing suggests another pairing (#201), as `_structure_apart`
-    says it: categorically only with no intervention in either run; else what agrees,
-    what differs (``differing``, as read) and which interventions there were."""
+    """What agrees where nothing suggests another pairing and nothing was left out
+    (#201), as `_structure_apart` says it: categorically only with no intervention in
+    either run; else what agrees, what differs (``differing``, as read) and which
+    interventions there were."""
     one = len(shown) == 1
+    alike = (
+        f"{'it reads' if one else 'they read'} alike at some hits, which could still trade places"
+    )
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
+    by = "it" if keys and len(keys) == 1 else "them"
+    joined = f"pairing hits by number pairs them as `queries join` by {by} would"
     # Selectors are checked one at a time: two that differ could line up better together
     # (review 3 of PR #209), which is not checked, so then nothing is said categorically.
     together = (
@@ -2097,44 +2423,31 @@ def _agreement(shown, keys, count, changes, differing, runs):
     )
     if not reached:
         if keys and not together:
-            one = len(keys) == 1
             return (
-                f"the hits line up by {_quoted(keys)}: {'it reads' if one else 'they read'} "
-                f"the same at each of the {count} hits in both runs, and differently at every "
-                f"hit, and {single}, so pairing hits by number pairs them as `queries join` "
-                f"by {'it' if one else 'them'} would"
+                f"the hits line up by {_quoted(keys)}: "
+                f"{_agrees(keys, count, pronoun=True, distinct=True)}, and {single}, so {joined}"
             )
         if keys:
-            one = len(keys) == 1
             return (
                 f"the hits line up by {_quoted(keys)} as far as each selector alone shows: "
-                f"{'it reads' if one else 'they read'} the same at each of the {count} hits "
-                f"in both runs, and differently at every hit, and {single}{together}"
+                f"{_agrees(keys, count, pronoun=True, distinct=True)}, and {single}{together}"
             )
         return (
             f"the hits line up as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-            f"{'it reads' if one else 'they read'} the same at each of the {count} hits in "
-            f"both runs, and {single}; but {'it reads' if one else 'they read'} alike at "
-            f"some hits, which could still trade places{together}"
+            f"{_agrees(shown, count, pronoun=True)}, and {single}; but {alike}{together}"
         )
     # After an intervention, what follows from it is unknown (review of PR #209): what
     # agrees, what does not, and no more.
-    names = _listed(
-        [
-            f"run {run}'s on {_quoted(list(dict.fromkeys(name for name, _, _ in changes[run])))}"
-            for run in reached
-        ]
-    )
     return (
-        f"{_quoted(shown)} {'reads' if one else 'read'} the same at each of the {count} hits "
-        f"in both runs{', and differently at every hit' if keys else ''}, and {single}"
+        f"{_agrees(shown, count, distinct=bool(keys))}, and {single}"
         + (
             f"; {_quoted(differing)} {'differs' if len(differing) == 1 else 'differ'}"
             if differing
             else ""
         )
-        + f"; but the interventions ({names}) can change other values and which calls reach "
-        "the line, so this does not show that each hit is the same moment in both"
+        + f"; but the interventions ({_interventions(changes, reached)}) can change other "
+        "values and which calls reach the line, so this does not show that each hit is the "
+        "same moment in both"
     )
 
 
@@ -2324,27 +2637,132 @@ def schema(path):
     }
 
 
-def table(result, width=120):
+# The columns a canned query compares, each of a pair shown in text from just before
+# where it first differs from the other (tenth evaluation: `diff` cut `…{'text':
+# 'Café', ...` against `…'lev...`, before the difference). `--json` keeps them whole.
+_PAIRED = {
+    "compare": {"value_a": "value_b", "value_b": "value_a"},
+    "diff": {"value_a": "value_b", "value_b": "value_a"},
+    "set_effect": {"observed": "after_set", "after_set": "observed"},
+}
+# Characters shown before a long value's first difference.
+_LEAD = 40
+# A set_effect change's values in text: each at most this long, and from this many
+# characters before where they differ.
+_CHANGE_WIDTH, _CHANGE_LEAD = 50, 30
+
+
+def _window(value, other, width, lead=_LEAD):
+    """``value`` in at most ``width`` characters, with `…` at each cut. Where the pair
+    differs and the usual cut (from the start) of the longer would hide where they first
+    differ, or show little after that, the window starts ``lead`` characters before that
+    place: one offset for both values, so their windows line up."""
+    start = 0
+    if other is not None and other != value and max(len(value), len(other)) > width:
+        first = _first_difference(value, other)
+        if first + lead // 2 > width - 1:
+            start = first - lead
+    if not start:
+        return value if len(value) <= width else value[: width - 1] + "…"
+    if len(value) - start <= width - 1:
+        return "…" + value[start:]
+    return "…" + value[start : start + width - 2] + "…"
+
+
+def _sets_text(value):
+    """A `diff` `(sets)` cell in text: how many changes, the first, and `…` for the rest
+    (tenth evaluation: six `--set-at`s made every line of the table 230 columns wide).
+    None where the cell is not such a list."""
+    try:
+        sets = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(sets, list) or not all(
+        isinstance(item, list) and len(item) == 3 for item in sets
+    ):
+        return None
+    if not sets:
+        return "none"
+    name, set_value, where = (str(part) for part in sets[0])
+    if len(set_value) > _CHANGE_WIDTH:
+        set_value = set_value[: _CHANGE_WIDTH - 1] + "…"
+    many = len(sets) > 1
+    return f"{len(sets)} change{'s' if many else ''}: {name}={set_value} ({where})" + (
+        ", …" if many else ""
+    )
+
+
+def _change_text(change, shown):
+    """``name: before -> after``, each value windowed against the other."""
+    before, after = shown(change["before"]), shown(change["after"])
+    return (
+        f"{change['name']}: {_window(before, after, _CHANGE_WIDTH, _CHANGE_LEAD)} -> "
+        f"{_window(after, before, _CHANGE_WIDTH, _CHANGE_LEAD)}"
+    )
+
+
+def _changes_text(row, changes, shown):
+    """A set_effect row's `interventions` cell with each change's values from just before
+    where they differ; None where ``changes`` (the run's, in the order made) do not
+    give the cell's text, which then shows as stored. The cell lists the changes at the
+    row's stop (its hit and line), or one change made at a stop with no capture."""
+    cell = row.get("interventions")
+    if cell is None:
+        return None
+    here = [
+        change
+        for change in changes
+        if change["hit"] == row.get("hit")
+        and change["line"] == row.get("line")
+        and None not in (change["name"], change["before"], change["after"])
+    ]
+    pieces = [f"{c['name']}: {c['before']} -> {c['after']}" for c in here]
+    if cell == "; ".join(pieces):
+        made = here
+    else:
+        made = [change for change, piece in zip(here, pieces) if piece == cell][:1]
+    return "; ".join(_change_text(change, shown) for change in made) if made else None
+
+
+def table(result, width=120, changes=None):
     """A plain-text table of a query result. A `function` column shows each frame's
-    short name (see ``names.function_labels``), with a note: the result keeps it whole."""
+    short name (see ``names.function_labels``), with a note: the result keeps it whole.
+    For a canned query (``result["query"]``) that compares values, a long value shows
+    from just before where it first differs from its pair (`_PAIRED`); `diff`'s
+    `(sets)` row shows how many changes and the first; set_effect's `interventions`
+    shows each change that way, given the run's ``changes``."""
     from peeky.names import function_labels, shortened_note
 
+    def shown(value):
+        return "NULL" if value is None else str(value).replace("\n", "\\n")
+
     def text(value):
-        value = "NULL" if value is None else str(value).replace("\n", "\\n")
-        return value if len(value) <= width else value[: width - 3] + "..."
+        value = shown(value)
+        return value if len(value) <= width else value[: width - 1] + "…"
 
     columns = result["columns"]
+    query_name = result.get("query")
+    paired = _PAIRED.get(query_name, {})
     shortened = {}
     if "function" in columns:
         labels = function_labels(row["function"] for row in result["rows"])
         shortened = {name: label for name, label in labels.items() if label != name}
-    cells = [
-        [
-            text(shortened.get(row[column], row[column]) if column == "function" else row[column])
-            for column in columns
-        ]
-        for row in result["rows"]
-    ]
+
+    def cell(row, column):
+        value = row[column]
+        if column == "function":
+            return text(shortened.get(value, value))
+        if query_name == "diff" and row.get("selector") == "(sets)" and column in paired:
+            if (summary := _sets_text(value)) is not None:
+                return text(summary)
+        if column in paired and value is not None and row.get(paired[column]) is not None:
+            return _window(shown(value), shown(row[paired[column]]), width)
+        if query_name == "set_effect" and column == "interventions" and changes:
+            if (made := _changes_text(row, changes, shown)) is not None:
+                return text(made)
+        return text(value)
+
+    cells = [[cell(row, column) for column in columns] for row in result["rows"]]
     widths = [max(len(item[i]) for item in [columns, *cells]) for i in range(len(columns))]
     lines = [
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
@@ -2364,6 +2782,58 @@ def table(result, width=120):
         )
     )
     return "\n".join(lines)
+
+
+def _compact_join(path, result, params):
+    """`join`'s ``result`` without the columns of selectors that agree between the runs
+    at every paired hit, and a note naming them: for its text table, which showed each
+    twice (tenth evaluation: runoff's, 430 columns). `--json` keeps every column (review
+    of PR #269). ``params`` name the result's runs (``prepare``); where they no longer
+    give its layout (a run deleted since), the table shows every column."""
+    try:
+        _, _, keys, phase, _, _, _, sides, same = _join_layout(path, params)
+        dropped, unpaired = _unchanged(path, keys, phase, sides, same)
+    except ValueError:
+        return result
+    if not dropped:
+        return result
+    named = {name: dict(zip(sides[name][1], sides[name][2])) for name in sides}
+    gone = {named[name][selector] for name in named for selector in dropped}
+    many = len(dropped) > 1
+    note = (
+        f"left out {len(dropped)} selector{'s' if many else ''} that "
+        f"{'agree' if many else 'agrees'} between the runs at every paired hit: "
+        f"{_quoted(dropped)}"
+        + (f" (with {'their' if many else 'its'} values at unpaired hits)" if unpaired else "")
+        + f"; --param unchanged=1 or --json shows {'them' if many else 'it'}"
+    )
+    return {
+        **result,
+        "columns": [column for column in result["columns"] if column not in gone],
+        "rows": [{k: v for k, v in row.items() if k not in gone} for row in result["rows"]],
+        "notes": [*result.get("notes", []), note],
+    }
+
+
+def query_table(path, result, params=None):
+    """`table` for a canned query's ``result`` (``result["query"]`` names it), run with
+    ``params`` from ``prepare``, which name its runs: read again by run id, never as "the
+    newest", which a probe may have saved since. For set_effect, with the run's changes,
+    read whole, to show each from where its values differ; for join, without the
+    selectors that agree at every paired hit, unless ``params`` has unchanged=1."""
+    params = params or {}
+    if result.get("query") == "join" and params.get("unchanged") != 1:
+        result = _compact_join(path, result, params)
+    changes = None
+    if result.get("query") == "set_effect" and "interventions" in result["columns"]:
+        changes = query(
+            path,
+            "SELECT hit, line, name, before, after FROM interventions WHERE run_id = :run "
+            "ORDER BY rowid",
+            {"run": params.get("run")},
+            limit=MAX_ROWS,
+        )["rows"]
+    return table(result, changes=changes)
 
 
 def schema_text(manifest):

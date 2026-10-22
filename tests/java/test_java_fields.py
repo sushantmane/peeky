@@ -91,16 +91,19 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
         "30",
     ]
     # Rows say which values --set can change: a final field and a list's boxed element
-    # cannot; a String can, to a text (#137), where the adapter's launcher allows it.
+    # cannot; a String can, to a text (#137), where the adapter's launcher allows it. An
+    # element is not promised while the JVM's other threads run (#261 review).
     assert {s: after[s]["settable"] for s in capture.split(",")} == {
         "current.end": True,
         "current.id": False,
         "current.label": texts(fields),
         "this.count": True,
-        "arr[0]": True,
-        "arr[2]": True,
+        "arr[0]": False,
+        "arr[2]": False,
         "xs[0]": False,
     }
+    for selector in ("arr[0]", "arr[2]"):
+        assert after[selector]["maybe_settable"] == "other threads are running; set checks again"
     # Evidence names the field as the selector that reached it.
     run = result["evidence"]["run_id"]
     store = root.parent / "state" / "evidence" / "evidence.db"
@@ -114,7 +117,8 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
 @pytest.mark.parametrize(
     "assignment, code, message",
     [
-        ("current.id=1", "MUTATION_REJECTED", "'id' cannot be changed: it is final"),
+        # The whole selector (#261), not the debugger's name alone.
+        ("current.id=1", "MUTATION_REJECTED", "`current.id` cannot be changed: it is final"),
         ("current.label=1", "MUTATION_REJECTED", "label"),
         ("xs[0]=1", "MUTATION_REJECTED", "an ArrayList's elements are objects (boxed)"),
         ("current.end=1.5", "MUTATION_REJECTED", "requires an integer literal for int end"),
@@ -134,7 +138,7 @@ def test_set_refuses_java_members_it_cannot_change_exactly(
         message = (
             "requires text in double quotes for String label"
             if texts(fields)
-            else "'label' cannot be changed: it is String"
+            else "`current.label` cannot be changed: it is String"
         )
     assert message in result["error"]["message"]
 

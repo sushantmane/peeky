@@ -12,6 +12,7 @@ through JDI, the JDK's debugger API. For these words and a few more, see
 
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See each name's declared type](#see-each-names-declared-type)
+  - [See where a local is visible](#see-where-a-local-is-visible)
 - [2.9 What a Function Returned](#29-what-a-function-returned)
   - [When a method threw](#when-a-method-threw)
 - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python)
@@ -57,11 +58,45 @@ peeky describe examples/java --config examples/java/merge.json
 ```
 language: java
 ...
-names in MergeBug.main (demo/MergeBug.java:22-35): args (String[]), input (java.util.List), merged (java.util.List), current (demo.MergeBug$Interval), next (demo.MergeBug$Interval)
+names in MergeBug.main (demo/MergeBug.java:22-35): args (String[]), input (java.util.List), merged (java.util.List), current (demo.MergeBug$Interval), next (demo.MergeBug$Interval, lines 26-30)
 mutable: root locals, fields (not final or static) and array elements (current.end, xs[0]) of type byte, short, int, long, char, boolean, float or double, and String ones; a char takes a char in single quotes ('+') or a code point (43), a String a text in double quotes (--set 'name="apple"'); never a boxed value (Integer), another object or an ArrayList's elements, nor a field a JDK class declares (a String's hash, an ArrayList's size) or an element of an array one holds. Field, char and String changes need an adapter bundle built by this version of scripts/setup_java_adapter.py. Rows mark what can change [settable]
 probe: peeky probe examples/java --config examples/java/merge.json --at demo/MergeBug.java:<line> [--arg A ...] --capture <a,b.c> [--set name=value] [--set-hit N] [--set-at LINE@HIT name=value] [--hits N] [--json]
 ...
 ```
+
+### See where a local is visible
+
+A local declared only inside blocks, such as a loop's, also shows the lines where it is visible
+([COOKBOOK 1.1](../COOKBOOK.md#block-lines)). For [examples/java](../../examples/java):
+
+```sh
+peeky describe examples/java --config examples/java/balance.json
+```
+
+```
+...
+names in BalanceBug.assign (demo/BalanceBug.java:19-32): workers (java.util.List), tasks (int[]), order (java.util.List), task (int, lines 21-30), best (demo.BalanceBug$Worker, lines 22-30), w (demo.BalanceBug$Worker, lines 23-26)
+...
+```
+
+- The lines come from the class file's LocalVariableTable. A line is listed where its breakpoint
+  sees the local: java-debug stops at the line's first instruction, and that is in the local's
+  scope.
+- So the line that declares a local isn't listed: its first instruction runs before the local
+  exists. `best` is declared on line 21, and a stop there doesn't see it yet.
+- Nor is a `for` header, whose first instruction starts the loop. `for (int b = 0; …)` on line 49
+  gives `b (int, lines 50-53, …)`. A step can still stop part-way through the header, where `b`
+  is visible.
+- A block on one line, such as `{ int x = n + 1; use(x); }`, gives no line:
+  `x (int, no breakpoint line)`. So does a one-line `for`.
+- A name declared once, for the rest of the method, gets no lines, such as `order`. So does one
+  whose scope runs to the method's end, such as an endless loop's counter.
+- A name declared more than once gets every declaration's lines, one that runs to the method's
+  end too. In a vote count that declares `ranking` in two loops:
+  `ranking (int[], lines 51-53, 78-79)`.
+- A name declared with different types is listed once per type, each with its own lines, or
+  `no breakpoint line`. An `int value` in an `if` block, then a `String value` to the method's
+  end: `value (int, line 31), value (String, line 34)`.
 
 ## 2.9 What a Function Returned
 
@@ -219,9 +254,23 @@ These rules also apply:
 - Field, char and String changes need an adapter bundle built by this version of
   `scripts/setup_java_adapter.py`.
 
-Rows mark what can be changed: `[settable]`. The mark on an element goes by the selector's path
-only. So an array that the JDK holds, reached under another name, may still be marked. It is
-refused only when the change is made ([rule](#arrays-the-jdk-holds)).
+Rows mark what can be changed: `[settable]`. A row of a type that `set` changes, which can't be
+changed there, says why instead:
+
+- `[not settable: not read again after this stop]`
+  ([rule](#locals-the-program-never-reads-again));
+- `[not settable: a constant javac compiles into its uses]`;
+- `[not settable: declared Object, not String]` ([rule](#the-declared-type-decides));
+- `[not settable: final]`;
+- `[not settable: in a caller's frame]`: only the stopped frame's values change;
+- `[not settable: declared by java.lang.String (the JDK's own state)]`
+  ([rule](#fields-the-jdk-declares));
+- `[not settable: its array is in a list held by …]` ([rule](#arrays-the-jdk-holds)).
+
+An element that Peeky can't promise either way says `[maybe settable: …]`. Then `set` checks again
+when the change is made ([rule](#arrays-the-jdk-holds)). At a line breakpoint, that is every
+element that no JDK class holds: `[maybe settable: other threads are running; set checks again]`.
+An object or array row has no mark: its type says it can't be set.
 
 ### Change a local
 
@@ -354,8 +403,43 @@ only exception is the backing array of the program's own `ArrayList`, `Vector`, 
   `HashMap<String, Object[]>`'s entry holds one:
   `inside an array held by java.util.HashMap$Node.value`.
 
-The `[settable]` mark on an element goes by the selector's path only. So an array the JDK holds,
-reached under another name, isn't marked as the JDK's. It is refused only when the change is made.
+An element's `[settable]` mark follows the same search. Before Peeky marks an array's elements, it
+asks the adapter what holds the array, whatever name reaches it. In this vote count, `main` passes
+`Collections.unmodifiableList(ballots)`, so each ballot's array is in a list that the view holds:
+
+```sh
+peeky session get ranking
+```
+
+```
+ranking: int[] = int[3]@59 [1, 2, 3]
+  ranking[0]: int = 1  [not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]
+  ranking[1]: int = 2  [not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]
+  ranking[2]: int = 3  [not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]
+```
+
+A change asks again, and is refused with the whole selector:
+
+```
+peeky: [MUTATION_REJECTED] The debugger refused to change `ranking[1]` (Peeky experimental Java adapter: the array is in a list held by java.util.Collections$UnmodifiableList.list, a JDK class's field; Peeky never changes the JDK's own state); it is unchanged
+  hint: Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger itself refused this write, which no [settable] mark can promise.
+```
+
+The program's own array, such as `choice`, can be changed. But at a line breakpoint its elements
+read `[maybe settable: other threads are running; set checks again]`:
+
+- java-debug stops only the thread that hit the breakpoint. The JVM's other threads run on.
+- One of them could put the array in a list that a JDK class holds before the change is made.
+- So Peeky reads what holds the array again at each listing, and keeps no verdict.
+- A change suspends every thread of the JVM while it checks and writes the element. Then the
+  threads run on, as before.
+- If the adapter can't resume them, it disconnects from the JVM, which lets the threads run, and
+  ends. The change fails, and the session closes with that reason (`DEBUGGER_ERROR`). An attached
+  JVM runs on, and a launched one is ended.
+
+An element is marked `[settable]` only at a stop where every thread is suspended, and no JDK class
+holds its array. With a bundle built before this check, elements read `[maybe settable: …]`, which
+says to rebuild it.
 
 ### Which lists' arrays are the program's
 
@@ -387,6 +471,14 @@ So Peeky bounds its wait:
 - It keeps 1 s of the budget for the rest of the change:
   `only 0.6 s of the session's pause budget is left ...`. Then change the element at a fresh stop.
 - Past that, it refuses. The search itself runs on in the JVM until it ends.
+
+The same search runs when Peeky lists an array's elements, before it marks them. There it waits at
+most 0.5 s.
+
+- Where the referrers are too many or too deep, or the JVM can't list them, a change is refused
+  too. The row says why: `[not settable: more than 64 objects refer to the array …]`.
+- Where the wait runs out, a change may still be made. The row says
+  `` [maybe settable: Peeky could not tell within 500 ms …; `set` searches again, for up to 2 s] ``.
 
 ### Changes refused before the run
 
@@ -465,8 +557,8 @@ set name: "c" -> "z"
 ### The declared type decides
 
 What a variable is declared decides whether it takes a text, as java-debug's own check does.
-Peeky reads declared types from the class files. These hold a String, but take no text and are not
-marked `[settable]`:
+Peeky reads declared types from the class files. These hold a String, but take no text. Their rows
+say why: `[not settable: declared Object, not String]`.
 
 - `Object o = "x"`
 - `CharSequence cs`
@@ -476,9 +568,9 @@ marked `[settable]`:
 ### Locals the program never reads again
 
 Peeky refuses to change a local that the program never reads after the stop, of any type. Its row
-is not marked `[settable]`. Where Peeky can't follow the code, as at another kind of stop, it makes
-the change. A note then says that a lambda or inner class that captured the local before keeps the
-old value.
+says `[not settable: not read again after this stop]`. Where Peeky can't follow the code, as at
+another kind of stop, it makes the change. A note then says that a lambda or inner class that
+captured the local before keeps the old value.
 
 Peeky follows the method's bytecode from where the stop's line begins. A line breakpoint or a step
 stops there. Peeky refuses when no path reads the local before storing into it again. For example:

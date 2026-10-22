@@ -557,8 +557,9 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
   with its example crate switched to 2024.
 - Test processes share OS permissions with the checker, and are trusted code.
 - No live-model Rust evaluation has been recorded.
-- Not delivered yet: debugging a Rust program on a separate host, and any `Option` payload other
-  than `i32`.
+- Not delivered yet: any `Option` payload other than `i32`.
+- A crate can be debugged on a separate host, through a worker started with `--rust-config`
+  ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)).
 - `tests/rust/test_rust_worker.py` runs the worker on a real Cargo build and LLDB. It covers:
   - launch over HTTP, `Some(3)` and `None`, struct expansion and a fieldless enum;
   - refused changes: an `Option`, a value out of range, an expression;

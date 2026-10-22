@@ -24,8 +24,9 @@ DEATH = (
 # (or at once, with "now") writes the given text to its stderr. "lines:N" makes it write
 # N log lines itself: Linux caps one argument at 128 KiB (MAX_ARG_STRLEN). How it writes:
 # "plain" (one write), "bytewise" (a byte at a time), "exit" (then exits at once),
-# "stop-exit" (reports a breakpoint stop first, then exits 0.5 s later), or "orphan" (a
-# descendant outside its process group keeps writing to the same stderr).
+# "stop-exit" (reports a breakpoint stop first, then exits 0.5 s later), "orphan" (a
+# descendant outside its process group keeps writing to the same stderr), or "set-exit"
+# (writes it and exits when asked `setVariable`, which it never answers).
 FAKE_ADAPTER = r"""
 import json, os, subprocess, sys, threading, time
 mode, stderr = sys.argv[1], sys.argv[2]
@@ -76,6 +77,10 @@ if mode == "now":
 while True:
     request = read()
     command, body = request["command"], {}
+    if command == "setVariable" and how == "set-exit":
+        sys.stderr.write(stderr)
+        sys.stderr.flush()
+        os._exit(3)
     if command in ("launch", "attach"):
         write({"seq": 0, "type": "event", "event": "initialized", "body": {}})
     if command == "setBreakpoints":
@@ -430,3 +435,41 @@ def test_a_failure_the_pause_guard_itself_meets_reaches_the_client_not_no_sessio
     # Its `cleanup` comes with the repeated error and with `close` (PR #147 review 2).
     assert error["cleanup"] == report["cleanup"]
     assert worker.dispatch("close", session) == {"state": "idle", "cleanup": report["cleanup"]}
+
+
+# What Peeky's Java launcher writes when it cannot resume the JVM after a change (#261).
+UNRESUMED = (
+    "Peeky experimental Java adapter: could not resume the JVM after a change "
+    "(com.sun.jdi.InternalException: Unexpected JDWP Error: 113); disconnected from it, "
+    "which resumes every thread the debugger suspended\n"
+    "com.sun.jdi.InternalException: Unexpected JDWP Error: 113\n"
+    "\tat jdk.jdi/com.sun.tools.jdi.VirtualMachineImpl.resume(VirtualMachineImpl.java:478)\n"
+    "\tat PeekyJavaAdapter.resume(PeekyJavaAdapter.java:207)\n"
+)
+
+
+def test_a_change_whose_jvm_stays_suspended_ends_the_session_as_lost():
+    # #261 review round 2: the launcher suspends every thread across a change to an
+    # element. Where it cannot resume them, it never answers the change: it disconnects,
+    # says why, and ends. The change fails with that reason, never as made or refused.
+    dap = adapter(UNRESUMED, mode="never", how="set-exit")
+    try:
+        began = time.monotonic()
+        with pytest.raises(RuntimeError) as failure:
+            dap.request("setVariable", {"variablesReference": 7, "name": "0", "value": "9"})
+        assert time.monotonic() - began < 3
+        message = str(failure.value)
+        assert message.startswith(
+            "The session is closed: the Java adapter could not resume the JVM's threads after "
+            "a change (Peeky experimental Java adapter: could not resume the JVM after a change "
+            "(com.sun.jdi.InternalException: Unexpected JDWP Error: 113)"
+        ), message
+        assert "at PeekyJavaAdapter.resume(PeekyJavaAdapter.java:207)" in message, message
+        assert message.endswith(
+            "an attached JVM runs on, and a launched one is ended. Start a new session"
+        )
+        error = classify(failure.value)
+        assert (error["code"], error["session_closed"]) == ("DEBUGGER_ERROR", True), error
+        assert "Debugger adapter closed" not in message
+    finally:
+        dap.close()

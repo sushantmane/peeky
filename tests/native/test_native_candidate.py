@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -161,11 +162,42 @@ def test_a_remote_worker_probes_the_candidate(loop, capsys, monkeypatch):
         code, result = probe(capsys, loop, "--at", "loop.c:5", *TWO_EDITS, "--worker", url)
         assert code == 0, result.get("error")
         assert result["candidate"]["line"] == 6 and "TOTAL:103" in result["output"]
+        # The edited file is the worker's copy, whose line 6 this is (#268 review).
+        where = result["breakpoint"]["source"]["path"]
+        assert where.startswith("worker:") and where.endswith("/loop.c"), where
+        assert "peeky-build-" in where and result["breakpoint"]["line"] == 6
+        # Without an edit, the worker names the compared source, shown as your file.
+        code, plain = probe(capsys, loop, "--at", "loop.c:5", "--capture", "total", "--worker", url)
+        assert code == 0, plain.get("error")
+        assert Path(plain["breakpoint"]["source"]["path"]).resolve() == (loop / "loop.c").resolve()
     finally:
         server.worker.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+def test_a_candidates_breakpoint_names_the_copy_its_line_is_from(loop, capsys):
+    # #268 review: the breakpoint named your loop.c with the candidate's line 6, which is
+    # `}` in your file: an edit that adds a line above moves the line it means.
+    from peeky.cli import CANDIDATE_LOCATIONS
+
+    source = loop / "loop.c"
+    code, plain = probe(capsys, loop, "--at", "loop.c:5", "--capture", "total")
+    assert code == 0, plain.get("error")
+    assert Path(plain["breakpoint"]["source"]["path"]).resolve() == source.resolve()
+    assert plain["breakpoint"]["line"] == 5 and "candidate" not in plain
+    edit = ("--old", "int total = 0;\n", "--new", "int total = 0;\n  int bonus = 100;\n")
+    code, result = probe(capsys, loop, "--at", "loop.c:5", "--capture", "total", *edit)
+    assert code == 0, result.get("error")
+    where = Path(result["breakpoint"]["source"]["path"])
+    assert where.name == "loop.c" and where.resolve() != source.resolve(), where
+    assert "peeky-build-" in str(where)
+    assert result["breakpoint"]["line"] == result["candidate"]["line"] == 6
+    assert result["candidate"]["note"] == CANDIDATE_LOCATIONS
+    code = main(["probe", str(loop), "--at", "loop.c:5", "--capture", "total", *edit, "--quiet"])
+    text = capsys.readouterr().out
+    assert code == 0 and f"candidate: {CANDIDATE_LOCATIONS}" in text, text
 
 
 TWO_EDITS = (
