@@ -239,11 +239,15 @@ The Java steps are saved beside it, in `remote-run-java.json`.
 | Program output, close | `peeky session report`, `session close` | 0 | 0.01 | `PAGE:[10, 20, 30]`; closed |
 | The host's source differs | `peeky probe … --config launch.json … --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
 | The host's source differs, attached JVM | `peeky probe … --config attach.json … --worker URL` | 2 | 0.07 | `PROVENANCE_CHANGED`; the JVM still waited, not attached |
-| Attached JVM, probe with a change | `peeky probe … --config attach.json … --worker URL` | 0 | 0.25 | `start` 3 → 0; the JVM detached, ran to its end and printed `PAGE:[10, 20, 30]` |
+| Attached JVM, probe with a change | `peeky probe … --config attach.json … --worker URL` | 0 | 0.25 | `start` 3 → 0; `ended: hits`. The JVM stayed alive, printed `PAGE:[10, 20, 30]` and blocked on its sentinel file |
+| The sentinel file created | `touch release`, on the host | — | — | the JVM printed `DONE` and exited with status 0 |
 
 - The attached JVM was started on the host with
   `-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005`. Then the worker
   was restarted with `--java-attach-config`.
+- After its output, the attached program waits for a `release` file. So the probe could pass only
+  by ending at its hit, and leaving the JVM running: not by waiting for the JVM's exit, or ending
+  it.
 - With the Java tests, the module took 8.0 s locally, with both images already built. A cold build
   of the `java` image took 17 s, with its base images already pulled.
 - On 2026-10-16, five consecutive local runs took 4.6–5.0 s. On GitHub's `ubuntu-latest` runner,

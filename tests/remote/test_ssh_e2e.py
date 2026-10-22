@@ -431,10 +431,37 @@ JAVA_LAUNCH = {
     "sources": [JAVA_SOURCE],
     "main_class": "demo.PaginationBug",
 }
+# The attached JVM prints its page, then blocks until a `release` file appears: a probe
+# that waited for the JVM's exit, or killed it, cannot pass.
+ATTACHED_SOURCE = "demo/AttachedPagination.java"
+ATTACHED_TEXT = """package demo;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+
+public class AttachedPagination {
+    public static void main(String[] args) throws Exception {
+        int page = 1;
+        int pageSize = 3;
+        int[] items = new int[8];
+        for (int i = 0; i < items.length; i++) items[i] = (i + 1) * 10;
+        int start = page * pageSize;
+        int end = Math.min(start + pageSize, items.length); // OBSERVE
+        int[] result = Arrays.copyOfRange(items, Math.min(start, items.length), end);
+        System.out.println("PAGE:" + Arrays.toString(result));
+        while (!Files.exists(Path.of("release"))) Thread.sleep(50);
+        System.out.println("DONE");
+    }
+}
+"""
+ATTACHED_LINE = next(
+    number for number, text in enumerate(ATTACHED_TEXT.splitlines(), 1) if "// OBSERVE" in text
+)
 JAVA_ATTACH = {
     "bundle": "/opt/peeky-java",
     "port": 5005,
-    "sources": [JAVA_SOURCE],
+    "sources": [ATTACHED_SOURCE],
     "class_roots": ["classes"],
 }
 
@@ -443,6 +470,8 @@ def _java_configs(host):
     for name, config in (("launch.json", JAVA_LAUNCH), ("attach.json", JAVA_ATTACH)):
         written = host.ssh(f"cat > java/{name}", input=json.dumps(config))
         assert written.returncode == 0, written.stderr
+    written = host.ssh(f"cat > java/{ATTACHED_SOURCE}", input=ATTACHED_TEXT)
+    assert written.returncode == 0, written.stderr
 
 
 @pytest.fixture(scope="module")
@@ -464,12 +493,13 @@ def java_checkout(tmp_path):
     """The client's checkout: the same Java source, and the same configurations."""
     (tmp_path / "demo").mkdir()
     shutil.copyfile(ROOT / "examples/java" / JAVA_SOURCE, tmp_path / JAVA_SOURCE)
+    (tmp_path / ATTACHED_SOURCE).write_text(ATTACHED_TEXT)
     for name, config in (("launch.json", JAVA_LAUNCH), ("attach.json", JAVA_ATTACH)):
         (tmp_path / name).write_text(json.dumps(config))
     return tmp_path
 
 
-def java_probe(host, capsys, step, checkout, config, *more):
+def java_probe(host, capsys, step, checkout, config, *more, at=f"{JAVA_SOURCE}:{JAVA_LINE}"):
     return run(
         host,
         capsys,
@@ -479,7 +509,7 @@ def java_probe(host, capsys, step, checkout, config, *more):
         "--config",
         checkout / config,
         "--at",
-        f"{JAVA_SOURCE}:{JAVA_LINE}",
+        at,
         "--capture",
         "start,pageSize",
         "--set",
@@ -542,13 +572,13 @@ def test_a_java_session_runs_on_the_other_host(java_host, capsys, java_checkout)
     assert code == 0 and result.get("closed") == "default", result
 
 
-def _changed_java_source(host):
+def _changed_java_source(host, source=JAVA_SOURCE):
     """The host's source writes a marker when it runs: proof it never ran."""
     changed = host.ssh(
-        f"cd java && cp {JAVA_SOURCE} .original && sed -i "
+        f"cd java && cp {source} .original && sed -i "
         "'s|int page = |new java.io.File(\"/home/peeky/RAN\").createNewFile(); int page = |' "
-        f"{JAVA_SOURCE} && sed -i 's|main(String\\[\\] args) {{|main(String[] args) throws "
-        f"Exception {{|' {JAVA_SOURCE} && ! cmp -s .original {JAVA_SOURCE}"
+        f"{source} && sed -i 's|main(String\\[\\] args) {{|main(String[] args) throws "
+        f"Exception {{|' {source} && ! cmp -s .original {source}"
     )
     assert changed.returncode == 0, changed.stderr
 
@@ -584,12 +614,15 @@ def test_a_different_java_source_on_the_host_is_refused_before_it_runs(
 
 @pytest.fixture
 def waiting_jvm(java_host):
-    """A JVM on the host, suspended until a debugger attaches (Gradle's --debug-jvm)."""
+    """A JVM on the host, suspended until a debugger attaches (Gradle's --debug-jvm).
+
+    jvm.pid is the JVM's own pid; its exit status lands in jvm.exit."""
     started = java_host.ssh(
-        "cd java && rm -rf classes && javac -g -d classes demo/PaginationBug.java && "
-        "{ nohup java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,"
-        "address=127.0.0.1:5005 -cp classes demo.PaginationBug > jvm.log 2>&1 "
-        "< /dev/null & echo $! > jvm.pid; }"
+        "cd java && rm -rf classes release jvm.exit jvm.pid && "
+        f"javac -g -d classes {ATTACHED_SOURCE} && "
+        "{ nohup sh -c 'java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,"
+        "address=127.0.0.1:5005 -cp classes demo.AttachedPagination & echo $! > jvm.pid; "
+        "wait $!; echo $? > jvm.exit' > jvm.log 2>&1 < /dev/null & }"
     )
     assert started.returncode == 0, started.stderr
     deadline = time.monotonic() + 30
@@ -602,12 +635,24 @@ def waiting_jvm(java_host):
     try:
         yield java_host
     finally:
-        java_host.ssh("kill $(cat java/jvm.pid) 2>/dev/null; rm -f java/jvm.pid")
+        java_host.ssh("cd java && touch release; kill $(cat jvm.pid) 2>/dev/null; rm -f jvm.pid")
+
+
+def _jvm_alive(host):
+    return host.ssh("kill -0 $(cat java/jvm.pid)").returncode == 0
+
+
+def _wait_for(condition, what, seconds=30):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.2)
 
 
 def test_an_attached_java_vm_on_the_other_host(waiting_jvm, capsys, java_checkout):
     host = waiting_jvm
-    _changed_java_source(host)
+    at = f"{ATTACHED_SOURCE}:{ATTACHED_LINE}"
+    _changed_java_source(host, ATTACHED_SOURCE)
     try:
         code, result = java_probe(
             host,
@@ -615,30 +660,41 @@ def test_an_attached_java_vm_on_the_other_host(waiting_jvm, capsys, java_checkou
             "Java attach probe with a different source on the host",
             java_checkout,
             "attach.json",
+            at=at,
         )
         # Not attached: the JVM still waits for a debugger, and has printed nothing.
-        assert host.ssh("kill -0 $(cat java/jvm.pid)").returncode == 0
+        assert _jvm_alive(host)
         assert "PAGE:" not in host.ssh("cat java/jvm.log").stdout
         _refused(host, result, code, **{"the JVM": "still waiting, not attached"})
     finally:
-        host.ssh(f"cd java && mv .original {JAVA_SOURCE}")
+        host.ssh(f"cd java && mv .original {ATTACHED_SOURCE}")
     # The refusal left the JVM waiting; the same probe with matching sources attaches.
     code, result = java_probe(
-        host, capsys, "Java attach probe with a change", java_checkout, "attach.json"
+        host, capsys, "Java attach probe with a change", java_checkout, "attach.json", at=at
     )
     assert code == 0, result
+    # The probe ended after its hit: it neither waited for the JVM's exit nor ended it.
+    assert result["ended"] == "hits", result
+    assert _jvm_alive(host)
     values = {(row["phase"], row["selector"]): row["value"] for row in result["rows"]}
     assert values[("observed", "start")] == "3" and values[("after-set", "start")] == "0"
     assert result["target_identity"]["mode"] == "attach"
-    deadline = time.monotonic() + 30
-    while host.ssh("kill -0 $(cat java/jvm.pid)").returncode == 0:
-        assert time.monotonic() < deadline, "the attached JVM did not finish"
-        time.sleep(0.2)
+    # Detached, the JVM runs on with the change, and blocks on the sentinel.
+    _wait_for(lambda: "PAGE:" in host.ssh("cat java/jvm.log").stdout, "no PAGE line")
+    assert _jvm_alive(host) and host.ssh("test -e java/jvm.exit").returncode == 1
     log = host.ssh("cat java/jvm.log").stdout
-    assert "PAGE:[10, 20, 30]" in log, log  # detached, not killed: it ran to its end
+    assert "PAGE:[10, 20, 30]" in log and "DONE" not in log, log
+    assert host.ssh("touch java/release").returncode == 0
+    _wait_for(lambda: host.ssh("test -e java/jvm.exit").returncode == 0, "the JVM did not end")
+    status = host.ssh("cat java/jvm.exit").stdout.strip()
+    log = host.ssh("cat java/jvm.log").stdout
+    assert status == "0" and "DONE" in log, (status, log)
     host.records[-1]["result"] = {
         "status": result["status"],
+        "ended": result["ended"],
         "observed start": values[("observed", "start")],
         "after set": values[("after-set", "start")],
         "JVM output on the host": next(line for line in log.splitlines() if "PAGE:" in line),
+        "the JVM after the probe": "alive, blocked on its sentinel file",
+        "after the sentinel": f"exit status {status}, printed DONE",
     }
