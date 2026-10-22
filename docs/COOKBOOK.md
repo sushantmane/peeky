@@ -2843,13 +2843,14 @@ In [Java 7.4](lang/java-cookbook.md#74-java-tests-already-running-gradle---debug
 
 To debug the optimized program, set its level in a `--config`:
 
-| Language | Key | Example |
+| Language | Key | Levels |
 | --- | --- | --- |
-| C, C++ | `optimization` | `"optimization": "O2"` |
-| Rust | `opt_level` | `"opt_level": "2"` |
+| C, C++ | `optimization` | `"Og"`, `"O1"` or `"O2"`; `"O0"` by default |
+| Rust | `opt_level` | `"1"` or `"2"`; `"0"` by default |
 
-[NATIVE.md](NATIVE.md) lists the other levels. A C or C++ config may also name explicit tool
-paths, as NATIVE.md shows. For example, this `examples/c/optimized.json` names them:
+A C or C++ config may also name explicit tool paths
+([C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config)). For example, this
+`examples/c/optimized.json` names them:
 
 ```json
 {"sources": ["pagination_bug.c"], "headers": ["pagination.h"], "optimization": "O2", "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang", "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap", "dwarfdump": "/usr/bin/dwarfdump", "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil", "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}
@@ -2874,11 +2875,18 @@ output:
 
 What changes in an optimized build:
 
-- Locals may be `unavailable`.
-- Values that are shown can be stale.
+- Locals may be `unavailable`. LLDB reports such a local as text, such as
+  `<error: variable not available>` or `<error: could not evaluate DW_OP_entry_value: ...>`. Peeky
+  gives it no value, an error that quotes the debugger's reason, and a warning.
+- Values that are shown can be stale, and look normal. An inlined `-O2` C function reported
+  `b=2, t=8` where the live values were 0 and 3. At Rust's `opt-level 2`, `start` read `1` where
+  the program's value was `3`, with no `unavailable` mark. Peeky can't detect this, so prefer an
+  unoptimized build for debugging.
 - In this macOS C example, the `function` column marks the frame `[opt]`. Only lldb-dap on macOS
   adds that mark. Linux's never does, and Rust function names have it removed.
-- Every result carries `optimized` and a warning.
+- Every probe result, session snapshot, `session get` row and `describe` carries `optimized` and a
+  warning.
+- A Rust enum is opaque, because LLDB zero-fills the enum pieces it can't locate.
 - Changes are refused. A probe's `--set` is refused before the program runs. The error says when
   the debug information gives the local no stack slot (a register or a location list):
 
@@ -2891,6 +2899,11 @@ peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:
 error [MUTATION_REJECTED]: `start` cannot be changed: changing values is refused in an optimized build (-O2), where the program may keep using other copies of a value; here the debug information gives `start` no stack slot (a register or a location list), so a change could not reach every copy. Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build
 hint: Use an unoptimized build to change values.
 ```
+
+- These rules apply to C, C++ and Rust, which all use LLDB. Peeky never reinterprets the value text
+  of another language's debugger.
+- In an unoptimized build, a value that the debugger can't read, such as one behind a NULL
+  pointer, shows the debugger's reason. It is never called "optimized out".
 
 ---
 

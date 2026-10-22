@@ -33,7 +33,7 @@ Negative tests reject finishing before runtime evidence, plus changes during ver
 
 ## Optional live-model execution
 
-Prepare a native target configuration like the one in [NATIVE.md](NATIVE.md), changing its declared files to:
+Prepare a native target configuration like the one in [C and C++ 7.1](lang/c-cpp-cookbook.md#name-the-tools-in-a-config), changing its declared files to:
 
 ```json
 {

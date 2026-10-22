@@ -213,7 +213,7 @@ revised after two adversarial reviews.
 - **Design notes per language:**
   - Java: the [worker](docs/JAVA_WORKER.md) and the [investigation loop](docs/JAVA_AGENT.md),
     with an example in `examples/java`;
-  - C: the [worker](docs/NATIVE.md) and the [investigation loop](docs/NATIVE_AGENT.md);
+  - C: the [worker](docs/WORKER.md) and the [investigation loop](docs/NATIVE_AGENT.md);
   - C++: [how Peeky reads C and C++ values](docs/NATIVE_INTERNALS.md), the
     [worker](docs/WORKER.md#configure-a-c-target) and the
     [investigation loop](docs/NATIVE_AGENT.md#the-c-fixture);

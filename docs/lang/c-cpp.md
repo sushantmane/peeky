@@ -22,6 +22,11 @@ A C++ compiler that isn't clang is refused before anything runs
   ([C and C++ 1.1](c-cpp-cookbook.md#11-what-can-i-ask)).
 - Pass program arguments after `--`, or with repeated `--arg`
   ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
+- To pin the compiler and debugger, name them in a `--config`
+  ([C and C++ 7.1](c-cpp-cookbook.md#name-the-tools-in-a-config)).
+- Peeky launches the program. It doesn't attach to a running one, evaluate expressions, or deploy
+  a remote debug server ([WORKER](../WORKER.md#what-the-c-and-c-worker-does)). To debug on another
+  host, run a worker there ([REMOTE.md](../REMOTE.md)).
 
 ## Read values
 

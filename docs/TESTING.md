@@ -12,6 +12,7 @@ All five jobs start independently. No build/install job sits ahead of the tests.
 | integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
 | remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
+| C LLVM 18 conformance | Real C debugging (`tests/native`) on Ubuntu 24.04, with `clang-18`, `lldb-18` and `llvm-18` from the signed Ubuntu repositories. The LLVM major is pinned; distribution patch versions can change, and each run prints them. It acquires its tools explicitly, never relying on a hosted image's toolchain, and starts independently of the Python, Java, package and quality lanes. It reports the acquisition and conformance times | The four-minute timeout; cold hosted timing must be measured before claiming the budget |
 | C++ LLVM 18 conformance (`native-cpp`) | Real C++ debugging and agent verification (`tests/cpp`) on Ubuntu 24.04, with LLVM 18 from signed Ubuntu package repositories. It records the installed package revisions, and depends on no C or Java lane | The four-minute timeout; measured hosted runs show whether it is met |
 | C++ LLVM 20 (Docker mirror only, `scripts/ci_linux`, `cpp-llvm20`) | `tests/cpp` with lldb-dap 20; `PEEKY_EXPECT_READ_MEMORY=1` makes the tests expect libstdc++ strings read whole from memory | |
 | Rust LLVM 20 (Docker mirror only, `scripts/ci_linux`) | Rust memory views with lldb-dap's `readMemory`; `PEEKY_EXPECT_READ_MEMORY=1` fails the lane if values fall back to raw fields | 60s |
@@ -40,7 +41,19 @@ pytest tests/integration --durations=10
 python -m build
 ```
 
-C++ conformance on macOS uses the Command Line Tools:
+C conformance on macOS uses the Command Line Tools. Without `PEEKY_NATIVE_DAP`, the native
+integration tests skip, and say so:
+
+```sh
+export PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)"
+export PEEKY_NATIVE_CC="$(xcrun --find clang)"
+export PEEKY_NATIVE_DWARFDUMP="$(xcrun --find llvm-dwarfdump)"
+export PEEKY_NATIVE_DSYMUTIL="$(xcrun --find dsymutil)"
+export PEEKY_NATIVE_SYSROOT="$(xcrun --show-sdk-path)"
+pytest tests/native --durations=10
+```
+
+C++ conformance on macOS uses the Command Line Tools too:
 
 ```sh
 PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)" \
