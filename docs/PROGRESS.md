@@ -572,6 +572,9 @@ An hourly thread heartbeat (`continue-peeky-mvp`) checks for available usage and
   - Sentences: the summary and sections 1.1 to 5.1 from a mean of 27.9 words to 12.3; section 7.1 from 35.8 to 12.4 (102 over 25 words before, none after). Lines wrapped at 100 characters; the doubled "Details: Details:" gone.
   - 7.1's "Common cases" and "Quick start", which repeated each other, are one quick start; its parts have headings that say what they answer ("Why a local shows `no value yet`", "Change a field behind a pointer"), with links from `c-cpp.md`, the COOKBOOK and CPP.md updated.
   - No new C build was run (no temporary directory was allowed, and none under `~/Documents`): examples are the recorded ones, plus a `describe` line the C lanes assert verbatim.
+- **#212: ERRORS.md in plain English** (branch `docs/plain-errors`). Every code's meaning, what to do, and its `retryable` and `session_closed` facts kept; the exit-status paragraph is a table, complete.
+  - Sentences: mean 23.3 words to 11.0 (22 over 25 words before, none after). The code table is short rows with a `Retryable` column; the longer notes moved to a section per code; the `MUTATION_REJECTED` rules, the two Java failures and process cleanup have headings that say what they answer. No history (`#137`, `#143`, `#168`, `PR #170 review`, `#180`, `#182`, `#190`, `#204`).
+  - A doc test ties the `Retryable` column to what `errors.py` sends, code by code.
 - **#67 (`0a1fad7`): CUDA phase 0** for #61. [ADR 0007](adr/0007-cuda-gdb-dap.md) (proposed) drives `cuda-gdb -i=dap`. `scripts/cuda/qualify.py` is the qualification to run on a GPU host.
   - Found by experiment: upstream GDB 14.2, 15.1 and 16.3 start the program at different DAP requests. One order works on all three (breakpoints, `launch`, then `configurationDone`).
   - The new `gdb-dap` lane keeps that order tested against GDB 15.1; 14.2 and 16.3 were run by hand.

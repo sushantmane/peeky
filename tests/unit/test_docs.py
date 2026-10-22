@@ -178,3 +178,22 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
     c_cpp = " ".join((DOCS / "lang/c-cpp-cookbook.md").read_text().split())
     assert "a `for` or `while` loop's variable, as in `for (int i = 0; …)`, is withheld" in c_cpp
     assert "too while the body calls, on one line or several" in c_cpp
+
+
+def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
+    # #212: ERRORS.md's code table has a Retryable column; it must say what Peeky sends.
+    from peeky.errors import _RULES
+
+    table = (DOCS / "ERRORS.md").read_text()
+    rows = dict(re.findall(r"^\| `([A-Z_]+)`[^|]*\|[^|]*\|[^|]*\| (yes|no) \|$", table, flags=re.M))
+    expected = {}
+    for _, code, _, retryable in _RULES:
+        expected.setdefault(code, set()).add(retryable)
+    # Sent outside the rules: a build's failure, a probe's no-stop, the worker's token check,
+    # and the fallbacks for an unexpected exception.
+    for code in ("BUILD_FAILED", "NO_STOP", "UNAUTHORIZED", "INTERNAL_ERROR", "DEBUGGER_ERROR"):
+        expected.setdefault(code, set()).add(False)
+    assert set(rows) == set(expected)
+    for code, flags in expected.items():
+        assert len(flags) == 1, code
+        assert rows[code] == ("yes" if flags.pop() else "no"), code
