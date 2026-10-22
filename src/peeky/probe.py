@@ -1692,8 +1692,12 @@ def _capture(
                 # or a Java field or array element.
                 row["settable"] = variable["settable"]
             if isinstance(variable.get("not_settable"), str):
-                # Why no stop of this build can change it (#138: `register`).
+                # Why it can't be changed: at no stop of this build (#138: `register`), or
+                # here (Java, #261).
                 row["not_settable"] = variable["not_settable"]
+            if isinstance(variable.get("maybe_settable"), str):
+                # Why neither mark can be promised (Java, #261).
+                row["maybe_settable"] = variable["maybe_settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
             if children and variable.get("variablesReference") and not variable.get("whole"):
@@ -3059,6 +3063,8 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             entry["settable"] = child["settable"]
         if isinstance(child.get("not_settable"), str):
             entry["not_settable"] = child["not_settable"]
+        if isinstance(child.get("maybe_settable"), str):
+            entry["maybe_settable"] = child["maybe_settable"]
         if isinstance(child.get("raw_reason"), str):
             # Why a Rust Vec or String field stays raw (#156).
             entry["raw_reason"] = child["raw_reason"]
@@ -4213,6 +4219,7 @@ def _table(result, short_names=True):
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
+            + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [note]" if row.get("note") and not _rust_note_kind(row["note"]) else ""),

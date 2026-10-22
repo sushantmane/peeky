@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from peeky.cli import main
+from peeky.errors import PROTOCOL_VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "remote-worker-token-1234567890abcdef"
@@ -226,6 +227,7 @@ def test_a_python_session_launch_reports_the_sources_it_accepted(remote):
         breakpoints=[{"line": 8}],
         expect_sha256={"program": expected["pagination_bug.py"]},
         expect_inputs=expected,
+        protocol=PROTOCOL_VERSION,
     )
     try:
         assert launch["inputs_checked"] == digest(expected)
@@ -395,6 +397,7 @@ def test_a_worker_source_changed_before_a_stop_is_refused_by_wait(remote):
         breakpoints=[{"line": 2}, {"line": 4}],
         expect_sha256={"program": expected["main.py"]},
         expect_inputs=expected,
+        protocol=PROTOCOL_VERSION,
     )
     session = {"session_id": launch["session_id"]}
     try:
@@ -426,6 +429,61 @@ def test_later_session_commands_carry_the_note(remote, capsys):
     assert code == 0 and "warning: Only the .py files under the target's directory" in out.out
     code, out = run(capsys, "session", "inspect", "--json")
     assert code == 0 and any("pyvenv.cfg" in w for w in json.loads(out.out)["warnings"])
+    run(capsys, "session", "close")
+
+
+def test_remote_stops_are_named_in_your_checkout(remote, capsys):
+    # #252: locations and frames named the worker host's root, a path you don't have.
+    host, local, worker, _ = remote
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    mine = local.resolve() / "pagination_bug.py"
+    start = ["session", "start", local / "pagination_bug.py", "--at", "8", "--worker", url]
+    code, out = run(capsys, *start, "--json")
+    assert code == 0 and json.loads(out.out)["location"] == f"{mine}:8", out.out
+    code, out = run(capsys, "session", "inspect", "--json")
+    assert json.loads(out.out)["frames"][0]["source"]["path"] == str(mine), out.out
+    run(capsys, "session", "continue", "--to-exit")
+    code, out = run(capsys, "session", "report", "--json")
+    assert code == 0 and str(host.resolve()) not in out.out, out.out
+    run(capsys, "session", "close")
+    probe = ["probe", local / "pagination_bug.py", "--at", "8", "--capture", "start"]
+    code, out = run(capsys, *probe, "--worker", url, "--json")
+    assert code == 0 and str(host.resolve()) not in out.out, out.out
+
+
+VENV_MAIN = (
+    "import os, sys\n"
+    "sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env', 'lib'))\n"
+    "import pkg\n"
+    "def total(x):\n"
+    "    y = x + 1\n"
+    "    return y\n"
+    "print('TOTAL', pkg.run(total))\n"
+)
+
+
+def test_a_frame_outside_the_compared_sources_stays_the_worker_hosts(remote, capsys):
+    # #268 review: a frame in a virtual environment under the root was shown as a file
+    # of yours, though no virtual environment is compared.
+    host, local, worker, _ = remote
+    for root in (host, local):
+        (root / "main.py").write_text(VENV_MAIN)
+        (root / "env" / "lib").mkdir(parents=True)
+        (root / "env" / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        (root / "env" / "lib" / "pkg.py").write_text("def run(f):\n    return f(2)\n")
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    start = ["session", "start", local / "main.py", "--at", "5", "--worker", url, "--json"]
+    code, out = run(capsys, *start)
+    assert code == 0, out
+    code, out = run(capsys, "session", "inspect", "--json")
+    paths = [frame["source"]["path"] for frame in json.loads(out.out)["frames"]]
+    assert paths[:3] == [
+        str(local.resolve() / "main.py"),
+        f"worker:{host.resolve()}/env/lib/pkg.py",
+        str(local.resolve() / "main.py"),
+    ], paths
     run(capsys, "session", "close")
 
 
@@ -571,8 +629,6 @@ def test_results_without_the_entry_hash_are_discarded(remote, capsys, monkeypatc
         }
 
     monkeypatch.setattr(client_module.Client, "probe", old_worker_probe)
-    from peeky.errors import PROTOCOL_VERSION
-
     hello = {"protocol": PROTOCOL_VERSION, "sources": {"kind": "python"}}
     monkeypatch.setattr(client_module.Client, "call", lambda self, op, **kw: hello)
     code, out = run(

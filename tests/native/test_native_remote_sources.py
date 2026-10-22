@@ -7,6 +7,7 @@ import threading
 import pytest
 
 from peeky.cli import WORKER_TOKEN_ENV, main
+from peeky.errors import PROTOCOL_VERSION
 
 TOKEN = "native-remote-sources-token-123"
 MAIN = """#include <stdio.h>
@@ -103,6 +104,7 @@ def test_a_header_changed_between_the_check_and_the_build_is_refused(remote, mon
             breakpoints=[{"line": 5}],
             expect_sha256={"program": expected["main.c"]},
             expect_inputs=expected,
+            protocol=PROTOCOL_VERSION,
         )
     assert refused.value.error_code == "PROVENANCE_CHANGED", refused.value.payload
     assert (

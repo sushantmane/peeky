@@ -210,7 +210,7 @@ jobs:
             pyproject.toml
             requirements-dev.txt
       - run: python -m pip install -e '.[dev]'
-      - name: Debug Python and Java programs on a second host through a real ssh -L tunnel
+      - name: Debug Python, Java, C, C++ and Rust programs on a second host through a real ssh -L tunnel
         env:
           PEEKY_E2E_DOCKER: "1"
           PEEKY_E2E_RECORD: ${{ runner.temp }}/remote-run.json
@@ -218,7 +218,7 @@ jobs:
           started=$SECONDS
           pytest tests/remote -v --durations=10
           echo "Remote SSH e2e: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
-          for record in "$PEEKY_E2E_RECORD" "${PEEKY_E2E_RECORD%.json}-java.json"; do
+          for record in "$PEEKY_E2E_RECORD" "${PEEKY_E2E_RECORD%.json}"-{java,native}.json; do
             python -c 'import json, sys; r = json.load(open(sys.argv[1])); print(json.dumps(r["environment"], indent=2)); [print(s["exit"], s["seconds"], s["step"]) for s in r["steps"]]' "$record"
           done
 

@@ -92,11 +92,18 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   [What can't be set](#what-cant-be-set). Examples: `--set current.end=10`, `arr[-1]=9`. A `String`
   field or element must be declared `String` too
   ([Java 7.3](java-cookbook.md#change-a-field-or-an-array-element)).
+- A row is marked `[settable]` where `set` would change it there. A row of one of those types that
+  isn't marked says why: `[not settable: not read again after this stop]`, `final`, or
+  `in a caller's frame` ([Java 7.3](java-cookbook.md#what-can-be-set)).
 - A `--set` that the class files rule out is refused before the JVM starts, with exit status 2.
   That is: no such local at the line, a type or value that doesn't fit, or a local never read after
   it ([Java 7.3](java-cookbook.md#changes-refused-before-the-run)).
 - `describe` shows each local's declared type, and lists the kinds that `set` changes
   ([Java 1.1](java-cookbook.md#see-each-names-declared-type)).
+- A local declared in blocks, such as a loop's, also shows the lines whose breakpoint sees it:
+  `b (int, lines 50-53, 77-79)`. Neither its declaring line nor a `for` header is one. A name
+  declared with different types is listed once per type, each with its own lines
+  ([Java 1.1](java-cookbook.md#see-where-a-local-is-visible)).
 
 ### How to write the value
 
@@ -138,8 +145,18 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([Java 7.3](java-cookbook.md#which-lists-arrays-are-the-programs)).
 - A list's iterators and sublists don't own it. But whoever holds one of them holds the list
   ([Java 7.3](java-cookbook.md#which-lists-arrays-are-the-programs)).
-- A row's `[settable]` mark goes by its path only. A local or field that refers to a String's bytes
-  may be marked, but the change is refused when it is made
+- Before it marks an element, Peeky asks the adapter what holds its array, under any name, as a
+  change asks again ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
+- Where a JDK class's field holds it, the row names the holder:
+  `[not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]`.
+- A line breakpoint stops only its own thread. Another thread could make a JDK class hold the
+  array before the change. So there, no element is promised:
+  `[maybe settable: other threads are running; set checks again]`
+  ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
+- An element is marked `[settable]` only where every thread is suspended and nothing holds its
+  array. Where the adapter can't tell in time, the row says `[maybe settable: …]`. So does a
+  bundle built before this check: rebuild it.
+- A change to an element suspends every thread while it checks and writes it
   ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
 - To change an array element, Peeky asks the JVM what refers to the array. It waits at most 2 s for
   the answer, and stays within the session's pause budget, `--max-pause`

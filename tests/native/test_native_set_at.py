@@ -129,7 +129,8 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
     assert json.loads(sets[3, "after-set"]) == [f"width: 3 -> 100 (line {ADD}, hit 3, in main)"]
     assert json.loads(sets[4, "observed"]) == [f"width: 100 -> 3 (line {REUSE}, hit 3, in main)"]
     assert sets[1, "observed"] is None and sets[3, "observed"] is None
-    # diff against the run without them: their (sets) row, then their effect.
+    # diff against the run without them: their (sets) row, the change itself, then its
+    # effect (tenth evaluation: the change came after its effects).
     diff = queried(capsys, "diff", "--param", "a=1", "--param", "b=2")
     assert [row["selector"] for row in diff[:2]] == ["(output)", "(sets)"]
     # runs.sets holds requests: each says where it was asked for (review of PR #214).
@@ -144,8 +145,8 @@ def test_a_change_at_one_line_is_restored_at_the_next_in_one_probe(linked, capsy
     # `total`'s after-set value is its observed one (the change was to `width`): no
     # difference of its own (seventh evaluation, finding 10).
     assert shown == [
-        (4, "observed", "total", "6", "103", None),
         (3, "after-set", "width", None, "100", "intervention only in run b"),
+        (4, "observed", "total", "6", "103", None),
     ], shown
 
 

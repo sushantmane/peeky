@@ -119,3 +119,91 @@ def test_an_implicit_constructor_never_spans_the_methods_between_fields(tmp_path
     assert found["H.<clinit>()V"][0] == [4, 4]
     assert found["H$1.<init>(Ldemo/H;)V"][0] == [14, 15]
     assert found["H.m()I"][0] == [7, 7]
+
+
+BLOCKS = """package demo;
+import java.util.List;
+public class Blocks {
+  int count(List<int[]> ballots, int[] choice) {
+    int n = ballots.size();
+    for (int round = 1; ; round++) {
+      int counted = 0;
+      for (int b = 0; b < n; b++) {
+        int[] ranking = ballots.get(b);
+        counted += ranking[choice[b]];
+      }
+      for (int c = 0; c < n; c++) {
+        if (c > counted) {
+          return c;
+        }
+      }
+      for (int c = 0; c < n; c++) {
+        choice[c]++;
+      }
+      // The ballots move on.
+      for (int b = 0; b < n; b++) {
+        int[] ranking = ballots.get(b);
+        choice[b] += ranking.length;
+      }
+      if (round > 3) {
+        return -1;
+      }
+    }
+  }
+
+  static String shapes(int k) {
+    for (int i = 0; i < k; i++) {
+      int x = i * 2;
+      System.out.println(x);
+    }
+    for (int j = 0; j < k; j++) {
+      String x = "v" + j;
+      System.out.println(x);
+    }
+    return "done";
+  }
+}
+"""
+
+
+def details(classes, method):
+    """The `details` a scope of Blocks's ``method`` gives describe (types, block lines)."""
+    methods = []
+    _class_metadata((Path(classes) / "demo/Blocks.class").read_bytes(), scopes=methods)
+    [found] = [each for each in methods if each[0] == method]
+    return found[4], found[5]
+
+
+def test_a_local_declared_only_in_blocks_lists_their_lines(tmp_path):
+    # #264 (tenth evaluation, runoff): `b`, `ranking` and `c` are each declared in two
+    # loops, but `describe` listed each once, with no lines, as if the method's own.
+    javac = shutil.which("javac")
+    if not javac:
+        pytest.skip("javac is not installed")
+    (tmp_path / "demo").mkdir()
+    (tmp_path / "demo/Blocks.java").write_text(BLOCKS)
+    subprocess.run(
+        [javac, "-g", "-proc:none", "-d", "out", "demo/Blocks.java"], cwd=tmp_path, check=True
+    )
+    names, found = details(tmp_path / "out", "count")
+    assert names == ["this", "ballots", "choice", "n", "round", "counted", "b", "c", "ranking"]
+    # The lines whose breakpoint sees each declaration (#264 review: a line's first
+    # instruction in its scope): not the declaring line of `ranking` (9, 22), nor a `for`
+    # header (8, 12, 17, 21), whose first instruction initializes the loop's variable.
+    # The two `c` loops are adjacent but two blocks; `b`'s are split by the code between.
+    assert found["spans"] == {
+        "counted": [[8, 26]],
+        "b": [[9, 10], [22, 23]],
+        "c": [[13, 14], [18, 18]],
+        "ranking": [[10, 10], [23, 23]],
+    }
+    # Declared for the whole method from where it is (`round`'s loop never ends): no lines.
+    assert "round" not in found["spans"] and "n" not in found["spans"]
+    assert found["types"]["ranking"] == "int[]" and "typed_spans" not in found
+    # Blocks declaring one name with different types list each with its own lines.
+    names, found = details(tmp_path / "out", "shapes")
+    assert found["spans"] == {"i": [[33, 34]], "j": [[37, 38]], "x": [[34, 34], [38, 38]]}
+    assert found["typed_spans"] == {
+        "x": [{"type": "int", "spans": [[34, 34]]}, {"type": "String", "spans": [[38, 38]]}]
+    }
+    assert found["types"]["x"] == "String or int"

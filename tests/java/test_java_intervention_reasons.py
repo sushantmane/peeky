@@ -160,8 +160,9 @@ def test_describe_gives_declared_types_and_the_settable_kinds(calc, capsys):
     assert main(["describe", str(root), "--config", str(config)]) == 0
     out = capsys.readouterr().out
     assert "names in Calc.parseExpr (app/Calc.java:" in out
-    assert "): this (app.Calc), left (long), op (char), right (long)" in out
-    assert "args (String[]), results (StringBuilder), expression (String)" in out
+    # The `if` block's locals with the lines where a stop sees them (#264).
+    assert "): this (app.Calc), left (long), op (char, lines 19-20), right (long, line 20)" in out
+    assert "args (String[]), results (StringBuilder), expression (String, lines 50-53)" in out
     [mutable] = [line for line in out.splitlines() if line.startswith("mutable:")]
     assert "of type byte, short, int, long, char, boolean, float or double" in mutable
     assert "a char takes a char in single quotes ('+') or a code point (43)" in mutable

@@ -34,6 +34,11 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   `--arg` ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 - `verify` also runs the crate's integration test, if it has one
   ([6.5](../COOKBOOK.md#65-writing-a-checker)).
+- To debug a crate on another host, run a worker there with `--rust-config`. Then add
+  `--worker URL` ([REMOTE](../REMOTE.md#c-c-and-rust-on-the-worker-host)).
+- Through a worker, `Cargo.toml`, `Cargo.lock` and every file in the config's `sources` and `tests`
+  are compared with yours before the build. One that differs is refused by name
+  ([REMOTE](../REMOTE.md#source-identity)).
 - If the build fails, the probe is refused before launch with `BUILD_FAILED`. It exits 2, with no
   table and no run saved. A candidate edit that doesn't compile counts too. In `verify`, it is a
   failed verify, which exits 1 ([ERRORS](../ERRORS.md)).
@@ -95,6 +100,10 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   `[unproven]` or `<unverified ...>`. That includes a moved or dropped value, one in a caller
   frame, and one in an optimized build
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).
+- A reference reads while the code still uses it, and after its last use until a call or drop
+  runs. A call of `std::ptr::eq` or `std::ptr::addr_eq` doesn't count. Past that, it shows only its
+  pointer, and its note names the call or drop and its line
+  ([Rust 7.2](rust-cookbook.md#when-a-reference-reads)).
 - A local whose slot may hold leftovers is withheld: the row says `no value yet:` and why. That is
   a local not assigned on some path (`let x;`), or not kept across an `.await`
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).

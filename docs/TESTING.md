@@ -16,7 +16,7 @@ or install job sits ahead of the tests.
 | C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`: real C++ debugging and agent verification, with the same LLVM 18 packages and `clang++-18`. It records the installed package revisions, and depends on no C or Java lane. Measured hosted runs show whether it meets its budget | — |
 | Rust 1.96 LLVM 18 conformance (`rust-probe`) | `tests/rust`: raw Rust debugging and the experimental Rust worker, with the pinned Rust 1.96.0 toolchain and LLVM 18 | — |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
-| remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss; Java: a launched JVM and an attached one (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
+| remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss; Java: a launched JVM and an attached one; C, C++ and Rust: a probe with a change, a session, and a changed source and header or module refused (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
 | Rust LLVM 20 (Docker mirror only, `scripts/ci_linux`) | Rust memory views with lldb-dap's `readMemory`; `PEEKY_EXPECT_READ_MEMORY=1` fails the lane if values fall back to raw fields | 60s |
 
 A dash means that no design budget is recorded. The job's timeout still applies.
