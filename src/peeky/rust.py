@@ -717,6 +717,10 @@ class RustTarget:
             session.unsafe_code = unsafe_source(texts, rust)
             if owned is not None:
                 owned.unsafe_code = session.unsafe_code
+                # Where std's printing is written, to trust a read it makes (#192 review).
+                owned.std_macros = std_macro_files(
+                    rustc, prepared.manifest.probes, (prepared.workspace, root)
+                )
             session.assert_current()
             return session
         except BaseException as exc:
@@ -727,6 +731,32 @@ class RustTarget:
             finally:
                 _remove_owned(parent, exc)
             raise
+
+
+def std_macro_files(rustc, probes, outside):
+    """The files std's and alloc's `print!`, `println!`, `eprint!`, `eprintln!` and
+    `format!` are written in, exactly as this toolchain's MIR names a span in them (#192
+    review 4): its sysroot's library sources (`rust-src`, where rustc maps its own
+    paths back), or rustc's `/rustc/<commit-hash>/library/…`, the hash from the build's
+    own `rustc -vV`. Never a file under ``outside`` (the crate, its build): a crate's
+    own `src/library/std/src/macros.rs` is no std file."""
+    sysroot = Path(rustc).parent.parent
+    commit = None
+    for probe in probes:
+        if tuple(probe.argv) == (rustc, "-vV"):
+            found = re.search(r"^commit-hash: ([0-9a-f]{40})$", probe.stdout, re.M)
+            commit = found[1] if found else None
+    files = set()
+    for library in ("std", "alloc"):
+        files.add(str(sysroot / "lib/rustlib/src/rust/library" / library / "src/macros.rs"))
+        if commit:
+            files.add(f"/rustc/{commit}/library/{library}/src/macros.rs")
+    roots = [Path(each).resolve() for each in outside]
+    return frozenset(
+        file
+        for file in files
+        if not any(Path(file).resolve().is_relative_to(root) for root in roots)
+    )
 
 
 def owned_locals(workspace, artifacts, crate, ir, sources):

@@ -416,3 +416,89 @@ def test_describe_walks_arrays_of_records_and_says_how_many_more(crate, capsys):
         "grid.inner.w, wide.a, wide.b, wide.c, wide.d, wide.e, wide.f, wide.g, wide.h, "
         "… and 2 more."
     ) in mutable, mutable
+
+
+SPOOF_MACROS = """macro_rules! fake_format {
+    ($($t:tt)*) => {
+        crate::format(format_args!($($t)*))
+    };
+}
+"""
+
+SPOOF = """#[macro_use]
+#[path = "library/std/src/macros.rs"]
+mod macros;
+
+#[inline(never)]
+fn keep(x: &mut i32) {
+    std::hint::black_box(x);
+}
+
+#[inline(never)]
+fn pause() {}
+
+fn format(_: std::fmt::Arguments<'_>) -> String {
+    String::new()
+}
+
+fn spoofed() -> i32 {
+    let mut x = 1;
+    let y = x;
+    keep(&mut x);
+    pause(); // SPOOFED
+    drop(fake_format!("{}", x));
+    x = y;
+    x
+}
+
+fn printed() -> i32 {
+    let mut x = 1;
+    let y = x;
+    keep(&mut x);
+    pause(); // PRINTED
+    println!("P:{}", x);
+    x = y;
+    x
+}
+
+fn formatted() -> i32 {
+    let mut x = 1;
+    let y = x;
+    keep(&mut x);
+    pause(); // FORMATTED
+    let s = format!("F:{}", x);
+    println!("{s}");
+    x = y;
+    x
+}
+
+fn main() {
+    println!("SPOOFED:{} PRINTED:{} FORMATTED:{}", spoofed(), printed(), formatted());
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_only_std_s_own_printing_counts_as_reading_a_value(crate, capsys):
+    # #192 review 4: a crate's own `src/library/std/src/macros.rs` and its own `fn
+    # format(_: Arguments) -> String` that formats nothing passed for std's `format!`:
+    # `set x: 1 -> 50` was reported, `x = y` put the old value back, and 1 was printed.
+    (crate / "src/main.rs").write_text(SPOOF)
+    (crate / "src/library/std/src").mkdir(parents=True)
+    (crate / "src/library/std/src/macros.rs").write_text(SPOOF_MACROS)
+
+    def line(marker):
+        return next(i for i, text in enumerate(SPOOF.splitlines(), 1) if f"// {marker}" in text)
+
+    at = ["probe", str(crate), "--at", f"src/main.rs:{line('SPOOFED')}", "--capture", "x"]
+    code = main([*at, "--set", "x=50", "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 2 and result.get("refused_before_launch") is True, result
+    assert "has already copied `x` into `y`" in result["error"]["message"], result
+    # std's own `println!` and `format!` (`std::fmt::format`, beside the crate's
+    # `format`) print the change before `x = y`.
+    for marker, printed in (("PRINTED", "P:50"), ("FORMATTED", "F:50")):
+        at = ["probe", str(crate), "--at", f"src/main.rs:{line(marker)}", "--capture", "x"]
+        code = main([*at, "--set", "x=50", "--json", "--quiet"])
+        result = json.loads(capsys.readouterr().out)
+        assert code == 0 and printed in result["output"], (marker, result)

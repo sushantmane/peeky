@@ -243,13 +243,13 @@ _ANY_LOCAL = re.compile(r"\b_([0-9]+)\b")
 _FORMAT_CALL = re.compile(r"(?:(?:core|std)::fmt::(?:rt::)?)?Arguments?::<'_>::new\w*\b")
 _FORMAT_TYPE = re.compile(r"(?:core|std)::fmt::(?:rt::)?Arguments?<'_>")
 # A call that formats the `fmt::Arguments` it is given, as std's own `print!`,
-# `println!`, `eprint!`, `eprintln!` and `format!` write it (#192 review 3): only from
-# their macros' file, where the name is `$crate`'s, never one of the crate's own.
+# `println!`, `eprint!`, `eprintln!` and `format!` write it (#192 review 3), by its full
+# path; MIR names `alloc::fmt::format` `format` alone where no other item is so named
+# (``Body._format_reads`` takes that only where none of the crate's own functions is).
 _FORMAT_SINK = re.compile(
-    r"^_[0-9]+ = (?:std::io::_e?print|(?:(?:alloc|std)::fmt::)?format)\((?:move|copy) _([0-9]+)\)"
+    r"^_[0-9]+ = (std::io::_e?print|(?:alloc|std)::fmt::format|format)\((?:move|copy) _([0-9]+)\)"
     r" -> "
 )
-_STD_MACROS = re.compile(r"/library/(?:std|alloc)/src/macros\.rs$")
 # A formatting argument made from a pointer (`core::fmt::rt::Argument::<'_>::
 # new_display::<i64>(move _42)`), and the primitives whose formatting reads the value.
 _FORMAT_ARGUMENT = re.compile(
@@ -901,7 +901,7 @@ class Body:
             if binding[0] is not None
         )
 
-    def copy_undoes(self, copy, root, start, projection=()):
+    def copy_undoes(self, copy, root, start, projection=(), sinks=(frozenset(), frozenset())):
         """True if, on some path from ``start`` ((block, index): before that statement),
         the program uses ``copy`` (or a pointer to it) and then assigns ``root`` whole or
         ends it without reading what a change made (#192): it goes on with the value
@@ -915,8 +915,9 @@ class Body:
         that call); a borrow given to anything else may never be read through, so the
         path goes on (#192 review: `ignore(&x)`, `println!("{}", x.a)` for a change to
         `x.b`, `ignore(format_args!("{}", x))`). A write
-        covering the whole part counts as an assignment, any other as nothing."""
-        copies, formats = self._pointers_to(copy) | {copy}, self._format_reads()
+        covering the whole part counts as an assignment, any other as nothing. ``sinks``:
+        ``_format_reads``'s (trusted files, the crate's own function paths)."""
+        copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
         # (block, index, whether the copy was used on the way here).
         pending, seen = [(start[0], start[1], False)], set()
         while pending:
@@ -945,7 +946,7 @@ class Body:
                 pending.extend((successor, 0, used) for successor in (*block.successors, *resumed))
         return False
 
-    def _format_reads(self):
+    def _format_reads(self, trusted=frozenset(), crate=frozenset()):
         """{a call that formats what it is given (``_FORMAT_SINK``, from std's macros'
         own file): the shared borrows (`&(_1.1: i64)`) whose primitive it formats}, each
         read at that call (#192 review 3: a borrow given to `Argument::new_display` is
@@ -957,8 +958,12 @@ class Body:
         Argument::<'_>::new_display::<i64>(move _11)`, not a type parameter named like
         one), and that pointer (`_11 = &(*_104)`, `_104 = copy (_6.0: &i64)`, `_6 =
         (move _7, move _8)`, `_7 = &_1`): only through locals assigned once. Empty where
-        the body's type parameters are not known."""
-        if self._format_cache is None or self._format_cache[0] != self.generics:
+        the body's type parameters are not known. Only a call whose span is in one of the
+        ``trusted`` files (``OwnedLocals.std_macros``: std's own, exactly as the
+        toolchain names them; #192 review 4: a crate's `src/library/std/src/macros.rs`
+        is not), to a function none of the ``crate``'s own is named as (`format`)."""
+        key = (self.generics, trusted, crate)
+        if self._format_cache is None or self._format_cache[0] != key:
             values, sinks = {}, []
             for block in self.blocks.values():
                 for text, file, _ in block.statements:
@@ -966,8 +971,8 @@ class Body:
                     if whole := _WHOLE_ASSIGNMENT.match(text):
                         values.setdefault(int(whole[1]), []).append(whole[2].split(" -> [")[0])
                     sink = _FORMAT_SINK.match(text)
-                    if sink and _STD_MACROS.search(str(file or "").replace("\\", "/")):
-                        sinks.append((text, int(sink[1])))
+                    if sink and file in trusted and sink[1] not in crate:
+                        sinks.append((text, int(sink[2])))
             found = {}
             for text, arguments in sinks if self.generics is not None else ():
                 borrows, pending, seen = set(), [(arguments, "arguments", None)], set()
@@ -1015,7 +1020,7 @@ class Body:
                         borrows.add(value)
                 if borrows:
                     found[text] = frozenset(borrows)
-            self._format_cache = (self.generics, found)
+            self._format_cache = (key, found)
         return self._format_cache[1]
 
     def _pointers_to(self, local):
@@ -3775,6 +3780,9 @@ class OwnedLocals:
     # Why the crate may have unsafe code (rust.unsafe_source; set by `prepare`): the
     # frozen-owner rule does not apply (#156 review).
     unsafe_code = None
+    # The exact files std's printing macros are written in (rust.std_macro_files; set by
+    # `prepare`): a call there that formats reads what it is given (#192 review 4).
+    std_macros = frozenset()
 
     def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None):
         self.bodies = list(bodies)
@@ -4089,6 +4097,8 @@ class OwnedLocals:
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
         formatting, bindings = self._formatting(), body.named_locals()
+        # What a call std's printing makes reads (#192 review 4: by its file and path).
+        sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
 
         def hazards(position):
             # A temporary that read the local, used again; a binding of the program's own
@@ -4102,7 +4112,7 @@ class OwnedLocals:
             return frozenset(n for n in temporaries if live >> n & 1) | frozenset(
                 n
                 for n in (direct - temporaries if named else ())
-                if body.copy_undoes(n, local, position, projection)
+                if body.copy_undoes(n, local, position, projection, sinks)
             )
 
         found = [(position, hazards(position)) for position in positions]

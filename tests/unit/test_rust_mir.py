@@ -3185,6 +3185,8 @@ def test_what_a_statement_surely_does_to_a_part_of_a_local(text, projection, acc
 
 
 STD_MACROS = "/t/lib/rustlib/src/rust/library/std/src/macros.rs"
+# What OwnedLocals.std_macros holds for this toolchain, and the crate's function paths.
+SINKS = (frozenset({STD_MACROS}), frozenset({"main"}))
 
 
 def formatting(sink="std::io::_print", kind="i16", file=STD_MACROS, generics=()):
@@ -3220,42 +3222,59 @@ def formatting(sink="std::io::_print", kind="i16", file=STD_MACROS, generics=())
     return body
 
 
-def test_std_printing_a_borrowed_primitive_reads_it_at_the_print():
-    # `println!("{}", x.a)`: `_print` formats `&x.a`, so the program reads `x.a` there.
-    body = formatting()
-    sink = "_3 = std::io::_print(move _4) -> [return: bb3, unwind continue];"
-    assert body._format_reads() == {sink: {"&(_1.0: i16)"}}
-    assert _root_access(sink, 1, (("field", 0),), body._format_reads()) == "read"
+@pytest.mark.parametrize("sink", ["std::io::_print", "std::fmt::format", "format"])
+def test_std_printing_a_borrowed_primitive_reads_it_at_the_print(sink):
+    # `println!("{}", x.a)`: `_print` formats `&x.a`, so the program reads `x.a` there; as
+    # `format!` does (`format` alone where no other item is so named).
+    body = formatting(sink)
+    call = f"_3 = {sink}(move _4) -> [return: bb3, unwind continue];"
+    assert body._format_reads(*SINKS) == {call: {"&(_1.0: i16)"}}
+    assert _root_access(call, 1, (("field", 0),), body._format_reads(*SINKS)) == "read"
     # Not at the borrow: making a formatting argument reads nothing yet.
-    assert _root_access("_8 = &(_1.0: i16);", 1, (("field", 0),), body._format_reads()) is None
+    borrow = "_8 = &(_1.0: i16);"
+    assert _root_access(borrow, 1, (("field", 0),), body._format_reads(*SINKS)) is None
     # For a change to `x.a` the program saw it; for one to `x.b`, `x = y` puts it back.
-    assert not body.copy_undoes(2, 1, (0, 1), (("field", 0),))
-    assert body.copy_undoes(2, 1, (0, 1), (("field", 1),))
+    assert not body.copy_undoes(2, 1, (0, 1), (("field", 0),), SINKS)
+    assert body.copy_undoes(2, 1, (0, 1), (("field", 1),), SINKS)
     # From past the print, nothing reads `x.a` before `x = y`.
-    assert body.copy_undoes(2, 1, (3, 0), (("field", 0),))
+    assert body.copy_undoes(2, 1, (3, 0), (("field", 0),), SINKS)
 
 
 @pytest.mark.parametrize(
-    ("sink", "kind", "file", "generics"),
+    ("sink", "kind", "file", "generics", "crate"),
     [
         # #192 review 3: built and given to a function of the crate's own, never formatted.
-        ("ignore", "i16", "src/main.rs", ()),
-        # A function the crate names `format`, or one in std's file that is no sink (a
-        # panic hook may never format its message).
-        ("format", "i16", "src/main.rs", ()),
-        ("core::panicking::panic_fmt", "i16", STD_MACROS, ()),
+        ("ignore", "i16", STD_MACROS, (), {"main", "ignore"}),
+        # #192 review 4: a call written in a file of the crate's own that only ends as
+        # std's does (`src/library/std/src/macros.rs`), or in another toolchain's.
+        ("format", "i16", "src/library/std/src/macros.rs", (), {"main"}),
+        ("std::io::_print", "i16", "/w/src/library/std/src/macros.rs", (), {"main"}),
+        (
+            "std::io::_print",
+            "i16",
+            "/u/lib/rustlib/src/rust/library/std/src/macros.rs",
+            (),
+            {"main"},
+        ),
+        # A function of the crate's own named `format` (std's is then `std::fmt::format`).
+        ("format", "i16", STD_MACROS, (), {"main", "format"}),
+        # A call in std's file that formats nothing for sure (a panic hook may not).
+        ("core::panicking::panic_fmt", "i16", STD_MACROS, (), {"main"}),
         # A type parameter named like a primitive (its `Display` may read nothing), or a
         # body whose type parameters are not known.
-        ("std::io::_print", "i16", STD_MACROS, ("i16",)),
-        ("std::io::_print", "i16", STD_MACROS, None),
+        ("std::io::_print", "i16", STD_MACROS, ("i16",), {"main"}),
+        ("std::io::_print", "i16", STD_MACROS, None, {"main"}),
         # A type of the crate's own: its `Display` may read any part, or none.
-        ("std::io::_print", "Ab", STD_MACROS, ()),
+        ("std::io::_print", "Ab", STD_MACROS, (), {"main"}),
     ],
 )
-def test_a_formatting_argument_nothing_proven_to_format_is_no_read(sink, kind, file, generics):
+def test_a_formatting_argument_nothing_proven_to_format_is_no_read(
+    sink, kind, file, generics, crate
+):
     body = formatting(sink, kind, file, generics)
-    assert body._format_reads() == {}
-    assert body.copy_undoes(2, 1, (0, 1), (("field", 0),))
+    sinks = (SINKS[0], frozenset(crate))
+    assert body._format_reads(*sinks) == {}
+    assert body.copy_undoes(2, 1, (0, 1), (("field", 0),), sinks)
 
 
 def test_a_borrow_given_to_a_call_shows_no_read():
@@ -3307,3 +3326,20 @@ def test_a_block_the_code_cannot_reach_adds_no_copy_to_a_join():
     assert body._reachable() == {0, 1, 3}
     assert 7 not in body.copies_at(1, (3, 0))
     assert 7 not in body.direct_copies_at(1, (3, 0))
+
+
+def test_std_macro_files_are_exactly_the_toolchains_own(tmp_path):
+    # #192 review 4: where std's printing is written, as this toolchain's MIR names it:
+    # its sysroot's sources, or `/rustc/<commit-hash>/` where they are not installed.
+    from peeky.build import ProbeResult
+    from peeky.rust import std_macro_files
+
+    rustc, commit = "/opt/tc/bin/rustc", "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96"
+    probes = (ProbeResult((rustc, "-vV"), f"rustc 1.96.0\ncommit-hash: {commit}\n", ""),)
+    assert std_macro_files(rustc, probes, (tmp_path,)) == {
+        f"/opt/tc/lib/rustlib/src/rust/library/{name}/src/macros.rs" for name in ("std", "alloc")
+    } | {f"/rustc/{commit}/library/{name}/src/macros.rs" for name in ("std", "alloc")}
+    # No commit hash read: the sysroot's only. A toolchain inside the crate: none.
+    assert len(std_macro_files(rustc, (), (tmp_path,))) == 2
+    inside = str(tmp_path / "tc/bin/rustc")
+    assert std_macro_files(inside, (), (tmp_path,)) == frozenset()
