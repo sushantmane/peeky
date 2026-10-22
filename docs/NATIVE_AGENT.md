@@ -59,6 +59,26 @@ Use a new output directory. Without `--url`, the command starts the configured w
 
 Live model runs send selected code and runtime evidence to the model and consume model usage. Required CI uses injected decisions only.
 
+## The C++ fixture
+
+`examples/cpp/pagination_bug.cpp` calculates the first item with `page * page_size`, on purpose.
+At its `OBSERVE` line, the first page by default has `start == 3`. Changing this local integer to
+`0` tests the hypothesis without changing the source or rebuilding the running executable.
+
+The deterministic agent test, `tests/cpp/test_cpp_agent.py`, then rejects a compile error and an
+overfit `start = 0` patch. It accepts `(request.page - 1) * request.page_size` against an
+independent checker.
+
+- The checker starts fresh processes for 12 valid cases and 10 invalid argument cases.
+- It parses numeric inputs with `strtol`, and bounds them before arithmetic.
+- The test uses separate, identical controller and worker source directories on one host, and the
+  authenticated HTTP interface.
+- Decision fixtures replace the model call in required CI.
+- This shows path independence, not a deployment on a separate host.
+
+To run it with a model, save a C++ config ([WORKER.md](WORKER.md#configure-a-c-target)), then run
+`peeky-agent --native-config config.json --program pagination_bug.cpp --check verify_pagination.py`.
+
 ## Checker contract and limits
 
 The trusted Python checker receives a temporary JSON descriptor path as `sys.argv[1]`. For C, it has `schema: 1`, `language: "c"`, `command: [prepared_binary_path]`, separate baseline arguments, the controlled environment, source identity and build evidence. Execute each independent case using `[*command, *case_arguments]` with the descriptor's environment. Return normally after assertions; the verification wrapper requires explicit checker completion in addition to process status.

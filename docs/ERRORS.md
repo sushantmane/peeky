@@ -87,7 +87,7 @@ The last column is the `retryable` field.
   - java-debug's event thread dying;
   - an attached JVM's stop that the debugger never reported (`Lost stop:`).
 - If values are huge, capture narrower selectors.
-- For Java, keep `debugger_events` for java-debug's issue #27. See
+- For Java, keep `debugger_events` for Peeky's issue #27. See
   [Two Java debugger failures](#two-java-debugger-failures).
 
 ### UNSUPPORTED
@@ -96,7 +96,7 @@ The last column is the `retryable` field.
 | --- | --- |
 | An operation or capability that isn't offered, such as `--capture return` for Python | Call `version` to see what is offered, or do what the message names |
 | A Java adapter bundle built before a required java-debug patch | Rebuild the adapter with `scripts/setup_java_adapter.py` |
-| A C++ target whose compiler isn't clang: `C++ targets need clang++ …`, refused before building ([CPP.md](CPP.md)) | Set `PEEKY_NATIVE_CXX` to clang++ |
+| A C++ target whose compiler isn't clang: `C++ targets need clang++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This
@@ -216,7 +216,8 @@ frame for the change. It points to `describe`'s `mutable:` line instead.
 ## Two Java debugger failures
 
 Two java-debug failures end with `DEBUGGER_ERROR` at once, instead of a timeout. See
-[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27). java-debug's issue #27 tracks both.
+[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events-27). Peeky's issue #27 covers both: java-debug
+dropping lifecycle events, such as an attached JVM's stop or a launched JVM's exit.
 
 ### `java-debug's event thread died (…)`
 
@@ -239,7 +240,7 @@ thread, its location, the session's breakpoint, and how long the stop has gone u
 - Later requests on the session repeat the error.
 - `report` still returns the session as it was: `state: detached`, `lost_stop`, `history` and
   `debugger_events`. `close` ends the session.
-- A failed probe carries `debugger_events` too. Keep it for issue #27.
+- A failed probe carries `debugger_events` too. Keep it for Peeky's issue #27.
 
 ## How Peeky ends a session's processes
 

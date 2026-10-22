@@ -12,6 +12,8 @@ All five jobs start independently. No build/install job sits ahead of the tests.
 | integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
 | remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
+| C++ LLVM 18 conformance (`native-cpp`) | Real C++ debugging and agent verification (`tests/cpp`) on Ubuntu 24.04, with LLVM 18 from signed Ubuntu package repositories. It records the installed package revisions, and depends on no C or Java lane | The four-minute timeout; measured hosted runs show whether it is met |
+| C++ LLVM 20 (Docker mirror only, `scripts/ci_linux`, `cpp-llvm20`) | `tests/cpp` with lldb-dap 20; `PEEKY_EXPECT_READ_MEMORY=1` makes the tests expect libstdc++ strings read whole from memory | |
 | Rust LLVM 20 (Docker mirror only, `scripts/ci_linux`) | Rust memory views with lldb-dap's `readMemory`; `PEEKY_EXPECT_READ_MEMORY=1` fails the lane if values fall back to raw fields | 60s |
 
 Every lane has a four-minute timeout. The goal is <5 minutes of execution wall time for the required checks, ideally <3 minutes. Queue delays are recorded separately and are outside the workflow's control. Cold cache and dependency service availability can affect duration. A timeout is a failure, not evidence that the speed goal was met.
@@ -36,6 +38,17 @@ ruff format --check .
 pytest tests/unit --durations=10
 pytest tests/integration --durations=10
 python -m build
+```
+
+C++ conformance on macOS uses the Command Line Tools:
+
+```sh
+PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)" \
+PEEKY_NATIVE_CXX="$(xcrun --find clang++)" \
+PEEKY_NATIVE_DWARFDUMP="$(xcrun --find llvm-dwarfdump)" \
+PEEKY_NATIVE_DSYMUTIL="$(xcrun --find dsymutil)" \
+PEEKY_NATIVE_SYSROOT="$(xcrun --show-sdk-path)" \
+pytest tests/cpp --durations=10
 ```
 
 Tests have a 45-second per-test timeout. Unit and integration paths can run separately, matching the parallel CI lanes.

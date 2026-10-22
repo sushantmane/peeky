@@ -208,6 +208,8 @@ very large optimized C++ unit can exceed the 16 MB bound on reading it.
 | JSON and the evidence store | LLDB's whole frame name: a C++ signature, or a Rust name with its symbol escapes | `trim_left(std::__1::basic_string<char, …> const&)`, `_$LT$…` |
 | A session's text | The frame with its parameters, the standard types written as code writes them | `in trim_left(std::string const&)` |
 
+How C++ names are shortened: [C and C++ 1.1](lang/c-cpp-cookbook.md#how-a-c-functions-name-is-shown).
+
 #### Match a function in SQL
 
 SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing. Match a frame with
@@ -239,14 +241,19 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
 
 - A span leaves out lines between the block's own lines where only code outside the block runs.
   So one block can give several spans.
+- A later span starts right after the last line it leaves out. LLDB moves a breakpoint on a line
+  without code to the next line with code, and that code is the block's.
 - In C++, a block's cleanup code is on the function's closing line. That code runs when an
   exception leaves the block. So `name (std::string, lines 22-25, 35)` is an `if` block's local.
   It is visible on the block's lines, and at the closing `}` while an exception unwinds. It is not
-  visible on the lines between.
+  visible on the lines between. C blocks have no such cleanup code.
 - A span is never narrower than where the debugger can show the local. So it keeps the lines
   inside it without code, such as comments or a lone `}`.
 - A block that also runs another file's code, such as an `#include` inside it, gives no lines. A
   local macro's expansion, on its definition's lines, does not count as another file's code.
+- For example, a Rust `for` loop's `i`, whose body runs `let s = twice!(i);` with a macro defined
+  above the loop, reads `i (lines 66, 70-71)`: the macro's line, then the body's. The loop header's
+  line between them runs outside the block.
 - Past eight blocks, one span covers them all.
 
 #### Fields and elements `set` may change (C, C++, Rust)

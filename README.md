@@ -214,7 +214,9 @@ revised after two adversarial reviews.
   - Java: the [worker](docs/JAVA_WORKER.md) and the [investigation loop](docs/JAVA_AGENT.md),
     with an example in `examples/java`;
   - C: the [worker](docs/NATIVE.md) and the [investigation loop](docs/NATIVE_AGENT.md);
-  - C++: [the C++ slice](docs/CPP.md);
+  - C++: [how Peeky reads C and C++ values](docs/NATIVE_INTERNALS.md), the
+    [worker](docs/WORKER.md#configure-a-c-target) and the
+    [investigation loop](docs/NATIVE_AGENT.md#the-c-fixture);
   - Rust: the [worker](docs/RUST_GATE.md) and the [investigation loop](docs/RUST_AGENT.md).
 - **The worker:** one controller and one session per worker, with session and stop identities. It
   offers local launch, breakpoints, bounded inspection, variable changes, continuation and evidence

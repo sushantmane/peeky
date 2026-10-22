@@ -69,6 +69,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - A reference parameter that its function binds again shows only its pointer
   ([Rust 7.2](rust-cookbook.md#reference-parameters)).
 - A `Vec<String>` stays raw ([Rust 7.2](rust-cookbook.md#what-peeky-reads)).
+- A `HashMap` or `BTreeMap` shows LLDB's raw fields. Peeky loads none of LLDB's Rust formatters,
+  so `m[1]` finds no element.
 - A `&str` loop item reads as text where the code still uses it. In `for cell in cells` over a
   `&[&str]`, `cell` reads `"Renée"`
   ([Rust 7.2](rust-cookbook.md#str-loop-items-and-containers-of-str)).
