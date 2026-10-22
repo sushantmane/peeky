@@ -69,7 +69,7 @@ A Java bundle built before then says to rebuild it (`predates String changes`).
 
 **Refused before the program runs.**
 - A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register or, at every place of the line, inside a statement that has already read it or copied into such a binding, a field through a pointer or of a type no change reaches, a Java local whose declared type no change reaches or cannot hold the value, a Java field of a value declared a type not among the program's classes that no class of the program which may be that value declares) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
-- For a register, the hint names a candidate edit with `std::hint::black_box` (COOKBOOK 6.6).
+- For a register, the hint names a candidate edit with `std::hint::black_box` ([Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 
 **A field through a C pointer parameter.** When the program calls the function once, the message names that call (``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``). Where that caller only passes its own pointer parameter on, it follows the calls to the frame that owns the struct (``fits has one caller: wrap.c:40 in wrap, which passes it on (`lay`, its own pointer parameter); wrap has one caller: wrap.c:75 in main, which passes `&lay`, where `lay.width` is settable``); where it cannot (several callers, a pointer kept or computed), it names no frame for the change and points to `describe`'s `mutable:` line.
 

@@ -311,7 +311,7 @@ _NATIVE_SUFFIXES = (".c", ".cpp", ".cc", ".cxx")
 _JAVA_NEEDS_CONFIG = (
     "Java targets need --config <file.json> naming the adapter bundle, the sources and the "
     'main class, e.g. {"bundle": "work/java-adapter", "sources": ["shop/Main.java"], '
-    '"main_class": "shop.Main"} (COOKBOOK 7.3; attached JVMs: 7.4)'
+    '"main_class": "shop.Main"} (java-cookbook 7.3; attached JVMs: 7.4)'
 )
 
 
@@ -761,10 +761,10 @@ def _describe_text(manifest):
     # before the program runs.
     whys = {
         "register": "kept in a register (a candidate edit with `std::hint::black_box(&mut x)` "
-        "keeps one in memory, COOKBOOK 6.6)",
+        "keeps one in memory, rust-cookbook 6.6)",
         "another binding": "another binding of the name, on the line given, is kept in a "
         "register (a candidate edit black-boxing that `let` keeps every one in memory, "
-        "COOKBOOK 6.6)",
+        "rust-cookbook 6.6)",
         "inlined": "a local of a function inlined where it is called (`#[inline(always)]`: no "
         "edit to it helps; change the value in the caller)",
         "async state": "held in an async body's state across an `.await` (change what it is "
@@ -820,7 +820,7 @@ def _describe_text(manifest):
                 else ""
             )
             + ": change those with a candidate edit, the program's own code (`--old`/`--new`; "
-            "`std::hint::black_box(&mut x)` after a `let` keeps a local in memory: COOKBOOK 6.6)"
+            "`std::hint::black_box(&mut x)` after a `let` keeps a local in memory: rust-cookbook 6.6)"
         )
     if manifest["language"] in ("c", "cpp"):
         # Two blocks declaring one name with different types (#158): a change follows

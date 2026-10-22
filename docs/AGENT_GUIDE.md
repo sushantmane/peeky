@@ -1,8 +1,10 @@
 # Peeky agent guide
 
-You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the debugger safely and returns evidence. Every claim you make must cite a peeky command and its output. This guide is the common path; [COOKBOOK.md](COOKBOOK.md) has every rule (cited below by section: 7.1), [ERRORS.md](ERRORS.md) the error codes. Each language's rules in one place: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
+You debug programs with **peeky**, a standalone tool. You decide what to do; peeky runs the debugger safely and returns evidence. Every claim you make must cite a peeky command and its output. This guide is the common path; [COOKBOOK.md](COOKBOOK.md) and your language's cookbook have every rule (cited by section: 7.1, the same number in both), [ERRORS.md](ERRORS.md) the error codes.
 
 ## First 5 minutes
+
+Start with your language's page: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
 
 1. **Learn the target:** `peeky describe examples/pagination_bug.py`. Look for `breakpoint lines`, each function's lines and names (`names in get_page (lines 4-9): …`) and `mutable:` (what `--set` can change). Pick a line where the suspicious value has just been computed.
 2. **Watch it:** `peeky probe examples/pagination_bug.py --at 8 --capture start,page --hits all`. One row per stop (`hit`, `value`), `status: completed`, the program's `output`, and every `warning:`.
@@ -17,7 +19,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 
 ## Rules you will hit
 
-1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (the COOKBOOK's opening tip; 10).
+1. **A breakpoint stops before its line runs:** to see what a line assigns, stop on the next. Probe only lines `describe` lists; `NO_STOP` means the line never ran (10).
 2. **Set a field in the frame that owns the struct.** Peeky never writes through a pointer or reference (`r->tail` in `push(struct ring *r)`, Rust `self.k`, `this`). Use the call a refusal names (`--set-at LINE@N`) only where it says `settable`; else follow it (`describe`'s `mutable:` line, a candidate edit) (7.1, 7.2).
 3. **Changes only where nothing is under way:** C/C++ at a statement's first line, Rust where the MIR proves it, never after `step --out`. Rows mark `[settable]`; a probe whose change its build rules out is refused before it runs (exit 2) (2.3, 7.1 to 7.3).
 4. **`--set` applies once, at hit 1** (`--set-hit N` for another); `--set-at LINE@HIT` changes at another line's hit (2.4, 2.8).
@@ -81,7 +83,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 - Values: C and C++ structs, arrays and `std::` containers show their first members (`{lo = 0, hi = 2}`; unions and pointer targets are not read); launched Java objects, arrays and `ArrayList`s their first fields or elements (7.3); Rust reference parameters, owned `Vec`/`String`/struct locals and container fields read from memory (`[memory]`; rule 7), anything else raw with a note (7.2).
 - A missing selector's error lists the visible names, or the children of the value read. C++ and Java members are read through `this` (`this.head_`). Python reads globals it provably uses (not an unassigned local; one, or a misspelled name, lists all, running all reprs) and dunders (`f.__defaults__`): 5.1; `[id 7]`: 4.6. `describe` lists each function's lines and the names it can see (`scopes`; types except in Python); `scopes_unavailable` says why its debug information could not be read.
 - debugpy lists a long list's first 100 items: a higher index is "beyond the debugger's visible window", not missing. An index from the end (`items[-1]`) needs the sequence's length and every element shown; otherwise it is an error, never a guess.
-- Failures carry `error: {code, message, hint, retryable, session_closed}` (see [ERRORS.md](ERRORS.md)). `status` is `completed`, `no-stop`, `failed` or `timeout`.
+- Failures carry `error: {code, message, hint, retryable, session_closed}`. `status` is `completed`, `no-stop`, `failed` or `timeout`.
 
 ### Querying saved evidence (`peeky sql`, `peeky queries`)
 

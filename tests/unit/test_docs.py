@@ -24,6 +24,10 @@ def test_the_guide_links_resolve():
         assert f"]({name})" in guide
         assert (DOCS / name).is_file()
     assert "RUST_AGENT.md" not in guide
+    # #207: the first five minutes send each language to its page, which links its cookbook.
+    first = guide.split("## First 5 minutes")[1].split("\n## ")[0]
+    for lang in ("python", "java", "c-cpp", "rust"):
+        assert f"](lang/{lang}.md)" in first, lang
 
 
 def _anchor(heading):
@@ -32,16 +36,58 @@ def _anchor(heading):
     return text.replace(" ", "-")
 
 
-def test_the_language_pages_links_resolve():
-    # M7: each page points into the COOKBOOK by section; every link must land.
-    for page in sorted((DOCS / "lang").glob("*.md")):
-        for target in re.findall(r"\]\(([^)\s]+)\)", page.read_text()):
+LANGS = ("python", "java", "c-cpp", "rust")
+
+
+def _without_fences(text):
+    return re.sub(r"^\s*```.*?^\s*```[^\n]*$", "", text, flags=re.M | re.S)
+
+
+def _headings(path):
+    return re.findall(r"^#+ (.+)$", _without_fences(path.read_text()), flags=re.M)
+
+
+def test_every_relative_link_in_the_docs_resolves():
+    # M7: each language page points into the cookbooks by section; #207 moved sections
+    # between files. Every relative link, and its anchor, must land.
+    anchors = {}
+    checked = 0
+    for page in sorted(DOCS.rglob("*.md")):
+        text = re.sub(r"`[^`\n]*`", "", _without_fences(page.read_text()))
+        for target in re.findall(r"\]\(([^)\s]+)\)", text):
+            if re.match(r"[a-z]+:", target):
+                continue
             path, _, anchor = target.partition("#")
-            linked = (page.parent / path).resolve()
-            assert linked.is_file(), (page.name, target)
-            if anchor:
-                headings = re.findall(r"^#+ (.+)$", linked.read_text(), flags=re.M)
-                assert anchor in {_anchor(h) for h in headings}, (page.name, target)
+            linked = (page.parent / path).resolve() if path else page
+            assert linked.exists(), (str(page.relative_to(DOCS)), target)
+            if anchor and linked.suffix == ".md":
+                if linked not in anchors:
+                    anchors[linked] = {_anchor(h) for h in _headings(linked)}
+                assert anchor in anchors[linked], (str(page.relative_to(DOCS)), target)
+            checked += 1
+    assert checked > 300
+
+
+def test_each_language_has_a_page_and_a_cookbook_numbered_as_the_cookbook():
+    # #207: a language's own recipes are in docs/lang/<lang>-cookbook.md, each section under
+    # the number and title of the COOKBOOK section it adds to; the page links it.
+    cookbook = set(_headings(DOCS / "COOKBOOK.md"))
+    for lang in LANGS:
+        assert f"]({lang}-cookbook.md)" in (DOCS / f"lang/{lang}.md").read_text()
+        sections = [h for h in _headings(DOCS / f"lang/{lang}-cookbook.md") if h[0].isdigit()]
+        assert sections, lang
+        for heading in sections:
+            assert heading in cookbook, (lang, heading)
+
+
+def test_every_part_of_the_cookbooks_fits_one_read():
+    # #207: the 181 KB COOKBOOK could not be read in pieces. Each part between two headings,
+    # and each language's summary page whole, fits one 20 KB read.
+    for path in [DOCS / "COOKBOOK.md", *sorted((DOCS / "lang").glob("*.md"))]:
+        parts = re.split(r"^#+ ", path.read_text(), flags=re.M)
+        assert max(len(part.encode()) for part in parts) < 20 * 1024, path.name
+    for lang in LANGS:
+        assert len((DOCS / f"lang/{lang}.md").read_bytes()) < 20 * 1024, lang
 
 
 def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
@@ -58,6 +104,7 @@ def test_the_docs_say_reading_any_global_lists_and_reprs_them_all(capsys):
     assert "a misspelled one included" in help_text
     guide = (DOCS / "AGENT_GUIDE.md").read_text()
     assert "one, or a misspelled name, lists all, running all reprs" in guide
-    cookbook = " ".join((DOCS / "COOKBOOK.md").read_text().split())
-    assert "Then all of them are listed and every repr runs" in cookbook
-    assert "a `for` loop's counter while its body calls, on one line or several" in cookbook
+    python = " ".join((DOCS / "lang/python-cookbook.md").read_text().split())
+    assert "Then all of them are listed and every repr runs" in python
+    c_cpp = " ".join((DOCS / "lang/c-cpp-cookbook.md").read_text().split())
+    assert "a `for` loop's counter while its body calls, on one line or several" in c_cpp

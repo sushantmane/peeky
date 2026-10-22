@@ -178,7 +178,7 @@ def test_describe_lists_the_settable_paths_and_the_edit_for_the_rest(crate, caps
     assert "board::Board::record: name" not in mutable, mutable
     assert "String root locals to a text in double quotes" in mutable, mutable
     assert "nor is anything in board::Board::record" in mutable, mutable
-    assert mutable.endswith("keeps a local in memory: COOKBOOK 6.6)"), mutable
+    assert mutable.endswith("keeps a local in memory: rust-cookbook 6.6)"), mutable
     assert "board (board::Board, " in out and "names (Vec<String>, " in out, out
 
 

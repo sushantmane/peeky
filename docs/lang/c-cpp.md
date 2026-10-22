@@ -1,30 +1,30 @@
 # Peeky for C and C++
 
-What is particular to C and C++ targets, one rule per line, each with the [COOKBOOK](../COOKBOOK.md) section that has the details. Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: the loop and the rules every language shares are there.
+What is particular to C and C++ targets, one rule per line, each with the section that has the details, in the [C and C++ cookbook](c-cpp-cookbook.md) or the [COOKBOOK](../COOKBOOK.md). Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: the loop and the rules every language shares are there.
 
 ## Targets
 
-- A `.c` or `.cpp` file, or a directory holding one program (`peeky probe ring/ --at 16`; `--at ring.cpp:16` names one when there are several). The directory's other `.c` files that define no `main` are built with it ([7.1](../COOKBOOK.md#71-c-and-c)).
-- `describe` lists each function's lines and names with their types (C: `struct ring` for a struct with no typedef; C++: `std::vector<std::string>`, as code writes it), leaving out the compiler's own (a range `for`'s `__range1`) ([1.1](../COOKBOOK.md#11-what-can-i-ask)).
+- A `.c` or `.cpp` file, or a directory holding one program (`peeky probe ring/ --at 16`; `--at ring.cpp:16` names one when there are several). The directory's other `.c` files that define no `main` are built with it ([C and C++ 7.1](c-cpp-cookbook.md#building)).
+- `describe` lists each function's lines and names with their types (C: `struct ring` for a struct with no typedef; C++: `std::vector<std::string>`, as code writes it), leaving out the compiler's own (a range `for`'s `__range1`) ([C and C++ 1.1](c-cpp-cookbook.md#11-what-can-i-ask)).
 - Program arguments go after `--` or in repeated `--arg` ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 
 ## Reading values
 
-- Selectors: `s.end`, `bins[3].hi`, through a pointer with `.` (`ps.start`), C++ members as `this.head_`, a map's value by key (`m[1]`) and its first entry as `m[#0]` ([2.1](../COOKBOOK.md#21-fields-and-indexes), [7.1](../COOKBOOK.md#71-c-and-c)).
+- Selectors: `s.end`, `bins[3].hi`, through a pointer with `.` (`ps.start`), C++ members as `this.head_`, a map's value by key (`m[1]`) and its first entry as `m[#0]` ([C and C++ 2.1](c-cpp-cookbook.md#21-fields-and-indexes), [C and C++ 7.1](c-cpp-cookbook.md#71-c-and-c)).
 - Names are selected as Clang keeps them, non-ASCII too (`größe.zähler`, `--set ñ=3`): `größe` in NFC and in NFD are two locals, each selected by its own spelling, and `inspect` marks each of two such rows (names equal under NFKC) with how it is written ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
-- Structs, arrays and standard containers show their first members (`{lo = 0, hi = 2}`, `size=3 ["users", "42", ""]`); unions and pointer targets are not read, and a container something may be part-way through changing (a library call, a constructor or destructor, another thread) shows only its size, and its elements are `not shown`, with why ([7.1](../COOKBOOK.md#71-c-and-c)).
-- **`no value yet`** is a local not initialized at this stop: read it below its declaration (the row says where). A **`note`** is a value Peeky cannot vouch for: on a line a loop returns to (a `do` body's first) the next line reads it; below a `setjmp` call, a local declared at or below the stop shows a `note`, and reads plainly below its declaration ([7.1](../COOKBOOK.md#71-c-and-c)).
-- **Same-named locals:** a plain name is the declaration the code names at the stop; `name @ file:line` selects another ([7.1](../COOKBOOK.md#71-c-and-c)).
+- Structs, arrays and standard containers show their first members (`{lo = 0, hi = 2}`, `size=3 ["users", "42", ""]`); unions and pointer targets are not read, and a container something may be part-way through changing (a library call, a constructor or destructor, another thread) shows only its size, and its elements are `not shown`, with why ([C and C++ 7.1](c-cpp-cookbook.md#structs-and-arrays-of-structs)).
+- **`no value yet`** is a local not initialized at this stop: read it below its declaration (the row says where). A **`note`** is a value Peeky cannot vouch for: on a line a loop returns to (a `do` body's first) the next line reads it; below a `setjmp` call, a local declared at or below the stop shows a `note`, and reads plainly below its declaration ([C and C++ 7.1](c-cpp-cookbook.md#locals-peeky-withholds)).
+- **Same-named locals:** a plain name is the declaration the code names at the stop; `name @ file:line` selects another ([C and C++ 7.1](c-cpp-cookbook.md#what-set-checks)).
 - **Several stops:** a line with several breakpoint locations stops at each, and rows carry `stop`: a macro's code at each location every pass (1, 2, 1, 2); a one-line loop whose body declares a local, or a range `for`, once before the loop, then once per pass (1, 2, 2, 2); a one-line loop whose body declares no local has one location and stops once in all. For one row per pass, put `--at` on a plain statement line in the body; a loop header may stop only once, before its loop ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - A step can land on a closing `}`, a loop header, or back on an `if`'s line ([1.1](../COOKBOOK.md#11-what-can-i-ask)).
-- A reference or pointer is saved with its address first (`0x000000016d78b298 "apple"`): compare or group such values by `no_addresses(value)`, or take the text after the address ([4.7](../COOKBOOK.md#47-c-references-and-pointers-in-sql)).
+- A reference or pointer is saved with its address first (`0x000000016d78b298 "apple"`): compare or group such values by `no_addresses(value)`, or take the text after the address ([C and C++ 4.7](c-cpp-cookbook.md#47-c-references-and-pointers-in-sql)).
 
 ## Changing values
 
-- `--set` changes a 16- to 64-bit integer local, or such a field or element of a struct or array local the stopped frame owns (`--set s.end=10`), at a statement's first line; rows mark it `[settable]`, and an 8-bit `char` is refused ([7.1](../COOKBOOK.md#71-c-and-c)).
-- A text in double quotes (`--set 'name="apple"'`) goes into a `char[N]` or `std::string` local within its size, never reallocating; not through a `char *` or a reference, nor into a const one. lldb-dap 21 (macOS) writes every case, older ones fewer ([7.1](../COOKBOOK.md#71-c-and-c)).
-- Every `std::string` change warns that a `string_view`, `c_str()` or `data()` pointer or iterator taken from it before keeps the old size: Peeky cannot see those ([7.1](../COOKBOOK.md#71-c-and-c)).
-- A field through a pointer (`r->tail` in `push(struct ring *r)`, `this.count`), or a structured binding of a reference (`auto &[at, n] = *owner`: `n`, `at.x`), cannot be set: set it in the frame that owns the struct, before the call; in C, when the program calls the function once, the refusal names that call, following a pointer a caller only passes on (`fits(lay, …)` in `wrap`) to the frame that owns the struct and its call (`main` at `wrap(&lay, …)`), or says it cannot and points to `describe`'s `mutable:` line ([7.1](../COOKBOOK.md#71-c-and-c)).
+- `--set` changes a 16- to 64-bit integer local, or such a field or element of a struct or array local the stopped frame owns (`--set s.end=10`), at a statement's first line; rows mark it `[settable]`, and an 8-bit `char` is refused ([C and C++ 7.1](c-cpp-cookbook.md#71-c-and-c)).
+- A text in double quotes (`--set 'name="apple"'`) goes into a `char[N]` or `std::string` local within its size, never reallocating; not through a `char *` or a reference, nor into a const one. lldb-dap 21 (macOS) writes every case, older ones fewer ([C and C++ 7.1](c-cpp-cookbook.md#changing-text)).
+- Every `std::string` change warns that a `string_view`, `c_str()` or `data()` pointer or iterator taken from it before keeps the old size: Peeky cannot see those ([C and C++ 7.1](c-cpp-cookbook.md#changing-text)).
+- A field through a pointer (`r->tail` in `push(struct ring *r)`, `this.count`), or a structured binding of a reference (`auto &[at, n] = *owner`: `n`, `at.x`), cannot be set: set it in the frame that owns the struct, before the call; in C, when the program calls the function once, the refusal names that call, following a pointer a caller only passes on (`fits(lay, …)` in `wrap`) to the frame that owns the struct and its call (`main` at `wrap(&lay, …)`), or says it cannot and points to `describe`'s `mutable:` line ([C and C++ 7.1](c-cpp-cookbook.md#what-set-checks)).
 
 ## Returns
 
