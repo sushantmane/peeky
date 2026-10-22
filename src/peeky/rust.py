@@ -3004,6 +3004,19 @@ class RustSession(NativeSession):
             # Why an owned Vec or String stays raw, for its row's note (#156).
             why = self._owned_raw(variable, frame, innermost, owned)
             return {"raw_reason": why} if why else None
+        if (
+            view is None
+            and top
+            and not innermost
+            and not parameter
+            and str(kind).startswith("alloc::vec::Vec<")
+            and (types := self._binding_types(variable, frame))
+            and all(str(each or "").startswith("std::vec::Vec<") for each in types)
+            and (why := self._owned_raw(variable, frame, innermost, owned))
+        ):
+            # An owned Vec of other elements (`Vec<Friend>`) in a caller frame says why too,
+            # never offering a length the call may be changing (#260).
+            return {"raw_reason": why}
         if view is None and top and kind in ("&str", "&mut str"):
             # A closure's capture (`name` of `|f| f.name == *name`, #260) is never judged:
             # why its text is not shown.

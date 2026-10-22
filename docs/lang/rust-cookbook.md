@@ -781,6 +781,8 @@ note: self.names shows LLDB's summary, not contents: Peeky does not read the ele
   the call's line, such as when it is lent as `&mut h`. Its pointers still show only their address:
   the callee may be part-way through replacing a `Box` it was lent. Where the call may move it, as
   `consume(h)` does, it is `[stale]`.
+- An owned `Vec` or `String` in a caller frame says the call under way may be changing it. Its note
+  never offers `v.len` as the length, since `v.retain_mut(…)` may be part-way through.
 - A field or element reassigned in place (`h.b = Box::new(..)`, `w.s = String::from(..)`,
   `arr[i] = ..`) leaves the local whole, if it was whole before. A field moved out and then stored
   again (`let d = h.b; h.b = ..`) still leaves it `[stale]`.

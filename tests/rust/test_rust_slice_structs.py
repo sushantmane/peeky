@@ -288,6 +288,9 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
         selectors = ["friends", "friends.len", "friends[0]", "slots", "slots.length", "kept"]
         main(["session", "get", *selectors, "kept[0].name", "--frame", str(frame), "--json"])
         rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        # `main`'s own `friends`, lent `&mut` to the call under way.
+        main(["session", "get", "friends", "--frame", str(frame + 1), "--json"])
+        [owner] = json.loads(capsys.readouterr().out)
     finally:
         main(["session", "close"])
         capsys.readouterr()
@@ -301,6 +304,8 @@ def test_a_callers_mut_vec_that_retain_mut_is_changing_is_not_read_as_its_value(
     assert "friends.len" not in rows["friends[0]"]["error"], rows["friends[0]"]
     assert rows["slots"].get("stale") and rows["slots.length"].get("stale"), rows
     assert "`slots` is a `&mut` parameter of a caller frame" in rows["slots"]["note"], rows
+    assert "`friends` is a local of a caller frame" in owner["note"], owner
+    assert "Capture" not in owner["note"], owner
     # A shared reference's target cannot change during the call: it still reads.
     assert not rows["kept"].get("stale"), rows["kept"]
     if reads(rows["kept"]):
