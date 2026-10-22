@@ -30,10 +30,28 @@ _RECORDS = {
 # own namespace `core`), and Rust's crates.
 CPP_LIBRARIES = frozenset({"std", "__gnu_cxx", "__gnu_debug", "__cxxabiv1"})
 RUST_LIBRARIES = frozenset({"std", "core", "alloc"})
+# The C++ standard containers Peeky previews by their elements (#181), by qualified name
+# (libc++'s `std::__1::vector<…>`, libstdc++'s `std::vector<…>`, `std::__debug::map<…>`).
+CXX_CONTAINER = re.compile(
+    r"std::(?:__\w+::)*(vector|array|deque|list|map|unordered_map|set|multiset|"
+    r"unordered_set|unordered_multiset)<"
+)
+_PARAMETERS = {
+    "DW_TAG_template_type_parameter": "type",
+    "DW_TAG_template_value_parameter": "value",
+}
 # Integer-encoded character types: a debugger shows their values as characters.
 _CHARACTERS = frozenset({"wchar_t", "char8_t", "char16_t", "char32_t"})
 _SELECTABLE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INDEX = re.compile(r"\[(0|[1-9][0-9]{0,9})\]")
+# A location that is one offset in the frame, nothing more but constants added to it
+# (a by-value structured binding's `DW_OP_breg31 WSP+16, DW_OP_plus_uconst 0x8`): a
+# local's own storage.
+_PLAIN_FRAME = re.compile(
+    r"\(?\s*DW_OP_(?:fbreg|breg[0-9]+)\b[^,()]*(?:,\s*DW_OP_plus_uconst\s+[^,()]+)*\)?\s*"
+)
+# A location read through a pointer.
+_DEREF = re.compile(r"\bDW_OP_(?:GNU_)?x?deref")
 
 
 class Unsettable(ValueError):
@@ -54,12 +72,42 @@ def _number(value):
     return None
 
 
-def local_types(dies, bodies):
+def referred_locals(dies, bodies):
+    """The names of the parameters and variables of a function's code (as
+    ``local_types`` walks them) whose storage the frame reaches through a pointer:
+    any location other than one frame offset (`DW_OP_fbreg -24`), such as clang's
+    `DW_OP_fbreg -24, DW_OP_deref` for a structured binding of a reference
+    (`auto& [items, n] = *owner`), a class passed by value through a hidden pointer, or
+    a named return value. Their values may be what a caller's library call is changing
+    (#181). None if there are too many to list them all."""
+    found, pending, seen = set(), [child for body in bodies for child in dies[body]["children"]], 0
+    while pending:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        seen += 1
+        if seen > MAX_LOCALS:
+            return None
+        name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+        location = die["attrs"].get("DW_AT_location") or ""
+        if name and not _PLAIN_FRAME.fullmatch(location):
+            found.add(name)
+    return frozenset(found)
+
+
+def local_types(dies, bodies, through=False):
     """{name: frozenset((type offset, storage, (file name, line)))} for the parameters
     and variables of a function's code (``bodies``: its concrete DIEs; nested blocks,
     but not the calls inlined into it). ``storage``: "automatic" (a variable in the
     frame's memory), "parameter" (a parameter there), "register" (a register only, no
     memory of its own), "static" (a fixed address) or "other" (a location list, none);
+    with ``through`` (C, C++), "through" for a variable the frame reaches through a
+    pointer (`DW_OP_fbreg -16, DW_OP_deref`: a C++ structured binding of a reference, a
+    named return value, a C `__block` variable), which a change would write through;
     the file name (no directory) and line it is declared on, as
     LLDB names a local when several of its name are in scope (`s @ main.rs:81`), or
     None. None if there are too many to list them all."""
@@ -84,7 +132,17 @@ def local_types(dies, bodies):
             r"DW_OP_(?:addr|piece|reg[0-9]|regx|entry_value|stack_value)", location
         )
         storage = "other"
-        if framed:
+        if (
+            framed
+            and through
+            and _DEREF.search(location)
+            and die["tag"] != "DW_TAG_formal_parameter"
+        ):
+            # A parameter read through a pointer is one the ABI passes by a hidden
+            # pointer to the call's own copy (a struct over 16 bytes on arm64, a class
+            # with a destructor): the parameter itself, as any other.
+            storage = "through"
+        elif framed:
             storage = "parameter" if die["tag"] == "DW_TAG_formal_parameter" else "automatic"
         elif re.fullmatch(r"\(?\s*DW_OP_(?:reg[0-9]+|regx)\b[^,]*\)?\s*", location):
             storage = "register"
@@ -209,11 +267,24 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             graph[offset] = ("array", name, target, tuple(counts) if known else None, variable)
             pending.append(target)
         elif tag in _RECORDS:
-            members, holds, variant, bases = [], [], False, []
+            members, holds, variant, bases, parameters = [], [], False, [], []
             for child in die["children"]:
                 member = dies[child]
                 if member["tag"] == "DW_TAG_variant_part":
                     variant = True
+                    continue
+                if member["tag"] in _PARAMETERS:
+                    # A class template's arguments: a standard container's element type
+                    # (#181), the `_Tp` of `std::vector<_Tp, _Allocator>`.
+                    own = member["attrs"]
+                    parameters.append(
+                        (
+                            _PARAMETERS[member["tag"]],
+                            _text(own.get("DW_AT_name")),
+                            _target(own.get("DW_AT_type")),
+                            _number(own.get("DW_AT_const_value")),
+                        )
+                    )
                     continue
                 if member["tag"] == "DW_TAG_inheritance":
                     holds.append(_target(member["attrs"].get("DW_AT_type")))
@@ -253,8 +324,15 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 # Its qualified name (`alloc::vec::Vec<i64, alloc::alloc::Global>`), which
                 # picks a Rust container's layout (#156).
                 _qualified(dies, offset) or name,
+                # Its template arguments: ("type", name, type offset, None) or ("value",
+                # name, type offset, constant) (#181).
+                tuple(parameters),
             )
             pending.extend(kind for kind in holds if kind is not None)
+            if graph[offset][9] and CXX_CONTAINER.match(graph[offset][11]):
+                # A standard container's elements (and a map's keys and values), which
+                # its members reach only through pointers: their previews' types (#181).
+                pending.extend(p[2] for p in parameters[:2] if p[0] == "type" and p[2])
         else:
             graph[offset] = ("other", tag)
     return graph

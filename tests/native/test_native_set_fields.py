@@ -3,6 +3,7 @@ holds itself, read back and seen by the program; everything else refused."""
 
 import json
 import os
+import sys
 
 import pytest
 
@@ -992,3 +993,45 @@ def test_c_a_program_using_setjmp_judges_changes_as_any_other(directory, capsys)
         assert code == 0 and result["after"] == after, result
     # 5 + 7, then 100 on each of the two longjmps back, and p.b.
     assert "214" in output(capsys)
+
+
+BLOCKS = """#include <stdio.h>
+struct big { long a, b, c; };
+__attribute__((noinline)) static long take(struct big big, int k) {
+    long t = big.a + k;  // TAKE
+    return t;
+}
+int main(void) {
+    __block int count = 1;
+    void (^bump)(void) = ^{ count += 1; };
+    bump();
+    int n = count;  // HERE
+    struct big b = { 1, 2, 3 };
+    printf("C %d %d %ld\\n", n, count, take(b, 1));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_c_local_reached_through_a_pointer_is_never_changed(directory, capsys):
+    # #186's review, after round 1: clang describes a C `__block` variable (blocks are on
+    # by default only on macOS) at a location read through its forwarding pointer, which
+    # `--set count=9` wrote through. A by-value parameter passed through a hidden pointer
+    # (a struct over 16 bytes on arm64) is the call's own copy, and still changes.
+    if sys.platform != "darwin":
+        pytest.skip("C blocks (`__block`) are enabled by default only on macOS")
+    path = directory / "blocks.c"
+    path.write_text(BLOCKS)
+    probe = ["probe", str(path), "--json"]
+    at = ["--at", str(line_of(BLOCKS, "HERE"))]
+    assert main([*probe, *at, "--capture", "count"]) == 0
+    (row,) = json.loads(capsys.readouterr().out)["rows"]
+    assert row["value"] == "2" and row.get("settable") is not True, row
+    code = main([*probe, *at, "--capture", "count", "--set", "count=9"])
+    result = json.loads(capsys.readouterr().out)
+    assert code != 0 and "is reached through a pointer or reference" in result["error"]["message"]
+    at = ["--at", str(line_of(BLOCKS, "TAKE"))]
+    assert main([*probe, *at, "--capture", "big.a", "--set", "big.a=100"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert "C 2 2 101" in result["output"], result

@@ -118,14 +118,14 @@ def test_classes_previews_follow_lldb_and_never_guess(cpp, capsys):
         assert rows["rp"]["value"].endswith(" {x = 1, y = 2}"), rows["rp"]
         assert rows["rp"]["value"].startswith("0x") and rows["pp"]["value"].startswith("0x")
         assert " {" not in rows["pp"]["value"], rows["pp"]
-        # Standard-library values keep their own views (#119, #128): a vector's or map's
-        # summary, a string's checked text.
-        assert rows["vp"]["value"] == "size=2" and rows["mp"]["value"] == "size=1"
-        # A value inside one is reached through the library's own children, which the
-        # debug information does not type: not previewed (review of #136).
-        assert " @ 0x" in rows["mp[1]"]["value"], rows["mp[1]"]
+        # A vector or map shows its first elements (#181), typed by its template's
+        # arguments in the debug information; a string its checked text (#128).
+        assert rows["vp"]["value"] == "size=2 [{x = 1, y = 2}, {x = 3, y = 4}]", rows["vp"]
+        assert rows["mp"]["value"] == "size=1 {1: {x = 5, y = 6}}", rows["mp"]
+        # A value inside one is typed by them too (review of #136 found none was).
+        assert rows["mp[1]"]["value"] == "{x = 5, y = 6}", rows["mp[1]"]
         mixed = rows["mixed"]["value"]
-        tail = ", v = size=2, ratio = 0.5, ok = true, c = 'z'}"
+        tail = ", v = size=2 [1, 2], ratio = 0.5, ok = true, c = 'z'}"
         assert mixed in ('{s = "hi"' + tail, "{s = <no value>" + tail), mixed
         if sys.platform == "darwin" or os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
             assert mixed.startswith('{s = "hi"'), mixed

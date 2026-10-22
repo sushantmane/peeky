@@ -1325,7 +1325,9 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert "read parr[0][-1]" in rows["parr[-1]"]["error"]
             assert "index the array where it is declared" in rows["pp[1]"]["error"]
         elif name == "rows.cpp":
-            assert rows["vp[0]"]["value"] == "size=3" and rows["vp[0][1]"]["value"] == "8"
+            # What it points at shows its elements (#181).
+            assert rows["vp[0]"]["value"] == "size=3 [7, 8, 9]", rows["vp[0]"]
+            assert rows["vp[0][1]"]["value"] == "8"
             assert "read vp[0][1] for its element" in rows["vp[1]"]["error"]
         elif name == "names.cpp":
             # Review 4: a member typedef's last name (`Table::Rows`, `Graph::vector`)
@@ -1337,7 +1339,8 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert rows["rf[0]"].get("value") in (None, "7"), rows["rf[0]"]
             assert rows["rf[1]"].get("value") in (None, "8"), rows["rf[1]"]
             assert rows["v[0]"]["value"] == "7" and rows["v[1]"]["value"] == "8", rows
-            assert rows["h.r[0]"]["value"] == "size=3" and rows["g.v[0][1]"]["value"] == "2"
+            assert rows["h.r[0]"]["value"] == "size=3 [7, 8, 9]", rows["h.r[0]"]
+            assert rows["g.v[0][1]"]["value"] == "2"
             assert "read g.v[0][1]" in rows["g.v[1]"]["error"]
         elif name == "anon.cpp":
             # Review 6: an unnamed struct a typedef names shows by that name (`Anon::P`),
@@ -1365,7 +1368,7 @@ def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_c
             assert rows["bigp[0][450]"]["value"] == "4"
             # A vector's own length is not one its type states.
             assert "read its elements from bigp[0][0]" in rows["bigp[-1]"]["error"]
-            assert rows["ep[0]"]["value"] == "size=0"
+            assert rows["ep[0]"]["value"] == "size=0 []"
             assert "np is NULL" in rows["np[0]"]["error"]
             assert "cannot read what garbage points at" in rows["garbage[0]"]["error"]
             # Review 2: the typedef behind lldb-dap's `const RowPtr` resolves; a template's

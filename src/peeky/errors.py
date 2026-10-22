@@ -327,6 +327,12 @@ _MUTATION_HINTS = (
         "N --set-hit N`, N counting that line's stops (`--capture <arg> --hits all` there).",
     ),
     (
+        r"is reached through a pointer or reference",
+        "Change the value where it is owned (the struct a structured binding `auto &[a, b] "
+        "= s` refers to, in the frame that holds it), or change the source with a candidate "
+        "edit (`--old`/`--new`).",
+    ),
+    (
         r"another binding of|the binding of `[^`]+` declared on line",
         "Keep every binding of the name in memory with a candidate edit (`--old`/`--new`): "
         "`std::hint::black_box(&mut x);` after each `let` the message names, or rename one "

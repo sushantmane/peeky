@@ -11,7 +11,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 ## Reading values
 
 - Selectors: `s.end`, `bins[3].hi`, through a pointer with `.` (`ps.start`), C++ members as `this.head_`, a map's value by key (`m[1]`) and its first entry as `m[#0]` ([2.1](../COOKBOOK.md#21-fields-and-indexes), [7.1](../COOKBOOK.md#71-c-and-c)).
-- Structs and arrays show their first members (`{lo = 0, hi = 2}`); unions and pointer targets are not read ([7.1](../COOKBOOK.md#71-c-and-c)).
+- Structs, arrays and standard containers show their first members (`{lo = 0, hi = 2}`, `size=3 ["users", "42", ""]`); unions and pointer targets are not read, and a container something may be part-way through changing (a library call, a constructor or destructor, another thread) shows only its size ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **`no value yet`** is a local not initialized at this stop: read it below its declaration (the row says where). A **`note`** is a value Peeky cannot vouch for: on a line a loop returns to (a `do` body's first) the next line reads it; below a `setjmp` call, a local declared at or below the stop shows a `note`, and reads plainly below its declaration ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **Same-named locals:** a plain name is the declaration the code names at the stop; `name @ file:line` selects another ([7.1](../COOKBOOK.md#71-c-and-c)).
 - **Several stops:** a line with several breakpoint locations stops at each, and rows carry `stop`: a macro's code at each location every pass (1, 2, 1, 2); a one-line loop whose body declares a local, or a range `for`, once before the loop, then once per pass (1, 2, 2, 2); a one-line loop whose body declares no local has one location and stops once in all. For one row per pass, put `--at` on a plain statement line in the body; a loop header may stop only once, before its loop ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
@@ -23,7 +23,7 @@ What is particular to C and C++ targets, one rule per line, each with the [COOKB
 - `--set` changes a 16- to 64-bit integer local, or such a field or element of a struct or array local the stopped frame owns (`--set s.end=10`), at a statement's first line; rows mark it `[settable]`, and an 8-bit `char` is refused ([7.1](../COOKBOOK.md#71-c-and-c)).
 - A text in double quotes (`--set 'name="apple"'`) goes into a `char[N]` or `std::string` local within its size, never reallocating; not through a `char *` or a reference, nor into a const one. lldb-dap 21 (macOS) writes every case, older ones fewer ([7.1](../COOKBOOK.md#71-c-and-c)).
 - Every `std::string` change warns that a `string_view`, `c_str()` or `data()` pointer or iterator taken from it before keeps the old size: Peeky cannot see those ([7.1](../COOKBOOK.md#71-c-and-c)).
-- A field through a pointer (`r->tail` in `push(struct ring *r)`, `this.count`) cannot be set: set it in the frame that owns the struct, before the call; in C, when the program calls the function once, the refusal names that call ([7.1](../COOKBOOK.md#71-c-and-c)).
+- A field through a pointer (`r->tail` in `push(struct ring *r)`, `this.count`), or a structured binding of a reference (`auto &[at, n] = *owner`: `n`, `at.x`), cannot be set: set it in the frame that owns the struct, before the call; in C, when the program calls the function once, the refusal names that call ([7.1](../COOKBOOK.md#71-c-and-c)).
 
 ## Returns
 
