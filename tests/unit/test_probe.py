@@ -216,6 +216,9 @@ CUT = {**WHOLE, "output_truncated": True}
 OPEN = {**WHOLE, "drained": False, "exit_code": None}
 # Text after Peeky's disconnect (lldb-dap 18's crash on Linux): kept apart, not as output.
 NOISY = {**OPEN, "after_disconnect": "free(): invalid pointer\n"}
+# Its stream ended cleanly, but the adapter then failed (#213 review).
+CRASHED = {**OPEN, "stream_drained": True, "adapter_exit": 2}
+KILLED = {**OPEN, "stream_drained": True, "adapter_exit": -6}
 RAN_ON = "output so far (the program ran on after the last hit, so this can include text "
 
 
@@ -314,6 +317,25 @@ def test_truncated_output_is_never_called_all_of_it(after):
     text = _table(result)
     assert "all of it" not in text and "truncated: some of it was dropped" in text
     assert ("output through the program's exit (it ran on after the last hit;" in text) is after
+
+
+@pytest.mark.parametrize(
+    "final, how", [(CRASHED, "exited with status 2"), (KILLED, "was ended by signal 6")]
+)
+def test_an_adapter_that_failed_as_it_exited_leaves_the_output_partial(monkeypatch, final, how):
+    import peeky.probe as probe_module
+    from peeky.probe import _table
+
+    worker = Ending("terminated", final)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert (result["output_complete"], result["program_ended"]) == (False, True)
+    assert result["adapter_exit"] == final["adapter_exit"]
+    warning = f"The debugger's adapter {how} after the program ended, so output it had not sent"
+    assert any(w.startswith(warning) for w in result["warnings"]), result["warnings"]
+    text = _table(result)
+    assert "the program ended, but its output may still have been arriving" in text
+    assert "warning: " + warning in text
 
 
 def test_only_the_last_twenty_lines_of_output_are_shown_and_it_says_so():

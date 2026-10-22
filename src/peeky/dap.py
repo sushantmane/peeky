@@ -810,7 +810,7 @@ class DAP:
                     self.response(seq, timeout=1)
                 except Exception:
                     pass
-            drained = ended and self._drain(mark)
+            clean = ended and self._drain(mark)
             if stop := getattr(self, "stderr_stop", None):
                 # The stderr reader stops and closes its descriptor itself (_read_stderr).
                 stop.set()
@@ -825,6 +825,8 @@ class DAP:
             self._kill_group()
             # Reaped only now, after everything that names its pid, group or session.
             self.process.wait(timeout=3)
+            # An adapter that failed as it exited may have dropped output it held.
+            status = self.process.returncode
             self.reader.join(timeout=3)
             if stderr_reader := getattr(self, "stderr_reader", None):
                 stderr_reader.join(timeout=1)
@@ -836,7 +838,11 @@ class DAP:
                 ]
                 self.final = {
                     "ended": ended,
-                    "drained": drained,
+                    "drained": clean and status == 0,
+                    # The stream ended cleanly, nothing after the mark: then only the
+                    # adapter's exit status (`adapter_exit`) can leave it partial.
+                    "stream_drained": clean,
+                    "adapter_exit": status,
                     "output": kept[0],
                     "output_truncated": kept[1],
                     "after_disconnect": "".join(after)[:AFTER_DISCONNECT_CHARS],
@@ -851,10 +857,10 @@ class DAP:
 
     def _drain(self, mark):
         """End the adapter's input, so that it ends too, and wait at most DRAIN_TIMEOUT
-        for it to end its output stream: whether it did with no output after ``mark``
-        (taken before the disconnect was sent). Called before anything is killed, so the
-        end is the adapter's own (#203); output after ``mark`` already settles it, so it
-        is not waited for."""
+        for it to end its output stream, and then to exit: whether the stream ended with
+        no output after ``mark`` (taken before the disconnect was sent). Called before
+        anything is killed, so the end is the adapter's own (#203); output after ``mark``
+        already settles it, so it is not waited for. close() then requires exit status 0."""
         if self.write_lock.acquire(timeout=1):
             try:
                 self.process.stdin.close()
@@ -869,4 +875,10 @@ class DAP:
                 if remaining <= 0:
                     break
                 self.condition.wait(remaining)
-            return self.stream_ended.is_set() and self.output_count == mark
+            if not (self.stream_ended.is_set() and self.output_count == mark):
+                return False
+        # Its exit follows its stream's end: waited for (never reaped here, #170), so
+        # that the status close() reads is the adapter's own, not that of Peeky's kill.
+        while self._adapter_state() == "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return True

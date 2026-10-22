@@ -1604,9 +1604,11 @@ def _settle_output(result, final, known_end):
     Peeky's disconnect. Whole (`output_complete`) only when the debugger reported the
     program's end before that disconnect, and the adapter then ended its stream with
     nothing more: none could follow. An end Peeky only inferred (java-debug #27), a
-    stream the adapter kept open, or text it sent from the disconnect on (its own, or the
-    program's: `output_after_disconnect`) leaves it partial, and `program_ended` says the
-    program had ended all the same."""
+    stream the adapter kept open, text it sent from the disconnect on (its own, or the
+    program's: `output_after_disconnect`), or an adapter that then exited with a status
+    other than 0 (`adapter_exit`, and the warning returned) leaves it partial, and
+    `program_ended` says the program had ended all the same."""
+    warning = None
     if isinstance(final, dict) and final.get("ended"):
         known_end = True
         if final.get("output") or "output" in result:
@@ -1619,10 +1621,25 @@ def _settle_output(result, final, known_end):
             result["output_after_disconnect"] = after
         if type(final.get("exit_code")) is int:
             result["exit_code"] = final["exit_code"]
+        status = final.get("adapter_exit")
+        if final.get("stream_drained") and not final.get("drained"):
+            # Its stream ended cleanly, but the adapter then failed: output it held may
+            # never have been sent.
+            result["adapter_exit"] = status
+            how = (
+                f"was ended by signal {-status}"
+                if type(status) is int and status < 0
+                else f"exited with status {status}"
+            )
+            warning = (
+                f"The debugger's adapter {how} after the program ended, so output it had "
+                "not sent yet may be missing: the output is not marked complete."
+            )
     if "output" in result and result.get("output_complete") is not True:
         result["output_complete"] = False
         if known_end:
             result["program_ended"] = True
+    return warning
 
 
 _UNWOUND = "its frame was gone when the step out ended (it did not return normally)"
@@ -3683,7 +3700,8 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 result["debugger_events"] = events
     finally:
         cleanup = worker.close()
-    _settle_output(result, getattr(worker, "last_final", None), known_end)
+    if settled := _settle_output(result, getattr(worker, "last_final", None), known_end):
+        warnings.append(settled)
     if cleanup and isinstance(result.get("error"), dict) and "cleanup" not in result["error"]:
         # What became of the program once the probe failed or timed out (#143).
         result["error"] = {**result["error"], "cleanup": cleanup}

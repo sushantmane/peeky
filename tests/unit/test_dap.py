@@ -356,8 +356,9 @@ def test_threads_a_thread_event_says_started_are_kept():
 # `terminated`, then output, all before Peeky disconnects; `exit-later`: after
 # `terminated`, `exited` comes once it answered; `noisy`: after it answered, text of its
 # own (lldb-dap 18 on Linux prints its crash as `stderr` output); `answering`: that text
-# while it handles the disconnect, before its answer; `open`: its stream stays open
-# after the end; `running`: the program never ends.
+# while it handles the disconnect, before its answer; `crash`: it answers, ends its
+# stream, and exits with status 2 (it may have dropped output it held); `open`: its
+# stream stays open after the end; `running`: the program never ends.
 ENDING_ADAPTER = r"""
 import json, sys, time
 mode = sys.argv[1]
@@ -401,24 +402,27 @@ while (request := read()) is not None:
             output("free(): invalid pointer\n", "stderr")
 if mode == "open":
     time.sleep(60)
+sys.exit(2 if mode == "crash" else 0)
 """
 
 
 @pytest.mark.parametrize(
-    "mode, ended, drained, output, code, after",
+    "mode, ended, drained, output, code, after, status",
     [
-        ("late", True, True, "early\nlate\n", 0, ""),
-        ("exit-later", True, True, "early\n", 7, ""),
-        ("noisy", True, False, "early\n", None, "free(): invalid pointer\n"),
+        ("late", True, True, "early\nlate\n", 0, "", 0),
+        ("exit-later", True, True, "early\n", 7, "", 0),
+        ("noisy", True, False, "early\n", None, "free(): invalid pointer\n", None),
         # #213 review: what comes from the disconnect on is not the program's, even
         # before the adapter's answer.
-        ("answering", True, False, "early\n", None, "free(): invalid pointer\n"),
-        ("open", True, False, "early\n", None, ""),
-        ("running", False, False, "early\n", None, ""),
+        ("answering", True, False, "early\n", None, "free(): invalid pointer\n", None),
+        # #213 review: a clean end of its stream, then a failed exit, is not whole.
+        ("crash", True, False, "early\n", None, "", 2),
+        ("open", True, False, "early\n", None, "", None),
+        ("running", False, False, "early\n", None, "", None),
     ],
 )
 def test_close_reads_the_output_to_the_adapters_end(
-    monkeypatch, mode, ended, drained, output, code, after
+    monkeypatch, mode, ended, drained, output, code, after, status
 ):
     # #203: output can follow `terminated`, and `exited` can come after it: what close
     # leaves is whole only once the adapter ended its stream with nothing more after
@@ -450,6 +454,10 @@ def test_close_reads_the_output_to_the_adapters_end(
     final = dap.final
     assert (final["ended"], final["drained"]) == (ended, drained)
     assert (final["output"], final["exit_code"], final["after_disconnect"]) == (output, code, after)
+    # The stream ended cleanly in each case with an exit status the adapter chose itself.
+    assert final["stream_drained"] is (status is not None)
+    if status is not None:
+        assert final["adapter_exit"] == status
     # The wait is for the adapter's end, never a fixed sleep: it stops when the end comes.
     assert time.monotonic() - started < (6 if mode == "open" else 8)
     assert dap.process.poll() is not None and not dap.reader.is_alive()
