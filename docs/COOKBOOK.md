@@ -120,7 +120,7 @@ probe: peeky probe examples/pagination_bug.py --at pagination_bug.py:<line> [--r
 ...
 ```
 
-A function's names also list the module globals its compiled code reads that the module binds by name (`MAX_GAP = 30`, not `globals()["x"] = 1`), not in code the compiler drops (`if False:`); nothing runs (`MAX_GAP (module global)`; `globals` in JSON). A probe there reads them, marked `[module global]`.
+A function's names also list the module globals its compiled code reads (its generator expressions' and comprehensions' too) that the module binds by name (`MAX_GAP = 30`, not `globals()["x"] = 1`), not in code the compiler drops (`if False:`); nothing runs (`MAX_GAP (module global)`; `globals` in JSON). A probe there reads them, marked `[module global]`.
 
 For a large module, `--json` and `jq` find a function quickly: `peeky describe dir --at module.py --json | jq '.scopes[] | select(.scope | test("is_private"))'`.
 

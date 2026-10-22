@@ -454,8 +454,9 @@ def _python_scopes(path):
     Static: lists parameters and assigned locals, not values or attributes, and the
     module globals a function reads that the module assigns (`globals`: a probe reads them,
     `[module global]`; ninth evaluation): names the module binds (`MAX_GAP = 30`, not
-    `globals()["x"] = 1`) that the function's compiled code loads as globals, so not in
-    code the compiler drops (`if False:`); nothing runs. Methods are qualified by class
+    `globals()["x"] = 1`) that the function's compiled code loads as globals (its generator
+    expressions' and comprehensions' too), so not in code the compiler drops (`if False:`);
+    nothing runs. Methods are qualified by class
     (`IPv6Address.is_private`); listed in source order, first MAX_SCOPES only.
     """
     import ast
@@ -494,17 +495,25 @@ def _python_scopes(path):
             compiled = compile(text, str(path), "exec", dont_inherit=True)
     except (SyntaxError, ValueError):
         compiled = None
-    loads, codes = {}, [compiled] if compiled is not None else []
+    # A generator expression's code is its own (a comprehension's too, before 3.12), but
+    # it is the enclosing function's: its loads count there (review of PR #214).
+    loads, codes = {}, [(compiled, None)] if compiled is not None else []
     while codes:
-        code = codes.pop()
-        codes.extend(each for each in code.co_consts if hasattr(each, "co_code"))
-        loads.setdefault((code.co_name, code.co_firstlineno), []).append(
-            {
-                instruction.argval
-                for instruction in dis.get_instructions(code)
-                if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS")
-            }
+        code, into = codes.pop()
+        if into is None or code.co_name not in (
+            "<genexpr>",
+            "<listcomp>",
+            "<setcomp>",
+            "<dictcomp>",
+        ):
+            into = set()
+            loads.setdefault((code.co_name, code.co_firstlineno), []).append(into)
+        into.update(
+            instruction.argval
+            for instruction in dis.get_instructions(code)
+            if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS")
         )
+        codes.extend((each, into) for each in code.co_consts if hasattr(each, "co_code"))
     spans, starts = {}, {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):

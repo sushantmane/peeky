@@ -86,6 +86,27 @@ def test_describe_lists_only_globals_the_module_binds_and_the_code_loads(tmp_pat
     assert scopes["check"]["names"] == ["n", "LIMIT"], scopes["check"]
 
 
+def test_describe_counts_a_generator_expressions_loads_for_its_function(tmp_path, capsys):
+    # Review round 2 of PR #214: a generator expression's code is its own (a
+    # comprehension's too, before Python 3.12), so `SCALE` read only there was missed. A
+    # lambda is a scope of its own: `OTHER` is its, not `total`'s.
+    path = tmp_path / "gens.py"
+    path.write_text(
+        "SCALE = 2\n"
+        "OFFSET = 1\n"
+        "OTHER = 3\n"
+        "\n"
+        "def total(xs):\n"
+        "    later = lambda: OTHER\n"
+        "    nested = (sum(y + OFFSET for y in row) for row in xs)\n"
+        "    return sum(x * SCALE for x in xs), {k for k in nested}, later\n"
+    )
+    assert main(["describe", str(path), "--json"]) == 0
+    scopes = {s["scope"]: s for s in json.loads(capsys.readouterr().out)["scopes"]}
+    assert scopes["total"].get("globals") == ["OFFSET", "SCALE"], scopes["total"]
+    assert scopes["total.lambda"].get("globals") == ["OTHER"], scopes
+
+
 def test_session_get_hints_quote_a_selector_as_people_would():
     # sessions 6: `peeky session get 'history['"'"'alice'"'"'][0]'`.
     row = {
