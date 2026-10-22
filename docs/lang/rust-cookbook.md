@@ -766,8 +766,25 @@ note: self.names shows LLDB's summary, not contents: Peeky does not read the ele
   - two blocks that declare the same names on one line;
   - the function's own line;
   - an `#[inline(always)]` or caller frame.
-- A raw pointer, also a `NonNull` or an `AtomicPtr`, keeps no borrow, and always shows only its
-  address. One inside a tuple reads with the tuple, as one inside a struct does.
+- A raw pointer, `*const T` or `*mut T`, keeps no borrow. It always shows only its address,
+  `[unproven]`. Its note says why: "Peeky never follows a raw pointer, because nothing proves that
+  what it points at still stands."
+- Its row has `unproven_pointer: "raw"`. Where the build's debug information doesn't tell a pointer
+  inside a value from a raw pointer, it shows only its address with `unproven_pointer: "unknown"`.
+- A `NonNull` or `AtomicPtr` local is judged as before. Where it shows only its pointer, it has the
+  generic `[unproven]` note, not this one. The raw pointer inside one is a raw pointer inside a
+  value: `o.q.pointer` of a `NonNull` field.
+- A raw pointer inside a value shows only its address too: a field, a tuple or array element, at any
+  depth. For example, with `let h = Holder { n: 1, p: &*b as *const i64 };`, `h.p` shows `0x…`
+  and lists nothing under it, even while `h` is live. Safe code can free what it points at:
+  `drop(b)`.
+- The value that holds it still reads: `h.n`, and `t.__0` of a `(i64, *const i64)`. An array of
+  raw pointers, such as `arr: [*const Pt; 2]`, lists its elements, and each shows its address.
+- A reference or a `Box` inside a value still reads. LLDB names `&i64`, `Box<i64>` and
+  `*const i64` all `long *`, so Peeky tells them apart by the field's Rust type in the build's
+  debug information.
+- The standard library's types hold raw pointers too. An `Rc`'s `ptr.pointer` and a slice
+  iterator's `ptr.pointer` show only their address.
 - Between a drop and the store of `*v = new`, `v` shows only its address. That is a stop inside
   the old value's `Drop`, then `step --out`.
 - In some places every local that borrows shows only its pointer. A reference parameter that is

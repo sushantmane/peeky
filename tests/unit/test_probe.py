@@ -603,6 +603,63 @@ def test_each_rust_note_names_every_gate_on_what_peeky_reads():
             assert gate in note, (name, gate)
 
 
+def test_a_raw_pointers_note_says_only_that_peeky_never_follows_one():
+    # #255 review: a raw pointer local got a reference's note ("This Rust reference shows
+    # only its pointer: the build's MIR does not show that what it points at still
+    # stands…"), and one in a live struct the generic one ("Here what it points at may be
+    # moved or dropped, or the MIR cannot say"): both false for it.
+    from peeky.probe import (
+        _UNPROVEN_RUST,
+        _held_unproven_note,
+        _resolve,
+        _rust_note_kind,
+        _unproven_note,
+    )
+
+    raw = {
+        "name": "p",
+        "type": "long *",
+        "value": "0x10",
+        "view": "unproven",
+        "variablesReference": 0,
+        "unproven_pointer": "raw",
+    }
+    maybe = {**raw, "unproven_pointer": "unknown"}
+    # A raw pointer's own words come first, whatever reason a reference's gate gave.
+    note = _unproven_note({**raw, "unproven_reason": "the build's MIR does not show it"})
+    assert note == (
+        "This Rust raw pointer shows only its address: Peeky never follows a raw pointer, "
+        "because nothing proves that what it points at still stands."
+    )
+    assert _unproven_note(maybe) == (
+        "This Rust pointer shows only its address: Peeky never follows a raw pointer, and "
+        "the build's debug information does not say whether this is one."
+    )
+    held = _held_unproven_note([raw, raw])
+    assert held == (
+        "Its Rust raw pointers show only their address: Peeky never follows a raw pointer, "
+        "because nothing proves that what one points at still stands."
+    )
+    held_maybe = _held_unproven_note([raw, maybe])
+    assert held_maybe.startswith("Its Rust pointers show only their address: Peeky never")
+    for text in (note, _unproven_note(maybe), held, held_maybe):
+        assert "reference" not in text and "Box" not in text, text
+        for claim in ("moved", "dropped", "MIR", "freed", "may be", "Here"):
+            assert claim not in text, (claim, text)
+        # A limit of Peeky's, said once among a probe's warnings, not a doubt.
+        assert _rust_note_kind(text), text
+    # Beside another pointer shown only as its address, every way that can be.
+    generic = _UNPROVEN_RUST[0].upper() + _UNPROVEN_RUST[1:] + "."
+    assert _held_unproven_note([raw, {"view": "unproven"}]) == generic
+    # Selecting through one is refused in the same words.
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({}), {}, snapshot(raw), parse_selector("p.x"))
+    assert str(caught.value) == (
+        "cannot expand 'p': this Rust raw pointer shows only its address: Peeky never "
+        "follows a raw pointer, because nothing proves that what it points at still stands"
+    )
+
+
 def test_rust_container_indexes_explain_what_is_unsupported():
     from peeky.probe import _resolve
 

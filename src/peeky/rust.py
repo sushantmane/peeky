@@ -51,6 +51,7 @@ from peeky.rust_lexer import without_comments
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
 from peeky.rust_mir import (
     _BORROWING,
+    _FN_POINTER,
     OwnedLocals,
     frame_shape,
     ir_functions,
@@ -1349,6 +1350,28 @@ def _may_own(kind, generics=()):
     return True
 
 
+def _may_hold_raw(kind, generics=()):
+    """Whether a value of MIR type ``kind`` may hold a raw pointer, or reach one through
+    its references (#255): anything but a primitive, `str`, a fn pointer, or a
+    reference, tuple or array made only of those. A struct's or enum's name says nothing
+    of its fields; None may be anything; ``generics`` as for _may_own."""
+    if kind is None:
+        return True
+    kind = kind.strip()
+    if _FN_POINTER.match(kind):
+        return False
+    if reference := re.match(r"&(?:'\S* )?(?:mut )?", kind):
+        return _may_hold_raw(kind[reference.end() :], generics)
+    if kind == "str" or (kind in _PRIMITIVES and generics is not None and kind not in generics):
+        return False
+    if kind.startswith("[") and kind.endswith("]"):
+        return _may_hold_raw(_top_level_parts(kind[1:-1], ";")[0], generics)
+    if kind.startswith("(") and kind.endswith(")"):
+        parts = [part for part in _top_level_parts(kind[1:-1], ",") if part.strip()]
+        return any(_may_hold_raw(part, generics) for part in parts)
+    return True
+
+
 def _top_level_parts(text, separator):
     """``text`` split at each ``separator`` outside brackets of any kind."""
     # `->` would close a bracket (`(fn(i64) -> i64, Pt)`).
@@ -1365,9 +1388,11 @@ def _top_level_parts(text, separator):
     return [*parts, text[start:]]
 
 
-def _unproven(variable, why=None):
+def _unproven(variable, why=None, pointer=None):
     """``variable`` shown only as its pointer (#101, #108); ``why``, where it is a
-    reference past #110's proof, says so (#205)."""
+    reference past #110's proof, says so (#205). ``pointer`` (#255): "raw" for a raw
+    pointer, "unknown" for one the build's debug information does not tell from a raw
+    pointer, for the row's note."""
     # Only the address: LLDB's summary of a `char *` (`Box<u8>`) is read through the
     # pointer too.
     address = re.match(r"0x[0-9a-fA-F]+", str(variable.get("value") or ""))
@@ -1378,6 +1403,7 @@ def _unproven(variable, why=None):
         "variablesReference": 0,
         "rust_view": "unproven",
         **({"why": why} if why else {}),
+        **({"pointer": pointer} if pointer else {}),
     }
 
 
@@ -2515,6 +2541,44 @@ class RustSession(NativeSession):
         declared = member_base(self._field_cache[2], root, path[1:])
         return declared if kind in RUST_SCALARS.get(declared, ()) else None
 
+    def _raw_pointer(self, variable, frame, ancestry):
+        """Whether a field or element LLDB shows as a data pointer (``ancestry``: the
+        (name, type) of each value above it, its root local first) is a raw pointer, or is
+        read through one (#255): "raw" where its Rust type in the build's debug
+        information says so (fields.rust_raw_pointer), never LLDB's C-style name, which a
+        reference shares (`long *` is `&i64` and `*const i64`). Where that does not say:
+        "unknown" in a local whose MIR type may hold a raw pointer (a struct's name says
+        nothing of its fields). None otherwise: a reference or a Box, a pointer in a local
+        of references and primitives, or no data pointer."""
+        from peeky.fields import Unsettable, rust_raw_pointer
+
+        levels = _constructors(variable.get("type"))
+        if levels[:1] != ["pointer"] or levels[1:2] == ["function"]:
+            return None
+        path = [step for step, _ in ancestry] + [variable.get("name")]
+        hashed = _frame_hash(frame)
+        if hashed and all(isinstance(step, str) for step in path):
+            try:
+                functions, _ = self._field_types()
+                root, _ = self._declared_type(
+                    functions.get(hashed[1]) or {},
+                    path[0],
+                    self._frame_scope(frame, {"name": path[0]}),
+                )
+                raw = rust_raw_pointer(self._field_cache[2], root, path[1:])
+            except (Unsettable, TypeError, IndexError):
+                raw = None
+            if raw is not None:
+                return "raw" if raw else None
+        proofs = getattr(self, "owned", None)
+        if proofs is None:
+            return "unknown"
+        types = self._binding_types({"name": path[0]}, frame)
+        generics = proofs.type_parameters(hashed[1]) if hashed else ()
+        if not types or any(_may_hold_raw(each, generics) for each in types):
+            return "unknown"
+        return None
+
     def _free_types(self):
         """The names of the crate's own types that hold no pointer (#164), for the borrow
         check of a text change: read from the build's debug information once."""
@@ -2603,11 +2667,19 @@ class RustSession(NativeSession):
         into your code) may be midway through changing it.
 
         ``taint`` (see aggregate_taint) says the value is inside a local whose pointers
-        may reach freed memory: a pointer there shows only its address. ``ancestry``:
+        may reach freed memory: a pointer there shows only its address. A raw pointer
+        anywhere inside a value shows only its address too (#255). ``ancestry``:
         the (name, type) of each value above a field or element, its root local first,
         for a `Vec`, `String`, `&str` or `Box<str>` field (see _field_container).
         """
         kind = variable.get("type")
+        raw = self._raw_pointer(variable, frame, ancestry) if not top and ancestry else None
+        if raw == "raw" or (raw and not taint):
+            # #255: a raw pointer inside a value (a field, a tuple or array element, a
+            # NonNull's) keeps no borrow, so nothing shows that what it points at still
+            # stands, however live the value is: only its address, as a local's. One the
+            # debug information does not tell apart in a moved value is the next rule's.
+            return _unproven(variable, pointer=raw)
         if taint and not top and (_holds_data_pointers(kind) or _is_wide_box(kind)):
             # #108: a Box field (or a Vec's, String's or Rc's pointer, a reference) of a
             # moved, dropped or unproven local; its own fields hold no pointer.
@@ -2769,6 +2841,23 @@ class RustSession(NativeSession):
             # every binding is a reference, a raw pointer or a fn pointer (or an array of
             # them): a generic `T`, `Self` or `impl Trait` may be a Box.
             pointer = _holds_data_pointers(kind)
+            # #255: a raw pointer keeps no borrow, so nothing proves what it points at: only
+            # its address, whatever #110 would find, and also where it cannot judge (an
+            # optimized build). An array of them (`[*const Pt; 2]`) is not collapsed: each
+            # element is a raw pointer inside a value.
+            levels = _constructors(kind)
+            if (
+                levels[:1] == ["pointer"]
+                and levels[1:2] != ["function"]
+                and types
+                and all(re.match(r"\*(?:const|mut) ", each or "") for each in types)
+            ):
+                return _unproven(variable, pointer="raw")
+            raw_array = (
+                levels[:1] == ["array"]
+                and bool(types)
+                and all(re.match(r"\[+\*(?:const|mut) ", each or "") for each in types)
+            )
             provable = innermost and unoptimized and hashed
             gated = (owning or (pointer and not plain)) and not (
                 provable
@@ -2779,7 +2868,7 @@ class RustSession(NativeSession):
             # Judged in every frame (`--frame N` reads callers): only proofs that make a
             # value readable (an owned container, a Box) are the innermost frame's.
             lent_only = not gated
-            if not gated and unoptimized and hashed:
+            if not gated and unoptimized and hashed and not raw_array:
                 # #110: a reference (or raw pointer, `&str`, a tuple holding one) outlives
                 # what it points into in scope, though not in use: it reads while the code
                 # still uses it ahead. A line breakpoint stops only where the line starts in
@@ -3054,9 +3143,10 @@ class RustSession(NativeSession):
         """#108: how much of a top-level local LLDB shows as a struct, tuple, array or
         enum (a value with children, not a pointer) reads, for one whose MIR type may own
         memory through a pointer inside it (a Box field, a Vec's or String's buffer, an
-        Rc; any struct, as the MIR names no fields). None: all of it, where the build's
-        MIR proves it initialized at the stop in the innermost frame of an unoptimized
-        build. "pointers": its own fields, not what its pointers reach, in a caller frame
+        Rc; any struct, as the MIR names no fields). None: all of it but what a raw
+        pointer in it points at (view_variable, #255), where the build's MIR proves it
+        initialized at the stop in the innermost frame of an unoptimized build.
+        "pointers": its own fields, not what its pointers reach, in a caller frame
         proven the same way (a callee may be midway through replacing a Box it lent).
         "stale": its fields marked as the bytes it left behind, and not what its
         pointers reach, where it may be moved, dropped, partly moved or not yet

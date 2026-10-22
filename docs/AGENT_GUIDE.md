@@ -64,7 +64,7 @@ the commands.
      read it below its declaration too (7.1).
    - Python: a `note` marks a local the pass assigns below the stop (5.1).
    - Rust: `[stale]` is a moved local's leftover bytes. Raw fields with a note are contents Peeky
-     could not prove (7.2).
+     could not prove (7.2). `unproven_pointer`: `raw` (a raw pointer) or `unknown` (maybe one).
    - Optimized builds may show stale values.
 7. **Rust reads `Vec`/`String` contents it can prove alive.** Those are owned locals, reference
    parameters of plain elements, `&str` loop items, and such fields: `self.values`, `entry.name`.
