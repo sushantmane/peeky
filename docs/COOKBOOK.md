@@ -1,6 +1,22 @@
 # Peeky Cookbook
 
-Recipes for debugging running programs from your terminal. Each one is copy-paste ready from the repository root and shows real output (macOS, Python 3.13, recorded 2026-10-16). Agents use the same commands; see [AGENT_GUIDE.md](AGENT_GUIDE.md). Each language's rules, with pointers into this book: [Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md). What is particular to one language is in its cookbook, under the number of the section here it adds to: [Python](lang/python-cookbook.md), [Java](lang/java-cookbook.md), [C and C++](lang/c-cpp-cookbook.md), [Rust](lang/rust-cookbook.md).
+Recipes for debugging running programs from your terminal. Agents use the same commands: see
+[AGENT_GUIDE.md](AGENT_GUIDE.md).
+
+- **Real output:** the output shown is real, recorded on macOS with Python 3.13, from 2026-10-16
+  on.
+- **Copy and paste:** run the commands from the repository root. A recipe that uses a small program
+  of its own shows that program.
+- **Languages:** this book covers what every language shares. Each language has a one-page summary
+  of its rules, and a cookbook for what is particular to it. A language cookbook's sections have
+  the numbers of the sections here that they add to.
+
+| Language | Its rules | Its cookbook |
+| --- | --- | --- |
+| Python | [python.md](lang/python.md) | [python-cookbook.md](lang/python-cookbook.md) |
+| Java | [java.md](lang/java.md) | [java-cookbook.md](lang/java-cookbook.md) |
+| C and C++ | [c-cpp.md](lang/c-cpp.md) | [c-cpp-cookbook.md](lang/c-cpp-cookbook.md) |
+| Rust | [rust.md](lang/rust.md) | [rust-cookbook.md](lang/rust-cookbook.md) |
 
 **The loop:** ask a question, keep the answer, check the fix.
 
@@ -12,9 +28,24 @@ peeky session start <target> --at <file>:<line>                        # several
 peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # proof, on a fresh build
 ```
 
-> **Tip:** a breakpoint stops **before** its line runs. To see a value a line assigns, stop on the next line.
+**Words used here:**
 
-> **Tip:** an intervention (`--set`) is an experiment on one run. It tells you whether a hypothesis explains the output. Only `peeky verify` says a source fix works.
+| Word | Meaning |
+| --- | --- |
+| target | The program to debug: a file or a directory, with a `--config` where needed ([0](#0-setup)) |
+| probe | One complete run that stops at a line, captures values and can change them ([2](#2-asking-questions-with-probes)) |
+| hit | One stop at the probe's line |
+| selector | What to capture: a name, a dotted path, an index or a string key ([2.1](#21-fields-and-indexes)) |
+| intervention | A change made with `--set` during a run ([2.3](#23-test-a-hypothesis-by-changing-a-value)) |
+| run | A probe's saved results, which `peeky queries` and `peeky sql` read ([4](#4-sql-over-saved-runs)) |
+| session | A program kept stopped, for several looks at one stop ([5](#5-step-by-step-sessions)) |
+| worker | The process that runs the debugger next to the program ([9](#9-a-program-on-another-host)) |
+
+> **Tip:** a breakpoint stops **before** its line runs. To see a value that a line assigns, stop on
+> the next line.
+
+> **Tip:** an intervention is an experiment on one run. It tells you whether a hypothesis explains
+> the output. Only `peeky verify` says that a source fix works.
 
 ---
 
@@ -1554,7 +1585,8 @@ run_a  run_b  hit   phase     selector  value_a           value_b               
 
 ## 7. C, C++, Rust and Java
 
-The commands are the same for every language; only the target changes. Each language's own sections are in its cookbook.
+The commands are the same for every language. Only the target changes. Each language's own
+sections are in its cookbook.
 
 ### 7.1 C and C++
 
@@ -1574,67 +1606,229 @@ In [Java 7.4](lang/java-cookbook.md#74-java-tests-already-running-gradle---debug
 
 ### 7.5 Optimized Builds
 
-Set `"optimization": "O2"` (C/C++) or `"opt_level": "2"` (Rust) in a `--config` to debug the optimized program. Locals may then be `unavailable`, shown values can be stale, and changes are refused (a probe's `--set` before the program runs, saying where the debug information keeps the local only in registers); every result carries `optimized` and a warning.
+To debug the optimized program, set its level in a `--config`:
+
+| Language | Key | Example |
+| --- | --- | --- |
+| C, C++ | `optimization` | `"optimization": "O2"` |
+| Rust | `opt_level` | `"opt_level": "2"` |
+
+[NATIVE.md](NATIVE.md) lists the other levels. A C or C++ config also names the tools, as
+NATIVE.md shows. For example, this `examples/c/optimized.json`:
+
+```json
+{"sources": ["pagination_bug.c"], "headers": ["pagination.h"], "optimization": "O2", "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang", "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap", "dwarfdump": "/usr/bin/dwarfdump", "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil", "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}
+```
+
+```sh
+peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:25 \
+  --capture page,page_size,start
+```
+
+```
+hit  phase     line  function    selector   type  value
+1    observed  25    main [opt]  page       int   1
+1    observed  25    main [opt]  page_size  int   3
+1    observed  25    main [opt]  start      int   3
+status: completed  hits: 1  seconds: 0.994  max pause: 37.7 ms
+warning: Optimized build (-O2): values that are shown can still be stale or wrong (the debugger cannot tell). Confirm with an unoptimized build before trusting them.
+output:
+  PAGE:[40, 50, 60]
+...
+```
+
+What changes in an optimized build:
+
+- Locals may be `unavailable`.
+- Values that are shown can be stale.
+- The `function` column marks the frame `[opt]`.
+- Every result carries `optimized` and a warning.
+- Changes are refused. A probe's `--set` is refused before the program runs, and the error says
+  where the debug information keeps the local only in registers:
+
+```sh
+peeky probe examples/c --config examples/c/optimized.json --at pagination_bug.c:25 \
+  --capture page,page_size,start --set start=0
+```
+
+```
+error [MUTATION_REJECTED]: `start` cannot be changed: changing values is refused in an optimized build (-O2), where the program may keep using other copies of a value; here the debug information gives `start` no stack slot (a register or a location list), so a change could not reach every copy. Refused before the program runs: the debugger's launch/attach request was not sent. Use an unoptimized build
+hint: Use an unoptimized build to change values.
+```
 
 ---
 
 ## 8. Slow Programs and Tool Timeouts
 
+If a probe or a `verify` may outlast your tool's timeout, add `--background`. Then collect the
+result with `peeky job wait`:
+
 ```sh
 peeky probe examples/pagination_bug.py --at 8 --capture start --background
-# job 3f2c... started; collect it with `peeky job wait 3f2c...`
-peeky job wait 3f2c... --timeout 20     # exit 3 while still running; then the exact output
-peeky job list
 ```
 
-`--background` works for `probe` and `verify`. Other bounds:
-- `--timeout S`: per probe (default 60 s, at most 300);
-- a `session` command's `--timeout S` (`session start` included): how long it waits for the program (default 30 s, at most 300); a program still running is left running, and `session wait` waits again;
-- `--hits N`: at most 100 (`--hits all` captures every stop up to 100);
-- `--until hits`: skips waiting for the program to exit.
+```
+job e85df1538ef6ffc0 started; collect it with `peeky job wait e85df1538ef6ffc0`
+```
+
+```sh
+peeky job wait e85df1538ef6ffc0 --timeout 20
+```
+
+```
+peeky: started; breakpoint pagination_bug.py:8 verified
+peeky: waiting for the program to reach it...
+peeky: hit 1/1 at pagination_bug.py:8; capturing
+peeky: all requested hits captured; letting the program finish
+peeky: program finished after 1 hit(s)
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: completed  hits: 1  seconds: 1.069  max pause: 10.7 ms
+output:
+  PAGE: [40, 50, 60]
+...
+```
+
+- `--background` works for `probe` and `verify` only.
+- While the job is still running, `peeky job wait` exits with status 3. Once the job has finished,
+  it prints the job's exact output.
+- `peeky job list` lists the jobs from the last 24 hours:
+  `e85df1538ef6ffc0  probe  finished  1.1 s`.
+
+Other bounds:
+
+| Bound | Default | At most | What it does |
+| --- | --- | --- | --- |
+| A probe's `--timeout S` | 60 s | 300 s | Bounds the whole probe, build included |
+| A `session` command's `--timeout S`, `session start` included | 30 s | 300 s | Bounds how long the command waits for the program. A program still running is left running, and `session wait` waits again |
+| `--hits N` | | 100 | `--hits all` captures every stop, up to 100, or fewer with more than 20 selectors ([2.2](#22-every-iteration-of-a-loop)) |
+| `--until hits` | | | Skips waiting for the program to exit |
+| `peeky job wait`'s `--timeout S` | 20 s | 300 s | Bounds how long it waits for the job |
 
 ---
 
 ## 9. A Program on Another Host
 
-Run the worker next to the program and reach it through SSH:
+Run the worker next to the program, and reach it through an SSH tunnel.
+
+On the host, make a token and start the worker:
 
 ```sh
-# on the host
 export DEBUG_TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 python3 -m peeky.worker --root /srv/app --port 8765
+```
 
-# on your machine (same sources)
+On your machine, with the same sources, open the tunnel and give the same token:
+
+```sh
 ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 you@host &
 export PEEKY_WORKER_TOKEN='<the token>'
 peeky probe ./app/job.py --at 42 --capture rows --worker http://127.0.0.1:8765
 peeky session start ./app/job.py --at 42 --worker http://127.0.0.1:8765
 ```
 
-If the host's source differs from yours, the worker refuses before running anything (`PROVENANCE_CHANGED`). A dropped tunnel gives `UNREACHABLE`; reconnect and continue, because the worker keeps the session. To try this without a second machine, `PEEKY_E2E_DOCKER=1 pytest tests/remote -v` runs it against a Linux container (needs Docker or OrbStack). The recorded run is in [REMOTE.md](REMOTE.md).
+The worker's `--root` holds the host's copy of the target's directory. So `./app/job.py` on your
+machine is `/srv/app/job.py` on the host.
+
+The probe's output looks as it does locally. For example, with `job.py` a copy of
+`examples/pagination_bug.py`, and the worker on the same machine without a tunnel:
+
+```sh
+peeky probe ./app/job.py --at 8 --capture start --worker http://127.0.0.1:8765
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: completed  hits: 1  seconds: 1.058  max pause: 6.3 ms
+output:
+  PAGE: [40, 50, 60]
+...
+```
+
+If the host's source differs from yours, the worker refuses before running anything:
+
+```
+error [PROVENANCE_CHANGED]: Worker source provenance differs for the program job.py: refused before launching. Sync sources before debugging remotely
+hint: Sources, build outputs or tools changed; start a new session on a fresh build.
+```
+
+- A dropped tunnel gives `UNREACHABLE`. Reconnect and continue: the worker keeps the session.
+- To try this without a second machine, run `PEEKY_E2E_DOCKER=1 pytest tests/remote -v`. It runs
+  against a Linux container, and needs Docker or OrbStack.
+- [REMOTE.md](REMOTE.md) has the recorded run.
 
 ---
 
 ## 10. When Something Goes Wrong
 
-Errors carry a stable `code`, a `hint`, and whether retrying can help (`--json` shows all fields).
+An error carries a stable `code`, a `hint`, and whether retrying can help. `--json` shows all the
+fields.
 
-| You see | Meaning | Do this |
+| You see | What it means | What to do |
 | --- | --- | --- |
-| `NO_STOP` | The line never ran (e.g. `--at 6`, the `raise` that valid input never reaches), or the program failed before it (the message gives the exit code when the debugger reports one, and the output says why) | Pick a line the run executes; `describe` lists lines with code, not lines that run. After a failure, check the program's arguments: everything after `--` goes to the program, and the hint names any of Peeky's own options found there |
-| `warning: The debugger moved the breakpoint ...` | The line has no code of its own; values come from the line named in the warning | Use a line from `describe` |
-| `<not found; visible: items, page, ...>` in a row | The name is not visible at that stop, or is not assigned yet (a breakpoint stops before its line) | Use a listed name, or stop one line later |
-| `MUTATION_REJECTED` | Not a literal (`--set start=min(1, 2)`), wrong type or range, or a Rust local held in a register | Use a literal of the right type, or edit the source and `verify` |
-| `INVALID_BREAKPOINT` | Conditions and logpoints are refused (they run code), or a Java line has no code | Unconditional lines only; probe with `--hits` and filter in SQL |
-| `PROVENANCE_CHANGED` | Sources, build outputs, tools or headers changed during the session | Start again on a fresh build |
-| `STALE_STOP` | The program moved on, possibly auto-resumed by `--max-pause` | `session wait`, then `inspect` |
-| `NO_SESSION` | No session under that name, or its start was interrupted | `session start` again (it takes the name over) |
-| `TIMEOUT` / `DEBUGGER_ERROR` | A bound was hit, or the debugger failed; the session is closed | Start again; never repeat a `set` blindly |
-| `UNREACHABLE` / `TRANSPORT_LOST` | The worker or the SSH tunnel is down / broke mid-request | Restore the tunnel; after `TRANSPORT_LOST`, `inspect` before anything else |
-| `INVALID_QUERY` | Bad SQL, or a write | `peeky sql --schema` |
-| A path you did not type (`/private/tmp/case/app.py` for `/tmp/case/app.py`) | Peeky prints real paths: on macOS `/tmp` is a link to `/private/tmp`, so both name the same file | Match files by the part after `/tmp` |
+| `NO_STOP` | The line never ran, such as `--at 6`: the `raise` that valid input never reaches. Or the program failed before it. Then the message gives the exit code if the debugger reports one, and the output says why | Pick a line that the run executes. `describe` lists lines with code, not lines that run. After a failure, check the program's arguments. Everything after `--` goes to the program, and the hint names any of Peeky's own options found there |
+| `warning: The debugger moved the breakpoint ...` | The line has no code of its own. Values come from the line that the warning names | Use a line from `describe` |
+| `<not found; visible: items, page, ...>` in a row | The name is not visible at that stop. Or it is not assigned yet: a breakpoint stops before its line | Use a listed name, or stop one line later |
+| `MUTATION_REJECTED` | A change was refused. For example: not a literal (`--set start=min(1, 2)`), a wrong type or range, or a Rust local held in a register | Use a literal of the right type. Or edit the source, and `verify` the edit |
+| `INVALID_BREAKPOINT` | Conditions and logpoints are refused, because they run code. Or a Java line has no code | Use unconditional lines only. Probe with `--hits`, and filter in SQL |
+| `PROVENANCE_CHANGED` | Sources, build outputs, tools or headers changed during the session. Or a worker's copy differs from yours ([9](#9-a-program-on-another-host)) | Start again on a fresh build |
+| `STALE_STOP` | The program moved on. `--max-pause` may have resumed it | Run `session wait`, then `inspect` |
+| `NO_SESSION` | No session has that name, or its start was interrupted | Run `session start` again. It takes the name over |
+| `TIMEOUT` or `DEBUGGER_ERROR` | A bound was hit, or the debugger failed. The session is closed | Start again. Never repeat a `set` blindly |
+| `UNREACHABLE` | The worker or the SSH tunnel is down | Restore the tunnel |
+| `TRANSPORT_LOST` | The worker or the SSH tunnel broke mid-request | Restore the tunnel, then run `inspect` before anything else |
+| `INVALID_QUERY` | Bad SQL, or a write | Run `peeky sql --schema` |
+| A path you did not type, such as `/private/tmp/case/app.py` for `/tmp/case/app.py` | Peeky prints real paths. On macOS, `/tmp` is a link to `/private/tmp`, so both name the same file | Match files by the part after `/tmp` |
 
-All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with unreliable timestamps, `PEEKY_NO_DIGEST_CACHE=1` rehashes every file on every check.
+For example, line 6 of `examples/pagination_bug.py` is a `raise` that this run never reaches:
+
+```sh
+peeky probe examples/pagination_bug.py --at 6 --capture page
+```
+
+```
+hit  phase  line  function  selector  type  value
+status: no-stop  hits: 0  seconds: 1.094
+error [NO_STOP]: The program finished without stopping at pagination_bug.py:6; check `peeky describe` for executable lines
+hint: Pick a line the program executes; see `peeky describe`.
+cleanup: nothing Peeky could identify was still running
+output:
+  PAGE: [40, 50, 60]
+...
+```
+
+Line 10 is blank, so the debugger moves the breakpoint:
+
+```sh
+peeky probe examples/pagination_bug.py --at 10 --capture start
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  9     get_page  start     int   3
+status: completed  hits: 1  seconds: 1.086  max pause: 6.3 ms
+warning: The debugger moved the breakpoint from line 10 to line 9 (line 10 has no code of its own); values are from line 9. Choose a line from `peeky describe`.
+...
+```
+
+An expression is not a literal:
+
+```sh
+peeky probe examples/pagination_bug.py --at 8 --capture start --set 'start=min(1, 2)'
+```
+
+```
+hit  phase     line  function  selector  type  value
+1    observed  8     get_page  start     int   3
+status: failed  hits: 1 before it failed  seconds: 0.342
+error [MUTATION_REJECTED]: Python --set values must be a literal (number, string, bytes, True/False/None, or a list/tuple/dict/set of literals); expressions are not evaluated
+hint: Pass a literal value of the variable's type (C, C++ and Rust: a decimal integer, or text in double quotes for a string).
+...
+```
+
+[ERRORS.md](ERRORS.md) lists all the codes. If you suspect a filesystem with unreliable timestamps,
+set `PEEKY_NO_DIGEST_CACHE=1`: Peeky then rehashes every file on every check.
 
 ---
 
@@ -1642,19 +1836,19 @@ All codes are listed in [ERRORS.md](ERRORS.md). If you suspect a filesystem with
 
 | You would type | Peeky | Notes |
 | --- | --- | --- |
-| `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run, nothing left running |
-| `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only; no expressions. Quote selectors with `[...]` (zsh globs them) |
-| `print m[1]` (a C++ `std::map`) | `--capture "m[1],m[#0].first"` | `m[1]` is the value for key 1, as in C++; `m[#0]` is the first entry in iteration order ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-c-map-or-set-by-key)) |
-| `set var x = 0`, `continue` | `--set x=0` | Applied once, at `--set-hit N`; the output shows the effect |
-| `ignore 1 9`, `continue` ×10 | `--hits 10` (or `--hits all`), then `peeky queries hits` | Every hit is captured and saved |
+| `break file:12`, `run`, `print x` | `peeky probe target --at file:12 --capture x` | One command, one complete run. Nothing is left running |
+| `print obj.field`, `print a[0]`, `print d['k']` | `--capture "obj.field,a[0],d['k']"` | Paths, indexes and string keys only, no expressions. Quote selectors with `[...]`: zsh globs them |
+| `print m[1]` (a C++ `std::map`) | `--capture "m[1],m[#0].first"` | `m[1]` is the value for key 1, as in C++. `m[#0]` is the first entry in iteration order ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-c-map-or-set-by-key)) |
+| `set var x = 0`, `continue` | `--set x=0` | Only where the language allows the change ([2.3](#23-test-a-hypothesis-by-changing-a-value)). Applied once, at `--set-hit N`. The output shows the effect |
+| `ignore 1 9`, `continue` ×10 | `--hits 10` (or `--hits all`), then `peeky queries hits` | Every hit up to N is captured and saved |
 | `commands 1 / silent / print x / end` | `--hits N --capture x` | Logging without breaking into the run |
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
-| `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children with their selectors |
-| `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop; values come from the top frame |
-| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals (frame N as `frames` lists them) |
-| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java `--into`/`--out` skip JDK code. After `step --out`, C, C++, Rust and Java `session inspect` shows what the function returned under `[Returned]` (also when the step stopped in a library), and `session get return` reads it; withheld unless exact (2.9). Python: not available |
-| `finish` at every call (`Run till exit ... Value returned is`) | `peeky probe target --at <function's first line> --capture return --hits all` | One `(return)` row per call, recursion and library callers included (2.9) |
-| `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot; the session's own breakpoint stays, and stopping there first says so (exit 3) |
-| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop or to exit |
+| `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children, with their selectors |
+| `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop. Values come from the top frame |
+| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals. Frame N is as `frames` lists them |
+| `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java's `--into` and `--out` skip JDK code. After `step --out` in C, C++, Rust and Java, `session inspect` shows what the function returned, under `[Returned]`. It does so also when the step stopped in a library. `session get return` reads it. The value is withheld unless it is exact ([2.9](#29-what-a-function-returned)). Python: not available |
+| `finish` at every call (`Run till exit ... Value returned is`) | `peeky probe target --at <function's first line> --capture return --hits all` | One `(return)` row per call, recursion and library callers included ([2.9](#29-what-a-function-returned)) |
+| `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot. The session's own breakpoint stays. If the program stops there first, Peeky says so, with exit status 3 |
+| `continue` | `peeky session continue [--to-exit]` | Runs to the next stop, or to the exit |
 | "rerun with another input and compare by eye" | `--arg ... --label A`, then `peeky queries diff` | The `(output)`, `(args)`, ... rows come first, then the first divergence |
-| "I think this fixes it" | `peeky verify --old ... --new ...` | Fresh build plus an independent checker |
+| "I think this fixes it" | `peeky verify --old ... --new ...` | A fresh build, and an independent checker |
