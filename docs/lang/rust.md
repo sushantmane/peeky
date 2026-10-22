@@ -114,6 +114,10 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   `[unproven]` or `<unverified ...>`. That includes a moved or dropped value, one in a caller
   frame, and one in an optimized build
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).
+- A reference reads while the code still uses it, and after its last use until a call or drop
+  runs. A call of `std::ptr::eq` or `std::ptr::addr_eq` doesn't count. Past that, it shows only its
+  pointer, and its note names the call or drop and its line
+  ([Rust 7.2](rust-cookbook.md#when-a-reference-reads)).
 - A local whose slot may hold leftovers is withheld: the row says `no value yet:` and why. That is
   a local not assigned on some path (`let x;`), or not kept across an `.await`
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).

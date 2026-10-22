@@ -778,8 +778,10 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
         for name in sources
         for text in [(Path(workspace) / name).read_text(errors="replace")]
     )
+    # Every function the dump holds, to tell the crate's own `std::ptr::eq` (#259).
+    defined = set()
     return OwnedLocals(
-        load_bodies(Path(workspace) / MIR_DIR, crate),
+        load_bodies(Path(workspace) / MIR_DIR, crate, defined),
         ir_functions(ir, sources),
         sources,
         precise=not collapsed,
@@ -788,6 +790,7 @@ def owned_locals(workspace, artifacts, crate, ir, sources):
             name: (Path(workspace) / name).read_bytes().decode("utf-8", errors="replace")
             for name in sources
         },
+        defined=defined,
     )
 
 
@@ -1431,6 +1434,76 @@ def _unproven(variable, why=None, pointer=None):
         **({"why": why} if why else {}),
         **({"pointer": pointer} if pointer else {}),
     }
+
+
+# What may have run since a reference's last use (rust_mir.OwnedLocals._judge's gaps).
+_GAP_WORDS = {
+    "call": ("a call", "calls"),
+    "drop": ("a drop", "drops"),
+    "write": ("a write", "writes"),
+    "end": ("the end of a variable's scope", "the ends of variables' scopes"),
+}
+
+
+def _listed(items):
+    """``items`` joined as a list in a sentence: `a`, `a and b`, `a, b and c`."""
+    items = list(items)
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _gap_reason(name, reasons, line):
+    """Why the MIR does not show that what the reference ``name`` points at still stands
+    at a stop on ``line`` (#259): a clause after "because", from the reason
+    OwnedLocals.reference_valid gave (``reasons``, its ``why``). It names what may have
+    run since its last use, and where."""
+    reason = reasons[0] if reasons else ("since", frozenset())
+    if reason[0] in ("dropped", "captured"):
+        # Between `drop((*v))` and the store of `*v = new` (through a closure's or a
+        # future's capture too).
+        return f"what `{name}` points at may be dropped here, before a new value is stored there"
+    if reason[0] == "unassigned":
+        return f"`{name}` may not be assigned yet here"
+    if reason[0] == "elsewhere":
+        return (
+            "the build's MIR cannot place this stop: it is in code from another file, on a line "
+            "the build's IR does not explain, or in a function Peeky could not analyze"
+        )
+    gaps = reason[1] if reason[0] == "since" else frozenset()
+    if not gaps or ("start", None) in gaps:
+        return (
+            f"`{name}` is not used ahead, and the MIR does not show that nothing has moved, "
+            f"changed or freed what it points at since its last use; probe a line that still "
+            f"uses `{name}`"
+        )
+    # Calls and drops are what can free it; a write or a scope's end is named only alone.
+    gaps = {gap for gap in gaps if gap[0] in ("call", "drop")} or gaps
+    if line is not None and all(at == line for _, at in gaps):
+        kinds = [_GAP_WORDS[kind][0] for kind in _GAP_WORDS if (kind, line) in gaps]
+        return (
+            f"the stop may be past {_listed(kinds)} on this line that "
+            f"{'runs' if len(kinds) == 1 else 'run'} after `{name}`'s last use; probe a line "
+            f"that uses `{name}` before any call"
+        )
+    parts = []
+    for kind, (one, many) in _GAP_WORDS.items():
+        lines = sorted(at for each, at in gaps if each == kind and at is not None)
+        macro = (kind, None) in gaps
+        if not lines and not macro:
+            continue
+        where = []
+        if lines:
+            # The walk back stops at a limit: there may be more than were found.
+            shown = [str(n) for n in lines[:4]] + (["others"] if len(lines) > 4 else [])
+            where.append(("on lines " if len(lines) > 1 else "on line ") + _listed(shown))
+        if macro:
+            where.append("in a macro's code")
+        # `on lines 3 and 5, and in a macro's code`.
+        joined = ", and ".join(where) if " and " in where[0] else _listed(where)
+        parts.append(f"{many if len(lines) + macro > 1 else one} {joined}")
+    return (
+        f"`{name}` is not used ahead, and {_listed(parts)} may have run since its last use; "
+        f"probe a line that still uses `{name}`"
+    )
 
 
 class RustSession(NativeSession):
@@ -2764,7 +2837,7 @@ class RustSession(NativeSession):
         # An optimized build's line table cannot place a proof (#13): nothing is proven.
         unoptimized = self.target.opt_level == "0"
         shown_path = ((frame or {}).get("source") or {}).get("path")
-        verdict = []
+        verdict, reasons = [], []
 
         def block():
             # #115: the DWARF lexical block the innermost frame's pc is in, which tells
@@ -2787,6 +2860,7 @@ class RustSession(NativeSession):
                         breakpoint=innermost and stop == "breakpoint",
                         column=(frame or {}).get("column"),
                         block=block(),
+                        why=reasons,
                     )
                 )
             return verdict[0]
@@ -2957,11 +3031,10 @@ class RustSession(NativeSession):
                 # A Vec of references past #110's proof (`names: Vec<&str>` after its last
                 # use, #205): its own fields (`names.len`) are its own, initialized, and
                 # read; the pointers inside it show only their address.
-                name = variable.get("name")
                 return {
                     "raw_reason": "its items are references, and the build's MIR does not "
-                    "show that what they point at still stands here (#110: a call or drop "
-                    f"may have come since `{name}` was last used)",
+                    "show that what they point at still stands here, because "
+                    + _gap_reason(variable.get("name"), reasons, line),
                     "taint": "pointers",
                 }
             if (
@@ -3002,8 +3075,7 @@ class RustSession(NativeSession):
                     # A reference past its last use (`cell` of `for cell in cells`, #205).
                     why = (
                         "the build's MIR does not show that what it points at still stands "
-                        "here (#110: a call or drop may have come since "
-                        f"`{variable.get('name')}` was last used)"
+                        "here, because " + _gap_reason(variable.get("name"), reasons, line)
                     )
                 return _unproven(variable, why)
         view = active_variant(variable, fetch, layouts)
@@ -3078,7 +3150,7 @@ class RustSession(NativeSession):
         ):
             return (
                 f"the build's MIR does not prove `{name}` initialized at this line: it may "
-                "be moved, dropped or not yet assigned around it (#53)"
+                "be moved, dropped or not yet assigned around it"
             )
         if getattr(self, "unsafe_code", None):
             return getattr(self, "unsafe_code", None)
@@ -3122,7 +3194,7 @@ class RustSession(NativeSession):
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
         proof = self.parameters.get((hashed[1], root))
-        verdict, declared = [], None
+        verdict, declared, reasons = [], None, []
 
         def valid():
             # #110 for the root, once.
@@ -3136,6 +3208,7 @@ class RustSession(NativeSession):
                         breakpoint=innermost and stop == "breakpoint",
                         column=place.get("column"),
                         block=self._stop_block(hashed[1], frame) if innermost else None,
+                        why=reasons,
                     )
                 )
             return verdict[0]
@@ -3153,7 +3226,7 @@ class RustSession(NativeSession):
             if not proofs.proven(hashed[1], root, line, path):
                 return {
                     "raw_reason": f"the build's MIR does not prove `{root}` initialized at "
-                    "this line: it may be moved, dropped or not yet assigned around it (#108)"
+                    "this line: it may be moved, dropped or not yet assigned around it"
                 }
             declared = proofs.declared_type(hashed[1], root, line, path) or ""
             through, dereference = "owned", bool(re.match(r"(?:std::boxed::)?Box<", declared))
@@ -3164,8 +3237,8 @@ class RustSession(NativeSession):
                 if valid() is not True:
                     return {
                         "raw_reason": f"`{root}` is a reference, and the build's MIR does "
-                        "not show that what it points at still stands here (#110: a call or "
-                        f"drop may have come since `{root}` was last used)"
+                        "not show that what it points at still stands here"
+                        + (f", because {_gap_reason(root, reasons, line)}" if reasons else "")
                     }
                 through, dereference = "lent", True
         try:
@@ -3186,8 +3259,8 @@ class RustSession(NativeSession):
             return {"raw_reason": unread_elements(name)}
         if through == "reference" and valid() is False:
             return {
-                "raw_reason": f"what `{root}` points at may be dropped and not yet replaced "
-                "here (#110)"
+                "raw_reason": f"the build's MIR does not show that what `{root}` points at "
+                f"still stands here, because {_gap_reason(root, reasons, line)}"
             }
         if (
             through == "owned"
@@ -3198,8 +3271,8 @@ class RustSession(NativeSession):
         ):
             return {
                 "raw_reason": f"it borrows, and the build's MIR does not show that what "
-                f"`{root}` borrows still stands here (#110): `{root}` is not used ahead, and "
-                "a call or drop may have come since its last use"
+                f"`{root}` borrows still stands here"
+                + (f", because {_gap_reason(root, reasons, line)}" if reasons else "")
             }
         view = container_view(variable, read, layouts, optimized=False, field=name)
         if view is None and not isinstance(variable.get("memoryReference"), str):

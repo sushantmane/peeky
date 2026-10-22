@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 
 from peeky.adapters import PythonAdapter
 from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
+from peeky.dap import RequestFailed
 from peeky.digest import sha256_file, tree_fingerprint
 from peeky.identifiers import is_name
 from peeky.java_metadata import descriptor_name, loop_header_stops
@@ -241,6 +242,22 @@ def _jdk_state(trail, index):
                 continue
         index -= 1
     return None
+
+
+# The short form a row shows (#261) of why `set` refuses a field (member_settable).
+_MEMBER_ROWS = {"it is final": "final", "it is static (shared by every instance)": "static"}
+
+
+# Why no element is promised [settable] while other threads run (#261 review).
+_THREADS_RUNNING = "other threads are running; set checks again"
+
+
+class Unproven(str):
+    """Why an element's mark can be promised neither way (#261): the launcher could not
+    tell in time whether a JDK class holds its array, or cannot tell before a change (an
+    older bundle). `set` checks again when the change is made."""
+
+    unproven = True
 
 
 class JdkState(str):
@@ -632,11 +649,18 @@ class JavaSession:
     knows_every_class = True
     # Set from the launcher's capabilities: whether it names fields' declaring classes.
     field_owners = False
+    # And whether it says what holds an array, before its elements are marked (#261).
+    array_holders = False
+    # And whether it changes fields and elements at all.
+    field_set = False
     # A field or element change tells the launcher what is left of the pause budget, for
     # its search of what refers to an array (#204).
     pause_budget_writes = True
     # java-debug occasionally drops VM-death events (#27); infer exit from no threads.
     liveness_by_threads = True
+    # A JDI step ends in its own call: one an exception ends stops at the caller's catch, so
+    # a step's stop in the same method, at the same depth, is the same call (#262).
+    steps_end_in_their_call = True
     # java-debug's "Event Hub" thread turns every JDI event into DAP stops, steps and
     # exits. If it dies (an unpatched bundle, #27), or an exception escapes one of its
     # handlers, nothing is ever reported again: end the session at once.
@@ -644,7 +668,14 @@ class JavaSession:
         r'Exception in thread "Event Hub"': (
             "java-debug's event thread died ({excerpt}); it reports no more stops, steps or "
             "exits, so the session cannot continue: close it and retry"
-        )
+        ),
+        # The launcher suspends every thread across a change to an element (#261). One it
+        # cannot resume ends it: the debugger's connection closes, which lets the JVM run.
+        r"Peeky experimental Java adapter: could not resume the JVM": (
+            "The session is closed: the Java adapter could not resume the JVM's threads after "
+            "a change ({excerpt}). It disconnected, so an attached JVM runs on, and a launched "
+            "one is ended. Start a new session"
+        ),
     }
 
     def __init__(self, target, prepared, java, bundle, command, bundle_hash, mapping, mapping_path):
@@ -795,6 +826,9 @@ class JavaSession:
             self.char_set = raw.get("peekyCharSet") is True
             # A launcher that names each listed field's declaring class (#204).
             self.field_owners = raw.get("peekyJdkOwners") is True
+            # And says whether a JDK class's field holds an array (#261).
+            self.array_holders = raw.get("peekyArrayHolders") is True
+            self.field_set = raw.get("peekyFieldSet") is True
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
@@ -1081,6 +1115,115 @@ class JavaSession:
             f"it is declared by {owner}, a JDK class: {_JDK_WHY}",
             f"declared by {owner} (the JDK's own state)" if scalar else None,
         )
+
+    def array_holder(self, dap, array, pause_left_ms=None):
+        """(why no element of ``array`` is marked [settable], in short, or None; whether
+        that holds for the rest of the stop) (#261). ``array``: the debugger's variable
+        for an array whose elements are listed. From the launcher's search of what
+        refers to it, which a write makes again (with a longer wait and every thread
+        suspended), so a mark promises no more than a write does:
+
+        - a JDK class's field holds it, or the search cannot tell for a reason a write
+          meets too (too many referrers): the reason;
+        - Unproven where a write may yet be made: a search that ran out of time, a
+          launcher that cannot search before a change, or another thread that is running
+          (a line breakpoint stops its own thread only), which could change what holds
+          the array before the write;
+        - None: no JDK class holds it, and no other thread runs.
+
+        Only a verdict made with every thread suspended holds for the rest of the stop.
+        ``pause_left_ms``: what is left of the session's pause budget."""
+        if not self.array_holders:
+            return (
+                Unproven(
+                    "this adapter bundle can't tell before a change whether a JDK class holds "
+                    "its array; rebuild it with scripts/setup_java_adapter.py"
+                ),
+                True,
+            )
+        request = {"variablesReference": array.get("variablesReference")}
+        if pause_left_ms is not None:
+            request["peekyPauseLeftMs"] = max(0, int(pause_left_ms))
+        try:
+            found = dap.request("peekyArrayHolder", request)
+        except RequestFailed as exc:
+            return (
+                Unproven(
+                    f"Peeky can't tell whether a JDK class holds its array ({str(exc)[:160]}); "
+                    "`set` checks when the change is made"
+                ),
+                False,
+            )
+        settled = found.get("allSuspended") is True
+        holder, unknown = found.get("holder"), found.get("unknown")
+        if isinstance(holder, str) and holder:
+            return f"its array is {holder[:200]} (the JDK's own state)", settled
+        if isinstance(unknown, str) and unknown:
+            if found.get("timedOut") is True:
+                return Unproven(f"{unknown[:200]}; `set` searches again, for up to 2 s"), settled
+            # More referrers than are read, or a JVM that cannot list them: a write is
+            # refused for the same reason.
+            return unknown[:200], settled
+        if not settled:
+            return Unproven(_THREADS_RUNNING), False
+        return None, True
+
+    def unsettable_row(
+        self,
+        variable,
+        frame=None,
+        parent=None,
+        trail=(),
+        member=False,
+        innermost=True,
+        unread=False,
+    ):
+        """Why a row of a type `set` changes is not marked [settable], in short (#261), or
+        None: for an object or array its type says it, and a name no selector reads is
+        never marked. ``member``: a field or element (``parent``: the type of what holds
+        it; ``trail``: as for internal_member); ``unread``: a local the program does not
+        read after this stop."""
+        name, kind = str(variable.get("name")), variable.get("type")
+        if kind not in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)):
+            return None
+        if member:
+            why = self.member_settable(variable, parent=parent, proven=True)
+            if why == "no selector names it":
+                return None
+            if why is not None:
+                return _MEMBER_ROWS.get(why) or (
+                    f"declared {found[1].removeprefix('java.lang.')}, not String"
+                    if (found := re.match(r"it is declared (\S+) and holds a String", why))
+                    else why
+                )
+            internal = self.internal_member(variable, parent=parent, trail=trail)
+            if internal:
+                return getattr(internal, "row", None) or str(internal)[:200]
+            if not self.field_set:
+                return (
+                    "this adapter bundle predates field and element changes; rebuild it with "
+                    "scripts/setup_java_adapter.py"
+                )
+        else:
+            if not is_name(name):
+                return None
+            declared = self.declared_local(frame, name) if frame else None
+            if declared and not all(read for _, read in declared):
+                return "a constant javac compiles into its uses"
+            if kind in _JAVA_STRINGS and not (
+                declared and all(each == _STRING_DESCRIPTOR for each, _ in declared)
+            ):
+                shown = {descriptor_name(each) for each, _ in declared or ()}
+                return (
+                    f"declared {', '.join(sorted(shown))}, not String"
+                    if shown
+                    else "Peeky cannot tell whether it is declared a String"
+                )
+        if not innermost:
+            return "in a caller's frame"
+        if unread:
+            return "not read again after this stop"
+        return None
 
     def validate_variable(self, variable, value):
         """The value must fit the local's declared type exactly.

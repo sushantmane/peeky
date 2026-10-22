@@ -73,8 +73,9 @@ the commands.
    `d['key']` (2.1).
 9. **`continue --to LINE` doesn't skip the session's breakpoint.** A stop there comes first (exit
    3, with a note): repeat the command (5.2).
-10. **Steps land where the code jumps:** a closing `}`, a loop header, or back on an `if`'s line.
-    Read a block's locals before stepping past its last statement (1.1, 5.2).
+10. **Steps land where the code jumps:** a closing `}`, a loop header, an `if`'s line, or a caller.
+    A `note` says when a step's stop is in another function or depth. Read a block's locals
+    before stepping past its last statement (1.1, 5.2).
 11. **Sessions need `--name` on every command** (unless `default`), and a `close`. Their programs'
     clocks run while you think, so prefer probes for timed code (5.3, 5.4).
 12. **`queries diff` pairs the last two runs by hit number.** Name runs (`--param a=1 --param
@@ -161,15 +162,15 @@ the commands.
   local whose declared type isn't supported, a value that doesn't fit, or a local never read after
   the stop. One refusal fails the probe, and ends with what is settable there
   (`settable here: total, i`, or `none`).
-- **Checks:** `session inspect` says why when nothing is `[settable]`. Every change is read back.
-  One the debugger refuses or can't store is `MUTATION_REJECTED`, and the session is kept. A value
-  stored differently closes the session. Expressions, names and calls are rejected, never
-  evaluated (2.3).
+- **Checks:** `session inspect` says why when nothing is `[settable]`; a Java row says why it isn't.
+  Every change is read back. One the debugger refuses or can't store is `MUTATION_REJECTED`, and
+  the session is kept. A value stored differently closes the session. Expressions, names and calls
+  are rejected, never evaluated (2.3).
 
 ### Reading probe results
 
 - **Read `warnings` every time.** They flag:
-  - a breakpoint the debugger moved to another line (values come from that line);
+  - a moved breakpoint, in a probe or `session start` (values come from the line it names);
   - a line that stops several times per pass, or a loop header only before its loop (rule 5);
   - runs that ended before all requested hits;
   - a Java exit Peeky inferred when the debugger dropped its exit event (the result stands).
@@ -205,10 +206,12 @@ and slow or unrepeatable runs.
 
 - `peeky sql --schema` lists the tables, views and canned queries (4.1). Read it before writing
   SQL.
-- `peeky queries` needs no SQL. Its queries: `run`, `wide` (a row per hit), `hits`, `compare`, and
-  `join` (two runs' hits paired by values: `key=v` or `key=a,b`). Also `diff` (what differs, first
-  divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable` and `failures`. `--param
-  a=1 --param b=5` (default: the last two) or `run=3` picks runs.
+- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (hits
+  paired by values: `key=v` or `key=a,b`; its table drops selectors that agree at every paired
+  hit), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`,
+  `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
+  `diff`, `compare` and `set_effect` tables show long values from where they differ (`--json`:
+  whole).
 - Compare numbers with `num`; `value` is the debugger's text. Mask addresses with
   `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to 4.6). `--label`
   tags a run with free text, stored as given; it never changes which runs `diff` or `compare:`

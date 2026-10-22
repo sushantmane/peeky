@@ -202,6 +202,7 @@ change that needs it.
 | `peekyCharSet` | Sends java-debug a char between single quotes, only for a variable declared `char` |
 | `peekyTextSet` | Sends a text, only for a variable declared `String` |
 | `peekyJdkOwners` | Names each listed field's declaring class (`peekyOwner`), and whether it is the JDK's (`peekyJdkOwner`): by its module, or on Java 8 by its class loader |
+| `peekyArrayHolders` | Answers Peeky's `peekyArrayHolder` request: whether a JDK class's field holds an array, and whether every thread is suspended (`allSuspended`), asked before its elements are marked `[settable]`. Suspends every thread while it checks and writes an element. Without it, elements read `[maybe settable: …]`; changes still work ([Java 7.3](lang/java-cookbook.md#arrays-the-jdk-holds)) |
 | `peekyPauseLeftMs` | Bounds the wait for what refers to an array to what the pause budget leaves ([Java 7.3](lang/java-cookbook.md#when-peeky-cant-tell-who-holds-an-array)) |
 
 ## Configure a C++ target

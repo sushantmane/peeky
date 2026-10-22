@@ -158,7 +158,9 @@ In Java, Peeky never changes a field that a JDK class declares, that is, one in 
 such a field holds, or of an array inside it, under any name:
 `the array is held by java.lang.String.value, a JDK class's field`. Such an element is refused too
 where more than 64 objects refer to it. So is one where the search for them takes longer than 2 s,
-or longer than the pause budget.
+or longer than the pause budget. Rows run the same search before they mark an element
+`[settable]`. Where the debugger itself refuses a write, the hint says that no mark could promise
+it.
 
 The value must be a literal in Python, and a scalar in a compiled language.
 

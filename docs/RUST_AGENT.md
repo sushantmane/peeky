@@ -214,6 +214,29 @@ The rules are in the cookbook's
 - A raw pointer local is judged by its MIR type, before #110. An array of them isn't collapsed:
   each element is judged as a raw pointer inside a value.
 
+### Past its last use
+
+- Between a reference's last use and the stop, a call or drop may move, drop or free its target. So
+  on every path back from the stop to its last use, only branches, assertions and whole assignments
+  to locals nothing borrows may run.
+- A call of `std::ptr::eq` or `std::ptr::addr_eq` on two raw pointer locals may run too: it reads
+  the two addresses, and nothing else (#259). The dump names `core::ptr::eq` `std::ptr::eq`, and
+  `addr_eq` alone where no other item has that name.
+- A crate's own `mod std` is dumped `std::ptr::eq` too, even one a macro declares:
+  `make_mod!(std)`. So these names count only where all of these hold:
+  - no function in the crate's MIR dump has such a name, with any prefix, such as
+    `fn std::ptr::eq` or `fn inner::addr_eq` (the standard library's bodies are never in it);
+  - no source declares, imports or renames a `std` or `core` of its own: `mod std`,
+    `use x as core`, `extern crate core as std`, or a `macro_rules!` body that names one;
+  - no macro is passed `std` or `core` other than as a path's start, as in `make_mod!(std)`;
+  - the code names `addr_eq` only after `ptr::`, so it declares none.
+- Making the reference a raw pointer (`&raw const (*f)`) is a use of it. A call given that raw
+  pointer is no use of it: the raw pointer keeps no borrow.
+- Where the proof fails, the reason it failed becomes the note. That is a value not yet assigned,
+  the Drop window below, or the calls, drops and writes on the paths back to the last use, with
+  their lines. The walk back stops after 16 of them.
+- Where a call or drop is among them, only calls and drops are named: they can free the target.
+
 ### The Drop window
 
 Between the drop and the store of `*v = new`, `v` shows only its address. That holds also when the

@@ -88,9 +88,11 @@ def test_an_attached_jvms_array_element_takes_set(attached):
     assert [(c["name"], c["before"], c["after"]) for c in result["interventions"]] == [
         ("items[3]", "40", "99")
     ]
-    assert {r["phase"]: r["settable"] for r in result["rows"]} == {
-        "observed": True,
-        "after-set": True,
+    # The JVM's other threads run on at a line breakpoint: no element is promised
+    # (#261 review), though the change is made.
+    assert {r["phase"]: (r["settable"], r.get("maybe_settable")) for r in result["rows"]} == {
+        "observed": (False, "other threads are running; set checks again"),
+        "after-set": (False, "other threads are running; set checks again"),
     }
     output = process.stdout.read()
     assert process.wait(timeout=30) == 0 and "PAGE:[99, 50, 60]" in output

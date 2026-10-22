@@ -414,7 +414,8 @@ def test_field_rows_say_whether_set_can_change_them(member_worker):
 
 def test_members_the_runtime_refuses_are_never_written(member_worker):
     _, child = inspected(member_worker)
-    with pytest.raises(ValueError, match="'nested' cannot be changed: it is final"):
+    # The whole selector, not the debugger's name alone (#261).
+    with pytest.raises(ValueError, match="`request.nested` cannot be changed: it is final"):
         call(member_worker, "set_variable", handle=child, name="nested", value="2")
     _, child = inspected(member_worker)
     with pytest.raises(ValueError, match="'nope' is not a field or element"):
@@ -461,6 +462,116 @@ def test_a_java_write_tells_the_launcher_what_is_left_of_the_pause_budget(member
     writes = [args for op, args in member_worker.dap.calls if op == "setVariable"]
     assert len(writes) == 2 and writes[-1]["value"] == "3"
     assert "peekyPauseLeftMs" not in writes[-1]
+
+
+class HolderBackend(MemberBackend):
+    """A Java array `xs` among the roots, whose write the launcher may refuse."""
+
+    def __init__(self):
+        super().__init__()
+        xs = {**variable("xs", "int[]", 300), "value": "int[2]@5", "indexedVariables": 2}
+        self.roots.append(xs)
+        self.children[300] = [variable("0"), variable("1")]
+        self.refusal = None
+
+    def request(self, operation, args):
+        if operation == "setVariable" and self.refusal:
+            from peeky.dap import RequestFailed
+
+            self.calls.append((operation, deepcopy(args)))
+            raise RequestFailed(self.refusal)
+        return super().request(operation, args)
+
+
+class HolderRuntime(MemberRuntime):
+    """Asks what holds an array before marking its elements (Java's launcher, #261);
+    ``settled``: whether every thread was suspended, so the verdict lasts the stop."""
+
+    def __init__(self, held, settled=True):
+        super().__init__()
+        self.held, self.settled, self.asked = held, settled, []
+
+    def array_holder(self, dap, array, pause_left_ms=None):
+        self.asked.append(array["value"])
+        return self.held, self.settled
+
+
+def array_handle(worker):
+    rows = call(worker, "inspect", frame_id=1)["scopes"][0]["variables"]
+    return next(row["variablesReference"] for row in rows if row["name"] == "xs")
+
+
+@pytest.mark.parametrize(
+    "held", [None, "its array is held by java.util.Fake.a (the JDK's own state)"]
+)
+def test_an_elements_mark_follows_what_holds_its_array(member_worker, held):
+    # #261: an element was marked [settable] by its path alone, then the launcher refused
+    # the write (the array was in a list an unmodifiable view wraps).
+    member_worker.dap, member_worker.runtime = HolderBackend(), HolderRuntime(held)
+    handle = array_handle(member_worker)
+    listed = call(member_worker, "expand", handle=handle)["variables"]
+    assert [row["settable"] for row in listed] == [held is None] * 2
+    assert [row.get("not_settable") for row in listed] == [held] * 2
+    # Asked once per array at a stop, however many of its elements are listed or read.
+    call(member_worker, "expand", handle=array_handle(member_worker), index=1)
+    assert member_worker.runtime.asked == ["int[2]@5"]
+    # Never for a field of an object.
+    call(member_worker, "expand", handle=inspected(member_worker)[1])
+    assert member_worker.runtime.asked == ["int[2]@5"]
+
+
+def test_a_verdict_made_while_other_threads_run_is_asked_again(member_worker):
+    # #261 review: a verdict cached for the stop went stale when a background thread
+    # wrapped the array's list in an unmodifiable view: `get` said settable, `set` refused.
+    from peeky.java import Unproven
+
+    running = Unproven("other threads are running; set checks again")
+    member_worker.dap = HolderBackend()
+    member_worker.runtime = HolderRuntime(running, settled=False)
+    for _ in range(2):
+        listed = call(member_worker, "expand", handle=array_handle(member_worker))["variables"]
+        assert [row.get("maybe_settable") for row in listed] == [str(running)] * 2
+        assert [row["settable"] for row in listed] == [False, False]
+    # Asked at each listing, never kept.
+    assert member_worker.runtime.asked == ["int[2]@5"] * 2
+    # What another thread did since is seen at the next listing.
+    member_worker.runtime.held = "its array is held by java.util.Fake.a (the JDK's own state)"
+    listed = call(member_worker, "expand", handle=array_handle(member_worker))["variables"]
+    assert [row.get("not_settable") for row in listed] == [member_worker.runtime.held] * 2
+
+
+def test_an_element_whose_holder_is_not_known_is_maybe_settable(member_worker):
+    # #261: where the launcher could not tell in time (or an older one cannot tell before
+    # a change), neither mark is promised: the row says why, and `set` decides.
+    from peeky.java import Unproven
+
+    held = Unproven("Peeky could not tell within 500 ms; `set` searches again, for up to 2 s")
+    member_worker.dap, member_worker.runtime = HolderBackend(), HolderRuntime(held)
+    listed = call(member_worker, "expand", handle=array_handle(member_worker))["variables"]
+    assert [row["settable"] for row in listed] == [False, False]
+    assert [row["maybe_settable"] for row in listed] == [str(held)] * 2
+    assert not any("not_settable" in row for row in listed)
+    # And the write is still made, as the launcher allows it.
+    call(member_worker, "set_variable", handle=array_handle(member_worker), name="1", value="2")
+    assert [op for op, _ in member_worker.dap.calls].count("setVariable") == 1
+
+
+def test_a_refused_member_write_names_the_whole_selector(member_worker):
+    # #261: "The debugger refused to change '1'" named the element's index alone.
+    member_worker.dap, member_worker.runtime = HolderBackend(), HolderRuntime(None)
+    member_worker.dap.refusal = "the array is held by java.util.Fake.a, a JDK class's field"
+    with pytest.raises(ValueError, match=r"refused to change `xs\[1\]` \(the array is held"):
+        call(member_worker, "set_variable", handle=array_handle(member_worker), name="1", value="2")
+
+
+def test_a_member_selector_is_written_as_a_read_names_it():
+    from peeky.worker import member_selector
+
+    assert member_selector([("ranking", "int[]")], "1") == "ranking[1]"
+    assert member_selector([("this", "Runoff"), ("names", "String[]")], "0") == "this.names[0]"
+    assert member_selector([("grid", "int[][]"), ("2", "int[]")], "3") == "grid[2][3]"
+    assert member_selector([("s", "Pair"), ("in", "Inner")], "lo") == "s.in.lo"
+    assert member_selector([("xs", "int [3]")], "[1]") == "xs[1]"
 
 
 @pytest.mark.parametrize("args", [{}, {"reference": 1, "handle": 1}, {"handle": "1"}])
