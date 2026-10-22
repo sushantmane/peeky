@@ -1,6 +1,6 @@
 # Peeky for Python
 
-What is particular to Python targets, one rule per line, each with the [COOKBOOK](../COOKBOOK.md) section that has the details. Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: the loop and the rules every language shares are there.
+What is particular to Python targets, one rule per line, each with the section that has the details, in the [Python cookbook](python-cookbook.md) or the [COOKBOOK](../COOKBOOK.md). Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: the loop and the rules every language shares are there.
 
 ## Targets
 
@@ -11,12 +11,12 @@ What is particular to Python targets, one rule per line, each with the [COOKBOOK
 ## Reading values
 
 - Python compiles names NFKC-normalized, and debugpy lists them so: `größe` written NFD in the source is selected as NFC `größe`, `ﬁx` as `fix`; another spelling is refused with the listed one ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
-- Dict entries are read by key: `order['id']`; `order.id` fails with a message that names `order['id']` and lists the keys ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
+- Dict entries are read by key: `order['id']`; `order.id` fails with a message that names `order['id']` and lists the keys ([Python 2.1](python-cookbook.md#21-fields-and-indexes)).
 - A line stops once per pass (a `for` header once per pass and once more when the loop ends), so Python rows have no `stop` ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
-- Two lambdas on one line are named alike (`<lambda>`): their stops are counted together, and the warning says so ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
-- `[id 6]` is debugpy's number for the object: at one hit, the same number is the same object; across hits a different number is a different object, but the same number may be a new object in a freed one's place; never compare numbers across runs ([4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python)).
-- Globals: `session inspect --globals` lists them, read-only; `get NAME` reads a global only where Peeky proves the function reads that name from its globals. Listing the globals runs every global's `__repr__` in the program ([5.1](../COOKBOOK.md#51-stop-look-change-finish)).
-- In a loop, a local the pass assigns below the stop holds an earlier pass's value: it is shown with a `note` (`this pass's code has not assigned it before this line, ...: the value is likely from an earlier pass`), and `--set` refuses it; read or change it after that assignment ([5.1](../COOKBOOK.md#51-stop-look-change-finish)).
+- Two lambdas on one line are named alike (`<lambda>`): their stops are counted together, and the warning says so ([Python 2.8](python-cookbook.md#28-change-a-value-then-restore-it)).
+- `[id 6]` is debugpy's number for the object: at one hit, the same number is the same object; across hits a different number is a different object, but the same number may be a new object in a freed one's place; never compare numbers across runs ([Python 4.6](python-cookbook.md#46-same-object-or-a-copy-java-python)).
+- Globals: `session inspect --globals` lists them, read-only; `get NAME` reads a global only where Peeky proves the function reads that name from its globals. Listing the globals runs every global's `__repr__` in the program ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
+- In a loop, a local the pass assigns below the stop holds an earlier pass's value: it is shown with a `note` (`this pass's code has not assigned it before this line, ...: the value is likely from an earlier pass`), and `--set` refuses it; read or change it after that assignment ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
 - debugpy lists a long list's first 100 items: a higher index is "beyond the debugger's visible window", not missing ([guide](../AGENT_GUIDE.md#reading-probe-results)).
 
 ## Changing values
@@ -32,7 +32,7 @@ What is particular to Python targets, one rule per line, each with the [COOKBOOK
 
 ## Candidates and verify
 
-- A candidate (`--old`/`--new`) runs from a private copy of the target root with the edit applied, and that copy is the working directory; your files are unchanged ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).
-- Nothing above the root is copied. A warning says so unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) that no repository above it holds, or the edited script is self-contained (it imports only standard modules that open no file, and names nothing that could); text shows it once per root, `--json` always. If the program reads or imports anything from above, give the project directory as the target ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).
-- A candidate with `--run` is refused: probe the edited file directly, or check the edit with `verify` ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).
+- A candidate (`--old`/`--new`) runs from a private copy of the target root with the edit applied, and that copy is the working directory; your files are unchanged ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
+- Nothing above the root is copied. A warning says so unless the root is a project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) that no repository above it holds, or the edited script is self-contained (it imports only standard modules that open no file, and names nothing that could); text shows it once per root, `--json` always. If the program reads or imports anything from above, give the project directory as the target ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
+- A candidate with `--run` is refused: probe the edited file directly, or check the edit with `verify` ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - An edit with a syntax error fails with `NO_STOP`, with the `SyntaxError` in the output ([6.6](../COOKBOOK.md#66-see-what-a-fix-does-before-making-it)).

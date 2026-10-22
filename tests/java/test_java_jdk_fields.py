@@ -129,7 +129,7 @@ def test_a_session_never_offers_a_jdk_classs_fields_and_keeps_the_programs(stock
             assert row["settable"] is False and owner in row["not_settable"], row
         assert get(capsys, "item.count.value")["value"] == "1001"
         assert get(capsys, "basket.limit")["settable"] is True
-        # An ArrayList's preview is unchanged (COOKBOOK 7.3); its boxed elements show values.
+        # An ArrayList's preview is unchanged (java-cookbook 7.3); its boxed elements show values.
         items = get(capsys, "items")
         assert re.fullmatch(
             r"ArrayList@[0-9]+ size=2 \[Integer@[0-9]+, Integer@[0-9]+\]", items["value"]

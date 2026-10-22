@@ -1897,7 +1897,7 @@ class RustSession(NativeSession):
                 )
                 + ", and Peeky proves a name in memory only when every binding of it is",
                 f"A candidate edit keeps that one in memory too, in the same probe "
-                f"(COOKBOOK 6.6): `std::hint::black_box(&mut {name});` after the `let` on "
+                f"(rust-cookbook 6.6): `std::hint::black_box(&mut {name});` after the `let` on "
                 f"{some} {listed} (declared `let mut`), or a new name for one of them",
             )
         what = "parameter" if parameter else "local"
@@ -1910,7 +1910,7 @@ class RustSession(NativeSession):
         return (
             f"in {function}, `{name}` is a {what} kept in a register (the debugger only "
             "shows a copy of it, so a change would not affect the program)",
-            f"A candidate edit keeps it in memory, in the same probe (COOKBOOK 6.6): {keep}, "
+            f"A candidate edit keeps it in memory, in the same probe (rust-cookbook 6.6): {keep}, "
             "by `--old`/`--new`, with this `--set`",
         )
 

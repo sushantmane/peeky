@@ -139,7 +139,7 @@ def test_a_register_parameter_is_refused_before_the_run_and_marked(tmp_path, sta
     assert code == 2
     message = refused_before_launch(result)
     assert "in limiter::allow, `width` is a parameter kept in a register" in message, message
-    assert "only shows a copy" in message and "COOKBOOK 6.6" in message, message
+    assert "only shows a copy" in message and "rust-cookbook 6.6" in message, message
     assert "`mut width` in the signature and `std::hint::black_box(&mut width);`" in message
     assert message.endswith(
         "settable here: no root locals (fields where rows mark them [settable])"
@@ -158,7 +158,7 @@ def test_a_register_parameter_is_refused_before_the_run_and_marked(tmp_path, sta
     assert "kept in a register" in mutable and "limiter::allow: limit, now, width" in mutable
     assert main(["probe", str(crate), "--at", f"src/main.rs:{at}", *run, "--capture", "width"]) == 0
     assert "10  [not settable: register]" in capsys.readouterr().out
-    # As the refusal advises (COOKBOOK 6.6): kept in memory, set in the same probe.
+    # As the refusal advises (rust-cookbook 6.6): kept in memory, set in the same probe.
     edit = ["--old", "limit: u32, width: u64) -> bool {", "--new"]
     edit.append("limit: u32, mut width: u64) -> bool { std::hint::black_box(&mut width);")
     argv = [*run, "--capture", "width", *edit, "--hits", "3", "--set-hit", "3", "--set", "width=9"]
@@ -415,10 +415,12 @@ def test_the_binding_kept_in_a_register_is_named(tmp_path, state, capsys):
     out = capsys.readouterr().out
     mutable = next(line for line in out.splitlines() if line.startswith("mutable:"))
     assert (
-        "keeps one in memory, COOKBOOK 6.6): bind::shadow: n, x @ main.rs:4; bind::twins: n."
+        "keeps one in memory, rust-cookbook 6.6): bind::shadow: n, x @ main.rs:4; bind::twins: n."
         in mutable
     ), mutable
-    assert "every one in memory, COOKBOOK 6.6): bind::shadow: x @ main.rs:6 (line 4)." in mutable
+    assert (
+        "every one in memory, rust-cookbook 6.6): bind::shadow: x @ main.rs:6 (line 4)." in mutable
+    )
     assert "change the value in the caller): bind::other::far: a, y. A Vec's" in mutable, mutable
 
 
