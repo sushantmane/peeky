@@ -92,6 +92,12 @@ def probe(capsys, stock, *options):
     return code, json.loads(capsys.readouterr().out)
 
 
+def main_error(capsys, assignment):
+    """The refusal of a `session set`."""
+    assert main(["session", "set", assignment]) == 2, assignment
+    return capsys.readouterr().err
+
+
 def get(capsys, selector):
     assert main(["session", "get", selector, "--json"]) == 0, capsys.readouterr().err
     return json.loads(capsys.readouterr().out)[0]
@@ -206,7 +212,9 @@ ALIAS = """package shop;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import javax.foo.Box;
@@ -246,14 +254,25 @@ public class Alias {
         int[] deep = {3};
         listed.add(deep);
         lists.put("k", listed);
+        // Lists the JDK holds through a view: an iterator a HashMap holds, and an
+        // unmodifiable view of a sublist.
+        List<int[]> kept = new ArrayList<>();
+        int[] keptRow = {2};
+        kept.add(keptRow);
+        Map<String, Iterator<int[]>> cursors = new HashMap<>();
+        cursors.put("k", kept.iterator());
+        List<int[]> sliced = new ArrayList<>();
+        int[] slicedRow = {1};
+        sliced.add(slicedRow);
+        List<int[]> frozen = Collections.unmodifiableList(sliced.subList(0, 1));
         // An iterator over `rows` is alive at the stop: a view, not a holder.
         for (int[] each : rows) {
             System.out.println("before " + each.length); // OBSERVE
         }
         System.out.println("AFTER " + text + " " + (text.hashCode() == before) + " " + own[0]
             + " " + holder.count + " " + box.value + " " + box.cells[0] + " " + cached[0]
-            + " " + row[0] + " " + row[1] + " " + deep[0] + " "
-            + shell.eval("1 + 1").get(0).value());
+            + " " + row[0] + " " + row[1] + " " + deep[0] + " " + keptRow[0] + slicedRow[0]
+            + " " + frozen.size() + cursors.size() + " " + shell.eval("1 + 1").get(0).value());
         shell.close();
     }
 }
@@ -317,7 +336,7 @@ def test_an_array_a_jdk_field_holds_is_refused_under_any_name(alias, capsys):
         assert main(["session", "report", "--json"]) == 0
         output = json.loads(capsys.readouterr().out)["output"]
         # The text and its cached hash are what they were.
-        assert "AFTER Bolt true 9 5 1 1 4 6 7 3 2" in output
+        assert "AFTER Bolt true 9 5 1 1 4 6 7 3 21 11 2" in output
     finally:
         main(["session", "close"])
 
@@ -340,7 +359,7 @@ def test_a_program_class_in_a_jdk_looking_package_is_the_programs(alias, capsys)
         capsys.readouterr()
         assert main(["session", "report", "--json"]) == 0
         output = json.loads(capsys.readouterr().out)["output"]
-        assert "AFTER Bolt true 1 1 2 7 4 6 7 3 2" in output
+        assert "AFTER Bolt true 1 1 2 7 4 6 7 3 21 11 2" in output
     finally:
         main(["session", "close"])
 
@@ -362,7 +381,10 @@ def test_a_jdk_module_the_application_loader_loads_is_the_jdks(alias, capsys):
         assert main(["session", "continue", "--to-exit"]) == 0
         capsys.readouterr()
         assert main(["session", "report", "--json"]) == 0
-        assert "AFTER Bolt true 1 1 1 1 4 6 7 3 2" in json.loads(capsys.readouterr().out)["output"]
+        assert (
+            "AFTER Bolt true 1 1 1 1 4 6 7 3 21 11 2"
+            in json.loads(capsys.readouterr().out)["output"]
+        )
     finally:
         main(["session", "close"])
 
@@ -381,6 +403,14 @@ def test_an_array_inside_an_object_array_the_jdk_holds_is_the_jdks(alias, capsys
         assert main(["session", "set", "deep[0]=9"]) == 2
         error = capsys.readouterr().err
         assert "in a list held by java.util.HashMap$Node.value" in error, error
+        # A list whose iterator or sublist the JDK holds is the JDK's state too (review
+        # round 3): the view is followed to whoever holds it.
+        for assignment, holder in (
+            ("keptRow[0]=9", "java.util.HashMap$Node.value"),
+            ("slicedRow[0]=9", "java.util.Collections$Unmodifiable"),
+        ):
+            error = main_error(capsys, assignment)
+            assert "in a list held, through an iterator or sublist, by " + holder in error, error
         # The loop's iterator over `rows` views the list; the program's rows still change.
         assert main(["session", "set", "each[1]=8"]) == 0
         assert "set each[1]: 7 -> 8" in capsys.readouterr().out
@@ -390,6 +420,9 @@ def test_an_array_inside_an_object_array_the_jdk_holds_is_the_jdks(alias, capsys
         assert main(["session", "continue", "--to-exit"]) == 0
         capsys.readouterr()
         assert main(["session", "report", "--json"]) == 0
-        assert "AFTER Bolt true 1 1 1 1 4 9 8 3 2" in json.loads(capsys.readouterr().out)["output"]
+        assert (
+            "AFTER Bolt true 1 1 1 1 4 9 8 3 21 11 2"
+            in json.loads(capsys.readouterr().out)["output"]
+        )
     finally:
         main(["session", "close"])

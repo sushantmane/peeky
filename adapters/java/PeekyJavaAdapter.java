@@ -250,9 +250,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
      * to it; null where nothing does. An array ``value`` is an element of is judged the same
      * way, whatever its type: an Object[] is no proof of whose its elements are. Only the
      * backing arrays of the JDK's lists (USER_ELEMENTS) hold the program's own elements,
-     * where the list itself is the program's (judged the same way, but for the list's own
-     * views, ``views``: its iterators and sublists). ``container``: whether ``value`` is an
-     * array holding the one being written.
+     * where the list itself is the program's, judged the same way: its own views (``views``:
+     * its iterators and sublists) do not own it, but whoever holds one holds the list.
+     * ``container``: whether ``value`` is an array holding the one being written.
      */
     private static String jdkHolder(ObjectReference value, boolean container, String views, int depth, int[] read, Set<Long> seen) {
         if (!seen.add(value.uniqueID())) return null;
@@ -267,15 +267,26 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                     throw new IllegalStateException("the array is nested too deep in others for "
                         + "Peeky to tell whether a JDK class holds it");
                 String found=jdkHolder((ArrayReference) referrer, true, null, depth + 1, read, seen);
-                if (found!=null) return found.startsWith("held by ") ? "inside an array " + found : found;
+                if (found!=null) return found.startsWith("held") ? "inside an array " + found : found;
                 continue;
             }
             for (com.sun.jdi.Field field : referrer.referenceType().allFields()) {
                 if (field.isStatic() || !jdkLoaded(field.declaringType()) || !value.equals(referrer.getValue(field)))
                     continue;
                 String owner=field.declaringType().name(), name=owner + "." + field.name();
-                // An iterator or sublist of the list being judged.
-                if (views!=null && owner.startsWith(views + "$")) continue;
+                if (views!=null && owner.startsWith(views + "$")) {
+                    // An iterator or sublist of the list being judged: not its owner, but
+                    // whoever holds the view holds the list through it.
+                    if (depth>=MAX_DEPTH)
+                        throw new IllegalStateException("the array is nested too deep in others for "
+                            + "Peeky to tell whether a JDK class holds it");
+                    String found=jdkHolder(referrer, false, views, depth + 1, read, seen);
+                    if (found!=null)
+                        return found.startsWith("held by ")
+                            ? "held, through an iterator or sublist, by " + found.substring("held by ".length())
+                            : found;
+                    continue;
+                }
                 if (container && USER_ELEMENTS.contains(name)) {
                     // A list's backing array: its elements are the program's own values,
                     // where the list is the program's.
@@ -283,7 +294,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                         throw new IllegalStateException("the array is nested too deep in others for "
                             + "Peeky to tell whether a JDK class holds it");
                     String found=jdkHolder(referrer, false, owner, depth + 1, read, seen);
-                    if (found!=null) return found.startsWith("held by ") ? "in a list " + found : found;
+                    if (found!=null) return found.startsWith("held") ? "in a list " + found : found;
                     continue;
                 }
                 return "held by " + name;
