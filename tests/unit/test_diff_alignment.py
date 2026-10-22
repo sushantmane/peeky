@@ -35,7 +35,8 @@ def saved(
     """A run of ``hits`` (one {selector: value} per hit, observed), ``returned`` values
     (one per hit), ``after`` (hit, selector, value) after-set rows, ``set_at`` (line,
     hit, name, value) and its ``changes`` (hit, name, before, after, capture hit: how
-    many hits of the line came before it). Selectors in ``stale`` are stale (a view)."""
+    many hits of the line came before it[, the function whose variable it was]).
+    Selectors in ``stale`` are stale (a view)."""
     rows = [
         dict(hit=hit, phase="observed", line=line, function=function, selector=s, value=v)
         | ({"stale": True} if s in stale else {})
@@ -65,7 +66,8 @@ def saved(
         "rows": rows,
         "interventions": [
             dict(hit=hit, name=name, before=b, after=a, line=line, capture_hit=c)
-            for hit, name, b, a, c in changes
+            | ({"function": where[0]} if where else {})
+            for hit, name, b, a, c, *where in changes
         ],
         "output": output,
         **({"candidate": {"diff": edit, "sha256": "e" * 64}} if edit else {}),
@@ -242,9 +244,10 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
             store, hits, language="rust", function=f"roster::widest::{symbol}", line=43, **options
         )
 
-    # Nothing else suggests another pairing, and no intervention: the hits line up.
+    # Nothing else suggests another pairing, most hits read alike, and no
+    # intervention: the hits line up.
     roster(["5", "6", "3"], "he3b8016ca05e3946", edit="--- a/src/main.rs\n")
-    roster(["7", "8", "9"], "hb7185e602e967d61")
+    roster(["5", "6", "9"], "hb7185e602e967d61")
     (note,) = alignment(notes(store, 1, 2))
     assert note == (
         "the hits line up by `title`: it reads the same at each of the 3 hits in both runs, "
@@ -259,8 +262,10 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
         "`title` reads the same at each of the 3 hits in both runs, but runs 1 and 3 saw "
         "`width`'s values at other hits (run 3's hit 1 matches run 1's hit 2: 6)"
     ), note
-    # roster 4: the widths set by --set-at instead; only hit 1's `width` was read before
-    # a change, so nothing lines up better, but after an intervention nothing is claimed.
+    # roster 4: the widths set by --set-at instead, each after its hit's read. A like
+    # name is no proof that a later read is of the changed variable (each hit is a new
+    # call of `widest`), so `width` still counts where it lines up at other hits, and
+    # the note says the intervention may account for it.
     roster(
         ["6", "7", "3"],
         "h01f9ab3be113ab4d",
@@ -275,9 +280,10 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     )
     (note,) = alignment(notes(store, 4, 1))
     assert note.startswith(
-        "`title` reads the same at each of the 3 hits in both runs, and differently at every "
-        "hit, and no single selector's values line up better at other hits; `width` differs; "
-        "but the interventions (run 4's on `width`)"
+        "`title` reads the same at each of the 3 hits in both runs, but runs 4 and 1 saw "
+        "`width`'s values at other hits (run 1's hit 2 matches run 4's hit 1: 6), though an "
+        "intervention on a like name (run 4's on `width`) may account for that: the values "
+        "do not settle whether a hit is the same moment in both"
     ), note
     # Nothing differs: nothing to say.
     roster(["6", "7", "3"], "hb7185e602e967d61")
@@ -396,3 +402,49 @@ def test_join_keys_split_only_outside_brackets_and_quotes(store):
         evidence.run_query(store, "join", {"key": ",".join("abcdefghi")})
     with pytest.raises(ValueError, match="run 1 captured no 'y'"):
         evidence.run_query(store, "join", {"key": "x,y"})
+
+
+def test_values_alike_at_every_hit_say_nothing_where_most_others_differ(store):
+    # Review 2 of PR #209, 1: `key` 1, 2 alike in both runs, and `call` A, B against
+    # C, D (no value of one at another hit of the other): "the hits line up by `key`",
+    # though nothing else agreed.
+    saved(store, [{"key": "1", "call": "'A'"}, {"key": "2", "call": "'B'"}])
+    saved(store, [{"key": "1", "call": "'C'"}, {"key": "2", "call": "'D'"}])
+    (note,) = alignment(notes(store, 1, 2))
+    assert note.startswith(
+        "`key` reads the same at each of the 2 hits in both runs, but `call` differs at 2 of "
+        "them: the values do not show that a hit is the same moment in both"
+    ), note
+    assert "line up by" not in note
+
+
+def test_an_intervention_on_another_functions_variable_never_hides_a_reorder(store):
+    # Review 2 of PR #209, 2: a --set-at of `helper`'s local `x` left every hit of the
+    # probed line's `main` `x` out, so its reorder (A, B against B, A) went unsaid. A
+    # like name is no proof of the same variable: it may hold back a claim that the hits
+    # line up, never a sign that they do not.
+    saved(store, [{"x": "'A'"}, {"x": "'B'"}], function="main")
+    saved(
+        store,
+        [{"x": "'B'"}, {"x": "'A'"}],
+        function="main",
+        set_at=[(5, 1, "x", "9")],
+        changes=[(1, "x", "1", "9", 0, "helper")],
+    )
+    (note,) = alignment(notes(store, 1, 2))
+    assert note.startswith(
+        "runs 1 and 2 saw the same values of `x` in another order (run 2's hit 1 matches run "
+        "1's hit 2: 'B'), though an intervention on a like name (run 2's on `x` in helper) "
+        "may account for that: the calls may have come in another order or number"
+    ), note
+    # The same name read alike at every hit after it never says the hits line up.
+    saved(store, [{"x": "'A'", "y": "1"}, {"x": "'B'", "y": "1"}], function="main")
+    saved(
+        store,
+        [{"x": "'A'", "y": "2"}, {"x": "'B'", "y": "1"}],
+        function="main",
+        set_at=[(5, 1, "x", "9")],
+        changes=[(1, "x", "1", "9", 0, "helper")],
+    )
+    found = alignment(notes(store, 3, 4))
+    assert not any("line up" in note and "`x`" in note.split(":")[0] for note in found), found

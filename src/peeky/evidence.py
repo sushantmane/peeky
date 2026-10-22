@@ -1800,21 +1800,24 @@ def _after_first(path, sql, params):
 
 
 def _changes(path, a, b):
-    """{run: [(name, after)]}: what each run's interventions (--set, --set-at) changed,
-    and after how many hits of its line had been captured (#201): a value read at a
-    later hit may follow from the change; one read at that hit or before cannot (a
-    stop's observed rows come before its own changes)."""
+    """{run: [(name, after, where)]}: what each run's interventions (--set, --set-at)
+    changed, after how many hits of its line had been captured (#201), and in which
+    function (its instance where it has one). A value read at a later hit may follow
+    from the change; one read at that hit or before cannot (a stop's observed rows come
+    before its own changes). A name alone never proves the same storage (review 2 of
+    PR #209: `x` in `helper` is not `main`'s `x`, nor is one call's local another's)."""
     found = {a: [], b: []}
     for row in query(
         path,
-        "SELECT run_id, name, MIN(COALESCE(capture_hit, hit, 0)) AS after FROM interventions "
-        "WHERE run_id IN (:a, :b) GROUP BY run_id, name ORDER BY MIN(rowid)",
+        "SELECT run_id, name, MIN(COALESCE(capture_hit, hit, 0)) AS after, "
+        "COALESCE(instance, short_function(function)) AS place FROM interventions WHERE "
+        "run_id IN (:a, :b) GROUP BY run_id, name, function, instance ORDER BY MIN(rowid)",
         {"a": a, "b": b},
         limit=MAX_ROWS,
     )["rows"]:
         if isinstance(row["name"], str) and row["run_id"] in found:
             after = row["after"] if type(row["after"]) is int else 0
-            found[row["run_id"]].append((row["name"], after))
+            found[row["run_id"]].append((row["name"], after, row["place"]))
     return found
 
 
@@ -1870,7 +1873,9 @@ def _structure_apart(path, run):
     changes = _changes(path, a, b)
     places, values, captured = {a: {}, b: {}}, {a: {}, b: {}}, {a: [], b: []}
     # Every value as read, of any phase: only whether anything differs at all. And the
-    # observed values that tell nothing: qualified, or read after a change to them.
+    # observed values that cannot show alignment: qualified (in no check at all), or read
+    # after an intervention on a name like theirs (review 2 of PR #209: that need not be
+    # their storage, so they still count where they suggest another pairing).
     cells, untold = {a: {}, b: {}}, {a: set(), b: set()}
     for row in rows:
         here = row["run_id"]
@@ -1883,11 +1888,14 @@ def _structure_apart(path, run):
             captured[here].append(row["selector"])
         if masked is None:
             continue
-        if row["caveat"] is not None or any(
-            row["hit"] > after and _touched(row["selector"], name) for name, after in changes[here]
-        ):
+        if row["caveat"] is not None:
             untold[here].add((row["selector"], row["hit"]))
             continue
+        if any(
+            row["hit"] > after and _touched(row["selector"], name)
+            for name, after, _ in changes[here]
+        ):
+            untold[here].add((row["selector"], row["hit"]))
         values[here].setdefault(row["selector"], {})[row["hit"]] = (masked, row["value"])
     join = (
         "if so, pair hits by a value that names the call and that the edit leaves alone (an "
@@ -1962,6 +1970,18 @@ def _structure_apart(path, run):
         else:
             found = f"runs {a} and {b} saw `{selector}`'s values at other hits"
         moved = f"{found} (run {b}'s hit {hit_b} matches run {a}'s hit {hit_a}: {seen_b[hit_b][1]})"
+        near = [
+            f"run {where}'s on `{name}`" + (f" in {place}" if place else "")
+            for where in (a, b)
+            for name, _, place in changes[where]
+            if _touched(selector, name)
+        ]
+        if near:
+            # Shown, though perhaps another variable's (another function's, another
+            # call's): a name alone cannot say.
+            moved += (
+                f", though an intervention on a like name ({_listed(near)}) may account for that"
+            )
         break
     if moved and shown:
         one = len(shown) == 1
@@ -1981,6 +2001,31 @@ def _structure_apart(path, run):
         for key in set(cells[a]) | set(cells[b])
         if key[2] in both
     )
+    # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
+    # differs (review 2 of PR #189). Only selectors both runs captured (`diff` lists the
+    # others once), plain and not read after an intervention on a like name; one with no
+    # such value at a hit is `missing`, which no text equals. Checked before anything
+    # agreeing is said (review 2 of PR #209: `key` 1, 2 in both runs said nothing about
+    # `call` A, B against C, D).
+    differ = [hit for hit in common if any(unlike(selector, hit) for selector in selectors)]
+    if len(differ) >= 2 and 2 * len(differ) > len(common):
+        if shown:
+            apart = [
+                selector for selector in selectors if any(unlike(selector, hit) for hit in common)
+            ]
+            one, many = len(shown) == 1, len(apart) > 1
+            return [
+                f"{_quoted(shown)} {'reads' if one else 'read'} the same at each of the "
+                f"{len(common)} hits in both runs, but {_quoted(apart)} "
+                f"{'differ' if many else 'differs'} at {len(differ)} of them: the values do "
+                "not show that a hit is the same moment in both; if the edit changed which "
+                f"calls reach the line, {join[len('if so, ') :]}"
+            ], True
+        return [
+            f"the runs' values differ at {len(differ)} of {len(common)} hits, so they cannot "
+            "show that a hit is the same moment in both; if the edit changed which calls "
+            f"reach the line, {join[len('if so, ') :]}"
+        ], True
     keys = _telling_apart(shown, [[seen(a, s, hit) for s in shown] for hit in common])
     agreed = (
         _agreement(
@@ -2002,19 +2047,6 @@ def _structure_apart(path, run):
         if shown and differs and len(common) >= 2
         else None
     )
-    if agreed and keys:
-        return [agreed], False
-    # Each selector's value at a hit, by name: `left=A, right=B` against `left=B, right=A`
-    # differs (review 2 of PR #189). Only selectors both runs captured (`diff` lists the
-    # others once), plain and read before any intervention changed them; one with no
-    # such value at a hit is `missing`, which no text equals.
-    differ = [hit for hit in common if any(unlike(selector, hit) for selector in selectors)]
-    if len(differ) >= 2 and 2 * len(differ) > len(common):
-        return [
-            f"the runs' values differ at {len(differ)} of {len(common)} hits, so they cannot "
-            "show that a hit is the same moment in both; if the edit changed which calls "
-            f"reach the line, {join[len('if so, ') :]}"
-        ], True
     return ([agreed], False) if agreed else ([], False)
 
 
@@ -2044,7 +2076,7 @@ def _agreement(shown, keys, count, changes, differing, runs):
     # agrees, what does not, and no more.
     names = _listed(
         [
-            f"run {run}'s on {_quoted(list(dict.fromkeys(name for name, _ in changes[run])))}"
+            f"run {run}'s on {_quoted(list(dict.fromkeys(name for name, _, _ in changes[run])))}"
             for run in reached
         ]
     )
