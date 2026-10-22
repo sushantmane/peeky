@@ -770,34 +770,69 @@ def test_why_a_row_read_through_a_changing_container_is_withheld():
     native.declarations[0]["types"]["b"] = {(59, "automatic", None)}
     clear = "std::__1::vector<Noisy, std::__1::allocator<Noisy>>::clear[abi:ne180100]()"
     below = stack("Noisy::~Noisy()", clear, "main", "start")
-    reason = native.changing_container(below[2], ["vp", "[1]", "x"], below)
+    reason = native.changing_container(below[2], ["vp", "[1]", "x"], below, threads=one)
     assert reason.label == "not shown", reason
     assert "below this frame (std::__1::vector<…>::clear)" in reason and "`vp`" in reason
-    assert native.changing_container(below[2], ["vp", "[1]"], below) is not None
+    assert native.changing_container(below[2], ["vp", "[1]"], below, threads=one) is not None
     # Not read through a container, or a root: never.
-    assert native.changing_container(below[2], ["b", "n"], below) is None
-    assert native.changing_container(below[2], ["vp"], below) is None
+    assert native.changing_container(below[2], ["b", "n"], below, threads=one) is None
+    assert native.changing_container(below[2], ["vp"], below, threads=one) is None
     # Its own frame's container, with the library call its caller's: read.
-    assert native.changing_container(below[0], ["vp", "[1]"], below) is None
+    assert native.changing_container(below[0], ["vp", "[1]"], below, threads=one) is None
     # Through a reference or pointer, a library call anywhere on the stack counts.
     for root, shown in (("rv", "`rv`"), ("pv", "`pv[0]`")):
-        reason = native.changing_container(below[0], [root, "[1]"], below)
+        reason = native.changing_container(below[0], [root, "[1]"], below, threads=one)
         assert "pointer or reference" in reason and shown in reason, reason
     alone = stack("count(Owner const&)", "main", "start")
-    assert native.changing_container(alone[0], ["rv", "[1]"], alone) is None
+    assert native.changing_container(alone[0], ["rv", "[1]"], alone, threads=one) is None
     # A lifetime under way (#181 review): below the frame, or anywhere through a
     # reference (the destructor's own frame too).
     ended = stack("E::~E()", "main", "start")
-    reason = native.changing_container(ended[1], ["vp", "[0]", "x"], ended)
+    reason = native.changing_container(ended[1], ["vp", "[0]", "x"], ended, threads=one)
     assert "constructor, destructor or assignment operator below this frame (E::~E)" in reason
-    assert native.changing_container(ended[0], ["vp", "[0]"], ended) is None
-    reason = native.changing_container(ended[0], ["rv", "[0]"], ended)
+    assert native.changing_container(ended[0], ["vp", "[0]"], ended, threads=one) is None
+    reason = native.changing_container(ended[0], ["rv", "[0]"], ended, threads=one)
     assert "while a constructor, destructor or assignment operator runs" in reason, reason
     # Frames that cannot be told: withheld, and said so.
-    assert "cannot read every frame" in native.changing_container(below[2], ["vp", "[1]"], [])
+    assert "cannot read every frame" in native.changing_container(
+        below[2], ["vp", "[1]"], [], threads=one
+    )
     assert (
         session("rust", fields=CONTAINERS).changing_container(below[2], ["vp", "[1]"], below)
         is None
     )
     assert _short_frame("void std::_Destroy<Noisy*, Noisy>(Noisy*, Noisy*)") == "std::_Destroy<…>"
     assert _short_frame(None) == "a frame with no name"
+
+
+def test_rows_read_through_a_container_need_one_thread_and_a_whole_stack():
+    # Review of #187: rows were withheld for library calls, never for another thread
+    # (`shared[0].x` read a moved-from `-1` while a worker thread relocated it), and a
+    # partial `stackTrace` page (64 frames of 2,000) was taken for the whole stack.
+    from peeky.worker import StackPage
+
+    native = session(fields=CONTAINERS)
+    native.declarations[0]["types"]["vp"] = {(51, "automatic", None)}
+    native.declarations[0]["types"]["rv"] = {(63, "automatic", None)}
+    alone = stack("count(Owner const&)", "main", "start")
+    assert native.changing_container(alone[1], ["vp", "[0]"], alone, threads=one) is None
+    for threads, shown in ((lambda: 2, "runs 2 threads"), (lambda: None, "cannot tell")):
+        reason = native.changing_container(alone[1], ["vp", "[0]"], alone, threads=threads)
+        assert shown in reason and reason.label == "not shown", reason
+    reason = native.changing_container(alone[1], ["vp", "[0]"], alone)
+    assert "cannot tell how many threads" in reason, reason
+    # Through a reference: the stack must be whole, as its replies say.
+    listed = StackPage(stack(*["f"] * 10), 10, 2000)
+    partial = StackPage(stack(*["f"] * 64), 1024, 2000)
+    reason = native.changing_container(listed[0], ["rv", "[0]"], listed, lambda n: partial, one)
+    assert "cannot read every frame" in reason, reason
+    whole = StackPage(stack(*["f"] * 64), 1024, 64)
+    assert native.changing_container(listed[0], ["rv", "[0]"], listed, lambda n: whole, one) is None
+    # The ten listed, short of their `totalFrames`, are not the whole stack either.
+    short = StackPage(stack(*["f"] * 5), 10, 300)
+    reason = native.changing_container(short[0], ["rv", "[0]"], short, lambda n: partial, one)
+    assert "cannot read every frame" in reason, reason
+    complete = StackPage(stack(*["f"] * 5), 10, 5)
+    assert native.changing_container(complete[0], ["rv", "[0]"], complete, None, one) is None
+    # Previews follow the same pages.
+    assert native.containers_settled(listed[0], True, listed, lambda n: partial, one) is False

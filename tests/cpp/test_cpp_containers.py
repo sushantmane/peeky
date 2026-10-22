@@ -452,16 +452,20 @@ int main() {
 def test_a_container_another_thread_is_relocating_keeps_its_summary(cpp, capsys):
     # Review of #181: the worker thread is inside `emplace_back`, which has moved the
     # element out (`x = -1` left behind) and is destroying it, when `main` stops: two
-    # threads, so `shared` shows its summary, and its element no preview.
+    # threads, so `shared` shows its summary. Review of #187: and its element no value
+    # at all, nor what it holds (`shared[0].x` read the moved-from `-1`).
     source = cpp / "relocating.cpp"
     source.write_text(RELOCATING)
     line = line_of(RELOCATING, "// HERE")
-    command = ["probe", str(source), "--at", str(line), "--capture", "shared,shared[0]", "--json"]
+    selectors = "shared,shared[0],shared[0].x"
+    command = ["probe", str(source), "--at", str(line), "--capture", selectors, "--json"]
     assert main(command) == 0
     result = json.loads(capsys.readouterr().out)
     rows = {row["selector"]: row for row in result["rows"]}
     assert rows["shared"]["value"] == "size=1", rows["shared"]
-    assert re.fullmatch(r"Slow @ 0x[0-9a-f]+", rows["shared[0]"]["value"]), rows["shared[0]"]
+    for selector in ("shared[0]", "shared[0].x"):
+        row = rows[selector]
+        assert "value" not in row and "the program runs 2 threads" in row["error"], row
     assert "1 2 1 2" in result["output"], result["output"]
 
 

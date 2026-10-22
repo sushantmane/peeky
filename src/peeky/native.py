@@ -1761,6 +1761,16 @@ _LIBRARY_FUNCTION = re.compile(r"(?:^|[\s*&])(?:::)?(?:std|__gnu_cxx|__gnu_debug
 STACK_READ = 1024
 
 
+def _whole(frames, asked):
+    """Whether a `stackTrace` reply of ``asked`` frames holds the whole stack: its own
+    ``complete`` where the worker kept it (fewer frames than asked for, and none more
+    in its `totalFrames`, #187 review), else fewer frames than asked for."""
+    complete = getattr(frames, "complete", None)
+    if isinstance(complete, bool):
+        return complete
+    return frames is not None and len(frames) < asked
+
+
 def _short_frame(name):
     """A frame's function for a reason, at most 80 characters: its name without its
     parameters, return type, ABI tags or template arguments
@@ -3427,9 +3437,11 @@ class NativeSession:
         one anywhere on the stack where the container is reached through a pointer or
         reference (``indirect``) or is no automatic of the frame (it may be what a
         caller's `clear` changes); ("unknown", None) where the frames cannot be told.
-        ``stack``: the frames as listed (innermost first); ``deeper(levels)``: the first
-        ``levels`` of them, where the ten listed may not be all (``STACK_READ`` are
-        read)."""
+        ``stack``: the frames as listed (innermost first, ten asked for);
+        ``deeper(levels)``: the first ``levels`` of them, where those listed may not be
+        all (``STACK_READ`` are read). Each may say whether it is the whole stack
+        (``_whole``)."""
+        listed = _whole(stack, 10)
         frames = list(stack or [])
         ids = [each.get("id") for each in frames]
         if frame is None or ids.count(frame.get("id")) != 1:
@@ -3445,11 +3457,13 @@ class NativeSession:
                 return ("lifetime", each.get("name"))
         if not indirect:
             return None
-        if len(frames) >= 10:
-            frames = list(deeper(STACK_READ) if deeper else [])
-            if not frames or len(frames) >= STACK_READ:
-                # More frames than are read: one of them may be the library's.
+        if not listed:
+            more = deeper(STACK_READ) if deeper else []
+            if not more or not _whole(more, STACK_READ):
+                # More frames than are read (a reply of as many as asked for, or fewer
+                # than its `totalFrames`): one of them may be the library's.
                 return ("unknown", None)
+            frames = list(more)
         for each in frames:
             if _library_frame(each):
                 return ("stack", each.get("name"))
@@ -3458,24 +3472,41 @@ class NativeSession:
                 return ("lifetime-stack", each.get("name"))
         return None
 
-    def changing_container(self, frame, steps, stack=None, deeper=None):
+    def changing_container(self, frame, steps, stack=None, deeper=None, threads=None):
         """Why a value read through a standard container's element (`o.items[1]`,
         `o.items[1].name`, a map's entry) is withheld, as a ``Withholding``, or None
-        (#187): a library call may be part-way through changing that container
-        (``library_call``), as `clear()` is while an element's destructor runs, the
-        vector still counting the elements it has destroyed. ``steps``: the root local's
-        name, then each child's the debugger gives."""
+        (#187): something may be part-way through changing that container: another
+        thread (a stop pauses it wherever it is, perhaps inside a `push_back` on it),
+        unless ``threads()`` proves the program runs one; or a library call, or a
+        constructor, destructor or assignment operator (``library_call``), as `clear()`
+        is while an element's destructor runs, the vector still counting the elements it
+        has destroyed. ``steps``: the root local's name, then each child's the debugger
+        gives."""
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
             return None
         walked = self._typed(frame, steps, walked=True) if steps and len(steps) > 1 else None
         if walked is None or walked[3] is None:
             return None
         held, container = walked[3]
+        container = container if len(container) <= 60 else container[:59] + "…"
+        count = threads() if threads is not None else None
+        if count != 1:
+            how = (
+                "Peeky cannot tell how many threads the program runs"
+                if count is None
+                else f"the program runs {count} threads"
+            )
+            return Withholding(
+                f"{how}: a stop pauses every other one wherever it is, perhaps part-way "
+                f"through changing `{container}`, which this is read through (a `push_back` "
+                "moving its elements); read it where the program runs one thread",
+                "not shown",
+                "it is read through a standard container another thread may be changing",
+            )
         found = self.library_call(frame, held, stack, deeper)
         if found is None:
             return None
         where, name = found
-        container = container if len(container) <= 60 else container[:59] + "…"
         if where == "between":
             reason = (
                 f"a standard-library call below this frame ({_short_frame(name)}) may be "
