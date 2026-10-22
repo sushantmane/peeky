@@ -55,8 +55,8 @@ python scripts/benchmark_worker.py --iterations 10 --java-bundle work/java-final
 ```
 
 Replace the bundle path as needed, and leave out `--java-bundle` for Python. Copilot wrote the
-first version of this benchmark extension, in an isolated folder. Review added the missing
-interpreter, JDK and adapter metadata, and verified both modes with real runs.
+first version of this benchmark extension, in an isolated folder. Parent review restored the
+missing interpreter, JDK and adapter metadata, and verified both modes with real runs.
 
 Ten fresh runs each, on the same local host as above, with full integrity checks and real output
 assertions:
