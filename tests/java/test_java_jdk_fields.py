@@ -32,6 +32,12 @@ public class Stock {
         int limit = 3;
     }
 
+    // Fields named like the JDK's, in a class no value below can be.
+    static final class Other {
+        int size;
+        int value;
+    }
+
     public static void main(String[] args) {
         Item item = new Item(args[0], Integer.valueOf(1001), 4);
         ArrayList<Integer> items = new ArrayList<>();
@@ -156,7 +162,7 @@ def test_a_session_never_offers_a_jdk_classs_fields_and_keeps_the_programs(stock
             "item.name.hash=5",
             [
                 "`item.name` is declared java.lang.String, a JDK type",
-                "no class of the program declares a field `hash`",
+                "no class of the program that may be one declares a field `hash`",
             ],
         ),
         ("items.size=0", ["`items` is declared java.util.ArrayList, a JDK type"]),
@@ -194,3 +200,119 @@ def test_the_programs_own_fields_stay_settable_beside_the_jdks(stock, capsys):
     }
     assert "java.lang.String" in observed["item.name.hash"]["not_settable"]
     assert "java.util.ArrayList" in observed["basket.size"]["not_settable"]
+
+
+ALIAS = """package shop;
+
+import java.lang.reflect.Field;
+import javax.foo.Box;
+import sun.misc.Unsafe;
+
+public class Alias {
+    static final class Holder {
+        byte[] bytes;
+        int count = 1;
+    }
+
+    public static void main(String[] args) throws Exception {
+        Field theUnsafe = Unsafe.class.getDeclaredField("theUnsafe");
+        theUnsafe.setAccessible(true);
+        Unsafe unsafe = (Unsafe) theUnsafe.get(null);
+        String text = new String(args[0]);
+        int before = text.hashCode();
+        long offset = unsafe.objectFieldOffset(String.class.getDeclaredField("value"));
+        byte[] alias = (byte[]) unsafe.getObject(text, offset);
+        Holder holder = new Holder();
+        holder.bytes = alias;
+        byte[] own = {1, 2, 3};
+        Box box = new Box();
+        System.out.println("before"); // OBSERVE
+        System.out.println("AFTER " + text + " " + (text.hashCode() == before) + " " + own[0]
+            + " " + holder.count + " " + box.value + " " + box.cells[0]);
+    }
+}
+"""
+
+# A class of the program in a package that only looks like the JDK's.
+BOX = """package javax.foo;
+
+public class Box {
+    public int value = 1;
+    public int[] cells = {1, 2};
+}
+"""
+
+
+@pytest.fixture
+def alias(tmp_path, monkeypatch):
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a setup_java_adapter.py output directory")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "alias"
+    for path, text in (("shop/Alias.java", ALIAS), ("javax/foo/Box.java", BOX)):
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text)
+    config = root / "alias.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(Path(bundle).resolve()),
+                "sources": ["shop/Alias.java", "javax/foo/Box.java"],
+                "main_class": "shop.Alias",
+                "arguments": ["Bolt"],
+            }
+        )
+    )
+    line = next(i for i, text in enumerate(ALIAS.splitlines(), 1) if "OBSERVE" in text)
+    return root, config, f"shop/Alias.java:{line}"
+
+
+@pytest.mark.timeout(300)
+def test_an_array_a_jdk_field_holds_is_refused_under_any_name(alias, capsys):
+    # A String's bytes, reached through Unsafe: a root local and a field of the program's
+    # name the same array, which the launcher finds by what refers to it.
+    root, config, at = alias
+    try:
+        assert main(["session", "start", str(root), "--config", str(config), "--at", at]) == 0
+        capsys.readouterr()
+        for assignment in ("alias[0]=78", "holder.bytes[0]=78"):
+            assert main(["session", "set", assignment]) == 2, assignment
+            error = capsys.readouterr().err
+            assert "[MUTATION_REJECTED]" in error, error
+            assert "held by java.lang.String.value, a JDK class's field" in error, error
+        # The program's own array and field still change.
+        assert main(["session", "set", "own[0]=9"]) == 0
+        assert "set own[0]: 1 -> 9" in capsys.readouterr().out
+        assert main(["session", "set", "holder.count=5"]) == 0
+        capsys.readouterr()
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        output = json.loads(capsys.readouterr().out)["output"]
+        # The text and its cached hash are what they were.
+        assert "AFTER Bolt true 9 5 1 1" in output
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(300)
+def test_a_program_class_in_a_jdk_looking_package_is_the_programs(alias, capsys):
+    # `javax.foo.Box` is the program's: the JDK's own class loaders did not load it.
+    root, config, at = alias
+    try:
+        assert main(["session", "start", str(root), "--config", str(config), "--at", at]) == 0
+        capsys.readouterr()
+        listed = {child["name"]: child for child in get(capsys, "box")["children"]}
+        assert listed["value"]["settable"] is True and "not_settable" not in listed["value"]
+        assert get(capsys, "box.cells[0]")["settable"] is True
+        assert main(["session", "set", "box.value=2"]) == 0
+        assert "set box.value: 1 -> 2" in capsys.readouterr().out
+        assert main(["session", "set", "box.cells[0]=7"]) == 0
+        assert "set box.cells[0]: 1 -> 7" in capsys.readouterr().out
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        assert "AFTER Bolt true 1 1 2 7" in json.loads(capsys.readouterr().out)["output"]
+    finally:
+        main(["session", "close"])

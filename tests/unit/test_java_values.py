@@ -131,30 +131,33 @@ def owners(field_owners=True):
     return session
 
 
+def field(name, kind, owner, jdk):
+    return {"name": name, "type": kind, "peekyOwner": owner, "peekyJdkOwner": jdk}
+
+
 def test_a_jdk_classs_field_is_never_settable_and_says_whose_it_is():
-    # #204: a String's cached hash; the launcher names each field's declaring class.
+    # #204: a String's cached hash; the launcher names each field's declaring class, and
+    # whether the JDK's own class loaders loaded it.
     session = owners()
-    hash_ = {"name": "hash", "type": "int", "value": "0", "peekyOwner": "java.lang.String"}
-    reason = session.internal_member(hash_, parent="String")
+    reason = session.internal_member(field("hash", "int", "java.lang.String", True), "String")
     assert "declared by java.lang.String, a JDK class" in reason
     assert reason.row == "declared by java.lang.String (the JDK's own state)"
-    # Inherited from a JDK class by one of the program's, and of another JDK package.
-    for owner in ("java.util.AbstractList", "javax.swing.JList", "jdk.internal.Foo", "sun.x.Y"):
-        assert session.internal_member({"name": "f", "type": "int", "peekyOwner": owner})
-    assert session.internal_member({"name": "f", "type": "int", "peekyOwner": "com.sun.x.Y"})
-    # The program's own fields keep their rules, whatever their class is named.
-    for owner in ("app.Rechnung$Posten", "javalike.Box", "com.sunny.Box"):
-        assert session.internal_member({"name": "f", "type": "int", "peekyOwner": owner}) is None
+    assert session.internal_member(field("size", "int", "java.util.AbstractList", True))
+    # The program's own fields keep their rules, whatever their package looks like.
+    for owner in ("app.Rechnung$Posten", "javax.foo.Box", "jdk.app.Box", "com.sun.app.Box"):
+        assert session.internal_member(field("f", "int", owner, False)) is None
     # An object-typed field is refused too, with no row note (no change is offered).
-    value = {"name": "value", "type": "byte[]", "peekyOwner": "java.lang.String"}
-    assert session.internal_member(value).row is None
+    assert session.internal_member(field("value", "byte[]", "java.lang.String", True)).row is None
+    # A launcher that names the class but not who loaded it tells nothing.
+    named = {"name": "f", "type": "int", "peekyOwner": "javax.foo.Box"}
+    assert "cannot tell which class declares it" in session.internal_member(named)
 
 
 def test_an_element_is_judged_by_the_field_that_holds_its_array():
     session = owners()
     root = {"name": "a", "type": "Rechnung$Posten"}
-    text = {"name": "bezeichnung", "type": "String", "peekyOwner": "app.Rechnung$Posten"}
-    value = {"name": "value", "type": "byte[]", "peekyOwner": "java.lang.String"}
+    text = field("bezeichnung", "String", "app.Rechnung$Posten", False)
+    value = field("value", "byte[]", "java.lang.String", True)
     byte = {"name": "0", "type": "byte", "value": "83"}
     reason = session.internal_member(byte, parent="byte[]", trail=[root, text, value])
     assert "in an array that `value` holds, a field the JDK class java.lang.String" in reason
@@ -163,12 +166,41 @@ def test_an_element_is_judged_by_the_field_that_holds_its_array():
     row = {"name": "0", "type": "int[]"}
     assert session.internal_member(byte, parent="int[]", trail=[grid, row]) is None
     assert session.internal_member(row, parent="int[][]", trail=[grid]) is None
-    # An array inside one a JDK field holds is the JDK's too.
-    data = {"name": "elementData", "type": "Object[]", "peekyOwner": "java.util.ArrayList"}
+    # A row of an array of arrays a JDK field holds is the JDK's too ...
+    table = field("table", "int[][]", "java.util.Fake", True)
+    holder = {"name": "x", "type": "Fake"}
+    assert session.internal_member(byte, parent="int[]", trail=[holder, table, row])
+    # ... but an array an Object[] holds (an ArrayList's elementData) is the program's.
+    data = field("elementData", "Object[]", "java.util.ArrayList", True)
     list_ = {"name": "xs", "type": "ArrayList"}
-    assert session.internal_member(byte, parent="int[]", trail=[list_, data, row])
+    assert session.internal_member(byte, parent="int[]", trail=[list_, data, row]) is None
+    assert session.internal_member(row, parent="Object[]", trail=[list_, data])
     # Without the way to it, nothing is offered.
     assert "cannot tell" in session.internal_member(byte, parent="byte[]", trail=[])
+
+
+def test_before_the_run_only_classes_that_may_be_the_value_count():
+    # #204 review: an unrelated class's `size` does not make an ArrayList's the program's.
+    from peeky.java import _may_be, _may_declare
+
+    declared = {
+        "app/Other": {"super": "java/lang/Object", "interfaces": [], "fields": {"size": "I"}},
+        "app/Shape": {"super": "java/lang/Object", "interfaces": [], "fields": {}},
+        "app/Square": {"super": "app/Base", "interfaces": ["app/Shape"], "fields": {}},
+        "app/Base": {"super": "java/lang/Object", "interfaces": [], "fields": {"size": "I"}},
+        "app/Mine": {"super": "java/util/AbstractList", "interfaces": [], "fields": {"n": "I"}},
+        "app/Sized": {"super": "app/Mine", "interfaces": [], "fields": {"size": "I"}},
+    }
+    assert not _may_be(declared, "app/Other", "java/util/ArrayList")
+    assert not _may_declare(declared, "java/util/ArrayList", "hash")
+    # A subclass of a JDK class may be any JDK type: its `size` defers to the stop.
+    assert _may_be(declared, "app/Sized", "java/util/ArrayList")
+    assert _may_declare(declared, "java/util/List", "size")
+    # A program type: only its own subtypes, through the program's classes.
+    assert _may_be(declared, "app/Square", "app/Shape")
+    assert _may_declare(declared, "app/Shape", "size")
+    assert not _may_be(declared, "app/Other", "app/Shape")
+    assert not _may_be(declared, "app/Sized", "app/Shape")
 
 
 def test_a_launcher_that_names_no_declaring_class_changes_no_field():

@@ -10,6 +10,8 @@ import com.microsoft.java.debug.core.adapter.variables.StackFrameReference;
 import com.sun.jdi.AbsentInformationException;
 import com.sun.jdi.ArrayReference;
 import com.sun.jdi.ArrayType;
+import com.sun.jdi.ClassLoaderReference;
+import com.sun.jdi.ClassObjectReference;
 import com.sun.jdi.LocalVariable;
 import com.sun.jdi.ObjectReference;
 import com.sun.jdi.ReferenceType;
@@ -20,7 +22,6 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
 
 /** Experimental Microsoft-core launcher. Only explicit, prepared source maps are accepted. */
 public final class PeekyJavaAdapter extends ProtocolServer {
@@ -28,8 +29,11 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         "configurationDone", "threads", "stackTrace", "scopes", "variables", "setVariable",
         "continue", "next", "stepIn", "stepOut", "disconnect");
     private static final Set<String> STEPS = Set.of("next", "stepIn", "stepOut");
-    /** The JDK's own packages (Peeky #204): their classes' fields are never written. */
-    private static final Pattern JDK = Pattern.compile("(?:java|javax|jdk|sun|com\\.sun)\\.");
+    /** The JDK's own class loaders besides the bootstrap one (Peeky #204). */
+    private static final Set<String> JDK_LOADERS = Set.of(
+        "jdk.internal.loader.ClassLoaders$PlatformClassLoader", "sun.misc.Launcher$ExtClassLoader");
+    /** At most this many objects referring to an array are read before writing it (#204). */
+    private static final int MAX_REFERRERS = 64;
 
     /** Fixed step filters: steps never stop inside the JDK; requests cannot change them. */
     private static JsonObject stepFilters() {
@@ -113,6 +117,7 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                 if (!text && !character && !value.matches("(?:true|false|[+-]?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)"))
                     throw new IllegalArgumentException("only numeric or boolean scalar literals, a quoted char for a char, or text for a String, supported");
                 checkFieldTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
+                checkArrayTarget(args.get("variablesReference").getAsInt());
                 if (text) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "java.lang.String", "text changes only a String");
                 if (character) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "char", "a quoted char changes only a char");
             }
@@ -146,31 +151,95 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             throw new IllegalArgumentException("field " + name + " is hidden by, or shares its name with, "
                 + "another field of " + type.name() + "; it cannot be changed");
         // A JDK class's own state (#204): a String's cached hash, an ArrayList's size.
-        String owner=visible.declaringType().name();
-        if (JDK.matcher(owner).lookingAt())
-            throw new IllegalArgumentException("field " + name + " is declared by " + owner
-                + ", a JDK class; Peeky never changes the JDK's own fields");
+        if (jdkLoaded(visible.declaringType()))
+            throw new IllegalArgumentException("field " + name + " is declared by "
+                + visible.declaringType().name() + ", a JDK class; Peeky never changes the JDK's own fields");
+    }
+
+    /** Whether the JDK loaded this class (#204): the bootstrap or platform loader, never the program's. */
+    private static boolean jdkLoaded(ReferenceType type) {
+        ClassLoaderReference loader=type.classLoader();
+        return loader==null || JDK_LOADERS.contains(loader.referenceType().name());
+    }
+
+    /**
+     * Refuse writing an element of an array a JDK class's field holds, by the array's
+     * identity (#204): a reflected or Unsafe alias of a String's bytes is that String's
+     * state whatever local or field names it. Fails closed where the JVM cannot tell.
+     */
+    private void checkArrayTarget(int reference) throws ReflectiveOperationException {
+        Object container=debugContext().getRecyclableIdPool().getObjectById(reference);
+        if (!(container instanceof VariableProxy)) return;
+        Object value=((VariableProxy) container).getProxiedVariable();
+        if (!(value instanceof ArrayReference)) return;
+        String holder=jdkHolder((ArrayReference) value, 0, new int[1]);
+        if (holder!=null)
+            throw new IllegalArgumentException("the array is held by " + holder
+                + ", a JDK class's field; Peeky never changes the JDK's own state");
+    }
+
+    /**
+     * The JDK field (`java.lang.String.value`) holding ``array``, directly or as an element
+     * of an array of arrays held so, from what refers to it; null where none does.
+     */
+    private static String jdkHolder(ArrayReference array, int depth, int[] read) {
+        if (!array.virtualMachine().canGetInstanceInfo())
+            throw new IllegalStateException("this JVM cannot list what refers to an array, so "
+                + "Peeky cannot tell whether a JDK class holds it");
+        List<ObjectReference> referrers=array.referringObjects(MAX_REFERRERS + 1);
+        read[0]+=referrers.size();
+        if (read[0]>MAX_REFERRERS)
+            throw new IllegalStateException("more than " + MAX_REFERRERS + " objects refer to the "
+                + "array, so Peeky cannot tell whether a JDK class holds it");
+        for (ObjectReference referrer : referrers) {
+            if (referrer instanceof ArrayReference) {
+                // An array of arrays (`int[][]`) is one value with its rows; an Object[] (an
+                // ArrayList's elementData) holds the program's own arrays.
+                if (!referrer.referenceType().name().endsWith("[][]")) continue;
+                if (depth>=4)
+                    throw new IllegalStateException("the array is nested too deep in others for "
+                        + "Peeky to tell whether a JDK class holds it");
+                String found=jdkHolder((ArrayReference) referrer, depth + 1, read);
+                if (found!=null) return found;
+                continue;
+            }
+            for (com.sun.jdi.Field field : referrer.referenceType().allFields())
+                if (!field.isStatic() && jdkLoaded(field.declaringType()) && array.equals(referrer.getValue(field)))
+                    return field.declaringType().name() + "." + field.name();
+            ReferenceType reflected=referrer instanceof ClassObjectReference
+                ? ((ClassObjectReference) referrer).reflectedType() : null;
+            // A static field: the JVM finds it in its class's mirror.
+            if (reflected!=null && jdkLoaded(reflected))
+                for (com.sun.jdi.Field field : reflected.fields())
+                    if (field.isStatic() && array.equals(reflected.getValue(field)))
+                        return reflected.name() + "." + field.name();
+        }
+        return null;
     }
 
     /**
      * Name the class that declares each field an object's listing shows (`peekyOwner`,
-     * Peeky #204): java-debug names fields only, and Peeky never changes a field a JDK
-     * class declares, inherited or not. A name two instance fields share stays unnamed.
+     * Peeky #204) and whether the JDK loaded it (`peekyJdkOwner`): java-debug names fields
+     * only, and Peeky never changes a field a JDK class declares, inherited or not. A name
+     * two instance fields share stays unnamed.
      */
     private Object withOwners(int reference, Object body) {
         try {
             Object container=debugContext().getRecyclableIdPool().getObjectById(reference);
             Object value=container instanceof VariableProxy ? ((VariableProxy) container).getProxiedVariable() : null;
             if (!(value instanceof ObjectReference) || value instanceof ArrayReference) return body;
-            Map<String, List<String>> owners=new HashMap<>();
+            Map<String, List<ReferenceType>> owners=new HashMap<>();
             for (com.sun.jdi.Field field : ((ObjectReference) value).referenceType().allFields())
                 if (!field.isStatic())
-                    owners.computeIfAbsent(field.name(), key -> new ArrayList<>()).add(field.declaringType().name());
+                    owners.computeIfAbsent(field.name(), key -> new ArrayList<>()).add(field.declaringType());
             JsonObject json=JsonUtils.toJsonTree(body, body.getClass()).getAsJsonObject();
             for (JsonElement each : json.getAsJsonArray("variables")) {
                 JsonObject variable=each.getAsJsonObject();
-                List<String> found=owners.get(variable.get("name").getAsString());
-                if (found!=null && found.size()==1) variable.addProperty("peekyOwner", found.get(0));
+                List<ReferenceType> found=owners.get(variable.get("name").getAsString());
+                if (found==null || found.size()!=1) continue;
+                variable.addProperty("peekyOwner", found.get(0).name());
+                // Whether the JDK loaded it, never judged by its package's name.
+                variable.addProperty("peekyJdkOwner", jdkLoaded(found.get(0)));
             }
             return json;
         } catch (Exception error) {
@@ -236,8 +305,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
             caps.addProperty("peekyTextSet", true);
             // And changes a char to a quoted char (#183), only where it is declared a char.
             caps.addProperty("peekyCharSet", true);
-            // And names each listed field's declaring class, never changing a JDK class's (#204).
-            caps.addProperty("peekyFieldOwners", true);
+            // And names each listed field's declaring class and whether the JDK loaded it,
+            // never changing a JDK class's field or an array one holds (#204).
+            caps.addProperty("peekyJdkOwners", true);
             response.body=caps;
         }
         super.sendResponse(response);

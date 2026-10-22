@@ -145,10 +145,10 @@ def _settable_kinds(session):
     return kinds
 
 
-# The JDK's own packages (#204): their classes' fields hold state other code relies on (a
-# String's cached hash must match its text in every HashMap holding it, an ArrayList's
-# size its elements), so Peeky never changes one.
-_JDK = re.compile(r"(?:java|javax|jdk|sun|com\.sun)[./]")
+# A JDK class's fields hold state other code relies on (a String's cached hash must match
+# its text in every HashMap holding it, an ArrayList's size its elements), so Peeky never
+# changes one (#204). A JDK class is one the JDK's own class loaders loaded (as the
+# launcher reports it), or, judged from the class files, any class not the program's.
 _JDK_WHY = (
     "Peeky never changes a JDK class's fields (a String's cached hash, an ArrayList's size): "
     "other code relies on them, so a change could corrupt the program's state behind its back"
@@ -158,9 +158,41 @@ _JDK_WHY = (
 _BOXED = ("Integer", "Long", "Short", "Byte", "Character", "Boolean", "Float", "Double")
 
 
-def jdk_class(name):
-    """Whether the class ``name`` (`java.lang.String`, `java/lang/String`) is the JDK's."""
-    return bool(_JDK.match(str(name)))
+def _may_be(declared, name, holder):
+    """Whether the program's class ``name`` may be a ``holder`` (#204): ``holder`` is
+    among the supertypes its class files list, or, for a ``holder`` not of the program,
+    one of them is a JDK type whose own supertypes Peeky does not read
+    (java.lang.Object's excepted)."""
+    seen, stack, unread = set(), [name], False
+    while stack:
+        each = stack.pop()
+        if each is None or each in seen:
+            continue
+        seen.add(each)
+        if each == holder:
+            return True
+        if each not in declared:
+            unread = unread or each != "java/lang/Object"
+            continue
+        stack.append(declared[each].get("super"))
+        stack.extend(declared[each].get("interfaces", ()))
+    return unread and holder not in declared
+
+
+def _may_declare(declared, holder, field):
+    """Whether a class of the program that may be a ``holder`` declares, or inherits
+    from a class of the program, a field named ``field`` (#204)."""
+    for name in declared:
+        if not _may_be(declared, name, holder):
+            continue
+        current = name
+        for _ in range(64):
+            if current not in declared:
+                break
+            if field in declared[current].get("fields", {}):
+                return True
+            current = declared[current].get("super")
+    return False
 
 
 class JdkState(str):
@@ -711,7 +743,7 @@ class JavaSession:
             # And a char a quoted char (#183).
             self.char_set = raw.get("peekyCharSet") is True
             # A launcher that names each listed field's declaring class (#204).
-            self.field_owners = raw.get("peekyFieldOwners") is True
+            self.field_owners = raw.get("peekyJdkOwners") is True
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # Launcher bundles built before stepping lack the marker: refuse cleanly.
@@ -957,26 +989,32 @@ class JavaSession:
     def internal_member(self, variable, parent=None, trail=()):
         """Why `set` never changes this field or element (#204), else None: a field a JDK
         class declares (a String's `hash`, an ArrayList's `size`, inherited or not), as
-        the launcher names its declaring class, or an element of an array such a field
-        holds (a String's bytes), or of an array inside that one. ``parent``: the type of
-        what holds it; ``trail``: the debugger's variable for each step from the root
-        local to it. Also why it cannot be told (a launcher that names no declaring
-        class)."""
+        the launcher names its declaring class and whether the JDK's own class loaders
+        loaded it, or an element of an array such a field holds (a String's bytes), or
+        of a row of an array of arrays held so. ``parent``: the type of what holds it;
+        ``trail``: the debugger's variable for each step from the root local to it.
+        Also why it cannot be told (a launcher that names no declaring class). Judged by
+        the way a selector reaches it: the launcher refuses an array a JDK field holds
+        under any other name when the change is made."""
         held, element = variable, str(parent or "").endswith("]")
         if element:
-            # An element: judged by the field holding its outermost array.
+            # An element: judged by the field holding its array, or the array of arrays
+            # (`int[][]`) its array is a row of; an Object[]'s arrays (an ArrayList's
+            # elementData) are the program's own.
             trail = list(trail or ())
             if not trail:
                 return "Peeky cannot tell what holds its array"
             index = len(trail) - 1
             while index > 0 and str(trail[index - 1].get("type") or "").endswith("]"):
+                if not str(trail[index - 1].get("type")).endswith("[][]"):
+                    return None
                 index -= 1
             if index == 0:
                 # The root local's own array.
                 return None
             held = trail[index]
-        owner = held.get("peekyOwner")
-        if not isinstance(owner, str) or not owner:
+        owner, jdk = held.get("peekyOwner"), held.get("peekyJdkOwner")
+        if not isinstance(owner, str) or not owner or type(jdk) is not bool:
             if not getattr(self, "field_owners", False):
                 return (
                     "this adapter bundle predates telling the JDK's own fields from the "
@@ -986,7 +1024,7 @@ class JavaSession:
             return "Peeky cannot tell which class declares " + (
                 f"`{held.get('name')}`, which holds its array" if element else "it"
             )
-        if not jdk_class(owner):
+        if not jdk:
             return None
         scalar = variable.get("type") in (*_JAVA_INTEGER_BITS, "char", "boolean", "float")
         scalar = scalar or variable.get("type") in ("double", *_JAVA_STRINGS)
@@ -1107,10 +1145,11 @@ class JavaSession:
         """Why a change of the field or element ``name`` (`a.text.hash`, `list.size`,
         `a.text.value[0]`) can never be made at ``line`` (#204), judged from the class
         files before the program runs, or None (the stop judges it): a field of a value
-        declared a JDK type, or of a class of the program whose superclass is one, that
-        no class of the program declares (so any such field is the JDK's own), or an
-        element of an array such a field holds. Only where every class but the JDK's
-        is the program's (not an attached JVM, whose libraries Peeky does not read)."""
+        declared a JDK type (any class not in the program's class files), or of a class
+        of the program whose superclass is one, that no class of the program which may be
+        that value declares (so any such field is the JDK's own), or an element of an
+        array such a field holds. Only where every class but the JDK's is the program's
+        (not an attached JVM, whose libraries Peeky does not read)."""
         if not getattr(self, "knows_every_class", True):
             return None
         match = re.fullmatch(r"([^\W\d][\w$]*)((?:\.[^\W\d][\w$]*|\[-?[0-9]+\])+)", name)
@@ -1129,15 +1168,15 @@ class JavaSession:
         }
         if len(descriptors) != 1:
             return None
-        program_fields = {field for each in declared.values() for field in each.get("fields", {})}
         current, path, internal = descriptors.pop(), match[1], None
         for field, index in re.findall(r"\.([^\W\d][\w$]*)|\[(-?[0-9]+)\]", match[2]):
             element = not field
             if element:
-                # An element: of an array whose type is known, or of one a JDK field holds.
+                # An element: of an array whose type is known, or directly of one a JDK
+                # field holds (whose rows may be the program's: the stop judges them).
                 if current and current.startswith("["):
                     current = current[1:]
-                elif not (internal and current is None):
+                elif not (internal and current is None and not path.endswith("]")):
                     return None
                 path += f"[{index}]"
                 continue
@@ -1153,11 +1192,12 @@ class JavaSession:
                 current, internal = declared[top]["fields"][field], None
             elif (
                 top is None
+                or top in declared
                 or top == "java/lang/Object"
-                or not jdk_class(top)
-                or field in program_fields
+                or _may_declare(declared, holder, field)
             ):
-                # No field, a class not read, or one the program declares: the stop judges.
+                # No such field, or one a class of the program that may be the value
+                # declares: the stop judges.
                 return None
             else:
                 shown, above = holder.replace("/", "."), top.replace("/", ".")
@@ -1166,8 +1206,8 @@ class JavaSession:
                     if holder == top
                     else f"`{path}` is declared {shown}, which extends the JDK class {above}"
                 ) + (
-                    f", and no class of the program declares a field `{field}`, so any such "
-                    "field is declared by a JDK class"
+                    f", and no class of the program that may be one declares a field "
+                    f"`{field}`, so any such field is declared by a JDK class"
                 )
                 current = None
             path += f".{field}"

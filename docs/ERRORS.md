@@ -41,7 +41,7 @@ A refused change writes nothing. The hint names the one action the broken rule l
 
 **What can change.** Anything else is refused:
 - a root local of the stopped (innermost) frame;
-- Java: also a scalar field or array element that is not final or static, never a field a JDK class declares (`it is declared by java.lang.String, a JDK class`) or an element of an array one holds (#204);
+- Java: also a scalar field or array element that is not final or static, never a field a JDK class declares (`it is declared by java.lang.String, a JDK class`: loaded by the JDK's own class loaders) or an element of an array one holds, under any name (`the array is held by java.lang.String.value, a JDK class's field`; refused too where more than 64 objects refer to the array) (#204);
 - Rust, C, C++: also an integer field or element of a local the frame holds itself, reached without a pointer, reference or Box and outside unions, enums, packed and standard-library types;
 - the value must be a literal (Python) or a scalar (compiled).
 
@@ -68,7 +68,7 @@ A Java bundle built before then says to rebuild it (`predates String changes`).
 **Python locals a loop's pass assigns before reading them (#182).** A local the current pass's code has not assigned before the stop's line, which every path through the rest of the pass assigns before reading it, is refused (`this function's code assigns it again (line N) before reading it`); the hint says to change it after that assignment.
 
 **Refused before the program runs.**
-- A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register or, at every place of the line, inside a statement that has already read it or copied into such a binding, a field through a pointer or of a type no change reaches, a Java local whose declared type no change reaches or cannot hold the value, a Java field of a value declared a JDK type that no class of the program declares) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
+- A probe whose `--set` its build rules out at its line in every function there (any change in an optimized build, a Rust local kept in a register or, at every place of the line, inside a statement that has already read it or copied into such a binding, a field through a pointer or of a type no change reaches, a Java local whose declared type no change reaches or cannot hold the value, a Java field of a value declared a type not among the program's classes that no class of the program which may be that value declares) is refused before the program runs: `refused_before_launch`, no hits, no run saved (#138), and exit status 2.
 - For a register, the hint names a candidate edit with `std::hint::black_box` (COOKBOOK 6.6).
 
 **A field through a C pointer parameter.** When the program calls the function once, the message names that call (``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``).
