@@ -1948,7 +1948,7 @@ class RustSession(NativeSession):
         text = (
             f"`{name}` cannot be changed at {source}:{line}, at any stop of this build: "
             + by_function(parts)
-            + ". Refused before the program runs: nothing ran"
+            + ". Refused before the program runs: the debugger's launch request was not sent"
         )
         if all(kind == "absent" for _, (kind, _) in failures):
             # No function that can stop there has such a local, as `set` would find.

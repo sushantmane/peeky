@@ -564,7 +564,7 @@ def describe(args):
                     "fresh build with the edit, your files unchanged; then `peeky queries diff`"
                 }
             ),
-            "evidence": 'every probe is saved with a run_id: peeky sql "SELECT hit, selector, '
+            "evidence": 'every probe not refused before launch is saved with a run_id: peeky sql "SELECT hit, selector, '
             'value FROM last_run"; peeky queries [name] (canned, no SQL); peeky sql --schema',
         },
         "selectors": "dotted paths, indexes and string keys, e.g. request.page, args[0], "
@@ -818,6 +818,43 @@ def _sets(items):
 
 
 def probe(args):
+    from peeky.client import WorkerUnreachable
+    from peeky.errors import PeekyError
+
+    try:
+        root, request, edit, original, language, adapter = _probe_request(args)
+        if args.worker is not None:
+            client, expected = _remote_probe(args, root, request)
+    except Exception as exc:
+        # Refused before the probe request was sent (here, or in the worker's version
+        # handshake; #190): the debugger's launch or attach request was not sent.
+        exc.before_launch = True
+        raise
+    if args.worker is not None:
+        try:
+            result = _probe_remote(args, root, request, client, expected)
+        except (WorkerUnreachable, PeekyError) as exc:
+            # The request never reached the worker, or the worker refused it as it
+            # answers a refusal. Anything else once it is sent (a broken connection, an
+            # answer that is not the worker's) leaves its outcome unknown.
+            if isinstance(exc, WorkerUnreachable) or getattr(exc, "from_worker", False):
+                exc.before_launch = True
+            raise
+    else:
+        result = run_probe(
+            root,
+            request,
+            adapter=adapter,
+            progress=_progress(args),
+            launch_budget=args.launch_budget,
+            launch_marker=args.launch_marker,
+        )
+    return _probe_result(args, root, result, edit, original, request.program, language)
+
+
+def _probe_request(args):
+    """(root, the Probe, edit, original text, language, the local adapter or None) for
+    `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
     root, program, line, language, data = resolve(args.target, args.at, args.config)
@@ -843,15 +880,17 @@ def probe(args):
         edit=edit,
         set_at=set_at,
     )
-    progress = (
-        None
-        if args.quiet
-        else lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
-    )
-    if args.worker is not None:
-        result = _probe_remote(args, root, request)
-    else:
-        result = run_probe(root, request, adapter=adapter_for(language, data), progress=progress)
+    adapter = adapter_for(language, data) if args.worker is None else None
+    return root, request, edit, original, language, adapter
+
+
+def _progress(args):
+    if args.quiet:
+        return None
+    return lambda message: print(f"peeky: {message}", file=sys.stderr, flush=True)
+
+
+def _probe_result(args, root, result, edit, original, program, language):
     if edit:
         _bind_candidate(result, original, edit, program)
     if misplaced := _misplaced_options(args):
@@ -1831,6 +1870,7 @@ def session(args):
 
 
 ATTACH_MAX_PAUSE = 10
+PROBE_STATUSES = frozenset({"completed", "no-stop", "failed", "timeout"})
 
 
 def _max_pause(value, language):
@@ -1872,10 +1912,9 @@ def _remote(url):
         )
     client = Client(url, token)
     version = client.call("version")
-    if version.get("protocol") != PROTOCOL_VERSION:
-        raise ValueError(
-            f"Worker speaks protocol {version.get('protocol')}, this client {PROTOCOL_VERSION}"
-        )
+    protocol = version.get("protocol") if isinstance(version, dict) else None
+    if protocol != PROTOCOL_VERSION:
+        raise ValueError(f"Worker speaks protocol {protocol}, this client {PROTOCOL_VERSION}")
     return client, token
 
 
@@ -1899,9 +1938,14 @@ def _expected(root, program, entry):
     return expected
 
 
-def _probe_remote(args, root, request):
+def _remote_probe(args, root, request):
+    """(client, the sources' expected hashes) for a remote probe, checked before it is
+    sent."""
     client, _ = _remote(args.worker)
-    expected = _expected(root, request.program, request.entry)
+    return client, _expected(root, request.program, request.entry)
+
+
+def _probe_remote(args, root, request, client, expected):
     result = client.probe(
         f"{request.program}:{request.line}",
         request.capture,
@@ -1917,6 +1961,20 @@ def _probe_remote(args, root, request):
         edit=request.edit,
         set_at=request.set_at,
     )
+    # A probe answer has one of these statuses, or is a probe child's bare error (#190
+    # review: any JSON object was taken for one).
+    error = result.get("error") if isinstance(result, dict) else None
+    bare_error = isinstance(error, dict) and isinstance(error.get("code"), str)
+    if not isinstance(result, dict) or (
+        result.get("status") not in PROBE_STATUSES
+        and not (result.get("status") is None and bare_error)
+    ):
+        from peeky.client import TransportLost
+
+        raise TransportLost(
+            "Connection to the worker broke during 'probe' (its answer is not a probe "
+            "result); its outcome is unknown"
+        )
     # A worker whose probe child was killed (its cap) or crashed early answers with
     # only status/error; give every result the same complete shape.
     if result.get("status") is None:
@@ -2916,6 +2974,10 @@ def main(argv=None, _job=False, _edits=None):
         "from $PEEKY_WORKER_TOKEN; local and worker sources must match",
     )
     sub.add_argument("--expect-sha256", action="append", default=[], help=argparse.SUPPRESS)
+    # A worker's probe child (#190 review): a launch budget below the worker's watchdog,
+    # and a file written just before the debugger is asked to start the program.
+    sub.add_argument("--launch-budget", type=float, help=argparse.SUPPRESS)
+    sub.add_argument("--launch-marker", type=Path, help=argparse.SUPPRESS)
     sub.add_argument(
         "--arg",
         action="append",
@@ -3172,7 +3234,11 @@ def main(argv=None, _job=False, _edits=None):
 
         payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
         if getattr(args, "json", False):
-            print(json.dumps({"error": payload}, indent=2))
+            shown = {"error": payload}
+            if getattr(args, "command", None) == "probe" and getattr(exc, "before_launch", False):
+                # As a probe the worker refused (#190): its launch request was not sent.
+                shown = {"status": "failed", **shown, "refused_before_launch": True}
+            print(json.dumps(shown, indent=2))
         print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
         print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
         if payload.get("cleanup"):
