@@ -12,8 +12,10 @@ gate's record is in the [archive](archive/RUST_GATE.md).
 
 **The crate's shape.** `rust_manifest` checks it before any tool runs:
 
-- one explicit binary, and at most one integration-test target, which can't be edited;
-- autodiscovery and build scripts off;
+- one binary target: a `[[bin]]` table, or Cargo's default `src/main.rs`;
+- at most one integration test, explicit or discovered in `tests/*.rs`, which can't be edited;
+- no build script, library or other binaries. A discovery switch (`build`, `autolib`,
+  `autobins`, `autotests`) may be left out only where Cargo would find nothing more;
 - no dependencies, workspaces or profiles;
 - a matching version 4 lockfile.
 
@@ -82,7 +84,7 @@ Every message is read before deciding. These are fatal instead:
 
 ## The MIR build
 
-Unoptimized builds compile the binary crate through a small rustc wrapper, set as
+Every build compiles the binary crate through a small rustc wrapper, set as
 `RUSTC_WORKSPACE_WRAPPER`. Peeky writes it into its own build directory, and rechecks its bytes
 before every command. For that crate only, the wrapper adds:
 
@@ -96,7 +98,9 @@ Around it:
 - The test target, and anything else Cargo compiles, gets no flags. Cargo reuses the one binary
   unit for both commands.
 - The dumps are a hashed build artifact.
-- Optimized builds use no wrapper, and read no owned locals.
+- Optimized builds run the wrapper too, and their MIR is parsed: their bindings' types decide
+  what a `Box` is. But no owned-local proof shows a container's contents there
+  ([Optimized builds](#optimized-builds)).
 
 ## The owned-local proof
 
@@ -444,12 +448,15 @@ the engineering probe.
 - A unit with only one of the two is ambiguous, and preparation fails.
 - Each selected unit must be DWARF 4, `DW_LANG_Rust` and produced by rustc, with its own line
   table. There are at most 16.
-- All the dwarfdump calls share one 30 s deadline.
+- All the dwarfdump calls share one time budget. The worker gives it at most 10 s, or less if the
+  launch's deadline is nearer. `application_symbols` accepts at most 30 s: its default, for direct
+  callers such as the engineering probe.
 - Each table is dumped by its exact `DW_AT_stmt_list` offset, and its header's offset must match.
-  The native worker's `parse_lines` then reads it, fail-closed, within its 2 MiB limit.
-- The standard library's tables are never read, so the C and C++ budget stays as it is. Fewer
-  lines can only refuse a breakpoint or a stop: a standard-library line can't be taken for a
-  declared file's.
+  The native worker's `parse_lines` then reads it, fail-closed.
+- For Rust, dwarfdump's output and the line parser are each bounded at 16 MiB. C and C++ keep
+  their own 2 MiB limit.
+- The standard library's tables are never read. Fewer lines can only refuse a breakpoint or a
+  stop: a standard-library line can't be taken for a declared file's.
 
 ## Enum views
 
@@ -492,7 +499,9 @@ conflicting definitions are unqualified.
 `settings set target.load-script-from-symbol-file false`, and reads back each value it writes.
 What it can change is in [Changing a value](#changing-a-value).
 
-- A view has `variablesReference: 0` and a `view` label.
+- A view has a `view` label. A leaf view has `variablesReference: 0`.
+- A decoded view with children gets a worker-owned expansion handle, for at most 512 children. It
+  never reaches the debugger, exposes no raw storage, and never authorizes a write.
 - A request's view reads share one budget: 128 fetches, 10 s, 1,024 items and 1 MiB. One absolute
   deadline covers each read's write and its response.
 - Running out is `budget-exhausted`, apart from a shape Peeky can't verify. That includes a read
@@ -505,7 +514,9 @@ What it can change is in [Changing a value](#changing-a-value).
 The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
 
 - It sets `CARGO_PROFILE_DEV_OPT_LEVEL`, and the target identity's profile records it.
-- The [MIR build](#the-mir-build) doesn't run: optimized builds read no owned locals.
+- The [MIR build](#the-mir-build) still runs, and its MIR is parsed. But no owned-local proof
+  shows a container's contents. A `Vec` or a `String` stays raw, with the reason "Peeky reads a
+  container's contents only in an unoptimized build".
 - A local with no value is reported as `unavailable`.
 - Every result carries `optimized` and a warning, because optimized code can show wrong values
   that LLDB doesn't flag. In a real run, `start` read `1` at opt-level 2, and `3` unoptimized.
@@ -529,3 +540,11 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
 - The raw-DAP engineering probe, `scripts/probe_rust.py` (`tests/rust/test_rust_probe.py`), is
   evidence for qualification only. It takes the `PEEKY_RUST_*` tool paths, or the same paths as
   named arguments. CI resolves the tools with `rustup which --toolchain 1.96.0`, and uses LLVM 18.
+  The probe:
+  - records the tools' and inputs' hashes, and requires Rust and Cargo 1.96.0;
+  - builds a fresh copy of the crate, offline;
+  - imports no Rust formatter, turns LLDB's source-init files off, and loads no scripts from symbol
+    files. The worker's own initialize request also sends both `sourceInitFile` flags as false;
+  - checks the stopped source and line, and the loaded module's identity;
+  - changes a scalar, and shows that the output changes without a rebuild;
+  - checks that the inputs' hashes are unchanged, and keeps bounded events and cleanup.
