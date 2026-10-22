@@ -160,7 +160,7 @@ Without the token, the reply is `401`:
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |
 | probe | one stateless request: `at`, `capture`, optional `set` and the probe's other options ([ADR 0004](adr/0004-stateless-probes.md)) | the probe's result |
-| version | none | protocol version, the sources a client hashes, operations, error codes |
+| version | none | protocol version, the sources a client hashes, the worker's root, operations, error codes |
 | shutdown | none | the worker closes its session and stops |
 
 - Client-visible IDs mean nothing across sessions or stops.

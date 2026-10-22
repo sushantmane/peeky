@@ -961,7 +961,7 @@ class DebugWorker:
             ),
             "function": str(frames[0].get("name") or "")[:300],
             "frame": 0,
-            "frames": frames,
+            "frames": _public_sources(runtime, frames),
             "scopes": [],
             "returned": returned,
             "outside_program": True,
@@ -1799,7 +1799,8 @@ class DebugWorker:
                     raise ValueError(f"expect_sha256 names an {role} that was not given")
                 if expected and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
                     raise ValueError(
-                        f"Worker source provenance differs for the {role} {path.name}: refused "
+                        f"Worker source provenance differs for the {role} "
+                        f"{path.relative_to(self.root).as_posix()}: refused "
                         "before launching. Sync sources before debugging remotely"
                     )
             # And every other source the target reads (#249): what this worker's trusted
@@ -1981,7 +1982,7 @@ class DebugWorker:
                 return {
                     "session_id": self.session,
                     "state": self.state,
-                    "breakpoints": points.get("breakpoints", []),
+                    "breakpoints": _public_sources(runtime, points.get("breakpoints", [])),
                     "source_sha256": hashlib.sha256(program.read_bytes()).hexdigest(),
                     **({"candidate_sha256": candidate_sha256} if edit else {}),
                     **(
@@ -2330,7 +2331,7 @@ class DebugWorker:
             source = (selected_frame.get("source") or {}).get("path")
             snapshot = {
                 "stop_id": self.stop_id,
-                # For people: the user's own source file; frames keep the debugger's paths.
+                # The user's own source file, as `frames` show it.
                 **(
                     {"location": f"{_display_path(runtime, source)}:{selected_frame.get('line')}"}
                     if isinstance(source, str) and source
@@ -2355,7 +2356,7 @@ class DebugWorker:
                     if self.stop_place
                     else {}
                 ),
-                "frames": frames,
+                "frames": _public_sources(runtime, frames),
                 "scopes": result,
                 # The object whose members selectors may name without it (C++, Java).
                 **(
@@ -2576,8 +2577,8 @@ class DebugWorker:
                 self.record_own_points(args["breakpoints"], placed)
                 self.note_places(runtime, args["breakpoints"], placed)
                 if warnings := [*self.loop_warnings(), *self.place_warnings()]:
-                    return {**placed, "warnings": warnings}
-            return placed
+                    return {**_public_placed(runtime, placed), "warnings": warnings}
+            return _public_placed(runtime, placed)
         if operation == "continue":
             self.stopped(args)
             pending = None if args.get("to_exit") else self.co_stopped()
@@ -4428,6 +4429,26 @@ _SET_MEMBER = (
 )
 
 
+def _public_sources(runtime, items):
+    """Breakpoints or frames as answered: copies, with a build copy's source shown as the
+    user's file, as `location` is (#252). The debugger's own frames are left as they are,
+    for the rules that compare them."""
+    shown = []
+    for item in items or []:
+        source = item.get("source") if isinstance(item, dict) else None
+        path = source.get("path") if isinstance(source, dict) else None
+        if isinstance(path, str) and path:
+            item = {**item, "source": {**source, "path": _display_path(runtime, path)}}
+        shown.append(item)
+    return shown
+
+
+def _public_placed(runtime, placed):
+    if isinstance(placed, dict) and isinstance(placed.get("breakpoints"), list):
+        return {**placed, "breakpoints": _public_sources(runtime, placed["breakpoints"])}
+    return placed
+
+
 def _display_path(runtime, path):
     """A prepared build's copy of a source, shown as the user's original file.
 
@@ -4663,6 +4684,8 @@ def make_server(root, token, port=8765, *, adapter=None):
                         "protocol": PROTOCOL_VERSION,
                         # Which sources a client hashes for expect_inputs (#249).
                         "sources": describe(worker.adapter),
+                        # Where its paths start: a remote client shows them as its own (#252).
+                        "root": str(worker.root),
                         "operations": sorted(OPERATIONS),
                         "error_codes": sorted(
                             {rule[1] for rule in _RULES}

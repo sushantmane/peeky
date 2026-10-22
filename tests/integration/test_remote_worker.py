@@ -429,6 +429,26 @@ def test_later_session_commands_carry_the_note(remote, capsys):
     run(capsys, "session", "close")
 
 
+def test_remote_stops_are_named_in_your_checkout(remote, capsys):
+    # #252: locations and frames named the worker host's root, a path you don't have.
+    host, local, worker, _ = remote
+    _, port = worker()
+    url = f"http://127.0.0.1:{port}"
+    mine = local.resolve() / "pagination_bug.py"
+    start = ["session", "start", local / "pagination_bug.py", "--at", "8", "--worker", url]
+    code, out = run(capsys, *start, "--json")
+    assert code == 0 and json.loads(out.out)["location"] == f"{mine}:8", out.out
+    code, out = run(capsys, "session", "inspect", "--json")
+    assert json.loads(out.out)["frames"][0]["source"]["path"] == str(mine), out.out
+    run(capsys, "session", "continue", "--to-exit")
+    code, out = run(capsys, "session", "report", "--json")
+    assert code == 0 and str(host.resolve()) not in out.out, out.out
+    run(capsys, "session", "close")
+    probe = ["probe", local / "pagination_bug.py", "--at", "8", "--capture", "start"]
+    code, out = run(capsys, *probe, "--worker", url, "--json")
+    assert code == 0 and str(host.resolve()) not in out.out, out.out
+
+
 def test_a_stale_pyc_in_the_tree_is_never_used(remote, capsys):
     # The worker host's __pycache__ holds a helper.pyc compiled from other code, marked
     # unchecked: Python loads it without looking at helper.py.

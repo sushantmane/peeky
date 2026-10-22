@@ -56,6 +56,8 @@ A session started with `--worker` says `remote` in its state: `session default (
 
 - The worker's interpreter, and its trusted target config, choose the runtime.
 - The client never sends executables or configuration.
+- Locations name your checkout. A path under the worker's `--root` comes back as the same file in
+  yours ([exceptions](#c-c-and-rust-on-the-worker-host)).
 - The client saves remote probe evidence, and its `runs.worker` column names the worker's URL. The
   worker runs stateless probes with `--no-save`, so the worker host keeps none.
 - **Verification runs locally.** `peeky verify` builds and checks candidates on your machine. So
@@ -96,11 +98,65 @@ A session works the same way:
 
 ```
 $ peeky session start . --config launch.json --at demo/PaginationBug.java:13 --worker http://127.0.0.1:56757
-session default (java, remote): state: stopped at /home/peeky/java/demo/PaginationBug.java:13 in PaginationBug.main(String[]), hit 1 (paused 0.0 s)
+session default (java, remote): state: stopped at demo/PaginationBug.java:13 in PaginationBug.main(String[]), hit 1 (paused 0.03 s)
 ```
 
 With an attached JVM, a probe stops at its hits, then detaches. The JVM runs on, and Peeky never
 kills it ([JAVA_ATTACH.md](JAVA_ATTACH.md)).
+
+### C, C++ and Rust on the worker host
+
+The worker builds and runs the program on its host, from its own trusted config. That config takes
+the same keys as `--config`. Its paths are relative to `--root`.
+
+| Target | Worker flag | The config names |
+| --- | --- | --- |
+| C or C++ | `--native-config` | `sources`, `headers`, `compiler`, `adapter`, `dwarfdump`; `"language": "cpp"` for C++ |
+| A Cargo crate | `--rust-config` | `sources`, `tests`, and every tool: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump` |
+
+- The host needs the toolchain: clang, lldb-dap and llvm-dwarfdump, and for Rust, cargo and rustc
+  ([WORKER.md](WORKER.md#start-a-c-or-c-worker)).
+- On your machine, no `--config` is needed. The worker says which files to hash.
+- The files compared are listed in [Source identity](#source-identity): a C header or a Rust module
+  that differs is refused by name.
+
+A probe of a C program through the worker, run in the checkout:
+
+```
+$ peeky probe . --at main.c:7 --capture start --set start=0 --worker http://127.0.0.1:56227 --no-save
+hit  phase      line  function  selector  type  value
+1    observed   7     main      start     int   3  [settable]
+1    after-set  7     main      start     int   0  [settable]
+set start: 3 -> 0
+status: completed  hits: 1  seconds: 0.736  max pause: 33.5 ms
+output so far (the program ended, but its output may still have been arriving):
+  START:0
+the debugger sent more text once Peeky began closing the session, its own or the program's still on its way (output_after_disconnect in --json)
+```
+
+The last lines are lldb-dap 18's, on Linux. It sends text as it exits, so the output isn't proven
+whole ([COOKBOOK](COOKBOOK.md#when-the-program-ended-but-its-output-isnt-proven-whole)).
+
+A Rust session:
+
+```
+$ peeky session start . --at src/main.rs:5 --worker http://127.0.0.1:56288
+session default (rust, remote): state: stopped at src/main.rs:5 in remote_pages::main, hit 1 (paused 0.01 s)
+$ peeky session get start
+start: i32 = 3  [settable]
+```
+
+**Locations name your checkout.** The worker builds from a private copy of the sources on its
+host. Locations, frames and breakpoints in that copy, or under the worker's `--root`, come back as
+the same file in your checkout. So the session above stopped at `src/main.rs:5`, not at a path that
+exists only on the host. Two kinds of path stay as the host reports them:
+
+- a file only the build has, such as a generated one;
+- a file outside both, such as the standard library's.
+
+**In a container,** LLDB turns off address randomization for the program it launches. Docker's
+default seccomp profile refuses that call, so run the container with `--cap-add=SYS_PTRACE
+--security-opt seccomp=unconfined`.
 
 ### Source identity
 
@@ -258,18 +314,19 @@ TCP relay as a third. Its tests cover:
 - refusing a non-loopback URL, a missing token, a wrong token (`UNAUTHORIZED`) and a closed port;
 - the token never appearing in output.
 
-The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), Python and Java, is
-repeated by CI on every change. A differing C header and a differing Rust module file are refused
-by name in the C and Rust lanes (`tests/native/test_native_remote_sources.py`,
-`tests/rust/test_rust_remote_sources.py`). `tests/unit/test_remote_sources.py` covers the
-protocol.
+The [recorded separate-host run](#recorded-separate-host-run-2026-10-22), for Python, Java, C, C++
+and Rust, is repeated by CI on every change. A differing C header and a differing Rust module file
+are refused by name there, and in the C and Rust lanes too
+(`tests/native/test_native_remote_sources.py`, `tests/rust/test_rust_remote_sources.py`).
+`tests/unit/test_remote_sources.py` covers the protocol.
 
 ## Recorded separate-host run (2026-10-22)
 
 `tests/remote/test_ssh_e2e.py` runs the procedure above against a second host. The host is a Linux
 container started from `scripts/remote_e2e/Dockerfile`. It has its own kernel network namespace,
 filesystem, OS and Python. The Java tests use the Dockerfile's `java` target, which adds a JDK and
-an adapter bundle built in the image.
+an adapter bundle built in the image. The C, C++ and Rust tests use its `native` target, which adds
+LLVM 18 and Rust 1.96.0, the versions the C and Rust lanes use.
 
 - The container runs a key-only `sshd`, which permits a single forward, to `127.0.0.1:8765`.
 - The client uses a throwaway ed25519 key, and ignores the user's ssh configuration.
@@ -284,7 +341,8 @@ To run it locally, you need Docker, for example OrbStack:
 PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
 ```
 
-The Java steps are saved beside it, in `remote-run-java.json`.
+The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ and Rust steps in
+`remote-run-native.json`.
 
 | | Client | Worker host |
 | --- | --- | --- |
@@ -292,6 +350,8 @@ The Java steps are saved beside it, in `remote-run-java.json`.
 | Python / debugpy | 3.13.8 / 1.8.22 | 3.11.17 / 1.8.22 |
 | SSH | OpenSSH 10.3p1 client | OpenSSH 10.0p2 sshd |
 | Java | none needed | Temurin 17.0.20.1 (the `java` target only) |
+| C, C++ | none needed | clang, lldb and llvm-dwarfdump 18.1.8 (the `native` target only) |
+| Rust | none needed | rustc and cargo 1.96.0, linked with clang 18 (the `native` target only) |
 
 | Step | Command (client) | Exit | Seconds | Result |
 | --- | --- | ---: | ---: | --- |
@@ -338,3 +398,28 @@ The Java steps are saved beside it, in `remote-run-java.json`.
   of the `java` image took 17 s, with its base images already pulled.
 - On 2026-10-16, five consecutive local runs took 4.6–5.0 s. On GitHub's `ubuntu-latest` runner,
   with an x86_64 client and container, the module took 21.7 s including the image build.
+
+**C, C++ and Rust** (2026-10-22), with the `native` target's container. Each language has a
+`main` file and a header or module it reads: `page.h`, `page.hpp` or `src/page.rs`.
+
+| Step | Command (client) | Exit | Seconds (C / C++ / Rust) | Result |
+| --- | --- | ---: | ---: | --- |
+| Probe with a change | `peeky probe . --at main.c:7 --capture start --set start=0 --worker URL` | 0 | 0.79 / 0.93 / 0.96 | `start` 3 → 0; output `START:0` |
+| Session start | `peeky session start . --at main.c:7 --worker URL` | 0 | 0.60 / 0.77 / 0.71 | stopped at `main.c:7`, `main.cpp:7`, `src/main.rs:5`: in your checkout |
+| Read, inspect, run to the end | `peeky session get start`, `session inspect`, `session continue --to-exit` | 0 | 0.06 or less each | `3`; frame 0 in your checkout; terminated |
+| Program output, close | `peeky session report`, `session close` | 0 | 0.11 or less | `START:3`; closed |
+| The host's `main` file differs | `peeky probe … --worker URL` | 2 | 0.08–0.09 | `PROVENANCE_CHANGED`, `differs for the program main.c`; the changed program was never built or run |
+| The host's header or module differs | `peeky probe … --worker URL` | 2 | 0.08–0.09 | `PROVENANCE_CHANGED`, naming `page.h`, `page.hpp` or `src/page.rs`; refused before launching |
+
+- The C++ and Rust commands are the same, with `main.cpp:7` or `src/main.rs:5`.
+- The changed `main` file creates a marker file if it runs. The marker never appeared.
+- No probe or session result names a path that exists only on the host. Those tests check every
+  string in their JSON results for the worker's root and its build directories.
+- The container needs `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined` for LLDB.
+- With all three images built, the whole module took 19.8 s locally: 21 tests, 12 of them C, C++
+  and Rust.
+- Cold builds, with the base images already pulled, took 94 s in all: 12 s for `host`, 9 s for
+  `java` and 73 s for `native`. The `native` stage took 35–37 s in two earlier builds; most of it
+  is downloading. The image is 1.8 GB.
+- The `native` stage installs its toolchain before Peeky. So a change to Peeky's source rebuilds it
+  in about 5 s.

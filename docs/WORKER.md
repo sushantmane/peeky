@@ -32,6 +32,9 @@ A client on another host must show that its sources are the worker's. This is pr
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
      directory holding `pyvenv.cfg`);
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
+
+   Its `root` is the worker's `--root`. A `location` or source `path` under it names the same file
+   in your checkout: show it there.
 2. With `launch` or `probe`, send `expect_sha256` (`program`, and `entry` for a `--run` script) and
    `expect_inputs`: `{path: sha256}` for every one of those files, at least one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
@@ -109,6 +112,9 @@ RESULT=success value=5000 array=4 pointer=5000
 
 - LLDB may first return a breakpoint as pending. Use the verified breakpoint events and the actual
   stopped frame and location as evidence. The worker keeps those events bounded.
+- A compiled target runs from a private build copy of its sources. Breakpoints, `location` and
+  `frames` name your source file instead of the copy. A file only the build has keeps the copy's
+  path.
 - Registers aren't treated as local variables.
 - The worker turns off LLDB's init files, shell expansion of the program's arguments, and LLDB's
   automatic variable summaries. That removes hidden configuration and behavior. It isn't isolation

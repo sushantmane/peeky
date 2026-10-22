@@ -75,6 +75,51 @@ def test_a_python_worker_compares_every_module_under_its_root(app):
     assert worker.dap is None  # nothing was launched
 
 
+def test_a_workers_paths_come_back_as_the_clients():
+    # #252: a remote stop was named by the worker host's path, which the client lacks.
+    from peeky.cli import _client_paths
+
+    answer = {
+        "location": "/srv/app/src/main.rs:5",
+        "frames": [
+            {"name": "main", "source": {"path": "/srv/app/src/main.rs"}},
+            {"name": "start", "source": {"path": "/rustc/abc/library/std/src/rt.rs"}},
+        ],
+        "history": [{"result": {"location": "/srv/app:1", "path": "/srv/app"}}],
+        # Only locations and paths: other text, and a root that merely shares a prefix.
+        "output": "/srv/app/src/main.rs",
+        "path": "/srv/application/main.rs",
+    }
+    assert _client_paths(answer, "/srv/app", "/home/me/app") == {
+        "location": "/home/me/app/src/main.rs:5",
+        "frames": [
+            {"name": "main", "source": {"path": "/home/me/app/src/main.rs"}},
+            {"name": "start", "source": {"path": "/rustc/abc/library/std/src/rt.rs"}},
+        ],
+        "history": [{"result": {"location": "/home/me/app:1", "path": "/home/me/app"}}],
+        "output": "/srv/app/src/main.rs",
+        "path": "/srv/application/main.rs",
+    }
+    assert _client_paths(answer, "/", "/home/me/app") == answer
+
+
+def test_a_program_that_differs_is_named_by_its_path_under_the_root(app):
+    # #252: a crate's src/main.rs was named `main.rs`, which other directories may hold.
+    (app / "src").mkdir()
+    (app / "src" / "main.py").write_text(MAIN)
+    worker = DebugWorker(app)
+    with pytest.raises(ValueError, match=r"differs for the program src/main\.py: refused"):
+        worker.dispatch(
+            "launch",
+            {
+                "program": "src/main.py",
+                "breakpoints": [{"line": 2}],
+                "expect_sha256": {"program": sha(MAIN + "# changed\n")},
+            },
+        )
+    assert worker.dap is None
+
+
 def test_only_virtual_environments_are_left_out(app):
     # #254 review: hidden directories and names like `env` were skipped, so a program
     # in .hidden/ imported a .hidden/helper.py that was never compared; round 2: .git too.

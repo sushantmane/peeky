@@ -1452,17 +1452,55 @@ def _remote_session(name, record):
             "session again on a worker of the same Peeky version"
         )
     client.sources = version.get("sources")
+    client.worker_root = version.get("root") if isinstance(version.get("root"), str) else None
     return client
 
 
-class _RemoteSession(Client):
+class _RemoteClient(Client):
+    """A remote worker's client: the worker's paths come back as yours (#252).
+
+    A location the worker reports under its own root (`/srv/app/main.c:7`) names the same
+    file in your checkout, so it is shown there; a path the worker's root doesn't hold is
+    left as it is."""
+
+    def __init__(self, url, token, worker_root=None, client_root=None):
+        super().__init__(url, token)
+        self.sources = None
+        self.worker_root, self.client_root = worker_root, client_root
+
+    def call(self, operation, **arguments):
+        result = super().call(operation, **arguments)
+        if operation == "version" or not (self.worker_root and self.client_root):
+            return result
+        return _client_paths(result, self.worker_root, str(self.client_root))
+
+
+def _client_paths(value, worker_root, client_root):
+    """``value`` with each location or source path under ``worker_root`` moved to
+    ``client_root``."""
+    if isinstance(value, list):
+        return [_client_paths(item, worker_root, client_root) for item in value]
+    if not isinstance(value, dict):
+        return value
+    head = worker_root.rstrip("/")
+    if not head:
+        return value
+    shown = {}
+    for key, item in value.items():
+        if key in ("location", "path") and isinstance(item, str):
+            if item == head or item.startswith((head + "/", head + ":")):
+                item = client_root.rstrip("/") + item[len(head) :]
+        shown[key] = _client_paths(item, worker_root, client_root)
+    return shown
+
+
+class _RemoteSession(_RemoteClient):
     """A remote session's client: your checkout is rehashed before and after every
     request, and must still be what the session compared at its start (#249)."""
 
     def __init__(self, record):
-        super().__init__(record["url"], record["token"])
+        super().__init__(record["url"], record["token"], client_root=record.get("root"))
         self.record = record
-        self.sources = None
 
     def call(self, operation, **arguments):
         if operation != "close":
@@ -2214,7 +2252,7 @@ def _remote(url):
             f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN; tokens are never accepted "
             "as arguments"
         )
-    client = Client(url, token)
+    client = _RemoteClient(url, token)
     version = client.call("version")
     protocol = version.get("protocol") if isinstance(version, dict) else None
     if protocol != PROTOCOL_VERSION:
@@ -2225,6 +2263,7 @@ def _remote(url):
         )
     # Which sources the worker's target reads: their local copies are hashed and sent.
     client.sources = version.get("sources")
+    client.worker_root = version.get("root") if isinstance(version.get("root"), str) else None
     return client, token
 
 
@@ -2254,6 +2293,7 @@ def _remote_probe(args, root, request):
     from peeky.sources import client_sources
 
     client, _ = _remote(args.worker)
+    client.client_root = root
     inputs = client_sources(root, client.sources)
     request = replace(request, expect_inputs=tuple(sorted(inputs.items())))
     return client, request, _expected(root, request.program, request.entry)
@@ -2392,6 +2432,7 @@ def _start_remote(args, root, program, line, language, max_pause):
     from peeky.sources import client_sources, difference
 
     client, token = _remote(args.worker)
+    client.client_root = root
     inputs = client_sources(root, client.sources)
     launch = client.call(
         "launch",
