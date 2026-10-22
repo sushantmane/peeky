@@ -408,14 +408,12 @@ def test_tuple_and_struct_elements_are_read_as_rust_prints_them(plain, capsys):
         "lengths[1].__0": ("-0.0", "f64"),
         "pairs[0].b": ("2", "u16"),
     }
-    # A struct with a String field is not read, and the note says what would be.
-    assert "view" not in rows["named"]
-    assert "every field is an integer, bool, float or char" in rows["named"]["note"]
+    # #260: a struct with a String field reads too, its text from memory.
+    assert rows["named"]["value"] == printed[2].rsplit(" ", 1)[0], rows["named"]
     code, result = run(
-        capsys, "probe", str(plain), "--at", owned, "--capture", "named[0]", "--quiet"
+        capsys, "probe", str(plain), "--at", owned, "--capture", "named[0].name", "--quiet"
     )
-    error = result["rows"][0]["error"]
-    assert "every field is an integer, bool, float or char" in error and "freed" not in error
+    assert result["rows"][0]["value"] == '"x"', result["rows"]
     # Reference parameters of composites, including &mut in the innermost frame.
     params = f"src/main.rs:{line_of(COMPOSITE, 'PARAMS')}"
     capture = "pairs,spans,shift,shift[0].__0,pairs[-1].__1,small"

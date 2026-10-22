@@ -489,6 +489,12 @@ def held_container(graph, root, name, steps, dereference=False):
     behind a shared reference). Raises Unsettable with the reason."""
     offset, node, _ = _strip(graph, root, name)
     if dereference:
+        if node[0] == "record" and re.fullmatch(r"&(?:mut )?\[.*\]", str(node[1] or "")):
+            # A slice reference is a data pointer and a length, not a pointer (#260).
+            raise Unsettable(
+                f"`{name}` is a slice, a data pointer and a length: Peeky reads what it holds "
+                f"only as its elements (`{name}[0]`), not through `{name}.data_ptr`"
+            )
         if node[0] not in ("pointer", "reference") or node[2] is None:
             raise Unsettable(f"the debug information gives `{name}` no type it points at")
         offset = node[2]

@@ -696,6 +696,15 @@ def test_a_container_field_is_found_only_through_plain_records():
             held_container(graph, 1, "self", list(steps), dereference=True)
     with pytest.raises(Unsettable, match="`self` is a pointer"):
         held_container(graph, 1, "self", ["values"])
+    # #260: a slice parameter is a data pointer and a length, which the debug information
+    # gives a type; what it holds reads as its elements, not through `data_ptr`.
+    graph[9] = record("&mut [app::Window]", [("data_ptr", 1, 0), ("length", 3, 8)]) + (
+        "&mut [app::Window]",
+    )
+    with pytest.raises(Unsettable) as refused:
+        held_container(graph, 9, "friends", ["data_ptr", "values"], dereference=True)
+    assert "no type it points at" not in str(refused.value)
+    assert "`friends` is a slice" in str(refused.value) and "`friends[0]`" in str(refused.value)
 
 
 def test_a_rust_raw_pointer_is_told_from_a_reference_by_its_debug_information_name():

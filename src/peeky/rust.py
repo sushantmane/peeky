@@ -59,6 +59,7 @@ from peeky.rust_mir import (
     stop_block,
 )
 from peeky.rust_symbols import (
+    CALLER_CHANGING,
     OWNED_CONTAINERS,
     REFERENCE_PARAMETERS,
     RUST_METADATA,
@@ -77,6 +78,7 @@ from peeky.rust_symbols import (
     lldb_float_debug,
     struct_name,
     struct_view,
+    unread_elements,
     without_numbered_structs,
 )
 from peeky.text_sets import text_kind
@@ -926,6 +928,10 @@ _NO_MEMORY = (
 
 # A String as the MIR names it: what a text (#137) changes.
 _TEXT_RUST = frozenset({"std::string::String", "alloc::string::String", "String"})
+# A `&mut` reference to a Vec, String, slice or str, as the IR or the MIR names its type.
+_MUT_CONTAINER = re.compile(
+    r"&mut (?:(?:std|alloc)::vec::Vec<|(?:std|alloc)::string::String$|\[|str$)"
+)
 
 
 # The prelude's own types (#183), named as the program names them, and the default
@@ -1389,6 +1395,26 @@ def _top_level_parts(text, separator):
             parts.append(text[start:at])
             start = at + 1
     return [*parts, text[start:]]
+
+
+def _caller_reason(name, held, changed="it"):
+    """Why a caller frame's container is not trusted (#260): ``held`` is what the frame
+    holds it as (`a local`). Whether the call under way was lent it is not checked, so
+    this holds whether it was or not."""
+    return (
+        f"`{name}` is {held} of a caller frame: Peeky doesn't check whether it was lent to "
+        f"{CALLER_CHANGING}, which may be changing {changed}, so its fields aren't trusted "
+        "here; Peeky reads it in the innermost frame"
+    )
+
+
+def _raw_container(why, taint=None):
+    """A container left raw, saying ``why`` (view_variable). Where a call under way may be
+    changing it (a caller frame's, owned or `&mut`), its own fields (`friends.len`) are not
+    its value either: they show `[stale]`, each saying why (#260)."""
+    if CALLER_CHANGING in why:
+        return {"raw_reason": why, "taint": "stale", "carry": True}
+    return {"raw_reason": why, **({"taint": taint} if taint else {})}
 
 
 def _unproven(variable, why=None, pointer=None):
@@ -1856,11 +1882,13 @@ class RustSession(NativeSession):
         named = "::".join((*function.ancestors, own))
         return named if len(named) <= 300 else named[:299] + "…"
 
-    def never_settable_row(self, variable, frame, member=False):
+    def never_settable_row(self, variable, frame, member=False, steps=None):
         """`register` where no stop of this build can change the row (#138): the build's
         IR keeps its local (for ``member``, the local holding the field or element) only
         in a register in the frame's function, so the debugger shows a copy. A root row
-        only when it is an integer, which nothing else would rule out. Else None."""
+        only when it is an integer, which nothing else would rule out. Else None, as for
+        a member whose path (``steps``: the debugger's child names) `set` refuses first,
+        whatever holds it (`sharers.len`, a standard-library type's field, #260)."""
         if self._optimized():
             return None
         kind = str(variable.get("type") or "")
@@ -1874,6 +1902,8 @@ class RustSession(NativeSession):
             return None
         plain = _plain(variable.get("name"))
         if self.memory.get((hashed[1], plain)) is True:
+            return None
+        if member and steps is not None and self._path_refused(frame, variable, steps):
             return None
         proofs = getattr(self, "owned", None)
         if _state_held(proofs.body(hashed[1]) if proofs is not None else None, plain):
@@ -1890,6 +1920,19 @@ class RustSession(NativeSession):
         if kind in ("other", "some"):
             return f"another binding in a register (line {', '.join(map(str, lines))})"
         return "register"
+
+    def _path_refused(self, frame, root, steps):
+        """Whether `set` refuses the member ``steps`` reach from the root local ``root``
+        for its path alone (a pointer, a standard-library type, not an integer), as it
+        judges that before the root's memory (validate_member)."""
+        from peeky.fields import Unsettable, settable_member
+
+        try:
+            kind, _, graph = self._root_type(frame, root)
+            settable_member(graph, kind, str(root.get("name")), [str(step) for step in steps])
+        except Unsettable:
+            return True
+        return False
 
     def _not_in_memory(self, hashed, name, line=None, path=None):
         """Why the IR proves no memory for ``name`` (as LLDB names it: `x @ main.rs:5`
@@ -2729,7 +2772,8 @@ class RustSession(NativeSession):
     ):
         """Qualified views: containers read from memory, active enum variants; None
         leaves ordinary values unchanged; {"raw_reason": why} leaves a container raw,
-        saying why (#156).
+        saying why (#156), with "taint" for what it holds (#205) and "carry" where each
+        value read through it says why too (#260: a call may be changing it).
 
         A container is read only for a top-level variable of ``frame`` that is either a
         proven reference parameter (rust_ir), once the frame is past the parameter's
@@ -2765,6 +2809,17 @@ class RustSession(NativeSession):
         hashed = _frame_hash(frame) if top else None
         proof = self.parameters.get((hashed[1], variable.get("name"))) if hashed else None
         line = (frame or {}).get("line")
+        if top and hashed and not innermost and getattr(self, "owned", None) is not None:
+            # #260: a `&mut` Vec, String or slice in a caller frame. The call under way
+            # (`friends.retain_mut(decide)`) may be part-way through changing it, so even
+            # its own fields (`friends.len`) are not its value: they show `[stale]`. A shared
+            # one reads in any frame, as a reference parameter's contents do.
+            kinds = [proof["type"]] if proof else self._binding_types(variable, frame)
+            if kinds and all(_MUT_CONTAINER.match(str(kind or "")) for kind in kinds):
+                held = "a `&mut` " + ("parameter" if proof else "reference")
+                return _raw_container(
+                    _caller_reason(variable.get("name"), held, "what it points at")
+                )
         if (
             proof
             and self.target.opt_level == "0"
@@ -2982,6 +3037,27 @@ class RustSession(NativeSession):
                     + _gap_reason(variable.get("name"), reasons, line),
                     "taint": "pointers",
                 }
+            if (
+                gated
+                and lent_only
+                and str(kind).startswith("alloc::vec::Vec<")
+                and not _holds_data_pointers(kind)
+            ):
+                # A Vec #110 does not show standing and the MIR does not prove initialized
+                # here (`sharers`, moved on this line), or in a caller frame (#260): not a
+                # Box, so its own fields show, as a moved struct's do (#108); the pointers
+                # inside it show only their address.
+                name = variable.get("name")
+                if not provable:
+                    return _raw_container(_caller_reason(name, "a local"))
+                why = (
+                    f"the build's MIR does not prove `{name}` initialized at this line: it "
+                    "may be moved, dropped or not yet assigned around it"
+                )
+                element = str(kind).removeprefix("alloc::vec::Vec<")
+                if re.search(r"[&*]", element):
+                    why += ", and its items are references"
+                return _raw_container(why, taint="pointers")
             if gated:
                 # #101: a moved or dropped Box still holds its pointer, and LLDB would
                 # read the freed allocation as its fields. The pointer is shown; what it
@@ -3014,8 +3090,49 @@ class RustSession(NativeSession):
         if view is None and top and not parameter and kind in OWNED_CONTAINERS:
             # Why an owned Vec or String stays raw, for its row's note (#156).
             why = self._owned_raw(variable, frame, innermost, owned)
-            return {"raw_reason": why} if why else None
+            return _raw_container(why) if why else None
+        if (
+            view is None
+            and top
+            and not innermost
+            and not parameter
+            and str(kind).startswith("alloc::vec::Vec<")
+            and (types := self._binding_types(variable, frame))
+            and all(str(each or "").startswith("std::vec::Vec<") for each in types)
+            and (why := self._owned_raw(variable, frame, innermost, owned))
+        ):
+            # An owned Vec of other elements (`Vec<Friend>`) in a caller frame says why too,
+            # never offering a length the call may be changing (#260).
+            return _raw_container(why)
+        if view is None and top and kind in ("&str", "&mut str"):
+            # A closure's capture (`name` of `|f| f.name == *name`, #260) is never judged:
+            # why its text is not shown.
+            if self._captured(variable, frame):
+                name = variable.get("name")
+                return {
+                    "raw_reason": f"`{name}` is this closure's capture, and Peeky does not "
+                    "judge whether what a capture points at still stands: read it in the "
+                    "function that makes the closure"
+                }
         return view
+
+    def _captured(self, variable, frame):
+        """Whether the frame's root local ``variable`` is a closure's capture: every
+        binding of its name in the frame's MIR body is reached through the closure's
+        environment, `_1` (`(*((*_1).0: &&str))`)."""
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        body = proofs.body(hashed[1]) if hashed and proofs is not None else None
+        if body is None or not body.name.startswith("{closure"):
+            return False
+        name = str(variable.get("name")).partition(" @ ")[0]
+        bindings = body.bindings.get(name, ())
+        return bool(bindings) and all(
+            binding[0] is None
+            and re.match(
+                r"[(*]*_1\b", body.places.get((name, binding[1], binding[2], binding[4]), "")
+            )
+            for binding in bindings
+        )
 
     def _owned_raw(self, variable, frame, innermost, owned):
         """Why an owned `Vec` or `String` local stays raw (see view_variable)."""
@@ -3023,10 +3140,7 @@ class RustSession(NativeSession):
         if self.target.opt_level != "0":
             return "Peeky reads a container's contents only in an unoptimized build"
         if not innermost:
-            return (
-                f"`{name}` is a local of a caller frame, which the call under way may be "
-                "changing; Peeky reads it in the innermost frame"
-            )
+            return _caller_reason(name, "a local")
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         if hashed is None or proofs is None:
             return "Peeky cannot match this frame to the build's MIR"
@@ -3101,18 +3215,14 @@ class RustSession(NativeSession):
 
         if proof and type(line) is int and line > proof["line"]:
             if proof["type"].startswith("&mut ") and not innermost:
-                return {
-                    "raw_reason": f"`{root}` is a `&mut` parameter of a caller frame: the call "
-                    "under way may be changing what it points at; Peeky reads it in the "
-                    "innermost frame"
-                }
+                # Its own fields (`self.values.len`) may be mid-change too (#260).
+                return _raw_container(
+                    _caller_reason(root, "a `&mut` parameter", "what it points at")
+                )
             through, dereference = "reference", True
         else:
             if taint == "pointers" or not innermost:
-                return {
-                    "raw_reason": f"`{root}` is a local of a caller frame, which the call under "
-                    "way may be changing; Peeky reads it in the innermost frame"
-                }
+                return _raw_container(_caller_reason(root, "a local"))
             if not proofs.proven(hashed[1], root, line, path):
                 return {
                     "raw_reason": f"the build's MIR does not prove `{root}` initialized at "
@@ -3146,11 +3256,7 @@ class RustSession(NativeSession):
         if name not in layouts or layouts[name].get("kind") == "unread":
             # Elements Peeky never reads (`Vec<String>`): said on the field's own row, as
             # in a listing of what holds it (#183).
-            return {
-                "raw_reason": f"Peeky does not read the elements of a {rust_spelling(name)}: "
-                "it reads a Vec's or slice's elements only where they are integers, bool, "
-                "floats or char, or tuples or structs of your crate of them"
-            }
+            return {"raw_reason": unread_elements(name)}
         if through == "reference" and valid() is False:
             return {
                 "raw_reason": f"the build's MIR does not show that what `{root}` points at "

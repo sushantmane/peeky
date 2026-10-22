@@ -6393,7 +6393,7 @@ class NativeSession:
     # what guarantees every reported change, on every adapter.
     requires_memory_location = True
 
-    def never_settable_row(self, variable, frame, member=False):
+    def never_settable_row(self, variable, frame, member=False, steps=None):
         """Why no stop changes a field or element (``member``) of the root local
         ``variable`` (#138: `set` refuses a member of a root outside the frame's memory,
         as the check before the run does): `register` where the debug information gives

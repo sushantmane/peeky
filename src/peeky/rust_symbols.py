@@ -644,10 +644,53 @@ def composite_container(name):
 _FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _composite(die, by_offset):
+_STRING = "alloc::string::String"
+
+
+def _qualified_names(root):
+    """{offset: name} of the unit's named types: a struct, enum or union by its whole
+    path (`alloc::string::String`), anything else (a pointer, a base type) by its own
+    name (`*const kitty::Friend`, `i128`)."""
+    names = {}
+
+    def visit(die, prefix):
+        for child in die.children:
+            name = child.attributes.get("DW_AT_name")
+            if child.tag == "DW_TAG_namespace" and name:
+                visit(child, (*prefix, _string(name)))
+            elif child.tag in ("DW_TAG_structure_type", "DW_TAG_union_type") and name:
+                names[child.offset] = "::".join((*prefix, _string(name)))
+                visit(child, (*prefix, _string(name)))
+            elif name and child.tag in ("DW_TAG_pointer_type", "DW_TAG_base_type"):
+                names[child.offset] = _string(name)
+
+    try:
+        visit(root, ())
+    except ValueError:
+        return {}
+    return names
+
+
+def _element_field(target, by_offset, names):
+    """How a field of a container's element is read (#260): a `String`'s text, by its
+    validated layout ({"string": layout}), or not at all ({"unread": its type's name or
+    None})."""
+    if target is not None and names.get(target.offset) == _STRING:
+        layout = _container_layout(target, _STRING, by_offset)
+        if layout["kind"] == "string":
+            return {"string": {key: layout[key] for key in ("size", "data", "length", "capacity")}}
+    return {"unread": names.get(target.offset) if target is not None else None}
+
+
+def _composite(die, by_offset, names=None):
     """A tuple or struct whose fields are all qualified scalars, from its DWARF: its
     size, fields (name, offset, scalar) in declaration order, and how Rust's derived
-    `{:?}` shows it (`(a, b)`, `Point(a, b)`, `Interval { start: a, end: b }`)."""
+    `{:?}` shows it (`(a, b)`, `Point(a, b)`, `Interval { start: a, end: b }`).
+
+    With ``names`` (_qualified_names), a container's element (#260): a field may also
+    be a `String` (name, offset, `alloc::string::String`; its layout under "string"),
+    read as text, or any other type (name, offset, None, its type's name), not read;
+    at least one field must be read."""
     if die is None or die.tag != "DW_TAG_structure_type":
         raise ValueError("Rust element is not a tuple or struct")
     if any(
@@ -665,7 +708,7 @@ def _composite(die, by_offset):
     members = [child for child in die.children if child.tag == "DW_TAG_member"]
     if not 0 < size <= 256 or not 0 < len(members) <= 16:
         raise ValueError("Rust element size or field count is out of bounds")
-    fields = []
+    fields, text, widths = [], None, {}
     for member in members:
         target = _target(member, by_offset)
         scalar = next(
@@ -676,17 +719,42 @@ def _composite(die, by_offset):
             ),
             None,
         )
-        if scalar is None:
-            raise ValueError("Rust element field is not a qualified scalar")
         field = _string(member.attributes.get("DW_AT_name"))
-        fields.append((field, _hex(member.attributes.get("DW_AT_data_member_location")), scalar))
-    spans = sorted((offset, offset + ELEMENT_TYPES[scalar][0]) for _, offset, scalar in fields)
+        offset = _hex(member.attributes.get("DW_AT_data_member_location"))
+        if scalar is not None:
+            fields.append([field, offset, scalar])
+            widths[field] = ELEMENT_TYPES[scalar][0]
+            continue
+        if names is None:
+            raise ValueError("Rust element field is not a qualified scalar")
+        found = _element_field(target, by_offset, names)
+        if "string" in found and text not in (None, found["string"]):
+            raise ValueError("Rust element's String fields disagree on their layout")
+        if "string" in found:
+            text = found["string"]
+            fields.append([field, offset, _STRING])
+            # A String is three words, aligned as one.
+            widths[field] = 8
+        else:
+            fields.append([field, offset, None, found["unread"]])
+    if not widths:
+        raise ValueError("Rust element has no field Peeky reads")
+    spans = sorted(
+        (offset, offset + (text["size"] if kind == _STRING else widths[field]))
+        for field, offset, kind, *_ in fields
+        if field in widths
+    )
     if any(a[1] > b[0] for a, b in zip(spans, spans[1:])) or spans[-1][1] > size:
         raise ValueError("Rust element fields overlap or exceed its size")
-    numbered = all(field == f"__{index}" for index, (field, _, _) in enumerate(fields))
+    if any(offset > size for _, offset, *_ in fields):
+        raise ValueError("Rust element field is past its end")
+    numbered = all(field == f"__{index}" for index, (field, *_) in enumerate(fields))
     if name.startswith("("):
         # rustc names a 1-tuple `(i8)` here (its MIR and `{:?}` say `(i8,)`).
-        expected = "(" + ", ".join(s for _, _, s in fields) + ")"
+        parts = [kind or (rest[0] if rest else None) for _, _, kind, *rest in fields]
+        if None in parts:
+            raise ValueError("Rust tuple part has no name to check")
+        expected = "(" + ", ".join(parts) + ")"
         if not numbered or name != expected:
             raise ValueError("Rust tuple does not match its fields")
         shape = "tuple"
@@ -694,13 +762,15 @@ def _composite(die, by_offset):
         raise ValueError("Rust struct name is not plain")
     elif numbered:
         shape = "tuple-struct"
-    elif all(_FIELD_NAME.fullmatch(field) for field, _, _ in fields):
+    elif all(_FIELD_NAME.fullmatch(field) for field, *_ in fields):
         shape = "struct"
     else:
         raise ValueError("Rust struct field names are not plain")
     # A plain struct or tuple is aligned as its widest field (each a power of two).
-    alignment = max(ELEMENT_TYPES[scalar][0] for _, _, scalar in fields)
-    if size % alignment or any(offset % ELEMENT_TYPES[s][0] for _, offset, s in fields):
+    alignment = max(widths.values())
+    if size % alignment or any(
+        offset % widths[field] for field, offset, *_ in fields if field in widths
+    ):
         raise ValueError("Rust element is not laid out as its fields' alignment requires")
     declared = re.fullmatch(r"([0-9]+)\)", die.attributes.get("DW_AT_alignment") or "")
     if declared and int(declared[1]) < alignment:
@@ -709,10 +779,11 @@ def _composite(die, by_offset):
     return {
         "element_size": size,
         "alignment": alignment,
-        "fields": [[field, offset, scalar] for field, offset, scalar in fields],
+        "fields": fields,
         "shape": shape,
         # Derived Debug prints the struct's own name, without its path or generics.
         "shown": name.split("<")[0],
+        **({"string": text} if text else {}),
     }
 
 
@@ -722,9 +793,10 @@ def _composite(die, by_offset):
 _UNREAD = {"kind": "unread"}
 
 
-def _composite_layout(struct, kind, element, by_offset):
+def _composite_layout(struct, kind, element, by_offset, names=None):
     """The layout of a `Vec<T>` or `&[T]` of composites; _UNREAD when T is not a
-    tuple or struct of qualified scalars; None for a declaration without a body."""
+    tuple or struct with a field Peeky reads (see _composite: ``names`` lets fields be
+    `String`s, or not read); None for a declaration without a body."""
     params = [
         child
         for child in struct.children
@@ -745,7 +817,7 @@ def _composite_layout(struct, kind, element, by_offset):
                 and child.attributes.get("DW_AT_name") == '"T")'
             ]
             target = _target(params[0], by_offset) if len(params) == 1 else None
-            composite = _composite(target, by_offset)
+            composite = _composite(target, by_offset, names)
             data, length, capacity = _vec_parts(
                 struct,
                 (element, composite["element_size"], None),
@@ -755,7 +827,7 @@ def _composite_layout(struct, kind, element, by_offset):
         else:
             data, pointer = _member(struct, "data_ptr", by_offset)
             pointee = _target(pointer, by_offset) if pointer.tag == "DW_TAG_pointer_type" else None
-            composite = _composite(pointee, by_offset)
+            composite = _composite(pointee, by_offset, names)
             length, length_type = _member(struct, "length", by_offset)
             _usize(length_type)
     except (KeyError, ValueError, IndexError):
@@ -814,6 +886,7 @@ def container_layouts(text, unit, root=None):
     crate = unit.name.rpartition("/@/")[2].split(".")[0]
 
     structs = {}
+    names = _qualified_names(root)
 
     def visit(die, prefix):
         for child in die.children:
@@ -838,7 +911,7 @@ def container_layouts(text, unit, root=None):
                 elif (composite := composite_container(qualified)) and (
                     composite[1].startswith("(") or composite[1].startswith(f"{crate}::")
                 ):
-                    layout = _composite_layout(child, *composite, by_offset)
+                    layout = _composite_layout(child, *composite, by_offset, names)
                     if layout is not None and layouts.get(qualified, layout) != layout:
                         layout = {"kind": "unqualified"}
                     if layout is not None:
@@ -1121,6 +1194,10 @@ def active_variant(variable, fetch, layouts):
     return {**view, "value": value, "rust_view": "active-variant"}
 
 
+# Why a caller frame's container is not trusted (rust.py's reasons name it in these
+# words): the call under way may be part-way through changing it, so a note never offers
+# one of its fields as its length (#260).
+CALLER_CHANGING = "the call under way"
 MAX_ELEMENTS = 256
 MAX_TEXT_BYTES = 4096
 # A shown value stays well inside the worker's 2000-character value limit, so its
@@ -1246,6 +1323,156 @@ def _composite_decoder(layout):
         return f"{shown}({inner})"
 
     return composite
+
+
+MAX_READ = 4096
+# The text fields of a container's elements read per view (#260): each is a memory read of
+# its own, out of the 128 one inspection has for every value it shows.
+MAX_ELEMENT_TEXTS = 16
+MAX_FIELD_TEXT = 1024
+
+
+_NOT_UTF8 = (
+    "the {}'s bytes here are not valid UTF-8, though Rust text always is, so Peeky shows "
+    "none of its text"
+)
+
+
+def _partial(layout):
+    """Whether a container's element has a field other than a scalar (#260)."""
+    return any(kind not in ELEMENT_TYPES for _, _, kind, *_ in layout.get("fields", ()))
+
+
+def rust_str_debug(text):
+    """Text as Rust's `{:?}` prints a `str`: `"Zoë"`, `"a\\"b"`, `"\\u{200d}"`."""
+    shown = []
+    for char in text:
+        point = ord(char)
+        if char == '"':
+            shown.append('\\"')
+        elif char == "'":
+            shown.append(char)
+        elif point in _CHAR_ESCAPES:
+            shown.append(_CHAR_ESCAPES[point])
+        else:
+            index = bisect.bisect_right(_ESCAPED_STARTS, point) - 1
+            escaped = index >= 0 and point <= ESCAPED[index][1]
+            shown.append(f"\\u{{{point:x}}}" if escaped else char)
+    return '"' + "".join(shown) + '"'
+
+
+def _withheld_field(field, kind, reason):
+    return {
+        "name": field,
+        "type": kind,
+        "value": None,
+        "unavailable": True,
+        "withheld": True,
+        "withheld_as": "not read",
+        "reason": reason,
+    }
+
+
+def _text_field(field, raw, layout, read, left):
+    """A `String` field of an element (its bytes ``raw``, at ``layout``'s offsets) read as
+    text, and its text as `{:?}` shows it (None where not read whole); ``left``: how
+    many more texts this view may read (MAX_ELEMENT_TEXTS)."""
+    data, length, capacity = (_word(raw, layout[key]) for key in ("data", "length", "capacity"))
+    if not length <= capacity < 2**63:
+        raise ValueError("Rust String length exceeds its capacity")
+    if length and data == 0:
+        raise ValueError("Rust String buffer is null")
+    if length and left[0] <= 0:
+        reason = (
+            f"Peeky reads the text of only the first {MAX_ELEMENT_TEXTS} String fields of a "
+            f"container's elements (each is a read of its own), and this is past them; it "
+            f"is {length} bytes long. Read it through a reference to the element, such as a "
+            "`for` loop's item"
+        )
+        return _withheld_field(field, "String", reason), None
+    count = min(length, MAX_FIELD_TEXT)
+    left[0] -= 1 if length else 0
+    payload = read(f"0x{data:X}", count) if count else b""
+    try:
+        # An incomplete character at a truncation point is not an error.
+        text = codecs.getincrementaldecoder("utf-8")().decode(payload, final=count == length)
+    except UnicodeDecodeError:
+        # Withheld whole, never a prefix decoded before the bad bytes.
+        reason = _NOT_UTF8.format("String") + ": check it with `peeky verify`"
+        return _withheld_field(field, "String", reason), None
+    child = {
+        "name": field,
+        "type": "String",
+        "value": _shown_text(text, length),
+        "length": length,
+        "children": [
+            {"name": "len", "type": "usize", "value": str(length)},
+            {"name": "capacity", "type": "usize", "value": str(capacity)},
+        ],
+    }
+    return child, rust_str_debug(text) if count == length else None
+
+
+def _unread_field(field, kind):
+    """A field of an element Peeky does not read (#260), with why and what to do."""
+    from peeky.rust import rust_spelling
+
+    shown = rust_spelling(kind) if kind else None
+    what = f"has type `{shown}`" if shown else "has a type the debug information does not name"
+    reason = (
+        f"Peeky reads an element's integer, bool, float, char and String fields, and "
+        f"`{field}` {what}: read it through a reference to the element, such as a `for` "
+        "loop's item"
+    )
+    return _withheld_field(field, shown, reason)
+
+
+def _partial_debug(shape, shown, parts):
+    """An element as Rust's derived `{:?}` shows it, its fields not shown whole (None)
+    left out: `Expense { cents: 4500, .. }`, `(_, 3)`."""
+    if shape == "struct":
+        listed = [f"{field}: {value}" for field, value in parts if value is not None]
+        if len(listed) < len(parts):
+            listed.append("..")
+        return f"{shown} {{ " + ", ".join(listed) + " }"
+    values = ["_" if value is None else value for _, value in parts]
+    inner = ", ".join(values) + ("," if len(values) == 1 else "")
+    return f"({inner})" if shape == "tuple" else f"{shown}({inner})"
+
+
+def _partial_elements(layout, raws, read):
+    """(values, children) of elements with a `String` field or one Peeky does not read
+    (#260): scalars as for any element, each String's text read from memory (the first
+    MAX_ELEMENT_TEXTS), and every other field withheld with why."""
+    left = [MAX_ELEMENT_TEXTS]
+    values, children = [], []
+    for index, raw in enumerate(raws):
+        members, parts = [], []
+        for name, offset, kind, *rest in layout["fields"]:
+            if kind in ELEMENT_TYPES:
+                width = ELEMENT_TYPES[kind][0]
+                value = _decoder({"element": kind})(raw[offset : offset + width])
+                members.append({"name": name, "type": kind, "value": value})
+            elif kind == _STRING:
+                text = layout["string"]
+                member, value = _text_field(
+                    name, raw[offset : offset + text["size"]], text, read, left
+                )
+                members.append(member)
+            else:
+                members.append(_unread_field(name, rest[0] if rest else None))
+                value = None
+            parts.append((name, value, kind))
+        value = _partial_debug(layout["shape"], layout["shown"], [part[:2] for part in parts])
+        if len(value) > MAX_SHOWN:
+            # Long texts: the element's scalars, each text left to its own row.
+            shorter = [(name, None if kind == _STRING else shown) for name, shown, kind in parts]
+            value = _partial_debug(layout["shape"], layout["shown"], shorter)
+        values.append(value)
+        children.append(
+            {"name": f"[{index}]", "type": layout["element"], "value": value, "children": members}
+        )
+    return values, children
 
 
 _FLOATS = {32: ("<f", "<I", 23), 64: ("<d", "<Q", 52)}
@@ -1565,6 +1792,19 @@ def struct_view(variable, read, layouts, *, parameter=None, owned=False, declare
         return None
 
 
+def unread_elements(name):
+    """Why a `Vec` or slice of type ``name`` (its debug information's) is not read by
+    element (#183, #260)."""
+    from peeky.rust import rust_spelling
+
+    return (
+        f"Peeky does not read the elements of a {rust_spelling(name)}: it reads a Vec's or "
+        "slice's elements where they are integers, bools, floats or chars, or tuples or "
+        "structs your crate defines with such a field or a String one (not an enum or a "
+        "packed struct)"
+    )
+
+
 def container_view(
     variable, read, layouts, *, optimized, parameter=None, owned=False, declared=None, field=None
 ):
@@ -1583,6 +1823,7 @@ def container_view(
     """
     reference_type = REFERENCE_PARAMETERS.get(parameter)
     composite = None if reference_type else _composite_parameter(parameter)
+    name = None
     if field is not None:
         # LLDB's name only confirms the DWARF's (`Vec<long>` is `Vec<i64>`).
         if _lossy(variable.get("type")) != _lossy(field):
@@ -1605,8 +1846,11 @@ def container_view(
         layout, thin = _one_layout(candidates, layouts), False
     else:
         return None
-    if layout is None or layout["kind"] == "unread":
+    if layout is None or (layout["kind"] == "unread" and field is not None):
         return None
+    if layout["kind"] == "unread":
+        # A proven container whose elements Peeky does not read: why, on its row (#260).
+        return {"raw_reason": unread_elements(name)} if name else None
     view = {"name": variable.get("name"), "type": variable["type"], "variablesReference": 0}
     if layout["kind"] == "unqualified":
         return {**view, "value": UNQUALIFIED_CONTAINER, "rust_view": "opaque"}
@@ -1654,8 +1898,18 @@ def container_view(
         if layout["kind"] in ("string", "str"):
             count = min(length, MAX_TEXT_BYTES)
             payload = read(f"0x{data:X}", count) if count else b""
-            # An incomplete character at a truncation point is not an error.
-            text = codecs.getincrementaldecoder("utf-8")().decode(payload, final=count == length)
+            try:
+                # An incomplete character at a truncation point is not an error.
+                text = codecs.getincrementaldecoder("utf-8")().decode(
+                    payload, final=count == length
+                )
+            except UnicodeDecodeError:
+                # Never a prefix of it: LLDB's summary, and why (#260).
+                return {
+                    "raw_reason": _NOT_UTF8.format(
+                        "String" if layout["kind"] == "string" else "&str"
+                    )
+                }
             return {
                 **view,
                 "value": _shown_text(text, length),
@@ -1663,16 +1917,20 @@ def container_view(
                 "length": length,
                 "children": sizes,
             }
-        count = min(length, MAX_ELEMENTS)
+        # One read holds at most MAX_READ bytes: of wide elements, the first that fit.
+        count = min(length, MAX_ELEMENTS, MAX_READ // width)
         payload = read(f"0x{data:X}", count * width) if count else b""
-        decode = _decoder(layout)
         raws = [payload[i * width : (i + 1) * width] for i in range(count)]
-        elements = [decode(raw) for raw in raws]
-        children = [
-            {"name": f"[{index}]", "type": layout["element"], "value": element}
-            for index, element in enumerate(elements)
-        ]
-        if "fields" in layout:
+        if _partial(layout):
+            elements, children = _partial_elements(layout, raws, read)
+        else:
+            decode = _decoder(layout)
+            elements = [decode(raw) for raw in raws]
+            children = [
+                {"name": f"[{index}]", "type": layout["element"], "value": element}
+                for index, element in enumerate(elements)
+            ]
+        if "fields" in layout and not _partial(layout):
             # A tuple's or struct's fields, named as LLDB names them (`__0`, `start`).
             fields = composite_fields(layout)
             for child, raw in zip(children, raws):
@@ -1689,5 +1947,5 @@ def container_view(
         }
     except ViewBudgetExhausted as exc:
         return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
-    except (ValueError, UnicodeDecodeError):
+    except ValueError:
         return {**view, "value": UNVERIFIED_CONTAINER, "rust_view": "opaque"}

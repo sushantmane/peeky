@@ -1016,7 +1016,10 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
     return {**variable, "scope": "globals"} if module else variable
 
 
-_RUST_TEXT = frozenset({"&str", "&mut str", "&str *", "alloc::string::String *"})
+# Rust text, shown whole: an owned `String` too, and an element's `String` field (#260).
+_RUST_TEXT = frozenset(
+    {"&str", "&mut str", "&str *", "alloc::string::String *", "alloc::string::String", "String"}
+)
 
 
 # Owned Rust containers are raw: a moved or dropped local can still point at freed memory.
@@ -1040,9 +1043,9 @@ _READ_RUST_TYPES = _read_rust_types()
 
 
 def _rust_composite(kind):
-    """Whether a Rust Vec or slice holds tuples or structs Peeky may read: a tuple of
-    integer, bool, float or char elements, or a struct (only the build's debug info says
-    whether its fields are all such scalars). Nested containers, references, enums and
+    """Whether a Rust Vec or slice holds tuples or structs Peeky may read: a tuple with
+    an integer, bool, float, char or String part, or a struct (only the build's debug
+    info says whether it has such a field). Nested containers, references, enums and
     tuples of anything else are never read. `&Vec<T>` is `Vec<T> *`."""
     from peeky.rust_symbols import ELEMENT_TYPES, composite_container
 
@@ -1051,8 +1054,16 @@ def _rust_composite(kind):
         return False
     element = composite[1]
     if element.startswith("("):
-        parts = element.removeprefix("(").removesuffix(")").removesuffix(",").split(", ")
-        return all(part in ELEMENT_TYPES for part in parts)
+        parts, depth, start = [], 0, 1
+        for at, char in enumerate(element):
+            if char in "(<[":
+                depth += 1
+            elif char in ")]" or (char == ">" and element[at - 1] != "-"):
+                depth -= 1
+            if (char == "," and depth == 1) or (char == ")" and depth == 0):
+                parts.append(element[start:at].strip())
+                start = at + 1
+        return any(part in ELEMENT_TYPES or part == "alloc::string::String" for part in parts)
     return not element.startswith(("alloc::", "core::", "std::", "&", "*", "[", "("))
 
 
@@ -1120,6 +1131,12 @@ def _raw_rust(variable, selector):
     else:
         what = kind
     step = _length_step(kind)
+    if _changing(variable):
+        # The reason says its fields, its length too, are not trusted here.
+        return (
+            f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
+            f"{variable['raw_reason']}. Check contents with `peeky verify`."
+        )
     return (
         f"This Rust {what} shows LLDB's summary (its type and address), not its contents: "
         f"{variable['raw_reason']}. {_str_items(variable, selector)}"
@@ -1128,13 +1145,41 @@ def _raw_rust(variable, selector):
     )
 
 
+def _changing(variable):
+    """Whether the worker left a Rust container raw because a call under way may be
+    changing it (a caller frame's): none of its fields is offered as its length (#260)."""
+    from peeky.rust_symbols import CALLER_CHANGING
+
+    return CALLER_CHANGING in str(variable.get("raw_reason") or "")
+
+
 _COMPOSITE_RUST = (
     "This Rust container of tuples or structs shows LLDB's summary: probe a line where it "
-    "is live, read it as a &Vec or &[T] parameter, or check contents with `peeky verify`. "
-    "{length}Peeky reads its elements only when every field is an integer, bool, float or "
-    "char, and an owned Vec only where the MIR proves it initialized at this stop, in the "
-    "innermost frame."
+    "is live, read it where it is passed as &Vec or &[T], or check contents with `peeky "
+    "verify`. {length}Peeky reads an owned Vec's elements only where the MIR proves it "
+    "initialized at this stop, in the innermost frame, and only their integer, bool, "
+    "float, char and String fields."
 )
+# A slice or `&Vec` already: never advised to be read as one (#260).
+_LENT_COMPOSITE_RUST = (
+    "This Rust slice or &Vec of tuples or structs shows LLDB's summary: check contents "
+    "with `peeky verify`. {length}Peeky reads its elements only for a parameter the build's "
+    "IR proves live, past the line declaring it (a &mut one only in the innermost frame), "
+    "and only their integer, bool, float, char and String fields."
+)
+
+
+def _lent_composite(kind):
+    """Whether a Rust container of tuples or structs is a slice or a `&Vec` (`Vec<T> *`)."""
+    return kind.startswith(("&[", "&mut [")) or kind.endswith(" *")
+
+
+def _composite_note(variable, selector):
+    """The note of a Rust container of tuples or structs that shows LLDB's summary."""
+    lent = _lent_composite(_lldb_type(variable))
+    return _rust_note(_LENT_COMPOSITE_RUST if lent else _COMPOSITE_RUST, variable, selector)
+
+
 _UNPROVEN_RUST = (
     "this Rust Box, or pointer, shows only its pointer, which can reach freed memory: "
     "read a plain function's own local where it is live, or capture what it holds where "
@@ -1171,7 +1216,7 @@ _UNREAD_RUST = (
     "This value is LLDB's summary (its type and address), not its contents: check "
     "contents with `peeky verify`. {items}{length}Peeky reads Rust contents only for "
     "String, &str, and containers of integer, bool, float or char elements, or of tuples "
-    "of them and structs of them your crate defines."
+    "and structs your crate defines (their integer, bool, float, char and String fields)."
 )
 
 
@@ -1227,7 +1272,14 @@ def _held_unproven_note(children):
 # warnings, unmarked in the table: Peeky's limits, not doubts about the value.
 _RUST_NOTE_OPENINGS = tuple(
     text.split(":")[0].split(";")[0]
-    for text in (_OWNED_RUST, _FIELD_RUST, _UNREAD_RUST, _COMPOSITE_RUST, _STALE_RUST)
+    for text in (
+        _OWNED_RUST,
+        _FIELD_RUST,
+        _UNREAD_RUST,
+        _COMPOSITE_RUST,
+        _LENT_COMPOSITE_RUST,
+        _STALE_RUST,
+    )
 ) + (
     "This Rust Box",
     "This Rust reference shows only its pointer",
@@ -1337,28 +1389,38 @@ def _absence(variable, segment, children, path=None, pointers=False):
         elif variable.get("view") == "memory":
             if _lldb_type(variable) in _RUST_TEXT:
                 message += "; text read from memory is shown whole, not by element"
-        elif _unread_rust(_lldb_type(variable)):
+        elif _unread_rust(_lldb_type(variable)) and not _changing(variable):
             message += (
                 f"; Peeky does not read {kind}'s elements, only those of String, &str, and "
-                "containers of integer, bool, float or char elements, or of tuples of them and "
-                "structs of them your crate defines"
+                "containers of integer, bool, float or char elements, or of tuples and structs "
+                "your crate defines (their integer, bool, float, char and String fields)"
                 + (f". Capture {shown_path}.{length} for the length" if length else "")
             )
+        elif isinstance(variable.get("raw_reason"), str):
+            # Why the worker left it raw (#156); never a length that may be mid-change.
+            message += (
+                f"; Peeky shows LLDB's summary of it, not its contents: {variable['raw_reason']}"
+                + (
+                    f". Capture {shown_path}.{length} for the length"
+                    if length and not _changing(variable)
+                    else ""
+                )
+                + ", and check contents with `peeky verify`"
+            )
         elif _rust_composite(_lldb_type(variable)):
+            # Never advice to read a slice or `&Vec` as one: it is one already (#260).
             message += (
                 "; check contents with `peeky verify`"
                 + (f", and capture {shown_path}.{length} for the length" if length else "")
-                + f". Peeky reads {kind}'s elements only when every field is an integer, "
-                "bool, float or char, and an owned Vec only where the MIR proves it "
-                "initialized at the stop line (innermost frame), with a debugger that has "
-                "readMemory"
-            )
-        elif isinstance(variable.get("raw_reason"), str):
-            # Why the worker left it raw (#156).
-            message += (
-                f"; Peeky shows LLDB's summary of it, not its contents: {variable['raw_reason']}"
-                + (f". Capture {shown_path}.{length} for the length" if length else "")
-                + ", and check contents with `peeky verify`"
+                + f". Peeky reads {kind}'s elements only "
+                + (
+                    "for a parameter the build's IR proves live, past the line declaring it "
+                    "(a &mut one only in the innermost frame)"
+                    if _lent_composite(_lldb_type(variable))
+                    else "where the MIR proves an owned Vec initialized at the stop line "
+                    "(innermost frame), or where it is passed as &Vec or &[T]"
+                )
+                + ", in an unoptimized build, with a debugger that has readMemory"
             )
         elif _lldb_type(variable).startswith(_RUST_CONTAINERS):
             message += (
@@ -1368,9 +1430,10 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 "at freed memory. Peeky reads Rust contents only for reference parameters "
                 "(&[T], &str, &Vec<T>, &String, or &mut), owned Vec and String locals the MIR "
                 "proves initialized at the stop line (innermost frame), and such fields of "
-                "what those hold. Their elements must be integers, bools, floats or chars (or "
-                "tuples, or structs your crate defines, of them), with a debugger that has "
-                "readMemory, such as lldb-dap from LLVM 20 (rust-cookbook 7.2)"
+                "what those hold. Their elements must be integers, bools, floats or chars, or "
+                "tuples or structs your crate defines (their integer, bool, float, char and "
+                "String fields read), with a debugger that has readMemory, such as lldb-dap "
+                "from LLVM 20 (rust-cookbook 7.2)"
             )
         return message
     twin = "" if segment.startswith("[") else twin_hint(segment, names)
@@ -1663,14 +1726,16 @@ def _capture(
                     row["note"] = _raw_rust(variable, selector)
                 elif owned_type and len(parse_selector(selector)) == 1:
                     row["note"] = _rust_note(_OWNED_RUST, variable, selector)
-                elif variable.get("stale"):
+                elif variable.get("stale") and not _THROUGH.match(str(variable.get("note"))):
+                    # A note carried from what holds it says why first (#260: a call may be
+                    # changing it), else every way a value can be stale.
                     row["note"] = _STALE_RUST + "."
                 elif owned_type:
                     row["note"] = _rust_note(_FIELD_RUST, variable, selector)
                 elif "view" not in variable and _unread_rust(_lldb_type(variable)):
                     row["note"] = _unread_note(variable, selector)
                 elif "view" not in variable and _rust_composite(_lldb_type(variable)):
-                    row["note"] = _rust_note(_COMPOSITE_RUST, variable, selector)
+                    row["note"] = _composite_note(variable, selector)
                 elif isinstance(variable.get("note"), str):
                     # A value the runtime shows but cannot vouch for (C, C++: a line a loop
                     # returns to; initialization not judged), or one read through it (#148).

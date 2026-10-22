@@ -1872,7 +1872,7 @@ hit  phase     line  v  total  bins[3].hi  no_value  caveats  sets
   its caveat, never as a plain value. The caveat is one of these:
   - The row's view, such as `stale`, `unproven`, `opaque` or `budget-exhausted`.
     `peeky sql --schema` explains `view`. `stale` is a moved or dropped Rust local's leftover bytes,
-    whatever view decoded them.
+    or a caller's Rust container that may be mid-change, whatever view decoded them.
   - `note`, where the probe marked the row `[note]`. A C local declared on a `do` body's first line
     gives `{"k":"note"}`: "may be the last pass's value, or leftovers".
   - `note` too, where the probe gave the row one of the Rust notes among its warnings.

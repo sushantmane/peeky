@@ -580,8 +580,14 @@ def test_each_rust_note_names_every_gate_on_what_peeky_reads():
             "only in the innermost frame",
         ),
         "_COMPOSITE_RUST": (
-            "every field is an integer, bool, float or char",
+            "integer, bool, float, char and String fields",
             "the MIR proves it initialized at this stop, in the innermost frame",
+        ),
+        # #260: a slice or `&Vec` is never told to be read as one.
+        "_LENT_COMPOSITE_RUST": (
+            "a parameter the build's IR proves live",
+            "only in the innermost frame",
+            "integer, bool, float, char and String fields",
         ),
         "_UNPROVEN_RUST": (
             "never follows a raw pointer",
@@ -595,7 +601,9 @@ def test_each_rust_note_names_every_gate_on_what_peeky_reads():
             "Peeky has no proof here: an optimized build, a caller frame, or unmatched MIR",
             "moved-from copy",
         ),
-        "_UNREAD_RUST": ("structs of them your crate defines",),
+        "_UNREAD_RUST": (
+            "structs your crate defines (their integer, bool, float, char and String",
+        ),
     }
     for name, needed in gates.items():
         note = getattr(probe, name)
@@ -696,6 +704,83 @@ def test_rust_container_indexes_explain_what_is_unsupported():
         _resolve(Tree({1: length}), {}, snapshot(text), parse_selector("label[0]"))
     message = str(caught.value)
     assert "shown whole, not by element" in message and "reference parameters" not in message
+    # #260: so is an owned String's, and an element's String field's, never "beyond the
+    # debugger's visible window" of as many elements as it has bytes.
+    sizes = [{"name": "len", "type": "usize", "value": "2", "variablesReference": 0}]
+    for kind in ("alloc::string::String", "String"):
+        owned = {**text, "name": "name", "type": kind, "length": 2}
+        with pytest.raises(ValueError) as caught:
+            _resolve(Tree({1: sizes}), {}, snapshot(owned), parse_selector("name[0]"))
+        message = str(caught.value)
+        assert "shown whole, not by element" in message and "window" not in message, message
+
+
+def test_a_container_a_call_may_be_changing_offers_no_field_as_its_length():
+    # Review of #260: a caller's `&mut Vec<T>` (`friends.retain_mut(decide)` under way)
+    # was told "Capture friends.len for the length", a length the call may be changing.
+    from peeky.probe import _raw_rust, _resolve
+
+    reason = (
+        "`friends` is a `&mut` parameter of a caller frame: Peeky doesn't check whether it "
+        "was lent to the call under way, which may be changing what it points at, so its "
+        "fields aren't trusted here; Peeky reads it in the innermost frame"
+    )
+    friends = {
+        "name": "friends",
+        "type": "alloc::vec::Vec<kitty::Friend, alloc::alloc::Global> *",
+        "value": "0x1",
+        "variablesReference": 1,
+        "raw_reason": reason,
+        "stale": True,
+    }
+    fields = [
+        {"name": "buf", "type": "RawVec", "value": "", "variablesReference": 2},
+        {"name": "len", "type": "unsigned long", "value": "3", "variablesReference": 0},
+    ]
+    note = _raw_rust(friends, "friends")
+    assert reason in note and "Capture" not in note, note
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: fields}), {}, snapshot(friends), parse_selector("friends[0]"))
+    assert reason in str(caught.value) and "friends.len" not in str(caught.value)
+    # A `Vec<String>` (elements never read) a call may be changing says the same.
+    strings = {**friends, "type": "alloc::vec::Vec<alloc::string::String, alloc::alloc::Global> *"}
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: fields}), {}, snapshot(strings), parse_selector("friends[0]"))
+    assert reason in str(caught.value) and "friends.len" not in str(caught.value)
+    # Any other reason still names the length.
+    other = {**friends, "raw_reason": "the debugger gives no memory address for it"}
+    assert "Capture friends.len for the length" in _raw_rust(other, "friends")
+
+
+def test_a_slice_of_structs_left_raw_is_never_told_to_be_read_as_a_slice():
+    # #260: `friends: &mut [Friend]`, a live parameter, was told "read it as a &Vec or
+    # &[T] parameter", which it was; an owned Vec may still be read where it is passed.
+    from peeky.probe import _composite_note, _resolve
+
+    fields = [
+        {"name": "data_ptr", "type": "kitty::Friend *", "value": "0x1", "variablesReference": 2},
+        {"name": "length", "type": "unsigned long", "value": "4", "variablesReference": 0},
+    ]
+    for kind in ("&mut [kitty::Friend]", "alloc::vec::Vec<kitty::Friend, alloc::alloc::Global> *"):
+        friends = {"name": "friends", "type": kind, "value": "", "variablesReference": 1}
+        with pytest.raises(ValueError) as caught:
+            _resolve(Tree({1: fields}), {}, snapshot(friends), parse_selector("friends[0]"))
+        for text in (str(caught.value), _composite_note(friends, "friends")):
+            assert "as a &Vec or &[T] parameter" not in text and "passed as" not in text, text
+            assert "a parameter the build's IR proves live" in text, text
+            assert "innermost frame" in text, text
+    owned = {
+        "name": "friends",
+        "type": "alloc::vec::Vec<kitty::Friend, alloc::alloc::Global>",
+        "value": "",
+        "variablesReference": 1,
+    }
+    assert "passed as &Vec or &[T]" in _composite_note(owned, "friends")
+    # The worker's reason, where it gives one, comes first (an element type not read).
+    raw = {**owned, "type": "&[kitty::Shape]", "raw_reason": "Peeky does not read the elements"}
+    with pytest.raises(ValueError) as caught:
+        _resolve(Tree({1: fields}), {}, snapshot(raw), parse_selector("friends[0]"))
+    assert "Peeky does not read the elements" in str(caught.value)
 
 
 def test_a_raw_rust_field_s_index_says_why_and_names_its_whole_selector():
@@ -1478,9 +1563,12 @@ def test_a_probe_that_times_out_says_what_the_debugger_last_reported(monkeypatch
         ("alloc::vec::Vec<(i8), alloc::alloc::Global>", True, False),
         ("&[demo::Interval]", True, False),
         ("alloc::vec::Vec<demo::Pair<unsigned short>, alloc::alloc::Global>", True, False),
-        # Never read: a tuple with a non-scalar, nested containers, enums, std structs.
-        ("&[(i32, alloc::string::String)]", False, True),
-        ("&[((i32, i32), i32)]", False, True),
+        # #260: a tuple with a String, or with any field read (the rest not read).
+        ("&[(i32, alloc::string::String)]", True, False),
+        ("&[((i32, i32), i32)]", True, False),
+        # Never read: a tuple with no field read, nested containers, enums, std structs.
+        ("&[(alloc::vec::Vec<i32, alloc::alloc::Global>, &str)]", False, True),
+        ("&[(fn(i32) -> i32, &str)]", False, True),
         (
             "alloc::vec::Vec<alloc::vec::Vec<int, alloc::alloc::Global>, alloc::alloc::Global>",
             False,

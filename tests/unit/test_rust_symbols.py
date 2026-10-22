@@ -693,7 +693,7 @@ def _namespace(label, name, *children):
     return (label, "DW_TAG_namespace", [("DW_AT_name", f'"{name}"')], list(children))
 
 
-def container_dump(*, len_offset="0x10", element="i32", data_ptr="i32_ptr"):
+def container_dump(*, len_offset="0x10", element="i32", data_ptr="i32_ptr", extra=()):
     vec = lambda label, t, raw: _struct(  # noqa: E731
         label,
         f"Vec<{t}, alloc::alloc::Global>",
@@ -769,6 +769,7 @@ def container_dump(*, len_offset="0x10", element="i32", data_ptr="i32_ptr"):
             _base("usize", "usize", "0x08", "DW_ATE_unsigned"),
             ("u8_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "u8"))], []),
             ("i32_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", "i32"))], []),
+            *extra,
         ],
     )
     return _tree_dump(tree)
@@ -1423,6 +1424,248 @@ def test_composites_are_read_only_from_the_crate_and_never_beside_an_unreadable_
     # Such a container is never mistaken for an enum.
     variable = {"name": "v", "type": "&[peeky_pagination::Interval]", "variablesReference": 1}
     assert active_variant(variable, None, alone) is None
+
+
+def _slice(label, name, pointee):
+    """A slice type named ``name`` whose data pointer points at ``pointee``, and that
+    pointer type."""
+    return (
+        _struct(
+            label,
+            name,
+            "0x10",
+            _member(f"{label}_data", "data_ptr", f"{label}_ptr", "0x00"),
+            _member(f"{label}_len", "length", "usize", "0x08"),
+        ),
+        (f"{label}_ptr", "DW_TAG_pointer_type", [("DW_AT_type", ("ref", pointee))], []),
+    )
+
+
+FRIEND = _struct(
+    "friend",
+    "Friend",
+    "0x28",
+    _member("fr_name", "name", "string", "0x00"),
+    _member("fr_paid", "paid", "i64", "0x18"),
+    _member("fr_owes", "owes", "i64", "0x20"),
+)
+EXPENSE = _struct(
+    "expense",
+    "Expense",
+    "0x28",
+    _member("ex_sharers", "sharers", "vec_u8", "0x00"),
+    _member("ex_payer", "payer", "raw_friend", "0x18"),
+    _member("ex_cents", "cents", "i64", "0x20"),
+)
+NAMED = _struct(
+    "named",
+    "(alloc::string::String, i64)",
+    "0x20",
+    _member("nt0", "__0", "string", "0x00"),
+    _member("nt1", "__1", "i64", "0x18"),
+)
+TEXT = {"size": 0x18, "data": 8, "length": 0x10, "capacity": 0}
+
+
+def element_dump():
+    """The crate `pp`'s slices of structs and a tuple with a `String` field, and of a
+    struct with fields Peeky does not read (#260)."""
+    slices = (
+        _slice("friends", "&mut [peeky_pagination::Friend]", "friend"),
+        _slice("expenses", "&[peeky_pagination::Expense]", "expense"),
+        _slice("pairs", "&[(alloc::string::String, i64)]", "named"),
+    )
+    raw = [("DW_AT_type", ("ref", "friend")), ("DW_AT_name", '"*const peeky_pagination::Friend"')]
+    return container_dump(
+        extra=(
+            _namespace("crate", "peeky_pagination", FRIEND, EXPENSE),
+            NAMED,
+            _base("i64", "i64", "0x08", "DW_ATE_signed"),
+            ("raw_friend", "DW_TAG_pointer_type", raw, []),
+            *(part for pair in slices for part in pair),
+        )
+    )
+
+
+def test_elements_with_a_string_field_keep_its_layout_and_leave_the_rest_unread():
+    # #260: `&mut [Friend]` with a `name: String` was unread, so `friends[1].name` and
+    # even `friends[1].paid` were not found.
+    from peeky.rust_symbols import container_layouts
+
+    layouts = container_layouts(*element_dump())
+    assert layouts["&mut [peeky_pagination::Friend]"] == {
+        "kind": "slice",
+        "size": 0x10,
+        "data": 0,
+        "length": 8,
+        "element": "peeky_pagination::Friend",
+        "element_size": 0x28,
+        "alignment": 8,
+        "fields": [
+            ["name", 0, "alloc::string::String"],
+            ["paid", 0x18, "i64"],
+            ["owes", 0x20, "i64"],
+        ],
+        "shape": "struct",
+        "shown": "Friend",
+        "string": TEXT,
+    }
+    expense = layouts["&[peeky_pagination::Expense]"]
+    assert expense["fields"] == [
+        ["sharers", 0, None, "alloc::vec::Vec<u8, alloc::alloc::Global>"],
+        ["payer", 0x18, None, "*const peeky_pagination::Friend"],
+        ["cents", 0x20, "i64"],
+    ]
+    assert "string" not in expense
+    pairs = layouts["&[(alloc::string::String, i64)]"]
+    assert (pairs["shape"], pairs["fields"]) == (
+        "tuple",
+        [["__0", 0, "alloc::string::String"], ["__1", 0x18, "i64"]],
+    )
+    # A struct's own preview (#106) still reads only a struct of scalars.
+    assert layouts["struct:peeky_pagination::Friend"] == {"kind": "unread"}
+
+
+def _signed(*values):
+    return b"".join(value.to_bytes(8, "little", signed=True) for value in values)
+
+
+def test_string_fields_of_elements_read_as_text_and_other_fields_say_why(monkeypatch):
+    from peeky import rust_symbols
+    from peeky.rust_symbols import container_layouts, container_view
+
+    layouts = container_layouts(*element_dump())
+    # A String is (capacity, pointer, length) here (TEXT).
+    friends = words(2, 0x2000, 2) + _signed(0, 5)
+    friends += words(8, 0x2100, 6) + _signed(4500, 0)
+    friends += words(0, 1, 0) + _signed(-1, 0)
+    blocks = {
+        "0x10": words(0x1000, 3),
+        "0x1000": friends,
+        "0x2000": b"Bo",
+        "0x2100": "Chloé".encode(),
+    }
+    kind = "&mut [peeky_pagination::Friend]"
+    variable = {"name": "friends", "type": kind, "memoryReference": "0x10"}
+
+    def view():
+        return container_view(variable, memory(blocks), layouts, optimized=False, parameter=kind)
+
+    shown = view()
+    assert shown["rust_view"] == "memory", shown
+    assert shown["value"] == (
+        '[Friend { name: "Bo", paid: 0, owes: 5 }, Friend { name: "Chloé", paid: 4500, '
+        'owes: 0 }, Friend { name: "", paid: -1, owes: 0 }]'
+    )
+    second = shown["children"][2]
+    assert (second["name"], second["type"]) == ("[1]", "peeky_pagination::Friend")
+    name, paid, _ = second["children"]
+    assert name == {
+        "name": "name",
+        "type": "String",
+        "value": '"Chloé"',
+        "length": 6,
+        "children": [
+            {"name": "len", "type": "usize", "value": "6"},
+            {"name": "capacity", "type": "usize", "value": "8"},
+        ],
+    }
+    assert paid == {"name": "paid", "type": "i64", "value": "4500"}
+    # Each text is a read of its own: past the cap, a text is withheld with why, and the
+    # element's other fields still read.
+    monkeypatch.setattr(rust_symbols, "MAX_ELEMENT_TEXTS", 1)
+    second = view()["children"][2]
+    assert second["value"] == "Friend { paid: 4500, owes: 0, .. }"
+    withheld = second["children"][0]
+    assert withheld["unavailable"] and withheld["withheld_as"] == "not read", withheld
+    assert "first 1 String fields" in withheld["reason"] and "6 bytes" in withheld["reason"]
+    monkeypatch.undo()
+    # Text shows as Rust's `{:?}` prints a str: `"` and controls escaped, `'` not.
+    blocks["0x2000"] = "a\"'\n\u200d".encode()
+    blocks["0x1000"] = words(8, 0x2000, 7) + _signed(1, 2)
+    blocks["0x10"] = words(0x1000, 1)
+    assert view()["value"] == '[Friend { name: "a\\"\'\\n\\u{200d}", paid: 1, owes: 2 }]'
+    # A text too long for the element's value is left to its own row, cut with a marker.
+    blocks["0x2000"] = b"a" * 2000
+    blocks["0x1000"] = words(2000, 0x2000, 2000) + _signed(1, 2)
+    long = view()["children"][1]
+    assert long["value"] == "Friend { paid: 1, owes: 2, .. }", long["value"]
+    assert re.search(r'^"a+" \(first [0-9]+ of 2000 bytes\)$', long["children"][0]["value"])
+    # Bytes that are not UTF-8 show no text, not even what decodes before them.
+    blocks["0x2000"] = b"Bo\xff"
+    blocks["0x1000"] = words(3, 0x2000, 3) + _signed(1, 2)
+    bad = view()["children"][1]
+    assert bad["value"] == "Friend { paid: 1, owes: 2, .. }", bad["value"]
+    assert bad["children"][0]["unavailable"] and bad["children"][0]["value"] is None
+    assert "the String's bytes here are not valid UTF-8" in bad["children"][0]["reason"]
+    assert "Bo" not in str(bad)
+    # A length past the capacity is never read as text.
+    blocks["0x1000"] = words(2, 0x2000, 3) + _signed(1, 2)
+    assert view()["rust_view"] == "opaque"
+    # Fields Peeky does not read are withheld with their type and why; the rest read.
+    kind = "&[peeky_pagination::Expense]"
+    variable = {"name": "expenses", "type": kind, "memoryReference": "0x10"}
+    blocks["0x1000"] = words(8, 0x3000, 3, 0xBEEF0) + _signed(4500)
+    shown = view()
+    assert shown["value"] == "[Expense { cents: 4500, .. }]"
+    sharers, payer, cents = shown["children"][1]["children"]
+    assert (sharers["type"], payer["type"]) == ("Vec<u8>", "*const peeky_pagination::Friend")
+    assert payer["unavailable"] and "value" in payer and payer["value"] is None
+    assert "`payer` has type `*const peeky_pagination::Friend`" in payer["reason"]
+    assert "through a reference to the element" in payer["reason"]
+    assert cents == {"name": "cents", "type": "i64", "value": "4500"}
+    # A tuple shows a field not read as `_`.
+    kind = "&[(alloc::string::String, i64)]"
+    variable = {"name": "pairs", "type": kind, "memoryReference": "0x10"}
+    blocks["0x1000"] = words(2, 0x2000, 2) + _signed(7)
+    blocks["0x2000"] = b"Bo"
+    assert view()["value"] == '[("Bo", 7)]'
+    monkeypatch.setattr(rust_symbols, "MAX_ELEMENT_TEXTS", 0)
+    assert view()["value"] == "[(_, 7)]"
+
+
+def test_text_that_is_not_utf8_is_never_shown_in_part():
+    # Review of #260: a String or &str whose bytes are not UTF-8 says so, with no prefix.
+    from peeky.rust_symbols import container_view
+
+    for kind, layout, name in (
+        ("&str", STR_LAYOUT, "&str"),
+        (
+            "alloc::string::String",
+            {**VEC_LAYOUT, "kind": "string", "element": "u8", "element_size": 1},
+            "String",
+        ),
+    ):
+        header = words(0x1000, 3) if kind == "&str" else words(3, 0x1000, 3)
+        read = memory({"0x10": header, "0x1000": b"ok\xff"})
+        variable = {"name": "t", "type": kind, "memoryReference": "0x10"}
+        layouts = {kind: layout}
+        if kind == "&str":
+            view = container_view(variable, read, layouts, optimized=False, parameter=kind)
+        else:
+            view = container_view(variable, read, layouts, optimized=False, field=kind)
+        assert view == {
+            "raw_reason": f"the {name}'s bytes here are not valid UTF-8, though Rust text "
+            "always is, so Peeky shows none of its text"
+        }, view
+
+
+def test_a_proven_container_of_elements_peeky_does_not_read_says_why():
+    # #260: a slice parameter of enums stayed raw with a note telling to read it as a
+    # `&[T]` parameter, which it was.
+    from peeky.rust_symbols import container_view
+
+    kind = "&[peeky_pagination::Choice]"
+    variable = {"name": "choices", "type": kind, "memoryReference": "0x10"}
+    view = container_view(
+        variable, None, {kind: {"kind": "unread"}}, optimized=False, parameter=kind
+    )
+    assert view == {
+        "raw_reason": "Peeky does not read the elements of a &[peeky_pagination::Choice]: it reads a "
+        "Vec's or slice's elements where they are integers, bools, floats or chars, or "
+        "tuples or structs your crate defines with such a field or a String one (not an "
+        "enum or a packed struct)"
+    }
 
 
 def struct_dump(*structs, roots=()):

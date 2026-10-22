@@ -105,7 +105,8 @@ TABLES = {
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option); 'stale' (whatever its view) "
-            "for a value in a Rust local that may be moved or dropped (the bytes it left); "
+            "for bytes that are not a trustworthy value: a Rust local's that may be moved or "
+            "dropped (the bytes it left), or a caller's container a call may be changing; "
             "else NULL",
             "identity": "Python: which object the value is, an INTEGER (debugpy's number for "
             "the object, not an address; the object keeps it if its class is reassigned). "
