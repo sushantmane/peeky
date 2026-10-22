@@ -56,6 +56,8 @@ A session started with `--worker` says `remote` in its state: `session default (
 
 - The worker's interpreter, and its trusted target config, choose the runtime.
 - The client never sends executables or configuration.
+- The client saves remote probe evidence, and its `runs.worker` column names the worker's URL. The
+  worker runs stateless probes with `--no-save`, so the worker host keeps none.
 - **Verification runs locally.** `peeky verify` builds and checks candidates on your machine. So
   the local interpreter, toolchain and dependencies must match the target's for the verdict to
   carry over. When they differ, run `verify` on the target host.
@@ -120,6 +122,7 @@ peeky: [UNREACHABLE] Worker at http://127.0.0.1:18765 is unreachable ([Errno 61]
 TCP relay as a third. Its tests cover:
 
 - probes through the forwarded port;
+- remote probe evidence saved by the client only, none on the worker host;
 - a source-identity mismatch, where results are discarded;
 - a dropped tunnel giving `UNREACHABLE`, without losing the session;
 - reconnecting on the same port, and continuing the session;
@@ -170,9 +173,8 @@ PEEKY_E2E_DOCKER=1 PEEKY_E2E_RECORD=remote-run.json pytest tests/remote -v
 | The host's source differs | `peeky probe … --set start=0 --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
 | Worker stopped behind a live tunnel | `peeky probe … --worker URL` | 2 | 0.002 | `TRANSPORT_LOST`, `session_closed: false` |
 
-- Every step gave the same result as in the first recorded run, on 2026-10-16. The one difference
-  is the exit status of the refused probe: 2 today, 1 then. A probe refused before launch now
-  exits 2.
+- All step results matched the first recorded run, of 2026-10-16, except the changed-source
+  probe's exit status, which changed from 1 to 2. A probe refused before launch exits 2.
 - The token never appears in any command's output. Every step asserts this.
 - This run's module took 9.6 s, including starting the container and sshd, with the image already
   built.
