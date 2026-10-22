@@ -4,12 +4,52 @@ This page is for maintainers. It explains how Peeky's C and C++ rules work, and 
 them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 [C and C++ cookbook](lang/c-cpp-cookbook.md). The worker's fields are in [WORKER.md](WORKER.md).
 
+## Building and checking a build
+
+- Peeky reads files a compile used outside the workspace from its `-MD` dependency file, by
+  clang's and GCC's escaping. An entry that could be read two ways fails the build's preparation.
+  Such an entry has:
+  - a backslash or a tab in a name;
+  - an undoubled `$`;
+  - a name with a newline, or an empty step (`//`);
+  - or a header that clang may have printed with `/` for a backslash.
+- The tools' escapes, dwarfdump's and clang's octal, are read back. Their output's lines end at
+  `\n` alone, so a source's name may hold any character.
+- The worker turns off LLDB's init files with both the LLVM 18 key and the newer one.
+- The first target was tiny, unoptimized code. Symbol tool and debugger versions remain part of
+  what is qualified.
+
 ## Building C++
 
 - Peeky passes clang `--driver-mode=g++`. The resolved `clang++` is often `clang` itself, which
   picks its language from the name it was run by.
 - Debugger display types, and the standard library's member names, differ between platforms.
   Tests check the values, and never assume that libc++ and libstdc++ share a layout.
+
+## Changing a value
+
+- Peeky changes integers only, a narrower set than LLDB's backend can change.
+- The write is lldb-dap's `setVariable` on the field. Then the frame's scopes are listed again and
+  the field is read back. Only the value asked for counts as a change.
+- `Statements.begins` decides whether a line starts a statement.
+- `Statements.statement_span` gives the lines of the statements that start there. The stopped
+  instruction's address must be the lowest of every line-table row the function has on them.
+- `Statements.opening_statements` gives the statements after a body's `{` on a function's first
+  line.
+- An inlined call shows in the debug information as a `DW_TAG_inlined_subroutine` with its
+  `DW_AT_call_line` on the statement's lines, or from another file.
+
+## Preview bounds and types
+
+- `native_previews` sets the bounds: 8 members or elements per level, two levels, 40 characters
+  per member, 240 in all.
+- Each level is one `variables` request. It counts against a preview budget of its own, per
+  inspection or expansion: `PREVIEW_FETCHES` (256) within `PREVIEW_SECONDS` (3 s). So previews
+  never take the value-view budget that libstdc++ strings use.
+- A preview's type is the local's declared type (`local_types`, as `--set` reads it), walked along
+  the selector's path in `fields.type_graph`. The graph keeps a record's base classes and a
+  bitfield's width. It also keeps what a pointer or reference points at, one level down, as a
+  graph of its own merged in. A change never walks through a pointer or reference.
 
 ## Maps and sets
 
@@ -133,6 +173,22 @@ clang's lexical blocks are right, but their code isn't contiguous.
 
 ## Which tests check what
 
+C's real HTTP regressions cover:
+
+- scalar, pointer and array inspection;
+- integer changes, and the program's output after them;
+- an unchanged source and binary;
+- stale scopes and stops;
+- tampering with the source, the binary or the symbols;
+- absent debug information;
+- cleanup of a stopped target, and after the adapter dies.
+
+Argument tests keep whitespace, empty values, wildcards, dollar signs and single quotes, without
+shell expansion. A harmless `.lldbinit` marker in a hostile home directory runs first as a
+positive control. Then the tests confirm that it doesn't run under the worker's settings. No
+required test calls a model.
+
+
 | Test | What it checks | Where |
 | --- | --- | --- |
 | `tests/cpp/test_cpp_worker.py` | C++17 builds with debug information: a class object, a reference to it, `std::array<int, 128>` and a local integer. The `Pagination` object and the `Pagination &` reference expand to `page`, `page_size` and `total`. The `std::array` lists a raw `__elems_` child, which expands to integers. The test also accepts one raw storage member, or indexed elements, on other standard libraries, and requires the first three values to be 10, 20 and 30 | Apple LLDB 21, locally. Hosted LLVM 18 is a separate CI result, not an assumption about its display shape |
@@ -142,3 +198,10 @@ clang's lexical blocks are right, but their code isn't contiguous.
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
+
+## References
+
+- [LLVM's lldb-dap](https://lldb.llvm.org/use/lldbdap.html)
+- [lldb-dap's launch configuration](https://github.com/llvm/llvm-project/blob/main/lldb/tools/lldb-dap/README.md)
+- [macOS debug symbols](https://lldb.llvm.org/use/symbols.html)
+- [Ubuntu's lldb-18 package](https://packages.ubuntu.com/noble/lldb-18)

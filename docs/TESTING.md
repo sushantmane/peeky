@@ -12,7 +12,7 @@ or install job sits ahead of the tests.
 | integration (Python 3.11) | Real debugpy + HTTP + runtime intervention + owned target cleanup | 180s |
 | integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
 | Java headless conformance (`java`) | `tests/java` on JDK 17 (Temurin), with an adapter that `scripts/setup_java_adapter.py` builds | — |
-| C LLVM 18 conformance (`native-c`) | `tests/native` on Ubuntu 24.04, with clang-18, lldb-18 and llvm-18 from signed Ubuntu repositories | — |
+| C LLVM 18 conformance (`native-c`) | `tests/native`: real C debugging, on Ubuntu 24.04, with clang-18, lldb-18 and llvm-18 from signed Ubuntu repositories. The LLVM major is pinned; distribution patch versions can change, and each run prints them. It acquires its tools explicitly, never relying on a hosted image's toolchain, and starts independently of the Python, Java, package and quality lanes. It reports the acquisition and conformance times. Cold hosted timing must be measured before claiming the budget | — |
 | C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`: real C++ debugging and agent verification, with the same LLVM 18 packages and `clang++-18`. It records the installed package revisions, and depends on no C or Java lane. Measured hosted runs show whether it meets its budget | — |
 | Rust 1.96 LLVM 18 conformance (`rust-probe`) | `tests/rust`: raw Rust debugging and the experimental Rust worker, with the pinned Rust 1.96.0 toolchain and LLVM 18 | — |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
@@ -86,7 +86,19 @@ python -m build
 - Each test has a 45-second timeout.
 - Unit and integration paths can run separately, matching the parallel CI lanes.
 
-C++ conformance on macOS uses the Command Line Tools:
+C conformance on macOS uses the Command Line Tools. Without `PEEKY_NATIVE_DAP`, the native
+integration tests skip, and say so:
+
+```sh
+export PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)"
+export PEEKY_NATIVE_CC="$(xcrun --find clang)"
+export PEEKY_NATIVE_DWARFDUMP="$(xcrun --find llvm-dwarfdump)"
+export PEEKY_NATIVE_DSYMUTIL="$(xcrun --find dsymutil)"
+export PEEKY_NATIVE_SYSROOT="$(xcrun --show-sdk-path)"
+pytest tests/native --durations=10
+```
+
+C++ conformance on macOS uses the Command Line Tools too:
 
 ```sh
 PEEKY_NATIVE_DAP="$(xcrun --find lldb-dap)" \

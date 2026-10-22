@@ -40,4 +40,4 @@ Compiled Cargo tests and independent candidate verification are described in [RU
 
 ## Optimized builds (opt-in)
 
-`opt_level` (`"0"` by default, or `"1"`/`"2"`) sets `CARGO_PROFILE_DEV_OPT_LEVEL`, which is recorded in the target identity's profile. Locals with no value are reported as `unavailable`. Every result carries `optimized` and a warning, because optimized code can show wrong values that LLDB doesn't flag. In a real run, `start` read `1` at `opt-level 2` versus `3` unoptimized. See NATIVE.md.
+`opt_level` (`"0"` by default, or `"1"`/`"2"`) sets `CARGO_PROFILE_DEV_OPT_LEVEL`, which is recorded in the target identity's profile. Locals with no value are reported as `unavailable`. Every result carries `optimized` and a warning, because optimized code can show wrong values that LLDB doesn't flag. In a real run, `start` read `1` at `opt-level 2` versus `3` unoptimized. See [COOKBOOK 7.5](COOKBOOK.md#75-optimized-builds).

@@ -26,6 +26,8 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Read structs, arrays and standard containers](#read-structs-arrays-and-standard-containers)
   - [Build a program from several files](#build-a-program-from-several-files)
   - [Which C++ builds Peeky supports](#which-c-builds-peeky-supports)
+  - [Name the tools in a config](#name-the-tools-in-a-config)
+  - [What Peeky checks about a build](#what-peeky-checks-about-a-build)
   - [Why a local shows `no value yet`](#why-a-local-shows-no-value-yet)
   - [Read C++ members](#read-c-members)
   - [Read a C++ string that holds a NUL byte](#read-a-c-string-that-holds-a-nul-byte)
@@ -261,7 +263,7 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
 - A `char[N]` or `std::string` local takes a text in double quotes: `--set 'name="apple"'`. The
   text must fit the local's size; Peeky never reallocates. lldb-dap 21 (macOS) writes every case;
   older versions write fewer ([details](#change-a-text)).
-- Floats can't be set, and a text can be set only as above.
+- Pointers and floats can't be set, and a text can be set only as above.
 - Peeky never changes a value inside a union, a packed struct, a bitfield, a const, or a `std::`
   type.
 - **Never through a pointer or a reference.** That rules out `ps.end`, `this.count`, and a C
@@ -303,6 +305,8 @@ output:
   ([details](#change-at-a-statements-first-instruction)).
 - To change a value at a later hit of a probe, add `--set-hit N`. In a session, change values at as
   many stops as you like.
+- A caller's frame is never changed: a call it is making may hold a copy of the old value.
+  `p.x + f()` loads `p.x` before it calls `f`.
 - Rows mark what `set` would change `[settable]`, fields and elements included, a preview's too.
   The fields of a local that the debug information keeps in registers, or as a static, say
   `[not settable: register]` or `[not settable: static]`.
@@ -318,8 +322,10 @@ peeky probe examples/cpp/pagination_bug.cpp --at 28 --capture start
 
 ### Read structs, arrays and standard containers
 
-A struct, a class or a fixed-size array shows its first members. Peeky reads them from the
-debugger's own children. For example, take a `histo.c` that counts its arguments in
+A struct, a class or a fixed-size array shows its first members. lldb-dap alone shows such a value
+as its type and address: `bins  bin[4] @ 0x16bb9f278`. Peeky writes a preview from the debugger's
+own children instead, in the form LLDB's `frame variable` uses. A 2-D array reads
+`[[1, 2, 3], [4, 5, 6]]`. For example, take a `histo.c` that counts its arguments in
 `struct bin bins[4]`, where each bin is `{lo, hi, count}`. One capture reads every bin:
 
 ```sh
@@ -333,18 +339,26 @@ hit  phase     line  function  selector  type    value
 ```
 
 `session get bins` shows each element the same way, with its selector:
-`bins[3]: bin = {lo = 6, hi = 7, count = 0} (children: peeky session get 'bins[3]')`. You still
-read and set fields by name: `bins[3].hi`, `--set 'bins[3].hi=8'`.
+`bins[3]: bin = {lo = 6, hi = 7, count = 0} (children: peeky session get 'bins[3]')`. The preview
+replaces the value in probe rows, `inspect`, `session get` (the root and every child it lists) and
+the evidence store. The handle stays, so you still read and set fields by name: `bins[3].hi`,
+`--set 'bins[3].hi=8'`. They are marked `[settable]` as before.
 
 #### What a preview shows
 
-A preview shows 8 members or elements, then `…`. It goes two levels deep, with `{…}` below that.
-It shows at most 40 characters of one member, and 240 in all.
+A preview shows 8 members or elements, then `…`. It goes two levels deep, with `{…}` below that:
+`{s = {a = {…}}}`. It shows at most 40 characters of one member, and 240 in all. A char array or a
+string is cut between characters, with LLDB's `...`. A note on a string is kept whole.
+
+- Previews have their own budget: 256 debugger requests within 3 s, per inspection or expansion.
+  Past it, values keep the debugger's text. The strings' checks have a budget of their own.
+- A probe previews only the values it captures. A selector reaches a field without previewing the
+  listings on its way. So a probe that captures scalars costs nothing more.
 
 | Member | In a preview |
 | --- | --- |
-| A union, under any name the debug information gives it, such as a typedef's | never previewed: `<union>` inside another value, because only one of its members holds what was stored |
-| A pointer | its address, never what it points at |
+| A union, under any name the debug information gives it, such as a typedef's | never previewed: `<union>` inside another value, an anonymous one too, because only one of its members holds what was stored |
+| A pointer | its address, never what it points at: not a `char *`'s text, nor a function's name |
 | A reference member | its address only |
 | A member with no value | `<no value>` |
 | A C++ base class | a member named by its class: `{Base = {b = 1}, d = 2}` |
@@ -353,27 +367,48 @@ It shows at most 40 characters of one member, and 240 in all.
 | A `std::string` | its checked text ([details](#read-a-c-string-that-holds-a-nul-byte)). With libstdc++ and lldb-dap 18: `<no value>`, and the member's own row says why |
 | A standard container | as below: `v = size=2 [1, 2]` |
 | Any other `std::` value | its debugger's summary, or `{…}` |
-| A `char16_t`, `char32_t` or `wchar_t` bitfield | no value: LLDB reads its bits wrongly |
+| A `char16_t`, `char32_t` or `wchar_t` bitfield | no value: LLDB reads its bits wrongly ([below](#characters)) |
+| Another bitfield | as LLDB reads it |
+| An unnamed bitfield that LLDB adds to fill a gap | left out |
+| A variable-length array, or a flexible array member, inside a struct | `[…]` |
 
 A reference local or parameter to a class shows its address, then the preview:
 `0x… {lo = {x = 0, y = 0}, hi = {x = 2, y = 3}}`. A `const std::string &` shows its address and
 text the same way. A reference to a union, or to a `std::` type other than a string or a
 container, shows no preview.
 
+- A pointer local shows no preview. `p[0]`, which a selector asks for, is previewed when it is a
+  struct, a class or an array. It is never previewed when it is a pointer itself: `pp[0]` shows
+  its address.
+- An array's length is the debug information's constant bound. A typedef'd array, such as
+  `typedef int Row[3]`, is an array: `[1, 2, 3]`.
+- A value shown with a `note` keeps the note with its preview. So does what is read through it:
+  `late.lo = {x = …, y = …}`, with ``read through `late`: …``. This holds in captures,
+  `session get` children and the evidence's `note`.
+
 #### When there is no preview
 
 Types come from the build's debug information, not from the debugger's type names. So
 `Hold<int[1]> hs[5]` previews its five elements: the `[1]` in its name is a template argument.
-Where the debug information can't vouch for a type, there is no preview, only the debugger's
-`T @ 0x…`. That is the case for:
+The debugger's children give the values, matched to the type's members by name, and an anonymous
+member by its order. When Peeky is unsure, there is no preview, only the debugger's `T @ 0x…`.
+That is the case for:
 
 - a local withheld at the stop;
-- a variable-length array;
-- an incomplete type, such as `op[0]` on a `struct opaque *`;
+- a member that the type lacks, or an array whose listed elements differ from its type;
+- a member that the type says is a number, but the debugger lists as a struct;
+- a program that uses `setjmp`: Peeky reads no declarations there;
+- a local declared twice, with two types;
+- a variable-length array: its bound is a variable or an expression, and debuggers misread it.
+  clang read another VLA's length, and GCC a wrong one;
+- an incomplete type, declared but never defined, such as `op[0]` on a `struct opaque *` or an
+  `SSL *`;
 - a map's entry, such as `m[#0]`, a `std::pair`;
 - what a standard-library type other than a container holds;
 - a class with a member named like one of its base classes: `struct B2 : A2 { int A2; }`;
-- every value of an optimized build.
+- an optimized build. Optimized builds have no previews, except wide character arrays, which are
+  shown element by element. A struct there may hold values that the optimizer hasn't stored yet:
+  GCC `-O2` showed `t = {x = 64, y = 0, z = 0}` where the program printed `{5, 6, 7}`.
 
 #### Standard containers
 
@@ -458,13 +493,22 @@ not shown: a standard-library call below this frame (std::__1::vector<…>::clea
 
 #### Characters
 
+- A C char array shows as LLDB writes it, bounded by its size, so it needs no NUL. It is cut at
+  40 characters.
 - A wide character array shows element by element: `[L'a', L'\0', L'b', L'\0']`. LLDB's own text
-  would stop at the first NUL. `char16_t` and `char32_t` arrays show element by element too:
-  `[u'x', u'\0', u'y']`.
-- A char-typed bitfield shows as its number: `sc = -3`, not LLDB's `'\x05'`.
+  would stop at the first NUL: `L"a"`. This holds for any element wider than a byte. `char16_t` and
+  `char32_t` arrays show element by element too: `[u'x', u'\0', u'y']`.
+- A char-typed bitfield shows as its number: `sc = -3`, not LLDB's `'\x05'`. LLDB reads it as an
+  unsigned character. Peeky shows the number its bits hold, sign-extended where its type is signed.
+  Its member row shows the same: `b.sc = -3`.
+- A plain `char` is signed or unsigned as the ABI makes it: signed on macOS and x86-64, unsigned on
+  Linux arm64.
+- A bitfield of a wide character type has no value: `char16_t w : 9`, `wchar_t`, `char32_t`, and
+  in C a `wchar_t` by its typedef's name. A preview shows `w = <bitfield>`, and its own row says
+  `not shown: a bitfield of a wide character type …`. LLDB reads it at other bits than the
+  program's: `u'a'` showed as U+030D.
 
-More details are in [NATIVE.md](../NATIVE.md). How Peeky reads these values is in
-[NATIVE_INTERNALS.md](../NATIVE_INTERNALS.md), for maintainers.
+How Peeky reads these values is in [NATIVE_INTERNALS.md](../NATIVE_INTERNALS.md), for maintainers.
 
 ### Build a program from several files
 
@@ -473,7 +517,8 @@ More details are in [NATIVE.md](../NATIVE.md). How Peeky reads these values is i
 - A directory works as the target too: `peeky probe ring/ --at 16` finds its one program. A
   checker script beside it doesn't count.
 - When the directory holds several programs, name one in `--at`: `--at ring.cpp:16`.
-- Headers read from outside the directory, SDK headers included, are hashed and rechecked.
+- Headers read from outside the directory, SDK headers included, are hashed and rechecked
+  ([details](#what-peeky-checks-about-a-build)).
 
 ### Which C++ builds Peeky supports
 
@@ -508,6 +553,80 @@ Peeky's C++ support doesn't cover these:
 - reassigning a pointer or a reference;
 - changing a whole class object;
 - C++ build systems.
+
+### Name the tools in a config
+
+Without a config, Peeky finds the compiler, lldb-dap and llvm-dwarfdump through `PEEKY_NATIVE_*`,
+`xcrun` or `PATH` ([COOKBOOK 0](../COOKBOOK.md#what-each-language-also-needs)). To pin them, pass
+a trusted `--config` with their absolute paths. On macOS, `xcrun` finds each one, even when it
+isn't on `PATH`:
+
+```sh
+xcrun --find lldb-dap
+xcrun --find clang
+xcrun --find llvm-dwarfdump
+xcrun --find dsymutil
+xcrun --show-sdk-path
+```
+
+For example, with the Command Line Tools:
+
+```json
+{
+  "sources": ["branch_bug.c"],
+  "headers": [],
+  "arguments": [],
+  "compiler": "/Library/Developer/CommandLineTools/usr/bin/clang",
+  "adapter": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap",
+  "dwarfdump": "/Library/Developer/CommandLineTools/usr/bin/llvm-dwarfdump",
+  "dsymutil": "/Library/Developer/CommandLineTools/usr/bin/dsymutil",
+  "sysroot": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"
+}
+```
+
+| Key | What it names |
+| --- | --- |
+| `sources` | the program's source files |
+| `headers` | its headers |
+| `arguments` | the program's arguments |
+| `language` | `"cpp"` for C++ ([WORKER](../WORKER.md#configure-a-c-target)) |
+| `compiler`, `adapter`, `dwarfdump` | the compiler, lldb-dap, and the tool that reads the debug information |
+| `dsymutil`, `sysroot` | on macOS: the tool that gathers debug symbols, and the SDK |
+| `optimization` | `"Og"`, `"O1"` or `"O2"`; `"O0"` by default ([7.5](../COOKBOOK.md#75-optimized-builds)) |
+
+- Use the paths on your machine. The ones above are one development machine's.
+- On macOS, set `sysroot`. Without the SDK's path, a plain clang call couldn't find `stdio.h`.
+- On Linux, use the pinned distribution tools. Leave out `dsymutil` and `sysroot` unless your
+  toolchain needs them.
+- The worker takes the same file, with `--native-config` ([WORKER](../WORKER.md)).
+
+### What Peeky checks about a build
+
+Peeky builds the declared sources in a fresh workspace, with debug information. It records what
+went into the build, and checks it again before it trusts the program.
+
+- The build's record covers the declared sources and headers, the compile flags, the tools'
+  identities and the output files. The optimization level is part of it: `compiler_options` and
+  `target_identity`.
+- On macOS, Peeky keeps and hashes the generated dSYM. On Linux, it uses the debug information in
+  the executable.
+- Each stop is checked against the prepared source location. The loaded executable is checked
+  against the one built.
+- Missing debug information fails closed. So does a change to the original or copied source, the
+  executable or the symbols.
+- Files that a compile reads outside the workspace, such as SDK headers or an absolute `#include`,
+  are hashed and rechecked like declared ones. Peeky finds them in the compiler's `-MD` dependency
+  file. An entry that could be read two ways fails the build's preparation.
+- Peeky preprocesses each source before it compiles anything. It refuses inline assembly that can
+  read a file, with `UNSUPPORTED`: `.incbin`, `.include`, or an assembler macro that could spell
+  one. No dependency file lists such a file ([ERRORS](../ERRORS.md)).
+- Peeky builds no `.s` or `.S` file, and passes no `-Wa,` option.
+- A source's name may hold any character: `main\u2028x.c`, `größe.c`.
+
+These checks aren't a sandbox. The program, the compiler, the debugger and the symbol tools run
+with your permissions. System headers, libraries and the dynamic loader aren't fully hermetic. So
+the checks don't prove that a hostile process can't interfere, nor anything about every loaded
+library.
 
 ### Why a local shows `no value yet`
 
@@ -915,12 +1034,13 @@ peeky session set ps.end=10       # MUTATION_REJECTED: `ps` is a pointer: Peeky 
 
 What Peeky checks:
 
-- **The path** is checked against the build's debug information, not the debugger's type names.
-  Only fields of structs and classes, and elements of fixed-size arrays, count. Never through a
-  pointer (`this` included), a reference, a base class or an anonymous member. Never inside a
-  union, a packed struct or a `std::` type.
-- **The target** is an integer of 16 to 64 bits, not const, volatile or a bitfield. The value must
-  fit it.
+- **The path** is checked against the build's debug information, not the debugger's type names. A
+  typedef can hide a pointer, and the debugger shows a bitfield as its declared type. Only fields
+  of structs and classes, and elements of fixed-size arrays, count. Never through a pointer
+  (`this` included), a reference, a base class or an anonymous member. Never inside a union, a
+  packed struct (whose fields may be misaligned) or a `std::` type.
+- **The target** is an integer of 16 to 64 bits, not const, volatile or a bitfield. `char`, `bool`,
+  enums and floats are refused. The value must fit the target.
 - **The root** is the first local in a selector: `s` in `s.arr[2]`. It must be an automatic
   variable or a parameter of the stopped frame, in an unoptimized build. Peeky must not withhold
   it: not declared below the stop, not in an initializer still running, and no jump past it. Nor
@@ -1113,13 +1233,15 @@ and the line table. All of these must hold:
 
 - **The line starts a statement,** and it is one of its function's own lines:
   - every bracket around it, up to the function's body, is a block of statements. Not a call's
-    arguments, an initializer, a `new long[1]{`, or a compound literal. Nothing inside a GNU
-    statement expression `({ … })` counts at all, even a macro's loop there;
+    arguments, a `for` header, an initializer, a `new long[1]{`, a compound literal, or a class
+    body. Nothing inside a GNU statement expression `({ … })` counts at all, even a macro's loop
+    there;
   - no directive or bracket-hiding macro lies between the line and the previous token;
   - that token ends a statement: `;`, `{`, `}`, a label, `else`, or the `)` of an `if`, `for`,
     `while` or `switch` header.
 - A brace after something like parameters (`REPEAT(k, 1) {`) is a function's body only at file
-  scope, or in a class's or namespace's body. Elsewhere, it is a block of the function around it.
+  scope, or in a class's, a namespace's or an `extern "C"` body. Elsewhere, it is a block of the
+  function around it.
 - **The stopped instruction's address is the lowest** of all the function's code on the lines of
   the statements that start there. Clang may put a later line's code first: `t =` /
   `p.x + g();` loads `p.x` and calls `g` before line 1's store.
