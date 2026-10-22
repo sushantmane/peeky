@@ -441,6 +441,28 @@ def test_an_unconfirmed_field_write_closes_the_session(worker):
     assert worker.dap is None
 
 
+def test_a_java_write_tells_the_launcher_what_is_left_of_the_pause_budget(member_worker):
+    # #204 review round 2: the launcher's search for what refers to an array must end
+    # within the session's pause budget (an attached JVM's 10 s).
+    import time
+
+    member_worker.runtime.pause_budget_writes = True
+    _, child = inspected(member_worker)
+    member_worker.max_pause = 10
+    member_worker.stopped_at = time.monotonic() - 3
+    call(member_worker, "set_variable", handle=child, name="page", value="2")
+    [write] = [args for op, args in member_worker.dap.calls if op == "setVariable"]
+    assert 6000 < write.pop("peekyPauseLeftMs") <= 7000
+    assert write == {"variablesReference": 100, "name": "page", "value": "2"}
+    # Without a budget, nothing is sent.
+    _, child = inspected(member_worker)
+    member_worker.max_pause = None
+    call(member_worker, "set_variable", handle=child, name="page", value="3")
+    writes = [args for op, args in member_worker.dap.calls if op == "setVariable"]
+    assert len(writes) == 2 and writes[-1]["value"] == "3"
+    assert "peekyPauseLeftMs" not in writes[-1]
+
+
 @pytest.mark.parametrize("args", [{}, {"reference": 1, "handle": 1}, {"handle": "1"}])
 def test_set_variable_takes_a_reference_or_a_handle(member_worker, args):
     with pytest.raises(ValueError):

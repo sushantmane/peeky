@@ -215,6 +215,8 @@ class JavaAttachSession(JavaSession):
     dap_request = "attach"
     terminate_debuggee = False
     provenance = "attached"
+    # Its libraries' classes are not read: what no class read declares may be theirs.
+    knows_every_class = False
 
     def __init__(
         self, target, root, java, bundle, command, bundle_hash, mapping_path, workspace, parsed
