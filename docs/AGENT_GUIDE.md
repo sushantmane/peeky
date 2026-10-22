@@ -85,7 +85,7 @@ Report the observation, the intervention and its effect, the edit, and the verif
 
 ### Querying saved evidence (`peeky sql`, `peeky queries`)
 
-Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional**: for one probe, read its JSON; saved runs help with large captures (query only the rows you need), comparisons (two inputs, with and without `--set`) and slow or unrepeatable runs.
+Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional**: for one probe, read its JSON; saved runs help with large captures, comparisons (with and without `--set`) and slow or unrepeatable runs.
 
 - `peeky sql --schema` lists the tables (`runs`, `captures`, `interventions`, `pauses`), the `evidence` and `last_run` views, and the canned queries. Read it before writing SQL.
 - `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (two runs' hits paired by a value: `key=v`), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`, `failures`. `--param a=1 --param b=5` (default: the last two) or `run=3` picks runs.
