@@ -30,42 +30,111 @@ def test_the_guide_links_resolve():
         assert f"](lang/{lang}.md)" in first, lang
 
 
-def _anchor(heading):
-    """GitHub's anchor for a Markdown heading."""
-    text = re.sub(r"[^\w\- ]", "", heading.strip().lower())
-    return text.replace(" ", "-")
+def _slugs(headings):
+    """GitHub's anchors for a page's headings, in order, as github-slugger makes them.
+
+    Backticks and other punctuation are dropped, spaces become hyphens, and a slug
+    already taken gets the next free `-1`, `-2` suffix.
+    """
+    seen = {}
+    for heading in headings:
+        text = re.sub(r"\s+#+\s*$", "", heading.strip())
+        text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+        base = re.sub(r"[^\w\- ]", "", text.lower()).replace(" ", "-")
+        slug = base
+        while slug in seen:
+            seen[base] += 1
+            slug = f"{base}-{seen[base]}"
+        seen[slug] = 0
+        yield slug
 
 
 LANGS = ("python", "java", "c-cpp", "rust")
 
 
 def _without_fences(text):
-    return re.sub(r"^\s*```.*?^\s*```[^\n]*$", "", text, flags=re.M | re.S)
+    return re.sub(r"^\s*(```|~~~).*?^\s*\1[^\n]*$", "", text, flags=re.M | re.S)
 
 
 def _headings(path):
-    return re.findall(r"^#+ (.+)$", _without_fences(path.read_text()), flags=re.M)
+    return re.findall(r"^ {0,3}#{1,6} (.+)$", _without_fences(path.read_text()), flags=re.M)
+
+
+def _broken_links(pages):
+    """Each relative link, outside code, whose file or anchor does not exist."""
+    anchors = {}
+    broken = []
+    checked = 0
+    for page in pages:
+        text = re.sub(r"`[^`\n]*`", "", _without_fences(page.read_text()))
+        for target in re.findall(r"\]\(([^)\s]+)\)", text):
+            if re.match(r"[a-z]+:", target):
+                continue
+            checked += 1
+            path, _, anchor = target.partition("#")
+            linked = (page.parent / path).resolve() if path else page.resolve()
+            if not linked.exists():
+                broken.append((page.name, target))
+            elif anchor and linked.suffix == ".md":
+                if linked not in anchors:
+                    anchors[linked] = set(_slugs(_headings(linked)))
+                if anchor not in anchors[linked]:
+                    broken.append((page.name, target))
+    return broken, checked
 
 
 def test_every_relative_link_in_the_docs_resolves():
     # M7: each language page points into the cookbooks by section; #207 moved sections
     # between files. Every relative link, and its anchor, must land.
-    anchors = {}
-    checked = 0
-    for page in sorted(DOCS.rglob("*.md")):
-        text = re.sub(r"`[^`\n]*`", "", _without_fences(page.read_text()))
-        for target in re.findall(r"\]\(([^)\s]+)\)", text):
-            if re.match(r"[a-z]+:", target):
-                continue
-            path, _, anchor = target.partition("#")
-            linked = (page.parent / path).resolve() if path else page
-            assert linked.exists(), (str(page.relative_to(DOCS)), target)
-            if anchor and linked.suffix == ".md":
-                if linked not in anchors:
-                    anchors[linked] = {_anchor(h) for h in _headings(linked)}
-                assert anchor in anchors[linked], (str(page.relative_to(DOCS)), target)
-            checked += 1
+    broken, checked = _broken_links(sorted(DOCS.rglob("*.md")))
+    assert not broken
     assert checked > 300
+
+
+def test_anchors_are_githubs_slugs():
+    # Review of #216: a set of slugs missed GitHub's suffixes for repeated headings
+    # (TESTING.md's "C investigation…" and "C++ investigation…" share one slug).
+    headings = [
+        "What `set` Checks",
+        "7.4 Java Tests Already Running (Gradle `--debug-jvm`, e.g. Venice)",
+        "11. From pdb / gdb / lldb to Peeky",
+        "Strings with a NUL Byte (C++)",
+        "snake_case and [a link](x.md) ##",
+        "C investigation slice (2026-10-14)",
+        "C++ investigation slice (2026-10-14)",
+        "C investigation slice (2026-10-14)",
+        "a",
+        "a",
+        "a-1",
+    ]
+    assert list(_slugs(headings)) == [
+        "what-set-checks",
+        "74-java-tests-already-running-gradle---debug-jvm-eg-venice",
+        "11-from-pdb--gdb--lldb-to-peeky",
+        "strings-with-a-nul-byte-c",
+        "snake_case-and-a-link",
+        "c-investigation-slice-2026-10-14",
+        "c-investigation-slice-2026-10-14-1",
+        "c-investigation-slice-2026-10-14-2",
+        "a",
+        "a-1",
+        "a-1-1",
+    ]
+    testing = list(_slugs(_headings(DOCS / "TESTING.md")))
+    assert "c-investigation-slice-2026-10-14" in testing
+    assert "c-investigation-slice-2026-10-14-1" in testing
+
+
+def test_the_link_check_finds_a_missing_anchor_or_file(tmp_path):
+    page = tmp_path / "a.md"
+    page.write_text(
+        "# Setup\n\n## C slice (1)\n\n## C++ slice (1)\n\n```sh\n# not a heading\n```\n\n"
+        "[ok](#setup) [ok](#c-slice-1-1) [bad](#c-slice-1-2) [bad](#not-a-heading) "
+        "[bad](b.md) [ok](a.md#c-slice-1) [web](https://example.com/#x) `[code](#nowhere)`\n"
+    )
+    broken, checked = _broken_links([page])
+    assert checked == 6
+    assert broken == [("a.md", "#c-slice-1-2"), ("a.md", "#not-a-heading"), ("a.md", "b.md")]
 
 
 def test_each_language_has_a_page_and_a_cookbook_numbered_as_the_cookbook():
