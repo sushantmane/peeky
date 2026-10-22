@@ -21,6 +21,12 @@ your checks.
 Python 3.11 or later is required. Run these, and every example, from the repository root:
 
 ```sh
+pip install -e .
+```
+
+For development and the tests, install the dev extras in a virtual environment:
+
+```sh
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e '.[dev]'
@@ -100,9 +106,10 @@ Why Peeky is a tool and not an agent: [ADR 0005](docs/adr/0005-tool-not-agent.md
 
 ## Ask follow-up questions with SQL
 
-Every `peeky probe` is saved with a `run_id`, in a local SQLite store at
-`$PEEKY_STATE_DIR/evidence/evidence.db`. Capture once, then ask as many questions as you like
-without running the program again, as heappy does for heap dumps.
+By default, every probe not refused before launch is saved with a `run_id`, and `--no-save` opts
+out. The runs go to a local SQLite store, at `$PEEKY_STATE_DIR/evidence/evidence.db`. Capture
+once, then ask as many questions as you like without running the program again, as heappy does for
+heap dumps.
 
 ```sh
 peeky probe app/ --at lib/parse.py:42 --run main.py --capture n,acc --hits 50 --label input=a
@@ -116,7 +123,7 @@ peeky sql --schema                  # tables, columns, views, canned queries, ex
 - The store helps with large captures, where you query only what you need. It also helps to compare
   runs, and with slow or unrepeatable runs.
 - A new question about the running program needs a new probe.
-- To skip saving a probe, add `--no-save`. For a separate database, add `--store PATH`.
+- For a separate database, add `--store PATH`.
 - Queries are read-only, and bounded by `--limit` rows, 10 s and 16 MB per result. The newest 500
   runs are kept. [COOKBOOK 4](docs/COOKBOOK.md#4-sql-over-saved-runs) describes the tables.
 
