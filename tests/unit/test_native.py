@@ -1364,7 +1364,7 @@ def test_a_local_declared_on_the_line_a_call_returns_to_is_withheld_part_way():
     run["rows"] = rows({17: (100, 124), 18: (130, 140)}, "a.c")
     run["locals"] = {"r": {("a.c", 17, True)}, "i": {("a.c", 17, True)}}
 
-    def header(source, line, name):
+    def header(source, line, name, span):
         return name == "i"
 
     assert declared_mid_line([run], "r", "a.c", 17, 112, header) == 17

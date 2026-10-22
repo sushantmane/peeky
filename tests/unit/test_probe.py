@@ -1599,6 +1599,46 @@ def test_a_set_whose_hit_never_comes_is_unapplied_like_a_set_at(monkeypatch):
     )
 
 
+def test_outputs_and_diff_say_a_requested_change_whose_hit_never_came_was_not_made(
+    monkeypatch, tmp_path
+):
+    # Review of PR #214: runs.sets holds requests; `outputs` and `diff` said where each
+    # change "applied", a --set or --set-at whose hit never came too.
+    import json
+
+    import peeky.probe as probe_module
+    from peeky import evidence
+
+    store = tmp_path / "evidence" / "evidence.db"
+    workers = [Lines(names={9: ["main", "<lambda>", "main"]}), Lines(stops=1), Lines(stops=1)]
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: workers.pop(0))
+    for request in (
+        Probe("main.py", 8, ("x",), set_at=((9, 2, "x", "5"), (9, 4, "x", "7"))),
+        Probe("main.py", 8, ("x",), (("x", "2"),), hits=2, set_hit=2),
+        Probe("main.py", 8, ("x",), (("x", "2"),), hits=1, set_hit=1),
+    ):
+        result = probe_module.run_probe("/w", request)
+        evidence.record(store, result)
+    rows = evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+    assert [json.loads(row["sets"]) for row in rows] == [
+        [
+            ["x", "5", "requested at 9@2"],
+            ["x", "7", "requested at 9@4, not made: that hit never came"],
+        ],
+        [["x", "2", "requested at 8@2, not made: that hit never came"]],
+    ]
+    # The same request, made in one run and not in the other, differs in `diff`.
+    (row,) = [
+        r
+        for r in evidence.run_query(store, "diff", {"a": 2, "b": 3})["rows"]
+        if r["selector"] == "(sets)"
+    ]
+    assert json.loads(row["value_a"]) == [
+        ["x", "2", "requested at 8@2, not made: that hit never came"]
+    ]
+    assert json.loads(row["value_b"]) == [["x", "2", "requested at 8@1"]]
+
+
 def test_a_set_no_stop_allows_is_refused_before_launch_and_never_saved(
     monkeypatch, tmp_path, capsys
 ):
@@ -1836,3 +1876,21 @@ def test_a_warning_says_how_many_functions_it_does_not_list():
     assert shown.startswith("f0 (stop 0); f1 (stop 1)") and shown.endswith(
         "f7 (stop 7); and 2 more"
     )
+
+
+def test_a_selector_by_line_that_names_several_bindings_is_refused():
+    # PR #215 review: `x @ part.rs:1` where two included files named `part.rs` (or two
+    # `let x` on one line) both declare an `x` there: the one lldb-dap lists by its
+    # plain name is not selected by it.
+    from peeky.probe import Refused, _scope_lookup
+
+    row = {"name": "x", "value": "1", "declared_at": "x @ part.rs:1", "declared_at_shared": 2}
+    scopes = [{"name": "Locals", "variables": [row]}]
+    with pytest.raises(Refused, match="2 bindings on this line: not selectable by line"):
+        _scope_lookup(None, {}, {}, scopes, "x @ part.rs:1")
+    alone = {**row, "declared_at_shared": 1}
+    found, _ = _scope_lookup(
+        None, {}, {}, [{"name": "Locals", "variables": [alone]}], "x @ part.rs:1"
+    )
+    assert found is alone
+    assert _scope_lookup(None, {}, {}, scopes, "x")[0] is row

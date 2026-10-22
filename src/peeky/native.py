@@ -40,7 +40,15 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
-from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
+from peeky.cxx_strings import (
+    SUMMARY_UNITS,
+    libstdcxx_string,
+    shows_text,
+    string_class,
+    summary_units,
+    text_like,
+    tidy,
+)
 from peeky.digest import sha256_file
 from peeky.identifiers import changeable, looks_located, split_located
 from peeky.names import standard_type, unicode_escape
@@ -802,11 +810,12 @@ def _balanced(name):
     return not depth
 
 
-def _locals(dies, offset, hidden=None):
+def _locals(dies, offset, hidden=None, label=None):
     """{name: {types}} for the parameters and variables of one function body, including
     nested blocks but not the bodies of calls inlined into it. A type is the name
     dwarfdump gives the DIE's DW_AT_type (`long long`, `Stats *`). ``hidden(offset)``:
-    a binding left out (a macro's own, see function_scopes)."""
+    a binding left out (a macro's own, see function_scopes). ``label(offset, name)``:
+    the name to list it by (see function_scopes)."""
     names, pending = {}, list(dies[offset]["children"])
     while pending and len(names) < 512:
         child = pending.pop()
@@ -824,6 +833,7 @@ def _locals(dies, offset, hidden=None):
             name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
+                name = label(child, name) if label else name
                 reference = _first(dies, chain, "DW_AT_type")
                 kind = _c_tagged(dies, reference, _type_name(dies, reference))
                 names.setdefault(name, set()).update({kind} if kind else set())
@@ -989,7 +999,7 @@ def _bindings(dies, offset):
 _MAX_SPANS = 8
 
 
-def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
+def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None, label=None):
     """({name: {(first, last)}}, {names visible in the whole function}), or None when
     the declarations were too many to read all: the lines of the blocks declaring each
     local, for the locals declared only inside nested blocks (a `for` loop's `i`), so
@@ -1001,7 +1011,8 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
     them has code only outside the block: C++ puts a block's cleanup, which runs when an
     exception leaves it, on the function's closing line, so a `while` body's locals are
     visible on its lines and on that one (`17-26, 35`), not on the lines between (the
-    eval-6 review). ``source_of`` names the declared source of a DW_AT_call_file."""
+    eval-6 review). ``source_of`` names the declared source of a DW_AT_call_file.
+    ``label(offset, name)``: the name to list a binding by (see function_scopes)."""
     rows = sorted(
         (address, source, line) for (source, line), found in addresses.items() for address in found
     )
@@ -1047,7 +1058,9 @@ def _block_spans(dies, entry, root, addresses, numbers, source_of, hidden=None):
         if hidden and hidden(child):
             return None
         name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
-        return None if not name or name.startswith("$") else name
+        if not name or name.startswith("$"):
+            return None
+        return label(child, name) if label else name
 
     # The concrete copies carry the code; an abstract or declaring DIE only says which
     # names are the function's own.
@@ -1336,11 +1349,20 @@ def function_scopes(
         for body in (*entry["bodies"], root):
             for local, kinds in _locals(dies, body, skip).items():
                 names.setdefault(local, set()).update(kinds)
+        label, ambiguous = (
+            _shadow_labels(dies, (*entry["bodies"], root), skip, position) if rust else (None, {})
+        )
+        shown = {}
+        for body in (*entry["bodies"], root):
+            for local, kinds in _locals(dies, body, skip, label).items():
+                shown.setdefault(local, set()).update(kinds)
         scope = {
             "scope": name,
             "source": source,
             "lines": [min(numbers), max(numbers)],
-            "names": sorted(names),
+            "names": sorted(shown),
+            # A selector names none of several bindings on one line (#215 review).
+            **({"ambiguous": dict(sorted(ambiguous.items()))} if ambiguous else {}),
         }
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
@@ -1348,7 +1370,7 @@ def function_scopes(
         merged = found.setdefault(
             json.dumps(scope, sort_keys=True), (scope, {}, {}, set(), [None], [None])
         )
-        for local, kinds in names.items():
+        for local, kinds in shown.items():
             merged[1].setdefault(local, set()).update(kinds)
         if graph is not None:
             parts = _settable_parts(
@@ -1360,7 +1382,15 @@ def function_scopes(
             )
         if never is not None:
             # Never settable in the scope only if in every copy (a generic's instances).
-            unchanged = dict(never(linkages_of(entry, root), names) or {})
+            # By the names the scope lists (`x @ main.rs:6` for one of several, #206);
+            # never one no selector names.
+            unchanged = dict(
+                never(
+                    linkages_of(entry, root),
+                    {n: k for n, k in shown.items() if n not in ambiguous},
+                )
+                or {}
+            )
             held = merged[4][0]
             merged[4][0] = (
                 unchanged
@@ -1379,7 +1409,7 @@ def function_scopes(
             declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
         )
         blocks = (
-            _block_spans(dies, entry, root, ran, numbers, source_of, skip)
+            _block_spans(dies, entry, root, ran, numbers, source_of, skip, label)
             if macros[source] is not None and not in_macro
             else None
         )
@@ -1419,6 +1449,48 @@ def function_scopes(
     if len(scopes) > MAX_SCOPES:
         scopes = [*scopes[:MAX_SCOPES], {"omitted": len(scopes) - MAX_SCOPES}]
     return scopes
+
+
+def _shadow_labels(dies, bodies, hidden, position):
+    """The test ``label(offset, name)`` that names a Rust binding as lldb-dap does where
+    another of its name is in scope too (`points @ main.rs:81`), for each name the
+    function declares more than once (#206): `describe` lists each by it. A binding
+    declared outside the declared sources keeps its plain name. With it, {label: how
+    many bindings} for each label several bindings share (two `let x` on one line, or
+    files of one name in two directories): a selector cannot tell them apart."""
+    places, pending = (
+        {},
+        [child for body in dict.fromkeys(bodies) for child in dies[body]["children"]],
+    )
+    while pending and len(places) < 512:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        if hidden and hidden(child):
+            continue
+        source, name, line = position(child)
+        if name and not name.startswith("$"):
+            # One binding, however many DIEs complete it (an abstract origin's copies).
+            places.setdefault(name, {})[_chain(dies, child)[-1]] = (source, line)
+
+    def label(offset, name):
+        if len(places.get(name, ())) < 2:
+            return name
+        source, _, line = position(offset)
+        return f"{name} @ {Path(source).name}:{line}" if source and line else name
+
+    shared = {}
+    for name, bindings in places.items():
+        if len(bindings) > 1:
+            for source, line in bindings.values():
+                if source and line:
+                    key = f"{name} @ {Path(source).name}:{line}"
+                    shared[key] = shared.get(key, 0) + 1
+    return label, {key: count for key, count in shared.items() if count > 1}
 
 
 def _settable_parts(graph, types, names, in_memory, linkages):
@@ -1851,6 +1923,13 @@ def _library_frame(frame):
     return bool(_LIBRARY_FUNCTION.search(name.rpartition("`")[2].split("(", 1)[0]))
 
 
+# A narrow character array's type, as LLDB names it (`char[8192]`, `const unsigned char[4]`).
+CHAR_ARRAY = re.compile(
+    r"(?:(?:const|volatile)\s+)*(?:(?:signed|unsigned)\s+)?char(?:\s+(?:const|volatile))*"
+    r"\s*\[[0-9]+\]"
+)
+
+
 def _is_object(variable):
     """Whether a DAP variable is a class, struct, union or array: it has children and is
     no pointer or reference."""
@@ -2154,11 +2233,18 @@ def declared_mid_line(table, name, source, line, address, settled):
     line's first instruction (``address``, unslid) and the function still has code of
     the line at or after it: back from a call in `long r = f(3) + f(4);` (`step --out`),
     `r` is stored only by that code. Else None. Not a variable a header sets once by no
-    call (``settled(source, line, name)`` True: `for (int i = 0; ...)`), which is live
+    call in a function no jump can enter it in (``settled(source, line, name, span)``
+    True, ``span`` the function's lines: `for (int i = 0; ...)`), which is live
     mid-line on later passes of a one-line loop."""
     base, found = _in_scope(table, name, source, line, address)
-    places = [at for declared_in, at, _ in found if declared_in == source and at == line]
-    if address is None or not places or settled(source, line, base) is True:
+    places = [
+        function for declared_in, at, function in found if declared_in == source and at == line
+    ]
+    if (
+        address is None
+        or not places
+        or all(settled(source, line, base, function.get("span")) is True for function in places)
+    ):
         return None
     for function in table:
         span = function["rows"].get((source, line))
@@ -3357,9 +3443,22 @@ class NativeSession:
             # Peeky's own text (read from memory, or noted): spelled and bounded already.
             return shown
         text = variable.get("value")
+        ended = False
+        if (
+            language in ("c", "cpp")
+            and isinstance(text, str)
+            and CHAR_ARRAY.fullmatch(str(variable.get("type") or "").strip())
+            and (units := summary_units(text, 1, "")) is not None
+            and units[1]
+            and units[0] < SUMMARY_UNITS
+        ):
+            # LLDB ends a `char[N]` longer than its summary limit with `...` even where
+            # the text ended at a NUL within it, which fewer bytes than the limit prove
+            # (ninth evaluation: `"    The quick brown fox"...` in a `char[8192]`).
+            text, ended = text[:-3], True
         tidied = tidy(text, language in ("c", "cpp")) if isinstance(text, str) else None
         if tidied is None:
-            return shown
+            return {**(shown or {}), "value": text} if ended else shown
         return {**(shown or {}), **tidied}
 
     def preview_value(
@@ -3809,6 +3908,18 @@ class NativeSession:
                     "leftovers; read it in the frame that is running once it is stored"
                 )
             # A caller is inside a call: `long r = f(x);` stores `r` only after it.
+            shown = split_located(name)
+            local = shown[0] if shown else name
+            if at < line and (word := self._header(here, at, local)) in ("for", "while"):
+                # Its header's code also runs after the body, so the frame's place proves
+                # nothing; nor can the text (a `goto` into the body, a macro's call). Kept
+                # under the worker's 300-character cap on a reason.
+                return (
+                    f"declared on line {at}, in this caller frame's `{word}` header, and Peeky "
+                    "cannot prove the loop has run its initialization (a `goto` into the body "
+                    "or a macro's call can skip or delay it): its storage may hold leftovers; "
+                    "read it in the loop's body (a probe there, or `step --out` to this frame)"
+                )
             return (
                 f"declared on line {at}, whose code this caller frame has not finished (it "
                 "is inside a call, and the declaration may be stored after the call "
@@ -3911,9 +4022,11 @@ class NativeSession:
                     "leftovers"
                 )
                 if label is not None
+                # Neutral: no `switch` or `goto` may be there at all (ninth evaluation:
+                # a function whose only jump was a `continue`).
                 else f"declared on line {at}, and Peeky cannot tell from the source whether "
-                "a jump (a `switch` or a `goto`) reaches this line past the declaration, so "
-                "it may not be initialized here: its storage may hold leftovers"
+                "this line can be reached without running the declaration, so it may not be "
+                "initialized here: its storage may hold leftovers"
             )
         if address is None or self.target.optimization != "O0":
             return None
@@ -3990,12 +4103,22 @@ class NativeSession:
         statements = self._statements(source)
         return None if statements is None else statements.declared_through(line, name)
 
-    def _settled(self, source, line, name):
-        """Whether a statement's header sets ``name`` on ``line`` once, by no call (True,
-        False), or None if unknown (Statements.declaration)."""
+    def _header(self, source, line, name):
+        """The keyword of the statement header that declares ``name`` on ``line`` (`for`,
+        `while`, …), or None (Statements.header)."""
+        statements = self._statements(source)
+        return None if statements is None else statements.header(line, name)
+
+    def _settled(self, source, line, name, span=None):
+        """Whether a statement's header sets ``name`` on ``line`` once, by no call, where
+        no jump can enter the statement past it (True, False; the function's lines
+        ``span``), or None if unknown (Statements.declaration, jumped_into): `goto
+        inside;` to a label in a one-line loop's body skips `int i = 0`."""
         statements = self._statements(source)
         found = None if statements is None else statements.declaration(line, name)
-        return None if found is None else found[3]
+        if found is None or found[3] is not True:
+            return None if found is None else found[3]
+        return statements.jumped_into(line, name, tuple(span) if span else None) is False
 
     def _jumped_past_include(self, source, line, stop, span):
         """Statements.jumped_past_include for the prepared ``source``; None if unreadable."""

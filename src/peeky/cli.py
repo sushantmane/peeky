@@ -451,12 +451,18 @@ MAX_SCOPES = 300
 def _python_scopes(path):
     """Names each Python function (and the module) can see, for choosing selectors.
 
-    Static: lists parameters and assigned locals, not values or attributes. Methods are
-    qualified by class (`IPv6Address.is_private`); listed in source order, first
-    MAX_SCOPES only.
+    Static: lists parameters and assigned locals, not values or attributes, and the
+    module globals a function reads that the module assigns (`globals`: a probe reads them,
+    `[module global]`; ninth evaluation): names the module binds (`MAX_GAP = 30`, not
+    `globals()["x"] = 1`) that the function's compiled code loads as globals (its generator
+    expressions' and comprehensions' too), so not in code the compiler drops (`if False:`);
+    nothing runs. Methods are qualified by class
+    (`IPv6Address.is_private`); listed in source order, first MAX_SCOPES only.
     """
     import ast
+    import dis
     import symtable
+    import warnings
 
     text = path.read_text()
     try:
@@ -464,10 +470,59 @@ def _python_scopes(path):
         table = symtable.symtable(text, str(path), "exec")
     except SyntaxError as exc:
         raise _parse_error(path, exc) from exc
-    spans = {}
+    # Names the module itself binds (`MAX_GAP = 30`), not its functions, classes or
+    # imports, nor a name a target only reads (`globals()["x"] = 1`, `counts[0] = 1`):
+    # what a function may read as a module global.
+    assigned = set()
+    for node in tree.body:
+        targets = (
+            node.targets
+            if isinstance(node, ast.Assign)
+            else [node.target]
+            if isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            else []
+        )
+        for target in targets:
+            for name in ast.walk(target):
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
+                    assigned.add(name.id)
+    # The globals each function's compiled code loads, by (name, first line) as the
+    # compiler numbers it: a decorated function's code starts at its first decorator.
+    try:
+        with warnings.catch_warnings():
+            # A program's own syntax warnings (`"\d"`) are not describe's to print.
+            warnings.simplefilter("ignore")
+            compiled = compile(text, str(path), "exec", dont_inherit=True)
+    except (SyntaxError, ValueError):
+        compiled = None
+    # A generator expression's code is its own (a comprehension's too, before 3.12), but
+    # it is the enclosing function's: its loads count there (review of PR #214).
+    loads, codes = {}, [(compiled, None)] if compiled is not None else []
+    while codes:
+        code, into = codes.pop()
+        if into is None or code.co_name not in (
+            "<genexpr>",
+            "<listcomp>",
+            "<setcomp>",
+            "<dictcomp>",
+        ):
+            into = set()
+            loads.setdefault((code.co_name, code.co_firstlineno), []).append(into)
+        into.update(
+            instruction.argval
+            for instruction in dis.get_instructions(code)
+            if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS")
+        )
+        codes.extend((each, into) for each in code.co_consts if hasattr(each, "co_code"))
+    spans, starts = {}, {}
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            spans.setdefault((node.lineno, getattr(node, "name", "lambda")), node.end_lineno)
+            name = getattr(node, "name", "lambda")
+            spans.setdefault((node.lineno, name), node.end_lineno)
+            first = min([d.lineno for d in getattr(node, "decorator_list", ())] + [node.lineno])
+            starts.setdefault(
+                (node.lineno, name), ("<lambda>" if name == "lambda" else name, first)
+            )
     found, stack = [], [(table, "")]
     while stack and len(found) < 20000:
         item, prefix = stack.pop()
@@ -494,7 +549,22 @@ def _python_scopes(path):
             or s.is_assigned()
             or (item.get_type() == "module" and s.is_imported())
         )
-        scopes.append({"scope": qualified, "lines": lines, "names": names[:100]})
+        # One code object of that name and first line, else none listed: two lambdas on
+        # a line cannot be told apart.
+        matched = loads.get(starts.get((item.get_lineno(), item.get_name())), [])
+        read = (
+            sorted(matched[0] & assigned)
+            if item.get_type() != "module" and len(matched) == 1
+            else []
+        )
+        scope = {
+            "scope": qualified,
+            "lines": lines,
+            "names": (names + [name for name in read if name not in names])[:100],
+        }
+        if read:
+            scope["globals"] = read
+        scopes.append(scope)
     if len(found) > MAX_SCOPES:
         scopes.append(
             {"scope": "...", "lines": None, "names": [], "omitted": len(found) - MAX_SCOPES}
@@ -719,13 +789,21 @@ def _describe_text(manifest):
             where = f" (lines {span})" if span else ""
         types, spans = scope.get("types", {}), scope.get("spans", {})
         shown = []
+        ambiguous = scope.get("ambiguous") or {}
         for name in scope["names"]:
+            if name in ambiguous:
+                # Bindings no selector tells apart (#215 review): `let x = 1; let x = "a";`.
+                count = ambiguous[name]
+                shown.append(f"{name} ({count} bindings on this line: not selectable by line)")
+                continue
             # A local declared only in nested blocks is visible on their lines alone.
             parts = [spell(types[name])] if name in types else []
             if name in spans:
                 listed = [f"{a}-{b}" if b > a else str(a) for a, b in spans[name]]
                 single = len(listed) == 1 and "-" not in listed[0]
                 parts.append(("line " if single else "lines ") + ", ".join(listed))
+            if name in scope.get("globals", ()):
+                parts.append("module global")
             shown.append(f"{name} ({', '.join(parts)})" if parts else name)
         lines.append(f"names in {scope['scope']}{where}: {', '.join(shown) or '-'}")
     from peeky.probe import optimization_level
@@ -799,6 +877,7 @@ def _describe_text(manifest):
             and not any(
                 (scope.get("types") or {}).get(name) in settable
                 and name not in (scope.get("never_settable") or {})
+                and name not in (scope.get("ambiguous") or {})
                 for name in scope["names"]
             )
         ]
@@ -1414,8 +1493,24 @@ def _named(text, name):
     )
 
 
+def _relative_location(location):
+    """`path:line`, the path relative to the working directory where the file is below
+    it, as a probe names its program (ninth evaluation: session states printed absolute
+    paths); else as given. Text only: JSON keeps the path whole."""
+    if not isinstance(location, str):
+        return location
+    path, sep, line = location.rpartition(":")
+    if not sep or not line.isdigit() or not os.path.isabs(path):
+        return location
+    try:
+        relative = Path(path).resolve().relative_to(Path.cwd().resolve())
+    except (OSError, ValueError):
+        return location
+    return f"{relative}:{line}"
+
+
 def _state_text(state, name="default"):
-    where = f" at {state['location']}" if state.get("location") else ""
+    where = f" at {_relative_location(state['location'])}" if state.get("location") else ""
     if where and state.get("function"):
         from peeky.names import display_function
 
@@ -1485,7 +1580,9 @@ def _frame_text(snapshot):
     index = snapshot.get("frame", 0)
     frame = snapshot["frames"][index] if len(snapshot["frames"]) > index else {}
     where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
-    return f"frame {index}: {display_function(snapshot.get('function'))} ({where})"
+    return (
+        f"frame {index}: {display_function(snapshot.get('function'))} ({_relative_location(where)})"
+    )
 
 
 def _variables_text(snapshot, name="default"):
@@ -1495,7 +1592,9 @@ def _variables_text(snapshot, name="default"):
     frame = snapshot["frames"][0] if snapshot["frames"] else {}
     # Where the program stopped; a caller frame's own location is on the next line.
     stopped = snapshot.get("innermost") or {"function": frame.get("name")} if index else snapshot
-    where = stopped.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    where = _relative_location(
+        stopped.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+    )
     if function := stopped.get("function"):
         where += f" in {display_function(function)}"
     if type(snapshot.get("hit")) is int:
@@ -1634,8 +1733,20 @@ def _read_frame(row):
     from peeky.names import display_function
 
     return (
-        f"frame {row.get('frame')}: {display_function(row.get('function'))} ({row.get('location')})"
+        f"frame {row.get('frame')}: {display_function(row.get('function'))} "
+        f"({_relative_location(row.get('location'))})"
     )
+
+
+def _shell_word(text):
+    """``text`` as one shell word to paste: as is where plain; in double quotes where it
+    holds a single quote but nothing a shell reads inside double quotes (`"`, `$`, a
+    backtick, a backslash, `!`); else as shlex quotes it (ninth evaluation:
+    `'history['"'"'alice'"'"'][0]'` for `history['alice'][0]`)."""
+    quoted = shlex.quote(text)
+    if quoted == text or "'" not in text or re.search(r'["$`\\!]', text):
+        return quoted
+    return f'"{text}"'
 
 
 def _get_lines(row, session="default"):
@@ -1656,7 +1767,7 @@ def _get_lines(row, session="default"):
     for child in row.get("children", []):
         name = child.get("selector") or f"{child['name']} [not selectable]"
         more = (
-            f" (children: peeky session get {shlex.quote(child['selector'])}"
+            f" (children: peeky session get {_shell_word(child['selector'])}"
             + (f" --name {shlex.quote(session)}" if session != "default" else "")
             + (f" --frame {row['frame']})" if row.get("frame") else ")")
             if child.get("expandable") and child.get("selector")
@@ -1682,7 +1793,9 @@ def _get_lines(row, session="default"):
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
-    if row.get("children_grouped"):
+    if row.get("children_grouped") and not row.get("children"):
+        # Said only where nothing else is listed (ninth evaluation: on every dataclass,
+        # it was noise); `--json` always has `children_grouped`.
         lines.append(
             f"  (debugpy groups more members under {', '.join(row['children_grouped'])}: "
             f"select one by name, as {row['selector']}.__class__)"
@@ -1794,8 +1907,15 @@ def session(args):
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
         )
-        if any("error" in row for row in rows):
-            # Every row was still printed; the exit status says one selector failed.
+        if failed := [row["selector"] for row in rows if "error" in row]:
+            # Every row was still printed; the exit status says one selector failed, and
+            # this line which (ninth evaluation: exit 1 with no word of which, or why).
+            print(
+                f"peeky: no value for {', '.join(failed[:10])}"
+                + (f" and {len(failed) - 10} more" if len(failed) > 10 else "")
+                + " (each row above says why), so the exit status is 1",
+                file=sys.stderr,
+            )
             return 1
     elif args.action == "set":
         from peeky.probe import apply_set
@@ -2611,7 +2731,7 @@ def _verify_text(result, keep=False):
     shown = "\n".join(text.strip() for text in output if text.strip())
     if reason and shown and shown == re.sub(r" \(SystemExit: [^)]*\)$", "", reason):
         # The checker printed only the line `reason` shows (eighth evaluation, L5).
-        lines.append("output: the reason above, its only line")
+        lines.append("output: the checker printed only the `reason:` line above")
     elif any(output):
         lines.extend(("output:", *output))
     if keep:

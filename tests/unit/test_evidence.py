@@ -273,7 +273,7 @@ def test_canned_queries_answer_comparisons(store):
     assert [(row["value"], row["changed"]) for row in hits] == [("3", None), ("6", 1)]
     outputs = evidence.run_query(store, "outputs")["rows"]
     assert [row["output"] for row in outputs] == ["PAGE: [40]\n", "PAGE: [10]\n"]
-    assert "set_hit" in outputs[0]
+    assert "set_hit" not in outputs[0] and "sets" in outputs[0]
     values = evidence.run_query(store, "values", {"selector": "start"})["rows"]
     assert values[0] == {
         "program": "a.py",
@@ -672,7 +672,11 @@ def test_values_changed_by_an_intervention_rank_after_real_differences(store):
     )
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["hit"], r["phase"], r["note"]) for r in rows] == [
-        (None, None, "the runs made different interventions (--set, --set-at)"),
+        (
+            None,
+            None,
+            "the runs requested different interventions (--set, --set-at), or made different ones",
+        ),
         (2, "observed", None),
         (1, "after-set", "intervention only in run b"),
     ]
@@ -1625,7 +1629,12 @@ def test_a_qualified_value_says_so_whatever_else_its_diff_row_says(store):
     diff = evidence.run_query(store, "diff")["rows"]
     shown = [(row["hit"], row["phase"], row["selector"], row["note"]) for row in diff]
     assert shown == [
-        (None, None, "(sets)", "the runs made different interventions (--set, --set-at)"),
+        (
+            None,
+            None,
+            "(sets)",
+            "the runs requested different interventions (--set, --set-at), or made different ones",
+        ),
         (2, "after-set", "n", "intervention only in run a"),
         (2, "after-set", "k", "intervention only in run a; " + qualified),
     ], shown

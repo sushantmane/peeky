@@ -4804,7 +4804,11 @@ def test_describe_leaves_out_a_macros_own_bindings(plain, capsys):
     vec = "alloc::vec::Vec<alloc::string::String, alloc::alloc::Global>"
     # The program's own: a parameter, a `let`, a tuple pattern and a closure's capture.
     assert types[("chars::count", 1)]["args"] == "&[alloc::string::String]", types
-    assert types[("chars::main", line_of(MACRO_BINDINGS, "fn main"))]["args"] == f"{vec} or i32"
+    # Bound twice in `main`: each binding by its selector (#206), never `println!`'s.
+    own = types[("chars::main", line_of(MACRO_BINDINGS, "fn main"))]
+    assert own[f"args @ main.rs:{line_of(MACRO_BINDINGS, 'let args: Vec')}"] == vec, own
+    assert own[f"args @ main.rs:{line_of(MACRO_BINDINGS, 'let (args2, args)')}"] == "i32", own
+    assert not [name for name in own if name.startswith("args") and name != "args2"][2:], own
     closure = ("chars::main::{{closure}}", line_of(MACRO_BINDINGS, "let g = move"))
     assert types[closure]["args"] == vec, types
     assert not any(
