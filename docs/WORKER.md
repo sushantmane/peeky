@@ -17,7 +17,7 @@ A native worker runs a fixed C or C++ target through lldb-dap:
   executable and each stopped location.
 - It changes integers and texts, within Peeky's rules
   ([C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c)). Rust uses the same debugger family.
-- The [investigation loop](NATIVE_AGENT.md) rebuilds a candidate fix and verifies it
+- The [investigation loop](AGENT_LOOP.md) rebuilds a candidate fix and verifies it
   independently. A change at runtime is an experiment, not a fix to the source.
 
 It doesn't attach to a running program, evaluate expressions, change a pointer, or deploy a remote
@@ -139,7 +139,7 @@ client.call("close", **session)
 - Sessions can step over, into and out. The launcher fixes the step filters
   ([Java 5.2](lang/java-cookbook.md#what---into-and---out-skip)).
 - A change at runtime is an experiment, never a verified fix. The
-  [Java investigation loop](JAVA_AGENT.md) rebuilds a candidate fix and verifies it.
+  [Java investigation loop](AGENT_LOOP.md) rebuilds a candidate fix and verifies it.
 
 ## Java adapter markers
 

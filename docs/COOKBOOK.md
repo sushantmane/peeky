@@ -2631,7 +2631,7 @@ the behavior is right.
 
 - For Rust, the crate's integration test must pass too, if it has one.
 
-Optional background: [NATIVE_AGENT.md](NATIVE_AGENT.md).
+How the investigation loop uses a checker: [AGENT_LOOP.md](AGENT_LOOP.md#the-checker-contract).
 
 ### 6.6 See What a Fix Does Before Making It
 
