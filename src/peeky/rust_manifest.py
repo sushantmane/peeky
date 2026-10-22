@@ -51,7 +51,7 @@ _SWITCHES = ("build", "autobins", "autotests", "autoexamples", "autobenches", "a
 _EMPTY_TABLES = frozenset({"dependencies", "dev-dependencies", "build-dependencies"})
 _SHAPE = (
     "Peeky builds one dependency-free binary crate, with at most one integration test "
-    "(see docs/RUST_AGENT.md)"
+    "(see docs/lang/rust-cookbook.md#set-up-the-crate)"
 )
 
 

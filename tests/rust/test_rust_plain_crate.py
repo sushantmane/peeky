@@ -187,7 +187,8 @@ def test_crates_beyond_the_supported_shape_are_refused_with_the_reason(
     at = f"src/main.rs:{line_of(MAIN)}"
     code, result = run(capsys, "probe", str(plain), "--at", at, "--capture", "a", "--quiet")
     assert code != 0 and message in result["error"]["message"], result["error"]
-    assert "docs/RUST_AGENT.md" in result["error"]["message"] or "must be empty" in message
+    shape = "docs/lang/rust-cookbook.md#set-up-the-crate"
+    assert shape in result["error"]["message"] or "must be empty" in message
 
 
 def test_a_missing_lockfile_says_how_to_create_it(plain, capsys):
