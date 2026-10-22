@@ -1991,17 +1991,23 @@ The recipe is in [C and C++ 4.7](lang/c-cpp-cookbook.md#47-c-references-and-poin
 
 ## 5. Step-by-Step Sessions
 
-Use a session when you want several looks at one stop. Every command is a separate shell call; a private worker keeps the program paused in between.
+Use a session when you want several looks at one stop. Each command is a separate shell call. A
+private worker keeps the program paused in between.
 
 ### 5.1 Stop, Look, Change, Finish
 
-**Common cases**
+**What it answers:** What do the values look like at this stop, and what happens if I change one?
 
-- `session start` stops once; `inspect` lists the locals, `get` reads values and lists their children, `set` changes one, and `close` ends the session (always close it).
-- Pass `--name` to every later command when the session is not `default`.
-- Session states and `inspect` name the stopped function (`in Ring::push(int)`, `in topk::insert_sorted::{{closure}}`).
-- `get` of a name that is not there prints why and names the stop; any selector with no value makes the exit status 1, and a last line on stderr names them (`peeky: no value for nosuch (each row above says why), so the exit status is 1`).
-- `--frame N` reads caller frame N; a caller's values cannot be changed.
+`session start` stops the program once. Then use these commands, and always close the session:
+
+| Command | What it does |
+| --- | --- |
+| `session inspect` | Lists the locals. |
+| `session get NAME …` | Reads values, and lists their children. |
+| `session set NAME=VALUE` | Changes one value. |
+| `session continue --to-exit` | Runs the program to its end. |
+| `session report` | Shows the state and the program's output. |
+| `session close` | Ends the session. |
 
 ```sh
 peeky session start examples/pagination_bug.py --at 8
@@ -2015,8 +2021,8 @@ peeky session close
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
-stopped at .../pagination_bug.py:8 in get_page, hit 1 (paused 0.06 s)
+session default (python): state: stopped at examples/pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
+stopped at examples/pagination_bug.py:8 in get_page, hit 1 (paused 0.12 s)
 [Locals]
   items: list = [10, 20, 30, 40, 50, 60]  [id 6] (children: peeky session get items)
   page: int = 1
@@ -2039,14 +2045,52 @@ state: terminated
 output:
 PAGE: [10, 20, 30]
 closed default
+cleanup: nothing Peeky could identify was still running
 ```
 
-- **Scope headers:** Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java.
-- **Long scopes:** A scope lists at most 50 entries (debugpy's groups count) and says how many more it has; `session get NAME` reads one past them by name.
-- **`session get`:** `session get` on a list, dict or struct lists one level of children, each with the selector that reads it, and `(children: ...)` on a child that has children of its own. A name that is not there prints only why (`x: <not found; visible: ...>`), and a last line names the stop it was read at (`note: this stop is in main at sched.cpp:30`: a comparator's `a` is not `main`'s); JSON gives such a row the stop's `location`. If any selector fails, every row is still printed and the exit status is 1.
-- **`continue`:** `session continue` without `--to-exit` runs to the next stop at the session's breakpoint.
+#### What `inspect` and `get` show
 
-**Caller frames.** `--frame N` reads frame N of the stack, as `session inspect --json` lists `frames` (0, the default, is where the program stopped; 1 its caller; at most 10):
+- Session states and `inspect` name the stopped function: `in Ring::push(int)`,
+  `in topk::insert_sorted::{{closure}}`.
+- Scope headers are the debugger's own names: `[Locals]` for Python, `[Local]` for Java.
+- A scope lists at most 50 entries, and says how many more it has. debugpy's groups count as
+  entries. To read one past them, name it: `session get NAME`.
+- `session get` on a list, dict or struct lists one level of children. Each child shows the
+  selector that reads it.
+- A child that has children of its own shows `(children: ...)`.
+
+#### When a name has no value
+
+`get` of a name that isn't there prints only why, such as `x: <not found; visible: ...>`. A note
+at the end names the stop it was read at.
+
+Any selector with no value makes the exit status 1. Every row is still printed, and a last line on
+stderr names the selectors with no value:
+
+```
+$ peeky session get nosuch start
+nosuch: <not found: 'nosuch' is neither a local nor a module global here; visible: items, page, page_size, start; module globals: the names in debugpy's function variables, special variables (select them by name)>
+start: int = 3
+note: this stop is in get_page at pagination_bug.py:8
+peeky: no value for nosuch (each row above says why), so the exit status is 1
+```
+
+The note tells you where you are. For example, this note says that a comparator's `a` is not
+`main`'s: `note: this stop is in main at sched.cpp:30`. In JSON, such a row has the stop's
+`location`.
+
+#### Go on to the next stop, or use another session
+
+- `session continue`, without `--to-exit`, runs to the next stop at the session's breakpoint
+  ([5.2](#52-stepping-and-running-to-a-line)).
+- A session that isn't `default` needs `--name` on every later command
+  ([5.3](#53-several-sessions-at-once)).
+
+#### Read a caller's frame
+
+`--frame N` reads frame N of the stack. Frame 0, the default, is where the program stopped. Frame 1
+is its caller. At most 10 frames are listed, and `session inspect --json` lists them under
+`frames`.
 
 ```sh
 peeky session start examples/corpus/mutable_default/program.py --at 3
@@ -2056,33 +2100,45 @@ peeky session inspect --frame 2
 ```
 
 ```
-stopped at .../program.py:3 in add_tag, hit 1 (paused 0.1 s)
-frame 1: <module> (.../program.py:7)
+session default (python): state: stopped at examples/corpus/mutable_default/program.py:3 in add_tag, hit 1 (paused 0.0 s)
+stopped at examples/corpus/mutable_default/program.py:3 in add_tag, hit 1 (paused 0.12 s)
+frame 1: <module> (examples/corpus/mutable_default/program.py:7)
 [Locals]
   (special variables: debugpy's group; select its members by name)
   (function variables: debugpy's group; select its members by name)
-frame 1: <module> (.../program.py:7)
+frame 1: <module> (examples/corpus/mutable_default/program.py:7)
 add_tag.__defaults__: tuple = (['a'],)  [id 24]
   add_tag.__defaults__[0]: list = ['a']  [id 79] (children: peeky session get 'add_tag.__defaults__[0]' --frame 1)
   len() [not selectable]: int = 1
 peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 to 1 (0 is the innermost; at most 10 are listed)
+  hint: Fix the request arguments; see `peeky <command> --help`.
 ```
 
-- **Caller frames:** A frame past the stack is `INVALID_REQUEST`, naming how many frames there are. Rust's owned-local and Box proofs hold only in the innermost frame, so a caller's `Vec` keeps its raw fields with a note.
-- **Changes:** A caller's values cannot be changed (`MUTATION_REJECTED`), so caller listings never say `[settable]`.
+- A frame past the stack is refused with `INVALID_REQUEST`, which says how many frames there are.
+- A caller's values can't be changed. `session set` takes no `--frame`, and a change to a caller's
+  value is refused with `MUTATION_REJECTED`. So caller listings never say `[settable]`.
+- Rust's proofs for owned locals and `Box`es hold only in the innermost frame. So a caller's `Vec`
+  keeps its raw fields, with a note.
 
-**Per language:** [Python 5.1](lang/python-cookbook.md#51-stop-look-change-finish) (globals, a name missing from the locals, a pass's own value, module level), [C and C++ 5.1](lang/c-cpp-cookbook.md#51-stop-look-change-finish) (a caller's local still being initialized).
+**Per language:**
+
+- [Python 5.1](lang/python-cookbook.md#51-stop-look-change-finish): globals, a name missing from
+  the locals, a pass's own value, module level.
+- [C and C++ 5.1](lang/c-cpp-cookbook.md#51-stop-look-change-finish): a caller's local still being
+  initialized.
 
 ### 5.2 Stepping and Running to a Line
 
 **What it answers:** What happens line by line from here, inside a call, or a few lines further on?
 
-**Common cases**
-
-- `step` runs to the next line, `step --into` into a call, `step --out` until the function returns; `continue` runs to the next stop, `--to LINE` once to a line, `--to-exit` to the end.
-- **`continue --to LINE` does not skip the session's breakpoint:** when a stop there comes first, the state says so and the exit status is 3; repeat it.
-- A step can land on a closing `}`, a loop header, or back on an `if`'s line (1.1); read a block's locals before stepping past it.
-- A step that leaves your sources says `outside the program's sources`: `step --out` or `continue`.
+| Command | Runs |
+| --- | --- |
+| `session step` | to the next line, over calls |
+| `session step --into` | into the call on this line |
+| `session step --out` | until this function returns |
+| `session continue` | to the next stop |
+| `session continue --to LINE` | once, to a line |
+| `session continue --to-exit` | to the program's end |
 
 ```sh
 peeky session start examples/pagination_bug.py --at 13
@@ -2095,50 +2151,196 @@ peeky session continue --to-exit
 ```
 
 ```
-session default (python): state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
-state: stopped at .../pagination_bug.py:5 in get_page (paused 0.0 s)
-state: stopped at .../pagination_bug.py:7 in get_page (paused 0.0 s)
-state: stopped at .../pagination_bug.py:8 in get_page (paused 0.0 s)
+session default (python): state: stopped at examples/pagination_bug.py:13 in <module>, hit 1 (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:5 in get_page (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:7 in get_page (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:8 in get_page (paused 0.0 s)
 start: int = 3
-state: stopped at .../pagination_bug.py:13 in <module> (paused 0.0 s)
+state: stopped at examples/pagination_bug.py:13 in <module> (paused 0.0 s)
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
-- **Hit numbers:** State lines number the stops at the session's breakpoint (`…:8 in get_page, hit 3`), and say which of the line's breakpoint locations a stop is at where it has several in the function (`hit 4, stop 1 of 3`; see `--hits` in 2.2). `session start --hit 5` runs on to the 5th stop, and `session continue --count 3` to the 3rd breakpoint stop from here, each within one `--timeout`. They never run past anything else: a crash, a finished step or the program's exit ends them there, with a note saying why and the last hit reached, and exit status 3 (as when `--timeout` ends them first).
-- **`continue --to`:** `peeky session continue --to 9` stops once at line 9 of the session's file (the extra breakpoint is removed at the next stop), then the session's own breakpoint applies again. If another stop comes first, such as the session's own breakpoint in a loop, the state says so and the exit status is 3 (`note: stopped at the session's breakpoint (line 30, hit 2) before reaching line 17; `session continue --to 17` again`); so does a program that exits first (`the program exited without reaching line 17`). There is no option to skip the session's breakpoint: repeating `--to` reaches the line with every stop counted. `continue --to` refuses a line the debugger would move (no code there) and keeps the stop.
-- **Leaving your sources:** A step can leave your sources, for example into a library, into Rust's standard library, or past the end of `main`. The state then says `outside the program's sources`, and nothing there is read or changed, except what your function returned when the step left it (2.9). In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code is still on the stack, `step --out` returns to it; past `main`, the state says so and `continue` finishes.
-- **The session's breakpoint during a step:** A step whose code reaches the session's breakpoint first (a recursive call on the line, or the rest of the function under `step --out`) stops there, and the state says so (`hit 2` and `note: the session's breakpoint (hit 2) stopped the step before it ended, and the step is over`); `step --out` then shows no return, since the function has not returned.
-- **Threads:** When other threads are stopped at the breakpoint too (LLDB stops them together; Java stops each one separately), `step` waits until `continue` has served them. A step that a breakpoint (or a crash) stops first is over: in C, C++ and Rust, the next `continue` runs to the next breakpoint, not to where the step would have ended. When another thread's stop catches the stepping thread mid-step (LLDB may report it as a step's end anywhere it was, inside `usleep`), the state says `the step was interrupted here` and `continue` serves that thread's stop.
+A step can land on a closing `}`, on a loop's header, or back on an `if`'s line
+([1.1](#11-what-can-i-ask)). So read a block's locals before you step past it.
 
-**Per language:** [Java 5.2](lang/java-cookbook.md#52-stepping-and-running-to-a-line) (`--into` and `--out` skip JDK classes).
+#### Run to a line with `continue --to`
+
+`session continue --to 9` stops once at line 9 of the session's file. The extra breakpoint is
+removed at the next stop. Then the session's own breakpoint applies again.
+
+`--to` doesn't skip the session's breakpoint. If a stop there comes first, as in a loop, the state
+says so and the exit status is 3. Repeat the command: every stop is counted. There is no option to
+skip the session's breakpoint.
+
+For example, in `examples/corpus/running_max/program.py`, line 5 is in a loop and line 7 is after
+it:
+
+```
+$ peeky session start examples/corpus/running_max/program.py --at 5
+session default (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 1 (paused 0.0 s)
+$ peeky session continue --to 7
+state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 2 (paused 0.0 s)
+note: stopped at the session's breakpoint (line 5, hit 2) before reaching line 7; `session continue --to 7` again
+$ echo $?
+3
+```
+
+- A program that exits first gives exit status 3 too, with this note:
+  `the program exited without reaching line 17`.
+- `continue --to` refuses a line the debugger would move, because it has no code. The session keeps
+  its stop, so you can choose another line:
+
+  ```
+  $ peeky session continue --to 8
+  peeky: [INVALID_BREAKPOINT] Line 8 has no code to stop at (the debugger would use line 7); choose a line from `peeky describe`
+    hint: Choose a line from `peeky describe` breakpoint_lines.
+  $ peeky session continue --to 7
+  state: stopped at examples/corpus/running_max/program.py:7 in running_max (paused 0.0 s)
+  ```
+
+#### Count stops with `--hit` and `--count`
+
+- State lines number the stops at the session's breakpoint: `…:8 in get_page, hit 3`.
+- A line can have several breakpoint locations in the function. State lines then also say which
+  one a stop is at: `hit 4, stop 1 of 3` (see `--hits` in [2.2](#22-every-iteration-of-a-loop)).
+- `session start --hit 5` runs on to the 5th stop.
+- `session continue --count 3` runs on to the 3rd breakpoint stop from here.
+- Both run within one `--timeout`.
+
+They never run past anything else. A crash, a finished step or the program's exit ends them there.
+A note says why, and names the last hit reached, if any. The exit status is 3, as when `--timeout`
+ends them first:
+
+```
+$ peeky session start examples/corpus/running_max/program.py --at 5 --hit 5
+session default (python): state: terminated (program exited; `peeky session report` shows output)
+note: the program exited before hit 5; last hit 3
+```
+
+#### When a step leaves your sources
+
+A step can leave your sources: into a library, into Rust's standard library, or past the end of
+`main`. Then:
+
+- The state says `outside the program's sources`.
+- Nothing there is read or changed. The one exception is what your function returned when the step
+  left it ([2.9](#29-what-a-function-returned)).
+- To get back, use `step --out` or `continue`.
+- In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code
+  is still on the stack, `step --out` returns to it.
+- Past `main`, the state says so, and `continue` finishes.
+
+#### When the session's breakpoint stops a step
+
+A step's code can reach the session's breakpoint first. Examples are a recursive call on the line,
+or the rest of the function under `step --out`. The step then stops there, and the state says so
+with `hit 2` and this note:
+
+```
+note: the session's breakpoint (hit 2) stopped the step before it ended, and the step is over
+```
+
+`step --out` then shows no return, because the function hasn't returned.
+
+#### Steps with several threads
+
+- Other threads may be stopped at the breakpoint too. LLDB stops them together; Java stops each one
+  separately. Then `step` waits until `continue` has served them.
+- A step that a breakpoint or a crash stops first is over. In C, C++ and Rust, the next `continue`
+  runs to the next breakpoint, not to where the step would have ended.
+- Another thread's stop can catch the stepping thread mid-step. LLDB may then report a step's end
+  anywhere the thread was, such as inside `usleep`. The state says `the step was interrupted here`,
+  and `continue` serves that thread's stop.
+
+**Per language:** [Java 5.2](lang/java-cookbook.md#52-stepping-and-running-to-a-line) (`--into`
+and `--out` skip JDK classes).
 
 ### 5.3 Several Sessions at Once
 
+**What it answers:** How do I keep two stops open at once?
+
+Give each session a name with `--name`, and pass the same `--name` to every later command:
+`inspect`, `get`, `set`, `step`, `continue`, `report` and `close`.
+
 ```sh
-peeky session start app.py --at 12 --name a
-peeky session start app.py --at 40 --name b
-peeky session get total --name b
+peeky session start examples/pagination_bug.py --at 8 --name a
+peeky session start examples/corpus/running_max/program.py --at 5 --name b
+peeky session get start --name a
+peeky session get best --name b
 peeky session list
+peeky session close --name a
+peeky session close --name b
 ```
 
-A second `session start` with a name that is already taken fails with "exists". It never takes over the other session.
+```
+session a (python): state: stopped at examples/pagination_bug.py:8 in get_page, hit 1 (paused 0.0 s)
+session b (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 1 (paused 0.0 s)
+start: int = 3
+best: int = 0
+a
+b
+closed a
+cleanup: terminated pid 63598
+closed b
+cleanup: terminated pid 63628
+```
 
-Every later command needs the same `--name`, `inspect`, `get`, `set`, `step`, `continue`, `report` and `close` alike: without it, a command acts on the session named `default` (or says there is none). `peeky session list` shows the names in use. With one session at a time, leave `--name` out everywhere.
+- `peeky session list` shows the names in use.
+- A command without `--name` acts on the session named `default`, or says there is none:
+
+  ```
+  $ peeky session get best
+  peeky: [NO_SESSION] No session named 'default'; start one with `peeky session start`
+    hint: Start a new session (launch or `peeky session start`).
+  ```
+
+- A second `session start` with a name already taken fails, and never takes over that session:
+
+  ```
+  $ peeky session start examples/pagination_bug.py --at 7 --name a
+  peeky: [INVALID_REQUEST] Session 'a' exists; close it or pass --name
+    hint: Fix the request arguments; see `peeky <command> --help`.
+  ```
+
+- With one session at a time, leave `--name` out everywhere.
 
 ### 5.4 Programs with Timeouts
 
-Tests with timeouts, heartbeats and RPC deadlines keep their clocks running while the program is paused. Prefer probes, which pause for milliseconds per hit, or give sessions a pause budget:
+**What it answers:** How do I debug a program whose clocks keep running while it is paused?
+
+Tests with timeouts, heartbeats and RPC deadlines keep their clocks running while the program is
+paused. Prefer probes, which pause for milliseconds per hit. Or give a session a pause budget with
+`--max-pause`:
 
 ```sh
 peeky session start app.py --at 12 --max-pause 5      # auto-resume after 5 s
-peeky session inspect                                   # shows paused_s and resume_in_s
+peeky session inspect                                   # shows how long it has been paused
 ```
 
-A breakpoint or step stop older than the budget is resumed; your next call says so (`STALE_STOP`). Crash and exception stops are never auto-resumed.
+The state shows the time left, and JSON has `paused_s` and `resume_in_s`. A breakpoint or step stop
+older than the budget is resumed, and your next call says so (`STALE_STOP`). For example, with
+`--max-pause 3`:
+
+```
+$ peeky session start examples/corpus/running_max/program.py --at 5 --max-pause 3
+session default (python): state: stopped at examples/corpus/running_max/program.py:5 in running_max, hit 1 (paused 0.0 s, auto-resume in 3.0 s)
+$ sleep 4
+$ peeky session get best
+peeky: [STALE_STOP] Stale stop_id: the program was auto-resumed after its 3.0 s pause budget (--max-pause); wait for the next stop or use a probe
+  hint: Call wait until state is stopped, then inspect the latest stop.
+```
+
+Crash and exception stops are never auto-resumed.
 
 ### 5.5 Cleaning Up
 
-A session's worker ends with `session close`, when its start fails or is interrupted, and after 5 idle minutes. `peeky session close --forget` drops a record whose worker is gone for good.
+A session's worker ends:
+
+- with `session close`;
+- when its start fails or is interrupted;
+- after 5 idle minutes.
+
+`peeky session close --forget` drops a record whose worker is gone for good.
 
 ---
 
@@ -2148,40 +2350,142 @@ A session's worker ends with `session close`, when its start fails or is interru
 
 **What it answers:** Does this change pass the independent checks, on a clean copy?
 
+`verify` applies the edit to a scratch copy, builds it fresh, and runs your checker on it. Your
+files don't change.
+
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
   --old 'start = page * page_size' --new 'start = (page - 1) * page_size'
 ```
 
 ```
-passed: True  stage: verification
+passed: True  stage: verification  seconds: 0.035
 checker exit: 0
 output:
 PASS: 12 independent pagination checks
 
 diff:
+--- pagination_bug.py
++++ pagination_bug.py
+@@ -4,7 +4,7 @@
+ def get_page(items, page, page_size):
+     if page < 1 or page_size < 1:
+         raise ValueError("page and page_size must be positive")
 -    start = page * page_size
 +    start = (page - 1) * page_size
+     end = start + page_size
+     return items[start:end]
 ```
 
-Your files are not changed. The edit is applied to a scratch copy; `--keep` keeps the edited file (build artifacts are always removed) in the system's temporary directory, at the `kept:` path the result prints; delete it when you are done. To see what an edit does before verifying, a candidate probe (6.6) is simpler. For a Cargo crate, its compiled tests run too, and a failure names each failed test with how it failed (`compiled tests: failed (1 failed)`, then `first_page_starts_at_zero: thread … panicked at tests/pagination.rs:10:5: assertion `left == right` failed …`). `--json` identifies the checker's descriptor and build by hash (`descriptor_sha256`, `artifact_manifest_id`); `--details` adds both in full.
+- To see what an edit does before you verify it, a candidate probe is simpler
+  ([6.6](#66-see-what-a-fix-does-before-making-it)).
+- To keep the edited file, add `--keep`. It stays in the system's temporary directory, with a
+  compiled program's build evidence beside it. Build artifacts are always removed.
+- The result prints the file's path after `candidate:`, and JSON names its directory in `kept`.
+  Delete it when you are done.
+- For a compiled program, `--json` identifies the checker's descriptor and the build by hash:
+  `descriptor_sha256` and `artifact_manifest_id`. `--details` adds both in full.
 
-**Does the checker catch the bug?** Before trusting `passed: True`, run the checker against the unedited program with `--baseline` (no `--old`/`--new`). It builds and checks the program as it is, like any verify, and should fail:
+#### A Cargo crate's tests
+
+For a Cargo crate, its compiled tests run too. A failure names each failed test, and how it
+failed:
+
+```
+$ peeky verify examples/rust --check examples/rust/verify_pagination.py --baseline
+passed: False  stage: verification  seconds: 1.379
+compiled tests: failed (1 failed)
+  first_page_starts_at_zero: thread 'first_page_starts_at_zero' (67900711) panicked at tests/pagination.rs:10:5:
+    assertion `left == right` failed
+      left: "PAGE:[40, 50, 60]\n"
+     right: "PAGE:[10, 20, 30]\n"
+reason: AssertionError: (1, 3, 8, [40, 50, 60], [10, 20, 30])
+checker exit: 1
+baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
+```
+
+#### Does the checker catch the bug?
+
+Before you trust `passed: True`, run the checker on the unedited program with `--baseline`, and no
+`--old`/`--new`. It builds and checks the program as it is, like any verify. It should fail:
 
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py --baseline
 ```
 
 ```
-passed: False  stage: verification
+passed: False  stage: verification  seconds: 0.033
 reason: AssertionError: (1, 3, [10, 20, 30], [40, 50, 60])
 checker exit: 1
 baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
 ```
 
-A checker that passes here cannot tell a fix from the bug. `reason` is the checker's exception, or, for a checker that only exited nonzero (`print("FAIL ..."); sys.exit(1)`), the first output line that starts like a failure (`FAIL`, `FAILED`, pytest's `E`, `…Error:`, `…Exception:`, `assert`; unittest's `FAIL:` header with the exception it reports, not its `FAILED (failures=1)`), with up to two indented lines after it (`reason: FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'`; `FAIL first case; expected 3; got 2`), else the last line (`mismatch: wrap got 6 want 7`); from stdout, or stderr when stdout is empty, with `(SystemExit: N)` added when N is not the `checker exit` status; `checker.error` in JSON keeps `SystemExit: 1`. An `--old`/`--new` pair that changes nothing is refused (`--new equals --old`); `--baseline` is the way to check the original.
+A checker that passes here can't tell a fix from the bug.
+
+An `--old`/`--new` pair that changes nothing is refused. `--baseline` is the way to check the
+original:
+
+```
+peeky: [INVALID_REQUEST] --new equals --old, so the edit changes nothing (to run the unedited program, leave out --old/--new; to check it, `verify --baseline`)
+  hint: Fix the request arguments; see `peeky <command> --help`.
+```
+
+#### Where `reason` comes from
+
+`reason` says why the checker failed:
+
+- If the checker raised an exception, `reason` is that exception, as above.
+- If it only exited non-zero (`print("FAIL ..."); sys.exit(1)`), `reason` is the first output line
+  that starts like a failure. Up to two indented lines after it are added.
+- If no line starts like a failure, `reason` is the last line: `mismatch: wrap got 6 want 7`.
+- Peeky reads stdout, or stderr when stdout is empty.
+
+A line starts like a failure when it starts with one of these:
+
+| Start | Note |
+| --- | --- |
+| `FAIL`, `FAILED` | |
+| `E` | pytest's |
+| `…Error:`, `…Exception:` | |
+| `assert` | |
+| unittest's `FAIL:` header | with the exception it reports; not its `FAILED (failures=1)` |
+
+For example, `reason: FAIL ['+1', '-']: got 'POPPED:' want 'POPPED:1'`, or
+`FAIL first case; expected 3; got 2`. This `fail_check.py` prints two lines and exits 1:
+
+```python
+import runpy
+import sys
+
+get_page = runpy.run_path(sys.argv[1])["get_page"]
+got = get_page([10, 20, 30, 40], 1, 2)
+if got != [10, 20]:
+    print("checking page 1")
+    print(f"FAIL page 1: got {got} want [10, 20]")
+    sys.exit(1)
+print("PASS")
+```
+
+```
+$ peeky verify examples/pagination_bug.py --check fail_check.py --baseline
+passed: False  stage: verification  seconds: 0.033
+reason: FAIL page 1: got [30, 40] want [10, 20]
+checker exit: 1
+output:
+checking page 1
+FAIL page 1: got [30, 40] want [10, 20]
+
+baseline: the unedited program, no edit (the checker rejects it, as it should reject the bug)
+```
+
+A checker's `SystemExit` code N can differ from the `checker exit` status. Then `reason` adds
+`(SystemExit: N)`. In JSON, `checker.error` keeps the exception itself, such as `SystemExit: 1`.
 
 ### 6.2 An Overfit Fix Is Rejected
+
+**What it answers:** Does a fix that only covers the reported case pass?
+
+No: the checker's other cases fail.
 
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
@@ -2189,22 +2493,44 @@ peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
 ```
 
 ```
-passed: False  stage: verification
+passed: False  stage: verification  seconds: 0.034
 reason: AssertionError: (2, 3, [40, 50, 60], [70])
 checker exit: 1
+diff:
+...
+-    start = page * page_size
++    start = 0 if page == 1 else page * page_size
+...
 ```
 
 ### 6.3 Multi-Line Edits
+
+**What it answers:** How do I pass an edit that spans lines?
+
+Put the texts in files, and pass them with `--old-file` and `--new-file`:
 
 ```sh
 peeky verify app/ --at lib/parse.py --check checks/parse_check.py --old-file old.txt --new-file new.txt
 ```
 
-`--old` must match the source exactly once; the error says how many times it matched, and where. Files are read byte for byte, whereas shell `$(cat file)` drops trailing newlines. On the command line, pass real newlines for multi-line text (bash: `--old $'a\n    b'`).
+`--old` must match the source exactly once. Otherwise the error says how many times it matched,
+and where:
+
+```
+peeky: [INVALID_REQUEST] --old matched 5 times (lines 4, 5, 6, 7, 8); it must match exactly once: include more surrounding text
+  hint: Fix the request arguments; see `peeky <command> --help`.
+```
+
+- Peeky reads the files byte for byte. Shell `$(cat file)` drops trailing newlines, so use the
+  `-file` options instead.
+- On the command line, pass real newlines for multi-line text. In bash: `--old $'a\n    b'`.
 
 ### 6.4 Several Edits at Once
 
-A general fix often touches more than one place: a new field and the function that uses it. Repeat the pair, once per edit:
+**What it answers:** How do I check a fix that touches more than one place?
+
+A general fix often touches more than one place, such as a new field and the function that uses
+it. Repeat the `--old`/`--new` pair, once per edit:
 
 ```sh
 peeky verify bucket.c --check check.py \
@@ -2213,24 +2539,65 @@ peeky verify bucket.c --check check.py \
   --old 'long refill = elapsed / 1000 * b->rate;' --new 'long refill = (b->milli + elapsed * b->rate) / 1000;'
 ```
 
-Each `--old` quotes the original file and must match it exactly once; the edits must not overlap, and their order does not matter. The `-file` forms repeat the same way (`--old-file a.txt --new-file b.txt --old-file c.txt --new-file d.txt`). Up to 32 edits; an error names the edit by its number (`(edit 2)`). Candidate probes take the same pairs, and `--at` keeps the original's numbering, mapped through every edit.
+- Each `--old` quotes the original file, and must match it exactly once.
+- Their order doesn't matter.
+- Edits must not overlap:
+
+  ```
+  peeky: [INVALID_REQUEST] Edits 1 and 2 overlap: each --old must quote its own part of the original file
+  ```
+
+- The `-file` forms repeat the same way:
+  `--old-file a.txt --new-file b.txt --old-file c.txt --new-file d.txt`.
+- Up to 32 edits are allowed. An error names the edit by its number:
+
+  ```
+  peeky: [INVALID_REQUEST] --old matched 0 times (edit 2); it must match exactly once: copy the exact text, including indentation
+  ```
+
+- Candidate probes take the same pairs. `--at` keeps the original's numbering, mapped through every
+  edit ([6.6](#66-see-what-a-fix-does-before-making-it)).
 
 ### 6.5 Writing a Checker
 
-A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when the behavior is right. Test the general rule, not the one input from the bug report (see `examples/verify_pagination.py`). For C, C++, Rust and Java its argument is the path of a JSON descriptor of the fresh build: run each case as `[*spec["command"], *case_arguments]` with `env=spec["environment"]` (`spec["language"]` names the language; see `examples/c/verify_pagination.py`; optional background: [NATIVE_AGENT.md](NATIVE_AGENT.md)). For Rust, the crate's integration test, when it has one, must pass too.
+**What it answers:** What must a checker do?
+
+A checker is a trusted script, run as `python checker.py <candidate-path>`. It exits 0 only when
+the behavior is right.
+
+- Test the general rule, not the one input from the bug report. See
+  `examples/verify_pagination.py`.
+- For Python, the argument is the edited file. `examples/verify_pagination.py` loads it with
+  `runpy.run_path`.
+- For C, C++, Rust and Java, the argument is the path of a JSON descriptor of the fresh build.
+  `spec["language"]` names the language.
+- Run each case as `[*spec["command"], *case_arguments]`, with `env=spec["environment"]`. From
+  `examples/c/verify_pagination.py`:
+
+  ```python
+  spec = json.loads(Path(sys.argv[1]).read_text())
+  ...
+  result = subprocess.run(
+      [*command, str(page), str(size), str(total)],
+      capture_output=True,
+      text=True,
+      timeout=5,
+      check=False,
+      env=spec["environment"],
+  )
+  ```
+
+- For Rust, the crate's integration test must pass too, if it has one.
+
+Optional background: [NATIVE_AGENT.md](NATIVE_AGENT.md).
 
 ### 6.6 See What a Fix Does Before Making It
 
-**What it answers:** With this edit, what would the program compute at the same line, and what would it print?
+**What it answers:** With this edit, what would the program compute at the same line, and what would
+it print?
 
-**Common cases**
-
-- Run the same probe twice, once as it is and once with `--old`/`--new`: the second builds a fresh copy with the edit; your files are not changed.
-- `--at` keeps the original's line numbers; a line inside an edit that adds or removes lines is refused.
-- The candidate's `compare:` line names the `queries diff` against the same probe without the edit when such a run is saved; otherwise it says how to make one.
-- It is evidence, not verification: `verify` checks the fix.
-
-Run the same probe twice: once as it is, once with `--old`/`--new`. The second builds a fresh copy with the edit; your files are not changed.
+Run the same probe twice: once as it is, and once with `--old`/`--new`. The second builds a fresh
+copy with the edit. Your files don't change. Then compare the two runs with `queries diff`.
 
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture start --arg 2
@@ -2241,49 +2608,171 @@ peeky queries diff
 
 ```
 hit  phase     line  function  selector  type  value
-1    observed  25    main      start     int   3
-status: completed  hits: 1  seconds: 0.665  max pause: 13.7 ms
+1    observed  25    main      start     int   6  [settable]
+status: completed  hits: 1  seconds: 1.013  max pause: 56.9 ms
+output:
+  PAGE:[70, 80]
+evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
+hit  phase     line  function  selector  type  value
+1    observed  25    main      start     int   3  [settable]
+status: completed  hits: 1  seconds: 0.99  max pause: 66.9 ms
 output:
   PAGE:[40, 50, 60]
 candidate: values are from a fresh build with this edit; your files are unchanged
 --- pagination_bug.c
 +++ pagination_bug.c
 @@ -21,7 +21,7 @@
-...
+         (argc > 3 && !parse_count(argv[3], 0, &total))) return 2;
+     int items[MAX_PAGE_ITEMS];
+     for (int i = 0; i < total; i++) items[i] = (i + 1) * PAGE_ITEM_MULTIPLIER;
 -    int start = page * page_size;
 +    int start = (page - 1) * page_size;
      int end = start + page_size; /* OBSERVE */
-
+     if (end > total) end = total;
+     printf("PAGE:[");
+evidence: saved as run 2; query it with `peeky queries run --param run=2` or `peeky sql` (see `peeky sql --schema`)
+compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)
 run_a  run_b  hit   phase     selector  value_a           value_b               differs  note
 1      2      NULL  NULL      (output)  PAGE:[70, 80]\n  PAGE:[40, 50, 60]\n  1        output differs at line 1, column 7
 1      2      NULL  NULL      (edit)    none              candidate             1        the runs built different edits (runs.edit has each diff)
 1      2      1     observed  start     6                 3                     1        NULL
+(3 rows)
 ```
 
-- **Lines:** `--at` uses the original file's numbering, so the same command works before and after. A line after an edit that adds or removes lines is moved to match (`line 25 is line 27 of the candidate`). Some lines have no faithful match and are refused before anything is built:
-  - a line inside such an edit;
-  - the line right after an edit whose `--old` ends with a newline but whose `--new` does not, because the candidate joins that line onto the edit.
-- **Build errors:** an edit that does not compile fails with `BUILD_FAILED` and the compiler's message. A Python edit with a syntax error fails with `NO_STOP`, with the `SyntaxError` in the output.
-- **Evidence:**
-  - The run's `edit` column holds the diff, and its `source_sha256` is the edited text's.
-  - `queries runs` marks the run `(candidate)`, and the `evidence` and `last_run` views have a `candidate` column. Captured `line`s are in the candidate's own numbering.
-  - `queries values` leaves candidate runs out, so they never mix with values the real program produced.
-  - `queries diff` pairs values by hit and selector, so a candidate whose lines moved still compares.
-  - A plain `queries diff` compares the newest run with the one before it, whatever that was. So after a candidate probe a `compare:` line names the newest saved run that is the same probe without the edit (the same target, `--at`, `--capture` and program arguments; the same build, by its target identity: compiler options, optimization, sources; every source the build read as it was when the edit was made, headers, `Cargo.toml` and `Cargo.lock` too, and in Python every `.py` file under the target; no edit, no `--set` or `--set-at`; a `--label` does not count): `compare: peeky queries diff --param a=1 --param b=2 (run 1: this probe without the edit)`, or says how to make one (after a candidate with `--set` or `--set-at`, run it without them too) (`evidence.compare` in JSON).
-  - A run whose hits are at other breakpoint locations of the line (#157: `stop` differs at a hit both reached, as when the edit changes how often the line stops per pass) is not named: the line says so and names `queries join`, which pairs by value. Runs saved before Peeky recorded what they read are never named, nor are any where it cannot tell (a Python tree past 4096 `.py` files or 16 MB): run the probe without the edit then.
-- **Not a verification:** this is evidence about one run. Only `peeky verify` checks a fix.
-- **Intervening where no local can be set:** in Java, Rust, C and C++, `--set` changes a scalar field or element directly (`--set s.end=10` where `s` is a struct local; see [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c) and [Rust 7.2](lang/rust-cookbook.md#72-rust-a-cargo-crate) for which ones). `--set` also works in the same probe as `--old`/`--new`. Where the value you want to change cannot be set (a Python field, or one reached through a pointer, a reference or a `Box`, as `last.end` is when `last` is a `&mut Span`), add a local holding it with the edit, on an earlier line (a local is visible only after its declaration), and set that local. In Rust, at the line `last.end = s.end;` that follows `if s.start <= last.end {`:
+This is evidence about one run, not a verification. Only `peeky verify` checks a fix.
 
-  ```sh
-  peeky probe spans --at src/main.rs:23 --capture end,last.end --arg 1-10,2-3 \
-    --old 'if s.start <= last.end {' \
-    --new 'let mut end = s.end; std::hint::black_box(&mut end); if s.start <= last.end {' \
-    --old 'last.end = s.end;' --new 'last.end = end;' --set end=10
+#### Which line a candidate stops at
+
+`--at` uses the original file's numbering, so the same command works before and after the edit. A
+line after an edit that adds or removes lines is moved to match:
+
+```
+candidate: values are from a copy of your tree with this edit; your files are unchanged (line 8 is line 9 of the candidate)
+```
+
+Some lines have no faithful match. Peeky refuses them before anything is built:
+
+- a line inside an edit that adds or removes lines:
+
+  ```
+  peeky: [INVALID_REQUEST] Line 7 is inside the edit (line 7, which becomes lines 7-8 of the candidate). An edit that changes the number of lines has no matching line inside it: probe a line before or after the edit
   ```
 
-  This reports `set end: 3 -> 10`. `black_box` keeps the new Rust local in memory, where a change reaches the program.
+- the line right after an edit whose `--old` ends with a newline but whose `--new` doesn't. The
+  candidate joins that line onto the edit.
 
-**Per language:** [Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it) (a local kept in a register), [Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it) (what a Python candidate's copy holds).
+#### When the edit doesn't build or run
+
+- An edit that doesn't compile fails with `BUILD_FAILED` and the compiler's message.
+- A Python edit with a syntax error fails with `NO_STOP`, with the `SyntaxError` in the output.
+
+#### Compare with the same probe without the edit
+
+A plain `queries diff` compares the newest run with the one before it, whatever that was. So after
+a candidate probe, a `compare:` line names the newest saved run that is the same probe without the
+edit, as above. JSON has it in `evidence.compare`.
+
+"The same probe" means all of these:
+
+- the same target, `--at`, `--capture` and program arguments;
+- the same build, by its target identity: compiler options, optimization and sources;
+- every source the build read, as it was when the edit was made. That includes headers,
+  `Cargo.toml` and `Cargo.lock`, and in Python every `.py` file under the target;
+- no edit, and no `--set` or `--set-at`.
+
+A `--label` doesn't count. When no such run is saved, the line says how to make one:
+
+```
+compare: no saved run is this probe without the edit (the same --at, --capture, program arguments and build, of the sources as they are now, with no --set or --set-at): run it without --old/--new, then `peeky queries diff`
+```
+
+After a candidate with `--set` or `--set-at`, run it without them too.
+
+The line names no run in these cases:
+
+- **Other breakpoint locations:** the run's hits are at other breakpoint locations of the line.
+  `stop` differs at a hit both runs reached, as when the edit changes how often the line stops per
+  pass. The line says so, and names `queries join`, which pairs by value.
+- **Older runs:** runs saved before Peeky recorded what they read are never named.
+- **When Peeky can't tell:** a run where Peeky can't tell what it read is never named either. An
+  example is a Python tree past 4096 `.py` files or 16 MB.
+
+In the last two cases, run the probe without the edit again.
+
+#### How candidate runs are stored
+
+- The run's `edit` column holds the diff. Its `source_sha256` is the edited text's.
+- `queries runs` marks the run `(candidate)`. The `evidence` and `last_run` views have a
+  `candidate` column.
+- Captured `line`s are in the candidate's own numbering.
+- `queries values` leaves candidate runs out, so they never mix with values the real program
+  produced.
+- `queries diff` pairs values by hit and selector, so a candidate whose lines moved still
+  compares.
+
+#### Change a value that `--set` can't reach
+
+In Java, Rust, C and C++, `--set` changes a scalar field or element directly: `--set s.end=10`,
+where `s` is a struct local. See [C and C++ 7.1](lang/c-cpp-cookbook.md#71-c-and-c) and
+[Rust 7.2](lang/rust-cookbook.md#72-rust-a-cargo-crate) for which ones. `--set` also works in the
+same probe as `--old`/`--new`.
+
+Some values can't be set: a Python field, or one reached through a pointer, a reference or a `Box`.
+Then add a local that holds the value, with the edit, on an earlier line, and set that local. A
+local is visible only after its declaration.
+
+For example, in this Rust `spans` crate, `last.end` can't be set on line 23, because `last` is a
+`&mut Span`:
+
+```rust
+fn merge(spans: &[Span]) -> Vec<Span> {
+    let mut sorted = spans.to_vec();
+    sorted.sort_by_key(|s| s.start);
+    let mut out: Vec<Span> = Vec::new();
+    for s in sorted {
+        if let Some(last) = out.last_mut() {
+            if s.start <= last.end {
+                last.end = s.end;
+                continue;
+            }
+        }
+        out.push(s);
+    }
+    out
+}
+```
+
+So the edit adds `end`, and the probe sets it:
+
+```sh
+peeky probe spans --at src/main.rs:23 --capture end --arg 1-10,2-3 \
+  --old 'if s.start <= last.end {' \
+  --new 'let mut end = s.end; std::hint::black_box(&mut end); if s.start <= last.end {' \
+  --old 'last.end = s.end;' --new 'last.end = end;' --set end=10
+```
+
+```
+hit  phase      line  function      selector  type  value
+1    observed   23    spans::merge  end       u32   3  [settable]
+1    after-set  23    spans::merge  end       u32   10  [settable]
+set end: 3 -> 10
+status: completed  hits: 1  seconds: 1.639  max pause: 142.2 ms
+output:
+  MERGED:1-10
+candidate: values are from a fresh build with this edit; your files are unchanged
+...
+```
+
+This reports `set end: 3 -> 10`, and the program prints `MERGED:1-10`. Without the change, it
+prints `MERGED:1-3`. `black_box` keeps the new Rust local in memory, where a change reaches the
+program.
+
+**Per language:**
+
+- [Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it): a local kept in a
+  register.
+- [Python 6.6](lang/python-cookbook.md#66-see-what-a-fix-does-before-making-it): what a Python
+  candidate's copy holds.
 
 ---
 
