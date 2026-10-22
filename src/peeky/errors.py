@@ -48,8 +48,8 @@ _RULES = (
         r"^DAP (frame|headers)|^Duplicate DAP header|non-DAP line|^Outgoing DAP frame"
         r"|^Expected DAP object|^Incomplete DAP frame",
         "DEBUGGER_ERROR",
-        "Start a new session, with narrower selectors if values are huge: the debugger's "
-        "protocol stream failed (for example, a reply over 4 MiB).",
+        "The protocol stream failed (a reply over 4 MiB, say) and closed the session: start "
+        "a new one, with narrower selectors if values are huge.",
         False,
     ),
     (
@@ -128,8 +128,8 @@ _RULES = (
         r"not a visible local|Expected exactly one existing local|not found in the inspected"
         r"|not a field or element the debugger lists",
         "NOT_FOUND",
-        "Run `inspect` to list the names. Reads take dotted paths (a.b); changes take the "
-        "frame's locals, and in Java, Rust, C and C++ their fields too.",
+        "Run `inspect` for names. Reads take dotted paths (a.b); changes take the frame's own "
+        "locals, and in Java, Rust, C and C++ their fields and elements.",
         False,
     ),
     (
@@ -218,8 +218,8 @@ _RULES = (
     (
         r"^The debuggee did not start",
         "TIMEOUT",
-        "Check the program can read its path and every directory above it, then retry: a "
-        "slow file system or a macOS privacy prompt blocks it. See `cleanup`.",
+        "Retry once it can read its path and every directory above it: a hung disk or macOS "
+        "privacy prompt blocks it. `cleanup` says if Peeky ended it.",
         False,
     ),
     (

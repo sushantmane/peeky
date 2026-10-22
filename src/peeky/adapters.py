@@ -823,7 +823,7 @@ class PythonCandidate:
                     f"This Python candidate's `import {name}` loads {served} from your tree, "
                     "not the copy, so values from it are not the edit's: check the edit with "
                     "`peeky verify`. An import hook or install, such as meson-python's editable "
-                    "loader, serves it ahead of every import path"
+                    "loader, serves it ahead of every import path, and may rebuild there"
                 )
 
     def _project_copy(self, entry):

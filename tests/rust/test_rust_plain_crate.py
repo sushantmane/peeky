@@ -3372,12 +3372,22 @@ def _rows_at(plain, capsys, marker, capture):
     return {row["selector"]: row for row in result["rows"]}
 
 
+STALE_WHY = (
+    "may own memory through a pointer",
+    "The MIR does not prove it initialized here",
+    "moved, partly moved, dropped or unassigned",
+    "Peeky has no proof here: an optimized build, a caller frame, or unmatched MIR",
+    "moved-from copy",
+)
+
+
+def _stale_note(note):
+    """The `[stale]` note names what the row is and every reason it may be stale."""
+    return all(why in (note or "") for why in STALE_WHY)
+
+
 def _stale(row):
-    return (
-        row.get("stale") is True
-        and "may own memory through a pointer" in row.get("note", "")
-        and "value" in row
-    )
+    return row.get("stale") is True and _stale_note(row.get("note")) and "value" in row
 
 
 def _hidden(row):
@@ -3450,7 +3460,7 @@ def test_session_listings_of_moved_aggregates_and_callers_aggregates(plain, caps
     try:
         code, (row,) = run(capsys, "session", "get", "h")
         children = {child["name"]: child for child in row["children"]}
-        assert row.get("stale") and "may own memory through a pointer" in row["note"], row
+        assert row.get("stale") and _stale_note(row["note"]), row
         assert children["b"].get("view") == "unproven" and not children["b"].get("expandable")
         assert children["n"]["value"] == "9" and children["n"].get("stale"), children
         assert children["v"].get("stale"), children
@@ -4942,7 +4952,4 @@ def test_saved_evidence_keeps_a_moved_locals_fields_stale(plain, capsys):
     caveats = json.loads(wide["rows"][0]["caveats"])
     assert caveats == {"h.o": "stale", "h.n": "stale", "h.s.start": "stale"}, wide
     code, stored = run(capsys, "queries", "run")
-    assert all(
-        row["view"] == "stale" and "may own memory through a pointer" in row["note"]
-        for row in stored["rows"]
-    )
+    assert all(row["view"] == "stale" and _stale_note(row["note"]) for row in stored["rows"])

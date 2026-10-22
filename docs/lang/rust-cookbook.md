@@ -433,7 +433,7 @@ hit  phase     line  function        selector     type     value
 2    observed  4     cells::longest  cell.length  usize    6  [memory]
 2    observed  4     cells::longest  cells        &[&str]  &[&str] @ 0x16b0faf20
 ...
-warning: cells: This value is LLDB's summary (its type and address), not its contents: check contents with `peeky verify`. Its `&str` items read as text where the code binds one (`for cell in cells`: `cell`). Capture cells.length for the length. Peeky reads Rust contents only for String, &str, and containers of integer, bool, float or char elements, or of tuples and structs of them.
+warning: cells: This value is LLDB's summary (its type and address), not its contents: check contents with `peeky verify`. Its `&str` items read as text where the code binds one (`for cell in cells`: `cell`). Capture cells.length for the length. Peeky reads Rust contents only for String, &str, and containers of integer, bool, float or char elements, or of tuples of them and structs of them your crate defines.
 ```
 
 The details:
@@ -882,7 +882,7 @@ peeky probe examples/rust --at 36 --capture request.page --set request.page=2
 ```
 
 ```
-Error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, the program has already copied `request` into `start` (at line 35) and goes on with that copy, so a change there may never be seen: Peeky proves no read of the change first (a reference lent to a call, or `{:?}`, is not one). Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line), or change the copy instead; settable here: start (root locals; fields too where rows mark them [settable])
+Error [MUTATION_REJECTED]: `request.page` cannot be changed at src/main.rs:36, at any stop of this build: in peeky_pagination::main, at every place line 36 can stop at, the program has already copied `request` into `start` (at line 35) and goes on with that copy, so a change there may never be seen: Peeky proves no read of the changed part first (a reference lent to a call, or `{:?}`, is not one). Refused before the program runs: nothing ran. Change it before the program copies it (`--set-at` an earlier line), or change the copy instead; settable here: start (root locals; fields too where rows mark them [settable])
 hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there), or change the copy the message names instead.
 ```
 

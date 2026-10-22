@@ -1122,9 +1122,9 @@ def _member_sets(sets, language):
         raise Refused(
             "MUTATION_REJECTED",
             f"--set {fields[0]} changes a field or element, which only Java, Rust, C and C++ "
-            f"targets allow. In {language}, add a local with a candidate edit and set it in "
-            "the same probe (COOKBOOK 6.6: `--old/--new` with `--set`), or edit the source and "
-            "run verify",
+            f"targets allow: in {language}, only the stopped function's own locals change. Add "
+            "a local with a candidate edit and set it in the same probe (COOKBOOK 6.6: "
+            "`--old/--new` with `--set`), or edit the source and run verify",
         )
 
 

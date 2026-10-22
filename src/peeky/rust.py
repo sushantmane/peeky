@@ -1687,8 +1687,8 @@ class RustSession(NativeSession):
                 "Rust mutation requires a local the program keeps in memory: change what "
                 f"{name!r} is computed from before it is assigned, or copy it into a local of "
                 "the poll's own after the `.await` with a candidate edit, in the same probe. "
-                f"In {where}, it is held in the async body's state across an `.await`, a "
-                "field of the future that Peeky never writes"
+                f"In {where}, it is held in the async body's state across an `.await`, at "
+                "every stop of the body: a field of the future, which Peeky never writes"
             )
         if hashed and self.memory.get((hashed[1], _plain(name))) is not True:
             place = frame or {}
@@ -2075,7 +2075,8 @@ class RustSession(NativeSession):
                 f"at every place line {line} can stop at, the program has already copied "
                 f"`{plain}` into {_names(names)}" + (f" (at {made})" if made else "") + " and "
                 "goes on with that copy, so a change there may never be seen: Peeky proves no "
-                "read of the change first (a reference lent to a call, or `{:?}`, is not one)",
+                "read of the changed part first (a reference lent to a call, or `{:?}`, is not "
+                "one)",
             )
         return (
             "statement",
@@ -2316,8 +2317,8 @@ class RustSession(NativeSession):
                     f"the program has already copied its value into {_names(names)}"
                     + (f" (at {made})" if made else "")
                     + f" and goes on with that copy, so a change to `{name}` may never be seen: "
-                    "Peeky proves no read of the change first (a reference lent to a call, or "
-                    "`{:?}`, is not one)",
+                    "Peeky proves no read of the changed part first (a reference lent to a "
+                    "call, or `{:?}`, is not one)",
                     f"Change it before {_names(names)} copies it (a stop on an earlier line), "
                     f"or change {_names(names)} instead",
                 )

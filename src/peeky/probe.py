@@ -1056,7 +1056,7 @@ _OWNED_RUST = (
     "This owned Rust Vec or String shows its raw fields: probe a line where it is live, "
     "or read it where it is passed as &Vec, &[T], &String or &str. {length}Here it may be "
     "moved, dropped or not yet assigned: Peeky reads it only where the MIR proves it "
-    "initialized, in the innermost frame."
+    "initialized at the stop line, in the innermost frame."
 )
 _FIELD_RUST = (
     "This Rust Vec or String field shows its raw fields: read it through what holds it in "
@@ -1113,25 +1113,29 @@ _COMPOSITE_RUST = (
     "This Rust container of tuples or structs shows LLDB's summary: probe a line where it "
     "is live, read it as a &Vec or &[T] parameter, or check contents with `peeky verify`. "
     "{length}Peeky reads its elements only when every field is an integer, bool, float or "
-    "char, and an owned Vec only where the MIR proves it initialized."
+    "char, and an owned Vec only where the MIR proves it initialized at this stop, in the "
+    "innermost frame."
 )
 _UNPROVEN_RUST = (
     "this Rust Box, or pointer, shows only its pointer, which can reach freed memory: "
     "read a plain function's own local where it is live, or capture what it holds where "
-    "it is created. What it points at may be moved or dropped, unsafe code may free it, or "
-    "the MIR cannot say (rust-cookbook 7.2)"
+    "it is created. Peeky never follows a raw pointer, and follows another only to a "
+    "value the MIR proves live, in the innermost frame of an unoptimized build, in a "
+    "crate with no unsafe code. Here what it points at may be moved or dropped, or the "
+    "MIR cannot say (rust-cookbook 7.2)"
 )
 _STALE_RUST = (
     "This is (or is inside) a Rust local that may own memory through a pointer: probe a "
-    "line where it is live, or read it where it is passed. Here it may be moved, dropped "
-    "or unassigned: its fields show leftover bytes, maybe a moved-from copy, and its "
-    "pointers only their address"
+    "line where it is live, or read it where it is passed. The MIR does not prove it "
+    "initialized here. It may be moved, partly moved, dropped or unassigned, or Peeky has "
+    "no proof here: an optimized build, a caller frame, or unmatched MIR. Its fields show "
+    "leftover bytes, maybe a moved-from copy, and its pointers only their address"
 )
 _UNREAD_RUST = (
-    "This value is LLDB's summary (its type and address), not its contents: check contents "
-    "with `peeky verify`. {items}{length}Peeky reads Rust contents only for String, &str, "
-    "and containers of integer, bool, float or char elements, or of tuples and structs of "
-    "them."
+    "This value is LLDB's summary (its type and address), not its contents: check "
+    "contents with `peeky verify`. {items}{length}Peeky reads Rust contents only for "
+    "String, &str, and containers of integer, bool, float or char elements, or of tuples "
+    "of them and structs of them your crate defines."
 )
 
 
@@ -1272,8 +1276,8 @@ def _absence(variable, segment, children, path=None, pointers=False):
         elif _unread_rust(_lldb_type(variable)):
             message += (
                 f"; Peeky does not read {kind}'s elements, only those of String, &str, and "
-                "containers of integer, bool, float or char elements, or of tuples and "
-                "structs of them"
+                "containers of integer, bool, float or char elements, or of tuples of them and "
+                "structs of them your crate defines"
                 + (f". Capture {shown_path}.{length} for the length" if length else "")
             )
         elif _rust_composite(_lldb_type(variable)):
@@ -1282,7 +1286,8 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 + (f", and capture {shown_path}.{length} for the length" if length else "")
                 + f". Peeky reads {kind}'s elements only when every field is an integer, "
                 "bool, float or char, and an owned Vec only where the MIR proves it "
-                "initialized (innermost frame), with a debugger that has readMemory"
+                "initialized at the stop line (innermost frame), with a debugger that has "
+                "readMemory"
             )
         elif isinstance(variable.get("raw_reason"), str):
             # Why the worker left it raw (#156).
@@ -1296,9 +1301,12 @@ def _absence(variable, segment, children, path=None, pointers=False):
                 "; check contents with `peeky verify`"
                 + (f", and capture {shown_path}.{length} for the length" if length else "")
                 + ". This one stays raw: a moved, dropped or unassigned local can still point "
-                "at freed memory. Peeky reads Rust contents only for reference parameters, "
-                "owned Vec and String locals the MIR proves initialized, and their fields, "
-                "with lldb-dap from LLVM 20 (rust-cookbook 7.2)"
+                "at freed memory. Peeky reads Rust contents only for reference parameters "
+                "(&[T], &str, &Vec<T>, &String, or &mut), owned Vec and String locals the MIR "
+                "proves initialized at the stop line (innermost frame), and such fields of "
+                "what those hold. Their elements must be integers, bools, floats or chars (or "
+                "tuples, or structs your crate defines, of them), with a debugger that has "
+                "readMemory, such as lldb-dap from LLVM 20 (rust-cookbook 7.2)"
             )
         return message
     twin = "" if segment.startswith("[") else twin_hint(segment, names)
