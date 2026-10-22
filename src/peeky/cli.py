@@ -719,7 +719,13 @@ def _describe_text(manifest):
             where = f" (lines {span})" if span else ""
         types, spans = scope.get("types", {}), scope.get("spans", {})
         shown = []
+        ambiguous = scope.get("ambiguous") or {}
         for name in scope["names"]:
+            if name in ambiguous:
+                # Bindings no selector tells apart (#215 review): `let x = 1; let x = "a";`.
+                count = ambiguous[name]
+                shown.append(f"{name} ({count} bindings on this line: not selectable by line)")
+                continue
             # A local declared only in nested blocks is visible on their lines alone.
             parts = [spell(types[name])] if name in types else []
             if name in spans:
@@ -799,6 +805,7 @@ def _describe_text(manifest):
             and not any(
                 (scope.get("types") or {}).get(name) in settable
                 and name not in (scope.get("never_settable") or {})
+                and name not in (scope.get("ambiguous") or {})
                 for name in scope["names"]
             )
         ]

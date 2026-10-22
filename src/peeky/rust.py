@@ -1838,10 +1838,11 @@ class RustSession(NativeSession):
         return self._in_scope(hashed[1], root.get("name"), place.get("line"), path)
 
     def declared_at(self, variable, frame):
-        """`entry @ main.rs:81` for a root local lldb-dap lists by its plain name where
-        its function binds that name more than once (#206): where it is declared, as
-        `describe` lists it and as lldb-dap names it where another of its name is in
-        scope too. None for another, or where the MIR does not tell which it is."""
+        """(`entry @ main.rs:81`, how many bindings that names) for a root local lldb-dap
+        lists by its plain name where its function binds that name more than once
+        (#206): where it is declared, as `describe` lists it and as lldb-dap names it
+        where another of its name is in scope too. None for another, or where the MIR
+        does not tell which it is."""
         name = variable.get("name")
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         if not hashed or proofs is None or not is_name(str(name), limit=None):
@@ -1861,7 +1862,14 @@ class RustSession(NativeSession):
         if len(found) != 1:
             return None
         file, number = found.pop()
-        return f"{name} @ {file}:{number}"
+        # Bindings that share it (`let x = 1; let x = "a";` on one line, or a file of the
+        # same name in another directory): it names none of them (#215 review).
+        shared = {
+            (b[0], b[1]) if b[0] is not None else (None, b[1], b[4])
+            for b in body.bindings.get(name, ())
+            if (Path(b[1]).name, b[2]) == (file, number)
+        }
+        return f"{name} @ {file}:{number}", len(shared)
 
     @staticmethod
     def _register_text(function, name, why, parameter=False):

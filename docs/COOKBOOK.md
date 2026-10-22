@@ -1415,7 +1415,8 @@ output:
 - **Names bound more than once** (#206):
   - `describe` lists each binding by the selector lldb-dap gives it where another of its name is in scope too: `points @ main.rs:73 (Vec<String>, lines 74-85)` and `points @ main.rs:81 (&str *, line 82)`;
   - that selector reads the binding at any stop where it is in scope, also where lldb-dap lists it by its plain name (`points @ main.rs:73` on line 76);
-  - a plain name is the one binding in scope at the stop, by the MIR's scopes: an earlier loop's `entry` does not hold back this loop's `entry.name`; where two are in scope, lldb-dap lists only the `@` names.
+  - a plain name is the one binding in scope at the stop, by the MIR's scopes: an earlier loop's `entry` does not hold back this loop's `entry.name`; where two are in scope, lldb-dap lists only the `@` names;
+  - two bindings that share a file name and line (`let x = n + 1; let x = format!("{x}!");`, or files of one name in two directories) share the selector too, which names neither: `describe` lists `x @ main.rs:3 (2 bindings on this line: not selectable by line)`, and the selector is refused with that reason.
 - **Long values:** Long values show their first elements with `(first k of N)`, and up to 256 elements stay selectable.
 - **Debugger:** This needs a debugger with `readMemory` (lldb-dap from LLVM 20); older debuggers keep the raw fields, with an error that names the length field.
 

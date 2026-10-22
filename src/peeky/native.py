@@ -1311,7 +1311,9 @@ def function_scopes(
         for body in (*entry["bodies"], root):
             for local, kinds in _locals(dies, body, skip).items():
                 names.setdefault(local, set()).update(kinds)
-        label = _shadow_labels(dies, (*entry["bodies"], root), skip, position) if rust else None
+        label, ambiguous = (
+            _shadow_labels(dies, (*entry["bodies"], root), skip, position) if rust else (None, {})
+        )
         shown = {}
         for body in (*entry["bodies"], root):
             for local, kinds in _locals(dies, body, skip, label).items():
@@ -1321,6 +1323,8 @@ def function_scopes(
             "source": source,
             "lines": [min(numbers), max(numbers)],
             "names": sorted(shown),
+            # A selector names none of several bindings on one line (#215 review).
+            **({"ambiguous": dict(sorted(ambiguous.items()))} if ambiguous else {}),
         }
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
@@ -1340,8 +1344,15 @@ def function_scopes(
             )
         if never is not None:
             # Never settable in the scope only if in every copy (a generic's instances).
-            # By the names the scope lists (`x @ main.rs:6` for one of several, #206).
-            unchanged = dict(never(linkages_of(entry, root), shown) or {})
+            # By the names the scope lists (`x @ main.rs:6` for one of several, #206);
+            # never one no selector names.
+            unchanged = dict(
+                never(
+                    linkages_of(entry, root),
+                    {n: k for n, k in shown.items() if n not in ambiguous},
+                )
+                or {}
+            )
             held = merged[4][0]
             merged[4][0] = (
                 unchanged
@@ -1405,8 +1416,10 @@ def function_scopes(
 def _shadow_labels(dies, bodies, hidden, position):
     """The test ``label(offset, name)`` that names a Rust binding as lldb-dap does where
     another of its name is in scope too (`points @ main.rs:81`), for each name the
-    function declares in more than one place (#206): `describe` lists each by it. A
-    binding declared outside the declared sources keeps its plain name."""
+    function declares more than once (#206): `describe` lists each by it. A binding
+    declared outside the declared sources keeps its plain name. With it, {label: how
+    many bindings} for each label several bindings share (two `let x` on one line, or
+    files of one name in two directories): a selector cannot tell them apart."""
     places, pending = (
         {},
         [child for body in dict.fromkeys(bodies) for child in dies[body]["children"]],
@@ -1423,7 +1436,8 @@ def _shadow_labels(dies, bodies, hidden, position):
             continue
         source, name, line = position(child)
         if name and not name.startswith("$"):
-            places.setdefault(name, set()).add((source, line))
+            # One binding, however many DIEs complete it (an abstract origin's copies).
+            places.setdefault(name, {})[_chain(dies, child)[-1]] = (source, line)
 
     def label(offset, name):
         if len(places.get(name, ())) < 2:
@@ -1431,7 +1445,14 @@ def _shadow_labels(dies, bodies, hidden, position):
         source, _, line = position(offset)
         return f"{name} @ {Path(source).name}:{line}" if source and line else name
 
-    return label
+    shared = {}
+    for name, bindings in places.items():
+        if len(bindings) > 1:
+            for source, line in bindings.values():
+                if source and line:
+                    key = f"{name} @ {Path(source).name}:{line}"
+                    shared[key] = shared.get(key, 0) + 1
+    return label, {key: count for key, count in shared.items() if count > 1}
 
 
 def _settable_parts(graph, types, names, in_memory, linkages):

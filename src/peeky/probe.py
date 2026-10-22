@@ -652,7 +652,17 @@ def _scope_lookup(worker, stop, snapshot, scopes, name):
         raise Refused(
             "NOT_FOUND",
             f"{name!r} is ambiguous: the debugger lists {len(listed)} locals of that name here "
-            "(declared on the same line), which Peeky cannot tell apart",
+            f"({len(listed)} bindings on this line: not selectable by line), which Peeky "
+            "cannot tell apart",
+        )
+    shared = [v.get("declared_at_shared") for v, _ in listed if v.get("declared_at") == name]
+    if shared and type(shared[0]) is int and shared[0] > 1:
+        # Where it is declared names several bindings (#215 review): `let x = 1; let x =
+        # "a";` on one line, or files of one name in two directories.
+        raise Refused(
+            "NOT_FOUND",
+            f"{name!r} is ambiguous: {shared[0]} bindings on this line: not selectable by "
+            f"line; the one in scope here is listed as {name.partition(' @ ')[0]!r}",
         )
     for variable, scope in listed:
         return variable, scope

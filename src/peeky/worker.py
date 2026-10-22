@@ -2871,7 +2871,7 @@ class DebugWorker:
             # function declares several of that name (`entry @ main.rs:81`, #206): the
             # selector `describe` lists it by reads it too.
             located = getattr(self.runtime, "declared_at", None) if not ancestry else None
-            declared_at = located(variable, frame) if located else None
+            declared_at, sharing = (located(variable, frame) if located else None) or (None, 0)
             # A value shown though the runtime cannot vouch for it: a note on its row, and
             # on everything read through it (#148), which says through what.
             note = getattr(reason, "note", None)
@@ -2903,6 +2903,9 @@ class DebugWorker:
                     output["selected_as"] = plain
                 if declared_at:
                     output["declared_at"] = declared_at
+                    if sharing > 1:
+                        # Bindings on one line it cannot tell apart (#215 review).
+                        output["declared_at_shared"] = sharing
                 if kind is not None:
                     output["type"] = kind
                     shown = getattr(self.runtime, "display_type", None)
@@ -2983,6 +2986,9 @@ class DebugWorker:
                     output["selected_as"] = plain
                 if declared_at:
                     output["declared_at"] = declared_at
+                    if sharing > 1:
+                        # Bindings on one line it cannot tell apart (#215 review).
+                        output["declared_at_shared"] = sharing
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
@@ -3195,6 +3201,8 @@ class DebugWorker:
                 output["selected_as"] = plain
             if declared_at:
                 output["declared_at"] = declared_at
+                if sharing > 1:
+                    output["declared_at_shared"] = sharing
             if never:
                 output["not_settable"] = never
             if own == "stale":

@@ -188,3 +188,30 @@ def test_describe_lists_each_binding_of_a_name_by_its_selector(tmp_path, state, 
     rows, _ = probe(capsys, crate, line, "entry @ main.rs:81.points,entry @ main.rs:61")
     assert rows[(1, "entry @ main.rs:81.points")]["value"] == "12", rows
     assert "not found" in rows[(1, "entry @ main.rs:61")]["error"], rows
+
+
+TWICE = """fn main() {
+    let n = std::env::args().count();
+    let x = n + 1; let x = format!("{x}!"); // TWICE
+    std::hint::black_box(&x);
+    println!("{x} {n}"); // AFTER
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_two_bindings_on_one_line_are_not_selectable_by_line(tmp_path, state, capsys):
+    # PR #215 review: both `x` are `x @ main.rs:3`, which names neither: `describe` said
+    # `x @ main.rs:3 (alloc::string::String or usize)`, one apparent selector.
+    crate = crate_at(tmp_path, "twice", TWICE)
+    assert main(["describe", str(crate)]) == 0
+    out = capsys.readouterr().out
+    names = next(line for line in out.splitlines() if line.startswith("names in twice::main "))
+    twice = line_of(TWICE, "// TWICE")
+    assert f"x @ main.rs:{twice} (2 bindings on this line: not selectable by line)" in names
+    assert "String or usize" not in names and "usize or" not in names, names
+    # lldb-dap lists both by it: the selector is refused, saying so; `n` still reads.
+    rows, _ = probe(capsys, crate, line_of(TWICE, "// AFTER"), f"x @ main.rs:{twice},n")
+    error = rows[(1, f"x @ main.rs:{twice}")]["error"]
+    assert "2 bindings on this line: not selectable by line" in error, error
+    assert rows[(1, "n")]["value"] == "3", rows
