@@ -15,6 +15,7 @@ What is particular to Python targets, one rule per line, each with the [COOKBOOK
 - Two lambdas on one line are named alike (`<lambda>`): their stops are counted together, and the warning says so ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
 - `[id 6]` is debugpy's number for the object: at one hit, the same number is the same object; across hits a different number is a different object, but the same number may be a new object in a freed one's place; never compare numbers across runs ([4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python)).
 - Globals: `session inspect --globals` lists them, read-only; `get NAME` reads a global only where Peeky proves the function reads that name from its globals. Listing the globals runs every global's `__repr__` in the program ([5.1](../COOKBOOK.md#51-stop-look-change-finish)).
+- In a loop, a local the pass assigns below the stop holds an earlier pass's value: it is shown with a `note` (`this pass's code has not assigned it before this line, ...: the value is likely from an earlier pass`), and `--set` refuses it; read or change it after that assignment ([5.1](../COOKBOOK.md#51-stop-look-change-finish)).
 - debugpy lists a long list's first 100 items: a higher index is "beyond the debugger's visible window", not missing ([guide](../AGENT_GUIDE.md#reading-probe-results)).
 
 ## Changing values
