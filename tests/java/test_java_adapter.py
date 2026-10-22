@@ -122,6 +122,8 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
             **({"peekyTextSet": True} if b"peekyTextSet" in launcher.read_bytes() else {}),
             # And from #183 on, a char takes a quoted char.
             **({"peekyCharSet": True} if b"peekyCharSet" in launcher.read_bytes() else {}),
+            # And from #204 on, each listed field's declaring class.
+            **({"peekyJdkOwners": True} if b"peekyJdkOwners" in launcher.read_bytes() else {}),
         }
         # Steps are allowed with a positive integer thread only; step-in targets, step back
         # and goto are not.
@@ -192,6 +194,67 @@ def test_java_runtime_intervention(bundle, tmp_path, nested):
         dap.close()
     assert before == {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in protected}
     assert dap.process.poll() is not None
+
+
+def test_an_array_write_waits_no_longer_than_the_pause_budget_allows(bundle, tmp_path):
+    # #204, PR #210 review round 2: before writing an element the launcher has the JVM
+    # search its heap for what refers to the array, which nothing can interrupt; it waits
+    # at most what the session's pause budget leaves, and refuses when that is too little.
+    if (
+        b"peekyJdkOwners"
+        not in (
+            Path(os.environ["PEEKY_JAVA_ADAPTER"]) / "classes" / "PeekyJavaAdapter.class"
+        ).read_bytes()
+    ):
+        pytest.skip("a launcher from before #204 does not search")
+    directory = tmp_path / "demo"
+    directory.mkdir()
+    source = directory / "Cells.java"
+    source.write_text(
+        """package demo;
+public class Cells {
+  public static void main(String[] args) {
+    int[] cells = {1, 2, 3};
+    System.out.println("CELLS:" + cells[0]);
+  }
+}
+"""
+    )
+    classes = tmp_path / "classes"
+    subprocess.run(["javac", "-g", "-d", str(classes), str(source)], check=True, timeout=15)
+    mapping = tmp_path / "source-map.json"
+    entries = {"demo.Cells": {"path": str(source), "lines": [3, 4, 5, 6]}}
+    mapping.write_text(json.dumps({"classes": entries}))
+    dap = DAP(command=[*bundle["command"], str(mapping)])
+    try:
+        dap.request(
+            "initialize",
+            {"adapterID": "java", "pathFormat": "path", "linesStartAt1": True},
+        )
+        launch = dap.send("launch", {"mainClass": "demo.Cells", "classPaths": [str(classes)]})
+        dap.wait_event({"initialized"})
+        dap.request(
+            "setBreakpoints", {"source": {"path": str(source)}, "breakpoints": [{"line": 5}]}
+        )
+        dap.request("configurationDone")
+        dap.response(launch)
+        tid = dap.wait_event({"stopped"})["body"]["threadId"]
+        frame = dap.request("stackTrace", {"threadId": tid})["stackFrames"][0]
+        scope = dap.request("scopes", {"frameId": frame["id"]})["scopes"][0]["variablesReference"]
+        listed = dap.request("variables", {"variablesReference": scope})["variables"]
+        cells = next(v for v in listed if v["name"] == "cells")["variablesReference"]
+        write = {"variablesReference": cells, "name": "0", "value": "7"}
+        with pytest.raises(RuntimeError, match="s of the session's pause budget is left"):
+            dap.request("setVariable", {**write, "peekyPauseLeftMs": 900})
+        assert dap.request("setVariable", {**write, "peekyPauseLeftMs": 5000})["value"] == "7"
+        dap.request("continue", {"threadId": tid})
+        wait_for_exit(dap)
+        deadline = time.monotonic() + 5
+        while "CELLS:7" not in dap.snapshot_output()[0] and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert "CELLS:7" in dap.snapshot_output()[0]
+    finally:
+        dap.close()
 
 
 def test_a_dropped_exit_event_is_inferred_only_when_the_jvm_is_gone():

@@ -1619,7 +1619,9 @@ def _capture(
                 row["not_settable"] = variable["not_settable"]
             if variable.get("debugger_type"):
                 row["debugger_type"] = variable["debugger_type"]
-            if children and variable.get("variablesReference"):
+            if children and variable.get("variablesReference") and not variable.get("whole"):
+                # A Java String or boxed number is a value (#204): its class's own fields
+                # are read only when selected by name (`n.value`).
                 try:
                     try:
                         listing = _children(
@@ -2849,13 +2851,24 @@ def _list_children(worker, stop, selector, backing, size):
         entry = {
             "name": f"[{int(match[1])}]",
             "type": child.get("type"),
-            "value": child.get("value"),
+            "value": _whole(worker, stop, child),
             "selector": f"{selector}[{int(match[1])}]",
         }
-        if child.get("variablesReference"):
+        if child.get("variablesReference") and not child.get("whole"):
             entry["expandable"] = True
         listed.append(entry)
     return {"children": listed, **({"children_truncated": True} if size > len(listed) else {})}
+
+
+def _whole(worker, stop, child):
+    """A listed child's value: a Java boxed number shown whole (#204) with its value, as
+    its own row shows it (`Integer@57 {value=1001}`); else as the worker gives it."""
+    if not child.get("whole"):
+        return child.get("value")
+    try:
+        return java_preview(child, _expander(worker, stop)) or child.get("value")
+    except ValueError:
+        return child.get("value")
 
 
 def _children(worker, stop, selector, variable, pointers=False, whole_strings=False):
@@ -2884,7 +2897,11 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             if not child.get("type") and not container:
                 grouped.append(child["name"])
             continue
-        entry = {"name": child["name"], "type": child.get("type"), "value": child.get("value")}
+        entry = {
+            "name": child["name"],
+            "type": child.get("type"),
+            "value": _whole(worker, stop, child),
+        }
         if child.get("unavailable"):
             entry.update(unavailable=True, reason=child.get("reason"))
         if child.get("identity"):
@@ -2930,7 +2947,7 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
             not path.endswith("]") or _genuine(child, page["variables"], path[-2] in "'\"")
         ):
             entry["selector"] = path
-        if child.get("variablesReference"):
+        if child.get("variablesReference") and not child.get("whole"):
             entry["expandable"] = True
         listed.append(entry)
     return {

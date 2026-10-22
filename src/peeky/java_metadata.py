@@ -150,7 +150,8 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
     static initializer's lambda, nested lambdas, a field initializer in each
     constructor). java-debug binds a line breakpoint to the first such method in
     class-file order only, so the others never stop there. With ``declarations`` (a
-    dict), also fills in "super" (the superclass's internal name), "fields" ({name:
+    dict), also fills in "super" (the superclass's internal name), "interfaces" (its
+    direct superinterfaces' internal names), "fields" ({name:
     descriptor}) and "methods": [{"name", "first", "last", "locals": [(name, descriptor,
     {lines its scope's code is on}, whether the code ever reads it)]}] (#164: what a
     variable is declared, and a constant local javac folds into its uses, which the
@@ -227,10 +228,15 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
         constant(super_class, 7)
     if declarations is not None:
         declarations.update(
-            super=utf(constant(super_class, 7)) if super_class else None, fields={}, methods=[]
+            super=utf(constant(super_class, 7)) if super_class else None,
+            interfaces=[],
+            fields={},
+            methods=[],
         )
     for _ in range(reader.u2()):
-        constant(reader.u2(), 7)
+        interface = constant(reader.u2(), 7)
+        if declarations is not None:
+            declarations["interfaces"].append(utf(interface))
     for _ in range(reader.u2()):
         reader.u2()
         field_name = utf(reader.u2())

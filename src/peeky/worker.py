@@ -2770,7 +2770,7 @@ class DebugWorker:
         return data
 
     def expose_variables(
-        self, variables, frame, scope, ancestry, taint=None, root=None, noted=None
+        self, variables, frame, scope, ancestry, taint=None, root=None, noted=None, trail=()
     ):
         """Only worker-issued handles leave the process. A child handle permits a write only
         to a member the runtime allows (Java fields and array elements), checked again
@@ -2778,7 +2778,8 @@ class DebugWorker:
         the debugger's variable for the root local of ``ancestry``, whose fields and
         elements are marked settable where `set` would change them (C, C++, Rust).
         ``noted``: the parent's (note, refuses) (see ``self.notes``): every child shows
-        that note, and none is settable where it refuses (#148)."""
+        that note, and none is settable where it refuses (#148). ``trail``: the
+        debugger's variable for each step of ``ancestry`` (Java: what holds an array)."""
         result = []
         member_rule = (
             self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
@@ -2985,7 +2986,7 @@ class DebugWorker:
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
-            settable = None
+            settable = never = None
             # Only the stopped frame's values change: a caller's are read-only.
             innermost = frame.get("id") == self.innermost_frame
             if not ancestry and (check := getattr(self.runtime, "settable", None)):
@@ -3024,18 +3025,22 @@ class DebugWorker:
                 steps = [step for step, _ in ancestry[1:]] + [name]
                 settable = member_rule(variable, steps)
             elif ancestry and (member := getattr(self.runtime, "member_settable", None)):
+                # A JDK class's own state (#204), never changed: why, on the row too.
+                internal = getattr(self.runtime, "internal_member", None)
+                jdk = internal(variable, parent=ancestry[-1][1], trail=trail) if internal else None
                 settable = (
-                    innermost
+                    not jdk
+                    and innermost
                     and self.member_set()
                     and not self.optimized()
                     and member(variable, parent=ancestry[-1][1], proven=True) is None
                 )
+                never = getattr(jdk, "row", None)
             if ancestry and settable and noted and noted[1]:
                 # Inside a local whose change is refused (#140): so is a change to this.
                 settable = False
             # A value no stop of this build can change (#138: a Rust local the IR keeps in
             # a register), and why, so no probe waits for a hit to learn it.
-            never = None
             if settable is False and (rule := getattr(self.runtime, "never_settable_row", None)):
                 if not ancestry:
                     never = rule(variable, frame)
@@ -3067,6 +3072,10 @@ class DebugWorker:
             }
             if display_value and (shown := display_value(variable)) is not None:
                 output["value"] = shown
+            if handle and (whole := getattr(self.runtime, "whole_value", None)) and whole(variable):
+                # A Java String or boxed number (#204): a value, its class's own fields
+                # listed only when selected by name.
+                output["whole"] = True
             if string_value and not (self.placeholders() and is_unavailable(output["value"])):
                 # A string the debugger shows only up to a NUL byte (#128); never one it
                 # has no value for (optimized out).
@@ -3331,6 +3340,7 @@ class DebugWorker:
             self.taints.get(args["handle"]),
             root=trail[0] if trail else None,
             noted=self.notes.get(args["handle"]),
+            trail=trail,
         )
         runtime.assert_current()
         return {
@@ -3681,20 +3691,27 @@ class DebugWorker:
             return self._set_scalar_member(
                 record, runtime, frame, ancestry, trail, reference, variable, args, previewed
             )
-        if reason := check(variable, parent=ancestry[-1][1] if ancestry else None):
+        parent = ancestry[-1][1] if ancestry else None
+        internal = getattr(runtime, "internal_member", None)
+        if internal and (reason := internal(variable, parent=parent, trail=trail)):
+            # A JDK class's own state (#204), or a launcher that cannot tell.
+            raise ValueError(f"{name!r} cannot be changed: {reason}")
+        if reason := check(variable, parent=parent):
             raise ValueError(f"{name!r} cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
+        request = {
+            "variablesReference": reference,
+            "name": name,
+            "value": literal(value, variable=variable) if literal else value,
+        }
+        if getattr(runtime, "pause_budget_writes", False) and self.max_pause and self.stopped_at:
+            # What the launcher may spend searching what refers to an array (#204).
+            left = self.max_pause - (time.monotonic() - self.stopped_at)
+            request["peekyPauseLeftMs"] = max(0, int(left * 1000))
         try:
-            changed = self.dap.request(
-                "setVariable",
-                {
-                    "variablesReference": reference,
-                    "name": name,
-                    "value": literal(value, variable=variable) if literal else value,
-                },
-            )
+            changed = self.dap.request("setVariable", request)
         except RequestFailed as exc:
             raise ValueError(
                 f"The debugger refused to change {name!r} ({str(exc)[:200]}); it is unchanged"
