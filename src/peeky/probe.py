@@ -1572,16 +1572,11 @@ def _resume(worker, stop, returning, rows):
             # Their stops are served first (LLDB stopped every thread): this thread then
             # runs on unwatched, so none of its calls' returns can be followed.
             for call in reversed(returning):
-                rows.append(_never_returned(call, _OTHER_THREADS))
+                rows.extend(_never_returned(call, _OTHER_THREADS))
             returning.clear()
     worker.dispatch("continue", stop)
 
 
-_AGAIN = (
-    "the line ran again at the same depth before this call returned (a loop's next pass, "
-    "or the call ended without returning and another began), so no return is attributed "
-    "to this hit; probe a line that runs once per call, such as the function's first"
-)
 _UNWOUND = "its frame was gone when the step out ended (it did not return normally)"
 _OTHER_THREADS = (
     "another thread stopped at a breakpoint before it returned; a probe follows one "
@@ -1593,21 +1588,61 @@ _OPTIMIZED_RETURN = (
 )
 
 
+def _again(call, frame, snapshot, place):
+    """Why a pending call's hits get no return when the capture line stopped again at
+    its depth, on its thread, before it returned, in a stop not proven to be in the same
+    call (#174). Only what the stop shows is said: a call of another function where the
+    stopped function is not the call's, another call where the frames under it are not,
+    else that Peeky could not tell."""
+    below = [_frame_id(caller) for caller in (snapshot.get("frames") or [])[1:]]
+    if frame.get("name") != call["function"]:
+        return (
+            "the line stopped again at the same depth in a call of another function (the "
+            "stopped function is not this call's) before this call returned, so no return "
+            "is attributed to this hit"
+        )
+    if below != call["below"]:
+        return (
+            "the line stopped again at the same depth in another call (the frames under it "
+            "are not this call's) before this call returned, so no return is attributed to "
+            "this hit"
+        )
+    several = bool(place) or any(hit.get("stops") for hit in call["hits"])
+    return (
+        "the line stopped again at the same depth"
+        + (f" (at its breakpoint location {place['stop']} of {place['stops']})" if place else "")
+        + " before this call returned, and Peeky could not tell whether in this call ("
+        + ("another of the line's breakpoint locations, or " if several else "")
+        + "a loop's next pass) or in a later call after this one ended without returning, "
+        "so no return is attributed to this hit; probe a line that runs once per call, such "
+        "as the function's first"
+    )
+
+
+def _each_hit(call, row):
+    """``row`` as the `(return)` row of each hit of ``call``, in hit order: a call
+    followed across stops of the line (#174) has several. Each has its hit's stop."""
+    shared = {key: value for key, value in row.items() if key != "hit"}
+    return [{"hit": hit["hit"], **shared, **hit} for hit in call["hits"]]
+
+
 def _never_returned(call, why):
-    return {
-        "hit": call["hit"],
-        "phase": "returned",
-        "selector": RETURN,
-        **({"function": call["function"]} if call.get("function") else {}),
-        "unavailable": True,
-        "error": f"withheld: {why}",
-    }
+    return _each_hit(
+        call,
+        {
+            "phase": "returned",
+            "selector": RETURN,
+            **({"function": call["function"]} if call.get("function") else {}),
+            "unavailable": True,
+            "error": f"withheld: {why}",
+        },
+    )
 
 
 def _returned_by(worker, stop, call):
     """The `(return)` row of a pending call whose step out just ended (#155), with the
     stack depth it ended at (the caller's: one frame fewer, else withheld)."""
-    row = {"hit": call["hit"], "phase": "returned", "selector": RETURN}
+    row = {"hit": call["hits"][-1]["hit"], "phase": "returned", "selector": RETURN}
     try:
         snapshot = worker.dispatch("inspect", {**stop, "previews": False, "depth": True})
     except ValueError as exc:
@@ -3102,7 +3137,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 continue
             if state["state"] == "terminated":
                 for call in reversed(returning):
-                    rows.append(_never_returned(call, "the program ended before it returned"))
+                    rows.extend(_never_returned(call, "the program ended before it returned"))
                 returning.clear()
                 if state.get("exit_inferred"):
                     warnings.append(
@@ -3131,7 +3166,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 # A step out of a call already withheld because another thread stopped
                 # in between: nothing to read, and nothing pending can be followed now.
                 for call in reversed(returning):
-                    rows.append(_never_returned(call, _OTHER_THREADS))
+                    rows.extend(_never_returned(call, _OTHER_THREADS))
                 returning.clear()
                 worker.dispatch("continue", stop)
                 continue
@@ -3139,12 +3174,16 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 # Another thread's stop caught the step out mid-way (LLDB): it is over,
                 # and that thread's stop is served next.
                 for call in reversed(returning):
-                    rows.append(_never_returned(call, _OTHER_THREADS))
+                    rows.extend(_never_returned(call, _OTHER_THREADS))
                 returning.clear()
                 worker.dispatch("continue", stop)
                 continue
             if returning and reason == "step":
                 # The innermost pending call's step out ended: what it returned (#155).
+                # No later stop is proven in a pending call from here (#174): the step
+                # out that follows may leave another frame.
+                for call in returning:
+                    call["live"] = None
                 row = _returned_by(worker, stop, returning[-1])
                 depth = row.pop("depth", None)
                 top = returning[-1]["depth"]
@@ -3154,11 +3193,10 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                     # the call itself has not returned yet; step out until it does.
                     _resume(worker, stop, returning, rows)
                     continue
-                rows.append(row)
-                returning.pop()
+                rows.extend(_each_hit(returning.pop(), row))
                 while returning and (depth is None or returning[-1]["depth"] > depth):
                     # Its frame is gone too, without a return Peeky saw.
-                    rows.append(_never_returned(returning.pop(), _UNWOUND))
+                    rows.extend(_never_returned(returning.pop(), _UNWOUND))
                 # The next pending call is at this depth (its own frame), or above it (a
                 # recursion through another function, `f` -> `c` -> `f`): step out until
                 # it returns. Each return is checked against its own hit's frames.
@@ -3211,6 +3249,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
             # A stop of the capture line is captured until --hits are; later ones (kept
             # for a --set-at on that line) only apply it.
             captured = line in matched and hits < probe.limit
+            place = {}
             if captured:
                 hits += 1
                 functions.setdefault(frame.get("name"), []).append(hits)
@@ -3355,6 +3394,27 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
                 active = needed
             depth = snapshot.get("depth")
             thread = body.get("threadId")
+            # This stop is in the innermost pending call where the step out of it that
+            # began at its last stop was interrupted here, in its own frame, with the
+            # step's watch on its caller kept whole (#174): no other call could have
+            # returned to that caller frame unseen. Nothing else is taken for it.
+            top = returning[-1] if returning else None
+            same = (
+                top is not None
+                and top["thread"] == thread
+                and depth is not None
+                and top["depth"] == depth
+                and top.get("live") is not None
+                and snapshot.get("same_call_as") == top["live"]
+                and frame.get("name") == top["function"]
+                and [_frame_id(caller) for caller in snapshot["frames"][1:]] == top["below"]
+            )
+            for call in returning:
+                # Only a call stepped out of from this stop, in its own frame, is watched
+                # until the next one.
+                call["live"] = None
+            # The capture line again in the same call: its return is this hit's too.
+            followed = returning.pop() if same and captured else None
             while returning and (
                 returning[-1]["thread"] != thread
                 or depth is None
@@ -3363,28 +3423,33 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
             ):
                 # A breakpoint stop (the capture line's, or a --set-at's) before the
                 # call's return: on another thread, above the call's frame (it is gone),
-                # or the line again at its depth (a loop's next pass, or the call ended
-                # without returning and another began; the stack cannot tell which).
+                # or the line again at its depth, not proven in the same call.
                 call = returning.pop()
                 why = (
                     _OTHER_THREADS
                     if call["thread"] != thread
-                    else _AGAIN
+                    else _again(call, frame, snapshot, place)
                     if depth is not None and call["depth"] == depth
                     else _GONE
                 )
-                rows.append(_never_returned(call, why))
+                rows.extend(_never_returned(call, why))
+            if same and not captured:
+                # A --set-at's stop in the call: it is stepped out of from here.
+                top["live"] = stop["stop_id"]
             if wants_return and captured:
                 call = {
-                    "hit": hits,
+                    # Its earlier hits in the same call first (#174), each with its stop.
+                    "hits": [*(followed["hits"] if followed else ()), {"hit": hits, **place}],
                     "depth": depth,
                     "thread": thread,
                     "function": frame.get("name"),
                     "below": [_frame_id(caller) for caller in snapshot["frames"][1:]],
+                    # The stop its step out begins at.
+                    "live": stop["stop_id"],
                 }
                 if level := snapshot.get("optimized"):
                     # Inlined calls have no return of their own to step out to.
-                    rows.append(_never_returned(call, _OPTIMIZED_RETURN.format(level)))
+                    rows.extend(_never_returned(call, _OPTIMIZED_RETURN.format(level)))
                 else:
                     returning.append(call)
             _resume(worker, stop, returning, rows)
@@ -3412,7 +3477,7 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
         if status == "timeout":
             # Still being stepped out of when time ran out: no return came (#162).
             for call in reversed(returning):
-                rows.append(_never_returned(call, "the probe timed out before it returned"))
+                rows.extend(_never_returned(call, "the probe timed out before it returned"))
             returning.clear()
         report = worker.dispatch("report", session)
         result.update(
@@ -3710,19 +3775,27 @@ def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, l
 def _by_hit(rows):
     """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...},
     returned: {"(return)": ...}}; line and function are the stop's, not where the call
-    returned to (a `(return)` row's own line)."""
-    grouped = {}
+    returned to (a `(return)` row's own line). A `(return)` row has its hit's stop too
+    (#174); the hit's stop is given only where every row of it has one and all agree."""
+    grouped, places = {}, {}
     for row in rows:
+        places.setdefault(row["hit"], set()).add((row.get("stop"), row.get("stops")))
         entry = grouped.setdefault(row["hit"], {"hit": row["hit"], "line": None, "function": None})
         if row["phase"] != "returned" and entry["line"] is None:
-            # The stop's line, function and (#157) which of the line's stops per pass.
+            # The stop's line and function.
             entry.update(line=row.get("line"), function=row.get("function"))
-            if "stops" in row:
-                entry.update(stop=row["stop"], stops=row["stops"])
         elif entry["function"] is None:
             entry["function"] = row.get("function")
+        if "stops" in row and "stops" not in entry:
+            # Which of the line's stops per pass (#157).
+            entry.update(stop=row["stop"], stops=row["stops"])
         value = row["value"] if "value" in row else {"error": row.get("error")}
         entry.setdefault(row["phase"], {})[row["selector"]] = value
+    for hit, entry in grouped.items():
+        if len(places[hit]) > 1:
+            # Rows of one hit at different stops, or some at none: no stop is picked.
+            entry.pop("stop", None)
+            entry.pop("stops", None)
     return list(grouped.values())
 
 

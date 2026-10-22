@@ -129,3 +129,45 @@ def test_a_method_that_threw_is_withheld_without_claiming_it_returns_nothing(jav
     assert "value" not in threw and "or it ended by an exception" in threw["error"], threw
     assert "a function returning nothing" not in threw["error"]
     assert [hits[hit][RETURN]["value"] for hit in (2, 3)] == ["14", "14"]
+
+
+LOOPS = """package demo;
+public class Loops {
+  static int sum(int n) {
+    int t = 0;
+    for (int i = 1; i <= n; i++) {
+      t += i; // SUM
+    }
+    return t;
+  }
+  public static void main(String[] args) {
+    System.out.println("S:" + sum(3));
+  }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_line_that_stops_again_before_the_return_claims_no_cause(java, tmp_path):
+    # #174: the line's next stop, at the same depth, before the call returned. Java has
+    # no watch on the caller to prove it is the same call: withheld, and the reason
+    # claimed a loop's next pass ("the line ran again ... (a loop's next pass, or ...)").
+    # It now says Peeky could not tell, and names the possibilities.
+    (tmp_path / "demo/Loops.java").write_text(LOOPS)
+    target = JavaTarget(bundle=java.bundle, sources=("demo/Loops.java",), main_class="demo.Loops")
+    line = next(i for i, text in enumerate(LOOPS.splitlines(), 1) if "// SUM" in text)
+    probe = Probe("demo/Loops.java", line, ("i", RETURN), hits="all")
+    result = run_probe(tmp_path, probe, adapter=target)
+    assert result["status"] == "completed", result.get("error")
+    hits = {}
+    for row in result["rows"]:
+        hits.setdefault(row["hit"], {})[row["selector"]] = row
+    assert [hits[hit]["i"]["value"] for hit in (1, 2, 3)] == ["1", "2", "3"]
+    for hit in (1, 2):
+        error = hits[hit][RETURN]["error"]
+        assert "value" not in hits[hit][RETURN] and error.startswith(
+            "withheld: the line stopped again at the same depth before this call returned, "
+            "and Peeky could not tell whether in this call (a loop's next pass) or in a later "
+            "call after this one ended without returning"
+        ), error
+    assert hits[3][RETURN]["value"] == "6"

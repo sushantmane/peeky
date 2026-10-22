@@ -8,7 +8,7 @@ import pytest
 
 from peeky import evidence
 from peeky.native import breakpoint_locations
-from peeky.probe import _table
+from peeky.probe import _by_hit, _table
 from peeky.worker import DebugWorker
 
 # lldb-dap's `breakpoint list 1 2 3 4` (Rust's legacy hash, an inlined copy, a C++
@@ -237,7 +237,82 @@ def test_an_older_store_gains_stops(tmp_path, version):
     assert evidence.query(store, "SELECT COUNT(stop) AS n FROM interventions")["rows"] == [{"n": 0}]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
-    assert evidence.SCHEMA_VERSION == 14
+    assert evidence.SCHEMA_VERSION == 15
+
+
+def test_return_rows_keep_their_hits_stop_and_older_ones_gain_it(tmp_path):
+    # #174: a `(return)` row stored no stop (NULL), so `diff` had to infer it from the
+    # hit's observed rows. Schema 15 records it, and fills it in for earlier runs.
+    store = tmp_path / "evidence.db"
+    probe = {
+        "probe": {"program": "a.c", "line": 8, "capture": ["k", "return"], "set": []},
+        "status": "completed",
+        "hits": 2,
+        "rows": [
+            dict(hit=1, phase="observed", line=8, selector="k", value="1", stop=1, stops=2),
+            dict(hit=1, phase="returned", line=12, selector="(return)", value="5", stop=1, stops=2),
+            dict(hit=2, phase="returned", line=12, selector="(return)", value="6", stop=2, stops=2),
+        ],
+    }
+    evidence.record(store, probe, language="c")
+    stored = "SELECT hit, phase, stop FROM last_run ORDER BY hit, phase"
+    expected = [
+        {"hit": 1, "phase": "observed", "stop": 1},
+        {"hit": 1, "phase": "returned", "stop": 1},
+        {"hit": 2, "phase": "returned", "stop": 2},
+    ]
+    assert evidence.query(store, stored)["rows"] == expected
+    # The same run saved by schema 14 (no stop on its `(return)` rows): the upgrade
+    # takes each from its hit's other rows; one whose hit has none stays NULL.
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "UPDATE captures SET stop = NULL WHERE phase = 'returned'; PRAGMA user_version = 14;"
+    )
+    connection.close()
+    expected[2]["stop"] = None
+    assert evidence.query(store, stored)["rows"] == expected
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+
+
+def test_an_older_return_gains_no_stop_from_rows_that_disagree(tmp_path):
+    # Review of PR #198: the upgrade took MIN(stop) of the hit's rows, so a schema-14
+    # hit observed at stop 1 with an after-set row at stop 2 had its return placed at
+    # stop 1, a guess. A stop is taken only where every other row has one and all agree.
+    store = tmp_path / "evidence.db"
+
+    def row(hit, phase, stop, value="1"):
+        selector = "(return)" if phase == "returned" else "k"
+        return dict(hit=hit, phase=phase, line=8, selector=selector, value=value) | (
+            {"stop": stop, "stops": 2} if stop else {}
+        )
+
+    probe = {
+        "probe": {"program": "a.c", "line": 8, "capture": ["k", "return"], "set": []},
+        "status": "completed",
+        "hits": 3,
+        "rows": [
+            row(1, "observed", 1),
+            row(1, "after-set", 2),
+            row(1, "returned", None, "5"),
+            row(2, "observed", 2),
+            row(2, "after-set", 2),
+            row(2, "returned", None, "6"),
+            row(3, "observed", None),
+            row(3, "after-set", 1),
+            row(3, "returned", None, "7"),
+        ],
+    }
+    evidence.record(store, probe, language="c")
+    connection = sqlite3.connect(store)
+    connection.execute("PRAGMA user_version = 14")
+    connection.close()
+    returned = "SELECT hit, stop FROM last_run WHERE phase = 'returned' ORDER BY hit"
+    assert evidence.query(store, returned)["rows"] == [
+        {"hit": 1, "stop": None},
+        {"hit": 2, "stop": 2},
+        {"hit": 3, "stop": None},
+    ]
 
 
 # lldb-dap 18's listing of `format!("[{}]", v)` in an `#[inline(always)]` function that
@@ -362,3 +437,44 @@ def test_a_change_says_which_stop_it_was(tmp_path):
     plain = {key: value for key, value in probe["interventions"][0].items() if key != "at"}
     shown = _table({**probe, "rows": [], "interventions": [plain], "pauses_ms": [], "output": ""})
     assert "set x: 0 -> 100  (stop 2 of 3)" in shown.splitlines()
+
+
+def test_wide_gives_a_hit_no_stop_its_rows_disagree_on(tmp_path):
+    # Review 2 of PR #198: `queries wide` took MIN(stop) for each hit and phase, so `x`
+    # at stop 1 and `y` at stop 2 of one hit showed as stop 1, as did a selector captured
+    # twice alike at stops 1 and 2, and a hit with a row at no stop showed the other's.
+    store = tmp_path / "evidence.db"
+
+    def row(hit, selector, stop):
+        labelled = {"stop": stop, "stops": 2} if stop else {}
+        value = "1" if selector == "x" else "2"
+        return dict(hit=hit, phase="observed", line=29, selector=selector, value=value) | labelled
+
+    probe = {
+        "probe": {"program": "a.c", "line": 29, "capture": ["x", "y"], "set": []},
+        "status": "completed",
+        "hits": 4,
+        "rows": [
+            row(1, "x", 1),
+            row(1, "y", 1),
+            row(2, "x", 1),
+            row(2, "y", 2),
+            row(3, "x", 1),
+            row(3, "x", 2),
+            row(3, "y", 1),
+            row(4, "x", 2),
+            row(4, "y", None),
+        ],
+    }
+    evidence.record(store, probe, language="c")
+    wide = evidence.run_query(store, "wide")
+    assert [(r["hit"], r["stop"], r["x"], r["y"]) for r in wide["rows"]] == [
+        (1, 1, "1", "2"),
+        (2, None, "1", "2"),
+        (3, None, "1", "2"),
+        (4, None, "1", "2"),
+    ]
+    # A probe's own per-hit summary takes no stop from rows that disagree either.
+    by_hit = {entry["hit"]: entry for entry in _by_hit(probe["rows"])}
+    assert by_hit[1]["stop"] == 1
+    assert not any("stop" in by_hit[hit] or "stops" in by_hit[hit] for hit in (2, 3, 4))

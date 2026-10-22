@@ -5510,10 +5510,11 @@ class NativeSession:
         cache["failed"][ret] = failure
         return failure
 
-    def unwatch_return(self, dap, watch, thread_id=None):
+    def unwatch_return(self, dap, watch, thread_id=None, caller=False):
         """End a step's watch (`watch_return`); with the thread that stopped (the watched
-        one), where it stopped: {pc, sp} of its innermost frame, and whether the watch
-        was dropped on the way (its counters ran out), else None."""
+        one), where it stopped: {pc, sp} of its innermost frame (with ``caller``, its
+        caller's stack pointer too, `caller_sp`), and whether the watch was dropped on
+        the way (its counters ran out), else None."""
         watched = thread_id is not None and thread_id == watch.get("thread")
         dropped = False
         if watched and (counters := watch.get("counters")):
@@ -5552,15 +5553,30 @@ class NativeSession:
         if not watched:
             return None
         try:
-            stack = dap.request("stackTrace", {"threadId": thread_id, "levels": 1}, timeout=2)
-            frame = (stack.get("stackFrames") or [{}])[0]
+            stack = dap.request(
+                "stackTrace", {"threadId": thread_id, "levels": 2 if caller else 1}, timeout=2
+            )
+            listed = stack.get("stackFrames") or [{}]
+            frame = listed[0]
             sp = _stack_pointer(dap, frame["id"])
         except Exception:
             return None
+        caller_sp = None
+        if caller and len(listed) > 1:
+            try:
+                caller_sp = _stack_pointer(dap, listed[1]["id"])
+            except Exception:
+                # Best effort: without it, the stop is not proven in the call (#174).
+                caller_sp = None
         pc = _address(frame.get("instructionPointerReference"))
         if None in (pc, sp):
             return None
-        return {"pc": pc, "sp": sp, **({"dropped": WATCH_TRAPS} if dropped else {})}
+        return {
+            "pc": pc,
+            "sp": sp,
+            **({"caller_sp": caller_sp} if caller_sp is not None else {}),
+            **({"dropped": WATCH_TRAPS} if dropped else {}),
+        }
 
     @staticmethod
     def discard_steps(dap, thread_id):

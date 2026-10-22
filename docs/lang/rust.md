@@ -26,5 +26,5 @@ What is particular to Rust targets (a Cargo crate), one rule per line, each with
 
 ## Returns
 
-- `--capture return` shows integers, `bool` and floats exactly; an enum or `Option`, a struct, a string or any return in an optimized build is withheld, saying why ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- `--capture return` shows integers, `bool` and floats exactly; an enum or `Option`, a struct, a string or any return in an optimized build is withheld, saying why. A line that stops again in the same call before it returns (a loop's next pass, each of `format!`'s blocks) gives each of those hits the call's return where the step out's watch proves that stop is in the same call, else withholds the earlier one ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 - `session step --out` shows with the stop what the function returned (`(return): u32 = 42`), or a withheld row saying why, as `--capture return` does (a panic that ended the call included); nothing where another stop interrupted the step first, or the program ended. `session get return` reads it again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
