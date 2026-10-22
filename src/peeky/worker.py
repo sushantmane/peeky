@@ -62,6 +62,8 @@ STEP_STOPS = frozenset({"step", "interrupted"})
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
 # The frames a step's start is compared by with the stop it returns to (#155).
 ORIGIN_LEVELS = 10
+# The deepest stack a session step's note compares (#262): deeper ones get no note.
+CALL_FRAMES = 256
 # Why a step out's function shows no value (#155).
 ABANDONED = (
     "it never returned: its caller went on without its return (an exception, longjmp or "
@@ -924,37 +926,45 @@ class DebugWorker:
         return len(reply.get("stackFrames", []))
 
     def reset_calls(self):
-        """Forget where the last `session step` or `continue` started (#262), and what the
-        current stop's comparison with it found."""
+        """Forget where the last `session step` started (#262), and what the current
+        stop's comparison with it found."""
         self.calls_from = None
         self.forget_calls()
 
     def forget_calls(self):
         """A new stop (or none): ``stop_names``, the names the innermost frame's
-        inspections listed at it; ``call_change``, how it relates to the call the last
-        session step or continue started in; ``names_before``, after a step that stayed in
-        its call, the names listed at an earlier stop of that call."""
+        inspections listed at it; ``call_change``, how its stack relates to the one the
+        last session step started from; ``names_before``, after a step that stayed in its
+        function at its depth, the names listed at an earlier stop there."""
         self.stop_names = set()
         self.call_change = self.names_before = None
 
     def call_stack(self):
         """The stopped thread's whole stack, innermost first, as `_frame_identity`s; None
-        where the debugger does not list it (best effort: then no note is given)."""
+        where it is deeper than CALL_FRAMES, or the debugger does not say the reply is all
+        of it (`totalFrames`), or does not answer within 2 s. Bounded, so a deep recursion's
+        stack never makes a reply too large to read (best effort: then no note is given)."""
         try:
             reply = self.dap.request(
-                "stackTrace", {"threadId": self.thread_id, "startFrame": 0, "levels": 0}, timeout=2
+                "stackTrace",
+                {"threadId": self.thread_id, "startFrame": 0, "levels": CALL_FRAMES},
+                timeout=2,
             )
         except Exception:
             return None
         frames = reply.get("stackFrames") if isinstance(reply, dict) else None
-        if not isinstance(frames, list) or not frames:
+        if not isinstance(frames, list) or not frames or len(frames) > CALL_FRAMES:
             return None
-        return [_frame_identity(frame) for frame in frames if isinstance(frame, dict)] or None
+        # lldb-dap says more frames follow by a total past those listed; debugpy and
+        # java-debug give the exact total. Anything else is not known to be whole.
+        if reply.get("totalFrames") != len(frames) or not all(isinstance(f, dict) for f in frames):
+            return None
+        return [_frame_identity(frame) for frame in frames]
 
-    def mark_calls(self, kind):
-        """Where a session's `step` or `continue` starts (its request's `calls`), for the
-        next stop of this thread to be compared with (#262): the whole stack, and the names
-        the innermost frame listed here, or at an earlier stop of the same call."""
+    def mark_calls(self):
+        """Where a session's `step` starts (its request's `calls`), for the step's own stop
+        to be compared with (#262): the whole stack, and the names the innermost frame
+        listed here, or at an earlier stop in the same function at the same depth."""
         stack = self.call_stack()
         names, line = self.stop_names, self.stop_line
         if not names and self.names_before:
@@ -962,25 +972,26 @@ class DebugWorker:
         self.calls_from = (
             None
             if stack is None
-            else {
-                "thread": self.thread_id,
-                "kind": kind,
-                "stack": stack,
-                "names": frozenset(names),
-                "line": line,
-            }
+            else {"thread": self.thread_id, "stack": stack, "names": frozenset(names), "line": line}
         )
 
     def compare_calls(self):
-        """At a new stop of the thread a session's step or continue resumed: whether it is
-        in another call than the one that started in (`call_change`), or, after a step that
-        stayed in its call, which names were listed earlier in it (`names_before`)."""
-        mark = self.calls_from
+        """At the first stop after a session's step: where it is the step's own end (reason
+        `step`, on its thread), how its stack relates to the one the step started from
+        (`call_change`), or, where the innermost function and its depth and callers are
+        the same, which names were listed earlier there (`names_before`).
+
+        Stacks are compared, not calls: two activations of a function at one depth, under
+        callers at the same lines, look the same. So nothing is said after a `continue`,
+        or after a step a breakpoint, exception or pause stopped first, where the program
+        may have left the call and made another; after a step's own end the stacks say
+        only what they show."""
+        mark, self.calls_from = self.calls_from, None
         if not (
             self.stop_id
             and mark
             and mark["thread"] == self.thread_id
-            and self.stop_reason in ("step", "breakpoint")
+            and self.stop_reason == "step"
         ):
             return
         after = self.call_stack()
@@ -989,11 +1000,11 @@ class DebugWorker:
             return
         if change["kind"] != "same":
             self.call_change = change
-        elif mark["kind"] == "step" and mark["names"] and type(mark["line"]) is int:
-            # The same function at the same depth, under the same callers: a step there
-            # stayed in its call (Java), or LLDB's step ran on to a later call from the same
+        elif mark["names"] and type(mark["line"]) is int:
+            # The same function at the same depth, under the same callers: a Java step
+            # stayed in its call; LLDB's may have run on to a later call from the same
             # place after an exception or `longjmp` ended it. Either way, a name listed
-            # earlier in this function and not here is out of scope at this line (scopes
+            # earlier in this function and not here is out of scope at this stop (scopes
             # are the code's, not the call's).
             self.names_before = {"names": mark["names"], "line": mark["line"]}
 
@@ -1073,7 +1084,7 @@ class DebugWorker:
             where["outside_program"] = True
             where["returns_to_program"] = self.stop_returns
         if self.stop_id and self.call_change:
-            # In another call than where the session's step or continue started (#262).
+            # Another function or depth than where the session's step started (#262).
             where["call_change"] = dict(self.call_change)
         return {**where, "reason": self.stop_reason} if self.stop_id else where
 
@@ -1134,8 +1145,6 @@ class DebugWorker:
                     "location": self.stop_location,
                     "paused_s": round(paused, 2),
                 }
-                # The next stop is not compared with one its client may never have seen.
-                self.calls_from = None
                 self._dispatch("continue", {"stop_id": self.stop_id})
                 self.auto_resumed.append(entry)
                 self.auto_resumed = self.auto_resumed[-100:]
@@ -1762,7 +1771,7 @@ class DebugWorker:
                 raise ValueError("max_pause must be a number of seconds within (0, 300]")
         if operation == "continue" and type(args.get("to_exit", False)) is not bool:
             raise ValueError("to_exit must be a boolean")
-        if operation in ("continue", "step") and type(args.get("calls", False)) is not bool:
+        if operation == "step" and type(args.get("calls", False)) is not bool:
             raise ValueError("calls must be a boolean")
         if operation in {"launch", "breakpoints"}:
             if not isinstance(args.get("program"), str):
@@ -2483,12 +2492,12 @@ class DebugWorker:
                 # A name missing from the locals may be a module global (`globals`).
                 snapshot["globals_available"] = True
             if index == 0:
-                # Kept for the next session step's stop, if it stays in this call (#262).
+                # Kept for a session step's stop in this function at this depth (#262).
                 self.stop_names.update(own)
                 before = self.names_before
                 gone = sorted(set(before["names"]) - set(own)) if before else []
                 if gone and not isinstance(self.adapter, PythonAdapter):
-                    # Listed at an earlier stop in this function, at this depth: this line
+                    # Listed at an earlier stop in this function, at this depth: this stop
                     # is outside each one's scope (Python has no block scopes; its own reason
                     # says why). Java's steps also prove it is the same call.
                     snapshot["no_longer_visible"] = {
@@ -2684,9 +2693,9 @@ class DebugWorker:
             return placed
         if operation == "continue":
             self.stopped(args)
-            if args.get("calls"):
-                # A session's own continue: its next stop is compared with this one.
-                self.mark_calls("continue")
+            # A continue's stop is never compared with this one (#262): the program may
+            # have left this call and made another that looks the same.
+            self.calls_from = None
             pending = None if args.get("to_exit") else self.co_stopped()
             if pending is not None:
                 # Another thread stopped at a breakpoint in this same all-threads stop:
@@ -2744,9 +2753,10 @@ class DebugWorker:
                     "`session continue` serves and resumes them before stepping"
                 )
             kind = args.get("kind", "over")
+            # A session's own step (`calls`): its stop is compared with this one (#262).
+            self.calls_from = None
             if args.get("calls"):
-                # A session's own step: its stop is compared with this one.
-                self.mark_calls("step")
+                self.mark_calls()
             cursor = getattr(self.dap, "event_cursor", None)
             consumed = cursor() if cursor else self.cursor
             # Only where the debugger lists returns (not debugpy): one request per step.
@@ -4467,35 +4477,36 @@ def _frame_identity(frame):
 
 
 def call_change(before, after):
-    """How a stop's whole stack (``after``) relates to the one where a session's step or
-    continue started (``before``), each a list of `_frame_identity`s, innermost first
-    (#262). A caller waiting on a call keeps its line and instruction, so its identity
-    tells it apart; the innermost frame's line moves, so only its name counts. Depths
-    count too, so a recursive call is another call.
+    """How a stop's whole stack (``after``) differs from the one a session's step started
+    from (``before``), each a list of `_frame_identity`s, innermost first (#262). A caller
+    waiting on a call keeps its line and instruction; the innermost frame's line moves, so
+    only its name counts. Depths count too, so a recursive call is told from its caller.
 
-    {"kind": "same"}: the same function at the same depth, with the same callers.
-    "returned": in a caller of the earlier innermost frame, `calls` frames up.
-    "entered": in a call the earlier innermost frame made, `calls` frames down.
-    "other": the earlier innermost frame's call has ended, and this is another call.
-    None where that cannot be told: the same function at the earlier depth, with other
+    These are stacks, not calls: an activation is not told from another at the same depth
+    under callers at the same lines. So the kinds say only what the stacks show, and never
+    that a call returned (it may have thrown, yielded or been unwound):
+
+    {"kind": "same"}: the same function at the same depth, under the same callers.
+    "left": shallower by `calls` frames, over the earlier innermost frame's callers.
+    "deeper": deeper by `calls` frames, over the earlier innermost frame's function.
+    "other": the earlier innermost function is no longer at its depth, and this stack is
+    not one of those shapes.
+    None where nothing is told: the same function at the earlier depth, with other
     callers (another call, or a Python generator resumed from elsewhere)."""
     if not before or not after:
         return None
     change = {"from": before[0][0], "to": after[0][0]}
     depth = len(after) - len(before)
     if depth < 0:
-        # The earlier innermost frame is gone: its call returned (or an exception or
-        # `longjmp` unwound it).
         up = -depth
         if before[up][0] == change["to"] and after[1:] == before[up + 1 :]:
-            return {"kind": "returned", **change, "calls": up}
+            return {"kind": "left", **change, "calls": up}
         return {"kind": "other", **change}
     if after[depth][0] != change["from"]:
-        # Another function at the earlier innermost frame's depth: that call ended.
         return {"kind": "other", **change}
     if after[depth + 1 :] != before[1:]:
         return None
-    return {"kind": "entered", **change, "calls": depth} if depth else {"kind": "same"}
+    return {"kind": "deeper", **change, "calls": depth} if depth else {"kind": "same"}
 
 
 def _method_name(function):

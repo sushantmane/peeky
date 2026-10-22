@@ -2195,37 +2195,42 @@ peeky session continue --to-exit
 ```
 session default (python): state: stopped at examples/pagination_bug.py:13 in <module>, hit 1 (paused 0.0 s)
 state: stopped at examples/pagination_bug.py:5 in get_page (paused 0.0 s)
-note: entered `get_page`, called from `<module>`
+note: now in `get_page`, one call deeper, called from `<module>`
 state: stopped at examples/pagination_bug.py:7 in get_page (paused 0.0 s)
 state: stopped at examples/pagination_bug.py:8 in get_page (paused 0.0 s)
 start: int = 3
 state: stopped at examples/pagination_bug.py:13 in <module> (paused 0.0 s)
-note: returned from `get_page` to `<module>`
+note: left `get_page`; now in `<module>`
 state: terminated (program exited; `peeky session report` shows output)
 ```
 
 A step can land on a closing `}`, on a loop's header, or back on an `if`'s line
 ([1.1](#11-what-can-i-ask)). So read a block's locals before you step past it.
 
-#### When a step or continue lands in another call
+#### When a step lands in another function
 
 A step off a function's last line lands in its caller, where the function's names are not
-visible. So the state then has a note that names both calls:
+visible. So the state then has a note that says how the stack changed:
 
-- ``note: returned from `get_page` to `<module>` ``: the stop is in a caller. The call returned,
-  or an exception ended it. With `, 2 calls up`, more than one call ended.
-- ``note: entered `walk`, called from `run` ``: the stop is in a call that the earlier frame
-  made.
-- ``note: returned from `add`, then entered `shift` ``: the earlier call has ended, and this is
-  another one.
+- ``note: left `get_page`; now in `<module>` ``: the stack is shallower, and the stop is in a
+  function that was below. With `, 2 calls up`, it is two frames shallower.
+- ``note: now in `walk`, one call deeper, called from `run` ``: the stack is deeper, over the
+  function the step started in. With more frames, it says ``3 calls deeper, below `run` ``.
+- ``note: left `add`; now in `shift` ``: the function is no longer at its depth, and the stack
+  changed below it too.
 
-Calls are told apart by the stack's depth and its callers, not only by name. So a recursive call
-gets a note too: ``entered `walk`, called from `walk` ``. `continue` gets the same notes.
+The note never says that a function returned: it may have thrown, yielded or been unwound. Where
+a function did return, `step --out` shows its value with the stop, except in Python
+([2.9](#29-what-a-function-returned)).
 
-No note usually means the same function at the same depth, under the same callers. After a step
-in Java or Python, that is the same call. In C, C++ and Rust, it can be a later call from the same
-place. LLDB's step runs on when an exception or `longjmp` ends its call, and the next stop may be
-a breakpoint in that later call.
+Depth counts, not only names. So a recursive call gets a note too: ``now in `walk`, one call
+deeper, called from `walk` ``. Only a step's own end gets a note. A `continue`, or a step that a
+breakpoint, a crash or a pause stopped first, gets none. The program may have left the call and
+made another that looks the same: the stacks can't tell two calls of a function apart. Nor does
+a stack deeper than 256 frames get a note, because it is not read whole.
+
+No note doesn't prove the same call. In C, C++ and Rust, an exception or `longjmp` can end a
+stepped call, and LLDB's step then ends in a later call from the same place.
 
 A `get` with no value at such a stop repeats the note:
 
@@ -2234,15 +2239,15 @@ $ peeky session start examples/pagination_bug.py --at 9
 session default (python): state: stopped at examples/pagination_bug.py:9 in get_page, hit 1 (paused 0.0 s)
 $ peeky session step
 state: stopped at examples/pagination_bug.py:13 in <module> (paused 0.0 s)
-note: returned from `get_page` to `<module>`
+note: left `get_page`; now in `<module>`
 $ peeky session get 'items[0]'
 items[0]: <not found; visible: the names in debugpy's function variables, special variables (select them by name)>
-note: this stop is in <module> at pagination_bug.py:13; since the previous stop, the program returned from `get_page` to `<module>`
+note: this stop is in <module> at pagination_bug.py:13, after a step from `get_page`
 ```
 
 In JSON, the state has `call_change`, and so does a `get` row with no value at that stop. It
-holds the `kind` (`returned`, `entered` or `other`), the two functions as `from` and `to`, and
-`calls`: how many calls up or down.
+holds the `kind` (`left`, `deeper` or `other`), the two functions as `from` and `to`, and `calls`:
+how many frames shallower or deeper.
 
 #### When a step leaves a block
 
@@ -2261,10 +2266,9 @@ $ peeky session get best.load
 best.load: <not found: 'best' was visible at line 30, earlier in this same call, but the block declaring it has ended (read it at a line inside that block); visible: order, tasks, workers>
 ```
 
-- The note needs a read at that earlier stop: `inspect`, or a `get` of any name. Peeky doesn't
-  read every stop's locals, because some debuggers run the program's code to show them.
-- After `continue`, there is no such note: the same function at the same depth may be another
-  call.
+- The message needs a read at that earlier stop: `inspect`, or a `get` of any name. Peeky
+  doesn't read every stop's locals, because some debuggers run the program's code to show them.
+- Only a step's own end gets the message, as with the notes above.
 - In C, C++ and Rust, the message doesn't say "this same call", because LLDB's step can end in a
   later call. It says only that this stop is outside the local's scope:
   `'square' was visible at line 14, at an earlier stop in this function, and this stop is outside

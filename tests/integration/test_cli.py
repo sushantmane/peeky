@@ -721,7 +721,6 @@ def test_step_and_continue_requests_are_validated(tmp_path):
         ("continue", {"to_line": "9"}, "positive line"),
         ("continue", {"to_line": 9, "to_exit": True}, "not both"),
         ("step", {"calls": "yes"}, "calls must be a boolean"),
-        ("continue", {"calls": 1}, "calls must be a boolean"),
     ):
         with pytest.raises(ValueError, match=message):
             DebugWorker.validate(operation, args)
@@ -748,61 +747,152 @@ print("CALLS:", run(["a"]))
 """
 
 
-def test_session_states_say_when_a_stop_is_in_another_call(tmp_path, capsys, monkeypatch):
+def session_at(tmp_path, monkeypatch, name, text):
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    program = tmp_path / name
+    program.write_text(text)
+    return program
+
+
+def test_session_steps_say_when_they_stop_in_another_function(tmp_path, capsys, monkeypatch):
     # Tenth evaluation (outline): a step off `rename`'s last line landed in `run` with no
     # word of it, and the next `get` of rename's names failed.
-    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    program = tmp_path / "calls.py"
-    program.write_text(CALLS)
+    program = session_at(tmp_path, monkeypatch, "calls.py", CALLS)
     try:
         assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
         code, out = run(capsys, "session", "step")
-        assert code == 0 and out.out.splitlines()[1:] == ["note: returned from `rename` to `run`"]
+        assert code == 0 and out.out.splitlines()[1:] == ["note: left `rename`; now in `run`"]
         code, out = run(capsys, "session", "get", "items")
-        place = (
-            "note: this stop is in run at calls.py:12; since the previous stop, the program "
-            "returned from `rename` to `run`"
-        )
+        place = "note: this stop is in run at calls.py:12, after a step from `rename`"
         assert code == 1 and place in out.out, out.out
+        code, out = run(capsys, "session", "get", "items", "--json")
+        (row,) = json.loads(out.out)
+        assert row["call_change"] == {"kind": "left", "from": "rename", "to": "run", "calls": 1}
         code, out = run(capsys, "session", "step", "--json")
         state = json.loads(out.out)
         assert state["location"].endswith("calls.py:13") and "call_change" not in state
         code, out = run(capsys, "session", "step", "--into", "--json")
         state = json.loads(out.out)
-        assert state["call_change"] == {"kind": "entered", "from": "run", "to": "walk", "calls": 1}
-        assert "note: entered `walk`, called from `run`" in run(capsys, "session", "wait")[1].out
+        assert state["call_change"] == {"kind": "deeper", "from": "run", "to": "walk", "calls": 1}
+        assert "note: now in `walk`, one call deeper, called from `run`" in (
+            run(capsys, "session", "wait")[1].out
+        )
         assert "note:" not in run(capsys, "session", "step")[1].out
-        # A recursive call is another call, though the function's name is the same.
+        # A recursive call is one call deeper, though the function's name is the same.
         code, out = run(capsys, "session", "step", "--into")
-        assert "calls.py:6 in walk" in out.out and "note: entered `walk`, called from `walk`" in (
-            out.out
-        )
+        assert "calls.py:6 in walk" in out.out
+        assert "note: now in `walk`, one call deeper, called from `walk`" in out.out
         code, out = run(capsys, "session", "step", "--out")
-        assert "calls.py:8 in walk" in out.out and "note: returned from `walk` to `walk`" in (
-            out.out
-        )
+        assert "calls.py:8 in walk" in out.out and "note: left `walk`; now in `walk`" in out.out
+        assert "returned" not in out.out
     finally:
         run(capsys, "session", "close")
-    # A continue that leaves the call and stops in another at the same depth.
+
+
+RECURSION = """def f(d):
+    if d == 0:
+        marker = d
+    else:
+        f(0)
+
+
+for d in (0, 1):
+    f(d)
+"""
+
+
+def test_a_continue_says_nothing_of_calls(tmp_path, capsys, monkeypatch):
+    # Review of #274: from the first `f(0)`, `continue` reached another `f(0)` that `f(1)`
+    # called, and the state said "entered `f`, called from `f`". The stacks cannot tell
+    # one activation from another, so a continue's stop is never compared.
+    program = session_at(tmp_path, monkeypatch, "recursion.py", RECURSION)
+    try:
+        assert run(capsys, "session", "start", program, "--at", "3")[0] == 0
+        code, out = run(capsys, "session", "continue", "--json")
+        state = json.loads(out.out)
+        assert code == 0 and state["hit"] == 2 and "call_change" not in state, state
+        assert "note" not in run(capsys, "session", "wait")[1].out
+        code, out = run(capsys, "session", "get", "nosuch")
+        assert code == 1 and "after a step" not in out.out
+    finally:
+        run(capsys, "session", "close")
+    program.write_text(CALLS)
     try:
         assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
         code, out = run(capsys, "session", "continue", "--to", "6", "--json")
         state = json.loads(out.out)
-        assert code == 0 and state["call_change"] == {
-            "kind": "other",
-            "from": "rename",
-            "to": "walk",
-        }, state
+        assert code == 0 and state["location"].endswith(":6") and "call_change" not in state
     finally:
         run(capsys, "session", "close")
 
 
-def test_session_start_warns_when_the_debugger_moved_its_breakpoint(tmp_path, capsys, monkeypatch):
+GENERATOR = """def numbers():
+    first = 1
+    yield first
+    yield 2
+
+
+def main():
+    total = 0
+    for n in numbers():
+        total += n
+    return total
+
+
+print("GEN:", main())
+"""
+
+
+def test_a_step_out_of_a_generator_at_yield_never_says_it_returned(tmp_path, capsys, monkeypatch):
+    # Review of #274: the generator only yielded, and the state said "returned from".
+    program = session_at(tmp_path, monkeypatch, "gen.py", GENERATOR)
+    try:
+        assert run(capsys, "session", "start", program, "--at", "2")[0] == 0
+        assert "gen.py:3 in numbers" in run(capsys, "session", "step")[1].out
+        code, out = run(capsys, "session", "step", "--out", "--json")
+        state = json.loads(out.out)
+        assert state["location"].endswith("gen.py:9") and state["function"] == "main", state
+        assert state["call_change"] == {"kind": "left", "from": "numbers", "to": "main", "calls": 1}
+        out = run(capsys, "session", "wait")[1].out
+        assert "note: left `numbers`; now in `main`" in out and "returned" not in out, out
+    finally:
+        run(capsys, "session", "close")
+
+
+DEEP = """def deep(n):
+    if n == 0:
+        return 0
+    return 1 + deep(n - 1)
+
+
+print("DEEP:", deep(300))
+"""
+
+
+def test_a_stack_deeper_than_the_bound_gives_no_note_and_steps_on(tmp_path, capsys, monkeypatch):
+    # Review of #274: the whole stack was read with no bound (`levels: 0`), so a deep
+    # recursion's could pass the debugger connection's 4 MiB message limit. At most 256
+    # frames are read now, and a stack not known to be whole gets no note.
+    program = session_at(tmp_path, monkeypatch, "deep.py", DEEP)
+    try:
+        # 302 frames deep: each step leaves one `deep` for its caller.
+        assert run(capsys, "session", "start", program, "--at", "3")[0] == 0
+        for n, args in enumerate(((), ("--into",), ("--out",)), 1):
+            code, out = run(capsys, "session", "step", *args, "--json")
+            state = json.loads(out.out)
+            assert code == 0 and state["location"].endswith("deep.py:4"), (args, state)
+            assert "call_change" not in state, state
+            assert f"n: int = {n}" in run(capsys, "session", "get", "n")[1].out
+        assert run(capsys, "session", "continue", "--to-exit")[0] == 0
+        assert "DEEP: 300" in run(capsys, "session", "report")[1].out
+    finally:
+        run(capsys, "session", "close")
+
+
+def test_session_start_warns_when_it_stopped_at_a_moved_breakpoint(tmp_path, capsys, monkeypatch):
     # Tenth evaluation (outline): `session start --at` a blank line stopped at the line
     # before it with no warning, where a probe at that line warns.
-    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    program = tmp_path / "calls.py"
-    program.write_text(CALLS)
+    program = session_at(tmp_path, monkeypatch, "calls.py", CALLS)
     moved = (
         "The debugger moved the breakpoint from line 14 to line 13 (line 14 has no code of its "
         "own); values are from line 13. Choose a line from `peeky describe`."
@@ -826,6 +916,15 @@ def test_session_start_warns_when_the_debugger_moved_its_breakpoint(tmp_path, ca
         # Where it is not moved, no warning.
         code, out = run(capsys, "session", "start", program, "--at", "13", "--json")
         assert code == 0 and "warnings" not in json.loads(out.out)
+    finally:
+        run(capsys, "session", "close")
+    # Review of #274: a breakpoint moved into a function that never runs. The program
+    # ends, and "values are from line 2" would say nothing true.
+    program.write_text('def never():\n    value = 1\n\n\nprint("done")\n')
+    try:
+        code, out = run(capsys, "session", "start", program, "--at", "3", "--json")
+        state = json.loads(out.out)
+        assert state["state"] == "terminated" and "warnings" not in state, state
     finally:
         run(capsys, "session", "close")
 

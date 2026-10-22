@@ -266,9 +266,9 @@ public class Blocks {
 
 
 @pytest.mark.timeout(180)
-def test_a_step_out_of_a_block_or_into_another_call_says_so(counter, capsys):
+def test_a_step_out_of_a_block_or_into_another_method_says_so(counter, capsys):
     # Tenth evaluation (runoff): a step left the block declaring `ranking`, and the next
-    # `get 'ranking[1]'` said only `<not found …>`; a step into or out of a call said
+    # `get 'ranking[1]'` said only `<not found …>`; a step into or out of a method said
     # nothing either.
     root, config = counter
     (root / "demo" / "Blocks.java").write_text(BLOCKS)
@@ -299,14 +299,17 @@ def test_a_step_out_of_a_block_or_into_another_call_says_so(counter, capsys):
         assert main(["session", "step", "--into"]) == 0
         out = capsys.readouterr().out
         assert "Blocks.java:5 in Blocks.walk(int)" in out
-        assert "note: entered `Blocks.walk(int)`, called from `Blocks.main(String[])`" in out
+        assert (
+            "note: now in `Blocks.walk(int)`, one call deeper, called from `Blocks.main(String[])`"
+            in out
+        )
         assert main(["session", "step"]) == 0
         assert "note:" not in capsys.readouterr().out
-        # A recursive call is another call of the same method.
+        # A recursive call is one call deeper, in the same method.
         assert main(["session", "step", "--into", "--json"]) == 0
         state = json.loads(capsys.readouterr().out)
         assert state["call_change"] == {
-            "kind": "entered",
+            "kind": "deeper",
             "from": "Blocks.walk(int)",
             "to": "Blocks.walk(int)",
             "calls": 1,
@@ -314,6 +317,6 @@ def test_a_step_out_of_a_block_or_into_another_call_says_so(counter, capsys):
         assert main(["session", "step", "--out"]) == 0
         out = capsys.readouterr().out
         assert "Blocks.java:8 in Blocks.walk(int)" in out
-        assert "note: returned from `Blocks.walk(int)` to `Blocks.walk(int)`" in out
+        assert "note: left `Blocks.walk(int)`; now in `Blocks.walk(int)`" in out
     finally:
         main(["session", "close"])

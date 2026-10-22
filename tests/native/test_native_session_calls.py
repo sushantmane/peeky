@@ -1,6 +1,7 @@
-"""Session states on a C build: a step into or out of a call says so (a recursive call
-too), a name whose block a step left says why it is gone, and `session start` warns
-when the debugger moved its breakpoint (tenth agent evaluation)."""
+"""Session states on a C build: a step into or out of a function says so (a recursive
+call too), a name whose block a step left says why it is gone, a stack too deep to read
+whole gets no note, and `session start` warns when it stopped at a breakpoint the debugger
+moved (tenth agent evaluation)."""
 
 import json
 import os
@@ -83,13 +84,13 @@ def test_steps_say_when_they_leave_a_block_or_change_calls(program, capsys):
         assert main(["session", "step", "--into"]) == 0
         out = capsys.readouterr().out
         assert f"calls.c:{line_of('WALK')} in walk" in out
-        assert "note: entered `walk`, called from `main`" in out
+        assert "note: now in `walk`, one call deeper, called from `main`" in out
         assert "call_change" not in state_of(capsys, "session", "step")
-        # A recursive call is another call of the same function.
+        # A recursive call is one call deeper, in the same function.
         state = state_of(capsys, "session", "step", "--into")
         assert state["location"].endswith(f":{line_of('WALK')}"), state
         assert state["call_change"] == {
-            "kind": "entered",
+            "kind": "deeper",
             "from": "walk",
             "to": "walk",
             "calls": 1,
@@ -97,10 +98,10 @@ def test_steps_say_when_they_leave_a_block_or_change_calls(program, capsys):
         assert main(["session", "step", "--out"]) == 0
         out = capsys.readouterr().out
         assert f"calls.c:{line_of('RECURSE')} in walk" in out
-        assert "note: returned from `walk` to `walk`" in out
+        assert "note: left `walk`; now in `walk`" in out
         state = state_of(capsys, "session", "step", "--out")
         assert state["call_change"] == {
-            "kind": "returned",
+            "kind": "left",
             "from": "walk",
             "to": "main",
             "calls": 1,
@@ -121,5 +122,73 @@ def test_session_start_warns_when_the_debugger_moved_its_breakpoint(program, cap
             f"{line_of('CALL')} (line {blank} has no code of its own); values are from line "
             f"{line_of('CALL')}. Choose a line from `peeky describe`."
         ) in out, out
+    finally:
+        main(["session", "close"])
+
+
+DEEP = """#include <stdio.h>
+
+static int deep(int n) {
+    if (n == 0) {
+        return 0; /* BOTTOM */
+    }
+    return 1 + deep(n - 1); /* UP */
+}
+
+int main(void) {
+    printf("DEEP:%d\\n", deep(20000));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_stack_too_deep_to_read_whole_gets_no_note_and_steps_on(program, capsys):
+    # Review of #274: a session step read the whole stack (`levels: 0`). 20,000 frames
+    # passed the debugger connection's 4 MiB message limit, and the session was closed
+    # (`DEBUGGER_ERROR`). At most 256 frames are read now; a deeper stack gets no note.
+    path = program.with_name("deep.c")
+    path.write_text(DEEP)
+
+    def line(marker):
+        return next(i for i, text in enumerate(DEEP.splitlines(), 1) if f"/* {marker} */" in text)
+
+    assert main(["session", "start", str(path), "--at", str(line("BOTTOM"))]) == 0
+    capsys.readouterr()
+    try:
+        for args in ((), ("--out",), ("--into",)):
+            state = state_of(capsys, "session", "step", *args)
+            assert state["state"] == "stopped" and "call_change" not in state, (args, state)
+        state = state_of(capsys, "session", "step", "--out")
+        assert state["location"].endswith(f":{line('UP')}") and "call_change" not in state
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report"]) == 0
+        assert "DEEP:20000" in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+
+
+@pytest.mark.timeout(120)
+def test_session_start_never_warns_of_a_moved_breakpoint_it_never_stopped_at(program, capsys):
+    # Review of #274: the program ended without stopping, and the start still said
+    # "values are from line N".
+    path = program.with_name("never.c")
+    path.write_text(
+        "static int never(int x) {\n"
+        "    int value = x + 1;\n"
+        "\n"
+        "    return value;\n"
+        "}\n"
+        "\n"
+        "int main(int argc, char **argv) {\n"
+        "    (void)argv;\n"
+        "    return argc > 5 ? never(argc) : 0;\n"
+        "}\n"
+    )
+    assert main(["session", "start", str(path), "--at", "3", "--json"]) == 0
+    try:
+        state = json.loads(capsys.readouterr().out)
+        assert state["state"] == "terminated" and "warnings" not in state, state
     finally:
         main(["session", "close"])

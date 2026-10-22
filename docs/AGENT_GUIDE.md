@@ -75,7 +75,7 @@ the commands.
 9. **`continue --to LINE` doesn't skip the session's breakpoint.** A stop there comes first (exit
    3, with a note): repeat the command (5.2).
 10. **Steps land where the code jumps:** a closing `}`, a loop header, an `if`'s line, or a caller.
-    A `note` names a call a step or continue entered or returned from. Read a block's locals
+    A `note` says when a step's stop is in another function or depth. Read a block's locals
     before stepping past its last statement (1.1, 5.2).
 11. **Sessions need `--name` on every command** (unless `default`), and a `close`. Their programs'
     clocks run while you think, so prefer probes for timed code (5.3, 5.4).
