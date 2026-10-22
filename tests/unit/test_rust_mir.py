@@ -3343,3 +3343,169 @@ def test_std_macro_files_are_exactly_the_toolchains_own(tmp_path):
     assert len(std_macro_files(rustc, (), (tmp_path,))) == 2
     inside = str(tmp_path / "tc/bin/rustc")
     assert std_macro_files(inside, (), (tmp_path,)) == frozenset()
+
+
+# #222: `let label: String;`, `label = format!("sum {sum}");` (line 4), `println!` (5).
+# `format!`'s last call, spanned in std's file, returns into line 5's block.
+DEFERRED = "\n".join(
+    [
+        "fn main() -> () {",
+        "    let mut _0: ();                      // return place in scope 0 at src/main.rs:1:11: 1:11",
+        "    let mut _3: std::string::String;     // in scope 0 at /rustc/x/library/alloc/src/macros.rs:113:9: 115:10",
+        "    let mut _4: std::string::String;     // in scope 0 at /rustc/x/library/alloc/src/macros.rs:114:13: 114:22",
+        "    let _19: &std::string::String;       // in scope 0 at src/main.rs:5:16: 5:21",
+        "    scope 1 {",
+        "        debug label => _2;               // in scope 1 at src/main.rs:3:9: 3:14",
+        "        let _2: std::string::String;     // in scope 1 at src/main.rs:3:9: 3:14",
+        "    }",
+        "",
+        "    bb0: {",
+        "        _4 = format(const 1_i32) -> [return: bb1, unwind continue]; // scope 1 at /rustc/x/library/alloc/src/macros.rs:114:13: 114:22",
+        "    }",
+        "",
+        "    bb1: {",
+        "        _3 = must_use::<String>(move _4) -> [return: bb2, unwind continue]; // scope 1 at /rustc/x/library/alloc/src/macros.rs:113:9: 115:10",
+        "    }",
+        "",
+        "    bb2: {",
+        "        StorageDead(_4);                 // scope 1 at /rustc/x/library/alloc/src/macros.rs:115:9: 115:10",
+        "        _2 = move _3;                    // scope 1 at src/main.rs:4:5: 4:10",
+        "        _19 = &_2;                       // scope 1 at src/main.rs:5:16: 5:21",
+        "        _0 = const ();                   // scope 0 at src/main.rs:6:2: 6:2",
+        "        return;                          // scope 0 at src/main.rs:6:2: 6:2",
+        "    }",
+        "}",
+        "",
+    ]
+)
+# bb1's IR: `must_use`, inlined from line 4 (`#[inline(always)]`), then the branch.
+DEFERRED_IR = """define internal void @_ZN5repro4main17h4853d4a0533b6443E() unnamed_addr #0 !dbg !10 {
+start:
+  %_4 = alloca [24 x i8], align 8
+  call void @format(ptr sret([24 x i8]) align 8 %_4, i32 1), !dbg !20
+  br label %bb1, !dbg !20
+
+bb1:                                              ; preds = %start
+  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %_3, ptr align 8 %_4, i64 24, i1 false), !dbg !22
+  br label %bb2, !dbg !23
+
+bb2:                                              ; preds = %bb1
+  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %label, ptr align 8 %_3, i64 24, i1 false), !dbg !24
+  store ptr %label, ptr %args, align 8, !dbg !25
+  ret void, !dbg !26
+}
+
+!1 = distinct !DICompileUnit(language: DW_LANG_Rust, file: !30, producer: "rustc")
+!2 = !DIFile(filename: "src/main.rs", directory: "/w")
+!3 = !DIFile(filename: "/rustc/x/library/alloc/src/macros.rs", directory: "")
+!4 = !DIFile(filename: "/rustc/x/library/core/src/hint.rs", directory: "")
+!9 = !DINamespace(name: "repro", scope: null)
+!10 = distinct !DISubprogram(name: "main", linkageName: "_ZN5repro4main17h4853d4a0533b6443E", scope: !9, file: !2, line: 1, unit: !1)
+!11 = distinct !DISubprogram(name: "must_use<String>", linkageName: "_ZN4core4hint8must_use17h1111111111111111E", scope: !9, file: !4, line: 613, unit: !1)
+!20 = !DILocation(line: 4, column: 13, scope: !10)
+!21 = distinct !DILocation(line: 4, column: 13, scope: !10)
+!22 = !DILocation(line: 614, column: 5, scope: !11, inlinedAt: !21)
+!23 = !DILocation(line: 615, column: 2, scope: !11, inlinedAt: !21)
+!24 = !DILocation(line: 4, column: 5, scope: !10)
+!25 = !DILocation(line: 5, column: 5, scope: !10)
+!26 = !DILocation(line: 6, column: 2, scope: !10)
+!30 = !DIFile(filename: "src/main.rs/@/repro.cgu.0", directory: "/w")
+"""
+
+
+def deferred_function(tmp_path, ir=DEFERRED_IR):
+    path = tmp_path / "repro.ll"
+    path.write_text(ir)
+    return ir_functions(path, ["src/main.rs"])["h4853d4a0533b6443"]
+
+
+def test_a_foreign_call_is_another_lines_only_where_every_instruction_of_it_says_so(tmp_path):
+    body = parse_body(DEFERRED)
+    every = body.stop_positions({2}, 5, "src/main.rs", True)
+    # Taken for line 5's (a macro it may invoke), `must_use`'s return is a place of it.
+    assert (2, 0) in every
+    # #230 review: where any instruction of the call does not say where it is, it may be
+    # line 5's: no location, line 0, an `inlinedAt` chain that does not resolve.
+    unlocated = DEFERRED_IR.replace(", i64 24, i1 false), !dbg !22\n", ", i64 24, i1 false)\n")
+    zero = DEFERRED_IR.replace("!23 = !DILocation(line: 615", "!23 = !DILocation(line: 0")
+    zero = zero.replace("inlinedAt: !21)\n!24", "inlinedAt: !27)\n!24")
+    zero += "!27 = distinct !DILocation(line: 0, column: 0, scope: !10)\n"
+    lost = DEFERRED_IR.replace(
+        "scope: !11, inlinedAt: !21)\n!23", "scope: !11, inlinedAt: !99)\n!23"
+    )
+    for ir in (unlocated, zero, lost):
+        function = deferred_function(tmp_path, ir)
+        placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
+        assert (2, 0) in placed, ir
+        assert function.call_lines(1) is None, ir
+    # Every instruction of it on line 4 (inlined from there): not line 5's (#222).
+    function = deferred_function(tmp_path)
+    placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
+    assert (2, 0) not in placed and placed == [(2, 2)]
+    assert function.call_lines(1) == {4}
+    # A call that is not inlined says where it is itself: line 4 here, so not line 5's.
+    called = DEFERRED_IR.replace(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %_3, ptr align 8 %_4, i64 24, i1 false), !dbg !22\n",
+        "  call void @must_use(ptr align 8 %_3, ptr align 8 %_4), !dbg !20\n",
+    )
+    assert deferred_function(tmp_path, called).call_lines(1) == {4}
+    # Its own call with no location, after located code: unknown, though the rest is line 4.
+    silent = called.replace("ptr align 8 %_4), !dbg !20\n", "ptr align 8 %_4)\n")
+    assert deferred_function(tmp_path, silent).call_lines(1) is None
+
+
+def test_a_foreign_calls_block_counts_whole_and_an_invoke_leaves_its_store_unknown(tmp_path):
+    # #230 review, round 2: which LLVM call is the MIR terminator's is not told. An
+    # unlocated call followed by a located helper call (`memcpy`) and branch on line 4 is
+    # no proof: the unlocated one could be line 5's.
+    body = parse_body(DEFERRED)
+    helper = DEFERRED_IR.replace(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %_3, ptr align 8 %_4, i64 24, i1 false), !dbg !22\n",
+        "  call void @must_use(ptr align 8 %_3, ptr align 8 %_4)\n"
+        "  call void @memcpy(ptr align 8 %_3, ptr align 8 %_4, i64 24), !dbg !20\n",
+    ).replace("  br label %bb2, !dbg !23\n", "  br label %bb2, !dbg !20\n")
+    # An `invoke` stores its result in its normal successor, which is line 5's block.
+    invoked = DEFERRED_IR.replace(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr align 8 %_3, ptr align 8 %_4, i64 24, i1 false), !dbg !22\n"
+        "  br label %bb2, !dbg !23\n",
+        "  invoke void @must_use(ptr align 8 %_3, ptr align 8 %_4)\n"
+        "          to label %bb2 unwind label %cleanup, !dbg !20\n",
+    )
+    for ir in (helper, invoked):
+        function = deferred_function(tmp_path, ir)
+        placed = body.stop_positions({2}, 5, "src/main.rs", True, None, None, None, function)
+        assert (2, 0) in placed, ir
+        assert function.call_lines(1) is None, ir
+    # Inlined (#222 as built): every instruction on line 4, no invoke: line 4's.
+    assert deferred_function(tmp_path).call_lines(1) == {4}
+
+
+def test_files_of_one_name_in_two_directories_are_not_one_file(tmp_path):
+    # #230 review: `a/mod.rs` and `b/mod.rs` as DIFiles of one name in two directories:
+    # code inlined from `b`'s line 4 is no line of `a`'s.
+    ir = DEFERRED_IR.replace(
+        '!2 = !DIFile(filename: "src/main.rs", directory: "/w")',
+        '!2 = !DIFile(filename: "mod.rs", directory: "/w/src/a")',
+    )
+    ir = ir.replace(
+        '!30 = !DIFile(filename: "src/main.rs/@/repro.cgu.0", directory: "/w")',
+        '!30 = !DIFile(filename: "src/a/mod.rs/@/repro.cgu.0", directory: "/w")',
+    )
+    ir += '!5 = !DIFile(filename: "mod.rs", directory: "/w/src/b")\n'
+    ir += '!12 = distinct !DISubprogram(name: "g", scope: !9, file: !5, line: 1, unit: !1)\n'
+    ir = ir.replace(
+        "!21 = distinct !DILocation(line: 4, column: 13, scope: !10)",
+        "!21 = distinct !DILocation(line: 4, column: 13, scope: !12)",
+    )
+    path = tmp_path / "dup.ll"
+    path.write_text(ir)
+    function = ir_functions(path, ["src/a/mod.rs"])["h4853d4a0533b6443"]
+    assert function.file == "src/a/mod.rs"
+    # The inlined code's site is in `b`'s file: another file's, so none of `a`'s lines;
+    # under the name alone it was taken for `a`'s line 4.
+    assert function.sites.get("bb1") is None
+    assert function.call_lines(1) == set()
+    # Only the build's own `src/a/mod.rs` is the program's source, not another `mod.rs`.
+    other = ir.replace('directory: "/w/src/a")', 'directory: "/elsewhere")')
+    path.write_text(other)
+    assert "h4853d4a0533b6443" not in ir_functions(path, ["src/a/mod.rs"])
