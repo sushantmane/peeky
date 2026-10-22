@@ -1362,14 +1362,11 @@ def queries(args):
             ),
         )
         return 0
-    # The runs are named once, so the table reads the runs the result came from.
-    params = evidence.prepare(path, args.name, evidence.parse_params(args.param))
-    result = evidence.run_query(path, args.name, params, limit=args.limit)
-    _emit(
-        {**result, "query": args.name, "store": str(path)},
-        args.json,
-        lambda shown: evidence.query_table(path, shown, params),
+    # The rows, their notes and the text table come from one snapshot of the store.
+    result, text = evidence.canned(
+        path, args.name, evidence.parse_params(args.param), limit=args.limit, table=not args.json
     )
+    _emit({**result, "query": args.name, "store": str(path)}, args.json, lambda _: text)
     return 0
 
 

@@ -4,7 +4,9 @@ after their effects, an alignment note over values a change moved, and `join` sh
 unchanged selectors twice. Synthetic stores cut down from outline (Python), debounce (C),
 kitty (Rust) and runoff (Java)."""
 
+import contextlib
 import json
+import threading
 
 import pytest
 
@@ -372,31 +374,41 @@ def test_join_leaves_out_selectors_that_agree_at_every_paired_hit(store, capsys)
 
 
 # Review 2 of PR #269: the text table re-read "the newest two runs" after the query ran,
-# so a probe saved meanwhile changed what it compared.
+# so a probe saved meanwhile changed what it compared. Review 3: the rows, notes and
+# table now read one snapshot, so a probe's save waits for them (a store's rollback
+# journal: its commit waits for the reader's shared lock). Each test saves from another
+# thread, as a probe would, and gives it a second to commit before reading on.
+def probe_meanwhile(save):
+    """Start ``save`` in another thread and wait up to a second for it: it commits at
+    once without a snapshot, and only after the query's reads with one."""
+    thread = threading.Thread(target=save)
+    thread.start()
+    thread.join(timeout=1)
+    return thread
+
+
 def test_join_table_reads_the_runs_its_result_came_from(store, capsys, monkeypatch):
     for xs in (["7", "8"], ["7", "9"]):
         saved(store, [{"k": k, "x": x, "y": "4"} for k, x in zip("12", xs)], line=9)
-    query = evidence.run_query
+    table, saving = evidence.query_table, []
 
-    def then_a_probe(*args, **kwargs):
-        result = query(*args, **kwargs)
+    def after_a_probe(*args, **kwargs):
         # Runs 2 and 3 agree on `x`; runs 1 and 2 do not.
-        saved(store, [{"k": k, "x": x, "y": "4"} for k, x in zip("12", ["7", "9"])], line=9)
-        return result
+        rows = [{"k": k, "x": x, "y": "4"} for k, x in zip("12", ["7", "9"])]
+        saving.append(probe_meanwhile(lambda: saved(store, rows, line=9)))
+        return table(*args, **kwargs)
 
-    monkeypatch.setattr(evidence, "run_query", then_a_probe)
+    monkeypatch.setattr(evidence, "query_table", after_a_probe)
     header, *rows, note, count = text(capsys, store, "join", "--param", "key=k").splitlines()
+    saving[0].join()
     assert header.split()[:5] == ["k", "hit_a", "hit_b", "a:x", "b:x"], header
     assert rows[1].split()[:5] == ["2", "2", "2", "8", "9"], rows
     assert note == (
         "note: left out 1 selector that agrees between the runs at every paired hit: `y`; "
         "--param unchanged=1 or --json shows it"
     )
-    # The same with the library: prepare names the runs, which the table reads.
-    params = evidence.prepare(store, "join", {"key": "k", "a": 1})
-    assert params == {"key": "k", "a": 1, "b": 3}
-    shown = evidence.query_table(store, {**query(store, "join", params), "query": "join"}, params)
-    assert "a:x" in shown.splitlines()[0]
+    # The probe saved run 3 once the query was done; prepare names it now.
+    assert evidence.prepare(store, "join", {"key": "k", "a": 1}) == {"key": "k", "a": 1, "b": 3}
 
 
 def test_set_effect_table_reads_its_own_runs_changes(store, capsys, monkeypatch):
@@ -407,17 +419,16 @@ def test_set_effect_table_reads_its_own_runs_changes(store, capsys, monkeypatch)
         set_at=[(66, 1, "previous", CAFE % 0)],
         changes=[(1, "previous", CAFE % 1, CAFE % 0, 1)],
     )
-    query = evidence.run_query
+    table, saving = evidence.query_table, []
 
-    def then_a_probe(*args, **kwargs):
-        result = query(*args, **kwargs)
-        saved(store, [{"previous": CAFE % 1}])
-        return result
+    def after_a_probe(*args, **kwargs):
+        saving.append(probe_meanwhile(lambda: saved(store, [{"previous": CAFE % 1}])))
+        return table(*args, **kwargs)
 
-    monkeypatch.setattr(evidence, "run_query", then_a_probe)
-    (row,) = [
-        line for line in text(capsys, store, "set_effect").splitlines() if " previous " in line
-    ]
+    monkeypatch.setattr(evidence, "query_table", after_a_probe)
+    shown = text(capsys, store, "set_effect")
+    saving[0].join()
+    (row,) = [line for line in shown.splitlines() if " previous " in line]
     assert row.endswith(
         "previous: …1}, {'text': 'Café', 'level': 1}] -> …1}, {'text': 'Café', 'level': 0}]"
     ), row
@@ -426,18 +437,83 @@ def test_set_effect_table_reads_its_own_runs_changes(store, capsys, monkeypatch)
 def test_diff_notes_read_the_runs_its_rows_came_from(store, monkeypatch):
     for calls in (["'A'", "'B'"], ["'B'", "'A'"]):
         saved(store, [{"key": k, "call": c} for k, c in zip("12", calls)], line=10)
-    unaligned = evidence._unaligned
+    unaligned, saving = evidence._unaligned, []
 
     def after_a_probe(path, params):
         # Runs 2 and 3 are alike: notes on them would say nothing.
-        saved(store, [{"key": k, "call": c} for k, c in zip("12", ["'B'", "'A'"])], line=10)
+        rows = [{"key": k, "call": c} for k, c in zip("12", ["'B'", "'A'"])]
+        saving.append(probe_meanwhile(lambda: saved(store, rows, line=10)))
         return unaligned(path, params)
 
     monkeypatch.setattr(evidence, "_unaligned", after_a_probe)
     result = evidence.run_query(store, "diff")
+    saving[0].join()
     assert {(row["run_a"], row["run_b"]) for row in result["rows"]} == {(1, 2)}
     (note,) = result["notes"]
     assert note.startswith(
         "`key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the same "
         "values of `call` in another order"
     ), note
+
+
+def full_store(store):
+    """Runs 1 and 2, `call` A, B against B, A (another order, no change between them),
+    then runs 3 to 500: the next save, run 501, evicts run 1 (MAX_RUNS)."""
+    assert evidence.MAX_RUNS == 500
+    for calls in (["'A'", "'B'"], ["'B'", "'A'"]):
+        saved(store, [{"key": k, "call": c} for k, c in zip("12", calls)], line=10)
+    connection = evidence._ensure(store)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "WITH RECURSIVE n(i) AS (SELECT 3 UNION ALL SELECT i + 1 FROM n WHERE i < 500) "
+            "INSERT INTO runs (run_id, started_at, program, line, status, hits) "
+            "SELECT i, started_at, program, line, status, hits FROM n, runs WHERE run_id = 2"
+        )
+        connection.execute("COMMIT")
+    finally:
+        connection.close()
+    return [{"key": k, "call": "'C'"} for k in "12"]
+
+
+def test_a_run_evicted_after_the_rows_never_silences_the_alignment_note(store, monkeypatch):
+    # Review 3 of PR #269: `diff --param a=1 --param b=2` read its rows; a probe saved run
+    # 501, evicting run 1; `_unaligned` then found no pair and said nothing, so the
+    # reorder warning vanished.
+    other = full_store(store)
+    unaligned, saving = evidence._unaligned, []
+
+    def after_a_probe(path, params):
+        saving.append(probe_meanwhile(lambda: saved(store, other, line=10)))
+        return unaligned(path, params)
+
+    monkeypatch.setattr(evidence, "_unaligned", after_a_probe)
+    result = evidence.run_query(store, "diff", {"a": 1, "b": 2})
+    saving[0].join()
+    (note,) = result["notes"]
+    assert note.startswith(
+        "`key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the same "
+        "values of `call` in another order"
+    ), note
+    # The probe did save run 501, and it evicted run 1, once the query was done.
+    runs = evidence.query(store, "SELECT MIN(run_id) AS first, MAX(run_id) AS last FROM runs")
+    assert runs["rows"] == [{"first": 2, "last": 501}]
+
+
+def test_a_run_gone_before_the_notes_is_said_never_silent(store, monkeypatch):
+    # The backstop, without the snapshot: the run goes between the rows and the notes,
+    # and the note says what could not be checked.
+    other = full_store(store)
+    unaligned = evidence._unaligned
+
+    def after_a_probe(path, params):
+        saved(store, other, line=10)
+        return unaligned(path, params)
+
+    monkeypatch.setattr(evidence, "_unaligned", after_a_probe)
+    monkeypatch.setattr(evidence, "_snapshot", lambda path: contextlib.nullcontext(), raising=False)
+    result = evidence.run_query(store, "diff", {"a": 1, "b": 2})
+    assert result["notes"] == [
+        "alignment, labels and older-run warnings could not be checked: run 1 was removed "
+        "after the rows were read; run the query again"
+    ]

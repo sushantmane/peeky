@@ -7,6 +7,8 @@ program is a new probe. Queries are read-only, one statement at a time, and boun
 in rows, time and value size; SQL never reaches a debugger or a debuggee.
 """
 
+import contextlib
+import contextvars
 import json
 import math
 import os
@@ -1249,22 +1251,20 @@ def _open_read_only(path):
     return connection
 
 
-def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
-    """Run one read-only SQL statement over the store; rows are capped at ``limit``."""
-    if not isinstance(sql, str) or not sql.strip():
-        raise ValueError("Evidence query failed: the SQL is empty")
-    if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
-        raise ValueError(f"Evidence query failed: --limit must be within 1..{MAX_ROWS}")
+def _reader(path, *, snapshot=False):
+    """(connection, clock): a read-only connection to the store, bounded as queries are,
+    whose SQL functions and progress handler stop at ``clock["deadline"]`` (each query
+    sets its own). With ``snapshot``, it holds one read transaction from here on."""
     connection = _open_read_only(path)
     # Each value, each row's width and the whole result are bounded.
     connection.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
     connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, MAX_COLUMNS)
-    deadline = time.monotonic() + seconds
+    clock = {"deadline": time.monotonic() + QUERY_SECONDS}
 
     def no_addresses(value, language=None):
         # SQLite checks the deadline only between VM steps, never inside a Python
         # function: a query calling it many times per row checks here too.
-        if time.monotonic() > deadline:
+        if time.monotonic() > clock["deadline"]:
             raise sqlite3.OperationalError("interrupted: query deadline")
         return _no_addresses(value, language)
 
@@ -1273,7 +1273,7 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
 
     def bounded(function):
         def call(*values):
-            if time.monotonic() > deadline:
+            if time.monotonic() > clock["deadline"]:
                 raise sqlite3.OperationalError("interrupted: query deadline")
             return function(*values)
 
@@ -1288,8 +1288,62 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
+    if snapshot:
+        try:
+            # Before the authorizer, which allows reads only. The store keeps SQLite's
+            # rollback journal: the first read takes a shared lock, held until the
+            # connection closes, so no save commits meanwhile (it waits, as for any
+            # reader), and every read sees the store as it was then.
+            connection.execute("BEGIN")
+            connection.execute("SELECT COUNT(*) FROM runs").fetchall()
+        except BaseException:
+            connection.close()
+            raise
     connection.set_authorizer(_authorize)
-    connection.set_progress_handler(lambda: time.monotonic() > deadline, 10000)
+    connection.set_progress_handler(lambda: time.monotonic() > clock["deadline"], 10000)
+    return connection, clock
+
+
+# The connection a canned query reads through (path, connection, clock): one read
+# transaction for its rows, its notes and its text table (review 3 of PR #269: a probe
+# that saved run 501 evicted run 1 between `diff`'s rows and its notes, and the
+# alignment note vanished).
+_SNAPSHOT = contextvars.ContextVar("peeky_evidence_snapshot", default=None)
+
+
+@contextlib.contextmanager
+def _snapshot(path):
+    """Every ``query`` on ``path`` in this block reads one snapshot of the store."""
+    path = Path(path).absolute()
+    held = _SNAPSHOT.get()
+    if held is not None and held[0] == path:
+        yield
+        return
+    connection, clock = _reader(path, snapshot=True)
+    token = _SNAPSHOT.set((path, connection, clock))
+    try:
+        yield
+    finally:
+        _SNAPSHOT.reset(token)
+        # Closing ends the read transaction.
+        connection.close()
+
+
+def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
+    """Run one read-only SQL statement over the store; rows are capped at ``limit``.
+    Inside ``_snapshot``, it reads that snapshot."""
+    if not isinstance(sql, str) or not sql.strip():
+        raise ValueError("Evidence query failed: the SQL is empty")
+    if type(limit) is not int or not 1 <= limit <= MAX_ROWS:
+        raise ValueError(f"Evidence query failed: --limit must be within 1..{MAX_ROWS}")
+    held = _SNAPSHOT.get()
+    if held is not None and held[0] == Path(path).absolute():
+        _, connection, clock = held
+        owned = False
+    else:
+        connection, clock = _reader(path)
+        owned = True
+    deadline = clock["deadline"] = time.monotonic() + seconds
     rows, size, cut = [], 0, None
     try:
         cursor = connection.execute(sql, params or {})
@@ -1334,7 +1388,8 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
             )
         raise ValueError(f"Evidence query failed: {message}") from exc
     finally:
-        connection.close()
+        if owned:
+            connection.close()
     shaped = {
         "columns": columns,
         "rows": [dict(zip(columns, map(_cell, row))) for row in rows],
@@ -1760,13 +1815,8 @@ def _listed(items):
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def prepare(path, name, params=None):
-    """``params`` checked for canned query ``name``, with the runs it reads named: `run`
-    (default: the newest), or `a` and `b` (default: the run before b, and the newest).
-    Each is resolved once, so that the query, its notes and its text table read the same
-    runs, though a probe may save a newer one meanwhile (review 2 of PR #269: `join`'s
-    table compared runs 2 and 3 for a result of runs 1 and 2). A run that does not
-    resolve stays unnamed, so the query says why."""
+def _checked(name, params):
+    """``params`` for canned query ``name``, checked before the store is read."""
     if name not in QUERIES:
         raise ValueError(
             f"Evidence query failed: no canned query {name!r}; one of: {', '.join(QUERIES)}"
@@ -1778,37 +1828,93 @@ def prepare(path, name, params=None):
             f"Evidence query failed: {name} does not take {', '.join(unknown)}; it takes: "
             + (", ".join(accepted) or "no parameters")
         )
-    if name in _PAIRS:
-        _require_runs(path, params)
     if missing := [param for param in required if params.get(param) is None]:
         raise ValueError(
             f"Evidence query failed: {name} needs "
             + " ".join(f"--param {param}=<value>" for param in missing)
         )
-    if {"a", "b"} <= set(accepted):
-        named = {"a": _A, "b": _B}
-    elif "run" in accepted:
-        named = {"run": _RUN}
-    else:
-        return params
-    if all(params.get(run) is not None for run in named):
-        return params
-    found = query(
-        path,
-        "SELECT " + ", ".join(f"{sql} AS {run}" for run, sql in named.items()),
-        {**dict.fromkeys(named), **params},
-    )["rows"][0]
+    return params
+
+
+def prepare(path, name, params=None):
+    """``params`` checked for canned query ``name``, with the runs it reads named: `run`
+    (default: the newest), or `a` and `b` (default: the run before b, and the newest).
+    Each is resolved once, so that the query, its notes and its text table read the same
+    runs, though a probe may save a newer one meanwhile (review 2 of PR #269: `join`'s
+    table compared runs 2 and 3 for a result of runs 1 and 2). A run that does not
+    resolve stays unnamed, so the query says why."""
+    params = _checked(name, params)
+    accepted = QUERIES[name][2]
+    with _snapshot(path):
+        if name in _PAIRS:
+            _require_runs(path, params)
+        if {"a", "b"} <= set(accepted):
+            named = {"a": _A, "b": _B}
+        elif "run" in accepted:
+            named = {"run": _RUN}
+        else:
+            return params
+        if all(params.get(run) is not None for run in named):
+            return params
+        found = query(
+            path,
+            "SELECT " + ", ".join(f"{sql} AS {run}" for run, sql in named.items()),
+            {**dict.fromkeys(named), **params},
+        )["rows"][0]
     return {
         **params,
         **{run: found[run] for run in named if params.get(run) is None and found[run] is not None},
     }
 
 
+def _present(path, runs):
+    """Which of ``runs`` (run ids) the store holds."""
+    if not runs:
+        return []
+    found = query(path, f"SELECT run_id FROM runs WHERE run_id IN ({', '.join(map(str, runs))})")[
+        "rows"
+    ]
+    held = {row["run_id"] for row in found}
+    return [run for run in runs if run in held]
+
+
+# What a query checks after reading its rows, for the note where a run went meanwhile.
+_CHECKS = {
+    "diff": "alignment, labels and older-run warnings",
+    "compare": "labels and older-run warnings",
+}
+
+
 def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
-    """Run a canned query by name with optional parameters (see ``prepare``)."""
+    """Run a canned query by name with optional parameters (see ``prepare``): its rows
+    and notes from one snapshot of the store."""
+    params = _checked(name, params)
+    with _snapshot(path):
+        return _run(path, name, params, limit)[0]
+
+
+def canned(path, name, params=None, *, limit=DEFAULT_ROWS, table=False):
+    """(result, text): ``run_query``'s result and, with ``table``, its text table
+    (``query_table``), all read in one snapshot of the store."""
+    params = _checked(name, params)
+    with _snapshot(path):
+        result, params = _run(path, name, params, limit)
+        text = query_table(path, {**result, "query": name}, params) if table else None
+    return result, text
+
+
+def _run(path, name, params, limit):
+    """(result, params): a canned query's rows and notes, and the params naming its
+    runs. Run inside ``_snapshot``, which keeps every run it reads; should a run it
+    named go before its notes are read all the same, a note says what they could not
+    check, never nothing (review 3 of PR #269)."""
     params = prepare(path, name, params)
     _, sql, accepted, _ = QUERIES[name]
     bound = {**dict.fromkeys(accepted), **params}
+    named = list(
+        dict.fromkeys(params[run] for run in ("a", "b", "run") if type(params.get(run)) is int)
+    )
+    held = _present(path, named)
     if callable(sql):
         # Built for the runs named (a column per selector): shown, to refine with peeky sql.
         built, extra, notes = sql(path, params)
@@ -1823,6 +1929,13 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
         notes += unaligned
         if counted:
             notes += _after_first(path, sql, bound)
+    if gone := [run for run in held if run not in _present(path, held)]:
+        one = len(gone) == 1
+        notes.append(
+            f"{_CHECKS.get(name, 'older-run warnings')} could not be checked: "
+            f"run{'' if one else 's'} {_listed([str(run) for run in gone])} "
+            f"{'was' if one else 'were'} removed after the rows were read; run the query again"
+        )
     if "stop" in result["columns"] and all(row.get("stop") is None for row in result["rows"]):
         # No row was at one of several breakpoint locations of its line (Python and Java
         # never are): the column would be empty (eighth evaluation, L7).
@@ -1831,7 +1944,7 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
             "columns": [column for column in result["columns"] if column != "stop"],
             "rows": [{k: v for k, v in row.items() if k != "stop"} for row in result["rows"]],
         }
-    return {**result, "notes": notes} if notes else result
+    return ({**result, "notes": notes} if notes else result), params
 
 
 def _labels(path, params):
