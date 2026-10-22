@@ -16,6 +16,8 @@ import threading
 import time
 from pathlib import Path
 
+from peeky.textlines import split_lines
+
 # Bound at import: a caller (or a test) replacing subprocess.Popen must not change what
 # lists the processes Peeky ends.
 _POPEN = subprocess.Popen
@@ -97,7 +99,7 @@ def table():
     if listing is None:
         return None
     found = {}
-    for line in listing.splitlines():
+    for line in split_lines(listing):
         parts = line.split(None, 4)
         if len(parts) == 5 and all(part.isdigit() for part in parts[:3]):
             # macOS `ps` gives no session id (`sess` is 0): asked of each process.

@@ -39,6 +39,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from peeky.rust_ir import ir_string
+from peeky.textlines import split_lines
+
 MAX_MIR_BYTES = 64 * 1024 * 1024
 MAX_ITERATIONS = 10_000
 # The dataflow's budget per reachable block, beyond MAX_ITERATIONS in all.
@@ -2584,7 +2587,7 @@ def _top_level(text):
 
 def parse_body(text):
     """One `-Zdump-mir` body, or None when the file holds no function body."""
-    lines = text.splitlines()
+    lines = split_lines(text)
     start = next((i for i, line in enumerate(lines) if line.startswith("fn ")), None)
     if start is None or not (header := _HEADER.match(lines[start])):
         return None
@@ -2794,7 +2797,8 @@ def load_bodies(directory, crate):
         return []
     bodies = []
     for path in files:
-        body = parse_body(path.read_text(encoding="utf-8", errors="replace"))
+        # As rustc wrote it: no newline translation, and no byte read as another (#188).
+        body = parse_body(path.read_bytes().decode("utf-8", errors="surrogateescape"))
         if body is not None:
             bodies.append(body)
     return bodies
@@ -2936,7 +2940,8 @@ class IrFunction:
 
 
 def _unquote(value):
-    return value[1:-1] if value and value.startswith('"') else value
+    """A metadata field's value: a quoted string's text (ir_string), else as written."""
+    return ir_string(value[1:-1]) if value and value.startswith('"') else value
 
 
 def ir_functions(path, files):
@@ -2945,7 +2950,8 @@ def ir_functions(path, files):
     if path.stat().st_size > 256 * 1024 * 1024:
         return {}
     raw, meta, current, pending = [], {}, None, ""
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    # Bytes not UTF-8 stay apart (surrogates ir_string refuses), never one `\ufffd`.
+    with path.open(encoding="utf-8", errors="surrogateescape", newline="") as stream:
         for line in stream:
             if line.startswith("!"):
                 if found := _META_LIST.match(line):
@@ -2954,9 +2960,11 @@ def ir_functions(path, files):
                     meta[found[1]] = (
                         found[2],
                         {
-                            key: _unquote(m[1])
+                            key: value
                             for key, pattern in _METAFIELDS.items()
                             if (m := pattern.search(found[3]))
+                            # A string LLVM does not write names nothing (#188 review).
+                            and (value := _unquote(m[1])) is not None
                         },
                     )
                 continue

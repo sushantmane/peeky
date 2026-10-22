@@ -23,6 +23,7 @@ from peeky.adapters import PythonAdapter
 from peeky.errors import Refused, classify
 from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function, function_labels, shortened_note
+from peeky.textlines import split_lines
 from peeky.worker import (
     DebugWorker,
     load_java_target,
@@ -2834,9 +2835,10 @@ UNAPPLIED_EXIT = 4
 
 
 def probe_exit_code(result):
-    """`peeky probe`'s and `peeky-probe`'s exit code: 0; 2 for a probe refused before it
-    ran (nothing ran: a refusal, as for any request Peeky turns down; seventh evaluation,
-    finding 14); 1 for any other probe that did not complete; or UNAPPLIED_EXIT."""
+    """`peeky probe`'s and `peeky-probe`'s exit code: 0; 2 for a probe refused before
+    launch (the debugger's launch or attach request was not sent: a refusal, as for any
+    request Peeky turns down; seventh evaluation, finding 14; #190); 1 for any other probe
+    that did not complete; or UNAPPLIED_EXIT."""
     if result.get("refused_before_launch"):
         return 2
     if result.get("status") != "completed":
@@ -2955,13 +2957,21 @@ def _expected_line(breakpoint, state, requested):
     return line
 
 
-def run_probe(root, probe, *, adapter=None, progress=None):
+def run_probe(root, probe, *, adapter=None, progress=None, launch_budget=None, launch_marker=None):
     """Run one self-contained probe; the worker is always closed before returning.
 
-    ``progress(message)`` receives human-readable milestones (never parsed).
+    ``progress(message)`` receives human-readable milestones (never parsed). A worker's
+    probe child passes ``launch_budget`` (seconds, at most the worker's own) so its
+    launch ends before the worker's watchdog, and ``launch_marker``, a file written just
+    before the debugger is asked to start the program (#190 review).
     """
     say = progress or (lambda message: None)
+    if launch_budget is not None and not launch_budget > 0:
+        raise ValueError("--launch-budget must be positive")
     worker = DebugWorker(root, adapter=adapter)
+    if launch_budget is not None:
+        worker.launch_deadline_s = min(worker.launch_deadline_s, launch_budget)
+    worker.launch_marker = launch_marker
     started = time.monotonic()
     deadline = started + probe.timeout
     result = {
@@ -3001,6 +3011,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
     # `returning` holds the calls still to return, innermost last: {hit, depth, thread}.
     wants_return, returning = RETURN in probe.capture, []
     selectors = tuple(selector for selector in probe.capture if selector != RETURN)
+    # Whether the worker was asked to launch: an error before that, or one the worker
+    # says came before it asked the debugger to start the program, is one before launch.
+    launching = False
     try:
         if wants_return and isinstance(worker.adapter, PythonAdapter):
             refused = ValueError(
@@ -3008,7 +3021,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
                 "one only by writing it into the program's globals (__pydevd_ret_val_dict), "
                 "which the program could see; capture what the caller stores instead"
             )
-            # Nothing ran: no run is kept as evidence.
+            # Refused before the launch request: no run is kept as evidence.
             refused.before_launch = True
             raise refused
         if probe.edit:
@@ -3021,6 +3034,7 @@ def run_probe(root, probe, *, adapter=None, progress=None):
             result["candidate"] = {"line": line, "original_line": probe.line}
         # The capture line first, then each --set-at line, each once.
         lines = list(dict.fromkeys([line, *(point["build_line"] for point in points)]))
+        launching = True
         launch = worker.dispatch(
             "launch",
             {
@@ -3565,8 +3579,9 @@ def run_probe(root, probe, *, adapter=None, progress=None):
         from peeky.errors import classify
 
         result.update(status="failed", error=classify(exc, session_closed=True))
-        if getattr(exc, "before_launch", False):
-            # Nothing ran (#138): no run to keep as evidence.
+        if getattr(exc, "before_launch", False) or not launching:
+            # The debugger's launch or attach request was not sent (#138, #190): no
+            # run to keep as evidence, and no table.
             result["refused_before_launch"] = True
         if session is not None:
             # What the program printed before the failure says how far it got.
@@ -3837,7 +3852,7 @@ def _table(result, short_names=True):
     (`_short_note`), which `peeky probe` gives once per state directory."""
     lines = []
     if result.get("refused_before_launch"):
-        # Nothing ran (#138): no rows, hits or timing to show, only why (seventh
+        # Refused before launch (#138): no rows, hits or timing to show, only why (seventh
         # evaluation, finding 14).
         lines.extend(f"warning: {warning}" for warning in result.get("warnings", ()))
         error = result.get("error") or {}
@@ -3970,7 +3985,7 @@ def _table(result, short_names=True):
             if result.get("status") == "failed"
             else "output so far (the program was still running):"
         )
-        lines.extend("  " + line for line in result["output"].splitlines()[-20:])
+        lines.extend("  " + line for line in split_lines(result["output"])[-20:])
     return "\n".join(lines)
 
 
