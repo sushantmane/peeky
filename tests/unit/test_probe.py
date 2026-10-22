@@ -589,12 +589,6 @@ def test_each_rust_note_names_every_gate_on_what_peeky_reads():
             "only in the innermost frame",
             "integer, bool, float, char and String fields",
         ),
-        "_RAW_STR_RUST": (
-            "a parameter past the line declaring it",
-            "in the innermost frame a local the code still uses ahead",
-            "unoptimized build",
-            "no unsafe code",
-        ),
         "_UNPROVEN_RUST": (
             "never follows a raw pointer",
             "a value the MIR proves live",

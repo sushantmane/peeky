@@ -1164,14 +1164,6 @@ def _composite_note(variable, selector):
     return _rust_note(_LENT_COMPOSITE_RUST if lent else _COMPOSITE_RUST, variable, selector)
 
 
-# A `&str` row left as LLDB shows it where the worker gives no reason (#260).
-_RAW_STR_RUST = (
-    "This Rust &str shows LLDB's summary (its type and address), not its text: Peeky reads "
-    "a &str's text only where it can show that what it points at still stands: a "
-    "parameter past the line declaring it (a &mut one in the innermost frame), or in the "
-    "innermost frame a local the code still uses ahead, in an unoptimized build of a crate "
-    "with no unsafe code. {length}"
-)
 _UNPROVEN_RUST = (
     "this Rust Box, or pointer, shows only its pointer, which can reach freed memory: "
     "read a plain function's own local where it is live, or capture what it holds where "
@@ -1270,7 +1262,6 @@ _RUST_NOTE_OPENINGS = tuple(
         _UNREAD_RUST,
         _COMPOSITE_RUST,
         _LENT_COMPOSITE_RUST,
-        _RAW_STR_RUST,
         _STALE_RUST,
     )
 ) + (
@@ -1729,8 +1720,6 @@ def _capture(
                     row["note"] = _unread_note(variable, selector)
                 elif "view" not in variable and _rust_composite(_lldb_type(variable)):
                     row["note"] = _composite_note(variable, selector)
-                elif "view" not in variable and _lldb_type(variable) in ("&str", "&mut str"):
-                    row["note"] = _rust_note(_RAW_STR_RUST, variable, selector)
                 elif isinstance(variable.get("note"), str):
                     # A value the runtime shows but cannot vouch for (C, C++: a line a loop
                     # returns to; initialization not judged), or one read through it (#148).
