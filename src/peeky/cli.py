@@ -30,7 +30,7 @@ from pathlib import Path
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
-from peeky.identifiers import is_located, is_name, look_alike
+from peeky.identifiers import is_name, look_alike, selectable
 from peeky.probe import (
     CANDIDATE_NEEDS_BUILD,
     MAX_EDITS,
@@ -1450,7 +1450,7 @@ def _variables_text(snapshot, name="default"):
         for variable in scope["variables"]:
             more = (
                 f" (children: peeky session get {variable['name']}{reads})"
-                if variable.get("variablesReference") and is_name(variable["name"], limit=None)
+                if variable.get("variablesReference") and is_name(variable["name"])
                 else ""
             )
             if variable.get("unavailable"):
@@ -1458,10 +1458,7 @@ def _variables_text(snapshot, name="default"):
             elif variable["name"] in PYDEVD_GROUPS and not variable.get("type"):
                 lines.append(f"  ({variable['name']}: debugpy's group; select its members by name)")
                 continue
-            elif not (
-                is_name(variable["name"], limit=None)
-                or is_located(variable["name"], r" @ .+", limit=None)
-            ):
+            elif not selectable(variable["name"]):
                 # LLDB's `(Return Value)` after `step --out`, debugpy's `special variables`.
                 more = " [not selectable]"
             if variable["name"] in alike:

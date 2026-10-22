@@ -269,3 +269,191 @@ def test_inspect_says_which_spelling_each_look_alike_row_is():
     ) in text
     assert f"{NFD}: int = 7  [settable] [written {ascii(NFD)}: another" in text
     assert "t @ a.c:3: int = 1\n" in text
+
+
+# Review of #199: what the worker takes over HTTP is held to the selector's name policy,
+# and only a row a selector can read whole is offered or marked [settable].
+REFUSED_NAMES = [
+    "a\u200db",  # an invisible character: the CLI refuses it
+    "a\u200bb",
+    "\u3164",
+    "p.\u202ex",
+    "x;expr evil",  # punctuation and spaces
+    "a b",
+    "x.y",
+    "s @ a.c:3; rm",
+    "ñ" * 129,  # past the 128 characters a selector's name may hold
+    "n" * 129,
+    "",
+]
+
+
+class Listing:
+    """A debugger whose every scope and value lists one variable named ``name``."""
+
+    def __init__(self, name):
+        self.name, self.calls = name, []
+
+    def request(self, command, args):
+        self.calls.append(command)
+        return {"variables": [{"name": self.name, "value": "1", "variablesReference": 0}]}
+
+    def close(self):
+        pass
+
+
+def _stopped(tmp_path, name):
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    worker.dap = Listing(name)
+    worker.session, worker.state, worker.stop_id, worker.thread_id = "s", "stopped", "t", 1
+    worker.capabilities = {"supports_set_variable": True, "supports_member_set": True}
+    worker.references, worker.reference_adapter = {7}, {7: 7}
+    return worker
+
+
+@pytest.mark.parametrize("name", REFUSED_NAMES)
+def test_the_worker_never_changes_a_variable_no_selector_can_name(tmp_path, name):
+    worker = _stopped(tmp_path, name)
+    for target, message in (({"reference": 7}, "a local's name"), ({"handle": 3}, "a field's")):
+        with pytest.raises(ValueError, match=f"set_variable's name must be {message}"):
+            worker.dispatch(
+                "set_variable",
+                {"session_id": "s", "stop_id": "t", **target, "name": name, "value": "1"},
+            )
+    assert worker.dap.calls == []
+
+
+@pytest.mark.parametrize(
+    "target, name",
+    [
+        ({"reference": 7}, "ñ" * 128),
+        ({"reference": 7}, NFD),
+        ({"reference": 7}, "größe @ main.rs:3"),
+        ({"handle": 3}, "zähler"),
+        ({"handle": 3}, "[3]"),  # LLDB's element
+        ({"handle": 3}, "3"),  # java-debug's
+    ],
+)
+def test_the_worker_takes_the_names_a_change_can_give(target, name):
+    from peeky.worker import DebugWorker
+
+    DebugWorker.validate(
+        "set_variable", {"session_id": "s", "stop_id": "t", **target, "name": name, "value": "1"}
+    )
+
+
+@pytest.mark.parametrize("name", ["[03]", "[-1]", "03", "-1", "['k']", "[#0]"])
+def test_a_member_change_names_an_element_as_the_debugger_does(tmp_path, name):
+    from peeky.worker import DebugWorker
+
+    with pytest.raises(ValueError, match="set_variable's name must be a field's"):
+        DebugWorker.validate(
+            "set_variable",
+            {"session_id": "s", "stop_id": "t", "handle": 3, "name": name, "value": "1"},
+        )
+
+
+@pytest.mark.parametrize("name", REFUSED_NAMES[:-1])
+def test_a_launch_change_or_an_inspection_takes_only_selectors(name):
+    from peeky.worker import DebugWorker
+
+    if name != "x.y":  # a field's selector: a change's, never an inspection's name
+        with pytest.raises(ValueError, match="sets: Invalid selector"):
+            DebugWorker.validate("launch", {"program": "a.c", "sets": [{"line": 3, "name": name}]})
+    for field in ("names", "globals", "previews"):
+        with pytest.raises(ValueError, match=f"{field} must be"):
+            DebugWorker.validate("inspect", {"session_id": "s", field: [name]})
+
+
+def test_http_requests_are_held_to_the_name_policy(tmp_path):
+    import threading
+
+    from peeky.client import Client
+    from peeky.worker import make_server
+
+    token = "unit-test-secret-token-1234"
+    server = make_server(tmp_path, token, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", token)
+        for name in ("a\u200db", "x;expr evil", "ñ" * 129):
+            with pytest.raises(Exception, match="set_variable's name must be a local's name"):
+                client.call(
+                    "set_variable", session_id="s", stop_id="t", reference=1, name=name, value="1"
+                )
+            with pytest.raises(Exception, match="set_variable's name must be a field's"):
+                client.call(
+                    "set_variable", session_id="s", stop_id="t", handle=1, name=name, value="1"
+                )
+            with pytest.raises(Exception, match="names must be a list"):
+                client.call("inspect", session_id="s", stop_id="t", names=[name])
+            with pytest.raises(Exception, match="sets: Invalid selector"):
+                client.call("launch", program="a.c", sets=[{"line": 3, "name": name}])
+            with pytest.raises(Exception, match="Invalid selector"):
+                client.call("probe", at="a.c:3", capture=[name])
+            with pytest.raises(Exception, match="Invalid selector"):
+                client.call("probe", at="a.c:3", set={name: "1"})
+            with pytest.raises(Exception, match="Invalid selector"):
+                client.call("probe", at="a.c:3", set_at=[[4, 1, name, "1"]])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+LONG, LONGER = "n" * 128, "n" * 129
+
+
+def test_a_row_past_128_characters_is_never_offered_or_marked_settable():
+    from peeky.cli import _variables_text
+
+    rows = [
+        {"name": LONG, "type": "S", "value": "{...}", "variablesReference": 4},
+        {"name": LONGER, "type": "S", "value": "{...}", "variablesReference": 5},
+        # A file name a selector cannot write (a space) is no selectable place either.
+        {"name": "t @ my file.c:3", "type": "int", "value": "1"},
+        {"name": "t @ main.c:5", "type": "int", "value": "2"},
+    ]
+    text = _variables_text(
+        {
+            "frames": [{"source": {"path": "a.c"}, "line": 3}],
+            "scopes": [{"name": "Locals", "variables": rows}],
+        }
+    )
+    assert f"{LONG}: S = {{...}} (children: peeky session get {LONG})" in text
+    assert f"{LONGER}: S = {{...}} [not selectable]" in text
+    assert "t @ my file.c:3: int = 1 [not selectable]" in text
+    assert "t @ main.c:5: int = 2\n" in text + "\n"
+
+
+@pytest.mark.parametrize(
+    "name, writable",
+    [
+        (LONG, True),
+        (LONGER, False),
+        (f"{LONG} @ main.c:15", True),
+        (f"{LONGER} @ main.c:15", False),
+        ("n @ my file.c:15", False),
+        ("n @ main.c:015", False),  # LLDB never writes a line so; a selector reads it as 15
+    ],
+)
+def test_lldb_integers_are_writable_only_under_a_name_a_selector_reads(name, writable):
+    from peeky.native import _writable_integer
+    from peeky.probe import parse_selector
+
+    assert _writable_integer({"name": name, "type": "int", "variablesReference": 0}) is writable
+    if writable:
+        assert parse_selector(name) == [name]
+
+
+def test_java_locals_and_members_past_128_characters_are_not_settable():
+    from peeky.java import JavaSession
+
+    assert JavaSession.settable(None, {"name": LONG, "type": "int"}) is True
+    assert JavaSession.settable(None, {"name": LONGER, "type": "int"}) is False
+    assert JavaSession.member_settable(None, {"name": LONGER, "type": "int"}) == (
+        "no selector names it"
+    )

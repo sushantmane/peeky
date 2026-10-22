@@ -18,7 +18,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
-from peeky.identifiers import is_located, is_name
+from peeky.identifiers import is_located, is_name, member_name
 from peeky.names import display_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
@@ -1476,6 +1476,14 @@ class DebugWorker:
                     "sets must be a list of at most 8 {line, name} changes (a positive line; "
                     "text: true for a text)"
                 )
+            from peeky.probe import parse_selector
+
+            for change in changes:
+                # Each name is a selector, as a probe's --set and --set-at take it.
+                try:
+                    parse_selector(change["name"])
+                except ValueError as exc:
+                    raise ValueError(f"sets: {exc}") from None
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
@@ -1546,6 +1554,13 @@ class DebugWorker:
                 raise ValueError("reference must be an integer")
             if not isinstance(args.get("name"), str) or not isinstance(args.get("value"), str):
                 raise ValueError("name and value must be strings")
+            # Only what a selector can name (#195): a change never reaches a variable the
+            # CLI could not select, such as one whose name holds an invisible character.
+            name = args["name"]
+            if "reference" in args and not (is_name(name) or is_located(name, _SHADOWED_PLACE)):
+                raise ValueError(_SET_NAME)
+            if "handle" in args and not member_name(name):
+                raise ValueError(_SET_MEMBER)
 
     def _dispatch(self, operation, args):
         runtime = self.runtime or self.adapter
@@ -3973,13 +3988,25 @@ def _name_list(value):
         and all(
             isinstance(name, str)
             and len(name) <= 400
-            and (is_name(name, limit=None) or is_located(name, _SHADOWED_PLACE))
+            and (is_name(name) or is_located(name, _SHADOWED_PLACE))
             for name in value
         )
     )
 
 
 _SHADOWED_PLACE = re.compile(r" @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
+_NAMED = (
+    "a Unicode identifier of at most 128 characters with no invisible character (U+200B, "
+    "U+200D, a bidi control)"
+)
+_SET_NAME = (
+    f"set_variable's name must be a local's name a selector can write: {_NAMED}, or one "
+    "LLDB gives with where it is declared (`s @ main.rs:81`)"
+)
+_SET_MEMBER = (
+    f"set_variable's name must be a field's name a selector can write ({_NAMED}) or an "
+    "element's index as the debugger names it (`[3]`, `3`)"
+)
 
 
 def _display_path(runtime, path):

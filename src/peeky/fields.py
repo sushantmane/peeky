@@ -421,7 +421,7 @@ def held_container(graph, root, name, steps, dereference=False):
                 if _packed(graph, node):
                     raise Unsettable(f"`{path}` is a packed {kind} ({shown})")
                 found = [member for member in members if member[0] == step]
-                if len(found) != 1 or not is_name(step, limit=None):
+                if len(found) != 1 or not is_name(step):
                     raise Unsettable(
                         f"the debug information lists no field `{step}` in {shown}, the "
                         f"type of `{path}`"
@@ -501,7 +501,7 @@ def settable_member(graph, root, name, steps, owner=None):
                         f"`{path}` is a packed {kind} ({shown}): its fields may be misaligned"
                     )
                 found = [member for member in members if member[0] == step]
-                if len(found) != 1 or not is_name(step, limit=None):
+                if len(found) != 1 or not is_name(step):
                     raise Unsettable(
                         f"the debug information lists no field `{step}` in {shown}, the "
                         f"type of `{path}` (base classes and anonymous members are not "

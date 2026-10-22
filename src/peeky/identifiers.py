@@ -61,6 +61,26 @@ def is_located(text, place, limit=MAX_NAME):
     return re.fullmatch(place, text[end:]) is not None
 
 
+# Where LLDB says a local is declared (`s @ main.rs:81`), as `parse_selector` writes it
+# back: a name listed so is one a selector reads whole.
+_LISTED_PLACE = re.compile(r" @ [^\s:@\[\]'\"]{1,255}:(?:0|[1-9][0-9]{0,8})")
+# An element's index as a debugger names it: LLDB `[3]`, java-debug `3`.
+_INDEX = re.compile(r"\[(?:0|[1-9][0-9]{0,9})\]|0|[1-9][0-9]{0,9}")
+
+
+def selectable(name):
+    """Whether a row the debugger lists as ``name`` is one a selector reads whole, as
+    `parse_selector` reads it: a name, or one with where LLDB says it is declared. What
+    `inspect` offers, and what alone may be marked [settable]."""
+    return is_name(name) or is_located(name, _LISTED_PLACE)
+
+
+def member_name(name):
+    """Whether ``name`` is a field or element a change can name: a name, or an
+    element's index as the debugger names it (`[3]`, `3`)."""
+    return is_name(name) or (isinstance(name, str) and _INDEX.fullmatch(name) is not None)
+
+
 def invisible(text):
     """The first invisible character in ``text`` (format or default-ignorable, never
     ASCII) as `U+200B`, else None."""
