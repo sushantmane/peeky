@@ -916,6 +916,13 @@ def _state_held(body, name):
     )
 
 
+# Why a non-ASCII local the build's IR shows no binding of is not changed (_ir_unread).
+_IR_UNREAD = (
+    "the build's IR shows Peeky no binding of `{name}` (LLVM writes a non-ASCII name "
+    "quoted and escaped), so whether the program keeps it in memory is not known"
+)
+
+
 def _plain(name):
     """A local's name without where LLDB says it is declared (`s @ main.rs:81` is `s`,
     when several of that name are in scope); the IR's memory proof covers every local
@@ -1394,6 +1401,8 @@ class RustSession(NativeSession):
                 continue
             if any(self.memory.get((hashed, name)) is True for hashed in hashes):
                 continue
+            if any(self._ir_unread(hashed, name) for hashed in hashes):
+                continue
             whys = {why(hashed, name) for hashed in hashes}
             found[name] = min(whys, key=lambda each: (_never_rank(each), each))
         return found
@@ -1609,6 +1618,11 @@ class RustSession(NativeSession):
                     f"Rust mutation requires a local the program keeps in memory; {rule}. "
                     + advice.replace(", with this `--set`", ", with `--set` in the same probe")
                 )
+        if hashed and self._ir_unread(hashed[1], name):
+            raise ValueError(
+                "Rust mutation requires a local the program keeps in memory; "
+                + _IR_UNREAD.format(name=_plain(name))
+            )
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
@@ -1657,7 +1671,7 @@ class RustSession(NativeSession):
         if not hashed or not self.memory:
             return None
         plain = _plain(variable.get("name"))
-        if self.memory.get((hashed[1], plain)) is True:
+        if self.memory.get((hashed[1], plain)) is True or self._ir_unread(hashed[1], plain):
             return None
         proofs = getattr(self, "owned", None)
         if _state_held(proofs.body(hashed[1]) if proofs is not None else None, plain):
@@ -1674,6 +1688,17 @@ class RustSession(NativeSession):
         if kind in ("other", "some"):
             return f"another binding in a register (line {', '.join(map(str, lines))})"
         return "register"
+
+    def _ir_unread(self, hashed, name):
+        """Whether ``name`` (as LLDB names it) is not ASCII and the build's IR shows Peeky
+        no binding of it in the function ``hashed`` (#195): LLVM writes such a name
+        quoted and escaped (`%"\\C3\\B1"`), so its absence proves no register."""
+        plain = _plain(name)
+        return (
+            not plain.isascii()
+            and (hashed, plain) not in self.memory
+            and not (getattr(self, "declarations_ir", None) or {}).get((hashed, plain))
+        )
 
     def _not_in_memory(self, hashed, name, line=None, path=None):
         """Why the IR proves no memory for ``name`` (as LLDB names it: `x @ main.rs:5`
@@ -1898,6 +1923,9 @@ class RustSession(NativeSession):
             return ("state", plain)
         if kept is None and body is None:
             return ("unproven", plain)
+        if self._ir_unread(hashed, plain):
+            # Judged at the stop, which says why it is not changed.
+            return None
         parameter = body is not None and any(
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
@@ -2183,6 +2211,8 @@ class RustSession(NativeSession):
                 "Rust field and element changes need an unoptimized build (opt-level 0)"
             )
         hashed = _frame_hash(frame)
+        if hashed and self._ir_unread(hashed[1], name):
+            raise Unsettable(_IR_UNREAD.format(name=_plain(name)))
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             raise Unsettable(
                 f"the build's IR does not keep `{name}` in memory here (the debugger may "
