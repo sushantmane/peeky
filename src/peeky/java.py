@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from peeky.adapters import PythonAdapter
 from peeky.build import ArtifactSpec, BuildRecipe, Command, assert_current, prepare
 from peeky.digest import sha256_file, tree_fingerprint
+from peeky.identifiers import is_name
 from peeky.java_metadata import loop_header_stops
 from peeky.loop_headers import loop_header_note
 from peeky.text_sets import parse_text
@@ -590,8 +591,7 @@ class JavaSession:
         the value it holds: `Object o = "x"` shows `String`)."""
         name, kind = str(variable.get("name")), variable.get("type")
         if not (
-            kind in (*_JAVA_INTEGER_BITS, *_settable_kinds(self))
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            kind in (*_JAVA_INTEGER_BITS, *_settable_kinds(self)) and is_name(name, limit=None)
         ):
             return False
         declared = self.declared_local(frame, name) if frame else None
@@ -734,7 +734,7 @@ class JavaSession:
         hint = variable.get("presentationHint")
         attributes = hint.get("attributes") if isinstance(hint, dict) else None
         attributes = attributes if isinstance(attributes, list) else []
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]{0,9}", name):
+        if not (is_name(name, limit=None) or re.fullmatch(r"0|[1-9][0-9]{0,9}", name)):
             return "no selector names it"
         if "readOnly" in attributes:
             return "it is final"

@@ -43,6 +43,7 @@ from peeky.build import (
 from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
 from peeky.cxx_strings import libstdcxx_string, shows_text, string_class, text_like, tidy
 from peeky.digest import sha256_file
+from peeky.identifiers import is_located, is_name
 from peeky.names import standard_type, unicode_escape
 from peeky.text_sets import text_kind
 
@@ -2843,10 +2844,9 @@ def _writable_integer(variable):
         and "readOnly" not in attributes
         # A name a selector can give: also one LLDB gives with where it is declared,
         # when several of that name are in scope (`n @ main.c:15`).
-        and bool(
-            re.fullmatch(
-                r"[A-Za-z_][A-Za-z0-9_]*(?: @ [^\s:@]+:[0-9]+)?", str(variable.get("name", ""))
-            )
+        and (
+            is_name(str(variable.get("name", "")), limit=None)
+            or is_located(str(variable.get("name", "")), r" @ [^\s:@]+:[0-9]+", limit=None)
         )
     )
 

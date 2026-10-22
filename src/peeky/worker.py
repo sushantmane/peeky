@@ -18,6 +18,7 @@ from pathlib import Path
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, classify
+from peeky.identifiers import is_located, is_name
 from peeky.names import display_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
@@ -3963,22 +3964,22 @@ _BEFORE_LAUNCH = (
 
 
 def _name_list(value):
-    """A request's list of at most 32 Python-style names, or names LLDB gives a local
-    with where it is declared (`s @ main.rs:81`, when several of that name are in
-    scope)."""
+    """A request's list of at most 32 names a selector can write (a Unicode identifier
+    with no invisible character, #195), or names LLDB gives a local with where it is
+    declared (`s @ main.rs:81`, when several of that name are in scope)."""
     return (
         isinstance(value, list)
         and len(value) <= 32
         and all(
             isinstance(name, str)
             and len(name) <= 400
-            and (name.isidentifier() or bool(_SHADOWED_NAME.fullmatch(name)))
+            and (is_name(name, limit=None) or is_located(name, _SHADOWED_PLACE))
             for name in value
         )
     )
 
 
-_SHADOWED_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127} @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
+_SHADOWED_PLACE = re.compile(r" @ [^\s:@\[\]'\"]{1,255}:[0-9]{1,9}")
 
 
 def _display_path(runtime, path):
