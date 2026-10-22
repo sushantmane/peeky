@@ -232,9 +232,10 @@ changed there, says why instead:
   ([rule](#fields-the-jdk-declares));
 - `[not settable: its array is in a list held by …]` ([rule](#arrays-the-jdk-holds)).
 
-An element whose array Peeky couldn't check in time says `[maybe settable: …]`. Then `set` checks
-again when the change is made ([rule](#when-peeky-cant-tell-who-holds-an-array)). An object or
-array row has no mark: its type says it can't be set.
+An element that Peeky can't promise either way says `[maybe settable: …]`. Then `set` checks again
+when the change is made ([rule](#arrays-the-jdk-holds)). At a line breakpoint, that is every
+element that no JDK class holds: `[maybe settable: other threads are running; set checks again]`.
+An object or array row has no mark: its type says it can't be set.
 
 ### Change a local
 
@@ -389,8 +390,18 @@ peeky: [MUTATION_REJECTED] The debugger refused to change `ranking[1]` (Peeky ex
   hint: Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger itself refused this write, which no [settable] mark can promise.
 ```
 
-The program's own array, such as `choice`, stays `[settable]`. With a bundle built before this
-check, elements read `[maybe settable: …]`, which says to rebuild it.
+The program's own array, such as `choice`, can be changed. But at a line breakpoint its elements
+read `[maybe settable: other threads are running; set checks again]`:
+
+- java-debug stops only the thread that hit the breakpoint. The JVM's other threads run on.
+- One of them could put the array in a list that a JDK class holds before the change is made.
+- So Peeky reads what holds the array again at each listing, and keeps no verdict.
+- A change suspends every thread of the JVM while it checks and writes the element. Then the
+  threads run on, as before.
+
+An element is marked `[settable]` only at a stop where every thread is suspended, and no JDK class
+holds its array. With a bundle built before this check, elements read `[maybe settable: …]`, which
+says to rebuild it.
 
 ### Which lists' arrays are the program's
 

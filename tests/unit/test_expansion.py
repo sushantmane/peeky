@@ -484,15 +484,16 @@ class HolderBackend(MemberBackend):
 
 
 class HolderRuntime(MemberRuntime):
-    """Asks what holds an array before marking its elements (Java's launcher, #261)."""
+    """Asks what holds an array before marking its elements (Java's launcher, #261);
+    ``settled``: whether every thread was suspended, so the verdict lasts the stop."""
 
-    def __init__(self, held):
+    def __init__(self, held, settled=True):
         super().__init__()
-        self.held, self.asked = held, []
+        self.held, self.settled, self.asked = held, settled, []
 
     def array_holder(self, dap, array, pause_left_ms=None):
         self.asked.append(array["value"])
-        return self.held
+        return self.held, self.settled
 
 
 def array_handle(worker):
@@ -517,6 +518,26 @@ def test_an_elements_mark_follows_what_holds_its_array(member_worker, held):
     # Never for a field of an object.
     call(member_worker, "expand", handle=inspected(member_worker)[1])
     assert member_worker.runtime.asked == ["int[2]@5"]
+
+
+def test_a_verdict_made_while_other_threads_run_is_asked_again(member_worker):
+    # #261 review: a verdict cached for the stop went stale when a background thread
+    # wrapped the array's list in an unmodifiable view: `get` said settable, `set` refused.
+    from peeky.java import Unproven
+
+    running = Unproven("other threads are running; set checks again")
+    member_worker.dap = HolderBackend()
+    member_worker.runtime = HolderRuntime(running, settled=False)
+    for _ in range(2):
+        listed = call(member_worker, "expand", handle=array_handle(member_worker))["variables"]
+        assert [row.get("maybe_settable") for row in listed] == [str(running)] * 2
+        assert [row["settable"] for row in listed] == [False, False]
+    # Asked at each listing, never kept.
+    assert member_worker.runtime.asked == ["int[2]@5"] * 2
+    # What another thread did since is seen at the next listing.
+    member_worker.runtime.held = "its array is held by java.util.Fake.a (the JDK's own state)"
+    listed = call(member_worker, "expand", handle=array_handle(member_worker))["variables"]
+    assert [row.get("not_settable") for row in listed] == [member_worker.runtime.held] * 2
 
 
 def test_an_element_whose_holder_is_not_known_is_maybe_settable(member_worker):

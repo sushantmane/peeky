@@ -7,6 +7,7 @@ row's mark said."""
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,9 @@ public class Marks {
     }
 }
 """
+
+
+RUNNING = "other threads are running; set checks again"
 
 
 @pytest.fixture
@@ -135,8 +139,10 @@ def test_a_settable_mark_promises_only_what_set_does(marks, capsys):
         assert main(["session", "set", "this.shared[0]=9"]) == 2
         error = capsys.readouterr().err
         assert "`this.shared[0]`" in error and "more than 64 objects refer" in error, error
-        # The program's own array stays settable, and changes.
-        assert all(child["settable"] is True for child in get(capsys, "choice")[0]["children"])
+        # The program's own array changes. A line breakpoint stops only its own thread,
+        # and the JVM's other threads run on, so no element is promised (#261 review).
+        for child in get(capsys, "choice")[0]["children"]:
+            assert child["settable"] is False and child["maybe_settable"] == RUNNING, child
         assert main(["session", "set", "choice[1]=1"]) == 0
         assert "set choice[1]: 0 -> 1" in capsys.readouterr().out
         # Locals and fields that are not marked say why.
@@ -175,10 +181,133 @@ def test_a_probe_row_marks_a_jdk_held_element_as_its_set_is_refused(marks, capsy
     observed = {row["selector"]: row for row in result["rows"] if row["phase"] == "observed"}
     assert observed["ranking[0]"]["settable"] is False, observed
     assert "UnmodifiableList" in observed["ranking[0]"]["not_settable"], observed
-    assert observed["choice[0]"]["settable"] is True, observed
+    assert observed["choice[0]"]["maybe_settable"] == RUNNING, observed
     assert observed["counted"]["not_settable"] == "not read again after this stop", observed
     assert main([*argv[:-3], "--set", "ranking[0]=9", "--json", "--no-save", "--quiet"]) == 1
     result = json.loads(capsys.readouterr().out)
     assert result["error"]["code"] == "MUTATION_REJECTED", result["error"]
     assert "The debugger refused to change `ranking[0]`" in result["error"]["message"]
     assert "can be changed here" not in result["error"]["hint"], result["error"]
+
+
+RACING = """package vote;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+public class Racing {
+    static final class Gate {
+        volatile boolean open;
+        volatile boolean done;
+    }
+
+    static final class Wrapper extends Thread {
+        final Gate gate;
+        final int[] cells;
+
+        Wrapper(Gate gate, int[] cells) {
+            this.gate = gate;
+            this.cells = cells;
+        }
+
+        @Override
+        public void run() {
+            try {
+                while (!gate.open) {
+                    Thread.sleep(5);
+                }
+                // Long enough for a read at the stop to come first.
+                Thread.sleep(3000);
+            } catch (InterruptedException stopped) {
+                return;
+            }
+            List<int[]> list = new ArrayList<>();
+            list.add(cells);
+            kept = Collections.unmodifiableList(list);
+            gate.done = true;
+        }
+    }
+
+    static List<int[]> kept;
+
+    public static void main(String[] args) throws Exception {
+        int[] target = {1, 2};
+        int[] own = {7};
+        Gate gate = new Gate();
+        Wrapper wrapper = new Wrapper(gate, target);
+        wrapper.setDaemon(true);
+        wrapper.start();
+        System.out.println("before " + target[0] + own[0] + gate.open); // STOP
+        wrapper.join();
+        System.out.println("AFTER " + target[0] + " " + own[0] + " " + kept.size());
+    }
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_another_thread_can_make_a_jdk_class_hold_the_array_after_a_read(
+    tmp_path, monkeypatch, capsys
+):
+    # #261 review: the verdict was kept for the whole stop, but a line breakpoint stops
+    # only its own thread. Here a background thread wraps a list holding `target` in an
+    # unmodifiable view after the first read: `get` said settable, and `set` was refused.
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a setup_java_adapter.py output directory")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "racing"
+    (root / "vote").mkdir(parents=True)
+    (root / "vote" / "Racing.java").write_text(RACING)
+    config = root / "racing.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(Path(bundle).resolve()),
+                "sources": ["vote/Racing.java"],
+                "main_class": "vote.Racing",
+            }
+        )
+    )
+    line = next(i for i, text in enumerate(RACING.splitlines(), 1) if "STOP" in text)
+    at = f"vote/Racing.java:{line}"
+    try:
+        assert main(["session", "start", str(root), "--config", str(config), "--at", at]) == 0
+        capsys.readouterr()
+        # Only app objects hold `target` yet, but the wrapper thread runs: not promised.
+        for child in get(capsys, "target")[0]["children"]:
+            assert child["settable"] is False and child["maybe_settable"] == RUNNING, child
+        # A write checks and writes with every thread suspended, then lets them run on.
+        assert main(["session", "set", "own[0]=8"]) == 0
+        assert "set own[0]: 7 -> 8" in capsys.readouterr().out
+        # Let the wrapper thread wrap the list, 3 s later. A read before then is not
+        # promised either; with no change in between, a kept verdict would outlive it.
+        assert main(["session", "set", "gate.open=true"]) == 0
+        capsys.readouterr()
+        target, done = get(capsys, "target", "gate.done")
+        if done["value"] == "false":
+            for child in target["children"]:
+                assert child["maybe_settable"] == RUNNING, child
+        deadline = time.monotonic() + 30
+        while get(capsys, "gate.done")[0]["value"] != "true":
+            assert time.monotonic() < deadline, "the wrapper thread never ran"
+            time.sleep(0.2)
+        # Read again at the same stop: what the other thread did is seen, never a kept
+        # verdict, and the row and the refusal agree.
+        for child in get(capsys, "target")[0]["children"]:
+            assert child["settable"] is False and "maybe_settable" not in child, child
+            assert child["not_settable"].startswith(
+                "its array is in a list held by java.util.Collections$Unmodifiable"
+            ), child
+        assert main(["session", "set", "target[0]=9"]) == 2
+        error = capsys.readouterr().err
+        assert "The debugger refused to change `target[0]`" in error, error
+        assert "in a list held by java.util.Collections$Unmodifiable" in error, error
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        output = json.loads(capsys.readouterr().out)["output"]
+        assert "AFTER 1 8 1" in output, output
+    finally:
+        main(["session", "close"])

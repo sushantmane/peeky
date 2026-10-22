@@ -248,6 +248,10 @@ def _jdk_state(trail, index):
 _MEMBER_ROWS = {"it is final": "final", "it is static (shared by every instance)": "static"}
 
 
+# Why no element is promised [settable] while other threads run (#261 review).
+_THREADS_RUNNING = "other threads are running; set checks again"
+
+
 class Unproven(str):
     """Why an element's mark can be promised neither way (#261): the launcher could not
     tell in time whether a JDK class holds its array, or cannot tell before a change (an
@@ -1103,17 +1107,29 @@ class JavaSession:
         )
 
     def array_holder(self, dap, array, pause_left_ms=None):
-        """Why no element of ``array`` (the debugger's variable for an array whose
-        elements are listed) is marked [settable] (#261), in short, or None where no JDK
-        class's field holds it: the launcher's search of what refers to it, as a write
-        makes it again (with a longer wait), so a mark promises no more than a write
-        does. Unproven where the write may still be made (a search that ran out of time,
-        a launcher that cannot search before a change). ``pause_left_ms``: what is left
-        of the session's pause budget."""
+        """(why no element of ``array`` is marked [settable], in short, or None; whether
+        that holds for the rest of the stop) (#261). ``array``: the debugger's variable
+        for an array whose elements are listed. From the launcher's search of what
+        refers to it, which a write makes again (with a longer wait and every thread
+        suspended), so a mark promises no more than a write does:
+
+        - a JDK class's field holds it, or the search cannot tell for a reason a write
+          meets too (too many referrers): the reason;
+        - Unproven where a write may yet be made: a search that ran out of time, a
+          launcher that cannot search before a change, or another thread that is running
+          (a line breakpoint stops its own thread only), which could change what holds
+          the array before the write;
+        - None: no JDK class holds it, and no other thread runs.
+
+        Only a verdict made with every thread suspended holds for the rest of the stop.
+        ``pause_left_ms``: what is left of the session's pause budget."""
         if not self.array_holders:
-            return Unproven(
-                "this adapter bundle can't tell before a change whether a JDK class holds "
-                "its array; rebuild it with scripts/setup_java_adapter.py"
+            return (
+                Unproven(
+                    "this adapter bundle can't tell before a change whether a JDK class holds "
+                    "its array; rebuild it with scripts/setup_java_adapter.py"
+                ),
+                True,
             )
         request = {"variablesReference": array.get("variablesReference")}
         if pause_left_ms is not None:
@@ -1121,20 +1137,26 @@ class JavaSession:
         try:
             found = dap.request("peekyArrayHolder", request)
         except RequestFailed as exc:
-            return Unproven(
-                f"Peeky can't tell whether a JDK class holds its array ({str(exc)[:160]}); "
-                "`set` checks when the change is made"
+            return (
+                Unproven(
+                    f"Peeky can't tell whether a JDK class holds its array ({str(exc)[:160]}); "
+                    "`set` checks when the change is made"
+                ),
+                False,
             )
+        settled = found.get("allSuspended") is True
         holder, unknown = found.get("holder"), found.get("unknown")
         if isinstance(holder, str) and holder:
-            return f"its array is {holder[:200]} (the JDK's own state)"
+            return f"its array is {holder[:200]} (the JDK's own state)", settled
         if isinstance(unknown, str) and unknown:
             if found.get("timedOut") is True:
-                return Unproven(f"{unknown[:200]}; `set` searches again, for up to 2 s")
+                return Unproven(f"{unknown[:200]}; `set` searches again, for up to 2 s"), settled
             # More referrers than are read, or a JVM that cannot list them: a write is
             # refused for the same reason.
-            return unknown[:200]
-        return None
+            return unknown[:200], settled
+        if not settled:
+            return Unproven(_THREADS_RUNNING), False
+        return None, True
 
     def unsettable_row(
         self,

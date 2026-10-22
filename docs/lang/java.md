@@ -140,13 +140,18 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([Java 7.3](java-cookbook.md#which-lists-arrays-are-the-programs)).
 - A list's iterators and sublists don't own it. But whoever holds one of them holds the list
   ([Java 7.3](java-cookbook.md#which-lists-arrays-are-the-programs)).
-- An element is marked `[settable]` only where no JDK class's field holds its array, under any
-  name. Before it marks one, Peeky asks the adapter what holds the array, as a change asks again
-  ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
-- Otherwise the row names the holder:
+- Before it marks an element, Peeky asks the adapter what holds its array, under any name, as a
+  change asks again ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
+- Where a JDK class's field holds it, the row names the holder:
   `[not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]`.
-  Where the adapter can't tell in time, the row says `[maybe settable: …]`, and `set` checks again.
-  So does a bundle built before this check: rebuild it
+- A line breakpoint stops only its own thread. Another thread could make a JDK class hold the
+  array before the change. So there, no element is promised:
+  `[maybe settable: other threads are running; set checks again]`
+  ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
+- An element is marked `[settable]` only where every thread is suspended and nothing holds its
+  array. Where the adapter can't tell in time, the row says `[maybe settable: …]`. So does a
+  bundle built before this check: rebuild it.
+- A change to an element suspends every thread while it checks and writes it
   ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
 - To change an array element, Peeky asks the JVM what refers to the array. It waits at most 2 s for
   the answer, and stays within the session's pause budget, `--max-pause`

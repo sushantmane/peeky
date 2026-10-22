@@ -85,6 +85,8 @@ public final class PeekyJavaAdapter extends ProtocolServer {
     }
 
     @Override protected void dispatchRequest(Messages.Request request) {
+        // The JVM, while a change to an array element is checked and made (#261).
+        com.sun.jdi.VirtualMachine paused=null;
         try {
             if (!COMMANDS.contains(request.command)) throw new IllegalArgumentException("unsupported command");
             JsonObject args = request.arguments;
@@ -151,6 +153,11 @@ public final class PeekyJavaAdapter extends ProtocolServer {
                     pauseLeftMs=Math.max(0, args.get("peekyPauseLeftMs").getAsLong());
                     args.remove("peekyPauseLeftMs");
                 }
+                // A line breakpoint stops only its own thread: another could make a JDK
+                // class hold the array between the check and the write. Every thread stays
+                // suspended until the write is made (released below, after java-debug's
+                // reply, which super.dispatchRequest waits for).
+                paused=suspendForArray(args.get("variablesReference").getAsInt());
                 checkFieldTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString());
                 if (text) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "java.lang.String", "text changes only a String");
                 if (character) checkDeclaredTarget(args.get("variablesReference").getAsInt(), args.get("name").getAsString(), "char", "a quoted char changes only a char");
@@ -170,7 +177,28 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         } catch (Exception error) {
             sendResponse(new Messages.Response(request.seq, request.command, false,
                 "Peeky experimental Java adapter: " + error.getMessage()));
+        } finally {
+            if (paused!=null) {
+                try {
+                    paused.resume();
+                } catch (RuntimeException gone) {
+                    // VMDisconnectedException: nothing is left to resume.
+                }
+            }
         }
+    }
+
+    /**
+     * The JVM, suspended (every thread, as counted: a thread stopped before stays so),
+     * where ``reference`` is an array whose element a change names; else null.
+     */
+    private com.sun.jdi.VirtualMachine suspendForArray(int reference) throws ReflectiveOperationException {
+        Object container=debugContext().getRecyclableIdPool().getObjectById(reference);
+        Object value=container instanceof VariableProxy ? ((VariableProxy) container).getProxiedVariable() : null;
+        if (!(value instanceof ArrayReference)) return null;
+        com.sun.jdi.VirtualMachine vm=((ArrayReference) value).virtualMachine();
+        vm.suspend();
+        return vm;
     }
 
     /**
@@ -279,7 +307,9 @@ public final class PeekyJavaAdapter extends ProtocolServer {
      * (checkArrayTarget), with a shorter wait, so a mark promises only what a write does.
      * Body: `holder` (where a JDK class's field holds it), or `unknown` (why that cannot
      * be told) with `timedOut` (whether a longer search, as a write makes, may tell), or
-     * neither (no JDK class holds it).
+     * neither (no JDK class holds it); and `allSuspended`: whether every thread of the JVM
+     * was suspended, so that no other can change what holds the array before the stop
+     * ends (a line breakpoint stops its own thread only).
      */
     private JsonObject arrayHolder(JsonObject args) throws Exception {
         JsonElement reference=args==null ? null : args.get("variablesReference");
@@ -292,6 +322,14 @@ public final class PeekyJavaAdapter extends ProtocolServer {
         long pauseLeftMs=args.has("peekyPauseLeftMs") ? Math.max(0, args.get("peekyPauseLeftMs").getAsLong()) : -1;
         long wait=pauseLeftMs<0 ? LIST_SEARCH_MS : Math.min(LIST_SEARCH_MS, pauseLeftMs - PAUSE_MARGIN_MS);
         JsonObject body=new JsonObject();
+        boolean all=true;
+        for (com.sun.jdi.ThreadReference thread : ((ArrayReference) value).virtualMachine().allThreads()) {
+            if (!thread.isSuspended()) {
+                all=false;
+                break;
+            }
+        }
+        body.addProperty("allSuspended", all);
         if (wait<MIN_LIST_SEARCH_MS) {
             body.addProperty("unknown", "too little of the session's pause budget is left to search "
                 + "for what refers to the array");

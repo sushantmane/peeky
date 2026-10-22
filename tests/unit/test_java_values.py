@@ -278,29 +278,46 @@ def test_an_elements_mark_asks_the_launcher_what_holds_its_array():
     session = owners()
     session.array_holders = True
     array = {"name": "ranking", "type": "int[]", "value": "int[3]@59", "variablesReference": 7}
-    held = Launcher({"holder": "in a list held by java.util.Collections$UnmodifiableList.list"})
-    assert session.array_holder(held, array, 4500.4) == (
-        "its array is in a list held by java.util.Collections$UnmodifiableList.list "
-        "(the JDK's own state)"
-    )
+    holder = "in a list held by java.util.Collections$UnmodifiableList.list"
+    held = Launcher({"holder": holder, "allSuspended": True})
+    reason, settled = session.array_holder(held, array, 4500.4)
+    assert reason == f"its array is {holder} (the JDK's own state)" and settled is True
+    assert not getattr(reason, "unproven", False)
     assert held.calls == [("peekyArrayHolder", {"variablesReference": 7, "peekyPauseLeftMs": 4500})]
-    assert not getattr(session.array_holder(held, array), "unproven", False)
-    assert session.array_holder(Launcher({}), array) is None
+    # No JDK class holds it, and every thread is suspended: settable for the whole stop.
+    assert session.array_holder(Launcher({"allSuspended": True}), array) == (None, True)
     # Where the launcher cannot tell, a write is refused too, and the row says why.
-    many = Launcher({"unknown": "more than 64 objects refer to the array", "timedOut": False})
-    assert session.array_holder(many, array) == "more than 64 objects refer to the array"
-    assert not getattr(session.array_holder(many, array), "unproven", False)
+    many = {"unknown": "more than 64 objects refer to the array", "timedOut": False}
+    reason, settled = session.array_holder(Launcher({**many, "allSuspended": True}), array)
+    assert reason == "more than 64 objects refer to the array" and settled is True
+    assert not getattr(reason, "unproven", False)
     # Where a longer search, as a write makes, may yet tell, neither mark is promised.
-    late = Launcher({"unknown": "Peeky could not tell within 500 ms", "timedOut": True})
-    reason = session.array_holder(late, array)
+    late = {"unknown": "Peeky could not tell within 500 ms", "timedOut": True}
+    reason, _ = session.array_holder(Launcher({**late, "allSuspended": True}), array)
     assert reason == "Peeky could not tell within 500 ms; `set` searches again, for up to 2 s"
     assert reason.unproven is True
-    reason = session.array_holder(Launcher(refusal="unsupported command"), array)
+    reason, settled = session.array_holder(Launcher(refusal="unsupported command"), array)
     assert "can't tell whether a JDK class holds" in reason and reason.unproven is True
+    assert settled is False
     # A launcher that cannot search before a change: neither, and it says to rebuild it.
     session.array_holders = False
-    reason = session.array_holder(Launcher({}), array)
+    reason, settled = session.array_holder(Launcher({}), array)
     assert "rebuild it with scripts/setup_java_adapter.py" in reason and reason.unproven is True
+
+
+def test_while_other_threads_run_no_element_is_promised_settable():
+    # #261 review: a line breakpoint stops only its own thread. Another may wrap the
+    # array's list in an unmodifiable view before the write, so no verdict lasts the stop.
+    session = owners()
+    session.array_holders = True
+    array = {"name": "target", "type": "int[]", "value": "int[2]@9", "variablesReference": 3}
+    reason, settled = session.array_holder(Launcher({"allSuspended": False}), array)
+    assert reason == "other threads are running; set checks again" and reason.unproven is True
+    assert settled is False
+    # A holder seen now is still why, but holds only for this listing.
+    holder = "in a list held by java.util.Collections$UnmodifiableCollection.c"
+    reason, settled = session.array_holder(Launcher({"holder": holder}), array)
+    assert reason == f"its array is {holder} (the JDK's own state)" and settled is False
 
 
 def test_a_row_set_does_not_change_says_why():

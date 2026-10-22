@@ -2975,6 +2975,8 @@ class DebugWorker:
         that note, and none is settable where it refuses (#148). ``trail``: the
         debugger's variable for each step of ``ancestry`` (Java: what holds an array)."""
         result = []
+        # What holds an array whose elements this listing shows (#261), asked once here.
+        listing = {}
         member_rule = (
             self.member_rule(self.runtime, frame, root) if ancestry and root is not None else None
         )
@@ -3241,7 +3243,7 @@ class DebugWorker:
                     and member(variable, parent=ancestry[-1][1], proven=True) is None
                 )
                 never = getattr(jdk, "row", None)
-                if settable and (held := self.array_held(trail)):
+                if settable and (held := self.array_held(trail, listing)):
                     # An array a JDK class's field holds, whatever path reaches it (#261):
                     # the write would be refused, so the row says why instead; or why
                     # that is not known, where the write may yet be made.
@@ -3711,20 +3713,27 @@ class DebugWorker:
             self.marks[key] = compute()
         return self.marks[key]
 
-    def array_held(self, trail):
+    def array_held(self, trail, listing):
         """Why the elements of the array a listing shows (``trail``'s last step) are not
         marked [settable], where the runtime asks the debugger what holds it (#261:
-        Java, a JDK class's field, under any name), else None; asked once per array at
-        each stop, within what is left of the pause budget."""
+        Java, a JDK class's field, under any name), else None; within what is left of
+        the pause budget. A verdict is kept for the rest of the stop only where the
+        runtime says it holds that long (every thread suspended); while another thread
+        runs, only for this listing (``listing``, a dict) and asked again at the next."""
         ask = getattr(self.runtime, "array_holder", None)
         array = trail[-1] if trail else None
         if ask is None or array is None or not str(array.get("type") or "").endswith("]"):
             return None
+        key = ("holder", self.stop_id, str(array.get("type")), str(array.get("value")))
+        for kept in (self.marks, listing):
+            if key in kept:
+                return kept[key]
         left = None
         if self.max_pause and self.stopped_at:
             left = (self.max_pause - (time.monotonic() - self.stopped_at)) * 1000
-        key = ("holder", self.stop_id, str(array.get("type")), str(array.get("value")))
-        return self.remember(key, lambda: ask(self.dap, array, left))
+        verdict, settled = ask(self.dap, array, left)
+        listing[key] = verdict
+        return self.remember(key, lambda: verdict) if settled else verdict
 
     def root_reason(self, runtime, frame, root):
         """Why no member of the root local ``root`` can change at this stop (a statement
