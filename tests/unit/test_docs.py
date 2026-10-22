@@ -255,9 +255,6 @@ def test_the_docs_peeky_prints_exist():
 # inline code counts as one word. History records (PROGRESS, evaluations, reviews, ADRs, and
 # pages marked historical) are kept as written.
 LONGEST_SENTENCE = 40
-# Not yet rewritten: RUST_GATE's current internals move into RUST_AGENT, and CPP_PLAN is
-# archived.
-NOT_YET_PLAIN = {"RUST_GATE.md", "CPP_PLAN.md"}
 
 
 def _sentences(text):
@@ -288,8 +285,7 @@ def test_the_docs_are_written_in_short_sentences():
     pages = [
         page
         for page in pages
-        if page.name not in NOT_YET_PLAIN | {"PROGRESS.md"}
-        and "> **Historical:**" not in page.read_text()[:2000]
+        if page.name != "PROGRESS.md" and "> **Historical:**" not in page.read_text()[:2000]
     ]
     assert len(pages) > 20
     assert _long_sentences(pages) == []

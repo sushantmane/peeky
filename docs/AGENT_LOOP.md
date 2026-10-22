@@ -20,7 +20,7 @@ checker counts as a repair.
 
 - A worker builds and debugs an isolated copy of the declared inputs: a C or C++ program through
   lldb-dap, a Java program through java-debug, and one dependency-free Cargo binary for Rust
-  ([RUST_GATE.md](RUST_GATE.md)).
+  ([RUST_AGENT.md](RUST_AGENT.md#the-cargo-build)).
 - Each candidate is rebuilt in a fresh workspace. `NativeVerification` does it for C and C++, and
   `RustVerification` for Rust. Java compiles it into another fresh workspace, and runs fresh JVMs.
 - Only the candidate source can change:
