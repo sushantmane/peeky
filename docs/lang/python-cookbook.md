@@ -33,8 +33,9 @@ Read [COOKBOOK 1.1](../COOKBOOK.md#11-what-can-i-ask) first.
 
 ### See which module globals a function reads
 
-`describe` lists the module globals each function reads, marked `(module global)`. Nothing in the
-program runs to find them. For this `sessions.py`:
+`describe` lists the module globals that a function's compiled code reads, within the limits
+below, and marks them `(module global)`. Nothing in the program runs to find them. For this
+`sessions.py`:
 
 ```python
 MAX_GAP = 30
@@ -125,9 +126,10 @@ Read [COOKBOOK 4.6](../COOKBOOK.md#46-same-object-or-a-copy-java-python) first.
 Use identities to tell whether a variable is the list's own element, or a copy whose changes go
 nowhere.
 
-Each Python value carries its object's identity: an integer, debugpy's number for the object. It is
-not a memory address. Text output shows it as `[id 6]`. In SQL, it is the `identity` column. Java
-uses `object_ref` instead; see [Java 4.6](java-cookbook.md#46-same-object-or-a-copy-java-python).
+Values with an identity carry debugpy's integer object number. Numbers, strings and `None` have
+none. The number is not a memory address. Text output shows it as `[id 6]`. In SQL, it is the
+`identity` column. Java uses `object_ref` instead; see
+[Java 4.6](java-cookbook.md#46-same-object-or-a-copy-java-python).
 
 For example, is `tags`, a mutable default argument, the same list on every call?
 
@@ -170,10 +172,10 @@ Read [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish) first.
 
 ### Read a module global
 
-`session get NAME` and a probe's `--capture NAME` read a module global only if the function reads
-that name from its globals. Peeky proves this from the function's scoping in its source, with
-Python's `symtable` module. Only then does it read the globals. The row is marked
-`[module global]`, and its `scope` is `globals`.
+Take a name that is missing from the locals. `session get NAME` and a probe's `--capture NAME`
+read it from the module's globals only when Peeky proves that the function reads it from there.
+Peeky proves it from the function's scoping in its source, with Python's `symtable` module. Only
+then does it read the globals. The row is marked `[module global]`, and its `scope` is `globals`.
 
 For this `limits.py`:
 
@@ -216,6 +218,7 @@ session default (python): state: stopped at limits.py:9 in shadow, hit 1 (paused
 $ peeky session get LIMIT
 LIMIT: <not found: 'LIMIT' is a local of shadow with no value at this line (not yet assigned, or deleted): reading it here raises UnboundLocalError. A module global of that name is not what shadow reads here, so it is not read; visible: (none)>
 note: this stop is in shadow at limits.py:9
+peeky: no value for LIMIT (each row above says why), so the exit status is 1
 $ peeky session close
 closed default
 cleanup: terminated pid 8263
@@ -281,8 +284,8 @@ Stopped in a loop, a local that this pass assigns *below* the stop still holds a
 value is from an earlier pass, or from before the loop. For example, back in `group` after
 `step --out` on `key = slug(title)`, `key` is the previous title's key.
 
-Peeky shows such a value with a `note`, in `get`, `inspect` and probe rows. A `note` is not a value
-to trust:
+Peeky shows such a value with a `note`, in `get`, `inspect` and probe rows. Don't trust a value
+marked with a `note`, or anything read through that value:
 
 ```
 key: str = 'hello-world'
@@ -406,7 +409,19 @@ Some repositories are left out, with a note:
 ### When the result warns that nothing above the root was copied
 
 Nothing above the target root is copied. In general, reading the source can't tell whether a
-program reaches there. So the result warns about it. Here `report.py` reads a file:
+program reaches there. So the result warns about it. For example, this `report.py` reads a file
+next to it:
+
+```python
+def load(path):
+    with open(path) as f:
+        return [int(line) for line in f]
+
+
+values = load("data.txt")
+total = sum(values) * 2
+print(total)
+```
 
 ```sh
 peeky probe report.py --at 8 --capture total --old 'sum(values) * 2' --new 'sum(values)'

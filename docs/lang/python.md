@@ -39,10 +39,11 @@ Peeky debugs Python with debugpy, Python's debugger.
   ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
 - `get NAME` reads a module global only where Peeky proves that the function reads that name from
   its globals ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
-- In a loop, a local that this pass assigns below the stop holds an earlier pass's value. Peeky
-  shows it with a `note`: `this pass's code has not assigned it before this line, ...: the value is
-  likely from an earlier pass`. `--set` refuses it. To read or change this pass's value, stop after
-  the assignment ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
+- In a loop, a local that this pass assigns below the stop still holds an older value. It is from
+  an earlier pass, or from before the loop. Peeky shows it with a `note`: `this pass's code has not
+  assigned it before this line, ...: the value is likely from an earlier pass`. `--set` refuses
+  it. To read or change this pass's value, stop after the assignment
+  ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
 - debugpy lists only a long list's first 100 items. A higher index shows "beyond the debugger's
   visible window": the item is not missing ([guide](../AGENT_GUIDE.md#reading-probe-results)).
 
@@ -64,7 +65,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 ## See what a function returned
 
 - `--capture return` is refused for Python, because debugpy would write into the program's
-  globals. `session step --out` shows no return value either.
+  globals. `session step --out` shows no return value either
+  ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 - Instead, capture what the caller stores. For `r = f(x)` on line 20, probe line 21 with
   `--capture r` ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
