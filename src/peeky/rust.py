@@ -1428,12 +1428,12 @@ def _gap_reason(name, reasons, line):
     OwnedLocals.reference_valid gave (``reasons``, its ``why``). It names what may have
     run since its last use, and where."""
     reason = reasons[0] if reasons else ("since", frozenset())
-    if reason[0] == "dropped":
+    if reason[0] in ("dropped", "captured"):
+        # Between `drop((*v))` and the store of `*v = new` (through a closure's or a
+        # future's capture too).
         return f"what `{name}` points at may be dropped here, before a new value is stored there"
     if reason[0] == "unassigned":
         return f"`{name}` may not be assigned yet here"
-    if reason[0] == "captured":
-        return f"the closure or future that holds `{name}` may be dropped here"
     if reason[0] == "elsewhere":
         return (
             "the build's MIR cannot place this stop: it is in code from another file, on a line "
@@ -3150,7 +3150,8 @@ class RustSession(NativeSession):
             }
         if through == "reference" and valid() is False:
             return {
-                "raw_reason": f"what `{root}` points at may be dropped and not yet replaced here"
+                "raw_reason": f"the build's MIR does not show that what `{root}` points at "
+                f"still stands here, because {_gap_reason(root, reasons, line)}"
             }
         if (
             through == "owned"

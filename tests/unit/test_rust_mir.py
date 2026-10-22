@@ -1388,6 +1388,7 @@ def test_the_note_names_what_may_have_run_since_a_reference_s_last_use():
     assert _gap_reason("r", [("dropped",)], 9) == (
         "what `r` points at may be dropped here, before a new value is stored there"
     )
+    assert _gap_reason("r", [("captured",)], 9) == _gap_reason("r", [("dropped",)], 9)
     assert _gap_reason("r", [("unassigned",)], 9) == "`r` may not be assigned yet here"
     for reasons in ([], [("since", frozenset())], since(("start", None), ("call", 3))):
         assert _gap_reason("r", reasons, 9).startswith("`r` is not used ahead, and the MIR")
