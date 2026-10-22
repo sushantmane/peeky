@@ -155,9 +155,9 @@ For example, `examples/java/pagination.json`. The bundle path is relative to the
   Maven or Gradle projects, and external classpaths, aren't supported.
 - Use a standard package-relative layout. A source-root prefix works.
 - Peeky reads non-preview class files up to Java 21. CI tests Java 17.
-- Arguments may hold spaces, backslashes and single quotes, and may be empty. Embedded double
-  quotes, CR or LF, and NUL are refused: the JDI connector's quoted-string contract can't carry
-  them.
+- Arguments may hold whitespace other than CR and LF, backslashes and single quotes, and may be
+  empty. Embedded double quotes, CR or LF, and NUL are refused: the JDI connector's quoted-string
+  contract can't carry them. Peeky takes at most 100 arguments, each at most 8,192 characters.
 
 Build the adapter bundle once, with JDK 17 and Python 3.11 or later:
 
