@@ -1960,9 +1960,14 @@ def _probe_remote(args, root, request, client, expected):
         edit=request.edit,
         set_at=request.set_at,
     )
-    # Every probe answer, the worker's own failures included, has one of these statuses
-    # (#190 review: any JSON object was taken for one).
-    if not isinstance(result, dict) or result.get("status") not in PROBE_STATUSES:
+    # A probe answer has one of these statuses, or is a probe child's bare error (#190
+    # review: any JSON object was taken for one).
+    error = result.get("error") if isinstance(result, dict) else None
+    bare_error = isinstance(error, dict) and isinstance(error.get("code"), str)
+    if not isinstance(result, dict) or (
+        result.get("status") not in PROBE_STATUSES
+        and not (result.get("status") is None and bare_error)
+    ):
         from peeky.client import TransportLost
 
         raise TransportLost(
@@ -1971,6 +1976,8 @@ def _probe_remote(args, root, request, client, expected):
         )
     # A worker whose probe child was killed (its cap) or crashed early answers with
     # only status/error; give every result the same complete shape.
+    if result.get("status") is None:
+        result["status"] = "failed"
     for key, default in (
         ("rows", []),
         ("by_hit", []),
