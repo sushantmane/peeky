@@ -63,7 +63,9 @@ def test_sources_from_outside_the_crate_fail_the_build(crate, tmp_path, capsys):
     path = crate / "src/main.rs"
     path.write_text(f'#[path = "{helper}"]\nmod helper;\n' + path.read_text())
     code, result = probe(capsys, crate, "--at", "37", "--capture", "start")
-    assert code == 1 and "not a declared source" in result["error"]["message"]
+    # Refused before the program started (#190): exit 2, no table.
+    assert code == 2 and "not a declared source" in result["error"]["message"]
+    assert result["refused_before_launch"] is True
     assert str(helper) in result["error"]["message"]
 
 

@@ -39,6 +39,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from peeky.rust_ir import ir_string
+
 MAX_MIR_BYTES = 64 * 1024 * 1024
 MAX_ITERATIONS = 10_000
 # The dataflow's budget per reachable block, beyond MAX_ITERATIONS in all.
@@ -3391,7 +3393,8 @@ class IrFunction:
 
 
 def _unquote(value):
-    return value[1:-1] if value and value.startswith('"') else value
+    """A metadata field's value: a quoted string's text (ir_string), else as written."""
+    return ir_string(value[1:-1]) if value and value.startswith('"') else value
 
 
 def ir_functions(path, files):
@@ -3400,7 +3403,8 @@ def ir_functions(path, files):
     if path.stat().st_size > 256 * 1024 * 1024:
         return {}
     raw, meta, current, pending = [], {}, None, ""
-    with path.open(encoding="utf-8", errors="replace") as stream:
+    # Bytes not UTF-8 stay apart (surrogates ir_string refuses), never one `\ufffd`.
+    with path.open(encoding="utf-8", errors="surrogateescape", newline="") as stream:
         for line in stream:
             if line.startswith("!"):
                 if found := _META_LIST.match(line):
@@ -3409,9 +3413,11 @@ def ir_functions(path, files):
                     meta[found[1]] = (
                         found[2],
                         {
-                            key: _unquote(m[1])
+                            key: value
                             for key, pattern in _METAFIELDS.items()
                             if (m := pattern.search(found[3]))
+                            # A string LLVM does not write names nothing (#188 review).
+                            and (value := _unquote(m[1])) is not None
                         },
                     )
                 continue

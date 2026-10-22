@@ -5,6 +5,7 @@ What is particular to Java targets, one rule per line, each with the [COOKBOOK](
 ## Targets
 
 - A Java target needs `--config <file.json>`: the adapter bundle, the sources and the main class, and optionally `arguments` (`{"bundle": "work/java-adapter", "sources": ["shop/Main.java"], "main_class": "shop.Main"}`); `describe`'s commands repeat it ([7.3](../COOKBOOK.md#73-java-launched)).
+- An adapter bundle built before Peeky's java-debug patches is refused before anything runs (`UNSUPPORTED`, exit 2, no table): rebuild it with `scripts/setup_java_adapter.py` and point the target's `bundle` at it ([ERRORS](../ERRORS.md)).
 - The JVM starts slowly: add `--background` to a probe or verify that may outlast your tool's timeout, then `peeky job wait <id>` ([8](../COOKBOOK.md#8-slow-programs-and-tool-timeouts)); `--until hits` skips waiting for the program to exit ([2.6](../COOKBOOK.md#26-stop-right-after-the-last-hit)).
 - A JVM already running with `--debug-jvm` is attached to, never killed: no `--arg`, no candidates or `verify`, plain values, and a session's `--max-pause` defaults to 10 s ([7.4](../COOKBOOK.md#74-java-tests-already-running-gradle---debug-jvm-eg-venice)).
 
