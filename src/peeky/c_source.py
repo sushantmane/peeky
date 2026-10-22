@@ -18,8 +18,14 @@ a macro whose expansion may hold an unclosed bracket or a `;` (`unsafe_macros`).
 import bisect
 import re
 
+# An identifier's characters: ASCII letters, digits and `_`, and every non-ASCII
+# character but whitespace (Clang reads U+00A0 as a space), which outside comments and
+# literals a program the compiler accepts holds only in identifiers (#195: `größe`, or
+# an NFD `größe`, whose combining mark `\w` misses).
+_ID = r"[^\s\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
+_NAME = r"[^\s\x00-\x40\x5b-\x5e\x60\x7b-\x7f]" + _ID + "*"
 # An identifier, not the tail of a number or of another identifier (`1e5`).
-_IDENTIFIER = re.compile(r"(?<!\w)[A-Za-z_]\w*")
+_IDENTIFIER = re.compile(f"(?<!{_ID}){_NAME}")
 # Where a comment or a literal may start.
 _OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
 # A raw string's prefix and delimiter: `R"x(`, `u8R"(`.
@@ -49,12 +55,12 @@ _CLOSE = frozenset((")", "]", "}", "%>", ":>"))
 _PAIRS = {"(": "(", ")": "(", "[": "[", "]": "[", "<:": "[", ":>": "[", "{": "{", "}": "{"}
 _PAIRS.update({"<%": "{", "%>": "{"})
 # A word or a punctuator, as statements are read: keywords, labels and brackets.
-_WORDS = re.compile(r"(?<!\w)[A-Za-z_]\w*|" + _TOKENS.pattern)
-_WORD = re.compile(r"[A-Za-z_]\w*")
-_LAST_WORD = re.compile(r"[A-Za-z_]\w*$")
+_WORDS = re.compile(f"(?<!{_ID}){_NAME}|" + _TOKENS.pattern)
+_WORD = re.compile(_NAME)
+_LAST_WORD = re.compile(_NAME + "$")
 # Words and punctuators as a declaration is read: its `=` and `,` (not `==`, `+=`, ...).
 _DECLARATION_TOKENS = re.compile(
-    r"(?<!\w)[A-Za-z_]\w*|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,.]"
+    f"(?<!{_ID}){_NAME}|==|!=|[-+*/%&|^]=|<<=|>>=|" + _TOKENS.pattern + r"|[=,.]"
 )
 # Statements whose header (in parentheses) can declare a variable for their body.
 _HEADERS = frozenset(("for", "if", "while", "switch", "catch"))
@@ -64,7 +70,7 @@ _USES = _USES | {"else", "do", "goto", "typeid", "alignof", "_Alignof", "new"}
 # What a statement or block follows: `else {`, `do {`, `try {`.
 _LEADING = frozenset(("else", "do", "try"))
 # A label a jump can reach, in a macro's body: at its start or after `;`, `{` or `}`.
-_LABEL = re.compile(r"(?:^|[;{}])\s*[A-Za-z_]\w*\s*:(?![:>])")
+_LABEL = re.compile(r"(?:^|[;{}])\s*" + _NAME + r"\s*:(?![:>])")
 _INCLUDE = re.compile(r"[ \t\f\v]*(?:#|%:)[ \t\f\v]*(?:include|include_next|import)\b")
 _INCLUDED = re.compile(r'(?:include|include_next|import)\s*(?:"([^"\n]+)"|<([^>\n]+)>)')
 _NONBLANK = re.compile(r"\S")
@@ -82,7 +88,9 @@ _QUALIFIED = re.compile(
 _DIRECTIVE = re.compile(r"[ \t\f\v]*(?:#|%:)")
 # `#line 7` and a line marker (`# 7 "x.c"`) renumber the lines after them.
 _RENUMBER = re.compile(r"^[ \t\f\v]*(?:#|%:)[ \t\f\v]*(?:line\b|[0-9])", re.M)
-_DEFINE = re.compile(r"^[ \t\f\v]*(?:#|%:)[ \t\f\v]*define[ \t\f\v]+([A-Za-z_]\w*)(\(?)(.*)$", re.M)
+_DEFINE = re.compile(
+    r"^[ \t\f\v]*(?:#|%:)[ \t\f\v]*define[ \t\f\v]+(" + _NAME + r")(\(?)(.*)$", re.M
+)
 
 
 def normalized(text):
@@ -146,15 +154,20 @@ def _continued(text, newline):
     return at >= 0 and text[at] == "\\"
 
 
+def _word_char(char):
+    """Whether ``char`` can be part of an identifier (``_ID``)."""
+    return (char.isalnum() or char == "_") if char.isascii() else not char.isspace()
+
+
 def _continues_identifier(text, i):
     # `fooR"x(` is an identifier then a string, not a raw string.
-    return i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_")
+    return i > 0 and _word_char(text[i - 1])
 
 
 def _digit_separator(text, i):
     """Whether the `'` at ``i`` is inside a number (`1'000`, C++14), not a literal."""
     start = i
-    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_."):
+    while start > 0 and (_word_char(text[start - 1]) or text[start - 1] == "."):
         start -= 1
     return start < i and text[start].isdigit()
 
@@ -292,30 +305,29 @@ def storage_named(text, name):
     initializer's braces are skipped; a parameter of a function defined there is not
     counted)."""
     escaped = re.escape(str(name))
+    bounded = f"(?<!{_ID}){escaped}(?!{_ID})"
     balanced = r"(?:[^;{}]|\{(?:[^{}]|\{[^{}]*\})*\})*"
     keyword = re.compile(
         r"\b(?:static|extern|thread_local|_Thread_local|__thread|using|typedef)\b"
         + balanced
-        + r"\b"
-        + escaped
-        + r"\b"
+        + bounded
     )
     for found in keyword.finditer(text):
         rest = re.match(r"[^;{]*", text[found.end() :])[0]
         following = text[found.end() + len(rest) : found.end() + len(rest) + 1]
         if not (following == "{" and ")" in rest and "(" in found[0]):
             return True
-    if re.search(r"\benum\b[^;{}]*\{[^{}]*\b" + escaped + r"\b", text):
+    if re.search(r"\benum\b[^;{}]*\{[^{}]*" + bounded, text):
         return True
     # A C++ structured binding: `auto [q, r] = s;`, `for (const auto& [q, r] : m)`.
-    if re.search(r"\bauto\b[^;{}\[]*\[[^\]]*\b" + escaped + r"\b", text):
+    if re.search(r"\bauto\b[^;{}\[]*\[[^\]]*" + bounded, text):
         return True
     # A C++ class (or enumeration) a block declares by that name: `struct q { ... };`.
-    if re.search(r"\b(?:struct|class|union|enum)\b[^;{}]*?\b" + escaped + r"\b", text):
+    if re.search(r"\b(?:struct|class|union|enum)\b[^;{}]*?" + bounded, text):
         return True
     # A function a block declares where an outer local's name is: `long use2(long);`
     # (or after a type's body: `struct S { long v; } use2(long);`).
-    return bool(re.search(r"(?:[A-Za-z_]\w*|\})[\s*&]+" + escaped + r"\s*\(", text))
+    return bool(re.search(f"(?:{_NAME}|\\}})[\\s*&]+" + escaped + r"\s*\(", text))
 
 
 def _braced(statement):
@@ -1127,7 +1139,7 @@ class Statements:
         def counts(at):
             return block is None or header or at < position or not block[0] <= at <= block[1]
 
-        target = re.compile(rf"(?<!\w)goto\s+{re.escape(label)}(?!\w)")
+        target = re.compile(rf"(?<!{_ID})goto\s+{re.escape(label)}(?!{_ID})")
         if any(counts(found.start()) for found in target.finditer(blanked, low, high + 1)):
             return True
         return bool(self.gotos) and any(
@@ -2034,7 +2046,7 @@ class Statements:
         token = before[0]
         if token in ("return", "co_return", "co_yield", "throw"):
             return True
-        return not (token[0].isalnum() or token[0] == "_" or token in (")", "]", ":>", ">", "}"))
+        return not (_word_char(token[0]) or token in (")", "]", ":>", ">", "}"))
 
     def _unattributed(self, position):
         """The token before ``position`` (``_before``), skipping attributes
@@ -2096,9 +2108,9 @@ class Statements:
             at -= 1
         if at < 0:
             return None
-        if code[at].isalnum() or code[at] == "_":
+        if _word_char(code[at]):
             start = at
-            while start > 0 and (code[start - 1].isalnum() or code[start - 1] == "_"):
+            while start > 0 and _word_char(code[start - 1]):
                 start -= 1
             return code[start : at + 1], start
         for mark in _TOKENS.finditer(code, max(0, at - 3), at + 1):
@@ -2121,7 +2133,7 @@ class Statements:
         code = self._code()[0]
         start = max(code.rfind(mark, 0, colon) for mark in ";{}:")
         head = code[start + 1 : colon].strip()
-        return bool(re.fullmatch(r"case\b[\s\S]*|default|[A-Za-z_]\w*", head)) and "?" not in head
+        return bool(re.fullmatch(r"case\b[\s\S]*|default|" + _NAME, head)) and "?" not in head
 
     def _word_before(self, position):
         """The identifier just before ``position`` (spaces skipped), or None."""
@@ -2129,7 +2141,7 @@ class Statements:
         while at >= 0 and blanked[at].isspace():
             at -= 1
         end = at + 1
-        while at >= 0 and (blanked[at].isalnum() or blanked[at] == "_"):
+        while at >= 0 and _word_char(blanked[at]):
             at -= 1
         word = blanked[at + 1 : end]
         return word if _WORD.fullmatch(word) else None
