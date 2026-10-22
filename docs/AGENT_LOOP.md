@@ -3,7 +3,8 @@
 `peeky-agent` is an optional reference harness. A controller drives a Peeky worker through a
 fixed set of actions, and a model, through Codex CLI, picks each one. The model's actions and the
 controller's rules are in [DESIGN.md](DESIGN.md#the-agent-loop-peeky-agent). This page covers the
-loop for C, C++, Java and Rust.
+loop for C, C++, Java and Rust. Each of these loops is experimental, and qualified on one narrow
+fixture.
 
 Every language follows the same flow:
 
@@ -158,7 +159,7 @@ language goes through the same sequence:
 | 2 | Change the live integer to `0`. Continuing prints `PAGE:[10, 20, 30]`, with no source change and no rebuild for the experiment | Change the live `i32` to `0`. Continuing prints `PAGE:[10, 20, 30]`, with no rebuild |
 | 3 | Propose invalid syntax. The compile failure returns its diagnostics for another decision | Propose invalid Rust syntax. The compile error returns as a retryable `build` result |
 | 4 | Propose `start = 0`. It fixes the first page, but independent later-page cases reject this overfit candidate | Propose `start = 0`. The Cargo test passes, because it checks only page 1. The independent checker rejects later pages, so the candidate fails |
-| 5 | Propose the fix. A fresh build passes all 12 supplied cases | Propose the fix. The compiled test and every checker case pass on a fresh build |
+| 5 | Propose the fix. A fresh build passes every supplied case: C's 12, C++'s 12 valid and 10 invalid-argument cases, and Java's 12, in fresh JVMs | Propose the fix. The compiled test and every checker case pass on a fresh build: 12 page cases and 10 invalid-argument cases |
 
 **C** runs the actual `peeky-agent` entry point. Set the native tools that the worker tests use:
 
@@ -261,7 +262,7 @@ peeky-agent \
   --output "$PWD/work/java-agent-run"
 ```
 
-For every language:
+For C, C++ and Java:
 
 - Without `--url`, the command starts the configured worker locally.
 - `--url`, with the worker's `DEBUG_TOKEN`, selects an existing worker. The declared sources'
@@ -270,6 +271,10 @@ For every language:
   inputs, and a suitable native or Java toolchain.
 - A live run sends selected source and runtime evidence to the model, and uses model credits.
   Required CI uses injected decisions only.
+
+For Rust, no live-model run has been recorded. Its frozen inputs, the integration-test file,
+`Cargo.toml` and `Cargo.lock`, are part of every identity check
+([How a candidate is verified](#how-a-candidate-is-verified)).
 
 ## What the loop doesn't prove
 
