@@ -884,6 +884,36 @@ _CALL_LEAD = re.compile(
 )
 
 
+# Inline assembly, which may write any memory or register it reaches, operands or not
+# (`__asm__("" : "=r"(p->width))`, a store through a register holding a pointer).
+_ASSEMBLY = re.compile(r"(?<![\w$])(?:asm|__asm|__asm__)(?![\w$])")
+# Builtins may take an address no `&` shows: of a value (`__builtin_addressof(x)`), or of
+# a frame (`__builtin_frame_address`, `__builtin_dwarf_cfa`), from which any local of it,
+# or of its callers, is reached (review of #211). Every builtin counts but those known to
+# reach no memory.
+_ADDRESSES = re.compile(
+    r"(?<![\w$])__builtin_(?!(?:expect|expect_with_probability|unreachable|assume|trap|"
+    r"constant_p|types_compatible_p|choose_expr|offsetof|clzs?|clzl{0,2}|ctzs?|ctzl{0,2}|"
+    r"popcountl{0,2}|parityl{0,2}|ffsl{0,2}|bswap(?:16|32|64)|"
+    r"(?:add|sub|mul)_overflow|object_size|dynamic_object_size|__\w+_chk)(?![\w$]))[\w$]+"
+)
+# Operators whose operand is not evaluated: `sizeof x.buf` takes no address.
+_UNEVALUATED_BEFORE = re.compile(
+    r"(?<![\w$])(?:sizeof|_Alignof|alignof|typeof|__typeof__|__typeof)\s*\(?\s*$"
+)
+
+
+def _under(graph, offset):
+    """The type ``offset`` names under its typedefs and qualifiers (fields.type_graph),
+    or None past 64 of them."""
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] not in ("typedef", "qualifier"):
+            return offset
+        offset = node[2]
+    return None
+
+
 def _split_arguments(text):
     """The comma-separated parts of an argument or parameter list, at its top level."""
     parts, depth, start = [], 0, 0
@@ -5137,22 +5167,31 @@ class NativeSession:
         through the pointer parameter ``root`` of the C function ``function`` (a
         declarations entry), when the program's sources call it once (seventh
         evaluation, finding 13): `push has one caller: m.c:15 in main, which passes `&r`,
-        where `r.tail` is settable: ...`. Settable is said, with how to change it,
-        only where a probe's stop on the first line of the call's statement can make the
-        change and the call sees it (``_settable_at_call``): a `--set-at` there, or in
-        another file (a probe stops in its `--at` file) a probe `--at` that line. Else the
-        call is named alone. None, for the general advice, with several or unknown
-        callers, and in C++ (overloads, argument-dependent lookup and member calls make a
-        call's target unclear from the text)."""
+        where `r.tail` is settable: ...`. Where that caller passes its own pointer
+        parameter on as is, the calls are followed up to the frame that owns the struct
+        (#202, ``_call_chain``): `fits has one caller: wrap.c:40 in wrap, which passes it
+        on (`lay`, its own pointer parameter); wrap has one caller: wrap.c:75 in main,
+        which passes `&lay`, where ...`. Settable is said, with how to change it, only
+        where a probe's stop on the first line of the owner's call statement can make the
+        change and the call sees it (``_settable_at_call``), and every function on the
+        way only reads through the pointer (``_uses``): a `--set-at` there, or in another
+        file (a probe stops in its `--at` file) a probe `--at` that line. Else the call is
+        named alone. Where the calls cannot be followed to a local the frame holds (a
+        function on the way with several callers, a pointer computed or kept elsewhere, a
+        static), no frame is named for the change: the message says so and points to
+        `describe`'s `mutable:` line. None, for the general advice, where the function
+        itself has several or unknown callers, and in C++ (overloads, argument-dependent
+        lookup and member calls make a call's target unclear from the text)."""
         if function is None or getattr(self.target, "language", None) != "c":
             return None
         declared = (function.get("types") or {}).get(root) or ()
         if not declared or {storage for _, storage, _ in declared} != {"parameter"}:
             return None
         try:
-            site = self._single_call(function, root)
-            if site is None:
+            chain, stopped = self._call_chain(function, root)
+            if not chain:
                 return None
+            site = chain[-1]
             caller, source, line, argument = (
                 site["caller"],
                 site["source"],
@@ -5162,17 +5201,50 @@ class NativeSession:
             first, start = self._call_statement(site)
         except (OSError, ValueError, RuntimeError):
             return None
-        named, at = function.get("name"), f"{Path(source).name}:{line}"
+        on_the_way = "".join(
+            f"{link['called'].get('name')} has one caller: {Path(link['source']).name}:"
+            f"{link['line']} in {link['caller'].get('name')}, which passes it on "
+            f"(`{link['argument']}`, its own pointer parameter); "
+            for link in chain[:-1]
+        )
+        named, at = site["called"].get("name"), f"{Path(source).name}:{line}"
         where = at + (
             f" (its statement starts on line {first})" if first not in (None, line) else ""
         )
+        heading = f"{on_the_way}{named} has one caller: {where} in {caller.get('name')}"
+        elsewhere = (
+            "; change the value in the frame that owns the struct, before the calls that "
+            "lead here: `describe`'s `mutable:` line lists the fields each function can set"
+        )
+        if stopped is not None:
+            return (
+                f"{heading}, which passes it on (`{argument}`, its own pointer parameter, "
+                f"where a change is refused too), and {stopped}{elsewhere}"
+            )
         passed = re.fullmatch(r"&\s*([A-Za-z_]\w*)", argument or "")
+        owned = self._owned(caller, passed[1]) if passed else "pointer"
+        if owned == "pointer":
+            passes = (
+                f", which passes on `{argument}`, and Peeky cannot tell what that points to"
+                if argument
+                else f", and Peeky cannot tell which of the call's arguments is "
+                f"`{site['parameter']}`"
+            )
+            return heading + passes + elsewhere
+        if owned is not None:
+            return (
+                f"{heading}, which passes `{argument}`, {owned}, which Peeky does not change "
+                "(it changes only locals a frame holds): change what sets it with a candidate "
+                "edit (`--old`/`--new`)"
+            )
         # A probe stops in its `--at` file, one of the program's sources (not a header).
         stoppable = source == function.get("source") or source in map(str, self.target.sources)
+        writers = [link["caller"].get("name") for link in chain[:-1] if not self._only_reads(link)]
         if (
             passed
             and steps
             and stoppable
+            and not writers
             and first is not None
             and start is not None
             and self._untouched(site, start, passed[1])
@@ -5190,21 +5262,203 @@ class NativeSession:
                 f"{selector}=<value> --set-hit N`, N counting that line's own stops (find N "
                 f"with `--capture {selector} --hits all` there)"
             )
-            return (
-                f"{named} has one caller: {where} in {caller.get('name')}, which passes "
-                f"`{argument}`, where `{selector}` is settable: {how}"
-            )
-        passes = f", which passes `{argument}`" if argument else ""
+            return f"{heading}, which passes `{argument}`, where `{selector}` is settable: {how}"
+        besides = f", and so may {' or '.join(writers)}, on the way" if writers else ""
         why = (
             f"Peeky cannot tell that a change at line {first or line} reaches it (a statement "
-            "there may change the value, or make the call, first)"
+            f"there may change the value, or make the call, first{besides})"
             if stoppable
             else f"a probe stops only in the program's source files, not in {Path(source).name}"
         )
         return (
-            f"{named} has one caller: {where} in {caller.get('name')}{passes}; change the "
-            f"value where it is owned, before that call: {why}"
+            f"{heading}, which passes `{argument}`; change the value where it is owned, before "
+            f"that call: {why}"
         )
+
+    def _call_chain(self, function, root):
+        """The one calls that lead to the C function ``function`` (a declarations entry)
+        through its pointer parameter ``root`` (#202), each ``_single_call``'s site with
+        the function it calls ("called") and that function's parameter ("parameter"):
+        its one call, then, while that call's caller passes it on as is (its own pointer
+        parameter, to the same type, never pointed elsewhere there, and no inline assembly
+        there: ``_uses``), the
+        caller's one call, up to 16. Returns (those sites, why the last site's caller,
+        which passes its own pointer parameter on, is followed no further, or None where
+        the last call passes something else); no sites where ``function`` itself has
+        several or unknown callers."""
+        graph, chain, seen = self.fields, [], set()
+        declared = (function.get("types") or {}).get(root) or ()
+        pointer = graph.get(_under(graph, next(iter(declared))[0])) if graph and declared else None
+        pointee = pointer[2] if pointer and pointer[0] == "pointer" else None
+        while True:
+            seen.add((function.get("name"), function.get("source"), str(function.get("span"))))
+            site = self._single_call(function, root)
+            if site is None:
+                why = f"Peeky cannot single out one call of {function.get('name')}"
+                return chain, why if chain else None
+            site.update(called=function, parameter=root)
+            chain.append(site)
+            caller, argument = site["caller"], site["argument"]
+            declared = (caller.get("types") or {}).get(argument or "") or ()
+            if len(declared) != 1 or next(iter(declared))[1] != "parameter" or graph is None:
+                return chain, None
+            pointer = graph.get(_under(graph, next(iter(declared))[0]))
+            if not pointer or pointer[0] != "pointer":
+                return chain, None
+            if not self._same_type(pointer[2], pointee):
+                return chain, f"Peeky cannot tell that `{argument}` there points to the same type"
+            uses = self._uses(site, argument)
+            if uses is None or uses.count("passed") != 1:
+                return chain, f"Peeky cannot read how {caller.get('name')} uses `{argument}`"
+            if "assembly" in uses:
+                return chain, (
+                    f"{caller.get('name')} has inline assembly, which may change `{argument}` "
+                    "or what it points to"
+                )
+            builtin = next((use[8:] for use in uses if use.startswith("builtin:")), None)
+            if builtin is not None:
+                return chain, (
+                    f"{caller.get('name')} uses `{builtin}`, which may change `{argument}` or "
+                    "what it points to"
+                )
+            if "changes" in uses:
+                return chain, f"{caller.get('name')} may point `{argument}` elsewhere first"
+            key = (caller.get("name"), caller.get("source"), str(caller.get("span")))
+            if key in seen or len(chain) >= 16:
+                return chain, "Peeky follows those calls no further"
+            function, root = caller, argument
+
+    def _same_type(self, one, other):
+        """Whether the type offsets ``one`` and ``other`` name one type, under typedefs
+        and qualifiers: the same entry, or records of one name, kind and size (each
+        translation unit has its own entries)."""
+        graph = self.fields
+        if graph is None or one is None or other is None:
+            return False
+        one, other = _under(graph, one), _under(graph, other)
+        if one is None or other is None:
+            return False
+        if one == other:
+            return True
+        first, second = graph.get(one), graph.get(other)
+        return bool(
+            first
+            and second
+            and first[0] == second[0] == "record"
+            and first[1]
+            and first[1:4] == second[1:4]
+        )
+
+    def _owned(self, caller, name):
+        """For a call passing `&name` in ``caller``: None where ``name`` may be a local the
+        caller's frame holds; "pointer" where it is a pointer (what it points to is not
+        the caller's); else why Peeky cannot change it there (a static, a global)."""
+        from peeky.fields import Unsettable
+
+        types = caller.get("types")
+        if types is None:
+            return None
+        declared = types.get(name)
+        if not declared:
+            return f"not a local of {caller.get('name')}"
+        if {storage for _, storage, _ in declared} == {"static"}:
+            return f"a static local of {caller.get('name')}"
+        try:
+            kind, _ = self._declared_type(types, name)
+        except Unsettable:
+            return None
+        node = self.fields.get(_under(self.fields, kind)) if self.fields is not None else None
+        return "pointer" if node and node[0] in ("pointer", "reference") else None
+
+    def _only_reads(self, site):
+        """Whether the caller of the one call ``site``, which passes its pointer parameter
+        on (``_call_chain``), uses it only for that call and to read integer fields
+        through it (``_uses``), so nothing it does changes what the call sees."""
+        uses = self._uses(site, site["argument"])
+        return uses is not None and uses.count("passed") == 1 and set(uses) <= {"passed", "reads"}
+
+    def _uses(self, site, name):
+        """What the caller of the one call ``site`` does with its pointer parameter
+        ``name`` at each mention in its body, as the compiler preprocessed it: "passed"
+        (the call's own argument), "changes" (`name = q`, `name++`, `&name`: it may point
+        elsewhere), "reads" (`name->field` or `name->items[i]`, an integer by the build's
+        types, only read) or "other" (`*name`, `name[0]`, `name->field = 1`, another
+        call's argument...); and first "assembly" where the body has inline assembly, and
+        "builtin:NAME" where it takes an address with a builtin (``_ADDRESSES``), which may
+        change either unseen (review of #211). None where Peeky cannot find the body."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+
+        graph = self.fields
+        defined = self._definition(site["unit"], site["caller"])
+        declared = (site["caller"].get("types") or {}).get(name) or ()
+        if defined is None or graph is None or len(declared) != 1:
+            return None
+        _, inner, offset = defined
+        pointer = graph.get(_under(graph, next(iter(declared))[0]))
+        kind = _under(graph, pointer[2]) if pointer and pointer[0] == "pointer" else None
+        own, uses = range(*site["argument_span"]), []
+        if _ASSEMBLY.search(inner):
+            uses.append("assembly")
+        if builtin := _ADDRESSES.search(inner):
+            uses.append(f"builtin:{builtin[0]}")
+        assigned = r"[\s)]*(?:(?:[-+*/%|^&]|<<|>>)?=(?!=)|\+\+|--)"
+        for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", inner):
+            before, after = inner[: found.start()].rstrip(), inner[found.end() :]
+            if before.endswith((".", "->")):
+                continue  # a member's name
+            if offset + found.start() in own:
+                uses.append("passed")
+                continue
+            applied = re.search(r"(?:(?<!&)&|\+\+|--)\s*(?:\(\s*)*$", before)
+            through = before.endswith("*") or re.match(r"\s*(?:->|\[|\.)", after)
+            if not through and (applied or re.match(assigned, after)):
+                uses.append("changes")
+                continue
+            use = re.match(r"\s*->\s*([A-Za-z_]\w*)", after)
+            if use is None or applied or before.endswith("*") or kind is None:
+                uses.append("other")
+                continue
+            end, steps = use.end(), [use[1]]
+            while (bracket := re.match(r"\s*\[", after[end:])) and len(steps) < 8:
+                closed = _arguments(after, end + bracket.end() - 1)
+                if closed is None:
+                    break
+                end, steps = closed[1], [*steps, "[0]"]
+            if re.match(rf"\s*(?:->|\.|\(|\[)|{assigned}", after[end:]):
+                uses.append("other")
+                continue
+            try:
+                named = debugger_steps(graph, kind, name, steps)
+                if named is None:
+                    raise Unsettable("no such member")
+                settable_member(graph, kind, name, named)
+            except Unsettable:
+                uses.append("other")
+                continue
+            uses.append("reads")
+        return uses
+
+    @staticmethod
+    def _definition(unit, entry):
+        """(its parameters, the text of its body, the offset where that text starts) of
+        the C function ``entry`` (a declarations entry) defined in ``unit`` (a
+        translation unit as ``_preprocessed`` reads it), or None where its definition is
+        not there on its first line (a prototype's line, or a K&R definition's, is not)."""
+        preprocessed, statements = unit
+        text, name, span = statements.blanked, entry.get("name"), entry.get("span")
+        at = preprocessed.line(entry.get("source"), span[0]) if span and name else 0
+        if not at:
+            return None
+        end = statements.starts[at] if at < len(statements.starts) else len(text)
+        heading = re.compile(rf"(?<![\w$]){re.escape(name)}\s*\(").search(
+            text, statements.starts[at - 1], end
+        )
+        listed = _arguments(text, heading.end() - 1) if heading else None
+        brace = text.find("{", listed[1]) if listed else -1
+        body = _arguments(text, brace) if brace >= 0 else None
+        if body is None or ";" in text[listed[1] : brace]:
+            return None
+        return _split_arguments(listed[0]), body[0], brace + 1
 
     def _call_statement(self, site):
         """For the one call ``site`` (``_single_call``'s, in the translation unit as the
@@ -5242,13 +5496,16 @@ class NativeSession:
         `NAME = push(ARGS);` (or `NAME op=`, or a declaration's `TYPE NAME =`), `return
         push(ARGS);` and `if (push(ARGS) ...)`, NAME a plain name other than ``root``;
         ARGS are `&root` and reads (``_reads``), and so is the rest of an `if`'s
-        condition; and the caller takes no address of ``root`` or its fields elsewhere
-        but to lend it (``_lent``), so no pointer reaches it. Anything else may change it
+        condition; and the caller's body, as preprocessed (a header included inside it
+        too), takes no address of ``root`` or its fields elsewhere but to lend it
+        (``_lent``), nor names an array in it without an index (``_decays``), so no
+        pointer reaches it, and has no inline assembly or address builtin (which may take
+        it unseen: ``_ADDRESSES``). Anything else may change it
         first (`r = q, push(&r, 1)`, `push(&r, RESET(r))`, `push(&r, ops[0](r.buf))`
         writing through the array that starts `r`, a pointer `a = &r` set earlier)."""
         from peeky.fields import Unsettable
 
-        preprocessed, statements = site["unit"]
+        _, statements = site["unit"]
         code, caller, opening = statements.blanked, site["caller"], site["opening"]
         closed, spans = _arguments(code, opening), _argument_spans(code, opening)
         if closed is None or spans is None or site["index"] is None or self.fields is None:
@@ -5272,29 +5529,65 @@ class NativeSession:
             or not all(self._reads(part, root, kind) for part in (*parts, rest))
         ):
             return False
-        span = caller.get("span")
-        if not span:
-            return False
         own = range(site["argument_span"][0], site["argument_span"][1])
-        for number in range(span[0], span[1] + 1):
-            at = preprocessed.line(caller.get("source"), number)
-            if at == 0:
-                return False  # the line is in the unit more than once
-            if at is None:
+        # Its whole body as the compiler preprocessed it, whatever each line's origin: a
+        # header included inside it is its code too (review of #211).
+        defined = self._definition(site["unit"], caller)
+        if defined is None:
+            return False
+        _, body, begin = defined
+        if _ASSEMBLY.search(body) or _ADDRESSES.search(body):
+            return False  # it may take the root's address unseen
+        address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
+        for found in re.finditer(address, body):
+            at = begin + found.start()
+            if at not in own and not self._lent(site, root, at):
+                return False
+        # An array in it, named without `&`, is a pointer into it: `keep(r.buf)`.
+        for found in re.finditer(rf"(?<![\w$]){re.escape(root)}(?![\w$])", body):
+            before = body[: found.start()].rstrip()
+            if before.endswith((".", "->")) or begin + found.start() in own:
+                continue  # a member's name, or the call's own `&root`
+            if not _UNEVALUATED_BEFORE.search(before) and self._decays(kind, body, found.end()):
+                return False
+        return True
+
+    def _decays(self, kind, text, position):
+        """Whether the selector that continues at ``position`` of ``text`` (`.buf`,
+        `.rows[i]`, nothing) from a local of type ``kind`` names an array, which a use
+        turns into a pointer into the local, by the build's types; True where Peeky cannot
+        tell. Through a pointer (`.next[0]`) it is no longer the local's."""
+        graph = self.fields
+        offset, element, pending, at = _under(graph, kind), None, 0, position
+        for _ in range(64):
+            node = graph.get(offset) if offset is not None else None
+            step = re.match(r"\s*(?:\.\s*([A-Za-z_]\w*)|\[)", text[at:])
+            if step is None:
+                return pending > 0 or node is None or node[0] == "array"
+            if step[1] is not None:
+                members = (
+                    [m for m in node[5] if m[0] == step[1]] if node and node[0] == "record" else []
+                )
+                if pending or len(members) != 1:
+                    return True
+                offset, at = _under(graph, members[0][1]), at + step.end()
                 continue
-            begin = statements.starts[at - 1]
-            finish = statements.starts[at] if at < len(statements.starts) else None
-            body = statements.blanked[begin:finish]
-            address = rf"(?<!&)&(?!&)\s*(?:\(\s*)*{re.escape(root)}(?![\w$])"
-            for found in re.finditer(address, body):
-                at = begin + found.start()
-                if at not in own and not self._lent(site, root, at):
-                    return False
+            closed = _arguments(text, at + step.end() - 1)
+            if closed is None:
+                return True
+            if not pending:
+                if node is None or node[0] != "array":
+                    return node is None
+                element, pending = node[2], len(node[3]) if node[3] else 1
+            pending, at = pending - 1, closed[1]
+            if not pending:
+                offset = _under(graph, element)
         return True
 
     def _reads(self, text, root, kind):
         """Whether the expression ``text`` only reads: no assignment, `++` or `--`, no `&`
-        (but `&&`), no call of any kind (a `(` after a name, `)`, `]` or member: `f(x)`,
+        (but `&&`, and the address of a plain name other than ``root``, `&out`, which
+        runs nothing), no call of any kind (a `(` after a name, `)`, `]` or member: `f(x)`,
         `(*fp)(x)`, `ops[0](x)`, `v.fn(x)`; `sizeof(x)` and `(int)(x)` too), no block,
         and ``root`` (of type ``kind``) only in reads of its integer fields (`r.count`,
         not `r.buf`, which passes a pointer into it)."""
@@ -5302,10 +5595,14 @@ class NativeSession:
 
         if (
             re.search(r"(?<![=!<>])(?:[-+*/%|^]|<<|>>|&(?!&))?=(?!=)|\+\+|--", text)
-            or re.search(r"(?<!&)&(?!&)|[;{}]|<%|%>", text)
+            or re.search(r"[;{}]|<%|%>", text)
             or re.search(r"[\w$)\]]\s*\(", text)
         ):
             return False
+        for found in re.finditer(r"(?<!&)&(?!&)", text):
+            named = re.match(r"\s*([A-Za-z_]\w*)(?![\w$])(?!\s*(?:[.\[(]|->))", text[found.end() :])
+            if named is None or named[1] == root:
+                return False
         for found in re.finditer(rf"(?<![\w$]){re.escape(root)}(?![\w$])", text):
             if text[: found.start()].rstrip().endswith((".", "->")):
                 continue  # a member's name
@@ -5325,9 +5622,9 @@ class NativeSession:
         """Whether the `&root` at ``position`` of the caller's unit (``site``'s) is a whole
         argument of a call by name of one of the program's functions, defined in that
         unit, whose parameter there points to ``root``'s type and is used only as
-        `p->field` or `p->array[i]` of a scalar (by the build's types), never with `&`
-        (`pop(&r, &v)`, pop reading `r->count` and `r->buf[r->head]`): such a call leaves
-        no pointer to ``root`` behind."""
+        `p->field` or `p->array[i]` of a scalar (by the build's types), never with `&`,
+        in a body with no inline assembly (`pop(&r, &v)`, pop reading `r->count` and
+        `r->buf[r->head]`): such a call leaves no pointer to ``root`` behind."""
         from peeky.fields import Unsettable, debugger_steps, settable_member
 
         preprocessed, statements = site["unit"]
@@ -5357,41 +5654,27 @@ class NativeSession:
         ):
             return False
         callees = [e for e in self.declarations or () if e.get("name") == name and e.get("span")]
-        at = preprocessed.line(callees[0].get("source"), callees[0]["span"][0]) if callees else 0
-        if len(callees) != 1 or not at:
+        defined = self._definition(site["unit"], callees[0]) if len(callees) == 1 else None
+        if defined is None or len(defined[0]) != len(spans):
             return False
-        end = statements.starts[at] if at < len(statements.starts) else len(text)
-        heading = re.compile(rf"(?<![\w$]){re.escape(name)}\s*\(").search(
-            text, statements.starts[at - 1], end
-        )
-        listed = _arguments(text, heading.end() - 1) if heading else None
-        parameters = _split_arguments(listed[0]) if listed else []
-        brace = text.find("{", listed[1]) if listed else -1
-        body = _arguments(text, brace) if brace >= 0 else None
-        # Not a prototype's line (nor a K&R definition's, left out).
-        if body is None or ";" in text[listed[1] : brace] or len(parameters) != len(spans):
+        parameters, inner, _ = defined
+        if _ASSEMBLY.search(inner) or _ADDRESSES.search(inner):
             return False
         parameter = re.search(r"([A-Za-z_]\w*)\s*$", parameters[index[0]])
         declared = (callees[0].get("types") or {}).get(parameter[1] if parameter else None) or ()
         if {storage for _, storage, _ in declared} != {"parameter"} or len(declared) != 1:
             return False
-
-        def under(offset):
-            for _ in range(64):
-                node = graph.get(offset)
-                if node is None or node[0] not in ("typedef", "qualifier"):
-                    return offset
-                offset = node[2]
-            return None
-
         try:
             kind, _ = self._declared_type(caller.get("types") or {}, root)
         except Unsettable:
             return False
-        pointer = graph.get(under(next(iter(declared))[0]))
-        if not pointer or pointer[0] != "pointer" or under(pointer[2]) != under(kind):
+        pointer = graph.get(_under(graph, next(iter(declared))[0]))
+        if (
+            not pointer
+            or pointer[0] != "pointer"
+            or _under(graph, pointer[2]) != _under(graph, kind)
+        ):
             return False
-        inner = body[0]
         for found in re.finditer(rf"(?<![\w$]){re.escape(parameter[1])}(?![\w$])", inner):
             before = inner[: found.start()].rstrip()
             if before.endswith((".", "->")):
@@ -5412,21 +5695,25 @@ class NativeSession:
         `_preprocessed` gives it), call, opening and argument_span (offsets in its
         text)} of the one call of the C function ``function`` in the program's
         sources, as the compiler preprocessed them (a macro's calls are where it is
-        used); None unless that is certain. Every mention of the function's name must be
-        its definition, a prototype at file scope, or a call by name inside a function
-        the build's debug information places there: anything else (its address taken, a
-        member's function pointer of that name, a declaration inside a function, a file
-        Peeky cannot preprocess) leaves the callers unknown."""
+        used), each unit's its own (a header's code is compiled once in each unit that
+        includes it, and macros may make the copies differ); None unless that is certain,
+        and where ``function`` or the caller is defined in more than one unit. Every
+        mention of the function's name must be its definition, a prototype at file
+        scope, or a call by name inside a function the build's debug information places
+        there: anything else (its address taken, a member's function pointer of that
+        name, a declaration inside a function, a file Peeky cannot preprocess) leaves the
+        callers unknown."""
         from peeky.c_source import _EXPRESSIONS
 
         name, span, source = function.get("name"), function.get("span"), function.get("source")
         if not re.fullmatch(r"[A-Za-z_]\w*", str(name)) or not span or not source:
             return None
-        definition, calls, seen = None, {}, set()
+        definition, calls, reads = None, {}, []
         for unit in self.target.sources:
             read = self._preprocessed(str(unit))
             if isinstance(read, str):
                 return None
+            reads.append(read)
             preprocessed, statements = read
             text, starts = statements.blanked, statements.starts
             counts = {}
@@ -5438,7 +5725,9 @@ class NativeSession:
                 if origin is None:
                     return None
                 counts[origin] = counts.get(origin, 0) + 1
-                key = (origin, counts[origin])
+                # Each unit's: a header's code is compiled once in each unit that
+                # includes it, and macros may make those copies differ (review of #211).
+                key = (len(reads), origin, counts[origin])
                 before = text[: found.start()].rstrip()
                 opening = len(text) - len(text[found.end() :].lstrip())
                 if before.endswith((".", "->")) or not text.startswith("(", opening):
@@ -5451,7 +5740,8 @@ class NativeSession:
                     return None
                 typed = before.endswith("*") or (word is not None and word[0] not in _EXPRESSIONS)
                 if origin == (source, span[0]):
-                    if definition not in (None, arguments):
+                    # Defined in one unit only, the one whose code the stop runs.
+                    if definition is not None:
                         return None
                     definition = arguments
                     continue
@@ -5461,16 +5751,19 @@ class NativeSession:
                     if not typed or not text[arguments[1] :].lstrip().startswith(";"):
                         return None
                     continue
-                if typed or key in seen:
+                if typed:
                     # A declaration inside a function (or `a * push(x)`, which reads alike).
-                    if typed:
-                        return None
-                    continue
-                seen.add(key)
+                    return None
                 calls[key] = (inside, origin, arguments, read, found.start(), opening)
         if definition is None or len(calls) != 1:
             return None
         caller, (where, line), arguments, read, call, opening = next(iter(calls.values()))
+        # The caller's code must be the call's unit's alone: its first line in no other.
+        first = (caller.get("source"), (caller.get("span") or (None,))[0])
+        if None in first or any(
+            other is not read and other[0].line(*first) is not None for other in reads
+        ):
+            return None
         parameters = _split_arguments(definition[0])
         values = _split_arguments(arguments[0])
         spans = _argument_spans(read[1].blanked, opening) or []
