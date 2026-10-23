@@ -1515,6 +1515,129 @@ def test_a_range_for_header_says_where_it_names_the_outer_local():
     assert Statements(RANGE_HEADER_SOURCE, raw_strings=False).range_header(3, "t") is None
 
 
+STATEMENT_HEADER_SOURCE = """long f(long x, P p, P *q) {
+    long t = x;
+    if (t) { static long t = 5; use(t); }
+    while (t-- > 0) { static long t = 6; use(t); }
+    for (long i = 0; i < t; i++) { static long t = 7; use(t + i); }
+    for (long i = t; i < 3; i++) { static long t = 8; use(t + i); }
+    switch (t) { default: { static long t = 9; use(t); } }
+    if (t > 0 &&
+        t < 9) { static long t = 10; use(t); }
+    if (t) { typedef int t; t k = 4; use(k); }
+    if (t) { extern long t; use(t); }
+    if (p.t + q->t) { static long t = 11; use(t); }
+    if (u) { static long t = 12; use(t); }
+    { static long t = 13; if (t) { use(t); } }
+    { typedef int t; } if (t) { static long t = 14; use(t); }
+    do { static long t = 15; use(t); } while (--t > 0);
+    return t;
+}
+"""
+STATEMENT_HEADER_CPP = """long f(long x, P p, P *q) {
+    long t = x;
+    if (long k = t; k) { static long t = 5; use(t + k); }
+    switch (long k = t; k) { default: { static long t = 6; use(t + k); } }
+    for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); }
+    for (const auto &[a, b] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) { use(a); }
+    for (long a : make(t)) { static long t = 8; use(t + a); }
+    for (auto w = make(t); long a : w) { static long t = 9; use(t + a); }
+    if constexpr (sizeof(t) > 1) { use(t); }
+    if (p.template t<0>() + P::template t<1>() + n::t) { static long t = 10; use(t); }
+    for (const auto &[a, b] : make2(1, [] { long r; { static long t = 11; r = t; } return t; })) { use(a); }
+    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 12; r = t; } return r; })) {
+        use(t * u);
+    }
+    return t;
+}
+"""
+
+
+def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_hides_it():
+    # #286: `if (t) { static long t = 5; use(t); }` named the static at the line's first
+    # instruction, though its header runs first and names the outer `t` there. Any
+    # statement's header naming it before the line's declaration hides it counts; a
+    # `while`'s condition and a `for`'s condition or increment run on each pass.
+    statements = Statements(STATEMENT_HEADER_SOURCE, raw_strings=False)
+    found = {line: statements.header_before(line, "t", 2) for line in range(3, 17)}
+    assert found == {
+        3: ("if", 3, 3, False),
+        4: ("while", 4, 4, True),
+        5: ("for", 5, 5, True),
+        # Only the init-statement, which runs once, names it.
+        6: ("for", 6, 6, False),
+        7: ("switch", 7, 7, False),
+        # A header over two lines: on its first, nothing a block declares hides it.
+        8: None,
+        9: ("if", 8, 9, False),
+        10: ("if", 10, 10, False),
+        11: ("if", 11, 11, False),
+        # Members; a header not naming it; a `static` declared before the header (which
+        # the header names), or in a block closed before it; a `do` loop's condition,
+        # after the block that declares it.
+        **{line: None for line in (12, 13, 14, 15, 16)},
+    }, found
+    assert statements.block_storage(9, "t", 2, True) == ("static", 9)
+    # A `static`'s own name, read to its end, is what hides the local there.
+    line = STATEMENT_HEADER_SOURCE.splitlines()[2]
+    begin = statements.starts[2]
+    header, declared = begin + line.index("(t)") + 2, begin + line.index("long t = 5") + 6
+    assert statements.block_storage(3, "t", 2, True, until=header) is False
+    assert statements.block_storage(3, "t", 2, True, until=declared) == ("static", 3)
+    assert statements.block_storage(3, "t", 2, True) == ("static", 3)
+
+    statements = Statements(STATEMENT_HEADER_CPP, raw_strings=True)
+    found = {line: statements.header_before(line, "t", 2) for line in range(3, 14)}
+    assert found == {
+        3: ("if", 3, 3, False),
+        4: ("switch", 4, 4, False),
+        # A binding in the loop's body.
+        5: ("for", 5, 5, True),
+        # A lambda's `static` in the range: that lambda's own code, never this one's.
+        6: ("for", 6, 6, True),
+        # A range's expression, and a C++20 init-statement, run once.
+        7: ("for", 7, 7, False),
+        8: ("for", 8, 8, False),
+        # Nothing hides it (`if constexpr`); members, `template` ones too; a lambda's
+        # `t` after its block closes, past the `static`.
+        **{line: None for line in (9, 10, 11)},
+        # The loop's own binding hides it in its range (`range_header` tells that), but
+        # not at the line's first instruction, where a lambda's `static` is next.
+        12: None,
+        13: None,
+    }, found
+    assert statements.header_before(12, "t", 2, entering=True) == ("for", 12, 12, True)
+    assert statements.block_storage(12, "t", 2, True, entering=True) == ("static", 12)
+    assert statements.range_header(12, "t") == (12, 12)
+    assert statements.header_before(3, "u", 2) is None
+
+
+def test_a_range_for_header_says_where_its_declaration_and_colon_are():
+    # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
+    # test and binding, its range's cleanup), all emitted after its range expression,
+    # carries its declaration's and its `:`'s columns; a classic `for`'s `?:` is no `:`.
+    text = """void f(void) {
+    for (const auto &[t, u] : make(t)) {}
+    for (auto w = make(t); long a : w) {}
+    for (i = 0; i < 3 ? 1 : 2; i++) {}
+    for (auto a : c ? x : y) {}
+}
+"""
+    found = {}
+    for raw_strings in (True, False):
+        statements = Statements(text, raw_strings=raw_strings)
+        for line in range(2, 6):
+            [(_, _, opening, closing)] = statements._headers(line)
+            colon = statements._range_colon(opening, closing)
+            found[raw_strings, line] = colon and tuple(text[at] for at in colon)
+    # C has no range-`for`.
+    assert found == {
+        **{(True, line): (first, ":") for line, first in ((2, "c"), (3, "l"), (5, "a"))},
+        (True, 4): None,
+        **{(False, line): None for line in range(2, 6)},
+    }, found
+
+
 OWN_STATIC = """long work(long a) {
     long t = a * 3;
     {
