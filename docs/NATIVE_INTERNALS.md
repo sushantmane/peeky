@@ -69,16 +69,26 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - `_function_entries` also gives a `CodeDie` for every `DW_TAG_subprogram` and
   `DW_TAG_inlined_subroutine` with code, placed or not. Each has its ranges, depth, entry root
   (None where unplaced), enclosing code, call site, and the row at each range's start.
-- An inlined call shares its caller's code, so the narrowest entry holding the address can be the
-  caller's. `frame_level` finds the code the frame runs, and `_function_at` gives no entry where
-  that is unplaced.
+- An inlined call shares its caller's code, so the narrowest entry holding the address can be
+  the wrong one. In a C++ target, `frame_level` gives the roots of every entry the frame may run.
+  `_function_at` takes the one root's entry, and none where there are several, or one unplaced.
 - The innermost frame runs the deepest code holding its address. lldb-dap gives an inlined call's
-  caller the address where the call's code starts, and a call's caller its return address. One
-  before either is in the caller's own code.
+  caller the address where the call's code starts, and a call's caller its return address.
+- A frame above the innermost one may run the deepest code at its address, or at the one before
+  it. Where those differ, as at the end of an inlined call whose last instruction calls, both
+  count.
 - At the start of an inlined call's code, a frame that shows the call's line is the caller: LLDB
   shows such a stop at the call. If the call's own first row is on that line too, either may be
   meant.
-- Where the code may be unplaced, the row says Peeky can't tell which function the frame runs.
+- Of several roots, the frame's line picks one if only that one's code holds rows the debugger
+  shows on it. Else its name picks the one entry named so. An inlined call's start on its own
+  call's line picks none.
+- Rows a later row at their address replaces count for neither: LLDB shows the last one's line.
+  GCC writes the call's line at an inlined call's start, then the callee's.
+- Copies of a function at one address (folded) are several roots, placed or not.
+- A frame left with several roots, or one unplaced, is withheld. The row says Peeky can't tell
+  which function the frame runs, or can't place it.
+- C targets keep the narrowest entry, as before.
 - GCC gives an inlined call with no code left the same `DW_AT_low_pc` and `DW_AT_high_pc`, and
   dwarfdump writes both as addresses. `_code_ranges` reads that as no code. Read as an offset, it
   held twice its address, and took the frames of `main` after it.
@@ -86,7 +96,7 @@ frame's entry: the narrowest function whose code holds the frame's address.
   rows must be that function's, as the deepest code there. Else the row is withheld, saying why.
 - Frames outside the program's sources, such as the standard library's, aren't judged so. Nor are
   C targets.
-- Clang's `cpp` lane and all of `tests/native` never reach the net.
+- Clang's `cpp` lane, on lldb-dap 18 and 20, and all of `tests/native` never reach the net.
 
 ## Changing a value
 

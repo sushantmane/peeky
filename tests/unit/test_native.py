@@ -2255,7 +2255,7 @@ def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
     # Review of #282: an inlined call shares its caller's code, so `_function_at` found
     # the caller's entry for its frame, and the net never ran: a forced-inline helper a
     # `#line` declares elsewhere showed `x` as leftovers inside `main`.
-    from peeky.native import UNPLACED, UNSURE, frame_level
+    from peeky.native import frame_level
 
     main = code_die(1, 0x100, 0x200, 1, first=("a.cpp", 14))
     # `helper`, inlined into `main` (called on line 16) at 0x140-0x160: Peeky cannot place
@@ -2263,30 +2263,37 @@ def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
     helper = code_die(2, 0x140, 0x160, None, True, 2, 1, ("a.cpp", 16), ("a.cpp", 10))
     twice = code_die(3, 0x150, 0x158, 4, True, 3, 2, ("a.cpp", 11), ("a.cpp", 3))
     code = (main, helper, twice)
+    lines = {
+        ("a.cpp", 16): frozenset({1}),
+        ("a.cpp", 10): frozenset({None}),
+        ("a.cpp", 11): frozenset({None}),
+    }
     # The innermost frame in `helper`'s code is `helper`'s; in `twice`'s, `twice`'s.
-    assert frame_level(code, 0x144, False, ("a.cpp", 10)) == UNPLACED
-    assert frame_level(code, 0x154, False, ("a.cpp", 3)) is None
+    assert frame_level(code, 0x144, False, ("a.cpp", 10), lines) == {None}
+    assert frame_level(code, 0x154, False, ("a.cpp", 3), lines) == {4}
     # At `helper`'s start, shown on its call's line: LLDB shows the call, in `main`.
-    assert frame_level(code, 0x140, False, ("a.cpp", 16)) is None
-    assert frame_level(code, 0x140, False, ("a.cpp", 10)) == UNPLACED
+    assert frame_level(code, 0x140, False, ("a.cpp", 16), lines) == {1}
+    assert frame_level(code, 0x140, False, ("a.cpp", 10), lines) == {None}
     # A caller frame: LLDB gives the caller of an inlined call the address its code starts
     # at (`main` at 0x140, `helper` at 0x150), and a call's caller its return address.
-    assert frame_level(code, 0x140, True, ("a.cpp", 16)) is None
-    assert frame_level(code, 0x150, True, ("a.cpp", 11)) == UNPLACED
-    assert frame_level(code, 0x15C, True, ("a.cpp", 12)) == UNPLACED
-    assert frame_level(code, 0x184, True, ("a.cpp", 17)) is None
+    # The code changes there (review round 2): only the frame's line tells which it is.
+    assert frame_level(code, 0x140, True, ("a.cpp", 16), lines) == {1}
+    assert frame_level(code, 0x140, True, ("a.cpp", 16)) == {1, None}
+    assert frame_level(code, 0x150, True, ("a.cpp", 11), lines) == {None}
+    assert frame_level(code, 0x15C, True, ("a.cpp", 12), lines) == {None}
+    assert frame_level(code, 0x184, True, ("a.cpp", 17), lines) == {1}
     # The call's own first row on its call's line: either may be meant.
     same = helper._replace(starts={0x140: ("a.cpp", 16)})
-    assert frame_level((main, same, twice), 0x140, False, ("a.cpp", 16)) == UNSURE
+    assert frame_level((main, same, twice), 0x140, False, ("a.cpp", 16), lines) == {1, None}
     # A function Peeky places inlined into one it cannot (a lambda into `std::sort`).
     library = code_die(5, 0x400, 0x500, None)
     lambda_ = code_die(6, 0x420, 0x430, 7, True, 2, 5, None, ("a.cpp", 20))
-    assert frame_level((library, lambda_), 0x424, False, ("a.cpp", 20)) is None
-    assert frame_level((library, lambda_), 0x420, True, None) == UNPLACED
+    assert frame_level((library, lambda_), 0x424, False, ("a.cpp", 20)) == {7}
+    assert frame_level((library, lambda_), 0x420, True, None) == {None, 7}
     # The session: frame 0 in `helper` is withheld, and its caller `main` is judged as
     # before, by its own entry.
     session = unplaced_session(tmp_path)
-    session.code = {"dies": code, "lines": {}}
+    session.code = {"dies": code, "lines": lines}
 
     def frame(identity, address, line):
         return {
@@ -2303,11 +2310,88 @@ def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
     assert session._function_at(stack[1]) is session.declarations[0]
     assert session._unplaced({"name": "seed"}, stack[1]) is None
     shared = {**stack[0], "line": 16}
-    session.code = {"dies": (main, same, twice), "lines": {}}
+    session.code = {"dies": (main, same, twice), "lines": lines}
     session.frames_listed([{**shared, "instructionPointerReference": hex(0x1140)}])
     reason = session._unplaced({"name": "x"}, {**shared, "instructionPointerReference": "0x1140"})
-    assert reason.startswith("Peeky cannot tell whether this frame runs a function it places")
-    assert len(reason) <= 300 and "cannot tell which function" in reason.refusal
+    assert reason == (
+        "Peeky cannot tell which function this frame runs: more than one runs the code at its "
+        "address (an inlined call and its caller, or copies of one function), so it cannot "
+        "tell whether this is set yet: it may hold leftovers. Read it at a stop on a line "
+        "only one of them runs"
+    )
+    assert reason.label == "not shown" and "cannot tell which function" in reason.refusal
+
+
+def test_a_frame_two_placed_functions_may_run_is_placed_by_neither(tmp_path):
+    # Review round 2 of #282: of several roots that may run a frame's code, `_function_at`
+    # took the narrowest whenever all were placed: an inlined call's start on its own
+    # call's line, or a caller frame at the end of an inlined call, was taken for the
+    # call's, and judged by its declarations.
+    from peeky.native import frame_level
+
+    parent = code_die(1, 0x100, 0x200, 1, first=("a.cpp", 14))
+    child = code_die(2, 0x140, 0x160, 2, True, 2, 1, ("a.cpp", 15), ("a.cpp", 15))
+    both = {("a.cpp", 15): frozenset({1, 2}), ("a.cpp", 17): frozenset({1})}
+    one = {("a.cpp", 15): frozenset({2})}
+    # At the child's start, on its call's line, where its own first row is too: either,
+    # whatever the line's rows say.
+    assert frame_level((parent, child), 0x140, False, ("a.cpp", 15), both) == {1, 2}
+    assert frame_level((parent, child), 0x140, False, ("a.cpp", 15), one) == {1, 2}
+    # Inside the child, the child's; outside it, the parent's.
+    assert frame_level((parent, child), 0x148, False, ("a.cpp", 15), both) == {2}
+    assert frame_level((parent, child), 0x180, False, ("a.cpp", 17), both) == {1}
+    # A caller frame at the child's end (its last instruction calls): the code before its
+    # address is the child's, at it the parent's. Its line, or its name, may tell which.
+    short = (parent, child._replace(ranges=((0x140, 0x150),)))
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both) == {1, 2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one) == {2}
+    names = {1: "main", 2: "helper"}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "helper(long)") == {2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "main") == {1}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "other(int)") == {1, 2}
+    # Copies of a function at one address (folded), placed or not: either.
+    folded = (code_die(1, 0x100, 0x200, 1), code_die(3, 0x100, 0x200, 3))
+    assert frame_level(folded, 0x120, False, ("a.cpp", 3)) == {1, 3}
+    copied = (code_die(1, 0x100, 0x200, 1), code_die(3, 0x100, 0x200, None))
+    assert frame_level(copied, 0x120, False, ("a.cpp", 3)) == {1, None}
+    # The session takes the one root's entry, never the narrowest holding the address
+    # before a caller's (the child's, here); where there is none, the frame is withheld.
+    session = unplaced_session(tmp_path)
+    main_entry = {**session.declarations[0], "name": "main"}
+    helper_entry = {"root": 2, "name": "helper", "source": "a.cpp", "ranges": ((0x140, 0x150),)}
+    session.declarations = [main_entry, helper_entry]
+    session.code = {"dies": short, "lines": both}
+
+    def frame(identity, address, line, name):
+        return {
+            "id": identity,
+            "name": name,
+            "instructionPointerReference": hex(0x1000 + address),
+            "source": {"path": str(tmp_path / "a.cpp")},
+            "line": line,
+        }
+
+    innermost, caller = frame(1, 0x400, 3, "twice(long)"), frame(2, 0x150, 15, "main")
+    session.frames_listed([innermost, caller])
+    assert session._narrowest(0x14F) is helper_entry
+    assert session._function_at(caller) is main_entry
+    assert session._unplaced({"name": "x"}, caller) is None
+    unnamed = {**caller, "name": "run"}
+    assert session._function_at(unnamed) is None
+    assert session._unplaced({"name": "x"}, unnamed).startswith(
+        "Peeky cannot tell which function this frame runs: more than one"
+    )
+    # At the child's start on the call's line, where its first row is too: withheld.
+    session.code = {"dies": (parent, child), "lines": one}
+    tie = {**frame(1, 0x140, 15, "helper(long)")}
+    session.frames_listed([tie])
+    assert session._function_at(tie) is None
+    assert "more than one runs the code" in session._unplaced({"name": "x"}, tie)
+    # A C target keeps the narrowest, and is not judged so.
+    session.target = SimpleNamespace(language="c", verification_inputs=("a.cpp",))
+    session.frames_listed([innermost, caller])
+    assert session._function_at(unnamed) is helper_entry
+    assert session._unplaced({"name": "x"}, unnamed) is None
 
 
 def gcc_dumps(workspace, class_declared=True):
@@ -2471,7 +2555,7 @@ def test_gccs_lambdas_and_implicit_constructors_are_placed_by_their_class(tmp_pa
     # #167: GCC gives a lambda's `operator()` and an implicit constructor no file or line,
     # so they had no entry: no rule ran in them, and their locals showed leftovers. They
     # take their class's, as clang gives them.
-    from peeky.native import UNPLACED, frame_level, function_scopes, local_declarations
+    from peeky.native import frame_level, function_scopes, local_declarations
 
     (tmp_path / "gcc.cpp").write_text("\n" * 20)
     info, line = gcc_dumps(tmp_path)
@@ -2522,9 +2606,11 @@ def test_gccs_lambdas_and_implicit_constructors_are_placed_by_their_class(tmp_pa
         {0x8C0: ("gcc.cpp", 3)},
     )
     assert code["lines"][("gcc.cpp", 3)] == {0xE8} and code["lines"][("gcc.cpp", 11)] == {None}
-    assert frame_level(code["dies"], 0x8D0, False, ("gcc.cpp", 11)) == UNPLACED
-    assert frame_level(code["dies"], 0x8C4, False, ("gcc.cpp", 3)) is None
-    assert frame_level(code["dies"], 0x8C0, True, ("gcc.cpp", 10)) == UNPLACED
+    lines = code["lines"]
+    assert frame_level(code["dies"], 0x8D0, False, ("gcc.cpp", 11), lines) == {None}
+    assert frame_level(code["dies"], 0x8C4, False, ("gcc.cpp", 3), lines) == {0xE8}
+    # The lambda's frame above `twice`'s, at its start: the lambda's or `twice`'s.
+    assert frame_level(code["dies"], 0x8C0, True, ("gcc.cpp", 10), lines) == {None, 0xE8}
 
 
 def test_gccs_closures_and_constructors_are_told_from_their_names():

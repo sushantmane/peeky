@@ -173,6 +173,74 @@ def test_an_inlined_function_peeky_cannot_place_withholds_its_locals(compiler, t
         capsys.readouterr()
 
 
+# Review round 2 of #282: at -O1, `wrap`'s inlined code ends with its call to `twice`, so
+# `wrap`'s frame returns to the first address past that code, `run`'s; and `run`'s frame
+# is at the start of `wrap`'s code (lldb-dap 18 and 20, clang and GCC alike). Each frame's
+# code changes at its address: its line and name tell whose it is.
+LAST_CALL = """#include <cstdio>
+__attribute__((noinline)) long twice(long v) {
+    long w = v * 2;
+    return w;  // TWICE
+}
+static inline __attribute__((always_inline)) long wrap(long a) {
+    return twice(a + 1);  // WRAP
+}
+__attribute__((noinline)) long run(long seed) {
+    long r = wrap(seed);  // RUN
+    return r + seed;
+}
+int main(int argc, char **) {
+    std::printf("%ld\\n", run(argc + 2));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_frames_whose_code_changes_at_their_address_are_told_apart(compiler, tmp_path, capsys):
+    (tmp_path / "last.cpp").write_text(LAST_CALL)
+    config = tmp_path / "native.json"
+    config.write_text(
+        json.dumps(
+            {
+                "language": "cpp",
+                "sources": ["last.cpp"],
+                "compiler": os.environ["PEEKY_NATIVE_CXX"],
+                "adapter": os.environ["PEEKY_NATIVE_DAP"],
+                "dwarfdump": os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+                "dsymutil": os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+                "sysroot": os.environ.get("PEEKY_NATIVE_SYSROOT"),
+                "optimization": "O1",
+            }
+        )
+    )
+    at = f"last.cpp:{line_of(LAST_CALL, '// TWICE')}"
+    code = main(["session", "start", str(tmp_path), "--config", str(config), "--at", at, "--json"])
+    started = json.loads(capsys.readouterr().out)
+    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
+        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
+    assert code == 0, started
+    try:
+        frames = [(1, "a", "wrap", "// WRAP")]
+        if compiler == "gcc":
+            # Clang's build has no code on `run`'s call line, which Peeky refuses to read
+            # a frame on; GCC's has a row there, at `wrap`'s start.
+            frames.append((2, "seed", "run", "// RUN"))
+        for frame, name, function, line in frames:
+            code, rows = run(capsys, "session", "get", name, "--frame", str(frame))
+            [row] = rows
+            assert row["function"].lstrip(":").startswith(function), row
+            assert row["location"].endswith(f"last.cpp:{line_of(LAST_CALL, line)}"), row
+            # Read, or withheld by the optimized build's own rules: never as a frame whose
+            # function Peeky cannot tell.
+            error = row.get("error", "")
+            assert row.get("value") == "3" or "optimized" in error, row
+            assert "which function" not in error and "cannot place" not in error, row
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 def run(capsys, *argv):
     code = main([*argv, "--json"])
     return code, json.loads(capsys.readouterr().out)

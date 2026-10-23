@@ -1278,6 +1278,8 @@ def _function_entries(
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
     marks = set() if prologues is not None else None
+    if replaced is None and code is not None:
+        replaced = set()
     rows = sorted(
         _line_rows(
             line_text,
@@ -1290,6 +1292,10 @@ def _function_entries(
         )
     )
     addresses = [row[0] for row in rows]
+    if code is not None:
+        # The rows LLDB shows: at an address several rows give, the last one's line.
+        shown = [row for row in rows if row not in replaced]
+        places = [row[0] for row in shown]
     dies = _dies(info)
     if prologues is not None:
         prologues.extend(_prologue_windows(dies, rows, marks))
@@ -1308,7 +1314,7 @@ def _function_entries(
         source = _source_of(attribute, inputs, workspace, sources)
         if code is not None:
             root = chain[-1] if source else None
-            made.append(_code_die(dies, offset, spans, root, rows, addresses))
+            made.append(_code_die(dies, offset, spans, root, shown, places))
         if source is None:
             # SDK and std code, and what names no file of the program: never listed, and
             # never claims the caller's rows.
@@ -1346,7 +1352,7 @@ def _function_entries(
                 each = each._replace(call=call if call[0] is not None else None)
             resolved[each.offset] = each
         code["dies"] = tuple(resolved.values())
-        code["lines"] = _line_owners(code["dies"], rows)
+        code["lines"] = _line_owners(code["dies"], shown)
     return dies, functions, lines, (inputs, sources), runs, starts
 
 
@@ -1369,7 +1375,7 @@ class CodeDie(NamedTuple):
 
 def _code_die(dies, offset, spans, root, rows, addresses):
     """The CodeDie of the function or inlined call at ``offset`` (_function_entries),
-    from the program's ``rows`` (and their ``addresses``); ``call`` keeps the
+    from the program's ``rows`` LLDB shows (and their ``addresses``); ``call`` keeps the
     DW_AT_call_file attribute, for the caller to resolve."""
     die = dies[offset]
     parent, above = None, die["parent"]
@@ -1432,10 +1438,10 @@ def _declared_at(dies, chain):
 
 
 def _line_owners(code, rows):
-    """{(source, line): roots} for the program's ``rows``: of the CodeDies whose code
-    holds each row, the deepest's root (an inlined call's, else its function's), None
-    for one Peeky cannot place. Copies of a function at one address (folded) count as
-    the placed one, if any is."""
+    """{(source, line): roots} for the program's ``rows`` LLDB shows: of the CodeDies
+    whose code holds each row, the deepest's root (an inlined call's, else its
+    function's), None for one Peeky cannot place. Copies of a function at one address
+    (folded) give each its root."""
     addresses = [row[0] for row in rows]
     best = [None] * len(rows)
     for each in code:
@@ -1453,12 +1459,12 @@ def _line_owners(code, rows):
     for (_, source, line), held in zip(rows, best):
         if held is None:
             continue
-        placed = {root for root in held[1] if root is not None}
-        owners.setdefault((source, line), set()).update(placed or {None})
+        owners.setdefault((source, line), set()).update(held[1])
     return {key: frozenset(roots) for key, roots in owners.items()}
 
 
-# What _frame_level says of a frame whose function Peeky cannot place, or cannot tell.
+# What _unplaced makes of a frame's roots: a function or inlined call Peeky cannot place,
+# or more than one it may run.
 UNPLACED, UNSURE = "unplaced", "unsure"
 
 
@@ -1489,51 +1495,78 @@ class CodeIndex:
         return list(found.values())
 
 
-def frame_level(code, pc, adjusted, place):
-    """Whether the frame at ``pc`` (unslid) runs a function Peeky cannot place (UNPLACED),
-    may or may not (UNSURE), or none of that is in question (None: what holds ``pc`` is
-    all placed, or Peeky has no such code). ``code``: CodeDies or their CodeIndex; ``adjusted``: whether the
-    frame is above the innermost one, its address where its call returns or, LLDB's
-    way for the caller of an inlined call, where that call's code starts (its range
-    holding the callee's address); ``place``: the frame's (source, line), as shown.
+def frame_level(code, pc, adjusted, place, lines=None, names=None, shown=None):
+    """The roots of the functions or inlined calls whose code the frame at ``pc``
+    (unslid) may run, as a frozenset: None for one Peeky cannot place. The frame is
+    placed only where that is one root, not None; empty where no code holds ``pc``.
+
+    ``code``: CodeDies or their CodeIndex. ``adjusted``: whether the frame is above the
+    innermost one, its address where its call returns or, LLDB's way for the caller of
+    an inlined call, where that call's code starts. ``place``: the frame's (source,
+    line), as shown; ``shown``, its name.
 
     An inlined call's frame and its caller's share the code that holds an address: the
-    frame runs the deepest code holding it (one before it, for ``adjusted``). Where an
-    inlined call's code starts at ``pc`` and the frame shows that call's line, it is the
-    caller's: LLDB shows a stop there at the call, the call's code not yet run, and the
-    caller of an inlined call there. If the call's own first row is on that line too,
-    either may be meant."""
+    innermost frame runs the deepest code holding it, a frame above it the deepest code
+    holding the address before it, or holding it (where its code changes there, as at the
+    end of an inlined call whose last instruction calls). At the start of an inlined
+    call's code, a frame that shows that call's line is its caller: LLDB shows a stop
+    there at the call, and the caller of an inlined call there. If the call's own first
+    row is on that line too, either may be meant.
 
+    Of several, the one whose code holds rows on the frame's line, if one alone does
+    (``lines``: _line_owners), else the one whose name (``names``: {root: name}) the
+    frame's is, if one alone; never at an inlined call's start tied so."""
     index = code if isinstance(code, CodeIndex) else CodeIndex(code)
-    holding = index.holding
 
-    def deepest(found):
+    def deepest(address):
+        found = index.holding(address)
         inlined = [each for each in found if each.inline]
-        if not inlined:
-            return found
-        top = max(each.depth for each in inlined)
-        return [each for each in inlined if each.depth == top]
+        if inlined:
+            top = max(each.depth for each in inlined)
+            found = [each for each in inlined if each.depth == top]
+        return {each.root for each in found}
 
-    at = holding(pc)
-    before = holding(pc - 1) if adjusted else at
-    if all(each.root is not None for each in (*at, *before)):
-        return None
-    by_offset = index.by_offset
-    levels = []
+    at = index.holding(pc)
+    row = next((each.starts[pc] for each in at if each.starts.get(pc) is not None), None)
+    roots, tied = set(), False
     for each in at:
         if not each.inline or each.call is None or each.call != place:
             continue
-        if not any(lo == pc for lo, _ in each.ranges):
+        if not any(low == pc for low, _ in each.ranges):
             continue
-        levels.append([by_offset[each.parent]] if each.parent in by_offset else [])
-        if each.starts.get(pc) == place:
+        outer = index.by_offset.get(each.parent)
+        roots.add(outer.root if outer is not None else None)
+        if row == place:
             # Its own first row is on its call's line: the frame may be either.
-            levels.append([each])
-    levels = levels or [deepest(before)]
-    placed = [bool(level) and any(each.root is not None for each in level) for level in levels]
-    if all(placed):
-        return None
-    return UNPLACED if not any(placed) else UNSURE
+            tied = tied or each.root != (outer.root if outer is not None else None)
+            roots.add(each.root)
+    if adjusted:
+        roots |= deepest(pc - 1) | deepest(pc)
+    elif not roots or row is None or row == place:
+        roots |= deepest(pc)
+    if len(roots) > 1 and not tied:
+        owners = (lines or {}).get(place) or frozenset()
+        chosen = roots & owners
+        if len(chosen) == 1:
+            return frozenset(chosen)
+        chosen = {
+            root
+            for root in roots
+            if root is not None and _names_function(shown, (names or {}).get(root))
+        }
+        if len(chosen) == 1:
+            return frozenset(chosen)
+    return frozenset(roots)
+
+
+def _names_function(shown, name):
+    """Whether a frame's name as the debugger shows it (`run(long)`, `::helper(long)`,
+    `Widget::Widget(long)`) is the function ``name`` (`run`, `helper`, `Widget::Widget`)."""
+    if not isinstance(shown, str) or not name:
+        return False
+    bare = shown.rpartition("`")[2].strip()
+    bare = bare[2:] if bare.startswith("::") else bare
+    return bare == name or bare.startswith(name + "(")
 
 
 def _own_lines(dies, entry, numbers, macro_lines=frozenset()):
@@ -3624,7 +3657,7 @@ class NativeSession:
         # parameters yet (#279); None (unknown) where the declarations are.
         self.prologues = None if declarations is None or prologues is None else tuple(prologues)
         # _function_entries's code: every function and inlined call with code, placed or
-        # not, to tell a frame Peeky cannot place (_frame_level); None where unknown.
+        # not, to tell a frame Peeky cannot place (_frame_roots); None where unknown.
         self.code = None if declarations is None else code
         self.unjudged = unjudged
         # In a program that may call setjmp: the macros of headers outside the program
@@ -4884,16 +4917,28 @@ class NativeSession:
         return bool(_CONSTRUCTOR_NAME.search(str(frame.get("name") or "")))
 
     def _function_at(self, frame):
-        """The declarations entry of the function a frame runs (the narrowest whose code
-        holds its address), or None: also where that is a function, or an inlined call,
-        Peeky cannot place, or may be (_frame_level), whose caller's code holds the
-        address too."""
+        """The declarations entry of the function a frame runs, or None. In a C++ target,
+        the one root frame_level gives for it (_frame_roots), and none where the code at
+        its address may be more than one function's or inlined call's, or is one Peeky
+        cannot place. In a C or Rust target, or without the build's code, the narrowest
+        whose code holds its address."""
         address = self._block_pc(frame)
         if address is None or not self.declarations:
             return None
-        if self._frame_level(frame) is not None:
-            return None
-        return self._narrowest(address)
+        roots = self._frame_roots(frame)
+        if roots is None:
+            return self._narrowest(address)
+        if len(roots) == 1 and None not in roots:
+            return self._entries_by_root().get(next(iter(roots)))
+        return None
+
+    def _entries_by_root(self):
+        """{root DIE: declarations entry}."""
+        if "entries_by_root" not in self.__dict__:
+            self.entries_by_root = {
+                function.get("root"): function for function in self.declarations or ()
+            }
+        return self.entries_by_root
 
     def _narrowest(self, address):
         """The declarations entry of the narrowest function whose code holds ``address``
@@ -4909,21 +4954,25 @@ class NativeSession:
             cache[address] = self.declarations[min(holding)[1]] if holding else None
         return cache[address]
 
-    def _frame_level(self, frame):
-        """frame_level for ``frame``: UNPLACED where it runs a function or an inlined call
-        Peeky cannot place, UNSURE where it may, else None; None too where its address
-        or the build's code is unknown (_unplaced judges those)."""
+    def _frame_roots(self, frame):
+        """frame_level for ``frame``: the roots of the code it may run, None for one Peeky
+        cannot place. None itself where it is not judged so: a C or Rust target, the
+        build's code unknown, or the frame's address."""
+        language = getattr(getattr(self, "target", None), "language", None)
         pc, code = self._unslid(frame), getattr(self, "code", None)
-        if pc is None or not code:
+        if language != "cpp" or pc is None or not code:
             return None
         adjusted = self._block_pc(frame) != pc
-        place = self._place(frame)
-        cache = self.__dict__.setdefault("frame_levels", {})
-        key = (pc, adjusted, place)
+        place, shown = self._place(frame), (frame or {}).get("name")
+        cache = self.__dict__.setdefault("frame_roots", {})
+        key = (pc, adjusted, place, shown)
         if key not in cache:
             if "index" not in code:
                 code["index"] = CodeIndex(code["dies"])
-            cache[key] = frame_level(code["index"], pc, adjusted, place)
+            names = {root: entry.get("name") for root, entry in self._entries_by_root().items()}
+            cache[key] = frame_level(
+                code["index"], pc, adjusted, place, code.get("lines"), names, shown
+            )
         return cache[key]
 
     def _line_level(self, frame):
@@ -4953,10 +5002,11 @@ class NativeSession:
         declarations; a frame that runs a line of the program's own sources or headers
         in a function the build's table does not hold has none to judge it by, so none
         of its locals or parameters is shown. That includes an inlined call Peeky cannot
-        place, which shares its caller's code (_frame_level), and a frame that may be one
-        (UNSURE). Where the frame's address is unknown, the line it shows must be the code
-        of one function Peeky places (_line_level). Frames outside the program's sources
-        (the standard library's) and C targets are not judged so."""
+        place, which shares its caller's code (_frame_roots), and a frame whose code may be
+        more than one function's (UNSURE), placed or not. Where the frame's address is
+        unknown, the line it shows must be the code of one function Peeky places
+        (_line_level). Frames outside the program's sources (the standard library's) and
+        C targets are not judged so."""
         language = getattr(getattr(self, "target", None), "language", None)
         if not getattr(self, "declarations", None) or language != "cpp":
             return None
@@ -4965,12 +5015,17 @@ class NativeSession:
         if not isinstance(name, str) or name.startswith("(") or not self._in_program(frame):
             return None
         address = self._block_pc(frame)
+        roots = None if address is None else self._frame_roots(frame)
         if address is None:
             level = self._line_level(frame)
-        elif not getattr(self, "code", None):
+        elif roots is None:
             level = UNPLACED if self._narrowest(address) is None else None
+        elif len(roots) > 1:
+            level = UNSURE
+        elif not roots or None in roots or next(iter(roots)) not in self._entries_by_root():
+            level = UNPLACED
         else:
-            level = self._frame_level(frame)
+            level = None
         if level is None:
             return None
         if level is UNPLACED:
@@ -4986,10 +5041,10 @@ class NativeSession:
                 "describe` lists",
             )
         reason = (
-            "Peeky cannot tell whether this frame runs a function it places or an inlined "
-            "call whose declarations it cannot place in the program's sources, so it cannot "
-            "tell whether this is set yet: it may hold leftovers. Read it on a line of a "
-            "function `peeky describe` lists"
+            "Peeky cannot tell which function this frame runs: more than one runs the code at "
+            "its address (an inlined call and its caller, or copies of one function), so it "
+            "cannot tell whether this is set yet: it may hold leftovers. Read it at a stop on "
+            "a line only one of them runs"
             if address is not None
             else f"Peeky cannot tell which function this frame runs ({self._unknown_address(frame)}"
             "): no one function it places runs all the code on this line, so it cannot tell "
