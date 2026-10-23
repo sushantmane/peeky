@@ -205,17 +205,25 @@ shows that reference's address as the variable's value.
 
 - `fields.element_reference` tells such a variable by that type. `local_types` stores it as
   `through`, wherever it is kept, so a change is refused before the program runs.
-- Apple clang 21 types it as a plain reference (`long &&`), not marked artificial. There,
-  `Statements.binds` reads the declaration's line: the name must be in a binding's brackets, and
-  declared no other way. Clang 18 marks it artificial, and lldb-dap doesn't list it.
+- Apple clang 21 types it as a plain reference (`long &&`), not marked artificial. Clang 18
+  marks it artificial, and lldb-dap doesn't list it.
+- Either way, `Statements.binds` reads the declaration's line: the name must be in a binding's
+  brackets, and declared no other way. A reference the code declares with GCC's type
+  (`std::tuple_element<0, P>::type &r`) fails that check, so it stays a reference. A GCC
+  candidate whose line Peeky can't read is withheld.
+- `Statements.binding` says whether the binding is by reference, and what it binds.
+  `NativeSession._bound_alive` follows one by reference only where that is an object of the
+  frame, or a member of one (`_local_object`): a local or by-value parameter in scope there,
+  reached through no reference or pointer. Anything else is `not shown`, since it may be gone.
 - `NativeSession.bound_element` gives the worker the element in the variable's place. For a
   number, a character or a pointer, that is the debugger's one child under the reference, with
   nothing listed under it. For a struct, a string or a container, `element_text` keeps the text
   after the address, and the members stay listed.
 - `display_type` gives the binding's type, and `debugger_type` keeps LLDB's reference.
 - Where `not_yet_declared` would show it with a note, as at a loop's return to its line, it is
-  withheld. Until its declaration runs, the reference may point anywhere. One the debugger lists
-  no element under is `not shown`.
+  withheld. Until its declaration runs, the reference may point anywhere. In an optimized build,
+  so is any stop on its declaration's lines. One the debugger lists no element under is `not
+  shown`.
 
 ## Function names
 

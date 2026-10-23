@@ -1403,6 +1403,32 @@ def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
     assert not statements.binds(0, "t") and not statements.binds(99, "t")
 
 
+def test_a_binding_says_how_it_binds_and_what():
+    # Review of #296: a binding by reference may refer into a temporary its line destroys.
+    source = """int main() {
+    auto &[t, u] = make(0)[0];
+    auto [x, y] = p;
+    for (const auto &[k, v] : m) { use(k); }
+    auto &&[g, h](one(1)); auto const &[a, b] = q . inner;
+    if (auto &[c, d] = p; c) {}
+    auto [first,
+          second]{pp};
+    long &w = x;
+}
+"""
+    statements = Statements(source, raw_strings=True)
+    assert [statements.binding(line, name) for line, name in [(2, "t"), (2, "u")]] == [
+        (True, "make(0)[0]", False)
+    ] * 2
+    assert statements.binding(3, "x") == (False, "p", False)
+    assert statements.binding(4, "v") == (True, "m", True)
+    assert statements.binding(5, "g") == (True, "one(1)", False)
+    assert statements.binding(5, "b") == (True, "q . inner", False)
+    assert statements.binding(6, "c") == (True, "p", False)
+    assert statements.binding(7, "first") == statements.binding(8, "second") == (False, "pp", False)
+    assert statements.binding(9, "w") is None and statements.binding(2, "x") is None
+
+
 RANGE_LAMBDA_SOURCE = """int f() {
     long t = 1;
     for (auto [t, u] : make([&] { long t = 40; return id(t); })) {

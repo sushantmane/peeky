@@ -693,61 +693,153 @@ BOUND = """0x0000000b: DW_TAG_compile_unit
 0x00000048:   DW_TAG_reference_type
                 DW_AT_type\t(0x00000010 "long int")
 
+0x0000004c:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
 0x00000050:   DW_TAG_subprogram
                 DW_AT_name\t("main")
 
 0x00000054:     DW_TAG_variable
+                  DW_AT_name\t("held")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(3)
+                  DW_AT_type\t(0x00000014 "Pt")
+                  DW_AT_location\t(DW_OP_fbreg -84)
+
+0x00000058:     DW_TAG_variable
+                  DW_AT_name\t("p")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(4)
+                  DW_AT_type\t(0x00000014 "Pt")
+                  DW_AT_location\t(DW_OP_fbreg -88)
+
+0x0000005c:     DW_TAG_variable
+                  DW_AT_name\t("x")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(5)
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_location\t(DW_OP_fbreg -92)
+
+0x00000060:     DW_TAG_variable
+                  DW_AT_name\t("pt")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(6)
+                  DW_AT_type\t(0x00000044 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -96)
+
+0x00000064:     DW_TAG_variable
+                  DW_AT_name\t("lr")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(7)
+                  DW_AT_type\t(0x00000048 "long int &")
+                  DW_AT_location\t(DW_OP_fbreg -100)
+
+0x00000068:     DW_TAG_variable
+                  DW_AT_name\t("t")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -104)
+
+0x0000006c:     DW_TAG_variable
+                  DW_AT_name\t("u")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -108)
+
+0x00000070:     DW_TAG_variable
+                  DW_AT_name\t("w")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -112)
+
+0x00000074:     DW_TAG_variable
                   DW_AT_name\t("t")
                   DW_AT_decl_file\t("/w/t.cpp")
                   DW_AT_decl_line\t(14)
-                  DW_AT_type\t(0x00000040 "type &&")
-                  DW_AT_location\t(DW_OP_fbreg -200)
-
-0x00000058:     DW_TAG_variable
-                  DW_AT_name\t("pt")
-                  DW_AT_type\t(0x00000044 "type &")
-                  DW_AT_location\t(DW_OP_fbreg -192)
-
-0x0000005c:     DW_TAG_variable
-                  DW_AT_name\t("lr")
                   DW_AT_type\t(0x00000048 "long int &")
-                  DW_AT_location\t(DW_OP_fbreg -184)
+                  DW_AT_location\t(DW_OP_fbreg -116)
 
-0x00000060:     DW_TAG_variable
-                  DW_AT_name\t("t")
+0x00000078:     DW_TAG_variable
+                  DW_AT_name\t("d")
                   DW_AT_decl_file\t("/w/t.cpp")
-                  DW_AT_decl_line\t(20)
-                  DW_AT_type\t(0x00000048 "long int &")
-                  DW_AT_location\t(DW_OP_fbreg -176)
+                  DW_AT_decl_line\t(16)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -120)
 
-0x00000064:     DW_TAG_variable
-                  DW_AT_name\t("u")
-                  DW_AT_type\t(0x00000040 "type &&")
-                  DW_AT_location\t(DW_OP_fbreg -168)
+0x0000007c:     DW_TAG_variable
+                  DW_AT_name\t("a")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(17)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -124)
 
-0x00000068:     DW_TAG_variable
-                  DW_AT_name\t("w")
-                  DW_AT_type\t(0x00000040 "type &&")
-                  DW_AT_location\t(DW_OP_fbreg -160)
+0x00000080:     DW_TAG_variable
+                  DW_AT_name\t("r")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(18)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -128)
+
+0x00000084:     DW_TAG_variable
+                  DW_AT_name\t("f")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(19)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -132)
 """
 
 
-def bound(where=None, shadowed=False):
+# Its source, `src/t.cpp`: by value (`t`, `pt`), by reference to a local (`a`), to a
+# member of one (`f`), and to an element of a temporary the line destroys (`d`); and a
+# reference the code declares with the element's type (`r`), and one named as a binding.
+BOUND_SOURCE = """#include <utility>
+int main(int argc, char **) {
+    Pt held{1, 2};
+    Pt p{3, 4};
+    long x = 5;
+    auto [pt, n] = both;
+    long &lr = x;
+    for (long i = 0; i < 2; i++) {
+        auto [t, u] = make(i)[0];
+        auto [w, z] = make(i)[1];
+        use(t + u + w);
+    }
+    {
+        long &t = x;
+    }
+    auto &[d, e] = make(0)[0];
+    auto &[a, b] = p;
+    std::tuple_element<0, std::pair<long, long>>::type &r = p.first;
+    auto &[f, g] = held.x;
+    return 0;
+}
+"""
+
+
+def bound(where=None, shadowed=False, readable=True):
     """A NativeSession over BOUND's `main` (with ``shadowed``, also its plain `long &t` on
-    line 20), the debugger showing the declaration at ``where``."""
+    line 14), the debugger showing the declaration at ``where``; its source, unless not
+    ``readable``."""
+    from peeky.c_source import Statements
     from peeky.fields import CPP_LIBRARIES, local_types, type_graph
     from peeky.native import _parse_dies
 
     dies = _parse_dies(BOUND)
     types = local_types(dies, [0x50], through=True)
     if not shadowed:
-        types["t"] = frozenset(each for each in types["t"] if each[2] == ("t.cpp", 14))
-    graph = type_graph(dies, {0x40, 0x44, 0x48}, CPP_LIBRARIES)
+        types["t"] = frozenset(each for each in types["t"] if each[2] == ("t.cpp", 9))
+    graph = type_graph(dies, {0x10, 0x14, 0x40, 0x44, 0x48, 0x4C}, CPP_LIBRARIES)
     for offset, node in type_graph(dies, {0x28, 0x30}, CPP_LIBRARIES).items():
         graph.setdefault(offset, node)
-    session = native(function={"types": types}, fields=graph)
+    session = native(function={"types": types, "source": "src/t.cpp"}, fields=graph)
+    statements = Statements(BOUND_SOURCE, True)
+    session._statements = lambda path: statements if readable and path == "src/t.cpp" else None
     session._shown_where = lambda name, pc: where
     session._unslid = lambda frame: 0x1000
+    session._place = lambda frame: ("src/t.cpp", frame["line"]) if "line" in frame else None
     return session
 
 
@@ -802,8 +894,8 @@ def test_a_pair_bindings_row_is_its_element_never_its_address():
     # Two references named `t`, the debugger's not told apart: withheld; told: read.
     shadowed = bound(shadowed=True).bound_element(t, frame, fetch)
     assert isinstance(shadowed, Withholding) and "cannot tell which" in shadowed, shadowed
-    assert bound(("t.cpp", 14, True), shadowed=True).bound_element(t, frame, fetch)["variable"]
-    assert bound(("t.cpp", 20, True), shadowed=True).bound_element(t, frame, fetch) is None
+    assert bound(("t.cpp", 9, True), shadowed=True).bound_element(t, frame, fetch)["variable"]
+    assert bound(("t.cpp", 14, True), shadowed=True).bound_element(t, frame, fetch) is None
     # Never in C, nor without the build's debug information.
     session.target.language = "c"
     assert session.bound_element(t, frame, fetch) is None and not session.display_type(t, frame)
@@ -905,11 +997,14 @@ def test_a_newer_clangs_binding_is_told_by_its_line():
     # not artificial: its row was the element's address after the declaration ran.
     from peeky.c_source import Statements
 
-    source = "int main() {\n    auto &[t, u] = held[1];\n    long &w = x;\n}\n"
+    source = "int main() {\n    Pt held{1, 2};\n    auto &[t, u] = held;\n    long &w = x;\n}\n"
     session = bound()
-    plain = {(0x48, "automatic", ("t.cpp", 2))}
     session._function_at = lambda frame: {
-        "types": {"t": frozenset(plain), "w": frozenset({(0x48, "automatic", ("t.cpp", 3))})},
+        "types": {
+            "held": frozenset({(0x14, "automatic", ("t.cpp", 2))}),
+            "t": frozenset({(0x48, "automatic", ("t.cpp", 3))}),
+            "w": frozenset({(0x48, "automatic", ("t.cpp", 4))}),
+        },
         "source": "src/t.cpp",
     }
     session._statements = lambda path: Statements(source, True) if path == "src/t.cpp" else None
@@ -926,3 +1021,60 @@ def test_a_newer_clangs_binding_is_told_by_its_line():
     # Another file's declaration, or a source Peeky cannot read, is not told.
     session._statements = lambda path: None
     assert session.bound_element(t, {"id": 1}, fetch) is None
+
+
+def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
+    # Review of #296: `auto &[d, e] = make(0)[0];` refers into a temporary the line
+    # destroyed; a later `make(7000)` reused its memory, and `d` showed `8000` with no note.
+    from peeky.native import Withholding
+
+    session, frame = bound(), {"id": 1}
+
+    def fetch(reference, count):
+        return [{"name": "&x", "type": ELEMENT, "value": "3", "variablesReference": 0}]
+
+    row = {"type": f"{ELEMENT} &", "value": "0x0000aaaaaaad32b0", "variablesReference": 4}
+    dangling = session.bound_element({**row, "name": "d"}, frame, fetch)
+    assert isinstance(dangling, Withholding) and dangling.label == "not shown", dangling
+    assert dangling == (
+        "the binding refers to an object Peeky can't prove is still alive: `d` binds "
+        "`make(0)[0]` by reference, and only an object of this frame, or a member of one, is "
+        "proven. Read it where the code names that object, or bind by value (`auto [...]`, no "
+        "`&`)"
+    )
+    assert len(dangling) <= 300
+    # A local object in scope, or a member of one: read through.
+    for name in ("a", "f"):
+        assert session.bound_element({**row, "name": name}, frame, fetch)["variable"]["value"]
+    # The code's own reference with the element's type is no binding: LLDB's text stays.
+    assert session.bound_element({**row, "name": "r"}, frame, fetch) is None
+    assert session.display_type({**row, "name": "r"}, frame) is None
+    # A line whose binding Peeky cannot read through: nor is anything read through it.
+    unknown = session._bound_alive(frame, "q", ("t.cpp", 16), None)
+    assert isinstance(unknown, Withholding) and "can't read what `q`'s declaration" in unknown
+    # GCC's type, but a line Peeky cannot read: neither read nor shown as an address.
+    unread = bound(readable=False).bound_element({**row, "name": "t"}, frame, fetch)
+    assert isinstance(unread, Withholding) and "cannot read its declaration's line" in unread
+    assert bound(readable=False).bound_element({**row, "name": "lr"}, frame, fetch) is None
+
+
+def test_an_optimized_bindings_own_line_withholds_it():
+    # Review of #296: in an optimized build, where in its declaration's lines a stop is
+    # cannot be told, so neither can whether this pass has set the reference.
+    session = bound()
+    session._not_yet_declared = lambda *args: None
+    t = variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70")
+    assert session.not_yet_declared(t, {"id": 1, "line": 9}) is None
+    session.target.optimization = "O1"
+    found = session.not_yet_declared(t, {"id": 1, "line": 9})
+    assert found == (
+        "declared on line 9, and in an optimized build Peeky cannot tell whether this stop is "
+        "past that declaration on this pass: the build reads this structured binding through "
+        "a reference its declaration sets, which may point anywhere until then; read it below "
+        "its declaration"
+    )
+    assert len(found) <= 300
+    # Below its declaration, or any other local: as before.
+    assert session.not_yet_declared(t, {"id": 1, "line": 11}) is None
+    lr = variable("lr", "long &", "0x0000fffffffffb20")
+    assert session.not_yet_declared(lr, {"id": 1, "line": 7}) is None

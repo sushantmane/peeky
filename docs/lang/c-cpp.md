@@ -90,6 +90,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   `auto [t, u] = p;`. GCC and newer clang hold each name as a reference. The row's `type` is the
   binding's, and `debugger_type` is LLDB's reference
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
+- A binding by reference, such as `auto &[t, u]`, is read only where it names a local of the frame,
+  or a member of one. Otherwise its row is `not shown`, because what it refers to may be gone
+  ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 - `address(value)` reads that address as an integer. To see which element a pointer points at in
   another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).

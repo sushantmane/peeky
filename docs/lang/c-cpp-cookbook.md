@@ -629,6 +629,17 @@ Some things only look different:
   - An element that is a pointer shows its value, but Peeky doesn't follow it: `p[0]` can't be
     read. Read what it points at where the pair is made.
   - It can't be changed, nor can its fields: a change would write through the reference.
+  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where it names an
+    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. Anything
+    else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
+    line destroys. So a binding of a call, a subscript, a range `for`'s element, `*p` or a global
+    shows `not shown: the binding refers to an object Peeky can't prove is still alive`. Read it
+    where the code names that object, or bind by value.
+  - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
+    tell whether that pass has set its reference yet.
+  - Peeky reads the binding's line to tell it from a reference the code declares with the
+    element's type: `std::tuple_element<0, P>::type &r = p.first;` keeps its address first. If
+    it can't read that line, the row is `not shown`.
 - **Strings with lldb-dap 18:** GCC describes `std::string` whole, so LLDB's summary works. A text
   cut at a NUL keeps its note: `"a" (shown up to a NUL at byte 1 of 3)`.
 - **A const pointer:** GCC's `this` is `Widget *const`. A change through it is refused as a

@@ -15,7 +15,8 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   program's output: they are a warning, not output.
 - A structured binding of a bitfield, which GCC gives no location: a true note.
 - A structured binding of a pair or tuple, which GCC (and Apple clang 21) hold as a
-  reference to the element: the element, never its address (#291).
+  reference to the element: the element, never its address (#291). By reference, only
+  where it names an object the frame keeps alive; optimized, never on its own line.
 
 The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
 C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
@@ -416,8 +417,8 @@ int main(int argc, char **argv) {
     for (long i = 0; i < t; i++) {
         auto [t, u] = make(i)[0]; // BY_VALUE
         use(t + u); // VALUE_READ
-        std::vector<std::pair<long, long>> held = make(i);
-        auto &[r, s] = held[1]; // BY_REFERENCE
+        std::pair<long, long> held = make(i)[1];
+        auto &[r, s] = held; // BY_REFERENCE
         use(r * s); // REFERENCE_READ
     }
     for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); } // ONE_LINE
@@ -526,6 +527,116 @@ def test_a_pair_or_tuple_binding_shows_its_element_never_its_address(cpp, capsys
         message = result["error"]["message"]
         assert "is reached through a pointer or reference" in message, result
         assert "Refused before the program runs" in message, result
+
+
+# Review of #296: bindings by reference that outlive what they refer to, and ones that
+# do not; a reference the code declares with the element's type.
+DANGLING = """#include <cstdio>
+#include <tuple>
+#include <utility>
+#include <vector>
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) std::vector<std::pair<long, long>> make(long v) {
+    return {{v + 1000, 1}, {v + 1001, 2}};
+}
+__attribute__((noinline)) std::pair<long, long> one(long v) { return {v + 30, v + 40}; }
+int main(int argc, char **argv) {
+    auto &[t, u] = make(0)[0]; // REF
+    const auto &[c, d] = make(0)[1]; // CONST_REF
+    auto &&[e, f] = make(0)[0]; // FORWARD
+    auto poison = make(7000);
+    std::pair<long, long> p{argc + 4, argc + 5};
+    std::tuple_element<0, std::pair<long, long>>::type &r = p.first; // EXPLICIT
+    auto &[a, b] = p; // LOCAL
+    auto &&[g, h] = one(argc); // EXTENDED
+    use(poison[0].first + r + a + g); // AFTER
+    return 0;
+}
+"""
+DEAD = (
+    "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
+    "`{}` by reference, and only an object of this frame, or a member of one, is proven. Read "
+    "it where the code names that object, or bind by value (`auto [...]`, no `&`)"
+)
+
+
+@pytest.mark.timeout(180)
+def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, capsys):
+    # Review of #296: `auto &[t, u] = make(0)[0];` refers into a temporary the line
+    # destroyed, and `auto poison = make(7000);` took its memory: `t = 8000, u = 1`, no note.
+    compiler, root = cpp
+    source = root / "dangling.cpp"
+    source.write_text(DANGLING)
+    code, result = probe(
+        source, line_of(DANGLING, "// AFTER"), "t,u,c,d,e,f,r,a,b,g,h", capsys, "--hits", "1"
+    )
+    assert "U=8041" in result["output"], result["output"]
+    rows = {row["selector"]: row for row in result["rows"]}
+    # Never `poison`'s elements, nor any value, through a temporary the line destroyed;
+    # nor through `one(argc)`'s, which `auto &&` keeps alive, but only by a rule Peeky
+    # does not prove (a call).
+    bound = {
+        "t": "make(0)[0]",
+        "u": "make(0)[0]",
+        "c": "make(0)[1]",
+        "d": "make(0)[1]",
+        "e": "make(0)[0]",
+        "f": "make(0)[0]",
+        "g": "one(argc)",
+        "h": "one(argc)",
+    }
+    for selector, initializer in bound.items():
+        row = rows[selector]
+        assert row.get("value") is None, row
+        if not hidden(compiler, row):
+            assert row["error"] == DEAD.format(selector, initializer), row
+    # A local of this frame: read through.
+    for selector, value in (("a", "5"), ("b", "6")):
+        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
+    # The code's own reference, though GCC types it as a binding's: a reference's row.
+    assert rows["r"]["type"].endswith("&") and "debugger_type" not in rows["r"], rows["r"]
+    assert re.fullmatch(r"0x[0-9a-f]+", rows["r"]["value"]), rows["r"]
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_an_optimized_bindings_own_line_never_reads_through_it(cpp, optimization):
+    # Review of #296: optimized, a stop on a binding's own line may come before this
+    # pass sets its reference, which Peeky cannot tell: no stop there reads through it.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "tuples.cpp").write_text(TUPLES)
+    adapter = NativeTarget(
+        sources=("tuples.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    for marker, names in (("BY_VALUE", ("t", "u")), ("BY_REFERENCE", ("r", "s"))):
+        line = line_of(TUPLES, f"// {marker}")
+        result = run_probe(root, Probe("tuples.cpp", line, names, hits="all"), adapter=adapter)
+        assert result["status"] == "completed", result.get("error")
+        for row in result["rows"]:
+            assert row.get("value") is None and "note" not in row, row
+            if row["error"].startswith("no value yet"):
+                assert row["error"].endswith(
+                    "the build reads this structured binding through a reference its "
+                    "declaration sets, which may point anywhere until then; read it below "
+                    "its declaration"
+                ), row
+    result = run_probe(
+        root,
+        Probe("tuples.cpp", line_of(TUPLES, "// ONE_LINE"), ("t", "u"), hits="all"),
+        adapter=adapter,
+    )
+    assert result["status"] == "completed", result.get("error")
+    assert all(row.get("value") is None for row in result["rows"]), result["rows"]
 
 
 @pytest.mark.timeout(180)
