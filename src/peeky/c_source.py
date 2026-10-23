@@ -1475,7 +1475,15 @@ class Statements:
         return tuple(sorted(lines)), unknown
 
     def block_storage(
-        self, line, name, after=None, elsewhere=False, body=False, entering=False, own=None
+        self,
+        line,
+        name,
+        after=None,
+        elsewhere=False,
+        body=False,
+        entering=False,
+        own=None,
+        until=None,
     ):
         """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
         line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
@@ -1509,6 +1517,10 @@ class Statements:
         declaration with that storage whose declarator for ``name`` is on that line is
         then the local itself, not one hiding it; only where ``name`` appears once on
         the line, so that no other declaration there can be the local.
+
+        ``until``: a position in the text read for the line (the end of a name in a
+        statement's header, ``header_before``): only what is declared up to it counts, as
+        the line is otherwise read, so False there means nothing hides the local yet.
 
         Peeky reads a translation unit as the compiler preprocessed it
         (``Preprocessed``), where no macro or conditional is left and an `#include`
@@ -1552,9 +1564,10 @@ class Statements:
             and code.startswith(("{", "<%"), opened)
             and self._brace(opened) in ("function", "lambda")
         ]
+        cut = finish if until is None else until
         if len(bodies) == 1:
             opened = bodies[0]
-            start, stop = max(opened + 1, lower), min(pairs[opened], finish)
+            start, stop = max(opened + 1, lower), min(pairs[opened], finish, cut)
             if start >= stop:
                 return False
             return self._storage_declaration(
@@ -1583,7 +1596,7 @@ class Statements:
         for index, opened in enumerate(around):
             # This block's own statements, up to the next block around the line.
             start = max(opened + 1, lower)
-            stop = around[index + 1] if index + 1 < len(around) else finish
+            stop = min(around[index + 1] if index + 1 < len(around) else finish, cut)
             if start >= stop:
                 continue
             # A C++ class declared in the local's own block leaves the local named
@@ -1636,42 +1649,14 @@ class Statements:
         an outer one; but a mention need not be a read (`sizeof(t)`, a lambda's body), so
         a caller can only say the header names it. A member's or a qualified name does not
         count (`p.t`, `p->t`, `n::t`, `p.template t<0>()`). Else None."""
-        if not self.raw_strings or self.unreadable or type(line) is not int:
+        if not self.raw_strings:
             return None
-        if not 1 <= line <= len(self.starts):
-            return None
-        code, pairs = self._code()
-        if pairs is None:
-            return None
-        begin = self.starts[line - 1]
-        finish = self.starts[line] if line < len(self.starts) else len(code)
-        for start, closing in pairs.items():
-            if not (start < finish and closing >= begin and code.startswith("(", start)):
+        code = self._code()[0]
+        for keyword, at, start, closing in self._headers(line):
+            if keyword != "for":
                 continue
-            keyword = self._before(start)
-            if keyword is None or keyword[0] != "for":
-                continue
-            # The binding's brackets at the header's own depth (after its last `;`, an
-            # init-statement's end), then the range's `:`.
-            binding, ranged, depth = None, False, 0
-            for mark in _TOKENS.finditer(code, start + 1, closing):
-                token = mark[0]
-                if token in _OPEN:
-                    if (
-                        depth == 0
-                        and token in ("[", "<:")
-                        and re.search(r"\bauto\s*&{0,2}\s*$", code[start + 1 : mark.start()])
-                    ):
-                        binding = (mark.start(), pairs[mark.start()])
-                    depth += 1
-                elif token in _CLOSE:
-                    depth -= 1
-                elif depth == 0 and token == ";":
-                    binding, ranged = None, False
-                elif depth == 0 and token == ":" and binding is not None:
-                    ranged = True
-                    break
-            if not ranged or not any(
+            binding = self._range_binding(start, closing)
+            if binding is None or not any(
                 word[0] == name for word in _IDENTIFIER.finditer(code, *binding)
             ):
                 continue
@@ -1679,8 +1664,121 @@ class Statements:
                 if word[0] != name or binding[0] < word.start() < binding[1]:
                     continue
                 if not self._member(word.start()):
-                    first = bisect.bisect_right(self.starts, keyword[1])
+                    first = bisect.bisect_right(self.starts, at)
                     return first, bisect.bisect_right(self.starts, closing)
+        return None
+
+    def header_before(self, line, name, after=None, entering=False, own=None):
+        """(keyword, first line, last line, always) of a statement header (`if`, `switch`,
+        `while` or `for`) holding ``line`` that names ``name`` where nothing hides the
+        local of that name yet, in its condition, an init-statement (`if (long k = t;
+        k)`) or a range's expression: `if (t) { static long t = 5; use(t); }`, where only
+        the `static` the line declares later hides it (``block_storage``, read with
+        ``after``, ``entering`` and ``own`` as it is). Running that header may read the
+        outer local, or not (a mention need not be a read, #283). A member's or a
+        qualified name does not count (`p.t`, `n::t`, `p.template t<0>()`), nor one in a
+        range-`for`'s structured binding. None if no header does, or Peeky cannot tell.
+
+        ``always``: whether a stop past the line's first instruction may still be in that
+        header, or its declaration is no more the code's there: a part naming ``name``
+        runs on each pass (a `while`'s condition, a `for`'s condition or increment), or
+        the declaration is in the header itself (a block of a lambda there, which another
+        function runs)."""
+        if not self.block_storage(line, name, after, True, False, entering, own):
+            return None
+        code = self._code()[0]
+        found = []
+        for keyword, at, start, closing in self._headers(line):
+            binding = self._range_binding(start, closing) if keyword == "for" else None
+            # A `while`'s condition runs on each pass, as a classic `for`'s condition and
+            # increment do (after the first of its two `;`); the rest runs once.
+            again = closing if keyword != "while" else start
+            if keyword == "for" and binding is None:
+                depth, semicolons = 0, []
+                for mark in _TOKENS.finditer(code, start + 1, closing):
+                    depth += (mark[0] in _OPEN) - (mark[0] in _CLOSE)
+                    if depth == 0 and mark[0] == ";":
+                        semicolons.append(mark.start())
+                if len(semicolons) == 2:
+                    again = semicolons[0]
+            named = []
+            for word in _IDENTIFIER.finditer(code, start + 1, closing):
+                if word[0] != name or self._member(word.start()):
+                    continue
+                if binding is not None and binding[0] < word.start() < binding[1]:
+                    continue
+                # Read up to the name's end: a declaration it completes (a `static`'s
+                # own) is no mention of the outer local.
+                hidden = self.block_storage(
+                    line, name, after, True, False, entering, own, until=word.end()
+                )
+                if hidden is False:
+                    named.append(word.start() > again)
+            if not named:
+                continue
+            inner = self.block_storage(
+                line, name, after, True, False, entering, own, until=closing + 1
+            )
+            lines = bisect.bisect_right(self.starts, at), bisect.bisect_right(self.starts, closing)
+            found.append((keyword, *lines, any(named) or inner is not False))
+        if not found:
+            return None
+        # The first such header names the statement.
+        return (
+            found[0][0],
+            min(first for _, first, _, _ in found),
+            max(last for _, _, last, _ in found),
+            any(always for *_, always in found),
+        )
+
+    def _headers(self, line):
+        """(keyword, where it starts, where its `(` opens, where its `)` closes) of each
+        statement header (`if`, `if constexpr`, `switch`, `while`, `for`) whose
+        parentheses hold part of ``line``."""
+        if self.unreadable or type(line) is not int or not 1 <= line <= len(self.starts):
+            return []
+        code, pairs = self._code()
+        if pairs is None:
+            return []
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        found = []
+        for start, closing in pairs.items():
+            if not (start < finish and closing >= begin and code.startswith("(", start)):
+                continue
+            keyword = self._before(start)
+            if keyword is not None and keyword[0] == "constexpr" and self.raw_strings:
+                keyword = self._before(keyword[1])
+            if keyword is not None and keyword[0] in ("if", "switch", "while", "for"):
+                found.append((keyword[0], keyword[1], start, closing))
+        return sorted(found, key=lambda header: header[2])
+
+    def _range_binding(self, start, closing):
+        """Where a range-`for` header's structured binding's brackets open and close, for
+        the header's parentheses from ``start`` to ``closing``: `for (const auto &[t, u] :
+        v)`; else None (another `for`, or a C source)."""
+        if not self.raw_strings:
+            return None
+        code, pairs = self._code()
+        # The binding's brackets at the header's own depth (after its last `;`, an
+        # init-statement's end), then the range's `:`.
+        binding, depth = None, 0
+        for mark in _TOKENS.finditer(code, start + 1, closing):
+            token = mark[0]
+            if token in _OPEN:
+                if (
+                    depth == 0
+                    and token in ("[", "<:")
+                    and re.search(r"\bauto\s*&{0,2}\s*$", code[start + 1 : mark.start()])
+                ):
+                    binding = (mark.start(), pairs[mark.start()])
+                depth += 1
+            elif token in _CLOSE:
+                depth -= 1
+            elif depth == 0 and token == ";":
+                binding = None
+            elif depth == 0 and token == ":" and binding is not None:
+                return binding
         return None
 
     def _member(self, position):

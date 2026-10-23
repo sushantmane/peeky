@@ -2,11 +2,15 @@
 `typedef`, an `extern`) withholds the outer local's row as it does at -O0. The outer
 local there lives in a register or as a constant, not in the frame's memory, and the
 scan (#144) skipped it: plain `n` showed the outer local's value where the code names
-the block's. The structured binding case is in tests/cpp/test_cpp_optimized_blocks.py."""
+the block's. The structured binding case is in tests/cpp/test_cpp_optimized_blocks.py.
+#286: a one-line statement whose header names the outer local before its block declares
+the name again hedges that local's note, at -O0 too, with clang and GCC."""
 
 import os
+import shutil
 
 import pytest
+from native_compilers import is_gcc
 
 from peeky.native import NativeTarget
 from peeky.probe import Probe, run_probe
@@ -116,3 +120,90 @@ def test_a_blocks_static_kept_as_a_constant_is_shown_where_the_code_names_it(
         "the block's `static` `t` (line 7), listed separately as `t @ blocks.c:7`"
         in (outer["error"])
     )
+
+
+# #286: one-line statements whose header names the outer `t` before their block's `static`
+# `t` exists. A `while`'s condition, and a `for`'s condition, run on each pass.
+HEADER_SOURCE = """#include <stdio.h>
+__attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; }
+int main(int argc, char **argv) {
+    long t = argc + 2; /* OUTER */
+    if (t) { static long t = 5; use(t); } /* IF */
+    for (long i = 0; i < t; i++) { static long t = 6; use(t + i); } /* FOR */
+    for (long i = t; i < 4; i++) { static long t = 7; use(t + i); } /* FOR_INIT */
+    while (t-- > 1) { static long t = 8; use(t); } /* WHILE */
+    switch (t) { default: { static long t = 9; use(t); } } /* SWITCH */
+    use(t);
+    return 0;
+}
+"""
+HEADERS = {"IF": "if", "FOR": "for", "FOR_INIT": "for", "WHILE": "while", "SWITCH": "switch"}
+
+
+@pytest.fixture(params=["clang", "gcc"])
+def cc(request, monkeypatch):
+    """The C compiler's family, with PEEKY_NATIVE_CC set to it: the lane's own where it is
+    of the family (the clang case skips where the lane builds C with GCC), else a `gcc` on
+    the path that is GCC."""
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    compiler = os.environ.get("PEEKY_NATIVE_CC", "clang")
+    if (request.param == "gcc") != is_gcc(compiler):
+        if request.param == "clang":
+            pytest.skip("this lane builds C with GCC; the clang lanes run the clang case")
+        compiler = shutil.which("gcc")
+        if compiler is None or not is_gcc(compiler):
+            pytest.skip("needs GCC")
+    monkeypatch.setenv("PEEKY_NATIVE_CC", compiler)
+    return request.param
+
+
+def header_line(marker):
+    return next(
+        i for i, row in enumerate(HEADER_SOURCE.splitlines(), 1) if row.endswith(f"/* {marker} */")
+    )
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", sorted(HEADERS))
+def test_a_statement_header_naming_the_outer_local_hedges_its_note(
+    tmp_path, cc, optimization, marker
+):
+    # #286: on `if (t) { static long t = 5; use(t); }` the outer `t` said "not what the
+    # code reads: the code here names the block's `static`", though the line's first
+    # instruction runs the header, where `t` is the outer local. Whether running it reads
+    # `t`, Peeky cannot tell: withheld, hedged. The outer local is selected by its line
+    # where the debugger lists several `t`s; plain `t` is whichever it lists.
+    adapter = target(optimization)
+    (tmp_path / "blocks.c").write_text(HEADER_SOURCE)
+    line, outer = header_line(marker), header_line("OUTER")
+    selectors = ("t", f"t @ blocks.c:{outer}")
+    result = run_probe(tmp_path, Probe("blocks.c", line, selectors, hits="all"), adapter=adapter)
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # The outer `t` holds 0 to 3 here; each block's `static` 5 or more.
+    assert not [row for row in found if row.get("value") in ("0", "1", "2", "3")], found
+    rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
+    assert any(row["hit"] == 1 for row in rows), found
+    static = f"the block's `static` `t` (line {line}), "
+    listed = ("which the debugger does not list", f"listed separately as `t @ blocks.c:{line}`")
+    hedged = {
+        f"may not be what the code reads: the code here may name {static}{how}, but the "
+        f"`{HEADERS[marker]}` statement's header names `t` before that declaration, and Peeky "
+        "cannot tell whether running the header reads this local: this row is the outer local "
+        "of that name"
+        for how in listed
+    }
+    plain = {
+        f"not what the code reads: the code here names {static}{how}: this row is the outer "
+        "local of that name"
+        for how in listed
+    }
+    for row in rows:
+        if marker in ("FOR", "WHILE") or optimization != "O0" or row["hit"] == 1:
+            # A part that runs on each pass, an optimized build, or the line's first stop.
+            assert row["error"] in hedged, row
+        else:
+            # Unoptimized, past the line's first instruction: a header run once has run.
+            assert row["error"] in plain, row

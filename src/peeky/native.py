@@ -5881,8 +5881,9 @@ class NativeSession:
         that brings it in (the preprocessed text has its lines there instead).
         ``entering()``: whether the stop is the first instruction of the statements that
         start on the line (None: it is not), where a range-`for`'s binding there is not
-        declared yet; where the loop's header names the local too, a stop Peeky cannot
-        tell to be past it is hedged (#283). ``siblings``: the frame's rows, when known,
+        declared yet; where the loop's header names the local too, or any statement's header
+        names it before the line's declaration (#286), a stop Peeky cannot tell to be past
+        that header is hedged (#283). ``siblings``: the frame's rows, when known,
         to say whether the debugger lists what the code names."""
         # An optimized build's local in registers is listed all the same (#173).
         found = shown_declaration(self.declarations, name, self._block_pc(frame), unstored=True)
@@ -5920,19 +5921,34 @@ class NativeSession:
                 and tuple(function.get("span") or ()) == (line, line)
             )
             storage = statements.block_storage(at, base, after, True, body, own=own)
-            if storage and storage[0] == "binding":
+            header = None
+            if storage:
                 # A range-`for` header holding the line that names the outer local before
                 # its binding exists: running it may read that local, or not (#283).
-                header = None if body else statements.range_header(at, base)
-                entered = entering() if entering is not None else None
-                if entered:
-                    storage = statements.block_storage(at, base, after, True, body, True, own)
-                if storage and storage[0] == "binding":
-                    # Past the first instruction (unoptimized), a header on the line has
-                    # run; on a header over several lines, no stop can be told apart.
-                    if header is not None and (entered is not False or header[0] != header[1]):
+                ranged, entered, asked = None, None, storage[0] == "binding"
+                if asked:
+                    ranged = None if body else statements.range_header(at, base)
+                    entered = entering() if entering is not None else None
+                    if entered:
+                        storage = statements.block_storage(at, base, after, True, body, True, own)
+                # Past the first instruction (unoptimized), a header on the line has run,
+                # unless a part of it naming the local runs on each pass; on a header over
+                # several lines, no stop can be told apart.
+                if storage and storage[0] == "binding" and ranged is not None:
+                    if entered is not False or ranged[0] != ranged[1]:
                         storage = ("binding-header", *storage[1:])
-                    elif entering is not None and entered is None:
+                elif storage and not body:
+                    # Any statement's header that names it before the line's declaration
+                    # does the same: `if (t) { static long t = 5; use(t); }` (#286).
+                    found = statements.header_before(at, base, after, bool(entered), own)
+                    if found is not None and not asked:
+                        entered = entering() if entering is not None else None
+                    if found is not None and (
+                        entered is not False or found[1] != found[2] or found[3]
+                    ):
+                        header = found[0]
+                if storage and storage[0] == "binding" and header is None:
+                    if entering is not None and entered is None:
                         # An optimized build: whether the stop starts the line, before the
                         # binding exists, cannot be told (#173).
                         before = statements.block_storage(at, base, after, True, body, True, own)
@@ -5940,7 +5956,7 @@ class NativeSession:
                             storage = ("binding-unsure", *storage[1:])
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
-                storage = None if origin is None else (storage[0], *origin)
+                storage = None if origin is None else (storage[0], *origin, header)
             verdicts.add(storage)
         if failure is None and verdicts == {False}:
             return None
@@ -5959,7 +5975,7 @@ class NativeSession:
                 f"`{base}` a block around it declares, not this local ({why}), so a change "
                 "to it may not reach that code",
             )
-        kind, declared_in, at = next(iter(verdicts))
+        kind, declared_in, at, header = next(iter(verdicts))
         place = f"line {at}" if declared_in == source else f"{Path(declared_in).name}:{at}"
         listed = f"`{base} @ {Path(declared_in).name}:{at}`"
         if siblings is not None:
@@ -5991,7 +6007,12 @@ class NativeSession:
             f"separately as {listed}",
             "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
         }.get(kind, f"the block's `{kind}` `{base}` ({place}), {unlisted}")
-        unsure = kind in ("binding-unsure", "binding-header")
+        if header is not None:
+            what += (
+                f", but the `{header}` statement's header names `{base}` before that "
+                "declaration, and Peeky cannot tell whether running the header reads this local"
+            )
+        unsure = kind in ("binding-unsure", "binding-header") or header is not None
         names, would = ("may name", "may") if unsure else ("names", "would")
         return Withholding(
             f"the code here {names} {what}: this row is the outer local of that name",

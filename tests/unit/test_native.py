@@ -1829,6 +1829,130 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, ent
             assert "Peeky cannot tell whether running the header reads" in found.refusal
 
 
+STATEMENT_HEADER_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    if (q) { static long q = 5; use(q); }
+    while (q-- > 0) { static long q = 6; use(q); }
+    for (long i = 0; i < q; i++) { static long q = 7; use(q + i); }
+    for (long i = q; i < 3; i++) { static long q = 8; use(q + i); }
+    switch (q) { default: { static long q = 9; use(q); } }
+    if (q > 0 &&
+        q < 9) { static long q = 10; use(q); }
+    if (q) { typedef int q; q k = 4; use(k); }
+    if (p.q) { static long q = 11; use(q); }
+    if (u) { static long q = 12; use(q); }
+    { static long q = 13; if (q) { use(q); } }
+    return q;
+}
+"""
+STATEMENT_HEADER_CPP_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    if (long k = q; k) { static long q = 5; use(q + k); }
+    switch (long k = q; k) { default: { static long q = 6; use(q + k); } }
+    for (long i = 0; i < q; i++) { auto [q, u] = make(i)[0]; use(q + u); }
+    for (const auto &[a, b] : make2(q, [] { long r; { static long q = 7; r = q; } return r; })) { use(a); }
+    for (const auto &[q, u] : make2(q, [] { long r; { static long q = 8; r = q; } return r; })) {
+        use(q * u);
+    }
+    for (auto [a, b] : make(p.template q<0>())) { static long q = 9; use(q + a); }
+    return q;
+}
+"""
+
+
+@pytest.mark.parametrize("entered", ["caller", None, True, False])
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, language, entered):
+    # #286: `if (q) { static long q = 5; use(q); }` gave the outer `q` the unhedged "not
+    # what the code reads: the code here names the block's `static`", though the `if`'s
+    # header runs first and names the outer `q`. entered: as in the range-`for` test
+    # above. A `while`'s condition, a `for`'s condition or increment, and a lambda's
+    # `static` in the header (another function's) are hedged at every stop.
+    frame = {"instructionPointerReference": "0x150"}
+    unit = STATEMENT_HEADER_UNIT if language == "c" else STATEMENT_HEADER_CPP_UNIT
+    session = preprocessing_session(tmp_path, {"a.c": unit})
+    session.target.language = language
+
+    def note(line):
+        entering = None if entered == "caller" else (lambda: entered)
+        return session._block_storage("q", frame, "a.c", line, entering=entering)
+
+    def static(line):
+        return f"the block's `static` `q` (line {line}), which the debugger does not list"
+
+    def hedged(keyword, what):
+        return (
+            "may not be what the code reads",
+            f"the code here may name {what}, but the `{keyword}` statement's header names `q` "
+            "before that declaration, and Peeky cannot tell whether running the header reads "
+            "this local: this row is the outer local of that name",
+        )
+
+    def plain(what):
+        return (
+            "not what the code reads",
+            f"the code here names {what}: this row is the outer local of that name",
+        )
+
+    def once(keyword, what):
+        # Past the first instruction (unoptimized), a header that runs once has run.
+        return plain(what) if entered is False else hedged(keyword, what)
+
+    if language == "c":
+        expected = {
+            3: once("if", static(3)),
+            4: hedged("while", static(4)),
+            5: hedged("for", static(5)),
+            # Only the init-statement names it.
+            6: once("for", static(6)),
+            7: once("switch", static(7)),
+            # A header over two lines: no stop on it can be told apart.
+            8: None,
+            9: hedged("if", static(9)),
+            10: once("if", "the type `q` the block's `typedef` names (line 10)"),
+            # A member; a header not naming it; a `static` before the header.
+            11: plain(static(11)),
+            12: plain(static(12)),
+            13: plain(static(13)),
+        }
+    else:
+        binding = "the structured binding `q` (line {})".format
+        expected = {
+            3: once("if", static(3)),
+            4: once("switch", static(4)),
+            5: hedged("for", binding(5)),
+            6: hedged("for", static(6)),
+            # The loop's own binding (the range-`for` test above); at the line's first
+            # instruction, before it exists, the lambda's `static` is next.
+            7: {
+                True: hedged("for", static(7)),
+                False: plain(binding(7)),
+            }.get(
+                entered,
+                (
+                    "may not be what the code reads",
+                    f"the code here may name {binding(7)}, but the loop's header names `q` "
+                    "before that binding exists, and Peeky cannot tell whether running the "
+                    "header reads this local: this row is the outer local of that name",
+                ),
+            ),
+            10: plain(static(10)),
+        }
+    for line, want in expected.items():
+        found = note(line)
+        if want is None:
+            assert found is None, (line, found)
+            continue
+        assert (found.label, str(found)) == want, (line, found)
+        would = "may not" if want[0].startswith("may") else "would not"
+        assert found.refusal.endswith(f"so a change to it {would} reach that code"), found.refusal
+        assert want[1].split(": this row")[0][len("the code here ") :] in found.refusal, (
+            found.refusal
+        )
+
+
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     # #138 with #146: `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
