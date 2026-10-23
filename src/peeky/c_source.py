@@ -85,9 +85,19 @@ _TRIGRAPH = re.compile(r"\?\?([=(/)'<!>-])")
 _TRIGRAPHS = dict(zip("=(/)'<!>-", "#[\\]^{|}~"))
 # Words a `(` follows in an expression, never in a function's head.
 _EXPRESSIONS = _USES | {"decltype", "noexcept", "and", "or", "not", "static_assert", "requires"}
-# What may stand between a function's (or a lambda's) parameters and its body.
+# What may stand between a function's (or a lambda's) parameters and its body: its
+# qualifiers and specifiers (a lambda's `constexpr`, `consteval`, `static`), an exception
+# specification, attributes, a trailing return type and a trailing `requires` clause.
+_GROUP = r"\((?:[^;{}()]|\((?:[^;{}()]|\([^;{}()]*\))*\))*\)"
 _QUALIFIED = re.compile(
-    r"(?:\s|const\b|volatile\b|noexcept\b|override\b|final\b|mutable\b|&|->[^;{}()]*)*"
+    r"(?:\s|&|(?:const|volatile|noexcept|override|final|mutable|constexpr|consteval|static)\b"
+    rf"|(?:noexcept|throw|__attribute__|__declspec)\s*{_GROUP}|\[\[[^\[\]]*\]\]"
+    r"|->[^;{}]*|requires\b[^;{}]*)*"
+)
+# A group of parentheses that may stand there: `noexcept(true)`, `__attribute__((cold))`,
+# `-> decltype(x)`, `requires (N > 1)`.
+_SPECIFYING = frozenset(
+    ("noexcept", "throw", "__attribute__", "__declspec", "decltype", "requires")
 )
 # A directive's line (`%:` is `#`).
 _DIRECTIVE = re.compile(r"[ \t\f\v]*(?:#|%:)")
@@ -1507,6 +1517,10 @@ class Statements:
         the statement holding it (a range-`for`'s binding names nothing inside a lambda
         in its range); where it opens several, the line is read as any other.
 
+        ``("bodies", line)``: with ``body``, where the line holds several functions' bodies
+        and a declaration there would hide the local: which function the frame runs, and
+        so whether the declaration is its own, cannot be told.
+
         ``others``: the stop is in a known function that goes on past the line: a
         function's or a lambda's body wholly on the line is another function's code,
         and no block in it counts, as none of its statements does (#290).
@@ -1620,9 +1634,14 @@ class Statements:
         ):
             # An `#include` in a block (a fragment) may declare it so.
             return None
-        return self._blocks_storage(
+        found = self._blocks_storage(
             code, around, finish, cut, name, after, lower, position, fresh, own
         )
+        if found and len(bodies) > 1:
+            # A frame wholly on a line holding several functions' bodies: which one it
+            # runs, and so whether what is found is its own, cannot be told (#299 review).
+            return ("bodies", found[1])
+        return found
 
     def _blocks_storage(self, code, blocks, finish, cut, name, after, lower, position, fresh, own):
         """``block_storage``'s verdict over ``blocks`` (where each opens, in order): each
@@ -2310,7 +2329,7 @@ class Statements:
             return "statement" if self._label(at) else "other"
         if token in ("]", ":>"):
             return "lambda" if self._introducer(self._opening(at)) else "other"
-        parameters = self._opening(at) if token == ")" else self._parameters(opening)
+        parameters = self._parameters(opening)
         word = self._before(parameters) if parameters is not None else None
         if word is None:
             return "other"
@@ -2344,7 +2363,14 @@ class Statements:
                 else "other"
             )
         if word[0] == ">" and self.raw_strings:
-            return "function"  # a template's: `f<int>(int a) {` (C++ only)
+            # A template's: `f<int>(int a) {` (C++ only), or a generic lambda's with its
+            # own template parameters: `[]<class T>(T v) {`.
+            angle = self._angle(word[1])
+            before = self._before(angle) if angle is not None else None
+            if before is not None and before[0] in ("]", ":>"):
+                if self._introducer(self._opening(before[1])):
+                    return "lambda"
+            return "function"
         if self._word_before(word[1] + len(word[0])) == "operator":
             return "function"  # `operator+(...) {`
         if _WORD.fullmatch(word[0]) and word[0] not in _EXPRESSIONS:
@@ -2439,13 +2465,43 @@ class Statements:
 
     def _parameters(self, opening):
         """Where the parentheses before the brace at ``opening`` open, when only what may
-        follow a function's parameters stands between them (`const`, `noexcept`,
-        `mutable`, `override`, a trailing return type), else None."""
+        follow a function's parameters stands between them (`const`, `noexcept(true)`,
+        `mutable`, `override`, a lambda's `constexpr`, attributes, a trailing return type:
+        `_QUALIFIED`), else None. A header's or a macro's parentheses count too (`if (c)
+        {`, `FOR_EACH(x) {`): the caller tells them apart."""
         code = self._code()[0]
-        closing = code.rfind(")", 0, opening)
-        if closing < 0 or not _QUALIFIED.fullmatch(code, closing + 1, opening):
+        end = opening
+        for _ in range(16):
+            closing = code.rfind(")", 0, end)
+            start = self._opening(closing) if closing >= 0 else None
+            if start is None:
+                return None
+            before = self._before(start)
+            if before is None or before[0] not in _SPECIFYING:
+                break
+            # Past `noexcept(...)`, `__attribute__((...))`, `decltype(...)`.
+            end = before[1]
+        else:
             return None
-        return self._opening(closing)
+        if not _QUALIFIED.fullmatch(code, closing + 1, opening):
+            return None
+        return start
+
+    def _angle(self, closing):
+        """Where the `<` matching the `>` at ``closing`` is (`]<class T>`), or None."""
+        code = self._code()[0]
+        depth = 0
+        for at in range(closing, max(closing - 512, -1), -1):
+            char = code[at]
+            if char == ">" and not code.startswith("->", at - 1):
+                depth += 1
+            elif char == "<":
+                depth -= 1
+                if depth == 0:
+                    return at
+            elif char in ";{}":
+                return None
+        return None
 
     def _label(self, colon):
         """Whether the `:` at ``colon`` ends a label (`case 1:`, `default:`, `out:`)."""

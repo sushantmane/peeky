@@ -5983,10 +5983,16 @@ class NativeSession:
             verdicts.add(storage)
         if failure is None and verdicts == {False}:
             return None
-        if failure is not None or len(verdicts) != 1 or None in verdicts:
+        # A frame wholly on a line holding several functions' bodies (lambdas): which one
+        # it runs cannot be told, so neither can whose declaration hides it (#299 review).
+        several = any(verdict and verdict[0] == "bodies" for verdict in verdicts)
+        if failure is not None or len(verdicts) != 1 or None in verdicts or several:
             why = (
                 f"Peeky could not preprocess the source to read it ({failure})"
                 if failure is not None
+                else "the line holds several functions' bodies (lambdas), and Peeky cannot "
+                "tell which one this frame runs"
+                if several
                 else "Peeky cannot read that from the source as the compiler preprocessed it"
             )
             return Withholding(

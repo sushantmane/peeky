@@ -848,9 +848,12 @@ is:
 A block that opens on the stop line counts.
 
 A lambda's body that opens and closes on the stop line is that lambda's code, with every block
-in it. What they declare counts in the lambda's own frame, but not in the function that holds the
-lambda. It counts there too where Peeky can't tell which function the frame runs, or where the
-lambda goes on past the line.
+in it. That holds for a generic lambda too, and whatever follows its parameters: `constexpr`,
+`mutable`, `noexcept(…)`, an attribute or a trailing return type. What they declare counts in the
+lambda's own frame, but not in the function that holds the lambda. It counts there too where
+Peeky can't tell which function the frame runs, or where the lambda goes on past the line. In a
+frame on a line that holds several lambdas' bodies, the row says `may not be what the code reads`.
+Peeky can't tell which of them the frame runs.
 
 A statement's header can also name the outer local, and run before the line's own declaration of
 that name exists. For example, `if (t) { static long t = 5; use(t); }` or

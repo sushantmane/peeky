@@ -387,7 +387,9 @@ int main(int argc, char **argv) {
     for (const auto &[t, u] : make2(t, [] { long r; { static long t = 8; r = t; } return r; })) { // BINDING
         use(t * u);
     }
-    use(t);
+    long v = [](long t) constexpr { long r = t; { enum { t = 9 }; r += t; } return r + t; }(t + 10); // CONSTEXPR
+    long w = []<class T>(T t) constexpr { T r = t; { enum { t = 8 }; r += t; } return r + t; }(t + 10); // GENERIC
+    use(t + v + w);
     return 0;
 }
 """
@@ -422,8 +424,9 @@ def test_a_lambdas_block_is_scoped_to_the_lambda(tmp_path, cxx, marker, optimiza
     )
     assert result["status"] == "completed", result.get("error")
     found = [row for row in result["rows"] if row["selector"] in selectors]
-    lambdas = [row for row in found if "operator()" in (row.get("function") or "")]
-    mains = [row for row in found if row not in lambdas]
+    # `main`'s frames, and the lambda's (clang names a generic one's by its address).
+    mains = [row for row in found if (row.get("function") or "").split(" ")[0] == "main"]
+    lambdas = [row for row in found if row not in mains]
     static = f"the block's `static` `t` (line {line})"
     # `main` never names the lambda's `static`, nor is a binding's own row the outer local.
     assert not [row for row in mains if static in row.get("error", "")], mains
@@ -446,3 +449,43 @@ def test_a_lambdas_block_is_scoped_to_the_lambda(tmp_path, cxx, marker, optimiza
     else:
         # At the line's first instruction, before the binding exists, the outer `t` (3).
         assert [row for row in mains if row["hit"] == 1 and row.get("value") == "3"], mains
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", ["CONSTEXPR", "GENERIC"])
+def test_a_constexpr_or_generic_lambdas_block_is_its_own(tmp_path, cxx, marker, optimization):
+    # Review of PR #299: a lambda declared `constexpr` (and a generic one, `[]<class T>`)
+    # was not read as a lambda: its block's enumerator `t` counted for `main`, whose `t`
+    # (3) was withheld as "not what the code reads". In the lambda's own frame, called
+    # immediately with 13, its parameter is withheld for that enumerator.
+    line = next(
+        i for i, row in enumerate(LAMBDA_SOURCE.splitlines(), 1) if row.endswith(f"// {marker}")
+    )
+    outer = next(i for i, row in enumerate(LAMBDA_SOURCE.splitlines(), 1) if "OUTER" in row)
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    (tmp_path / "blocks.cpp").write_text(LAMBDA_SOURCE)
+    result = run_probe(
+        tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # `main`'s frames, and the lambda's (clang names a generic one's by its address).
+    mains = [row for row in found if (row.get("function") or "").split(" ")[0] == "main"]
+    lambdas = [row for row in found if row not in mains]
+    enumerator = f"the block's enumerator `t` (line {line})"
+    assert not [row for row in mains if enumerator in row.get("error", "")], mains
+    assert not [row for row in found if row.get("value") == "13"], found
+    assert not [
+        row
+        for row in lambdas
+        if "value" not in row and enumerator not in row.get("error", "") and row["selector"] == "t"
+    ], lambdas
+    if optimization == "O0":
+        # The caller's `t`, and the lambda's own frame, withheld for its block's `t`.
+        assert [row for row in mains if row.get("value") == "3"], mains
+        assert [
+            row
+            for row in lambdas
+            if row["error"].startswith(f"not what the code reads: the code here names {enumerator}")
+        ], lambdas

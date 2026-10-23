@@ -1985,6 +1985,51 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
         )
 
 
+LAMBDAS_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    long v = [](long q) constexpr { long r = q; { enum { q = 9 }; r += q; } return r + q; }(q);
+    auto g = [](long q) { { enum { q = 8 }; } return q; }; auto h = [](long q) { return q; };
+    return q + v + g(q) + h(q);
+}
+"""
+
+
+@pytest.mark.parametrize("span", [(1, 6), (3, 3), (4, 4), None])
+def test_a_lambdas_block_counts_only_in_its_own_frame(tmp_path, span):
+    # #290, review of PR #299: an explicitly `constexpr` lambda's block still counted for
+    # the function holding it; and in a frame wholly on a line holding two lambdas, the
+    # note named one of their declarations, though which one the frame runs is unknown.
+    # span: the lines of the frame's function (None: Peeky cannot place the frame).
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": LAMBDAS_UNIT})
+    session.target.language = "cpp"
+    function = None if span is None else {"source": "a.c", "span": span}
+    session._function_at = lambda frame: function
+    line = 3 if span != (4, 4) else 4
+    found = session._block_storage("q", frame, "a.c", line)
+    if span == (1, 6):
+        # The function holding the lambda, going on past the line: nothing hides `q`.
+        assert found is None
+        assert session._block_storage("q", frame, "a.c", 4) is None
+    elif span == (4, 4):
+        assert (found.label, str(found)) == (
+            "may not be what the code reads",
+            "a block around line 4 may declare `q` (a `static`, an `extern`, an enumerator, a "
+            "function or a type), which the code would name instead of this local: the line "
+            "holds several functions' bodies (lambdas), and Peeky cannot tell which one this "
+            "frame runs",
+        )
+        assert "may not reach that code" in found.refusal
+    else:
+        # The lambda's own frame, or one Peeky cannot place: its enumerator hides `q`.
+        assert (found.label, str(found)) == (
+            "not what the code reads",
+            "the code here names the block's enumerator `q` (line 3), a constant: this row is "
+            "the outer local of that name",
+        )
+
+
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     # #138 with #146: `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
