@@ -12,14 +12,21 @@ import pytest
 from peeky.dap import DAP
 from peeky.errors import classify
 from peeky.native import (
+    PROVIDER_RULES,
     UNLISTED,
     NativeSession,
     count_path,
     formatter_count,
+    hashed_value,
+    lldb_major,
     local_buffer,
+    provider_type,
     raw_count,
+    undecoded_reason,
     unlisted_reason,
+    unordered_proof,
 )
+from peeky.native_previews import Typed
 from peeky.probe import _resolve, debugger_diagnostics, parse_selector
 
 HASHTABLE = "(std::_Hashtable<int, int, ...>::size_type) _M_element_count = {}"
@@ -100,12 +107,18 @@ def test_an_unordered_container_the_debugger_miscounts_is_withheld():
         "the program"
     )
     assert counts.asked == ["us._M_h._M_element_count"]
-    # Where the counts agree (clang's, and an empty one), the debugger's listing stands.
+    # Where the counts agree on none, nothing is listed: it stands.
     agreeing = Counts({"us._M_h._M_element_count": "0"})
     assert session.unlisted_container(shown, {"id": 1}, [("us", shown["type"])], agreeing) is None
+    # Where they agree on some, the entries are listed only where they are proven to
+    # decode as they are (see the provider's rules below).
     listed = variable("us", "std::unordered_set<int>", "size=1")
     one = Counts({"us._M_h._M_element_count": "1"})
+    session._unproven_entries = lambda *_: None
     assert session.unlisted_container(listed, {"id": 1}, [("us", listed["type"])], one) is None
+    session._unproven_entries = lambda *_: "type"
+    why = session.unlisted_container(listed, {"id": 1}, [("us", listed["type"])], one)
+    assert str(why) == undecoded_reason("type") and why.label == UNLISTED
 
 
 @pytest.mark.parametrize(
@@ -219,24 +232,28 @@ def test_no_entry_of_an_unlisted_container_is_read(selector):
     assert "insert" not in str(caught.value) and "0 entries:" not in str(caught.value)
 
 
-def string_graph(buffer=(16,), offsets=(0, 8, 16), element="char"):
+def string_graph(buffer=(16,), offsets=(0, 8, 16), element="char", size=32, union=16, capacity=3):
     """fields.type_graph of libstdc++'s `std::string` as GCC describes it."""
-    record = ("record", "basic_string<char>", "class", 32, None)
+    record = ("record", "basic_string<char>", "class", size, None)
     members = (
         ("_M_dataplus", 2, offsets[0], False, None, None),
         ("_M_string_length", 3, offsets[1], False, None, None),
         (None, 4, offsets[2], False, None, None),
     )
-    union = (
+    inner = (
         ("_M_local_buf", 5, None, False, None, None),
-        ("_M_allocated_capacity", 3, None, False, None, None),
+        ("_M_allocated_capacity", capacity, None, False, None, None),
     )
+    hider = (("_M_p", 7, 0, False, None, None),)
     return {
         1: (*record, members, (2, 3, 4), False, False, "std"),
+        2: ("record", "_Alloc_hider", "struct", 8, None, hider, (7,), False, False, "std"),
         3: ("base", "long unsigned int", "DW_ATE_unsigned", 8),
-        4: ("record", "", "union", 16, None, union, (5, 3), False, False, "std"),
+        4: ("record", "", "union", union, None, inner, (5, 3), False, False, "std"),
         5: ("array", "", 6, buffer, False),
         6: ("base", element, "DW_ATE_signed_char", 1),
+        7: ("pointer", "", 6),
+        8: ("base", "unsigned int", "DW_ATE_unsigned", 4),
     }
 
 
@@ -250,8 +267,163 @@ def test_a_libstdcxx_strings_own_buffer_is_sized_by_the_debug_information():
         string_graph(buffer=(4, 4)),
         string_graph(buffer=None),
         string_graph(element="wchar_t"),
+        # Review of #281: sizes that do not add up are never trusted. A 64-byte buffer in
+        # a 16-byte union of a 32-byte string would let a 40-byte text past the object.
+        string_graph(buffer=(64,)),
+        string_graph(buffer=(17,)),
+        string_graph(union=24),
+        string_graph(union=None),
+        string_graph(size=None),
+        string_graph(capacity=8),
+        string_graph(capacity=99),
     ):
         assert local_buffer(other, other[1]) is None
+    # A shorter buffer that fits is its own length.
+    assert local_buffer(string_graph(buffer=(8,)), string_graph()[1]) == 8
+
+
+def record(name, members=(), parameters=(), size=8, kind="class", holds=None):
+    """A fields.type_graph record: members as (name, type offset, location)."""
+    rows = tuple((m[0], m[1], m[2], False, None, None) for m in members)
+    shown = tuple(("type", p[0], p[1], None) for p in parameters)
+    held = tuple(m[1] for m in members) if holds is None else holds
+    return ("record", name, kind, size, None, rows, held, False, False, "std", (), name, shown)
+
+
+def hashed(name, value, allocator, parameters, holder=30):
+    """A libstdc++ unordered container holding ``value``: its record, and its hashtable's."""
+    table = record(
+        f"std::_Hashtable<{name}>",
+        [("_M_buckets", 21, 0), ("_M_before_begin", 20, 16), ("_M_element_count", 22, 24)],
+        [("_Key", value), ("_Value", value), ("_Alloc", allocator)],
+        size=56,
+    )
+    return {holder: table, holder + 1: record(name, [("_M_h", holder, 0)], parameters, 56)}
+
+
+SET = "std::unordered_set<int, std::hash<int>, std::equal_to<int>, std::allocator<int> >"
+WEIRD = "std::unordered_set<int, std::hash<int>, std::equal_to<int>, WeirdAlloc<double, int> >"
+ASSETS = (
+    "std::unordered_map<int, Asset, std::hash<int>, std::equal_to<int>, "
+    "std::allocator<std::pair<const int, Asset> > >"
+)
+GRAPH = {
+    1: ("base", "int", "DW_ATE_signed", 4),
+    2: ("base", "double", "DW_ATE_float", 8),
+    3: ("base", "long double", "DW_ATE_float", 16),
+    10: record("std::allocator<int>", parameters=[("_Tp", 1)], size=1),
+    # GCC's: no template arguments.
+    11: record("std::allocator<int>", size=1),
+    12: record("WeirdAlloc<double, int>", parameters=[("T", 2), ("V", 1)], size=1),
+    13: record("std::allocator<long double>", parameters=[("_Tp", 3)], size=1),
+    14: record("std::allocator<std::pair<const int, Asset> >", parameters=[("_Tp", 60)], size=1),
+    20: record("std::__detail::_Hash_node_base", [("_M_nxt", 21, 0)]),
+    21: ("pointer", "", None),
+    22: ("base", "long unsigned int", "DW_ATE_unsigned", 8),
+    50: record("std::hash<int>", parameters=[("_Tp", 1)], size=1),
+    51: record("std::equal_to<int>", parameters=[("_Tp", 1)], size=1),
+    60: record("std::pair<const int, Asset>", [("first", 61, 0), ("second", 70, 4)]),
+    61: ("qualifier", "const", 1),
+    70: record("Asset", [("v", 1, 0)], size=4),
+    **hashed(SET, 1, 10, [("_Value", 1), ("_Hash", 50), ("_Pred", 51), ("_Alloc", 10)], 30),
+    **hashed(SET, 1, 11, [("_Value", 1), ("_Hash", 50), ("_Pred", 51), ("_Alloc", 11)], 32),
+    **hashed(WEIRD, 1, 12, [("_Value", 1), ("_Hash", 50), ("_Pred", 51), ("_Alloc", 12)], 34),
+    **hashed(
+        "std::unordered_set<long double>",
+        3,
+        13,
+        [("_Value", 3), ("_Hash", 50), ("_Pred", 51), ("_Alloc", 13)],
+        36,
+    ),
+    **hashed(
+        ASSETS,
+        60,
+        14,
+        [("_Key", 1), ("_Tp", 70), ("_Hash", 50), ("_Pred", 51), ("_Alloc", 14)],
+        38,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "container, rules, names, proven",
+    [
+        # A standard set: its allocator's first argument is the value type, by either rule.
+        (31, ("fixed", "last"), [SET], None),
+        # GCC's `std::allocator<int>` has no template arguments: nothing proves it.
+        (33, ("fixed",), [SET], "unknown"),
+        (33, ("last",), [SET], "unknown"),
+        # Review of #281: `WeirdAlloc<double, int>` decodes an `int` as a `double`.
+        (35, ("last",), [WEIRD], "type"),
+        (35, ("fixed",), [WEIRD], "type"),
+        # A `long double` (16-byte aligned) is past the 8 bytes LLDB skips in each node.
+        (37, ("last",), ["std::unordered_set<long double>"], "place"),
+        # A map whose name holds `set`: LLDB 18 takes it for a set (the 4th argument is
+        # `std::equal_to<int>`); LLDB 20 takes the last.
+        (39, ("fixed",), ["std::unordered_map<int, Asset>", ASSETS], "type"),
+        (39, ("last",), ["std::unordered_map<int, Asset>", ASSETS], None),
+        (39, ("fixed", "last"), [ASSETS], "type"),
+        # Names that disagree on `set` (a typedef's, `Ids`): LLDB 18's choice is not known.
+        (31, ("fixed",), ["Ids", SET], "unknown"),
+        (31, ("last",), ["Ids", SET], None),
+    ],
+)
+def test_entries_are_listed_only_where_lldbs_provider_decodes_them_as_they_are(
+    container, rules, names, proven
+):
+    assert unordered_proof(GRAPH, GRAPH[container], rules, names) == proven
+
+
+def test_the_provider_rules_and_the_hashtables_value():
+    assert provider_type(GRAPH, GRAPH[31], "fixed", [SET]) == 1
+    assert provider_type(GRAPH, GRAPH[35], "last", [WEIRD]) == 2
+    assert provider_type(GRAPH, GRAPH[39], "last", [ASSETS]) == 60
+    assert hashed_value(GRAPH, GRAPH[39]) == (60, 8) and hashed_value(GRAPH, GRAPH[37]) == (3, 8)
+    # Without a hashtable, a `_Value`, or `_Hash_node_base`'s size: none.
+    assert hashed_value(GRAPH, record("x", [("_M_h", 70, 0)])) is None
+    assert hashed_value(GRAPH, GRAPH[70]) is None
+    assert PROVIDER_RULES[18] == ("fixed",) and PROVIDER_RULES[20] == ("last",)
+    for reason in ("type", "place", "unknown"):
+        assert len(undecoded_reason(reason, pointer=True)) <= 300
+        assert undecoded_reason(reason).endswith("print its entries from the program")
+
+
+class Versions:
+    def __init__(self, reply):
+        self.reply, self.asked = reply, []
+
+    def request(self, command, arguments, timeout=None):
+        self.asked.append((command, arguments))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return {"result": self.reply}
+
+
+def test_lldbs_version_picks_the_rule_and_unknown_needs_both():
+    assert lldb_major(Versions("(lldb) version\nlldb version 18.1.3\n")) == 18
+    asked = Versions("(lldb) version\nlldb version 20.1.2\n")
+    assert lldb_major(asked) == 20
+    assert asked.asked == [("evaluate", {"expression": "`version", "context": "repl"})]
+    assert lldb_major(Versions("lldb-1700.0.9.502\nApple Swift version 6.1")) is None
+    assert lldb_major(Versions(TimeoutError("no answer"))) is None
+    # The row's container record, by its way from its root local; each version's rule.
+    function = {"types": {"m": {(39, "automatic", None)}}, "referred": frozenset()}
+    session = native(function=function, fields=GRAPH)
+    session._shown_where = lambda name, pc: None
+    session._block_pc = lambda frame: None
+    shown = variable("m", "std::unordered_map<int, Asset>", "size=1")
+    steps = [("m", shown["type"])]
+    for major, proven in ((18, "type"), (19, "type"), (20, None), (21, None), (None, "type")):
+        session.lldb_major = major
+        assert session._unproven_entries(shown, {"id": 1}, steps) == proven, major
+    # Through a pointer to it: what it points at.
+    function["types"]["p"] = {(80, "automatic", None)}
+    session.fields = {**GRAPH, 80: ("pointer", "", 39)}
+    session.lldb_major = 20
+    assert session._unproven_entries(shown, {"id": 1}, [("p", "Assets *")]) is None
+    # A row Peeky cannot place in the debug information: not proven.
+    assert session._unproven_entries(shown, {"id": 1}, [("q", "Assets")]) == "unknown"
+    assert Typed(GRAPH, 39).node()[11] == ASSETS
 
 
 def test_a_bitfields_binding_with_no_location_says_why_no_stop_reads_it():
@@ -334,9 +506,15 @@ def test_a_probe_warns_of_the_debuggers_lines_it_left_out():
     result = {}
     final = {"debugger_diagnostics": [DWARF.rstrip("\n")], "diagnostic_count": 3}
     warning = debugger_diagnostics(result, None, final)
+    # Said neutrally: a program line of exactly this shape on `stderr` would be moved too.
     assert warning == (
-        "The debugger printed 3 lines about the build's debug information, which Peeky left "
-        "out of the program's output (debugger_diagnostics in --json): " + DWARF.rstrip("\n")
+        "3 `stderr` lines with the shape of LLDB's errors about the build's debug information "
+        "were moved here from the program's output (debugger_diagnostics in --json); a "
+        "program line that looks exactly like one would be moved too: " + DWARF.rstrip("\n")
+    )
+    one = debugger_diagnostics({}, {**final, "diagnostic_count": 1})
+    assert (
+        one.startswith("A `stderr` line with the shape of LLDB's errors") and " was moved " in one
     )
     assert result == {"debugger_diagnostics": [DWARF.rstrip("\n")]}
     assert debugger_diagnostics({}, None, {"diagnostic_count": 0}) is None

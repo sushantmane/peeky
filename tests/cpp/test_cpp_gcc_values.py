@@ -5,7 +5,10 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
 - Unordered containers: LLDB's libstdc++ formatter finds no element type in GCC's
   `std::allocator` (nor behind a typedef's name), so it counts each as empty. Peeky
   checks its count against the container's own `_M_element_count`: where they differ,
-  no preview, key or position read, or listing.
+  no preview, key or position read, or listing. Where they agree, the entries are listed
+  only where the formatter decodes them as the type the container holds, where it holds
+  them: an allocator whose first template argument is another type, a 16-byte-aligned
+  `long double`, or (LLDB 18) a map whose type's name holds `set` decode wrongly.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
   length comes from the build's debug information, and a refusal says what LLDB misreads.
 - LLDB 18's errors about that debug information come on its own stderr, apart from the
@@ -212,6 +215,77 @@ def test_a_listing_and_a_callers_reference_follow_the_same_rule(cpp, capsys):
     assert rows["um"].get("value") != "size=0 {}", rows["um"]
 
 
+DECODED = """#include <cstddef>
+#include <cstdio>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+// A conforming allocator whose first template argument is not its value type.
+template <class T, class V> struct WeirdAlloc {
+    using value_type = V;
+    WeirdAlloc() = default;
+    template <class U, class W> WeirdAlloc(const WeirdAlloc<U, W> &) {}
+    template <class U> struct rebind { using other = WeirdAlloc<T, U>; };
+    V *allocate(std::size_t n) { return std::allocator<V>().allocate(n); }
+    void deallocate(V *p, std::size_t n) { std::allocator<V>().deallocate(p, n); }
+    bool operator==(const WeirdAlloc &) const { return true; }
+    bool operator!=(const WeirdAlloc &) const { return false; }
+};
+struct Asset { int v; };
+int main() {
+    std::unordered_set<int, std::hash<int>, std::equal_to<int>, WeirdAlloc<double, int>> ws{7};
+    std::unordered_set<long double> ld{1.5L};
+    std::unordered_map<int, Asset> assets{{1, {5}}};
+    std::printf("DECODED:%zu %zu %zu\\n", ws.size(), ld.size(), assets.size()); // HERE
+    return 0;
+}
+"""
+ANOTHER_TYPE = (
+    "the debugger would read its entries as another type than they are: it takes their type "
+    "from the allocator's first template argument, not the container's own; print its "
+    "entries from the program"
+)
+WRONG_PLACE = (
+    "the debugger would read its entries from the wrong place: their type is aligned past "
+    "where it reads in each node; print its entries from the program"
+)
+
+
+@pytest.mark.timeout(180)
+def test_entries_lldb_would_decode_as_another_type_or_place_are_not_listed(cpp, capsys):
+    # Review of #281: `WeirdAlloc<double, int>` compiles, LLDB counts `size=1` as the
+    # container does, and shows `ws[#0]` as the double 3.4584595208887258E-323.
+    compiler, root = cpp
+    source = root / "decoded.cpp"
+    source.write_text(DECODED)
+    capture = "ws,ws[#0],ld,ld[#0],assets,assets[1]"
+    code, result = probe(source, line_of(DECODED, "// HERE"), capture, capsys)
+    assert "DECODED:1 1 1" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    # Never a double for an int, by any compiler or LLDB.
+    assert rows["ws"]["error"] == f"not listed: {ANOTHER_TYPE}", rows["ws"]
+    assert rows["ws[#0]"]["error"] == f"[#0] not read: ws is not listed: {ANOTHER_TYPE}"
+    # A `long double` is 16-byte aligned, past the 8 bytes LLDB skips: clang's would read
+    # `size=1 {0}`. GCC's is counted empty first.
+    assert rows["ld"]["error"] in (
+        f"not listed: {WRONG_PLACE}",
+        f"not listed: {MISCOUNTED.format(1)}",
+    ), rows["ld"]
+    assert rows["ld"]["error"].endswith(WRONG_PLACE) == (compiler == "clang")
+    assert rows["ld[#0]"].get("value") is None, rows["ld[#0]"]
+    # LLDB 18 takes `std::unordered_map<int, Asset>` for a set (its name holds `set`), and
+    # decodes its pairs as `int`s; LLDB 20 reads clang's. GCC's is counted empty on LLDB 20.
+    if rows["assets"].get("value") is not None:
+        assert compiler == "clang" and rows["assets"]["value"] == "size=1 {1: {v = 5}}"
+        assert rows["assets[1]"]["value"] == "{v = 5}", rows["assets[1]"]
+    else:
+        reasons = [ANOTHER_TYPE] + ([MISCOUNTED.format(1)] if compiler == "gcc" else [])
+        error = rows["assets"]["error"]
+        assert error in [f"not listed: {reason}" for reason in reasons], rows["assets"]
+        reason = error.removeprefix("not listed: ")
+        assert rows["assets[1]"]["error"] == f"[1] not read: assets is not listed: {reason}"
+
+
 TEXT = """#include <cstdio>
 #include <string>
 int main() {
@@ -272,10 +346,14 @@ def test_the_debuggers_errors_about_the_debug_information_are_not_program_output
     # The program's own line that looks like one stays its output.
     assert "error: fake 0x000000fc: DW_TAG_member 'x' refers to type 0x1" in output, output
     diagnostics = result.get("debugger_diagnostics") or []
-    warnings = [w for w in result["warnings"] if w.startswith("The debugger printed")]
+    warnings = [w for w in result["warnings"] if "debugger_diagnostics in --json" in w]
     if diagnostics:
         assert all(DWARF.fullmatch(line) for line in diagnostics), diagnostics
-        assert len(warnings) == 1 and "(debugger_diagnostics in --json): error: " in warnings[0]
+        assert len(warnings) == 1 and warnings[0].startswith("A `stderr` line with the shape of")
+        assert (
+            "a program line that looks exactly like one would be moved too: error: "
+            in (warnings[0])
+        )
     else:
         assert not warnings, result["warnings"]
     if compiler == "clang":

@@ -113,10 +113,12 @@ class DAP:
         when Peeky ends its input as it answers `disconnect` (debugpy: 1, #213), and the
         lines its stderr then shows: close() does not take that exit for a crash.
         ``diagnostics``: a regex for the debugger's own lines that this adapter sends as
-        `stderr` output, where the program's own output comes as `stdout` (lldb-dap runs
-        the program on a terminal, which carries both its streams): an output event whose
-        every line it matches is kept apart (``debugger_diagnostics``), never shown as
-        the program's output (#167: LLDB 18's errors about GCC's debug information)."""
+        `stderr` output (#167: LLDB 18's errors about GCC's debug information). In the
+        launch Peeky makes, lldb-dap runs the program on a terminal, which carries both its
+        streams as `stdout`; that is no DAP rule, and lldb-dap sends a program's stderr as
+        `stderr` where it is no terminal. A `stderr` event whose every line the pattern
+        matches is kept apart (``debugger_diagnostics``), and the caller warns that a
+        program line of that exact shape would be kept apart too."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (

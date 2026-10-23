@@ -293,6 +293,54 @@ def test_a_buffer_the_debugger_misreads_is_sized_by_the_debug_information():
     assert not fake.writes
 
 
+def test_a_buffer_larger_than_its_string_is_never_written():
+    # Review of #281: a graph of a 32-byte string, a 16-byte union and `_M_local_buf` as
+    # `char[64]` gave a 64-byte buffer, and a 40-byte text was written past the object.
+    from types import SimpleNamespace
+
+    from peeky.native import NativeSession
+
+    def graph(count):
+        hider = (("_M_p", 7, 0, False, None, None),)
+        inner = (
+            ("_M_local_buf", 5, None, False, None, None),
+            ("_M_allocated_capacity", 3, None, False, None, None),
+        )
+        members = (
+            ("_M_dataplus", 2, 0, False, None, None),
+            ("_M_string_length", 3, 8, False, None, None),
+            (None, 4, 16, False, None, None),
+        )
+        string = ("record", "basic_string<char>", "class", 32, None, members, (2, 3, 4))
+        return {
+            1: (*string, False, False, "std"),
+            2: ("record", "_Alloc_hider", "struct", 8, None, hider, (7,), False, False, "std"),
+            3: ("base", "long unsigned int", "DW_ATE_unsigned", 8),
+            4: ("record", "", "union", 16, None, inner, (5, 3), False, False, "std"),
+            5: ("array", "", 6, (count,), False),
+            6: ("base", "char", "DW_ATE_signed_char", 1),
+            7: ("pointer", "", 6),
+        }
+
+    session = NativeSession.__new__(NativeSession)
+    session.target = SimpleNamespace(language="cpp")
+    variable = {"name": "s", "type": "std::string"}
+    session._root_type = lambda frame, root: (1, True, graph(64))
+    assert session.text_storage(variable, {"id": 1}) == ("std", None)
+    session._root_type = lambda frame, root: (1, True, graph(16))
+    assert session.text_storage(variable, {"id": 1}) == ("std", {"local_buf": 16})
+    # Without the size, the buffer LLDB reads as `char[0]` is refused: nothing written.
+    fake = Fake()
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    with pytest.raises(ValueError, match="misreads this build's string buffer as char\\[0\\]"):
+        change(listed(), "x" * 40, fake.interface(), listed, "std", None)
+    assert not fake.writes and not fake.sets and fake.get(0x2010, 6) == b"named\0"
+    # With the consistent size, the text must fit its 15 bytes.
+    with pytest.raises(ValueError, match="with room for 15 bytes, and the text is 40 bytes"):
+        change(listed(), "x" * 40, fake.interface(), listed, "std", {"local_buf": 16})
+    assert not fake.writes
+
+
 def test_a_libstdcxx_string_not_constructed_is_refused():
     fake = Fake()
     listed = libstdcxx(fake, b"x", heap=0x9000, capacity=40)

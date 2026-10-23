@@ -3296,37 +3296,62 @@ _RAW_COUNT = re.compile(r"(?:.*\s=\s)?(0|[1-9][0-9]{0,18})", re.S)
 def local_buffer(graph, node):
     """The length in bytes of a libstdc++ string's own buffer (`_M_local_buf`), from the
     build's debug information (``graph``, fields.type_graph; ``node``, the string's
-    record), where its members are laid out as libstdc++'s are: the data pointer, the
-    length, then a union of the buffer (a `char` array) and the heap capacity, at
-    offsets 0, 8 and 16. Else None."""
+    record), where its members are laid out as libstdc++'s are and their sizes agree: an
+    8-byte data pointer, an 8-byte length, then a union of the buffer (a `char` array)
+    and the 8-byte heap capacity, at offsets 0, 8 and 16. The buffer must fit the union,
+    and the union the string, by their byte sizes: a text is written into the buffer
+    (#167), so a size that does not add up is never trusted. Else None."""
     from peeky.fields import Unsettable, _strip
 
+    def size(offset):
+        # The byte size of a type: a base type's, a pointer's (a record's member), or an
+        # array's of one-byte elements; None where the debug information gives none.
+        _, found, _ = _strip(graph, offset, "_M_local_buf")
+        if found[0] in ("base", "record"):
+            return found[3] if type(found[3]) is int else None
+        if found[0] == "pointer":
+            return 8
+        if found[0] == "array" and found[3] and len(found[3]) == 1:
+            element = size(found[2])
+            return found[3][0] * element if element else None
+        return None
+
+    if node[0] != "record" or type(node[3]) is not int:
+        return None
     members = {member[0]: member for member in node[5]}
     unions = [member for member in node[5] if member[0] is None]
-    if (
-        (members.get("_M_dataplus") or (None, None, None))[2] != 0
-        or (members.get("_M_string_length") or (None, None, None))[2] != 8
-        or len(unions) != 1
-        or unions[0][2] != 16
-    ):
+    plus, length = members.get("_M_dataplus"), members.get("_M_string_length")
+    if plus is None or length is None or len(unions) != 1:
+        return None
+    if plus[2] != 0 or length[2] != 8 or unions[0][2] != 16:
         return None
     try:
+        if size(plus[1]) != 8 or size(length[1]) != 8:
+            return None
         _, union, _ = _strip(graph, unions[0][1], "_M_local_buf")
-        if union[0] != "record" or union[2] != "union":
+        if union[0] != "record" or union[2] != "union" or type(union[3]) is not int:
+            return None
+        if not 8 <= union[3] or 16 + union[3] > node[3]:
             return None
         inner = {member[0]: member for member in union[5]}
-        buffer = inner.get("_M_local_buf")
-        if buffer is None or buffer[2] not in (0, None) or "_M_allocated_capacity" not in inner:
+        buffer, held = inner.get("_M_local_buf"), inner.get("_M_allocated_capacity")
+        if buffer is None or held is None or {buffer[2], held[2]} - {0, None}:
+            return None
+        if size(held[1]) != 8:
             return None
         _, array, _ = _strip(graph, buffer[1], "_M_local_buf")
         if array[0] != "array" or not array[3] or len(array[3]) != 1:
             return None
         _, element, _ = _strip(graph, array[2], "_M_local_buf")
+        if element[0] != "base" or element[1] != "char" or element[3] != 1:
+            return None
+        count = array[3][0]
     except Unsettable:
         return None
-    if element[0] != "base" or element[1] != "char" or element[3] != 1:
+    if type(count) is not int or not 1 < count <= union[3]:
+        # The buffer must fit the union it shares with the capacity.
         return None
-    return array[3][0] if 1 < array[3][0] <= 64 else None
+    return count
 
 
 def _pointer_type(kind):
@@ -3362,6 +3387,123 @@ def count_path(steps, pointer=_pointer_type):
 
 def _unread(path):
     raise ValueError(f"{path} is not read here")
+
+
+# Which template argument LLDB's libstdc++ provider for unordered containers
+# (lldb/examples/synthetic/gnu_libstdcpp.py, StdUnorderedMapSynthProvider.extract_type)
+# takes as the allocator, whose first template argument it decodes each entry as, by
+# LLDB's major version. "fixed": LLDB 18 and 19 take the 5th of a map and the 4th of a set,
+# a set being any value whose type's name holds `set`. "last": LLDB 20 to 22 take the
+# last. Any other version must pass both.
+PROVIDER_RULES = {18: ("fixed",), 19: ("fixed",), 20: ("last",), 21: ("last",), 22: ("last",)}
+
+
+def _resolved(graph, offset):
+    """``offset`` past typedefs and qualifiers, as far as ``graph`` reads them."""
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] not in ("typedef", "qualifier"):
+            return offset
+        offset = node[2]
+    return None
+
+
+def provider_type(graph, node, rule, names):
+    """The type LLDB's provider decodes the entries of the unordered container ``node``
+    (a fields.type_graph record) as, under ``rule`` (see ``PROVIDER_RULES``; ``names``:
+    LLDB's and the debug information's names for the container's type, which "fixed"
+    reads), past typedefs and qualifiers; None where it cannot be told."""
+    parameters = node[12] if len(node) > 12 else ()
+    if rule == "fixed":
+        sets = {"set" in str(name) for name in names}
+        if len(sets) != 1:
+            return None
+        index = 3 if sets.pop() else 4
+    else:
+        index = len(parameters) - 1
+    if not 0 <= index < len(parameters) or parameters[index][0] != "type":
+        return None
+    allocator = graph.get(_resolved(graph, parameters[index][2]))
+    if allocator is None or allocator[0] != "record" or len(allocator) < 13:
+        return None
+    first = allocator[12][0] if allocator[12] else None
+    if first is None or first[0] != "type" or first[2] is None:
+        return None
+    return _resolved(graph, first[2])
+
+
+def hashed_value(graph, node):
+    """(the type a libstdc++ unordered container's nodes hold, its hashtable's `_Value`,
+    past typedefs and qualifiers; the byte size of `_Hash_node_base`, which precedes it in
+    each node), or None where the debug information does not say."""
+    table = next((member for member in node[5] if member[0] == "_M_h"), None)
+    found = graph.get(_resolved(graph, table[1])) if table is not None else None
+    if found is None or found[0] != "record" or len(found) < 13 or len(found[12]) < 2:
+        return None
+    value = found[12][1]
+    if value[0] != "type" or value[1] not in ("_Value", None, "") or value[2] is None:
+        return None
+    before = next((member for member in found[5] if member[0] == "_M_before_begin"), None)
+    base = graph.get(_resolved(graph, before[1])) if before is not None else None
+    if base is None or base[0] != "record" or type(base[3]) is not int:
+        return None
+    return _resolved(graph, value[2]), base[3]
+
+
+def unordered_proof(graph, node, rules, names):
+    """None where LLDB's provider is proven to read the unordered container ``node``'s
+    entries as the type its nodes hold, where they hold it, under each of ``rules``;
+    else why not: "type" (it would decode another type), "place" (the type is aligned
+    past where it reads: it reads right after `_Hash_node_base`) or "unknown"."""
+    from peeky.fields import _alignment
+
+    held = hashed_value(graph, node)
+    if held is None:
+        return "unknown"
+    value, base = held
+    for rule in rules:
+        decoded = provider_type(graph, node, rule, names)
+        if decoded is None:
+            return "unknown"
+        if decoded != value:
+            return "type"
+    alignment = _alignment(graph, value)
+    if not alignment:
+        return "unknown"
+    return "place" if base % alignment else None
+
+
+def undecoded_reason(why, pointer=False):
+    """Why an unordered container whose count LLDB reads right is withheld all the same:
+    its entries' type or place is not proven (``unordered_proof``)."""
+    what = "it points at an unordered container, and " if pointer else ""
+    if why == "type":
+        return (
+            f"{what}the debugger would read its entries as another type than they are: it "
+            "takes their type from the allocator's first template argument, not the "
+            "container's own; print its entries from the program"
+        )
+    if why == "place":
+        return (
+            f"{what}the debugger would read its entries from the wrong place: their type is "
+            "aligned past where it reads in each node; print its entries from the program"
+        )
+    return (
+        f"{what}Peeky cannot prove from the build's debug information that the debugger "
+        "reads its entries as the type they are, where they are; print its entries from "
+        "the program"
+    )
+
+
+def lldb_major(dap):
+    """LLDB's major version, from its `version` command (`lldb version 18.1.3`), or None
+    (Apple's LLDB names none, or the debugger did not answer)."""
+    try:
+        reply = dap.request("evaluate", {"expression": "`version", "context": "repl"}, timeout=2)
+    except Exception:
+        return None
+    found = re.search(r"^lldb version ([0-9]{1,3})\.", str(reply.get("result") or ""), re.M)
+    return int(found[1]) if found else None
 
 
 def formatter_count(value):
@@ -3473,8 +3615,11 @@ class NativeSession:
     elements_by_index = True
     # LLDB's errors about the build's debug information, which lldb-dap 18 sends as
     # `stderr` output (`error: prog 0x000000fc: DW_TAG_member '_M_local_buf' refers to
-    # type ...`, GCC's std::string): the program's own output comes as `stdout`, through
-    # the terminal lldb-dap runs it on, so these are the debugger's (#167).
+    # type ...`, GCC's std::string) (#167). In the launch Peeky makes (no `stdio`
+    # redirection), lldb-dap runs the program on a terminal and sends its output as
+    # `stdout`; it sends a program's stderr as `stderr` only where that is no terminal.
+    # So a `stderr` line of exactly this shape is moved out of the output, and the
+    # warning says a program line like it would be moved too.
     debugger_diagnostics = r"error: \S(?:.*\S)? 0x[0-9a-fA-F]{8}: DW_TAG_\w+ \S.*"
 
     @property
@@ -4181,9 +4326,29 @@ class NativeSession:
             except (ValueError, RuntimeError, OSError, TimeoutError):
                 raw = None
         if raw is not None and raw == shown:
-            return None
-        reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
+            # The count is right; entries are listed only where they decode as they are.
+            why = self._unproven_entries(variable, frame, steps) if raw else None
+            if why is None:
+                return None
+            reason = undecoded_reason(why, pointer=shape == "pointer")
+        else:
+            reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
         return Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
+
+    def _unproven_entries(self, variable, frame, steps):
+        """Why LLDB's listing of a non-empty unordered container is not proven to decode
+        its entries as they are (``unordered_proof``), or None. The container's record is
+        the build's debug information's, by the row's way from its root local; which rule
+        LLDB's provider follows comes from its version (``lldb_major``), else both."""
+        graph = getattr(self, "fields", None)
+        typed = self._typed(frame, [str(name) for name, _ in steps]) if graph else None
+        if typed is not None and typed.kind() in ("pointer", "reference"):
+            typed = typed.target()
+        node = typed.node() if typed is not None else None
+        if node is None or node[0] != "record" or len(node) < 13:
+            return "unknown"
+        rules = PROVIDER_RULES.get(self.__dict__.get("lldb_major"), ("fixed", "last"))
+        return unordered_proof(graph, node, rules, [str(variable.get("type") or ""), node[11]])
 
     def unlocated(self, variable, frame):
         """Why a root local the debugger has no value for can neither be read nor
@@ -7117,6 +7282,10 @@ class NativeSession:
             raise RuntimeError("Native stopped line does not match prepared symbols")
 
     def validate_debugger(self, dap, frame):
+        language = getattr(getattr(self, "target", None), "language", None)
+        if language == "cpp" and "lldb_major" not in self.__dict__:
+            # Which rule LLDB's unordered-container provider follows (#167).
+            self.lldb_major = lldb_major(dap)
         modules = dap.request("modules", {"startModule": 0, "moduleCount": 256}).get("modules", [])
         if "moduleId" in frame:
             matches = [module for module in modules if module.get("id") == frame["moduleId"]]

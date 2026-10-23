@@ -440,6 +440,17 @@ That is the case for:
   Inside a preview it shows `<not listed>`: `{us = <not listed>, n = 2}`. A pointer to one is
   withheld the same way. Where Peeky can't read the container's own count, the row is withheld
   too, and says so. That happens for one reached through a base class or an anonymous member.
+
+  A right count isn't enough. LLDB decodes each entry as the allocator's first template
+  argument, at a fixed place in each node. So a non-empty one is listed only where the debug
+  information proves that type and place right. These are withheld, each with why:
+
+  - an allocator whose first template argument is another type, such as
+    `WeirdAlloc<double, int>` for `int` entries;
+  - a type aligned to more than 8 bytes, such as `long double`;
+  - with LLDB 18 or 19, a map whose type's name holds `set`, such as
+    `std::unordered_map<int, Asset>`;
+  - one Peeky can't place in the build's debug information.
 - These keep the debugger's own view too: `std::forward_list`, container adaptors such as
   `std::stack` and `std::queue`, `std::pair` and `std::tuple`.
 - A container nested four levels below a local, such as `grid.idx[1]`, is past the inspection's

@@ -1873,8 +1873,8 @@ def _resume(worker, stop, returning, rows):
 
 
 def debugger_diagnostics(result, *sources):
-    """The warning for the debugger's own lines a session left out of the program's
-    output (#167: LLDB 18's errors about the build's debug information), from the first
+    """The warning for the `stderr` lines a session left out of the program's output as
+    LLDB's (#167: LLDB 18's errors about the build's debug information), from the first
     of ``sources`` (the session's end, or its last report) that has any; it also sets
     ``debugger_diagnostics`` in ``result`` (the first 20 lines). None where none."""
     for source in sources:
@@ -1883,11 +1883,12 @@ def debugger_diagnostics(result, *sources):
         if type(count) is not int or count <= 0 or not isinstance(lines, list) or not lines:
             continue
         result["debugger_diagnostics"] = [str(line)[:500] for line in lines[:20]]
-        many = f"{count} lines" if count > 1 else "a line"
+        many = f"{count} `stderr` lines" if count > 1 else "A `stderr` line"
         return (
-            f"The debugger printed {many} about the build's debug information, which Peeky "
-            f"left out of the program's output (debugger_diagnostics in --json): "
-            f"{str(lines[0])[:200]}"
+            f"{many} with the shape of LLDB's errors about the build's debug information "
+            f"{'were' if count > 1 else 'was'} moved here from the program's output "
+            "(debugger_diagnostics in --json); a program line that looks exactly like one "
+            f"would be moved too: {str(lines[0])[:200]}"
         )
     return None
 

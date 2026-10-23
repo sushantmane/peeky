@@ -1042,10 +1042,12 @@ program wrote.
 
 LLDB 18 also prints its own errors about some builds' debug information. An example is GCC's
 `std::string`: `error: program 0x000000fc: DW_TAG_member '_M_local_buf' refers to type …`.
-lldb-dap sends those on its own stderr, apart from the program's terminal. So they are never in
-`output`: the result has a warning, and `debugger_diagnostics` lists their first 20 lines.
-`session report --json` also gives `diagnostic_count`, how many there were. A line the program
-prints, even one like those, stays in `output`.
+lldb-dap sends those as `stderr` output. In the launch Peeky makes, the program writes through
+its terminal, which lldb-dap sends as `stdout`, its stderr too. So a `stderr` line of exactly
+that shape is moved out of `output`. The result has a warning, and `debugger_diagnostics`
+lists the first 20 such lines. `session report --json` also gives `diagnostic_count`, how many
+there were. lldb-dap sends a program's stderr as `stderr` only where it isn't a terminal. There,
+a program line of exactly that shape would be moved too, and the warning says so.
 
 Branch on the exit status:
 

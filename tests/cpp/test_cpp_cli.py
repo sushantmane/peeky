@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -38,6 +39,12 @@ int main(int argc, char** argv) {
     return 0;
 }
 """
+
+
+def built_by_gcc():
+    """Whether PEEKY_NATIVE_CXX is GCC (the test-only hatch, PEEKY_TEST_CPP_GCC=1)."""
+    shown = subprocess.run([os.environ["PEEKY_NATIVE_CXX"], "--version"], capture_output=True)
+    return b"Free Software Foundation" in shown.stdout
 
 
 @pytest.fixture
@@ -238,8 +245,10 @@ def test_writes_that_cannot_reach_the_program_are_never_reported_as_done(ring, c
             # A computed value: refused (or unchanged), never "set hi: 2 -> 2".
             assert main(["session", "set", "hi=17"]) != 0
             error = capsys.readouterr().err
-            # GCC gives it no location (#167): neither read nor changed, and said so.
-            said = ("refused", "did not", "neither read nor change it")
+            said = ["refused", "did not"]
+            if built_by_gcc():
+                # GCC gives it no location (#167): neither read nor changed, and said so.
+                said.append("neither read nor change it")
             assert "MUTATION_REJECTED" in error and any(text in error for text in said), error
         # The session is still usable, and a stored local takes a canonical literal.
         assert main(["session", "set", "plain=+5"]) == 0
