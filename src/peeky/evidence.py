@@ -1140,15 +1140,21 @@ EXAMPLES = (
 QUERY_SUMMARIES = {
     "runs": "the latest runs (20 unless count), newest first",
     "run": "every captured value of one run, in capture order",
-    "hits": "each selector's observed values by hit, with changed (NULL where unknown)",
-    "compare": "every value of two runs side by side, paired by hit",
-    "diff": "what differs between two runs: status, output, inputs, then values",
-    "outputs": "inputs, requested interventions, outcome and output of two runs",
+    "hits": "each selector's observed and returned values by hit, with changed (NULL where "
+    "unknown)",
+    "compare": "every value of two runs side by side, paired by hit; first the status of a run "
+    "that did not complete, and any requested interventions",
+    "diff": "how two runs compare: outcome, then what differs (or may) in output, edit, source, "
+    "line, arguments, interventions and captured values",
+    "outputs": "arguments, requested interventions (and how they went), outcome and output of "
+    "two runs",
     "set_effect": "values before and after one run's interventions",
-    "values": "one selector's distinct observed values across non-candidate runs",
+    "values": "one selector's distinct observed and returned values per program and line, "
+    "across non-candidate runs",
     "wide": "one run, a row per hit and phase, a column per selector",
-    "join": "two runs' hits paired by a key selector's value, then the unpaired hits",
-    "unreadable": "selectors of one run that have no value, and why",
+    "join": "two runs' hits paired by the values of one or more key selectors, then the "
+    "unpaired hits",
+    "unreadable": "the captures of one run that have no value, with unavailable and error",
     "failures": "the latest runs that did not complete (20 unless count), newest first",
 }
 
@@ -2922,8 +2928,10 @@ def schema(path):
             for name, (description, columns) in TABLES.items()
         },
         "views": VIEWS,
-        "joins": "captures, interventions and pauses join runs on run_id; or use the "
-        "evidence view, which already has the run's columns",
+        "joins": "captures, interventions and pauses join runs on run_id. The evidence view "
+        "has some of the run's columns (label, program, status, args, sets, language and a "
+        "few more); the others, such as output, error_code, seconds and warnings, need a "
+        "join with runs",
         "queries": {
             name: {"description": description, "params": params}
             for name, (description, _, params, _) in QUERIES.items()
@@ -3205,7 +3213,8 @@ def query_table(path, result, params=None):
 SCHEMA_PARTS = ("joins", "queries", "functions", "examples", "rules")
 # Each view in a few words, for `peeky sql --schema`'s index.
 _VIEW_SUMMARIES = {
-    "evidence": "captures, each with its run's label, program, status, args and more (not output)",
+    "evidence": "captures with some of their run's columns (label, program, status, args, ...; "
+    "not output)",
     "last_run": "The evidence rows of the newest run",
 }
 

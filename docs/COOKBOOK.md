@@ -2146,10 +2146,10 @@ tables:
   captures       One row per captured selector, per hit and phase (17 columns)
   ...
 views:
-  evidence       captures, each with its run's label, program, status, args and more (not output)
+  evidence       captures with some of their run's columns (label, program, status, args, ...; not output)
   last_run       The evidence rows of the newest run
 other parts:
-  joins          captures, interventions and pauses join runs on run_id; or use the evidence view, which already has the run's columns
+  joins          captures, interventions and pauses join runs on run_id. The evidence view has some of the run's columns (label, program, status, args, sets, language and a few more); the others, such as output, error_code, seconds and warnings, need a join with runs
   queries        12 canned queries, each described in full; `peeky queries --help` lists their parameters
   functions      SQL functions Peeky adds: no_addresses, first_difference, difference_position, ...
   ...
@@ -2169,9 +2169,9 @@ lists each with the parameters it takes:
 
 ```
   set_effect [run]                               values before and after one run's interventions
-  values selector                                one selector's distinct observed values across non-candidate runs
+  values selector                                one selector's distinct observed and returned values per program and line, across non-candidate runs
   wide [run] [phase]                             one run, a row per hit and phase, a column per selector
-  join [a] [b] key [phase] [masked] [unchanged]  two runs' hits paired by a key selector's value, then the unpaired hits
+  join [a] [b] key [phase] [masked] [unchanged]  two runs' hits paired by the values of one or more key selectors, then the unpaired hits
 ```
 
 - Pass each as `--param name=value`. A name in brackets is optional.

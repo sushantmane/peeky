@@ -100,8 +100,8 @@ def test_schema_alone_is_a_short_index_of_every_table_view_and_part(store, capsy
     lines = text.splitlines()
     assert "  runs           One row per probe run (31 columns)" in lines
     assert (
-        "  evidence       captures, each with its run's label, program, status, args and more "
-        "(not output)"
+        "  evidence       captures with some of their run's columns (label, program, status, "
+        "args, ...; not output)"
     ) in lines
     manifest = evidence.schema(store)
     assert f"  joins          {manifest['joins']}" in lines
@@ -141,6 +141,45 @@ def test_schema_joins_prints_the_joins(store, capsys):
         "engine": manifest["engine"],
         "joins": manifest["joins"],
     }
+
+
+def test_the_joins_say_which_run_columns_the_evidence_view_has(store):
+    # Review 2 of PR #307: "the evidence view, which already has the run's columns", though
+    # it has only some; output, error_code, seconds and warnings need a join with runs.
+    manifest = evidence.schema(store)
+    joins = manifest["joins"]
+    assert "already has the run's columns" not in joins
+    assert "The evidence view has some of the run's columns" in joins
+    connection = evidence._ensure(store)
+    try:
+        viewed = {row[1] for row in connection.execute("PRAGMA table_info(evidence)")}
+        runs = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+    finally:
+        connection.close()
+    has, _, others = joins.partition("; the others, such as ")
+    for column in ("label", "program", "status", "args", "sets", "language"):
+        assert column in has and column in viewed and column in runs, column
+    for column in ("output", "error_code", "seconds", "warnings"):
+        assert column in others and column in runs and column not in viewed, column
+    assert others.endswith("need a join with runs")
+
+
+def test_each_query_summary_names_the_phases_and_runs_its_sql_reads():
+    # Review 2 of PR #307: `hits` and `values` read returned values as well as observed
+    # ones, and `values` leaves out candidate runs; `join`'s key takes several selectors.
+    for name, (_, sql, params, _) in evidence.QUERIES.items():
+        summary = evidence.QUERY_SUMMARIES[name]
+        if isinstance(sql, str) and "phase IN ('observed', 'returned')" in sql:
+            assert "observed and returned values" in summary, name
+        if isinstance(sql, str) and "NOT candidate" in sql:
+            assert "non-candidate runs" in summary, name
+        if "several" in params.get("key", ""):
+            assert "one or more key selectors" in summary, name
+    assert {
+        name
+        for name, (_, sql, _, _) in evidence.QUERIES.items()
+        if isinstance(sql, str) and "phase IN ('observed', 'returned')" in sql
+    } == {"hits", "values"}
 
 
 def test_schema_names_print_those_tables_views_and_parts_in_full(store, capsys):
@@ -207,19 +246,34 @@ HELP = [
     ("run [run]", "every captured value of one run, in capture order"),
     (
         "hits [run] [selector]",
-        "each selector's observed values by hit, with changed (NULL where unknown)",
+        "each selector's observed and returned values by hit, with changed (NULL where unknown)",
     ),
-    ("compare [a] [b]", "every value of two runs side by side, paired by hit"),
-    ("diff [a] [b]", "what differs between two runs: status, output, inputs, then values"),
-    ("outputs [a] [b]", "inputs, requested interventions, outcome and output of two runs"),
+    (
+        "compare [a] [b]",
+        "every value of two runs side by side, paired by hit; first the status of a run that "
+        "did not complete, and any requested interventions",
+    ),
+    (
+        "diff [a] [b]",
+        "how two runs compare: outcome, then what differs (or may) in output, edit, source, "
+        "line, arguments, interventions and captured values",
+    ),
+    (
+        "outputs [a] [b]",
+        "arguments, requested interventions (and how they went), outcome and output of two runs",
+    ),
     ("set_effect [run]", "values before and after one run's interventions"),
-    ("values selector", "one selector's distinct observed values across non-candidate runs"),
+    (
+        "values selector",
+        "one selector's distinct observed and returned values per program and line, across "
+        "non-candidate runs",
+    ),
     ("wide [run] [phase]", "one run, a row per hit and phase, a column per selector"),
     (
         "join [a] [b] key [phase] [masked] [unchanged]",
-        "two runs' hits paired by a key selector's value, then the unpaired hits",
+        "two runs' hits paired by the values of one or more key selectors, then the unpaired hits",
     ),
-    ("unreadable [run]", "selectors of one run that have no value, and why"),
+    ("unreadable [run]", "the captures of one run that have no value, with unavailable and error"),
     ("failures [count]", "the latest runs that did not complete (20 unless count), newest first"),
 ]
 
