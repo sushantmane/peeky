@@ -870,7 +870,8 @@ is:
   instruction, where the range runs first, unless the loop's body has code on that line too;
 - a `thread_local`, which the debugger lists apart as `q @ file:line`.
 
-A block that opens on the stop line counts.
+A block that opens on the stop line counts. So does the block of an `if constexpr (…)`, an
+`if consteval` or an `if !consteval`.
 
 A lambda's body that opens and closes on the stop line is that lambda's code, with every block
 in it. That holds for a generic lambda too, and whatever follows its parameters: `constexpr`,

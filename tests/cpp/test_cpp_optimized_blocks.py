@@ -2,7 +2,8 @@
 local of its name where LLDB lists only that local, as it does at -O0 (the C cases are
 in tests/native/test_native_optimized_blocks.py). #283: on a one-line range-for whose
 range reads the outer local, that local's note says so, at -O0 too. #286: so does any
-one-line statement whose header names it before the line declares the name again."""
+one-line statement whose header names it before the line declares the name again. #289:
+an `if constexpr` block's declaration hides the outer local too."""
 
 import json
 import os
@@ -487,3 +488,61 @@ def test_a_constexpr_or_generic_lambdas_block_is_its_own(tmp_path, cxx, marker, 
             for row in lambdas
             if row["error"].startswith(f"not what the code reads: the code here names {enumerator}")
         ], lambdas
+
+
+# #289: an `if constexpr` block's `static`, on the stop's line.
+CONSTEXPR_SOURCE = """#include <cstdio>
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    if constexpr (sizeof(long) > 1) { static long t = 5; use(t); } // CONSTEXPR
+    if constexpr (sizeof(t) > 1) { static long t = 6; use(t); } // HEADER
+    use(t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", ["CONSTEXPR", "HEADER"])
+def test_an_if_constexpr_blocks_static_withholds_the_outer_local(
+    tmp_path, cxx, optimization, marker
+):
+    # #289: on `if constexpr (sizeof(long) > 1) { static long t = 5; use(t); }` the outer
+    # `t` showed its value (3) with no note: the scanner read the block as a function's
+    # body, though the code there names the block's `static`. Where the header names `t`
+    # too, the note is hedged as other headers' are (#286).
+    line = next(
+        i for i, row in enumerate(CONSTEXPR_SOURCE.splitlines(), 1) if row.endswith(f"// {marker}")
+    )
+    outer = next(i for i, row in enumerate(CONSTEXPR_SOURCE.splitlines(), 1) if "OUTER" in row)
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    (tmp_path / "blocks.cpp").write_text(CONSTEXPR_SOURCE)
+    result = run_probe(
+        tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # The outer `t` holds 3; the blocks' `static`s 5 and 6.
+    assert not [row for row in found if row.get("value") == "3"], found
+    rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
+    assert any(row["hit"] == 1 for row in rows), found
+    static = f"the block's `static` `t` (line {line}), "
+    listed = ("which the debugger does not list", f"listed separately as `t @ blocks.cpp:{line}`")
+    plain = {
+        f"not what the code reads: the code here names {static}{how}: this row is the outer "
+        "local of that name"
+        for how in listed
+    }
+    hedged = {
+        f"may not be what the code reads: the code here may name {static}{how}, but the `if` "
+        "statement's header names `t` before that declaration, and Peeky cannot tell whether "
+        "running the header reads this local: this row is the outer local of that name"
+        for how in listed
+    }
+    for row in rows:
+        if marker == "HEADER" and (optimization != "O0" or row["hit"] == 1):
+            assert row["error"] in hedged, row
+        else:
+            assert row["error"] in plain, row
