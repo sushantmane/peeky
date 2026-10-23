@@ -140,6 +140,11 @@ frame's entry: the narrowest function whose code holds the frame's address.
   `.eh_frame` FDE names its LSDA in `.gcc_except_table`.
 - On Mach-O, the `__unwind_info` LSDA array, and any `__eh_frame` FDE, name LSDAs in
   `__gcc_except_tab`. Each LSDA's call-site records give the landing pads.
+- Every field is read within its record, its augmentation data or its call-site table. A LEB128
+  number must fit in 64 bits, and the `__unwind_info` arrays must lie in their section, past its
+  header.
+- A table that breaks any of these, or a DWARF64 `.eh_frame` record, can't be read. Then no
+  landing pad is known, which is never the same as having none.
 - `runs_into` is True where every way in from below is another line's code, and no jump comes
   back. It is False where every way in from below is code at or above the line, or where only
   jumps back come. Anything else is None, and so is a landing pad, or tables Peeky can't read.

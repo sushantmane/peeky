@@ -2879,33 +2879,38 @@ _POINTER_FORMATS = {0x00: "<Q", 0x01: None, 0x02: "<H", 0x03: "<I", 0x04: "<Q"}
 _POINTER_FORMATS.update({0x09: None, 0x0A: "<h", 0x0B: "<i", 0x0C: "<q"})
 
 
-def _leb128(data, at, signed=False):
-    """(value, next offset) of the LEB128 number at ``at`` of ``data``."""
-    value, shift = 0, 0
-    while True:
-        if at >= len(data) or shift > 63:
+def _leb128(data, at, limit, signed=False):
+    """(value, next offset) of the LEB128 number at ``at`` of ``data``, which must end
+    before ``limit`` and fit in 64 bits (signed: -2**63 to 2**63 - 1)."""
+    value, shift, byte = 0, 0, 0x80
+    while byte & 0x80:
+        if at >= min(limit, len(data)) or shift > 63:
             raise ValueError("Malformed LEB128 number in an exception table")
         byte = data[at]
         at += 1
         value |= (byte & 0x7F) << shift
         shift += 7
-        if byte < 0x80:
-            return (value - (1 << shift) if signed and byte & 0x40 else value), at
+    if signed and byte & 0x40:
+        value -= 1 << shift
+    if not (-(1 << 63) <= value < 1 << 63 if signed else value < 1 << 64):
+        raise ValueError("LEB128 number in an exception table exceeds 64 bits")
+    return value, at
 
 
-def _eh_pointer(data, at, encoding, address, resolve=True):
+def _eh_pointer(data, at, encoding, address, limit, resolve=True):
     """(value, next offset) of the DW_EH_PE-encoded pointer at ``at`` of ``data``, a
-    section loaded at ``address``: absolute, or relative to its own place (pcrel), as the
-    unwinder reads it: 0 stays 0 (no pointer). With ``resolve`` False its value is not
-    needed (an indirect personality's), only skipped."""
+    section loaded at ``address``, which must end before ``limit``: absolute, or
+    relative to its own place (pcrel), as the unwinder reads it: 0 stays 0 (no
+    pointer). With ``resolve`` False its value is not needed (an indirect personality's),
+    only skipped."""
     form = encoding & 0x0F
     if form not in _POINTER_FORMATS or encoding & 0x70 == 0x50:
         raise ValueError("Unsupported pointer format in an exception table")
     if (packed := _POINTER_FORMATS[form]) is None:
-        value, end = _leb128(data, at, signed=form == 0x09)
+        value, end = _leb128(data, at, limit, signed=form == 0x09)
     else:
         end = at + struct.calcsize(packed)
-        if end > len(data):
+        if end > min(limit, len(data)):
             raise ValueError("Truncated pointer in an exception table")
         value = struct.unpack_from(packed, data, at)[0]
     if not resolve:
@@ -2914,25 +2919,39 @@ def _eh_pointer(data, at, encoding, address, resolve=True):
         raise ValueError("Unsupported pointer application in an exception table")
     if encoding & 0x70 == 0x10 and value:
         value += address + at
-    return value & ((1 << 64) - 1), end
+    if not 0 <= value < 1 << 64:
+        raise ValueError("Pointer outside the address space in an exception table")
+    return value, end
+
+
+def _eh_byte(data, at, limit):
+    """(the byte at ``at``, next offset), which must lie before ``limit``."""
+    if at >= min(limit, len(data)):
+        raise ValueError("Truncated exception table record")
+    return data[at], at + 1
 
 
 def _eh_frame_lsdas(data, address):
     """[(function start, LSDA address)] of each FDE of an `.eh_frame` section (``data``,
-    loaded at ``address``) that names an LSDA: its CIE's augmentation has `L`."""
-    found, cies, at = [], {}, 0
-    while at < len(data) and len(found) < MAX_EXCEPTION_RECORDS:
+    loaded at ``address``) that names an LSDA: its CIE's augmentation has `L`. Every
+    field is read within its record; a DWARF64 record (extended length) is not read."""
+    found, cies, at, records = [], {}, 0, 0
+    while at < len(data):
+        records += 1
+        if records > MAX_EXCEPTION_RECORDS:
+            raise ValueError("Oversized `.eh_frame`")
         if at + 4 > len(data):
-            raise ValueError("Truncated `.eh_frame` record")
+            # Padding after the last record is zeros.
+            if any(data[at:]):
+                raise ValueError("Truncated `.eh_frame` record")
+            break
         start, length = at, struct.unpack_from("<I", data, at)[0]
         at += 4
         if length == 0:
-            break
+            # A terminator, or padding: any record after it is read too.
+            continue
         if length == 0xFFFFFFFF:
-            if at + 8 > len(data):
-                raise ValueError("Truncated `.eh_frame` record")
-            length = struct.unpack_from("<Q", data, at)[0]
-            at += 8
+            raise ValueError("DWARF64 `.eh_frame` records are not supported")
         end = at + length
         if end > len(data) or length < 4:
             raise ValueError("Truncated `.eh_frame` record")
@@ -2943,43 +2962,49 @@ def _eh_frame_lsdas(data, address):
             if (at - pointer) not in cies:
                 raise ValueError("An `.eh_frame` FDE names no CIE before it")
             lsda, encoding, augmented = cies[at - pointer]
-            begin, cursor = _eh_pointer(data, at + 4, encoding, address)
-            _, cursor = _eh_pointer(data, cursor, encoding & 0x0F, address)
-            if augmented and lsda is not None:
-                _, cursor = _leb128(data, cursor)
-                where, _ = _eh_pointer(data, cursor, lsda, address)
-                if where:
-                    found.append((begin, where))
+            begin, cursor = _eh_pointer(data, at + 4, encoding, address, end)
+            _, cursor = _eh_pointer(data, cursor, encoding & 0x0F, address, end)
+            if augmented:
+                size, cursor = _leb128(data, cursor, end)
+                if cursor + size > end:
+                    raise ValueError("An `.eh_frame` FDE's augmentation passes its end")
+                if lsda is not None:
+                    where, _ = _eh_pointer(data, cursor, lsda, address, cursor + size)
+                    if where:
+                        found.append((begin, where))
         at = end
     return found
 
 
 def _eh_cie(data, at, end, address):
     """(LSDA pointer encoding or None, FDE pointer encoding, whether FDEs carry
-    augmentation data) of the CIE whose body starts at ``at``."""
-    version = data[at] if at < end else None
-    stop = data.find(b"\0", at + 1, end)
+    augmentation data) of the CIE whose body runs from ``at`` to ``end``."""
+    version, at = _eh_byte(data, at, end)
+    stop = data.find(b"\0", at, end)
     if version not in (1, 3) or stop < 0:
         raise ValueError("Unsupported `.eh_frame` CIE")
-    augmentation, at = data[at + 1 : stop].decode("ascii", "replace"), stop + 1
-    if "eh" in augmentation:
+    augmentation, at = data[at:stop].decode("ascii", "replace"), stop + 1
+    if augmentation not in ("", "eh") and not augmentation.startswith("z"):
+        raise ValueError("Unknown `.eh_frame` augmentation")
+    if augmentation == "eh":
         at += 8
-    _, at = _leb128(data, at)
-    _, at = _leb128(data, at, signed=True)
-    at = at + 1 if version == 1 else _leb128(data, at)[1]
+    _, at = _leb128(data, at, end)
+    _, at = _leb128(data, at, end, signed=True)
+    at = _eh_byte(data, at, end)[1] if version == 1 else _leb128(data, at, end)[1]
     if not augmentation.startswith("z"):
         return None, 0x00, False
-    _, at = _leb128(data, at)
-    lsda, encoding = None, 0x00
+    size, at = _leb128(data, at, end)
+    if at + size > end:
+        raise ValueError("An `.eh_frame` CIE's augmentation passes its end")
+    limit, lsda, encoding = at + size, None, 0x00
     for letter in augmentation[1:]:
-        if at >= end:
-            raise ValueError("Truncated `.eh_frame` CIE")
         if letter == "L":
-            lsda, at = data[at], at + 1
+            lsda, at = _eh_byte(data, at, limit)
         elif letter == "R":
-            encoding, at = data[at], at + 1
+            encoding, at = _eh_byte(data, at, limit)
         elif letter == "P":
-            _, at = _eh_pointer(data, at + 1, data[at], address, resolve=False)
+            personality, at = _eh_byte(data, at, limit)
+            _, at = _eh_pointer(data, at, personality, address, limit, resolve=False)
         elif letter not in "SBG":
             raise ValueError("Unknown `.eh_frame` augmentation")
     return (None if lsda == 0xFF else lsda), encoding, True
@@ -2987,17 +3012,29 @@ def _eh_cie(data, at, end, address):
 
 def _unwind_info_lsdas(data, base):
     """[(function start, LSDA address)] from a Mach-O `__unwind_info` section's LSDA
-    array; its offsets count from ``base``, the image's __TEXT address."""
-    if len(data) < 28:
+    array; its offsets count from ``base``, the image's __TEXT address. The header's
+    arrays, the index and the LSDA array must lie in the section, past the header,
+    4-byte aligned, the LSDA array past the index and bounded by its entries."""
+    header = 28
+    if len(data) < header:
         raise ValueError("Truncated `__unwind_info`")
-    version, *_, index, count = struct.unpack_from("<7I", data, 0)
-    if version != 1 or index + 12 * count > len(data):
+    version, common, commons, personal, personals, index, count = struct.unpack_from("<7I", data, 0)
+    arrays = ((common, 4 * commons), (personal, 4 * personals), (index, 12 * count))
+    if version != 1 or not count:
         raise ValueError("Unsupported `__unwind_info`")
-    if not count:
-        return []
-    first = struct.unpack_from("<I", data, index + 8)[0]
-    last = struct.unpack_from("<I", data, index + 12 * (count - 1) + 8)[0]
-    if not first <= last <= len(data) or (last - first) % 8:
+    if any(at < header or at % 4 or at + size > len(data) for at, size in arrays):
+        raise ValueError("Malformed `__unwind_info` arrays")
+    if index < max(common + 4 * commons, personal + 4 * personals):
+        raise ValueError("Malformed `__unwind_info` index")
+    offsets = [struct.unpack_from("<I", data, index + 12 * n + 8)[0] for n in range(count)]
+    first, last = offsets[0], offsets[-1]
+    if (
+        first < index + 12 * count
+        or first % 4
+        or last > len(data)
+        or (last - first) % 8
+        or offsets != sorted(offsets)
+    ):
         raise ValueError("Malformed `__unwind_info` LSDA array")
     return [
         (base + start, base + lsda) for start, lsda in struct.iter_unpack("<II", data[first:last])
@@ -3007,33 +3044,30 @@ def _unwind_info_lsdas(data, base):
 def _lsda_pads(data, address, lsda, start):
     """The landing pads of the LSDA at ``lsda``, in a section (``data``) loaded at
     ``address``, of the function starting at ``start``: where each call-site record
-    sends the unwinder (none for a record without one)."""
-    at = lsda - address
-    if not 0 <= at < len(data):
+    sends the unwinder (none for a record without one). Every record lies within the
+    call-site table."""
+    at, limit = lsda - address, len(data)
+    if not 0 <= at < limit:
         raise ValueError("An LSDA lies outside its exception table")
+    encoding, at = _eh_byte(data, at, limit)
     base = start
-    if (encoding := data[at]) != 0xFF:
-        base, at = _eh_pointer(data, at + 1, encoding, address)
-    else:
-        at += 1
-    if at >= len(data):
-        raise ValueError("Truncated LSDA")
-    if data[at] != 0xFF:
-        _, at = _leb128(data, at + 1)
-    else:
-        at += 1
-    if at >= len(data) or data[at] & 0xF0:
+    if encoding != 0xFF:
+        base, at = _eh_pointer(data, at, encoding, address, limit)
+    types, at = _eh_byte(data, at, limit)
+    if types != 0xFF:
+        _, at = _leb128(data, at, limit)
+    encoding, at = _eh_byte(data, at, limit)
+    if encoding & 0xF0:
         raise ValueError("Unsupported LSDA call-site encoding")
-    encoding = data[at]
-    length, at = _leb128(data, at + 1)
+    length, at = _leb128(data, at, limit)
     end, pads = at + length, set()
-    if end > len(data):
+    if end > limit:
         raise ValueError("Truncated LSDA call-site table")
     while at < end:
-        _, at = _eh_pointer(data, at, encoding, address)
-        _, at = _eh_pointer(data, at, encoding, address)
-        pad, at = _eh_pointer(data, at, encoding, address)
-        _, at = _leb128(data, at)
+        _, at = _eh_pointer(data, at, encoding, address, end)
+        _, at = _eh_pointer(data, at, encoding, address, end)
+        pad, at = _eh_pointer(data, at, encoding, address, end)
+        _, at = _leb128(data, at, end)
         if pad:
             pads.add(base + pad)
     return pads

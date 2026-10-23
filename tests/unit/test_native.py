@@ -1445,6 +1445,156 @@ def test_landing_pads_come_from_a_mach_o_or_elf_executables_tables(tmp_path):
         landing_pads(program)
 
 
+def record(body):
+    """An `.eh_frame` record: its 4-byte length, then ``body``, padded to 4 bytes."""
+    body += bytes(-len(body) % 4)
+    return struct.pack("<I", len(body)) + body
+
+
+def zplr_cie(augmentation=7):
+    """A "zPLR" CIE's body: an indirect personality, pc-relative LSDAs and starts, and
+    ``augmentation`` as its augmentation data's length."""
+    fields = bytes([1, 0x78, 30, augmentation, 0x9B]) + bytes(4) + bytes([0x1B, 0x1B])
+    return bytes(4) + b"\x01zPLR\0" + fields
+
+
+def fde(at, start=0x14E8, lsda=0x3000, augmentation=4, address=0x2000):
+    """The body of an FDE whose record starts at ``at`` of `.eh_frame`, under the CIE at
+    0, naming ``lsda``."""
+    begin = start - (address + at + 8)
+    return struct.pack("<IiiBi", at + 4, begin, 0x400, augmentation, lsda - (address + at + 17))
+
+
+def elf_tables(frame, lsda=MAIN_LSDA):
+    return elf_image([(b".eh_frame", 1, 0x2000, frame), (b".gcc_except_table", 1, 0x3000, lsda)])
+
+
+def macho_tables(info):
+    tables = [(b"__unwind_info", 0x100002000, info), (b"__gcc_except_tab", 0x100003000, MAIN_LSDA)]
+    return macho_image(tables)
+
+
+def index_info(index, first, last=None, count=2):
+    """An `__unwind_info` (92 bytes) with ``count`` index entries at ``index`` whose LSDA
+    offsets are ``first``, then ``last``, and one LSDA (main's) at ``first``. What would
+    lie over the header is left out: the header's own bytes are read there."""
+    last = first + 8 if last is None else last
+    entries = [struct.pack("<III", 0x4E8, 0, first), struct.pack("<III", 0x9000, 0, last)]
+    data = bytearray(struct.pack("<7I", 1, 28, 0, 28, 0, index, count) + bytes(64))
+    for n, entry in enumerate(entries[:count]):
+        if 28 <= index + 12 * n <= len(data) - 12:
+            data[index + 12 * n : index + 12 * n + 12] = entry
+    if 28 <= first <= len(data) - 8:
+        data[first : first + 8] = struct.pack("<II", 0x4E8, 0x3000)
+    return bytes(data)
+
+
+def test_a_wellformed_table_reads_and_each_malformed_case_below_is_its_variant(tmp_path):
+    from peeky.native import landing_pads
+
+    program = tmp_path / "program"
+    program.write_bytes(elf_tables(record(zplr_cie()) + record(fde(28)) + bytes(4)))
+    assert landing_pads(program) == {0x164C, 0x169C, 0x16E4}
+    program.write_bytes(macho_tables(index_info(28, 52)))
+    assert landing_pads(program) == {0x10000064C, 0x10000069C, 0x1000006E4}
+
+
+# Review round 3 of #295: each must be unreadable (ValueError, for the reason given: no
+# landing pad is known, so every preceded row is None), never read as having none.
+MALFORMED = {
+    "a CIE whose fields run past its end, into the terminator": (
+        lambda: elf_tables(struct.pack("<I", 6) + bytes(4) + b"\x01\0" + bytes(4)),
+        "LEB128",
+    ),
+    "a zPLR CIE cut after its augmentation string": (
+        lambda: elf_tables(struct.pack("<I", 10) + zplr_cie()[:10] + bytes(4)),
+        "LEB128",
+    ),
+    "a CIE whose augmentation data is shorter than its letters": (
+        lambda: elf_tables(record(zplr_cie(augmentation=2)) + record(fde(28)) + bytes(4)),
+        "Truncated pointer",
+    ),
+    "an FDE whose augmentation runs past its end": (
+        lambda: elf_tables(record(zplr_cie()) + record(fde(28, augmentation=0x7F)) + bytes(4)),
+        "augmentation passes its end",
+    ),
+    "an FDE whose LSDA pointer runs past its augmentation data": (
+        lambda: elf_tables(record(zplr_cie()) + record(fde(28, augmentation=2)) + bytes(4)),
+        "Truncated pointer",
+    ),
+    "a DWARF64 record": (
+        lambda: elf_tables(struct.pack("<IQ", 0xFFFFFFFF, 12) + bytes(8) + b"\x01zR\0"),
+        "DWARF64",
+    ),
+    "a call-site record running past its table's end": (
+        lambda: elf_tables(
+            record(zplr_cie()) + record(fde(28)) + bytes(4),
+            MAIN_LSDA[:3] + b"\x10" + MAIN_LSDA[4:],
+        ),
+        "LEB128",
+    ),
+    "a call site's landing pad over 64 bits (2**64, read as 0)": (
+        lambda: elf_tables(
+            record(zplr_cie()) + record(fde(28)) + bytes(4),
+            bytes.fromhex("ff ff 01 0d 30 4c") + b"\x80" * 9 + b"\x02" + b"\x00",
+        ),
+        "exceeds 64 bits",
+    ),
+    "an `__unwind_info` index over its header": (
+        lambda: macho_tables(index_info(0, 52)),
+        "arrays",
+    ),
+    "an `__unwind_info` index past its section": (
+        lambda: macho_tables(index_info(80, 52)),
+        "arrays",
+    ),
+    "an `__unwind_info` with no index": (
+        lambda: macho_tables(index_info(28, 52, count=0)),
+        "Unsupported",
+    ),
+    "an LSDA array over the index": (lambda: macho_tables(index_info(28, 40)), "LSDA array"),
+    "an LSDA array over the header": (lambda: macho_tables(index_info(52, 0)), "LSDA array"),
+    "a misaligned LSDA array": (lambda: macho_tables(index_info(28, 54)), "LSDA array"),
+    "an LSDA array past its section": (
+        lambda: macho_tables(index_info(28, 52, last=4096)),
+        "LSDA array",
+    ),
+    "an LSDA array running backward": (
+        lambda: macho_tables(index_info(28, 60, last=52)),
+        "LSDA array",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(MALFORMED))
+def test_a_malformed_exception_table_is_unreadable_never_empty(tmp_path, case):
+    from peeky.native import landing_pads
+
+    build, reason = MALFORMED[case]
+    program = tmp_path / "program"
+    program.write_bytes(build())
+    with pytest.raises(ValueError, match=reason):
+        landing_pads(program)
+
+
+def test_a_leb128_number_is_read_within_its_limit_and_64_bits():
+    from peeky.native import _leb128
+
+    assert _leb128(b"\xe4\x02", 0, 2) == (0x164, 2)
+    assert _leb128(b"\x78", 0, 1, signed=True) == (-8, 1)
+    assert _leb128(b"\xff" * 9 + b"\x01", 0, 10) == ((1 << 64) - 1, 10)
+    assert _leb128(b"\x80" * 9 + b"\x7f", 0, 10, signed=True) == (-(1 << 63), 10)
+    for data, limit, signed in (
+        (b"\xe4\x02", 1, False),  # past its limit
+        (b"\x80" * 9 + b"\x02", 10, False),  # 2**64
+        (b"\x80" * 10 + b"\x01", 11, False),  # eleven bytes
+        (b"\x80" * 9 + b"\x40", 10, True),  # -2**69
+        (b"\x80" * 9 + b"\x01", 10, True),  # 2**63
+    ):
+        with pytest.raises(ValueError):
+            _leb128(data, 0, limit, signed=signed)
+
+
 def _instructions(*pairs):
     return [{"address": f"0x{address:X}", "instruction": text} for address, text in pairs]
 
