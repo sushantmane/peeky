@@ -6,6 +6,7 @@ later hits."""
 
 import json
 import re
+import shlex
 import sqlite3
 
 import pytest
@@ -199,8 +200,8 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
     assert alignment(notes(store, 3, 4)) == [
         "hits pair by `gleich`: it agrees between the runs at each of the 2 hits and is unique "
         "across these hits\n"
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
-        "prove the hits are the same moments\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=3 --param b=4 "
+        "--param key=gleich` would, but that does not prove the hits are the same moments\n"
         "- `x` differs after the interventions (run 4's on `x`) and may follow from them, so "
         "this check leaves it out\n"
         "- runs 3 and 4 saw the same values of `call` in another order (run 4's hit 1 matches "
@@ -276,15 +277,18 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
 
     # Nothing else suggests another pairing, but `width` differs after the edit and is
     # left out: what agrees is said, never that the hits line up (review of PR #269).
-    titled = (
-        "hits pair by `title`: it agrees between the runs at each of the 3 hits and is unique "
-        "across these hits\n- pairing by hit number pairs them as `queries join` by it would, but that does "
-        "not prove the hits are the same moments"
-    )
+    def titled(a, b):
+        return (
+            "hits pair by `title`: it agrees between the runs at each of the 3 hits and is "
+            "unique across these hits\n- pairing by hit number pairs them as `peeky queries join "
+            f"--param a={a} --param b={b} --param key=title` would, but that does not prove the "
+            "hits are the same moments"
+        )
+
     roster(["5", "6", "3"], "he3b8016ca05e3946", edit="--- a/src/main.rs\n")
     roster(["5", "6", "9"], "hb7185e602e967d61")
     assert alignment(notes(store, 1, 2)) == [
-        f"{titled}\n- `width` differs after the edit and may follow from it, so this check "
+        f"{titled(1, 2)}\n- `width` differs after the edit and may follow from it, so this check "
         "leaves it out"
     ]
     # roster 5 and 6: the fix counts characters, so every name's `width` is one less (6 7
@@ -293,7 +297,7 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     # (review of PR #209).
     roster(["6", "7", "3"], "hb7185e602e967d61", label="original-43")
     assert alignment(notes(store, 1, 3)) == [
-        f"{titled}\n- runs 1 and 3 saw `width`'s values at other hits (run 3's hit 1 matches "
+        f"{titled(1, 3)}\n- runs 1 and 3 saw `width`'s values at other hits (run 3's hit 1 matches "
         "run 1's hit 2: 6)\n- that alternate alignment does not settle whether the calls were "
         "reordered: `width` may differ because of the edit, or match by chance"
     ]
@@ -314,7 +318,7 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
         changes=[(1, "width", "6", "5", 1), (2, "width", "7", "6", 2)],
     )
     assert alignment(notes(store, 4, 1)) == [
-        f"{titled}\n- runs 4 and 1 saw `width`'s values at other hits (run 1's hit 2 matches "
+        f"{titled(4, 1)}\n- runs 4 and 1 saw `width`'s values at other hits (run 1's hit 2 matches "
         "run 4's hit 1: 6)\n- that alternate alignment does not settle whether the calls were "
         "reordered: `width` may differ because of the edit and the interventions (run 4's on "
         "`width`), or match by chance"
@@ -500,8 +504,8 @@ def test_selectors_that_differ_together_withhold_the_claim(store):
     assert note == (
         "hits pair by `key`: it agrees between the runs at each of the 6 hits and is unique "
         "across these hits\n"
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
-        "prove the hits are the same moments\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=key` would, but that does not prove the hits are the same moments\n"
         "- no single selector's values line up better at other hits\n"
         "- `p` and `q` differ, and how they line up together was not checked"
     )
@@ -520,6 +524,12 @@ def test_selectors_that_differ_together_withhold_the_claim(store):
 # another hit. seats (Java), line 54: `name` per group; the fix moves `r` and `first`.
 PICKS = ["0", "2", "3", "0", "1", "1", "2", "3", "0", "1"]
 STUDENTS = ['"Maya"', '"Leon"', '"Ines"', '"Omar"']
+# grades' `name` is a `const std::string &`: its address, then its text; the addresses
+# differ between the runs (review 2 of PR #308).
+NAMED = {
+    run: [f"0x000000{base}{n}0 {name}" for n, name in enumerate(STUDENTS, 1)]
+    for run, base in (("a", "1010e156"), ("b", "1055715f"))
+}
 GROUPS = ['"Kim"', '"Okafor"', '"Lund"', '"Ng"', '"Sato"']
 EVAL11 = {
     "rota": (
@@ -534,11 +544,11 @@ EVAL11 = {
     "grades": (
         [
             {"name": n, "quiz": q, "stats.lowest": "58"}
-            for n, q in zip(STUDENTS, ["87", "88", "90", "95"])
+            for n, q in zip(NAMED["a"], ["87", "88", "90", "95"])
         ],
         [
             {"name": n, "quiz": q, "stats.lowest": low}
-            for n, q, low in zip(STUDENTS, ["87", "84", "87", "88"], ["58", "72", "64", "79"])
+            for n, q, low in zip(NAMED["b"], ["87", "84", "87", "88"], ["58", "72", "64", "79"])
         ],
         "name",
         "quiz",
@@ -584,15 +594,21 @@ def test_diff_leads_with_its_verdict_where_a_key_pairs_every_hit(store, case):
     saved(store, after, edit="--- a/x\n+++ b/x\n", label="candidate")
     (note,) = alignment(notes(store, 1, 2))
     verdict, same, *rest = short(note)
+    # grades' `name` agrees only with addresses masked, so plain `join` would pair none.
+    masked = case == "grades"
     assert verdict == (
         f"hits pair by `{key}`: it agrees between the runs at each of the {len(before)} hits "
-        "and is unique across these hits"
+        f"{'with addresses masked ' if masked else ''}and is unique across these hits"
     ), note
-    # Never that the hits are the same moments.
+    # Never that the hits are the same moments; the `join` named pairs them as said.
     assert same == (
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        f"--param key={key}{' --param masked=1' if masked else ''}` would, but that does not "
         "prove the hits are the same moments"
     ), note
+    assert [(r["hit_a"], r["hit_b"], r["matched"]) for r in suggested_join(store, note)] == [
+        (hit, hit, "both") for hit in range(1, len(before) + 1)
+    ], note
     assert "hits line up" not in note and "may not line up" not in note, note
     # The sign of a reorder comes last, and is not graded (review of PR #308: a key may be
     # a counter): it does not settle whether the calls were reordered.
@@ -688,8 +704,8 @@ def test_a_value_unique_at_every_hit_pairs_the_hits_but_never_proves_they_line_u
     assert note == (
         "hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique "
         "across these hits\n"
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
-        "prove the hits are the same moments\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=i` would, but that does not prove the hits are the same moments\n"
         "- no single selector's values line up better at other hits"
     ), note
     # Nor as far as a value that repeats shows.
@@ -717,3 +733,98 @@ def test_an_alternate_alignment_is_never_graded_beside_a_key(store):
         "reordered: `call` may differ because of the edit, or match by chance"
     ), note
     assert "weak" not in note and "strong" not in note, note
+
+
+def suggested_join(store, note):
+    """The rows of the `queries join` a note names, run as the note gives it (the shell's
+    words, each `--param` value parsed as the CLI parses it)."""
+    (command,) = re.findall(r"`(peeky queries join [^`]*)`", note)
+    words = shlex.split(command)[3:]
+    assert words[::2] == ["--param"] * (len(words) // 2), command
+    return evidence.run_query(store, "join", evidence.parse_params(words[1::2]))["rows"]
+
+
+def test_the_join_a_pairing_note_names_pairs_the_hits_as_it_says(store):
+    # Review 2 of PR #308: alignment compares values with addresses masked, but plain
+    # `join` compares the stored text. `name` (a C++ string reference: its address, then
+    # its text) agrees at both hits only once addresses are masked, and the note said
+    # "pairs them as `queries join` by it would", though `join --param key=name` paired
+    # none (grades' `name` too).
+    saved(
+        store,
+        [
+            {"name": '0x0000000100003f90 "apple"', "n": "1"},
+            {"name": '0x0000000100003fa0 "pear"', "n": "2"},
+        ],
+    )
+    saved(
+        store,
+        [
+            {"name": '0x000000016fdff690 "apple"', "n": "1"},
+            {"name": '0x000000016fdff6a0 "pear"', "n": "3"},
+        ],
+    )
+    (note,) = alignment(notes(store, 1, 2))
+    verdict, same, *_ = short(note)
+    assert verdict == (
+        "hits pair by `name`: it agrees between the runs at each of the 2 hits with addresses "
+        "masked and is unique across these hits"
+    ), note
+    assert same == (
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=name --param masked=1` would, but that does not prove the hits are the same "
+        "moments"
+    ), note
+    rows = suggested_join(store, note)
+    assert [(r["hit_a"], r["hit_b"], r["matched"]) for r in rows] == [
+        (1, 1, "both"),
+        (2, 2, "both"),
+    ]
+    # Without masked=1, join pairs none: the note must not name that.
+    plain = evidence.run_query(store, "join", {"a": 1, "b": 2, "key": "name"})["rows"]
+    assert all(r["matched"] != "both" for r in plain)
+    # A key alike as stored: plain `join`, as the note names it.
+    saved(store, [{"i": "1", "n": "1"}, {"i": "2", "n": "2"}, {"i": "3", "n": "3"}])
+    saved(
+        store, [{"i": "1", "n": "1"}, {"i": "2", "n": "2"}, {"i": "3", "n": "4"}], edit="--- a/x\n"
+    )
+    (note,) = alignment(notes(store, 3, 4))
+    assert "masked" not in note, note
+    assert "`peeky queries join --param a=3 --param b=4 --param key=i` would" in note, note
+    rows = suggested_join(store, note)
+    assert [(r["hit_a"], r["hit_b"], r["matched"]) for r in rows] == [
+        (1, 1, "both"),
+        (2, 2, "both"),
+        (3, 3, "both"),
+    ]
+
+
+def test_join_guidance_names_masked_where_only_addressed_values_tell_hits_apart(store):
+    # Review 2 of PR #308: "if they don't, pair hits by a value …: `peeky queries join …`"
+    # where only `p`, which carries addresses, tells the hits apart: plain `join` by `p`
+    # pairs none, so the command names masked=1, and pairs every hit.
+    saved(store, [{"p": '0x0000000100003f90 "x"'}, {"p": '0x0000000100003fa0 "y"'}])
+    saved(store, [{"p": '0x000000016fdff690 "y"'}, {"p": '0x000000016fdff6a0 "x"'}])
+    (note,) = alignment(notes(store, 1, 2))
+    assert note.startswith(REORDER), note
+    assert note.endswith(
+        "carry addresses, so match them masked: `peeky queries join --param a=1 --param b=2 "
+        "--param key=<selector>[,<selector>…] --param masked=1`"
+    ), note
+    rows = evidence.run_query(store, "join", {"a": 1, "b": 2, "key": "p", "masked": 1})["rows"]
+    assert [(r["hit_a"], r["hit_b"], r["matched"]) for r in rows] == [
+        (1, 2, "both"),
+        (2, 1, "both"),
+    ]
+    # A selector free of addresses that tells them apart too: plain `join`.
+    saved(
+        store,
+        [{"p": '0x0000000100003f90 "x"', "k": "1"}, {"p": '0x0000000100003fa0 "y"', "k": "2"}],
+    )
+    saved(
+        store,
+        [{"p": '0x000000016fdff690 "y"', "k": "2"}, {"p": '0x000000016fdff6a0 "x"', "k": "1"}],
+    )
+    (note,) = alignment(notes(store, 3, 4))
+    assert note.endswith("--param key=<selector>[,<selector>…]`"), note
+    assert "masked" not in note, note

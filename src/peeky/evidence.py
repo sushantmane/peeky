@@ -13,6 +13,7 @@ import json
 import math
 import os
 import re
+import shlex
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -999,8 +1000,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "which pairs by value (and, for the first case, says how many rows come after the first "
         "hit with a real difference, if any); where they stopped as often, a note says what suggests the hits do not "
         "line up, or what plain values agree between the runs at every hit (where they are "
-        "unique across the hits, that pairing by hit number is what join by them gives; never "
-        "that the hits are the same moments). A selector that differs after an intervention or an edit may "
+        "unique across the hits, that pairing by hit number is what join by them gives, named "
+        "whole, with masked=1 where they agree only with addresses masked; never that the hits "
+        "are the same moments). A selector that differs after an intervention or an edit may "
         "follow from it, so it is left out of what agrees; where its values line up better at "
         "other hits, the note says so, that the change may account for it, and that the hits are "
         "not said to line up. Such a note's first line is its verdict (hits pair by, hits pair "
@@ -2452,21 +2454,44 @@ def _structure_apart(path, run):
             return skipped
         return values[run].get(selector, {}).get(hit, (missing,))[0]
 
+    def stored(run, selector, hit):
+        """The value as stored: what `join` matches without `--param masked=1`."""
+        return values[run].get(selector, {}).get(hit, (missing, missing))[1]
+
+    def apart(chosen):
+        """Whether ``chosen``'s values, addresses masked, tell each run's hits apart."""
+        return bool(chosen) and all(
+            len({tuple(seen(r, s, hit) for s in chosen) for hit in common}) == len(common)
+            for r in (a, b)
+        )
+
     # Whether `join` could pair the hits: the plain values of the selectors both runs
     # read at every hit tell each run's hits apart, taken together (tenth evaluation:
     # debounce's `settle` has no value that names its call, so `join` cannot help).
+    # Where only values that carry addresses do, `join` matches them only with
+    # `--param masked=1` (review 2 of PR #308: each run's addresses differ).
     plain = [
         s
         for s in selectors
         if all(seen(r, s, hit) not in (missing, skipped) for r in (a, b) for hit in common)
     ]
-    keyable = bool(plain) and all(
-        len({tuple(seen(r, s, hit) for s in plain) for hit in common}) == len(common)
-        for r in (a, b)
-    )
+    carries = {
+        s
+        for s in plain
+        if any(seen(r, s, hit) != stored(r, s, hit) for r in (a, b) for hit in common)
+    }
+    keyable = apart(plain)
+    join_masked = keyable and not apart([s for s in plain if s not in carries])
     pair_by = (
         "pair hits by a value that names the call and that the edit leaves alone (an "
-        f"argument, an index): `peeky queries join --param a={a} --param b={b} {_JOIN_KEY}`"
+        "argument, an index)"
+        + (
+            "; the values that tell the hits apart carry addresses, so match them masked"
+            if join_masked
+            else ""
+        )
+        + f": `peeky queries join --param a={a} --param b={b} {_JOIN_KEY}"
+        + (" --param masked=1`" if join_masked else "`")
     )
     join = (
         f"if they don't, {pair_by}"
@@ -2530,6 +2555,12 @@ def _structure_apart(path, run):
         )
     ]
     shown = [s for s in agreeing if len({seen(a, s, hit) for hit in common}) > 1]
+    # Alike only once addresses are masked (review 2 of PR #308: a C++ string reference's
+    # address, then its text): the note says so, and names `join --param masked=1`.
+    masked_only = {
+        s for s in agreeing if any(stored(a, s, hit) != stored(b, s, hit) for hit in common)
+    }
+    alike_masked = bool(set(shown) & masked_only)
 
     def moved_in(found, among):
         """(selector, what it saw) for the first of ``among`` whose values in ``found``
@@ -2566,7 +2597,7 @@ def _structure_apart(path, run):
         return [
             _note(
                 "hits may not line up: the values do not settle how they pair",
-                _agrees(shown, len(common)),
+                _agrees(shown, len(common), masked=alike_masked),
                 f"but {moved[1]}",
                 join,
             )
@@ -2600,8 +2631,8 @@ def _structure_apart(path, run):
                     f"hits may not line up: {_quoted(apart)} "
                     f"{'differ' if len(apart) > 1 else 'differs'} at {len(differ)} of the "
                     f"{len(common)} hits",
-                    f"{_agrees(shown, len(common))}, but that does not show that a hit is the "
-                    "same moment in both",
+                    f"{_agrees(shown, len(common), masked=alike_masked)}, but that does not "
+                    "show that a hit is the same moment in both",
                     calls,
                 )
             ], True
@@ -2616,9 +2647,12 @@ def _structure_apart(path, run):
     if len(common) < 2 or not differs:
         return [], False
     keys = _telling_apart(shown, [[seen(a, s, hit) for s in shown] for hit in common])
+    paired = keys and _paired(keys, len(common), (a, b), bool(set(keys) & masked_only))
     if left_out:
         return [
-            _after_change(shown, keys, len(common), changes, edited, left_out, hedged, join)
+            _after_change(
+                shown, paired, len(common), changes, edited, left_out, hedged, join, alike_masked
+            )
         ], hedged is not None
     if not shown:
         return [], False
@@ -2631,7 +2665,7 @@ def _structure_apart(path, run):
             for hit in common
         )
     ]
-    return [_agreement(shown, keys, len(common), changes, differing, (a, b))], False
+    return [_agreement(shown, paired, len(common), changes, differing, (a, b), alike_masked)], False
 
 
 def _cause(changes, edited, detail=True):
@@ -2648,7 +2682,7 @@ def _cause(changes, edited, detail=True):
     return " and ".join(causes)
 
 
-def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
+def _after_change(shown, paired, count, changes, edited, left_out, hedged, join, masked):
     """The note where a change left selectors out (tenth evaluation): what agrees, never
     that the hits line up (review of PR #269); what was left out, and why; and a sign
     that the hits may not line up among those left out (``hedged``: the selector and
@@ -2657,7 +2691,9 @@ def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
     comes last (eleventh evaluation: grades' `quiz` 88 at another hit, beside `name`):
     it does not settle whether the calls were reordered, and is never graded (review of
     PR #308: a key may be a counter, which is no evidence against a reorder). Else the
-    sign is the verdict."""
+    sign is the verdict. ``paired`` is `_paired`'s lines where some values that agree are
+    unique across the hits; ``masked``, whether ``shown`` agree only with addresses
+    masked."""
     it = "them" if any(changes.values()) else "it"
     others = [selector for selector in left_out if not hedged or selector != hedged[0]]
 
@@ -2683,8 +2719,8 @@ def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
     alike = (
         f"{'it reads' if one else 'they read'} alike at some hits, which could still trade places"
     )
-    if keys:
-        lines = [*_paired(keys, count), leaves(True)]
+    if paired:
+        lines = [*paired, leaves(True)]
         if hedged:
             selector, saw = hedged
             lines += [
@@ -2697,7 +2733,7 @@ def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
     if not hedged:
         return _note(
             f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-            f"{_agrees(shown, count, pronoun=True)}",
+            f"{_agrees(shown, count, pronoun=True, masked=masked)}",
             f"but {alike}",
             leaves(True),
         )
@@ -2707,7 +2743,7 @@ def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
         saw,
         f"`{selector}` may differ because of {_cause(changes, edited)}, so this does not prove "
         "a reorder",
-        f"{_agrees(shown, count)}, but {alike}" if shown else None,
+        f"{_agrees(shown, count, masked=masked)}, but {alike}" if shown else None,
         leaves(False),
         join,
     )
@@ -2736,47 +2772,53 @@ def _interventions(changes, reached):
     return _listed(named)
 
 
-def _agrees(selectors, count, *, pronoun=False, apart=False):
-    """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), and
-    with ``apart`` ` and is unique across these hits` (`and together are unique …`)."""
+def _agrees(selectors, count, *, pronoun=False, apart=False, masked=False):
+    """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), with
+    ``masked`` ` with addresses masked` (alike only so: review 2 of PR #308), and with
+    ``apart`` ` and is unique across these hits` (`and together are unique …`)."""
     one = len(selectors) == 1
     subject = ("it" if one else "they") if pronoun else _quoted(selectors)
     text = f"{subject} {'agrees' if one else 'agree'} between the runs at each of the {count} hits"
+    if masked:
+        text += " with addresses masked"
     if apart:
         text += f" and {'is' if one else 'together are'} unique across these hits"
     return text
 
 
-def _paired(keys, count):
+def _paired(keys, count, runs, masked):
     """The verdict where ``keys`` agree between the runs at every hit and are unique across
     them, and what it amounts to: hit-number pairing is what `join` by them gives, which
     does not prove the hits are the same moments (review of PR #308: Peeky cannot tell
-    whether a value names the call, so it never says the hits line up)."""
-    by = "it" if len(keys) == 1 else "them"
+    whether a value names the call, so it never says the hits line up). The `join` is
+    given whole, with `--param masked=1` where a key agrees only with addresses masked:
+    plain `join` compares the stored text (review 2 of PR #308)."""
+    a, b = runs
+    command = (
+        f"peeky queries join --param a={a} --param b={b} --param "
+        f"{shlex.quote('key=' + ','.join(keys))}" + (" --param masked=1" if masked else "")
+    )
     return [
-        f"hits pair by {_quoted(keys)}: {_agrees(keys, count, pronoun=True, apart=True)}",
-        f"pairing by hit number pairs them as `queries join` by {by} would, but that does not "
-        "prove the hits are the same moments",
+        f"hits pair by {_quoted(keys)}: "
+        f"{_agrees(keys, count, pronoun=True, apart=True, masked=masked)}",
+        f"pairing by hit number pairs them as `{command}` would, but that does not prove the "
+        "hits are the same moments",
     ]
 
 
-def _agreement(shown, keys, count, changes, differing, runs):
+def _agreement(shown, paired, count, changes, differing, runs, masked):
     """What agrees where nothing suggests another pairing and nothing was left out
     (#201), as `_structure_apart` says it: that the hits pair by what agrees, never that
     they line up (review of PR #308); then, with no intervention in either run, that no
     single selector suggests another pairing; else what differs (``differing``, as read)
-    and which interventions there were."""
+    and which interventions there were. ``paired`` and ``masked`` as for `_after_change`."""
     one = len(shown) == 1
-    verdict = (
-        _paired(keys, count)
-        if keys
-        else [
-            f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-            f"{_agrees(shown, count, pronoun=True)}",
-            f"but {'it reads' if one else 'they read'} alike at some hits, which could still "
-            "trade places",
-        ]
-    )
+    verdict = paired or [
+        f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
+        f"{_agrees(shown, count, pronoun=True, masked=masked)}",
+        f"but {'it reads' if one else 'they read'} alike at some hits, which could still trade "
+        "places",
+    ]
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
     if not reached:

@@ -1739,16 +1739,21 @@ Each of these three notes names `queries join` where it could pair the hits: whe
 selectors, taken together, tell each run's hits apart. Join by a value that names the call and that
 the edit leaves alone, such as an argument or an index. Don't join by a value the edit changed.
 Where no captured selector tells the hits apart, the note says that `join` could not pair them.
+Where only values that carry addresses tell them apart, the command has `--param masked=1`. Plain
+`join` compares values as stored, and each run's addresses differ.
 
 The note's first line is its verdict. Each detail follows on a line of its own, after `- `. With
 `--json`, the note is one string in `notes`, with its lines split by newlines. The verdict is one of
 these:
 
 - `hits pair by` some values. They agree between the runs at every hit, and they are unique across
-  these hits. So pairing by hit number pairs the hits as `queries join` by those values would. That
-  doesn't prove they are the same moments ([below](#when-values-agree-at-every-hit)).
+  these hits. So pairing by hit number pairs the hits as the `queries join` the note gives would.
+  That doesn't prove they are the same moments ([below](#when-values-agree-at-every-hit)).
 - `hits pair as far as` some values show. They agree between the runs at every hit, but they read
   alike at some hits, which could still trade places.
+
+These checks compare values with addresses and Java object numbers masked. Where a value agrees
+only so, the verdict says `with addresses masked`, and its `join` command has `--param masked=1`.
 - `hits may not line up:` and why. Something suggests they may not, as the three signs above do. Or
   the values can't show that they do.
 
@@ -1793,9 +1798,14 @@ apart. No captured value names `settle`'s call, so the note says `join` couldn't
 #### When values agree at every hit
 
 Some values may agree between the runs at every hit. Where nothing suggests another pairing, a note
-says so. Where they are unique across the hits, it says that the hits pair by them: pairing by hit
-number pairs the hits as `queries join` by them would. A constant, a value that never changes from
-hit to hit, doesn't count here.
+says so. Where they are unique across the hits, it says that the hits pair by them. Pairing by hit
+number then pairs the hits as `queries join` by them would, and the note gives that command. A
+constant, a value that never changes from hit to hit, doesn't count here.
+
+`queries join` compares values as stored, unless you add `--param masked=1`. A C++ string
+reference, for example, shows its address, then its text. Its text may agree while each run's
+address differs. Then the note says the value agrees `with addresses masked`, and its command has
+`--param masked=1`. Plain `join` by it would pair no hits.
 
 That never proves the hits are the same moments, so no note says they line up. Peeky can't tell
 whether a value names the call. A loop counter agrees in two runs even where other arguments, or a
@@ -1815,7 +1825,7 @@ run_a  run_b  hit   phase     selector  value_a               value_b           
 3      4      NULL  NULL      (args)    ["0", "0", "7", "8"]  ["0", "0", "7", "9"]  1        the runs had different program arguments: values also differ by input
 3      4      4     observed  v         8                     9                     1        NULL
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
-  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=4 --param key=i` would, but that does not prove the hits are the same moments
   - no single selector's values line up better at other hits
 (3 rows)
 ```
@@ -1834,7 +1844,7 @@ run_a  run_b  hit   phase     selector  value_a       value_b       differs  not
 3      5      NULL  NULL      (edit)    none          candidate     1        the runs built different edits (runs.edit has each diff)
 3      5      4     observed  total     28            21            1        NULL
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
-  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=5 --param key=i` would, but that does not prove the hits are the same moments
   - `total` differs after the edit and may follow from it, so this check leaves it out
 (3 rows)
 ```
@@ -1852,7 +1862,7 @@ run_a  run_b  hit   phase      selector  value_a       value_b                  
 3      6      NULL  NULL       (sets)    none          1 change: total=5 (requested at 9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
 3      6      4     after-set  total     NULL          5                                     1        intervention only in run b
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
-  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=6 --param key=i` would, but that does not prove the hits are the same moments
   - no single selector's values line up better at other hits
   - the interventions (run 6's on `total` in main) can change other values and which calls reach the line, so this does not show that each hit is the same moment in both
 (3 rows)
@@ -1880,7 +1890,7 @@ What the note says depends on the case:
 
   ```
   hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique across these hits
-  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 --param key=key` would, but that does not prove the hits are the same moments
   - runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B')
   - that alternate alignment does not settle whether the calls were reordered: `call` may differ because of the edit, or match by chance
   ```
@@ -1927,7 +1937,7 @@ What the note says depends on the case:
 
   ```
   hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique across these hits
-  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 --param key=ms` would, but that does not prove the hits are the same moments
   - `db.candidate`, `db.count` and `changes` differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
   - runs 1 and 3 saw `db.stable`'s values at other hits (run 3's hit 11 matches run 1's hit 7: 1)
   - that alternate alignment does not settle whether the calls were reordered: `db.stable` may differ because of the interventions, or match by chance

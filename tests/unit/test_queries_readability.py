@@ -234,8 +234,8 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
     assert evidence.run_query(store, "diff")["notes"] == [
         "hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique "
         "across these hits\n"
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
-        "prove the hits are the same moments\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=ms` would, but that does not prove the hits are the same moments\n"
         "- runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 10 matches run 1's "
         "hit 9: 1)\n"
         "- that alternate alignment does not settle whether the calls were reordered: "
@@ -258,8 +258,8 @@ def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
     assert note == (
         "hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique "
         "across these hits\n"
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
-        "prove the hits are the same moments\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=key` would, but that does not prove the hits are the same moments\n"
         "- runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches "
         "run 1's hit 2: 'B')\n"
         "- that alternate alignment does not settle whether the calls were reordered: `call` "
@@ -308,8 +308,8 @@ def test_agreement_is_said_as_agreement_between_the_runs(store):
     assert evidence.run_query(store, "diff", {"a": 1, "b": 3})["notes"] == [
         "hits pair by `e.cents`: it agrees between the runs at each of the 3 hits and is unique "
         "across these hits\n"
-        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
-        "prove the hits are the same moments\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 "
+        "--param key=e.cents` would, but that does not prove the hits are the same moments\n"
         "- `payer` differs after the edit and may follow from it, so this check leaves it out"
     ]
 
