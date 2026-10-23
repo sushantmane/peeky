@@ -1078,3 +1078,71 @@ def test_an_optimized_bindings_own_line_withholds_it():
     assert session.not_yet_declared(t, {"id": 1, "line": 11}) is None
     lr = variable("lr", "long &", "0x0000fffffffffb20")
     assert session.not_yet_declared(lr, {"id": 1, "line": 7}) is None
+
+
+UNIONS = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_structure_type
+                DW_AT_name\t("Pt")
+                DW_AT_byte_size\t(0x08)
+
+0x00000018:     DW_TAG_member
+                  DW_AT_name\t("x")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000020:   DW_TAG_union_type
+                DW_AT_name\t("U")
+                DW_AT_byte_size\t(0x08)
+
+0x00000024:     DW_TAG_member
+                  DW_AT_name\t("p")
+                  DW_AT_type\t(0x00000014 "Pt")
+
+0x00000030:   DW_TAG_structure_type
+                DW_AT_name\t("Holder")
+                DW_AT_byte_size\t(0x10)
+
+0x00000034:     DW_TAG_member
+                  DW_AT_name\t("u")
+                  DW_AT_type\t(0x00000020 "U")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000038:     DW_TAG_member
+                  DW_AT_name\t("inner")
+                  DW_AT_type\t(0x00000014 "Pt")
+                  DW_AT_data_member_location\t(0x08)
+
+0x00000040:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000044:     DW_TAG_union_type
+                  DW_AT_name\t("_Storage")
+                  DW_AT_byte_size\t(0x08)
+
+0x00000048:       DW_TAG_member
+                    DW_AT_name\t("v")
+                    DW_AT_type\t(0x00000014 "Pt")
+"""
+
+
+def test_a_member_chain_through_a_union_is_never_proven():
+    # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then `u.p.~pair(); new (&u.q)
+    # std::pair<long, long>{7, 8};` showed `a = 7, b = 8`: which member of a union is alive
+    # changes as the program runs, a standard library's union too.
+    from peeky.fields import CPP_LIBRARIES, type_graph
+    from peeky.native import _member_object, _parse_dies
+
+    graph = type_graph(_parse_dies(UNIONS), {0x14, 0x20, 0x30, 0x44}, CPP_LIBRARIES)
+    holder, union, library = (Typed(graph, offset) for offset in (0x30, 0x20, 0x44))
+    assert _member_object(holder, "inner").kind() == "record"
+    assert _member_object(holder, "u").kind() == "union"
+    assert _member_object(_member_object(holder, "u"), "p") is None
+    assert _member_object(union, "p") is None and _member_object(library, "v") is None
+    assert _member_object(holder, "missing") is None and _member_object(None, "p") is None

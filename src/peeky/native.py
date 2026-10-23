@@ -3868,9 +3868,14 @@ class Everywhere(str):
 
 
 def _member_object(typed, name):
-    """The Typed of the member ``name`` of the struct, class or union ``typed`` (one
-    member of that name, no reference or pointer), or None."""
-    if typed is None or typed.kind() not in ("record", "union", "library"):
+    """The Typed of the member ``name`` of the struct or class ``typed`` (one member of
+    that name, no reference or pointer), or None. Never a union's (a standard library's
+    too): which member is alive there changes as the program runs (round 2 of the #296
+    review: `auto &[a, b] = u.p;`, then `new (&u.q) …` read `u.q`)."""
+    node = typed.node() if typed is not None else None
+    if node is None or node[0] != "record" or node[2] == "union":
+        return None
+    if typed.kind() not in ("record", "library"):
         return None
     found = [kind for member, kind in typed.members()[0] if member == name]
     if len(found) != 1:

@@ -630,8 +630,9 @@ Some things only look different:
     read. Read what it points at where the pair is made.
   - It can't be changed, nor can its fields: a change would write through the reference.
   - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where it names an
-    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. Anything
-    else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
+    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A union's
+    member doesn't count, since another member may become active. Anything else may be gone by
+    the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
     line destroys. So a binding of a call, a subscript, a range `for`'s element, `*p` or a global
     shows `not shown: the binding refers to an object Peeky can't prove is still alive`. Read it
     where the code names that object, or bind by value.

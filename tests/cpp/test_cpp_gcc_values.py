@@ -598,6 +598,78 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     assert re.fullmatch(r"0x[0-9a-f]+", rows["r"]["value"]), rows["r"]
 
 
+# Round 2 of the #296 review: a union's member, whose life ends when another becomes
+# active, and the boundaries checked by hand: a local reassigned, a vector's element, and a
+# map's entries in a range `for`.
+BOUNDARIES = """#include <cstdio>
+#include <map>
+#include <new>
+#include <utility>
+#include <vector>
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+union U {
+    std::pair<long, long> p;
+    std::pair<long, long> q;
+    U() : p{1, 2} {}
+    ~U() {}
+};
+struct Holder { U u; std::pair<long, long> inner; };
+int main(int argc, char **argv) {
+    U u;
+    auto &[a, b] = u.p; // UNION
+    u.p.~pair();
+    new (&u.q) std::pair<long, long>{7, 8};
+    Holder h;
+    h.inner = {31, 32};
+    auto &[x, y] = h.u.p; // NESTED_UNION
+    auto &[c, d] = h.inner; // MEMBER
+    std::pair<long, long> p{argc + 4, argc + 5};
+    auto &[e, f] = p; // REASSIGNED
+    p = std::pair<long, long>{argc + 40, argc + 50};
+    std::vector<std::pair<long, long>> v{{11, 12}};
+    auto &[g, k] = v[0]; // SUBSCRIPT
+    std::map<long, long> m{{21, 22}, {23, 24}};
+    for (auto &[key, value] : m) { // MAP_LOOP
+        use(key * value); // MAP_READ
+    }
+    use(u.q.first + c + e + g); // AFTER
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys):
+    # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then a placement new made `u.q`
+    # the union's active member: `a = 7, b = 8`, with no note.
+    compiler, root = cpp
+    source = root / "boundaries.cpp"
+    source.write_text(BOUNDARIES)
+    capture = "a,b,x,y,c,d,e,f,g,k"
+    code, result = probe(source, line_of(BOUNDARIES, "// AFTER"), capture, capsys, "--hits", "1")
+    assert "U=90" in result["output"], result["output"]
+    rows = {row["selector"]: row for row in result["rows"]}
+    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p", "g": "v[0]", "k": "v[0]"}
+    for selector, initializer in withheld.items():
+        row = rows[selector]
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == DEAD.format(selector, initializer), row
+    # A struct's member, and a local reassigned after the binding: what it holds now.
+    shown = {"c": "31", "d": "32", "e": "41", "f": "51"}
+    for selector, value in shown.items():
+        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
+    # A map's entry in a range `for`: an element of `m`, which the body may erase.
+    code, result = probe(
+        source, line_of(BOUNDARIES, "// MAP_READ"), "key,value", capsys, "--hits", "all"
+    )
+    assert len(result["rows"]) == 4, result["rows"]
+    for row in result["rows"]:
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == DEAD.format(row["selector"], "m").replace(
+            "binds `m`", "binds an element of `m`"
+        ), row
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("optimization", ["O1", "O2"])
 def test_an_optimized_bindings_own_line_never_reads_through_it(cpp, optimization):

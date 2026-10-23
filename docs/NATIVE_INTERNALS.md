@@ -214,7 +214,8 @@ shows that reference's address as the variable's value.
 - `Statements.binding` says whether the binding is by reference, and what it binds.
   `NativeSession._bound_alive` follows one by reference only where that is an object of the
   frame, or a member of one (`_local_object`): a local or by-value parameter in scope there,
-  reached through no reference or pointer. Anything else is `not shown`, since it may be gone.
+  reached through no reference, pointer or union (`_member_object`). Anything else is `not
+  shown`, since it may be gone.
 - `NativeSession.bound_element` gives the worker the element in the variable's place. For a
   number, a character or a pointer, that is the debugger's one child under the reference, with
   nothing listed under it. For a struct, a string or a container, `element_text` keeps the text
