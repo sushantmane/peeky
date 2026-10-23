@@ -1047,7 +1047,7 @@ Branch on the exit status:
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
 | 2 | An error, or a refusal. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
-| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran. This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
+| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
 
 - Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
   whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
@@ -1178,9 +1178,11 @@ output:
   DEBOUNCE:P@9,R@20, quiet 16
 ```
 
-In Java, `set` changes a field through the reference a method holds. So in a Java `settle`,
-`--set-at LINE@all db.count=0` on its early `return` works as it is
-([Java 7.3](lang/java-cookbook.md#change-a-field-or-an-array-element)).
+In Java, `set` can change an eligible program-owned instance field through a Java local, parameter
+or `this` reference, subject to the holder and field checks
+([Java 7.3](lang/java-cookbook.md#change-a-field-or-an-array-element)). So in a Java
+`settle(Debounce db, int level)`, `--set-at LINE@all db.count=0` on its early `return` works as it
+is.
 
 How `@all` works:
 
@@ -1199,9 +1201,10 @@ How `@all` works:
   exits 4.
 - One `@all` counts as one of the 8 changes a probe may make.
 - With `--until hits`, the probe ends after its last hit, and its `@all` with it. A warning says
-  that any later stop ran without the change.
+  that any later execution of the line ran without the change.
 - The text shows the first 3 changes, each with its hit, then one line that counts the rest. In
   JSON, each change is in `interventions`, with its own `at` (`18@4`) and `"all": true`.
+  `set_outcomes` says how far each request got ([below](#how-the-evidence-records-changes)).
 
 #### Where and when a change is made
 
@@ -1257,15 +1260,27 @@ lists each function's stops.
 
 - `runs.sets` lists each requested change as `[name, value, "LINE@HIT"]`. A `--set` stays
   `[name, value]`, with its hit in `runs.set_hit`.
-- `queries diff`'s `(sets)` row and `queries outputs` show each change, a `--set`'s too, as
-  `[name, value, "requested at LINE@HIT"]`: `["gleich", "true", "requested at 56@4"]`. They add
-  `, not made: that hit never came` where the probe warned so.
-- An `@all` is one request, `"requested at 80@all"`. It adds `, not made: its line never stopped`,
-  or `, made only at the first 100 stops: the cap`, where the probe warned so.
-- So runs whose changes differ only in their hit, or in which changes were made, tell apart.
-- `diff`'s table shows its `(sets)` row short: how many changes, and the first. `--json` has them
-  all. With an `@all` among them, it counts requests: `1 request: db.count=0 (requested at
-  18@all)`.
+- `queries diff`'s and `queries compare`'s `(sets)` rows and `queries outputs` show each change,
+  a `--set`'s too, as `[name, value, "requested at LINE@HIT"]`: `["gleich", "true", "requested at
+  56@4"]`. Each adds how it went where it wasn't simply made: `, not made: that hit never came`,
+  or `, refused at that hit`.
+- An `@all` is one request, `"requested at 80@all"`, with how far it got:
+  - `, made at 32 stops, to the program's end`;
+  - `, made at 1 stop before --until hits ended the probe`;
+  - `, made at 6 stops; refused at hit 7`;
+  - `, made at the first 100 stops: the cap`;
+  - `, not made: its line never stopped`.
+- `runs.set_outcomes` (schema 16) keeps each request's outcome, in the order of `runs.sets`: `made`,
+  the stops it was made at; `ended`, why no more were; and `complete`. The probe's JSON has the same
+  list as `set_outcomes`. Runs saved before schema 16 say only `, not made: that hit never came`.
+- So runs whose changes differ in their hit, in which were made, or in how far an `@all` got, tell
+  apart. Two runs that changed the same first hit alike, but one to the program's end and one until
+  `--until hits` ended it, differ in `(sets)`.
+- `diff` and `compare` start with a `(status)` row, with each run's error, where either run didn't
+  complete. Two runs refused at different hits differ there too.
+- `diff`'s table shows its `(sets)` row short: how many changes, and the first that differs from the
+  other run's. `--json` has them all. With an `@all` among them, it counts requests:
+  `1 request: db.count=0 (requested at 18@all, made at 16 stops, to the program's end)`.
 - `diff` shows more than 3 alike `intervention only in run b` rows as one, its first hit's. Its note
   says how many hits there were: `intervention only in run b, at 15 hits`.
 - The `interventions` table lists each change made: its `line`, `hit`, `capture_hit`, `function`
@@ -1538,7 +1553,8 @@ runs.
 **1. How the runs differed.** Check these rows before you credit an edit with a difference. Each
 appears only where it applies:
 
-- `(status)` and `(output)`: the runs' outcomes or outputs differ.
+- `(status)` and `(output)`: the runs' outcomes or outputs differ. `(status)` also appears where
+  either run didn't complete, with each run's error, such as the hit at which a change was refused.
 - `(edit)`: the runs built different edits, such as a candidate edit in one run only.
 - `(source)`: two runs that are not candidates ran different source text, such as another copy of
   the file.
@@ -1546,10 +1562,10 @@ appears only where it applies:
   were read.
 - `(args)`: the runs had different program arguments.
 - `(sets)`: the runs requested or made different interventions. Each is
-  `[name, value, "requested at LINE@HIT"]`, as in
+  `[name, value, "requested at LINE@HIT"]`, with how it went, as in
   [3.2](#32-inputs-outcomes-and-outputs-of-the-last-two-runs). The table shows how many each run
-  made, and the first: `6 changes: db.count=0 (requested at 80@5), …`, or `none`. `--json` has
-  the whole list.
+  made, and the first that differs: `6 changes: db.count=0 (requested at 80@5), …`, or `none`.
+  `--json` has the whole list.
 
 A candidate's `--at` keeps the original's line numbers. So `--at 33` is the same line, even where
 the candidate's rows show its line 34. It gives no `(line)` row.
@@ -1857,7 +1873,9 @@ other run's hit at the same stop.
 
 #### Labels, `compare` and older runs
 
-- `queries compare` shows every value of the two runs side by side, with the same notes.
+- `queries compare` shows every value of the two runs side by side, with the same notes. Its
+  `(status)` row comes first where either run didn't complete, and its `(sets)` row where either
+  asked for a change ([2.8](#how-the-evidence-records-changes)).
 - A canned query reads its rows, its notes and its table from one snapshot of the store. So a run
   saved meanwhile, or a run it evicts, can't change them.
   - A probe that saves meanwhile waits for the query, but for about 10 seconds at most. Past that,
@@ -1895,9 +1913,11 @@ Both outputs say `private`. But `::ffff:8.8.8.8` is public, so its output is the
 `sets` lists each run's requested changes. Each is `[name, value, "requested at LINE@HIT"]`:
 
 - A `--set` is at its `--at` line's `--set-hit`: `["gap", "20", "requested at 34@4"]`.
-- A `--set-at` is at its own `LINE@HIT`.
+- A `--set-at` is at its own `LINE@HIT`, or `LINE@all`.
 - A change whose hit never came ends with `, not made: that hit never came`. The probe warned about
-  it too.
+  it too. One refused there ends with `, refused at that hit`.
+- An `@all` says how far it got: `, made at 6 stops; refused at hit 7`, or `, made at 1 stop before
+  --until hits ended the probe` ([2.8](#how-the-evidence-records-changes)).
 
 ### 3.3 What My Intervention Changed
 

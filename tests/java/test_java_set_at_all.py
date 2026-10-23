@@ -1,7 +1,7 @@
-"""`--set-at LINE@all` on a launched JVM (#265): Java changes an object's field through the
-reference a method holds, so the line reached only when the input agrees with the accepted
-level, in `settle`, takes the change at each of its stops: the tenth evaluation's debounce,
-in Java, tested in one option."""
+"""`--set-at LINE@all` on a launched JVM (#265): Peeky changes an eligible program-owned
+instance field through a Java parameter's reference, so the line reached only when the input
+agrees with the accepted level, in `settle`, takes the change at each of its stops: the tenth
+evaluation's debounce, in Java, tested in one option."""
 
 import json
 import os

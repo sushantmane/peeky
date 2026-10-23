@@ -136,3 +136,31 @@ def test_an_all_stops_at_the_cap_and_the_probe_exits_with_4(state, capsys):
         for warning in result["warnings"]
     ), result["warnings"]
     assert "(1 --set-at @all cut short at the cap)" in _table(result)
+
+
+@pytest.mark.timeout(240)
+def test_diff_tells_an_all_cut_short_by_until_hits_from_one_made_to_the_end(state, capsys):
+    # Review of PR #278: both runs complete, with the same values at their one hit; only
+    # how far the @all got tells them apart.
+    (state / "debounce.py").write_text(DEBOUNCE)
+    agrees = line_of(DEBOUNCE, "AGREES")
+    argv = ["probe", str(state / "debounce.py"), "--at", f"debounce.py:{agrees}"]
+    argv += ["--capture", "ms", "--set-at", f"{agrees}@all", "count=0", "--json", "--quiet"]
+    argv += [f"--arg={arg}" for arg in ARGS]
+    for until in ("exit", "hits"):
+        assert main([*argv, "--until", until]) == 0
+        capsys.readouterr()
+    assert main(["queries", "diff", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["rows"]
+    sets = {row["selector"]: row for row in rows}["(sets)"]
+    assert json.loads(sets["value_a"]) == [
+        ["count", "0", f"requested at {agrees}@all, made at 16 stops, to the program's end"]
+    ]
+    assert json.loads(sets["value_b"]) == [
+        [
+            "count",
+            "0",
+            f"requested at {agrees}@all, made at 1 stop before --until hits ended the probe",
+        ]
+    ]
+    assert "(status)" not in {row["selector"] for row in rows}

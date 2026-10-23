@@ -3338,6 +3338,53 @@ def _all_elsewhere(message, points):
     )
 
 
+def _set_outcomes(probe, points, changes, status, finished, attempt, unreported):
+    """Each requested change's outcome, in runs.sets' order (each --set, then each
+    --set-at): `made`, the stops it was made at; `ended`, why no more were: "made" (one
+    at a hit, made), "exit" (the program ended), "until_hits" (the probe ended after its
+    last hit), "cap" (an @all's 100 stops), "refused" or "failed" at `hit` (its own change
+    there), "timeout" or "failed" (the probe's, first), or "lost_stop" (an @all whose run
+    the debugger lost a stop of, which may have gone unchanged); `complete`, whether it
+    was carried out in full: one at a hit made, or an @all made at every stop of its line
+    until the program ended. Comparisons say it (review of #278: a run ended by --until
+    hits, or a refusal at hit 7, read like one that changed every stop)."""
+    over = {"exit": "exit", "hits": "until_hits"}.get(finished) or (
+        "timeout" if status == "timeout" else "failed"
+    )
+    made_set = sum(1 for change in changes if "at" not in change)
+    outcomes = []
+    for index, (name, value) in enumerate(probe.set):
+        outcome = {"option": "--set", "at": f"{probe.line}@{probe.set_hit}"}
+        if index < made_set:
+            outcome.update(made=1, ended="made")
+        elif attempt is not None and attempt["point"] is None and index == made_set:
+            ended = "refused" if attempt.get("refused") else "failed"
+            outcome.update(made=0, ended=ended, hit=attempt["hit"])
+        else:
+            outcome.update(made=0, ended=over)
+        outcomes.append({**outcome, "name": name, "value": value})
+    for point in points:
+        made = len(point["changes"])
+        outcome = {"option": "--set-at", "at": f"{point['line']}@{point['hit']}", "made": made}
+        if attempt is not None and attempt["point"] is point:
+            ended = "refused" if attempt.get("refused") else "failed"
+            outcome.update(ended=ended, hit=attempt["hit"])
+        elif point["hit"] != ALL and made:
+            outcome["ended"] = "made"
+        elif point["capped"] is not None:
+            outcome["ended"] = "cap"
+        elif point["hit"] == ALL and unreported and over == "exit":
+            outcome["ended"] = "lost_stop"
+        else:
+            outcome["ended"] = over
+        outcomes.append({**outcome, "name": point["name"], "value": point["value"]})
+    for outcome in outcomes:
+        outcome["complete"] = outcome["ended"] == "made" or (
+            outcome["ended"] == "exit" and outcome["at"].endswith(f"@{ALL}") and outcome["made"] > 0
+        )
+    return outcomes
+
+
 def _set_at_moved(points, placed, program):
     """Refuse a --set-at whose line the debugger moved (no code of its own there): a
     change is made where it was asked, never at a line nearby."""
@@ -3419,6 +3466,10 @@ def run_probe(
     # Pauses at stops that only apply a --set-at (no capture there).
     set_pauses = []
     unreported = None
+    # How the probe's watch ended: "exit" (the program ended), "hits" (--until hits), else
+    # None (a failure or the timeout); and the change being made when one failed: for
+    # each request's outcome (`_set_outcomes`).
+    finished, attempt = None, None
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # Each --set-at, with its line in the build that runs (#137).
@@ -3605,6 +3656,7 @@ def run_probe(
                 # reported that stop (#27): the line did run.
                 unreported = state.get("unreported_stop")
                 status = "completed" if hits else "failed" if unreported else "no-stop"
+                finished = "exit"
                 say(f"program finished after {hits} hit(s)")
                 break
             # From the moment the stop arrived, so debugger reads before capture count too.
@@ -3659,7 +3711,7 @@ def run_probe(
                 _resume(worker, stop, returning, rows)
                 pauses.append(round((time.monotonic() - paused) * 1000, 1))
                 if not returning and not owed and probe.until == "hits":
-                    status = "completed"
+                    status, finished = "completed", "hits"
                     say("all requested hits captured; ending the probe now")
                     break
                 continue
@@ -3770,6 +3822,7 @@ def run_probe(
                             else ""
                         )
                     )
+                attempt = {"point": point, "hit": hit}
                 try:
                     applied = apply_set(worker, stop, name, value)
                 except Refused as exc:
@@ -3796,6 +3849,7 @@ def run_probe(
                             else ""
                         ),
                     ) from None
+                attempt = None
                 change = {
                     **applied,
                     "line": frame.get("line"),
@@ -3930,7 +3984,7 @@ def run_probe(
                 round((time.monotonic() - paused) * 1000, 1)
             )
             if not owed and not returning and probe.until == "hits":
-                status = "completed"
+                status, finished = "completed", "hits"
                 say(
                     "all requested hits captured"
                     + (" and --set-at applied" if points else "")
@@ -4052,6 +4106,8 @@ def run_probe(
     except Exception as exc:
         from peeky.errors import classify
 
+        if attempt is not None:
+            attempt["refused"] = isinstance(exc, Refused)
         if getattr(exc, "before_launch", False) and len(exc.args) == 1 and points:
             # An @all refused for a change in its caller's frame: what @all there means.
             exc.args = (_all_elsewhere(str(exc.args[0]), points),)
@@ -4264,6 +4320,12 @@ def run_probe(
                     f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
                     f"{point['hit']} never came."
                 )
+    if not result.get("refused_before_launch") and (
+        outcomes := _set_outcomes(
+            probe, points, changes, result.get("status"), finished, attempt, unreported
+        )
+    ):
+        result["set_outcomes"] = outcomes
     if result.get("ended") == "hits":
         for point in points:
             if point["hit"] == ALL and point["changes"] and point["capped"] is None:
@@ -4272,7 +4334,7 @@ def run_probe(
                     f"--set-at {probe.program}:{point['line']}@{ALL} {point['name']}="
                     f"{point['value']} was made at each of the {len(point['changes'])} stops "
                     f"of line {point['build_line']} before the probe ended after its last hit "
-                    "(--until hits): any later stop ran without it."
+                    "(--until hits). Any later execution of the line ran without the change."
                 )
     if discard:
         rows, changes = [], []

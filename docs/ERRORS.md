@@ -371,7 +371,7 @@ The CLI's exit status is the same for `peeky probe` and the `peeky-probe` script
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass; a `session get` with a failed selector. |
 | 2 | An error, or a refusal: anything Peeky turned down. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for. |
-| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. Or a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: its `unapplied` entry has `made`, the number of stops changed. JSON lists the change in `unapplied`. The values are evidence of a run without that change. |
+| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. |
 
 Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
 whatever its code. Its JSON says `refused_before_launch`. The causes include:

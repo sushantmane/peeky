@@ -216,8 +216,8 @@ def test_an_all_never_keeps_an_until_hits_probe_running(monkeypatch):
     assert "unapplied" not in result and probe_exit_code(result) == 0
     assert (
         "--set-at main.py:9@all x=5 was made at each of the 1 stops of line 9 before the probe "
-        "ended after its last hit (--until hits): any later stop ran without it."
-        in result["warnings"]
+        "ended after its last hit (--until hits). Any later execution of the line ran without "
+        "the change." in result["warnings"]
     )
 
 
@@ -328,9 +328,9 @@ def test_the_evidence_keeps_each_change_and_says_how_the_request_went(monkeypatc
         + evidence.run_query(store, "outputs", {"a": 3, "b": 4})["rows"]
     }
     assert sets == {
-        1: [["x", "5", "requested at 9@all"]],
+        1: [["x", "5", "requested at 9@all, made at 5 stops, to the program's end"]],
         2: [["x", "5", "requested at 9@all, not made: its line never stopped"]],
-        3: [["x", "5", f"requested at 9@all, made only at the first {MAX_HITS} stops: the cap"]],
+        3: [["x", "5", f"requested at 9@all, made at the first {MAX_HITS} stops: the cap"]],
         4: [],
     }
     # `diff`'s (sets) row counts an @all as one request, however many changes it made.
@@ -339,13 +339,18 @@ def test_the_evidence_keeps_each_change_and_says_how_the_request_went(monkeypatc
         for r in evidence.run_query(store, "diff", {"a": 4, "b": 1})["rows"]
         if r["selector"] == "(sets)"
     ]
-    assert evidence._sets_text(row["value_b"]) == "1 request: x=5 (requested at 9@all)"
-    assert evidence._sets_text(row["value_a"]) == "none"
     assert (
-        evidence._sets_text(
-            json.dumps([["x", "5", "requested at 9@2"], ["y", "1", "requested at 9@3"]])
-        )
-        == "2 changes: x=5 (requested at 9@2), …"
+        evidence._sets_text(row["value_b"])
+        == "1 request: x=5 (requested at 9@all, made at 5 stops, to the program's end)"
+    )
+    assert evidence._sets_text(row["value_a"]) == "none"
+    two = [["x", "5", "requested at 9@2"], ["y", "1", "requested at 9@3"]]
+    assert evidence._sets_text(json.dumps(two)) == "2 changes: x=5 (requested at 9@2), …"
+    # Against the other run's, the first change that differs.
+    other = [two[0], ["y", "1", "requested at 9@3, not made: that hit never came"]]
+    assert (
+        evidence._sets_text(json.dumps(two), json.dumps(other))
+        == "2 changes: …, y=1 (requested at 9@3)"
     )
 
 
@@ -376,4 +381,229 @@ def test_diff_shows_many_alike_changes_as_one_row(tmp_path, monkeypatch):
     rows = evidence.run_query(store, "diff", {"a": 3, "b": 4})["rows"]
     assert [(row["hit"], row["note"]) for row in rows if row["phase"] == "after-set"] == [
         (hit, "intervention only in run b") for hit in (1, 2, 3)
+    ]
+
+
+# Review of PR #278: comparisons hid how far an @all got. A run refused at hit 7, two runs
+# refused at different hits, and a run --until hits ended after one change, each read
+# like a run that changed every stop of the line.
+def recorded(monkeypatch, store, *runs):
+    """Run and save each (worker, request) in turn; their results."""
+    workers = [worker for worker, _ in runs]
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: workers.pop(0))
+    results = []
+    for _, request in runs:
+        results.append(probe_module.run_probe("/w", request))
+        evidence.record(store, results[-1])
+    return results
+
+
+def run_rows(store, query, a, b):
+    rows = evidence.run_query(store, query, {"a": a, "b": b})["rows"]
+    return {
+        row["selector"]: (row["value_a"], row["value_b"], row["differs"], row["note"])
+        for row in rows
+        if row["selector"] in ("(status)", "(sets)")
+    }
+
+
+ALL_AT_9 = Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),))
+REFUSED_7 = "--set-at main.py:9@all x=5 was refused at hit 7 of line 9 (in main)"
+
+
+def test_a_refusal_at_hit_7_says_so_wherever_the_run_is_compared(monkeypatch, tmp_path, capsys):
+    store = tmp_path / "evidence" / "evidence.db"
+    full, refused = recorded(
+        monkeypatch,
+        store,
+        (Stops([8, *[9] * 10]), ALL_AT_9),
+        (Stops([8, *[9] * 10], refuse=(7,)), ALL_AT_9),
+    )
+    assert full["set_outcomes"] == [
+        {
+            "option": "--set-at",
+            "at": "9@all",
+            "name": "x",
+            "value": "5",
+            "made": 10,
+            "ended": "exit",
+            "complete": True,
+        }
+    ]
+    assert refused["set_outcomes"] == [
+        {
+            "option": "--set-at",
+            "at": "9@all",
+            "name": "x",
+            "value": "5",
+            "made": 6,
+            "ended": "refused",
+            "hit": 7,
+            "complete": False,
+        }
+    ]
+    (outputs,) = evidence.run_query(store, "outputs", {"a": 2, "b": 2})["rows"]
+    assert json.loads(outputs["sets"]) == [
+        ["x", "5", "requested at 9@all, made at 6 stops; refused at hit 7"]
+    ]
+    for query in ("diff", "compare"):
+        rows = run_rows(store, query, 1, 2)
+        status_a, status_b, differs, note = rows["(status)"]
+        assert (status_a, differs, note) == ("completed", 1, "outcome differs"), query
+        assert status_b.startswith(f"failed [MUTATION_REJECTED]: {REFUSED_7}"), status_b
+        sets_a, sets_b, differs, _ = rows["(sets)"]
+        assert differs == 1 and "made at 6 stops; refused at hit 7" in sets_b, sets_b
+        assert "made at 10 stops, to the program's end" in sets_a, sets_a
+    # Each run against itself: `compare` still says it did not complete, and how far the
+    # change got; `diff` names the outcome too.
+    rows = run_rows(store, "compare", 2, 2)
+    assert rows["(status)"][2:] == (0, "neither run completed, and both ended the same way")
+    assert rows["(sets)"][2:] == (0, "the same interventions, made alike")
+    assert set(run_rows(store, "diff", 2, 2)) == {"(status)"}
+    assert main_text(capsys, store, "compare", 1, 2).count("refused at hit 7") >= 2
+
+
+def test_two_runs_refused_at_different_hits_differ(monkeypatch, tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    recorded(
+        monkeypatch,
+        store,
+        (Stops([8, *[9] * 10], refuse=(7,)), ALL_AT_9),
+        (Stops([8, *[9] * 10], refuse=(9,)), ALL_AT_9),
+    )
+    for query in ("diff", "compare"):
+        rows = run_rows(store, query, 1, 2)
+        status_a, status_b, differs, note = rows["(status)"]
+        assert (differs, note) == (1, "outcome differs"), query
+        assert "refused at hit 7 of line 9" in status_a and "hit 9 of line 9" in status_b
+        sets_a, sets_b, differs, _ = rows["(sets)"]
+        assert differs == 1, query
+        assert "made at 6 stops; refused at hit 7" in sets_a, sets_a
+        assert "made at 8 stops; refused at hit 9" in sets_b, sets_b
+
+
+def test_a_run_ended_by_until_hits_differs_from_one_that_ran_to_its_end(
+    monkeypatch, tmp_path, capsys
+):
+    # Both completed, with the same values at their one captured hit: only how far the
+    # @all got tells them apart.
+    store = tmp_path / "evidence" / "evidence.db"
+    every = ((8, ALL, "x", "5"),)
+    to_end, until = recorded(
+        monkeypatch,
+        store,
+        (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)),
+        (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), until="hits", set_at=every)),
+    )
+    assert (to_end["status"], until["status"]) == ("completed", "completed")
+    assert to_end["rows"] == until["rows"]
+    assert [o["ended"] for o in (*to_end["set_outcomes"], *until["set_outcomes"])] == [
+        "exit",
+        "until_hits",
+    ]
+    for query in ("diff", "compare"):
+        rows = run_rows(store, query, 1, 2)
+        assert "(status)" not in rows, query
+        sets_a, sets_b, differs, _ = rows["(sets)"]
+        assert differs == 1, query
+        assert sets_a == '[["x","5","requested at 8@all, made at 3 stops, to the program\'s end"]]'
+        assert sets_b == (
+            '[["x","5","requested at 8@all, made at 1 stop before --until hits ended the probe"]]'
+        )
+    # Only the (sets) row differs, and the text table shows how far each got.
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
+    assert [row["selector"] for row in rows] == ["(sets)"]
+    shown = main_text(capsys, store, "diff", 1, 2)
+    assert "made at 1 stop before --until hits ended the probe" in shown, shown
+
+
+def main_text(capsys, store, query, a, b):
+    from peeky.cli import main
+
+    capsys.readouterr()
+    argv = ["queries", query, "--param", f"a={a}", "--param", f"b={b}", "--store", str(store)]
+    assert main(argv) == 0
+    return capsys.readouterr().out
+
+
+def test_each_outcome_reads_as_how_far_the_change_got():
+    def said(**outcome):
+        return evidence._set_outcome(json.dumps(outcome))
+
+    every = {"at": "9@all"}
+    assert said(made=1, ended="made", at="9@2") == ""
+    assert said(made=0, ended="exit", at="9@4") == ", not made: that hit never came"
+    assert said(made=0, ended="refused", hit=4, at="9@4") == ", refused at that hit"
+    assert said(made=0, ended="timeout", at="9@4") == ", not made: the probe timed out first"
+    assert said(made=32, ended="exit", **every) == ", made at 32 stops, to the program's end"
+    assert said(made=1, ended="until_hits", **every) == (
+        ", made at 1 stop before --until hits ended the probe"
+    )
+    assert said(made=0, ended="until_hits", **every) == (
+        ", not made: its line never stopped before --until hits ended the probe"
+    )
+    assert said(made=6, ended="refused", hit=7, **every) == ", made at 6 stops; refused at hit 7"
+    assert said(made=6, ended="failed", hit=7, **every) == ", made at 6 stops; failed at hit 7"
+    assert said(made=6, ended="failed", **every) == ", made at 6 stops before the probe failed"
+    assert said(made=100, ended="cap", **every) == ", made at the first 100 stops: the cap"
+    assert said(made=3, ended="lost_stop", **every) == (
+        ", made at 3 stops; the debugger lost a stop, which may have run without it"
+    )
+    assert evidence._set_outcome("not json") is None and evidence._set_outcome("[]") is None
+
+
+def test_outcomes_follow_the_runs_sets_order_and_a_set_refused_is_said(monkeypatch):
+    # A --set refused at its hit, after a --set-at made at line 9's first stop.
+    worker = Stops([9, 8, 9], refuse=(2,))
+    request = Probe(
+        "main.py", 8, ("x",), (("x", "2"),), set_at=((9, 1, "x", "5"), (9, 2, "x", "6"))
+    )
+    result = run(monkeypatch, worker, request)
+    assert result["status"] == "failed"
+    assert [
+        (o["option"], o["at"], o["made"], o["ended"], o.get("hit"), o["complete"])
+        for o in result["set_outcomes"]
+    ] == [
+        ("--set", "8@1", 0, "refused", 1, False),
+        ("--set-at", "9@1", 1, "made", None, True),
+        ("--set-at", "9@2", 0, "failed", None, False),
+    ]
+
+
+def test_a_schema_15_store_gains_outcomes_and_its_runs_keep_their_warnings(tmp_path):
+    import sqlite3
+
+    store = tmp_path / "evidence.db"
+    older = {
+        "probe": {"program": "a.c", "line": 8, "set_at": [[9, 4, "x", "7"]]},
+        "status": "completed",
+        "warnings": [
+            "--set-at a.c:9@4 x=7 was not applied: line 9 stopped 3 time(s) before the probe "
+            "ended, so its hit 4 never came."
+        ],
+    }
+    evidence.record(store, older)
+    connection = sqlite3.connect(store)
+    connection.executescript("ALTER TABLE runs DROP COLUMN set_outcomes; PRAGMA user_version = 15;")
+    connection.close()
+    newer = {
+        **older,
+        "warnings": [],
+        "set_outcomes": [
+            {"option": "--set-at", "at": "9@4", "name": "x", "value": "7", "made": 0,
+             "ended": "refused", "hit": 4, "complete": False}
+        ],
+    }  # fmt: skip
+    evidence.record(store, newer)
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+    assert [row[0] is None for row in connection.execute("SELECT set_outcomes FROM runs")] == [
+        True,
+        False,
+    ]
+    connection.close()
+    rows = evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+    assert [json.loads(row["sets"]) for row in rows] == [
+        [["x", "7", "requested at 9@4, not made: that hit never came"]],
+        [["x", "7", "requested at 9@4, refused at that hit"]],
     ]
