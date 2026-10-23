@@ -1378,30 +1378,55 @@ def enum_address(variable):
     return f"0x{found.pop():016x}"
 
 
-def _instead(variable, top):
-    """What to read instead of an enum Peeky does not decode: what an `if let` or a
-    `match` on it binds."""
+_RESULT_NAME = re.compile(r"core::result::Result<.+>")
+
+
+def binding_advice(variable, top):
+    """What to read instead of an enum Peeky does not decode, where it holds a value:
+    what an `if let` on it binds (`Some(x)` of an `Option`, `Ok(x)` or `Err(e)` of a
+    `Result`), or a `match` arm, naming a root local (``top``)."""
     name = str(variable.get("name") or "").partition(" @ ")[0]
-    if not _OPTION_NAME.fullmatch(str(variable.get("type") or "")):
-        return "read what a `match` on it binds instead"
-    if top and _IDENTIFIER.fullmatch(name):
-        return f"read what `if let Some(x) = &{name}` binds instead"
-    return "read what an `if let Some(x)` on it binds instead"
+    kind = str(variable.get("type") or "")
+    named = top and _IDENTIFIER.fullmatch(name)
+    if _OPTION_NAME.fullmatch(kind):
+        if named:
+            return f"read what `if let Some(x) = &{name}` binds instead"
+        return "read what an `if let Some(x)` on it binds instead"
+    if _RESULT_NAME.fullmatch(kind):
+        if named:
+            return f"read what `if let Ok(x) = &{name}` or `Err(e)` binds instead"
+        return "read what an `if let Ok(x)` or `Err(e)` on it binds instead"
+    return "read what a `match` arm on it binds instead"
 
 
-def enum_withheld(variable, value, why, *, top=False):
+def uninitialized_advice(name):
+    """What to do where the MIR does not prove a local initialized: there may be nothing
+    in it to borrow, so read it where it is."""
+    return (
+        f"read it on a line where `{name}` is assigned and not yet moved or dropped, such as "
+        "the one after its assignment"
+    )
+
+
+CALLER_ADVICE = "stop at a line of the function it belongs to, to read it there"
+OPTIMIZED_ADVICE = 'read it in an unoptimized build (`opt_level` "0", the default)'
+
+
+def enum_withheld(variable, value, why, *, top=False, instead=None):
     """An enum shown as ``value`` (UNQUALIFIED or UNVERIFIED), its storage never read,
-    with ``why`` and what to read instead: the address it is stored at, which a pointer
-    into it can be compared with, and what an `if let` or a `match` on it binds."""
+    with ``why``, the address it is stored at (which a pointer into it can be compared
+    with) and what to do: ``instead``, else what an `if let` or a `match` on it binds
+    (binding_advice), which needs it to hold a value."""
     address = enum_address(variable)
     where = f"It is stored at {address}; " if address else "Its address is not known; "
+    advice = instead if instead is not None else binding_advice(variable, top)
     return {
         "name": variable.get("name"),
         "type": variable.get("type"),
         "variablesReference": 0,
         "value": value,
         "rust_view": "opaque",
-        "why": f"{why}. {where}{_instead(variable, top)}",
+        "why": f"{why}. {where}{advice}",
     }
 
 
@@ -1493,6 +1518,14 @@ def option_layouts(kind, layouts):
     ]
 
 
+def _without_lifetimes(name):
+    """A MIR type without its lifetimes, which the debug information never names:
+    `Pick<'_>` is `Pick`, `Pair<'a, T>` is `Pair<T>`, `&'a T` is `&T`."""
+    name = re.sub(r"<(?:'\w+(?:, )?)+>", "", name)
+    name = re.sub(r"(?<=<)(?:'\w+, )+", "", name)
+    return re.sub(r"&'\w+ ", "&", name)
+
+
 def option_name(declared, shown, layouts):
     """The `Option` layout an owned local is, by the MIR's declared type
     (`std::option::Option<Engineer>`) and confirmed by LLDB's name (see struct_name);
@@ -1501,7 +1534,7 @@ def option_name(declared, shown, layouts):
     lldb = _OPTION_NAME.fullmatch(str(shown or ""))
     if not exact or not lldb:
         return None
-    element = struct_name(exact[1], lldb[1], layouts)
+    element = struct_name(_without_lifetimes(exact[1]), lldb[1], layouts)
     name = f"core::option::Option<{element}>" if element else None
     return name if name in option_layouts(shown, layouts) else None
 

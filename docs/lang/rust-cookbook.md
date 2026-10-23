@@ -596,6 +596,7 @@ last.__0: rota::Engineer = Engineer { name: "Björn", shifts: 1, .. }
   other field shows `not read:`, and the value leaves it out (`..`).
 - Peeky never changes it: `--set last.__0.shifts=3` is refused.
 - `describe` lists these types on its `qualified enum views:` line.
+- A struct with lifetimes reads too, such as `Option<Pick<'a>>`.
 
 How Peeky tells `None` from `Some`:
 
@@ -627,6 +628,16 @@ says why, where the value is stored and what to read instead:
 ```
 warning: count: Peeky decodes `Option<i32>`, and an `Option` of a tuple or struct your crate defines whose layout the debug information proves; it does not decode this `Option<u32>`. It is stored at 0x000000016fb8ece8; read what `if let Some(x) = &count` binds instead.
 ```
+
+What it says to do depends on the enum and on why:
+
+- an `Option`: what `if let Some(x) = &count` binds;
+- a `Result`: what `if let Ok(x) = &parsed` or `Err(e)` binds;
+- any other enum: what a `match` arm on it binds;
+- a value the MIR doesn't prove initialized: there may be nothing to borrow. Read it on a line where
+  it is assigned and not yet moved or dropped, such as the one after its assignment;
+- a caller frame's value: stop at a line of its own function;
+- an optimized build: read it in an unoptimized one.
 
 The address is printed as a pointer is, so you can compare a pointer with it. With lldb-dap 18,
 which can't read memory, rota's `last` is withheld. Its note says `It is stored at

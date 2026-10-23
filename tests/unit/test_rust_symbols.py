@@ -2736,6 +2736,12 @@ def test_an_options_layout_is_picked_by_its_mir_type_and_confirmed_by_lldbs_name
         option_name("std::option::Option<Engineer>", "core::option::Option<x::Engineer>", layouts)
         is None
     )
+    # The MIR names a struct's lifetimes (`Borrow<'_>`); the debug information never does.
+    dump = struct_option_dump(_option("o", "borrow", "0x10", ("0x00", "u64"), none="0x00"))
+    layouts = {**enum_layouts(*dump), **container_layouts(*dump)}
+    shown = f"core::option::Option<{CRATE}::Borrow>"
+    for declared in ("Borrow<'_>", "Borrow<'a>", f"{CRATE}::Borrow<'static>"):
+        assert option_name(f"std::option::Option<{declared}>", shown, layouts) == shown
 
 
 def test_rust_sessions_read_an_option_only_under_an_owned_locals_proofs():
@@ -2770,23 +2776,65 @@ def test_rust_sessions_read_an_option_only_under_an_owned_locals_proofs():
         )
         return found["value"], found.get("why", "")
 
+    where = "It is stored at 0x0000000000000010; "
+    binding = where + "read what `if let Some(x) = &last` binds instead"
     assert shown() == ('Some(Engineer { name: "Ana", shifts: 1, .. })', "")
+    # Each reason says what to do instead, true for that reason.
     value, why = shown(innermost=False)
     assert value == UNVERIFIED and why.startswith("`last` is a local of a caller frame"), why
+    assert why.endswith(where + "stop at a line of the function it belongs to, to read it there")
     value, why = shown(top=False)
     assert "only as a local or parameter, not inside another value" in why, why
+    assert why.endswith(where + "read what an `if let Some(x)` on it binds instead"), why
+    # Moved, dropped or not yet assigned: there may be nothing to borrow, so no `if let`.
     proven["proven"] = False
-    assert "does not prove `last` initialized at this line" in shown()[1]
+    why = shown()[1]
+    assert why == (
+        "the build's MIR does not prove `last` initialized at this line: it may be moved, "
+        f"dropped or not yet assigned around it. {where}read it on a line where `last` is "
+        "assigned and not yet moved or dropped, such as the one after its assignment"
+    ), why
     proven.update(proven=True, declared="std::option::Option<(std::string::String, i64)>")
     assert shown()[1].startswith(
         "Peeky picks an `Option`'s layout by its type in the build's MIR, "
         "`std::option::Option<(std::string::String, i64)>`, and that matches no one layout"
     ), shown()
+    assert shown()[1].endswith(binding)
     proven["declared"] = None
     assert "which gives none here (in a generic function" in shown()[1]
     proven["declared"] = "std::option::Option<Engineer>"
     session.unsafe_code = "the crate has unsafe code (src/main.rs)"
-    assert shown()[1].startswith("the crate has unsafe code (src/main.rs). It is stored at")
+    assert shown()[1] == f"the crate has unsafe code (src/main.rs). {binding}"
     session.unsafe_code = None
     session.target.opt_level = "2"
-    assert shown()[1].startswith("Peeky decodes an enum's variant only in an unoptimized build")
+    assert shown()[1] == (
+        f"Peeky decodes an enum's variant only in an unoptimized build. {where}read it in an "
+        'unoptimized build (`opt_level` "0", the default)'
+    )
+
+
+@pytest.mark.parametrize(
+    "kind, top, advice",
+    [
+        ("core::option::Option<u32>", True, "read what `if let Some(x) = &v` binds instead"),
+        ("core::option::Option<u32>", False, "read what an `if let Some(x)` on it binds instead"),
+        (
+            "core::result::Result<u32, alloc::string::String>",
+            True,
+            "read what `if let Ok(x) = &v` or `Err(e)` binds instead",
+        ),
+        (
+            "core::result::Result<u32, alloc::string::String>",
+            False,
+            "read what an `if let Ok(x)` or `Err(e)` on it binds instead",
+        ),
+        (f"{CRATE}::Turn", True, "read what a `match` arm on it binds instead"),
+    ],
+)
+def test_an_opaque_enum_names_the_binding_its_own_kind_has(kind, top, advice):
+    # Review of #303: a `Result` or a user enum was told to read an `if let`'s binding
+    # only for `Option`s, and was given a `match` without its arm.
+    variable = {"name": "v", "type": kind, "memoryReference": "0x10", "value": ""}
+    view = active_variant(variable, None, {kind: {"kind": "unqualified"}}, top=top)
+    assert view["value"] == UNQUALIFIED, view
+    assert view["why"].endswith(f"It is stored at 0x0000000000000010; {advice}"), view

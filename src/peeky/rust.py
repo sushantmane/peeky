@@ -60,7 +60,9 @@ from peeky.rust_mir import (
     stop_block,
 )
 from peeky.rust_symbols import (
+    CALLER_ADVICE,
     CALLER_CHANGING,
+    OPTIMIZED_ADVICE,
     OWNED_CONTAINERS,
     REFERENCE_PARAMETERS,
     RUST_METADATA,
@@ -83,6 +85,7 @@ from peeky.rust_symbols import (
     option_view,
     struct_name,
     struct_view,
+    uninitialized_advice,
     unread_elements,
     without_numbered_structs,
 )
@@ -3277,7 +3280,7 @@ class RustSession(NativeSession):
             # zero-fills a missing piece without reporting it, so a decoded variant is
             # not trustworthy there.
             why = "Peeky decodes an enum's variant only in an unoptimized build"
-            return enum_withheld(variable, UNVERIFIED, why, top=top)
+            return enum_withheld(variable, UNVERIFIED, why, top=top, instead=OPTIMIZED_ADVICE)
         if view is None and lent and (REFERENCE_PARAMETERS.get(lent) or _composite_parameter(lent)):
             # A reference parameter's contents, left raw in a crate with unsafe code.
             return {"raw_reason": getattr(self, "unsafe_code", None)}
@@ -3339,8 +3342,11 @@ class RustSession(NativeSession):
         hashed, proofs = _frame_hash(frame) if top else None, getattr(self, "owned", None)
         place = frame or {}
         line, path = place.get("line"), (place.get("source") or {}).get("path")
+        # What to do instead, where reading what an `if let` binds is not the way.
+        instead = None
         if self.target.opt_level != "0":
             why = "Peeky decodes an enum's variant only in an unoptimized build"
+            instead = OPTIMIZED_ADVICE
         elif not top:
             why = (
                 "Peeky reads an `Option` of a tuple or struct only as a local or parameter, "
@@ -3352,6 +3358,7 @@ class RustSession(NativeSession):
                 f"lent to {CALLER_CHANGING}, which may be changing it, so Peeky reads it only "
                 "in the innermost frame"
             )
+            instead = CALLER_ADVICE
         elif hashed is None or proofs is None:
             why = "Peeky cannot match this frame to the build's MIR"
         elif not proofs.proven(hashed[1], name, line, path):
@@ -3359,6 +3366,8 @@ class RustSession(NativeSession):
                 f"the build's MIR does not prove `{name}` initialized at this line: it may "
                 "be moved, dropped or not yet assigned around it"
             )
+            # It may hold nothing to borrow here: an `if let` on it reads nothing.
+            instead = uninitialized_advice(str(name).partition(" @ ")[0])
         else:
             declared = proofs.declared_type(hashed[1], name, line, path)
             chosen = option_name(declared, kind, layouts)
@@ -3376,7 +3385,7 @@ class RustSession(NativeSession):
                 why = self.unsafe_code
             else:
                 return option_view(variable, read, layouts[chosen])
-        return enum_withheld(variable, UNVERIFIED, why, top=top)
+        return enum_withheld(variable, UNVERIFIED, why, top=top, instead=instead)
 
     def _owned_raw(self, variable, frame, innermost, owned):
         """Why an owned `Vec` or `String` local stays raw (see view_variable)."""

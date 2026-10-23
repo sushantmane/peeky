@@ -554,7 +554,14 @@ crate with no unsafe code.
 **Every opaque enum says why** (`enum_withheld`): the worker passes `opaque_reason` on its row,
 which becomes the row's note. It gives the address LLDB stores it at, from `memoryReference` and
 the `T @ 0x…` value, which must agree. It is printed as a pointer is, so a pointer into it can
-be compared. And it says what to read instead: what an `if let` or a `match` on it binds.
+be compared. And it says what to do instead (`binding_advice`): read what an `if let` on it
+binds (`Some(x)`, `Ok(x)` or `Err(e)`), or a `match` arm. A reason that leaves no value to
+borrow gives its own advice. Where the MIR doesn't prove it initialized, read it on a line after
+its assignment. In a caller frame, stop in its own function. In an optimized build, build
+unoptimized.
+
+`option_name` drops a MIR type's lifetimes first (`Pick<'_>` is `Pick`): the debug information
+never names them.
 
 ## View reads
 
