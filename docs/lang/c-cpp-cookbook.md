@@ -847,11 +847,29 @@ is:
 
 A block that opens on the stop line counts.
 
-A range-`for`'s header can also name the outer local: `for (auto [t, u] : make(t)) { use(t); }`.
-That code runs before the binding exists, and a mention isn't always a read, as in `sizeof(t)`.
-So the row says `may not be what the code reads` wherever Peeky can't tell that the header has
-run. That is at the line's first instruction, on any line of a header that spans lines, and in a
-caller frame. A member's name, such as `p.t` or `p.template t<0>()`, isn't the local.
+A statement's header can also name the outer local, and run before the line's own declaration of
+that name exists. For example, `if (t) { static long t = 5; use(t); }` or
+`for (auto [t, u] : make(t)) { use(t); }`. A mention isn't always a read, as in `sizeof(t)`. So
+the row says `may not be what the code reads` wherever Peeky can't tell that the header has run:
+
+- at every stop in an optimized build, and in a caller frame;
+- on any line of a header that spans lines;
+- in an unoptimized build, at any stop the line table doesn't place after the header's `)`. That
+  includes the line's first instruction. It also includes a stop back from a call in the header,
+  as in `if (check(t) && t > 2)` after `step --out` from `check`. A range-`for`'s declaration
+  and `:` carry its implicit code, all of it run after its range. That is the `begin` and `end`
+  setup, each pass's test and binding, and the range's cleanup. So a stop there counts as past;
+- at every stop on the line when part of the header runs on each pass. That is a `while`'s
+  condition, or a `for`'s condition or increment;
+- at every stop on the line when the declaration is in a lambda in the header, which another
+  function runs.
+
+Peeky trusts the line table's column only on a line of plain ASCII text, without tabs, that no
+macro changes. Any `if`, `switch`, `while` or `for` header counts, also one with an
+init-statement: `if (long k = t; k)`. A member's name, such as `p.t` or `p.template t<0>()`,
+isn't the local. Otherwise Peeky counts every `t` the header spells. That includes one the header
+declares itself, as in `for (long t = 0; …)`, or a lambda's parameter `t`. There the row may say
+`may not be what the code reads` though the plain note would be true.
 
 Peeky reads the source as the build's compiler preprocesses it (`-E`, with the same flags). So
 whatever a macro expands to counts, and only what a conditional keeps. A prototype's parameter
