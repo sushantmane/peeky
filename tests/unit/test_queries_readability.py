@@ -232,14 +232,15 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
         changes=[(hit, "db.count", "1", "0", hit - 1, 80) for _, hit, _, _ in SETS],
     )
     assert evidence.run_query(store, "diff")["notes"] == [
-        "hits pair by `ms`: it agrees between the runs at each of the 32 hits and tells them "
-        "apart\n"
+        "hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique "
+        "across these hits\n"
         "- pairing by hit number pairs them as `queries join` by it would, but that does not "
         "prove the hits are the same moments\n"
         "- runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 10 matches run 1's "
         "hit 9: 1)\n"
-        "- with `ms` pairing every hit, that is a weak sign of a reorder: `db.stable` may "
-        "differ because of the interventions (run 2's on `db.count` in main), or match by chance"
+        "- that alternate alignment does not settle whether the calls were reordered: "
+        "`db.stable` may differ because of the interventions (run 2's on `db.count` in main), or "
+        "match by chance"
     ]
 
 
@@ -255,14 +256,14 @@ def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert "hits line up" not in note, note
     assert note == (
-        "hits pair by `key`: it agrees between the runs at each of the 3 hits and tells them "
-        "apart\n"
+        "hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique "
+        "across these hits\n"
         "- pairing by hit number pairs them as `queries join` by it would, but that does not "
         "prove the hits are the same moments\n"
         "- runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches "
         "run 1's hit 2: 'B')\n"
-        "- with `key` pairing every hit, that is a weak sign of a reorder: `call` may differ "
-        "because of the edit, or match by chance"
+        "- that alternate alignment does not settle whether the calls were reordered: `call` "
+        "may differ because of the edit, or match by chance"
     )
 
 
@@ -305,8 +306,8 @@ def test_agreement_is_said_as_agreement_between_the_runs(store):
         edit="--- a/src/main.rs\n",
     )
     assert evidence.run_query(store, "diff", {"a": 1, "b": 3})["notes"] == [
-        "hits pair by `e.cents`: it agrees between the runs at each of the 3 hits and tells "
-        "them apart\n"
+        "hits pair by `e.cents`: it agrees between the runs at each of the 3 hits and is unique "
+        "across these hits\n"
         "- pairing by hit number pairs them as `queries join` by it would, but that does not "
         "prove the hits are the same moments\n"
         "- `payer` differs after the edit and may follow from it, so this check leaves it out"
