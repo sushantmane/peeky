@@ -1003,7 +1003,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "selector was left out). A selector that differs after an intervention or an edit may "
         "follow from it, so it is left out of what agrees; where its values line up better at "
         "other hits, the note says so, that the change may account for it, and that the hits are "
-        "not said to line up. The text table shows a long value from just before where it first "
+        "not said to line up. Such a note's first line is its verdict (hits line up by, hits "
+        "pair by, or hits may not line up), then each detail on a line of its own after `- `. "
+        "The text table shows a long value from just before where it first "
         "differs from the other run's, and (sets) as a count and the first change that differs; "
         "--json has them whole",
         _DIFF,
@@ -2403,7 +2405,12 @@ def _structure_apart(path, run):
     with no intervention in either run and nothing left out; else only that they agree,
     and what pairing by number amounts to, since a change can change other values and
     which calls reach the line. `join` is named only where some captured selectors
-    together tell each run's hits apart, so that it could pair them."""
+    together tell each run's hits apart, so that it could pair them.
+
+    Each note leads with its verdict on a line of its own (``_note``; eleventh
+    evaluation: three agents could not find it in one long sentence): `hits line up by`,
+    `hits line up as far as`, `hits pair by`, `hits pair as far as`, or `hits may not
+    line up:`. Each detail follows on its own line."""
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
@@ -2457,12 +2464,14 @@ def _structure_apart(path, run):
         len({tuple(seen(r, s, hit) for s in plain) for hit in common}) == len(common)
         for r in (a, b)
     )
+    pair_by = (
+        "pair hits by a value that names the call and that the edit leaves alone (an "
+        f"argument, an index): `peeky queries join --param a={a} --param b={b} {_JOIN_KEY}`"
+    )
     join = (
-        "; if so, pair hits by a value that names the call and that the edit leaves alone "
-        f"(an argument, an index): `peeky queries join --param a={a} --param b={b} "
-        f"{_JOIN_KEY}`"
+        f"if they don't, {pair_by}"
         if keyable
-        else "; no captured selector tells the hits apart, so `queries join` could not pair them"
+        else "no captured selector tells the hits apart, so `queries join` could not pair them"
     )
     # Each place of one run pairs with one place of the other, and the pair's first hit.
     forward, backward = {}, {}
@@ -2480,9 +2489,14 @@ def _structure_apart(path, run):
         else:
             then, earlier = (backward[here_b][0], here_b), backward[here_b][1]
         return [
-            f"at hit {hit} run {a} stopped {_place(here_a)} and run {b} {_place(here_b)}, "
-            f"but at hit {earlier} run {a} {_place(then[0])} paired with run {b} "
-            f"{_place(then[1])}: a hit need not be the same moment in both{join}"
+            _note(
+                "hits may not line up: where the runs stopped does not pair the same way at "
+                "every hit",
+                f"at hit {hit} run {a} stopped {_place(here_a)} and run {b} {_place(here_b)}",
+                f"but at hit {earlier} run {a} {_place(then[0])} paired with run {b} "
+                f"{_place(then[1])}",
+                join,
+            )
         ], True
 
     def unlike(selector, hit):
@@ -2550,14 +2564,15 @@ def _structure_apart(path, run):
     moved = moved_in(values, selectors)
     if moved and shown:
         return [
-            f"{_agrees(shown, len(common))}, but {moved[1]}: the values do not settle "
-            f"whether a hit is the same moment in both{join}"
+            _note(
+                "hits may not line up: the values do not settle how they pair",
+                _agrees(shown, len(common)),
+                f"but {moved[1]}",
+                join,
+            )
         ], True
     if moved:
-        return [
-            f"{moved[1]}: the calls may have come in another order or number, so a hit need "
-            f"not be the same moment in both{join}"
-        ], True
+        return [_note(f"hits may not line up: {_REORDER}", moved[1], join)], True
     # Then on those left out: the change may account for it, but it still vetoes saying
     # the hits line up (review of PR #269: `call` A, B, C against B, A, C after an edit,
     # beside `key` 1, 2, 3 in both, gave "the hits line up by `key`").
@@ -2575,23 +2590,28 @@ def _structure_apart(path, run):
     # of PR #209: `key` 1, 2 in both runs said nothing about `call` A, B against C, D).
     differ = [hit for hit in common if any(unlike(selector, hit) for selector in selectors)]
     if len(differ) >= 2 and 2 * len(differ) > len(common):
-        calls = (
-            f"; if the edit changed which calls reach the line, {join[len('; if so, ') :]}"
-            if keyable
-            else join
-        )
+        calls = f"if the edit changed which calls reach the line, {pair_by}" if keyable else join
         if shown:
             apart = [
                 selector for selector in selectors if any(unlike(selector, hit) for hit in common)
             ]
             return [
-                f"{_agrees(shown, len(common))}, but {_quoted(apart)} "
-                f"{'differ' if len(apart) > 1 else 'differs'} at {len(differ)} of them: the "
-                f"values do not show that a hit is the same moment in both{calls}"
+                _note(
+                    f"hits may not line up: {_quoted(apart)} "
+                    f"{'differ' if len(apart) > 1 else 'differs'} at {len(differ)} of the "
+                    f"{len(common)} hits",
+                    f"{_agrees(shown, len(common))}, but that does not show that a hit is the "
+                    "same moment in both",
+                    calls,
+                )
             ], True
         return [
-            f"the runs' values differ at {len(differ)} of {len(common)} hits, so they cannot "
-            f"show that a hit is the same moment in both{calls}"
+            _note(
+                f"hits may not line up: the runs' values differ at {len(differ)} of "
+                f"{len(common)} hits",
+                "so they cannot show that a hit is the same moment in both",
+                calls,
+            )
         ], True
     if len(common) < 2 or not differs:
         return [], False
@@ -2632,46 +2652,80 @@ def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
     """The note where a change left selectors out (tenth evaluation): what agrees, never
     that the hits line up (review of PR #269); what was left out, and why; and a sign
     that the hits may not line up among those left out (``hedged``: the selector and
-    what it saw), which the change may account for, but which still stands."""
-    cause = _cause(changes, edited)
+    what it saw), which the change may account for. Where some values that agree tell
+    the hits apart, the verdict is that the hits pair by them, and such a sign is a weak
+    one: the change, or chance, may account for it (eleventh evaluation: grades' `quiz`
+    88 at another hit, beside `name`, which paired every hit). Else the sign is the
+    verdict."""
     it = "them" if any(changes.values()) else "it"
     others = [selector for selector in left_out if not hedged or selector != hedged[0]]
-    parts = []
+
+    def leaves(detail):
+        if not others:
+            return None
+        one = len(others) == 1
+        return (
+            f"{_quoted(others)} {'differs' if one else 'differ'} after "
+            f"{_cause(changes, edited, detail)} and may follow from {it}, so this check leaves "
+            f"{'it' if one else 'them'} out"
+        )
+
     if not shown and not hedged:
         one = len(left_out) == 1
-        return (
-            f"the values cannot show whether the hits line up: {_quoted(left_out)} "
-            f"{'differs' if one else 'differ'} after {cause} and may follow from {it}, and no "
-            "other selector both agrees between the runs and changes from hit to hit"
+        return _note(
+            "hits may not line up: the values cannot show whether they do",
+            f"{_quoted(left_out)} {'differs' if one else 'differ'} after "
+            f"{_cause(changes, edited)} and may follow from {it}",
+            "no other selector both agrees between the runs and changes from hit to hit",
         )
+    one = len(shown) == 1
+    alike = (
+        f"{'it reads' if one else 'they read'} alike at some hits, which could still trade places"
+    )
     if keys:
         by = "it" if len(keys) == 1 else "them"
-        parts.append(
-            f"{_agrees(keys, count, distinct=True)}, so pairing hits by number pairs them as "
-            f"`queries join` by {by} would, though that does not prove the hits are the same "
-            "moments"
+        lines = [
+            f"hits pair by {_quoted(keys)}: {_agrees(keys, count, pronoun=True, apart=True)}",
+            f"pairing by hit number pairs them as `queries join` by {by} would, but that does "
+            "not prove the hits are the same moments",
+            leaves(True),
+        ]
+        if hedged:
+            selector, saw = hedged
+            lines += [
+                saw,
+                f"with {_quoted(keys)} pairing every hit, that is a weak sign of a reorder: "
+                f"`{selector}` may differ because of {_cause(changes, edited, not others)}, "
+                "or match by chance",
+            ]
+        return _note(*lines)
+    if not hedged:
+        return _note(
+            f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
+            f"{_agrees(shown, count, pronoun=True)}",
+            f"but {alike}",
+            leaves(True),
         )
-    elif shown:
-        one = len(shown) == 1
-        parts.append(
-            f"{_agrees(shown, count)}, but {'it reads' if one else 'they read'} alike at some "
-            "hits, which could still trade places"
-        )
-    if others:
-        one = len(others) == 1
-        parts.append(
-            f"{_quoted(others)} {'differs' if one else 'differ'} after {cause} and may follow "
-            f"from {it}, so this check leaves {'it' if one else 'them'} out"
-        )
-    if hedged:
-        selector, saw = hedged
-        because = _cause(changes, edited, detail=not others)
-        parts.append(
-            f"{'but ' if parts else ''}{saw}: `{selector}` may differ because of {because}, so "
-            "this does not prove a reorder, but it keeps Peeky from saying the hits line up"
-            + ("" if keys else join)
-        )
-    return "; ".join(parts)
+    selector, saw = hedged
+    return _note(
+        f"hits may not line up: {_REORDER}",
+        saw,
+        f"`{selector}` may differ because of {_cause(changes, edited)}, so this does not prove "
+        "a reorder",
+        f"{_agrees(shown, count)}, but {alike}" if shown else None,
+        leaves(False),
+        join,
+    )
+
+
+_REORDER = "the calls may have come in another order or number"
+
+
+def _note(verdict, *details):
+    """An alignment note: its verdict, then each detail (none where None) on a line of its
+    own after `- ` (eleventh evaluation: three agents could not find the verdict in one
+    long sentence). The text table indents the details under `note:`."""
+    return "\n".join([verdict, *(f"- {detail}" for detail in details if detail)])
 
 
 def _interventions(changes, reached):
@@ -2687,64 +2741,67 @@ def _interventions(changes, reached):
     return _listed(named)
 
 
-def _agrees(selectors, count, *, pronoun=False, distinct=False):
+def _agrees(selectors, count, *, pronoun=False, apart=False):
     """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), and
-    with ``distinct`` `, and its value is different at every hit`."""
+    with ``apart`` ` and tells them apart` (`and together tell them apart`)."""
     one = len(selectors) == 1
     subject = ("it" if one else "they") if pronoun else _quoted(selectors)
     text = f"{subject} {'agrees' if one else 'agree'} between the runs at each of the {count} hits"
-    if distinct:
-        text += f", and {'its value is' if one else 'their values are'} different at every hit"
+    if apart:
+        text += " and tells them apart" if one else " and together tell them apart"
     return text
 
 
 def _agreement(shown, keys, count, changes, differing, runs):
     """What agrees where nothing suggests another pairing and nothing was left out
-    (#201), as `_structure_apart` says it: categorically only with no intervention in
-    either run; else what agrees, what differs (``differing``, as read) and which
-    interventions there were."""
+    (#201), as `_structure_apart` says it: that the hits line up only with no
+    intervention in either run; else that they pair by what agrees, what differs
+    (``differing``, as read) and which interventions there were."""
     one = len(shown) == 1
     alike = (
-        f"{'it reads' if one else 'they read'} alike at some hits, which could still trade places"
+        f"but {'it reads' if one else 'they read'} alike at some hits, which could still trade "
+        "places"
     )
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
     by = "it" if keys and len(keys) == 1 else "them"
-    joined = f"pairing hits by number pairs them as `queries join` by {by} would"
+    shows = f"{_quoted(shown)} {'shows' if one else 'show'}: {_agrees(shown, count, pronoun=True)}"
     # Selectors are checked one at a time: two that differ could line up better together
     # (review 3 of PR #209), which is not checked, so then nothing is said categorically.
     together = (
-        f"; {_quoted(differing)} differ, and how they line up together was not checked"
+        f"{_quoted(differing)} differ, and how they line up together was not checked"
         if len(differing) > 1
-        else ""
+        else None
     )
     if not reached:
         if keys and not together:
-            return (
-                f"the hits line up by {_quoted(keys)}: "
-                f"{_agrees(keys, count, pronoun=True, distinct=True)}, and {single}, so {joined}"
+            return _note(
+                f"hits line up by {_quoted(keys)}: {_agrees(keys, count, pronoun=True, apart=True)}",
+                single,
+                f"pairing by hit number pairs them as `queries join` by {by} would",
             )
         if keys:
-            return (
-                f"the hits line up by {_quoted(keys)} as far as each selector alone shows: "
-                f"{_agrees(keys, count, pronoun=True, distinct=True)}, and {single}{together}"
+            return _note(
+                f"hits line up by {_quoted(keys)} as far as each selector alone shows: "
+                f"{_agrees(keys, count, pronoun=True, apart=True)}",
+                single,
+                together,
             )
-        return (
-            f"the hits line up as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-            f"{_agrees(shown, count, pronoun=True)}, and {single}; but {alike}{together}"
-        )
+        return _note(f"hits line up as far as {shows}", single, alike, together)
     # After an intervention, what follows from it is unknown (review of PR #209): what
     # agrees, what does not, and no more.
-    return (
-        f"{_agrees(shown, count, distinct=bool(keys))}, and {single}"
-        + (
-            f"; {_quoted(differing)} {'differs' if len(differing) == 1 else 'differ'}"
-            if differing
-            else ""
-        )
-        + f"; but the interventions ({_interventions(changes, reached)}) can change other "
-        "values and which calls reach the line, so this does not show that each hit is the "
-        "same moment in both"
+    return _note(
+        f"hits pair by {_quoted(keys)}: {_agrees(keys, count, pronoun=True, apart=True)}"
+        if keys
+        else f"hits pair as far as {shows}",
+        single,
+        None if keys else alike,
+        f"{_quoted(differing)} {'differs' if len(differing) == 1 else 'differ'}"
+        if differing
+        else None,
+        f"the interventions ({_interventions(changes, reached)}) can change other values and "
+        "which calls reach the line, so this does not show that each hit is the same moment in "
+        "both",
     )
 
 
@@ -3096,7 +3153,9 @@ def table(result, width=120, changes=None):
     count = result["row_count"]
     if note := shortened_note(shortened):
         lines.append(note)
-    lines.extend(f"note: {note}" for note in result.get("notes", ()))
+    # A note of several lines (`diff`'s verdict on how hits pair, then its details) keeps
+    # its details under its `note:`.
+    lines.extend(f"note: {note}".replace("\n", "\n  ") for note in result.get("notes", ()))
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
         + (

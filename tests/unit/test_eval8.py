@@ -54,6 +54,11 @@ def saved(store, rows, label=None, **probe):
     return evidence.record(store, recorded(rows, **probe), label=label, language="java")
 
 
+# `queries diff`'s verdicts where the hits may not line up (eleventh evaluation: first).
+MAY_NOT = "hits may not line up: "
+REORDER = f"{MAY_NOT}the calls may have come in another order or number\n- "
+
+
 def test_diff_says_when_the_same_values_came_in_another_order(store):
     # M6: an edit changed how parseExpr's calls nest; both runs stopped 5 times, so no
     # note came, and `op '+' -> '-'` at hit 4 read as if the edit changed an operator.
@@ -62,12 +67,11 @@ def test_diff_says_when_the_same_values_came_in_another_order(store):
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'+'", "'-'"], 1)])
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("runs 1 and 2 saw the same values of `op` in another order"), note
-    assert "(run 2's hit 4 matches run 1's hit 5: '-'): the calls may have come" in note, note
+    assert note.startswith(f"{REORDER}runs 1 and 2 saw the same values of `op` in another order")
+    assert "in another order (run 2's hit 4 matches run 1's hit 5: '-')\n" in note, note
     # `op` repeats, so no captured value could key `join` (tenth evaluation): not named.
     assert note.endswith(
-        "a hit need not be the same moment in both; no captured selector tells the hits "
-        "apart, so `queries join` could not pair them"
+        "\n- no captured selector tells the hits apart, so `queries join` could not pair them"
     ), note
     # The same values in the same order, or other values: no note.
     saved(store, [(n, "op", v) for n, v in enumerate(["'-'", "'-'", "'-'", "'-'", "'+'"], 1)])
@@ -99,12 +103,16 @@ def test_diff_says_when_a_hit_is_in_another_function_or_line(store):
     saved(store, [(1, "x", "1", "f", 24), (2, "x", "2", "f", 24), (3, "x", "5", "f", 24)])
     saved(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24), (3, "x", "5", "f", 24)])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("at hit 2 run 1 stopped in f at line 24 and run 2 in g at line 24"), note
+    assert note.startswith(
+        f"{MAY_NOT}where the runs stopped does not pair the same way at every hit\n"
+        "- at hit 2 run 1 stopped in f at line 24 and run 2 in g at line 24\n"
+    ), note
     saved(store, [(1, "x", "1", "f", 24), (2, "x", "3", "g", 24), (3, "x", "5", "g", 24)])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith(
-        "at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24, but at hit 1 run 2 "
-        "in f at line 24 paired with run 3 in f at line 24"
+        f"{MAY_NOT}where the runs stopped does not pair the same way at every hit\n"
+        "- at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24\n"
+        "- but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24\n"
     ), note
     # Renamed and moved, the same way at every hit: the same moments.
     saved(store, [(1, "x", "1", "f2", 30), (2, "x", "3", "g", 26), (3, "x", "5", "g", 26)])
@@ -123,7 +131,7 @@ def test_diff_pairs_places_by_instance_too(store):
     with sqlite3.connect(store) as db:
         db.execute("UPDATE captures SET instance = 'f::<u8>' WHERE run_id = ? AND hit = 3", (run,))
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("at hit 3 run 1 stopped in f at line 24 and run 2 in f::<u8>"), note
+    assert "\n- at hit 3 run 1 stopped in f at line 24 and run 2 in f::<u8>" in note, note
 
 
 def test_diff_compares_orders_without_addresses_or_object_numbers(store):
@@ -134,11 +142,11 @@ def test_diff_compares_orders_without_addresses_or_object_numbers(store):
     saved(store, [(1, "s", '0x000000016fdff2a0 "x"'), (2, "s", '0x000000016fdff2c0 "y"')])
     saved(store, [(1, "s", '0x000000016fdff3a0 "y"'), (2, "s", '0x000000016fdff3c0 "x"')])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("runs 1 and 2 saw the same values of `s` in another order"), note
+    assert note.startswith(f"{REORDER}runs 1 and 2 saw the same values of `s` in another order")
     saved(store, [(1, "o", "Item@57 {k=1}"), (2, "o", "Item@58 {k=2}")])
     saved(store, [(1, "o", "Item@61 {k=2}"), (2, "o", "Item@62 {k=1}")])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("runs 3 and 4 saw the same values of `o` in another order"), note
+    assert note.startswith(f"{REORDER}runs 3 and 4 saw the same values of `o` in another order")
 
 
 def test_diff_says_when_values_line_up_at_other_hits(store):
@@ -149,8 +157,8 @@ def test_diff_says_when_values_line_up_at_other_hits(store):
     saved(store, [(1, "k", "'A'"), (2, "k", "'C'"), (3, "k", "'D'")])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith(
-        "runs 1 and 2 saw `k`'s values at other hits (run 2's hit 2 matches run 1's hit 3: "
-        "'C'): the calls may have come in another order or number"
+        f"{REORDER}runs 1 and 2 saw `k`'s values at other hits (run 2's hit 2 matches run 1's "
+        "hit 3: 'C')\n"
     ), note
 
 
@@ -163,8 +171,9 @@ def test_diff_says_when_values_cannot_show_the_hits_pair(store):
     saved(store, [(1, "v", "1"), (2, "v", "7"), (3, "v", "8")])
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith(
-        "the runs' values differ at 2 of 3 hits, so they cannot show that a hit is the same "
-        "moment in both; if the edit changed which calls reach the line, pair hits by a value"
+        f"{MAY_NOT}the runs' values differ at 2 of 3 hits\n- so they cannot show that a hit is "
+        "the same moment in both\n- if the edit changed which calls reach the line, pair hits "
+        "by a value"
     ), note
     # One hit of three: no note.
     saved(store, [(1, "v", "1"), (2, "v", "7"), (3, "v", "9")])
@@ -180,11 +189,11 @@ def test_diff_compares_each_hits_values_by_selector(store):
     saved(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("left", "'A'"), ("right", "'B'"))])
     saved(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("left", "'B'"), ("right", "'A'"))])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("the runs' values differ at 3 of 3 hits"), note
+    assert note.startswith(f"{MAY_NOT}the runs' values differ at 3 of 3 hits\n"), note
     saved(store, [(1, "v", "1"), (2, "v", "1"), (2, "x", "None"), (3, "v", "1")])
     saved(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1"), (3, "x", "None")])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("the runs' values differ at 2 of 3 hits"), note
+    assert note.startswith(f"{MAY_NOT}the runs' values differ at 2 of 3 hits\n"), note
     # A selector only one run captured is not a difference at every hit (review 3).
     saved(store, [(1, "v", "1"), (2, "v", "1"), (3, "v", "1")])
     saved(store, [(n, s, v) for n in (1, 2, 3) for s, v in (("v", "1"), ("w", "5"))])
@@ -193,7 +202,7 @@ def test_diff_compares_each_hits_values_by_selector(store):
     saved(store, [(1, "x", "2"), (2, "x", "3"), (3, "v", "1")])
     saved(store, [(1, "v", "1"), (2, "x", "2"), (3, "x", "3")])
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert note.startswith("runs 7 and 8 saw `x`'s values at other hits"), note
+    assert note.startswith(f"{REORDER}runs 7 and 8 saw `x`'s values at other hits"), note
 
 
 def test_diff_and_compare_name_the_runs_labels(store):

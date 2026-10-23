@@ -5,6 +5,8 @@ rechnung (Java), whose fix made one call fewer, so 20 of `diff`'s 22 rows were a
 later hits."""
 
 import json
+import re
+import sqlite3
 
 import pytest
 
@@ -104,10 +106,12 @@ def wrap(store, columns, width, *, word=True, **options):
 
 
 JOIN = (
-    "if so, pair hits by a value that names the call and that the edit leaves alone (an "
+    "if they don't, pair hits by a value that names the call and that the edit leaves alone (an "
     "argument, an index): `peeky queries join --param a={} --param b={} "
     "--param key=<selector>[,<selector>…]`"
 )
+# The verdict where a selector's values line up better at other hits.
+REORDER = "hits may not line up: the calls may have come in another order or number\n- "
 
 
 def test_a_value_an_intervention_changed_is_no_sign_the_hits_do_not_line_up(store):
@@ -126,10 +130,11 @@ def test_a_value_an_intervention_changed_is_no_sign_the_hits_do_not_line_up(stor
     )
     wrap(store, 2, 20, edit="--- a/wrap.c\n+++ b/wrap.c\n", label="candidate")
     assert alignment(notes(store, 1, 2)) == [
-        "`column` and `word` agree between the runs at each of the 8 hits, but they read "
-        "alike at some hits, which could still trade places; `lay.width` differs after the "
-        "edit and the interventions (run 1's on `lay.width`) and may follow from them, so "
-        "this check leaves it out"
+        "hits pair as far as `column` and `word` show: they agree between the runs at each of "
+        "the 8 hits\n"
+        "- but they read alike at some hits, which could still trade places\n"
+        "- `lay.width` differs after the edit and the interventions (run 1's on `lay.width`) "
+        "and may follow from them, so this check leaves it out"
     ]
     rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
     assert {row["selector"] for row in rows if row["hit"] is not None} == {"lay.width"}
@@ -145,20 +150,22 @@ def test_values_alike_at_every_hit_and_one_that_moved_are_both_said(store):
     wrap(store, 2, 20, edit="--- a/wrap.c\n+++ b/wrap.c\n", label="candidate")
     (note,) = alignment(notes(store, 1, 2))
     assert note == (
-        "`word` agrees between the runs at each of the 8 hits, but it reads alike at some "
-        "hits, which could still trade places; but runs 1 and 2 saw `column`'s values at other "
-        "hits (run 2's hit 6 matches run 1's hit 7: 14): `column` may differ because of the "
-        "edit, so this does not prove a reorder, but it keeps Peeky from saying the hits line "
-        "up; no captured selector tells the hits apart, so `queries join` could not pair them"
+        f"{REORDER}runs 1 and 2 saw `column`'s values at other hits (run 2's hit 6 matches run "
+        "1's hit 7: 14)\n"
+        "- `column` may differ because of the edit, so this does not prove a reorder\n"
+        "- `word` agrees between the runs at each of the 8 hits, but it reads alike at some "
+        "hits, which could still trade places\n"
+        "- no captured selector tells the hits apart, so `queries join` could not pair them"
     )
-    assert "the hits line up as" not in note and "line up by" not in note
+    assert "hits line up" not in note and "pair by" not in note and "pair as far" not in note
     # Without `word`, the sign alone.
     wrap(store, 1, 20, word=False)
     wrap(store, 2, 20, word=False, edit="--- a/wrap.c\n+++ b/wrap.c\n")
     (note,) = alignment(notes(store, 3, 4))
     assert note.startswith(
-        "runs 3 and 4 saw `column`'s values at other hits (run 4's hit 6 matches run 3's hit "
-        "7: 14): `column` may differ because of the edit, so this does not prove a reorder"
+        f"{REORDER}runs 3 and 4 saw `column`'s values at other hits (run 4's hit 6 matches run "
+        "3's hit 7: 14)\n- `column` may differ because of the edit, so this does not prove a "
+        "reorder"
     ), note
 
 
@@ -169,13 +176,14 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
     saved(store, [{"key": "1", "call": "'B'"}, {"key": "2", "call": "'A'"}])
     (note,) = alignment(notes(store, 1, 2))
     assert note.startswith(
-        "`key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the "
-        "same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B'): "
-        "the values do not settle whether a hit is the same moment in both"
+        "hits may not line up: the values do not settle how they pair\n"
+        "- `key` agrees between the runs at each of the 2 hits\n"
+        "- but runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 "
+        "matches run 1's hit 2: 'B')"
     ), note
-    assert "line up by" not in note
+    assert "line up by" not in note and "pair by" not in note
     # `key` tells the hits apart, so `join` could pair them by it: it is named.
-    assert note.endswith("; " + JOIN.format(1, 2)), note
+    assert note.endswith("\n- " + JOIN.format(1, 2)), note
     # The same where `key` follows from a value an intervention set (`gleich` from `x`):
     # `call`'s order may follow from it too (tenth evaluation), but it is still said, and
     # nothing says the hits line up (review of PR #269).
@@ -189,13 +197,16 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
         changes=[(1, "x", "0", "5", 0)],
     )
     assert alignment(notes(store, 3, 4)) == [
-        "`gleich` agrees between the runs at each of the 2 hits, and its value is different "
-        "at every hit, so pairing hits by number pairs them as `queries join` by it would, "
-        "though that does not prove the hits are the same moments; `x` differs after the "
-        "interventions (run 4's on `x`) and may follow from them, so this check leaves it "
-        "out; but runs 3 and 4 saw the same values of `call` in another order (run 4's hit 1 "
-        "matches run 3's hit 2: 'B'): `call` may differ because of the interventions, so "
-        "this does not prove a reorder, but it keeps Peeky from saying the hits line up"
+        "hits pair by `gleich`: it agrees between the runs at each of the 2 hits and tells "
+        "them apart\n"
+        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
+        "prove the hits are the same moments\n"
+        "- `x` differs after the interventions (run 4's on `x`) and may follow from them, so "
+        "this check leaves it out\n"
+        "- runs 3 and 4 saw the same values of `call` in another order (run 4's hit 1 matches "
+        "run 3's hit 2: 'B')\n"
+        "- with `gleich` pairing every hit, that is a weak sign of a reorder: `call` may differ "
+        "because of the interventions, or match by chance"
     ]
     # A reorder among hits that read alike is said too.
     saved(
@@ -207,7 +218,7 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
         [{"word": "5", "column": "9"}, {"word": "5", "column": "3"}, {"word": "3", "column": "15"}],
     )
     (note,) = alignment(notes(store, 5, 6))
-    assert "but runs 5 and 6 saw the same values of `column` in another order" in note, note
+    assert "- but runs 5 and 6 saw the same values of `column` in another order" in note, note
 
 
 def test_a_qualified_value_tells_nothing_and_matches_nothing(store):
@@ -225,7 +236,7 @@ def test_a_qualified_value_tells_nothing_and_matches_nothing(store):
         stale={"stale_key"},
     )
     (note,) = alignment(notes(store, 1, 2))
-    assert note.startswith("runs 1 and 2 saw the same values of `call` in another order"), note
+    assert note.startswith(f"{REORDER}runs 1 and 2 saw the same values of `call` in another order")
     joined = evidence.run_query(store, "join", {"key": "stale_key"})
     assert [(r["stale_key"], r["hit_a"], r["hit_b"], r["matched"]) for r in joined["rows"]] == [
         (None, 1, None, "only in run a"),
@@ -248,8 +259,8 @@ def test_values_read_before_an_intervention_still_tell(store):
     )
     (note,) = alignment(notes(store, 1, 2))
     assert note.startswith(
-        "runs 1 and 2 saw the same values of `x` in another order (run 2's hit 1 matches run "
-        "1's hit 2: 'B')"
+        f"{REORDER}runs 1 and 2 saw the same values of `x` in another order (run 2's hit 1 "
+        "matches run 1's hit 2: 'B')"
     ), note
 
 
@@ -266,14 +277,14 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     # Nothing else suggests another pairing, but `width` differs after the edit and is
     # left out: what agrees is said, never that the hits line up (review of PR #269).
     titled = (
-        "`title` agrees between the runs at each of the 3 hits, and its value is different at "
-        "every hit, so pairing hits by number pairs them as `queries join` by it would, though "
-        "that does not prove the hits are the same moments"
+        "hits pair by `title`: it agrees between the runs at each of the 3 hits and tells them "
+        "apart\n- pairing by hit number pairs them as `queries join` by it would, but that does "
+        "not prove the hits are the same moments"
     )
     roster(["5", "6", "3"], "he3b8016ca05e3946", edit="--- a/src/main.rs\n")
     roster(["5", "6", "9"], "hb7185e602e967d61")
     assert alignment(notes(store, 1, 2)) == [
-        f"{titled}; `width` differs after the edit and may follow from it, so this check "
+        f"{titled}\n- `width` differs after the edit and may follow from it, so this check "
         "leaves it out"
     ]
     # roster 5 and 6: the fix counts characters, so every name's `width` is one less (6 7
@@ -282,9 +293,9 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     # (review of PR #209).
     roster(["6", "7", "3"], "hb7185e602e967d61", label="original-43")
     assert alignment(notes(store, 1, 3)) == [
-        f"{titled}; but runs 1 and 3 saw `width`'s values at other hits (run 3's hit 1 "
-        "matches run 1's hit 2: 6): `width` may differ because of the edit, so this does not "
-        "prove a reorder, but it keeps Peeky from saying the hits line up"
+        f"{titled}\n- runs 1 and 3 saw `width`'s values at other hits (run 3's hit 1 matches "
+        "run 1's hit 2: 6)\n- with `title` pairing every hit, that is a weak sign of a "
+        "reorder: `width` may differ because of the edit, or match by chance"
     ]
     # roster 4: the widths set by --set-at instead, each after its hit's read. A like
     # name is no proof that a later read is of the changed variable (each hit is a new
@@ -303,10 +314,10 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
         changes=[(1, "width", "6", "5", 1), (2, "width", "7", "6", 2)],
     )
     assert alignment(notes(store, 4, 1)) == [
-        f"{titled}; but runs 4 and 1 saw `width`'s values at other hits (run 1's hit 2 "
-        "matches run 4's hit 1: 6): `width` may differ because of the edit and the "
-        "interventions (run 4's on `width`), so this does not prove a reorder, but it keeps "
-        "Peeky from saying the hits line up"
+        f"{titled}\n- runs 4 and 1 saw `width`'s values at other hits (run 1's hit 2 matches "
+        "run 4's hit 1: 6)\n- with `title` pairing every hit, that is a weak sign of a "
+        "reorder: `width` may differ because of the edit and the interventions (run 4's on "
+        "`width`), or match by chance"
     ]
     # Nothing differs: nothing to say.
     roster(["6", "7", "3"], "hb7185e602e967d61")
@@ -437,8 +448,9 @@ def test_values_alike_at_every_hit_say_nothing_where_most_others_differ(store):
     saved(store, [{"key": "1", "call": "'C'"}, {"key": "2", "call": "'D'"}])
     (note,) = alignment(notes(store, 1, 2))
     assert note.startswith(
-        "`key` agrees between the runs at each of the 2 hits, but `call` differs at 2 of "
-        "them: the values do not show that a hit is the same moment in both"
+        "hits may not line up: `call` differs at 2 of the 2 hits\n- `key` agrees between the "
+        "runs at each of the 2 hits, but that does not show that a hit is the same moment in "
+        "both"
     ), note
     assert "line up by" not in note
 
@@ -457,10 +469,9 @@ def test_an_intervention_on_another_functions_variable_never_hides_a_reorder(sto
         changes=[(1, "x", "1", "9", 0, "helper")],
     )
     assert alignment(notes(store, 1, 2)) == [
-        "runs 1 and 2 saw the same values of `x` in another order (run 2's hit 1 matches run "
-        "1's hit 2: 'B'): `x` may differ because of the interventions (run 2's on `x` in "
-        "helper), so this does not prove a reorder, but it keeps Peeky from saying the hits "
-        "line up; " + JOIN.format(1, 2)
+        f"{REORDER}runs 1 and 2 saw the same values of `x` in another order (run 2's hit 1 "
+        "matches run 1's hit 2: 'B')\n- `x` may differ because of the interventions (run 2's "
+        "on `x` in helper), so this does not prove a reorder\n- " + JOIN.format(1, 2)
     ]
     # The same name read alike at every hit after it never says the hits line up.
     saved(store, [{"x": "'A'", "y": "1"}, {"x": "'B'", "y": "1"}], function="main")
@@ -473,7 +484,7 @@ def test_an_intervention_on_another_functions_variable_never_hides_a_reorder(sto
     )
     found = alignment(notes(store, 3, 4))
     assert not any("line up" in note and "`x`" in note.split(":")[0] for note in found), found
-    assert not any("the hits line up" in note for note in found), found
+    assert not any("hits line up" in note for note in found), found
 
 
 def test_selectors_that_differ_together_withhold_the_claim(store):
@@ -487,13 +498,177 @@ def test_selectors_that_differ_together_withhold_the_claim(store):
         saved(store, [{"key": str(n), "p": pq[0], "q": pq[1]} for n, pq in enumerate(pairs, 1)])
     (note,) = alignment(notes(store, 1, 2))
     assert note == (
-        "the hits line up by `key` as far as each selector alone shows: it agrees between the "
-        "runs at each of the 6 hits, and its value is different at every hit, and no single "
-        "selector's values line up better at other hits; `p` and `q` differ, and how they "
-        "line up together was not checked"
+        "hits line up by `key` as far as each selector alone shows: it agrees between the "
+        "runs at each of the 6 hits and tells them apart\n"
+        "- no single selector's values line up better at other hits\n"
+        "- `p` and `q` differ, and how they line up together was not checked"
     )
     # One differing selector: as before.
     saved(store, [{"key": str(n), "p": pq[0]} for n, pq in enumerate(pairs_a, 1)])
     saved(store, [{"key": str(n), "p": pq[0]} for n, pq in enumerate(pairs_b, 1)])
     (note,) = alignment(notes(store, 3, 4))
-    assert note.startswith("the hits line up by `key`: it agrees between the runs"), note
+    assert note.startswith("hits line up by `key`: it agrees between the runs"), note
+
+
+# The eleventh evaluation: three agents could not find the verdict in the note's one long
+# sentence, where a key paired every hit and the sign of a reorder was the edit's doing.
+# rota (Rust), line 47: `week` 1 to 10; the fix swaps `pick` at weeks 6 and 7. grades
+# (C++), line 66: `name` per student; the fix resets `stats.lowest`, and `quiz` 88 comes at
+# another hit. seats (Java), line 54: `name` per group; the fix moves `r` and `first`.
+PICKS = ["0", "2", "3", "0", "1", "1", "2", "3", "0", "1"]
+STUDENTS = ['"Maya"', '"Leon"', '"Ines"', '"Omar"']
+GROUPS = ['"Kim"', '"Okafor"', '"Lund"', '"Ng"', '"Sato"']
+EVAL11 = {
+    "rota": (
+        [{"week": str(week), "pick": pick} for week, pick in enumerate(PICKS, 1)],
+        [
+            {"week": str(week), "pick": {6: "2", 7: "1"}.get(week, pick)}
+            for week, pick in enumerate(PICKS, 1)
+        ],
+        "week",
+        "pick",
+    ),
+    "grades": (
+        [
+            {"name": n, "quiz": q, "stats.lowest": "58"}
+            for n, q in zip(STUDENTS, ["87", "88", "90", "95"])
+        ],
+        [
+            {"name": n, "quiz": q, "stats.lowest": low}
+            for n, q, low in zip(STUDENTS, ["87", "84", "87", "88"], ["58", "72", "64", "79"])
+        ],
+        "name",
+        "quiz",
+    ),
+    "seats": (
+        [
+            {"name": n, "r": r, "first": f}
+            for n, r, f in zip(GROUPS, "22323", ["2", "4", "6", "0", "1"])
+        ],
+        [
+            {"name": n, "r": r, "first": f}
+            for n, r, f in zip(GROUPS, "32121", ["3", "0", "0", "5", "5"])
+        ],
+        "name",
+        "first",
+    ),
+}
+VERDICTS = (
+    "hits line up by ",
+    "hits line up as far as ",
+    "hits pair by ",
+    "hits pair as far as ",
+    "hits may not line up: ",
+)
+
+
+def short(note):
+    """The note's lines, after checking its shape: a verdict, then each detail on a line
+    of its own after `- `, in sentences of at most 40 words (inline code is one word, as
+    in the docs)."""
+    verdict, *details = note.split("\n")
+    assert verdict.startswith(VERDICTS), note
+    assert all(detail.startswith("- ") for detail in details), note
+    for line in [verdict, *details]:
+        for sentence in re.split(r"(?<=[.:;])\s+", re.sub(r"`[^`]*`", "X", line)):
+            assert len(sentence.split()) <= 40, sentence
+    return [verdict, *details]
+
+
+@pytest.mark.parametrize("case", sorted(EVAL11))
+def test_diff_leads_with_its_verdict_where_a_key_pairs_every_hit(store, case):
+    before, after, key, moved = EVAL11[case]
+    saved(store, before, label="original")
+    saved(store, after, edit="--- a/x\n+++ b/x\n", label="candidate")
+    (note,) = alignment(notes(store, 1, 2))
+    verdict, same, *rest = short(note)
+    assert verdict == (
+        f"hits pair by `{key}`: it agrees between the runs at each of the {len(before)} hits "
+        "and tells them apart"
+    ), note
+    # Never that the hits are the same moments.
+    assert same == (
+        "- pairing by hit number pairs them as `queries join` by it would, but that does not "
+        "prove the hits are the same moments"
+    ), note
+    assert "hits line up" not in note and "may not line up" not in note, note
+    # The sign of a reorder comes last, as a weak one: the edit, or chance, may account for
+    # it while the key pairs every hit.
+    assert rest[-2].startswith("- runs 1 and 2 saw "), note
+    assert f"`{moved}`" in rest[-2] and " matches run 1's hit " in rest[-2], note
+    assert rest[-1] == (
+        f"- with `{key}` pairing every hit, that is a weak sign of a reorder: `{moved}` may "
+        "differ because of the edit, or match by chance"
+    ), note
+    # The text table keeps the details under the verdict's `note:`.
+    _, text = evidence.canned(store, "diff", {"a": 1, "b": 2}, table=True)
+    lines = text.splitlines()
+    first = lines.index(f"note: {verdict}")
+    assert lines[first + 1 : first + 1 + len(rest) + 1] == [f"  {same}"] + [
+        f"  {line}" for line in rest
+    ], text
+
+
+def test_every_alignment_note_leads_with_its_verdict(store):
+    # Each of the notes `diff` gives where both runs stopped as often: the verdict first.
+    edit = {"edit": "--- a/x\n+++ b/x\n"}
+    cases = [
+        # Places don't pair.
+        (
+            [{"x": "1"}, {"x": "2"}, {"x": "3"}],
+            [{"x": "1"}, {"x": "2"}, {"x": "3"}],
+            {},
+            "hits may not line up: where the runs stopped",
+        ),
+        # The same values in another order; with a value alike at every hit too.
+        ([{"k": "'A'"}, {"k": "'B'"}], [{"k": "'B'"}, {"k": "'A'"}], {}, "hits may not line up"),
+        (
+            [{"i": "1", "k": "'A'"}, {"i": "2", "k": "'B'"}],
+            [{"i": "1", "k": "'B'"}, {"i": "2", "k": "'A'"}],
+            {},
+            "hits may not line up: the values do not settle how they pair",
+        ),
+        # Most hits differ.
+        (
+            [{"v": "1"}, {"v": "2"}, {"v": "3"}],
+            [{"v": "1"}, {"v": "7"}, {"v": "8"}],
+            {},
+            "hits may not line up: the runs' values differ at 2 of 3 hits",
+        ),
+        # A key, and no change; after an edit; alike hits after an edit; nothing agrees.
+        (
+            [{"i": "1", "v": "5"}, {"i": "2", "v": "6"}, {"i": "3", "v": "7"}],
+            [{"i": "1", "v": "5"}, {"i": "2", "v": "6"}, {"i": "3", "v": "9"}],
+            {},
+            "hits line up by `i`: it agrees",
+        ),
+        (
+            [{"i": "1", "v": "5"}, {"i": "2", "v": "6"}, {"i": "3", "v": "7"}],
+            [{"i": "1", "v": "5"}, {"i": "2", "v": "6"}, {"i": "3", "v": "9"}],
+            edit,
+            "hits pair by `i`: it agrees",
+        ),
+        (
+            [{"w": "1", "v": "5"}, {"w": "1", "v": "6"}, {"w": "2", "v": "7"}],
+            [{"w": "1", "v": "5"}, {"w": "1", "v": "6"}, {"w": "2", "v": "9"}],
+            edit,
+            "hits pair as far as `w` shows: it agrees",
+        ),
+        (
+            [{"v": "1"}, {"v": "2"}],
+            [{"v": "3"}, {"v": "4"}],
+            edit,
+            "hits may not line up: the values cannot show whether they do",
+        ),
+    ]
+    for run, (before, after, options, verdict) in enumerate(cases):
+        a = saved(store, before)
+        b = saved(store, after, function="g" if run == 0 else "fits", **options)
+        if run == 0:
+            # Run b stopped in `g` only at its second hit.
+            with sqlite3.connect(store) as db:
+                db.execute(
+                    "UPDATE captures SET function = 'fits' WHERE run_id = ? AND hit != 2", (b,)
+                )
+        (note,) = alignment(notes(store, a, b))
+        assert short(note)[0].startswith(verdict), (verdict, note)

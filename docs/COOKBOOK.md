@@ -1707,7 +1707,9 @@ may follow from the change, so the note words its sign with care
    hit. So they count as the same place. Otherwise the note says where the pairing breaks:
 
    ```
-   at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24, but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24
+   hits may not line up: where the runs stopped does not pair the same way at every hit
+   - at hit 3 run 2 stopped in f at line 24 and run 3 in g at line 24
+   - but at hit 1 run 2 in f at line 24 paired with run 3 in f at line 24
    ```
 
 2. **Values line up better at other hits.** Peeky masks addresses and Java object numbers first, as
@@ -1716,7 +1718,8 @@ may follow from the change, so the note words its sign with care
    - The same values can come in another order:
 
      ```
-     runs 1 and 2 saw the same values of `op` in another order (run 2's hit 4 matches run 1's hit 5: -)
+     hits may not line up: the calls may have come in another order or number
+     - runs 1 and 2 saw the same values of `op` in another order (run 2's hit 4 matches run 1's hit 5: -)
      ```
 
    - `[A, B, C]` against `[A, C, D]` gives ``saw `k`'s values at other hits``.
@@ -1728,13 +1731,27 @@ may follow from the change, so the note words its sign with care
    show that the hits pair. The note says so:
 
    ```
-   the runs' values differ at 4 of 5 hits, so they cannot show that a hit is the same moment in both
+   hits may not line up: the runs' values differ at 4 of 5 hits
+   - so they cannot show that a hit is the same moment in both
    ```
 
 Each of these three notes names `queries join` where it could pair the hits: where the captured
 selectors, taken together, tell each run's hits apart. Join by a value that names the call and that
 the edit leaves alone, such as an argument or an index. Don't join by a value the edit changed.
 Where no captured selector tells the hits apart, the note says that `join` could not pair them.
+
+The note's first line is its verdict. Each detail follows on a line of its own, after `- `. With
+`--json`, the note is one string in `notes`, with its lines split by newlines. The verdict is one of
+these:
+
+- `hits line up by` some values, or `hits line up as far as` they show. Then neither run made an
+  intervention, no value was left out, and nothing suggests otherwise
+  ([below](#when-values-agree-at-every-hit)).
+- `hits pair by` some values, or `hits pair as far as` they show. Then a run made an intervention,
+  or a value was left out after a change. Pairing by hit number pairs the hits as `queries join` by
+  those values would. That doesn't prove they are the same moments.
+- `hits may not line up:` and why. Something suggests they may not, as the three signs above do. Or
+  the values can't show that they do.
 
 **No note does not prove that the hits line up.**
 
@@ -1752,6 +1769,8 @@ Only plain values count in these checks. Peeky checks each selector on its own.
 - So such a selector is left out of what agrees and of the hits that differ. The note names it.
 - It still counts where its values line up better at other hits. The change may account for that,
   so the note says it doesn't prove a reorder. But no note then says the hits line up.
+- Where values that agree tell the hits apart, the verdict is that the hits pair by them. Such a
+  sign then comes last, as a weak one ([below](#when-values-agree-at-every-hit)).
 - `after-set` rows never count.
 
 In this C example, `--set-at` resets a counter, `db.count`, in `main`. The probe stops in `settle`,
@@ -1759,7 +1778,12 @@ once per sample. The reset changes `db.stable` too, at later samples. Its 0s and
 better at other hits:
 
 ```
-note: `level` agrees between the runs at each of the 32 hits, but it reads alike at some hits, which could still trade places; `db.candidate` and `db.count` differ after the interventions (run 2's on `db.count` in main) and may follow from them, so this check leaves them out; but runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 11 matches run 1's hit 7: 1): `db.stable` may differ because of the interventions, so this does not prove a reorder, but it keeps Peeky from saying the hits line up; no captured selector tells the hits apart, so `queries join` could not pair them
+note: hits may not line up: the calls may have come in another order or number
+  - runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 11 matches run 1's hit 7: 1)
+  - `db.stable` may differ because of the interventions (run 2's on `db.count` in main), so this does not prove a reorder
+  - `level` agrees between the runs at each of the 32 hits, but it reads alike at some hits, which could still trade places
+  - `db.candidate` and `db.count` differ after the interventions and may follow from them, so this check leaves them out
+  - no captured selector tells the hits apart, so `queries join` could not pair them
 ```
 
 `level` is the input sample. It agrees between the runs, but it is 0 or 1, so it can't tell the hits
@@ -1769,8 +1793,8 @@ apart. No captured value names `settle`'s call, so the note says `join` couldn't
 
 Some values may agree between the runs at every hit. Where nothing suggests another pairing, a note
 says so. It may also say that the hits line up by them, but only with no intervention in either
-run, and with no selector left out. The cases below say when. A constant, a value that never
-changes from hit to hit, doesn't count here.
+run, and with no selector left out. Otherwise it says that the hits pair by them. The cases below
+say when. A constant, a value that never changes from hit to hit, doesn't count here.
 
 Here the second run's last input differs. `i` tells the hits apart, so the hits line up by it:
 
@@ -1785,13 +1809,15 @@ run_a  run_b  hit   phase     selector  value_a               value_b           
 3      4      NULL  NULL      (output)  total: 36\n          total: 46\n          1        output differs at line 1, column 8
 3      4      NULL  NULL      (args)    ["0", "0", "7", "8"]  ["0", "0", "7", "9"]  1        the runs had different program arguments: values also differ by input
 3      4      4     observed  v         8                     9                     1        NULL
-note: the hits line up by `i`: it agrees between the runs at each of the 4 hits, and its value is different at every hit, and no single selector's values line up better at other hits, so pairing hits by number pairs them as `queries join` by it would
+note: hits line up by `i`: it agrees between the runs at each of the 4 hits and tells them apart
+  - no single selector's values line up better at other hits
+  - pairing by hit number pairs them as `queries join` by it would
 (3 rows)
 ```
 
-After an edit, a selector that differs is left out. The note then says what pairing by number amounts
-to, and that this doesn't prove the hits are the same moments. Here a candidate edit changes `total`
-at hit 4:
+After an edit, a selector that differs is left out. The verdict then says the hits pair by `i`. The
+next line says what that amounts to, and that it doesn't prove the hits are the same moments. Here a
+candidate edit changes `total` at hit 4:
 
 ```sh
 b --capture i,v,total --old 'bins[v % 4].hi' --new 'bins[v % 4].lo' -- 0 0 7 8
@@ -1803,7 +1829,9 @@ run_a  run_b  hit   phase     selector  value_a       value_b       differs  not
 3      5      NULL  NULL      (output)  total: 36\n  total: 21\n  1        output differs at line 1, column 8
 3      5      NULL  NULL      (edit)    none          candidate     1        the runs built different edits (runs.edit has each diff)
 3      5      4     observed  total     28            21            1        NULL
-note: `i` agrees between the runs at each of the 4 hits, and its value is different at every hit, so pairing hits by number pairs them as `queries join` by it would, though that does not prove the hits are the same moments; `total` differs after the edit and may follow from it, so this check leaves it out
+note: hits pair by `i`: it agrees between the runs at each of the 4 hits and tells them apart
+  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - `total` differs after the edit and may follow from it, so this check leaves it out
 (3 rows)
 ```
 
@@ -1819,7 +1847,9 @@ run_a  run_b  hit   phase      selector  value_a       value_b                  
 3      6      NULL  NULL       (output)  total: 36\n  total: 13\n                          1        output differs at line 1, column 8
 3      6      NULL  NULL       (sets)    none          1 change: total=5 (requested at 9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
 3      6      4     after-set  total     NULL          5                                     1        intervention only in run b
-note: `i`, `v` and `total` agree between the runs at each of the 4 hits, and their values are different at every hit, and no single selector's values line up better at other hits; but the interventions (run 6's on `total` in main) can change other values and which calls reach the line, so this does not show that each hit is the same moment in both
+note: hits pair by `i`: it agrees between the runs at each of the 4 hits and tells them apart
+  - no single selector's values line up better at other hits
+  - the interventions (run 6's on `total` in main) can change other values and which calls reach the line, so this does not show that each hit is the same moment in both
 (3 rows)
 ```
 
@@ -1830,25 +1860,36 @@ What the note says depends on the case:
   both. It says the values don't settle it, and never that the hits line up:
 
   ```
-  `key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B'): the values do not settle whether a hit is the same moment in both
+  hits may not line up: the values do not settle how they pair
+  - `key` agrees between the runs at each of the 2 hits
+  - but runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B')
   ```
 
   Peeky can't tell which of them names the call. A value alike by chance, such as a counter, agrees
   either way.
 - **The sign comes from a selector left out.** Its values may differ because of the change. So the
   note says the sign doesn't prove a reorder. It still keeps the note from saying the hits line up.
-  Here an edit swaps the first two calls, and `key` agrees at every hit:
+  Where values that agree tell the hits apart, the verdict is that the hits pair by them. The sign
+  comes last, as a weak one: the change, or chance, may account for it. Here an edit swaps the first
+  two calls, and `key` agrees at every hit:
 
   ```
-  `key` agrees between the runs at each of the 3 hits, and its value is different at every hit, so pairing hits by number pairs them as `queries join` by it would, though that does not prove the hits are the same moments; but runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B'): `call` may differ because of the edit, so this does not prove a reorder, but it keeps Peeky from saying the hits line up
+  hits pair by `key`: it agrees between the runs at each of the 3 hits and tells them apart
+  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B')
+  - with `key` pairing every hit, that is a weak sign of a reorder: `call` may differ because of the edit, or match by chance
   ```
+
+  Where no value that agrees tells the hits apart, the sign is the verdict, as in the `db.stable`
+  example above.
 
 - **Most hits differ.** Where values differ at more than half the hits, and at least 2, the note
   says so before anything that agrees. It says the values don't show that the hits are the same
   moments:
 
   ```
-  `key` agrees between the runs at each of the 2 hits, but `call` differs at 2 of them: the values do not show that a hit is the same moment in both
+  hits may not line up: `call` differs at 2 of the 2 hits
+  - `key` agrees between the runs at each of the 2 hits, but that does not show that a hit is the same moment in both
   ```
 
 - **No change in either run.** The note says what the agreeing values show:
@@ -1858,7 +1899,9 @@ What the note says depends on the case:
     alike hits could still trade places:
 
     ```
-    the hits line up as far as `word` shows: …; but it reads alike at some hits, which could still trade places
+    hits line up as far as `word` shows: …
+    - …
+    - but it reads alike at some hits, which could still trade places
     ```
 
   - Two or more selectors differ. Peeky checks selectors one at a time, and two that differ could
@@ -1866,18 +1909,24 @@ What the note says depends on the case:
     far as each selector alone shows:
 
     ```
-    the hits line up by `key` as far as each selector alone shows: …; `p` and `q` differ, and how they line up together was not checked
+    hits line up by `key` as far as each selector alone shows: …
+    - …
+    - `p` and `q` differ, and how they line up together was not checked
     ```
 
   In each case, this holds only as far as those values name the call. An edit with no selector left
   out gives the same notes.
 - **After a change that left selectors out,** what follows from it is unknown. So the note says only
-  what agrees, and what was left out. Where the values that agree tell the hits apart, it says what
-  pairing by number amounts to, as in the edit example above. Here the counter program is probed in
-  `main`'s loop, where `ms` counts the samples:
+  what agrees, and what was left out. Where the values that agree tell the hits apart, the verdict is
+  that the hits pair by them, as in the edit example above. Else it is that they pair as far as those
+  values show. Here the counter program is probed in `main`'s loop, where `ms` counts the samples:
 
   ```
-  `ms` agrees between the runs at each of the 32 hits, and its value is different at every hit, so pairing hits by number pairs them as `queries join` by it would, though that does not prove the hits are the same moments; `db.candidate`, `db.count` and `changes` differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out; but runs 1 and 3 saw `db.stable`'s values at other hits (run 3's hit 11 matches run 1's hit 7: 1): `db.stable` may differ because of the interventions, so this does not prove a reorder, but it keeps Peeky from saying the hits line up
+  hits pair by `ms`: it agrees between the runs at each of the 32 hits and tells them apart
+  - pairing by hit number pairs them as `queries join` by it would, but that does not prove the hits are the same moments
+  - `db.candidate`, `db.count` and `changes` differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
+  - runs 1 and 3 saw `db.stable`'s values at other hits (run 3's hit 11 matches run 1's hit 7: 1)
+  - with `ms` pairing every hit, that is a weak sign of a reorder: `db.stable` may differ because of the interventions, or match by chance
   ```
 
 - **After an intervention that left nothing out,** the note says what agrees, what differs and which
@@ -1887,7 +1936,9 @@ What the note says depends on the case:
   differs:
 
   ```
-  the values cannot show whether the hits line up: `previous` and `self.items` differ after the edit and may follow from it, and no other selector both agrees between the runs and changes from hit to hit
+  hits may not line up: the values cannot show whether they do
+  - `previous` and `self.items` differ after the edit and may follow from it
+  - no other selector both agrees between the runs and changes from hit to hit
   ```
 
 - **No value agrees at every hit,** or only a constant does, and nothing changed. Then only the three
