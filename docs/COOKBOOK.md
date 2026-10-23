@@ -1565,9 +1565,10 @@ runs.
 | 1 | `(status)`, `(output)`, `(edit)`, `(source)`, `(line)`, `(args)`, `(sets)` | How the runs differed |
 | 2 | `intervention only in run a` or `run b` | Values that only one run's `--set` changed |
 | 3 | values that differ | Real differences, in hit order |
-| 4 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
-| 5 | `addresses only` | Values that differ only in addresses |
-| 6 | `only in run a` | Selectors only one run captured |
+| 4 | `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
+| 5 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
+| 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr |
+| 7 | `only in run a` | Selectors only one run captured |
 
 **1. How the runs differed.** Check these rows before you credit an edit with a difference. Each
 appears only where it applies:
@@ -1609,8 +1610,25 @@ divergence.
 **Long values.** The table cuts a value at 120 characters. Where the two runs' values first differ
 near or past that cut, both show from 40 characters before the difference instead. Both start at
 the same place, so the two windows line up. `…` marks every cut. `--json` keeps every value whole.
+The table never cuts a note, so a note always shows what to do.
 
-**4. Qualified values.** A value that a view or a note qualifies, in either run, ranks here. Its
+**4. Pointers whose addresses differ** say `addresses differ`. An address can be another element's
+in the other run, so such a row may be a real difference. A pointer into an array may point at
+element 6 in one run and at element 4 in the other.
+
+- Most are a pointer or a reference, by their type, such as `const int *` or
+  `const std::string &`. They say `it may point at another element too`.
+- Any other value of a C, C++ or Rust run is here too, as a struct's preview shows its pointers as
+  addresses. Such a row says `an address in it may be another element's too`.
+- The stack and the heap start at another address in each run. So most pointers differ, whether or
+  not they point at another element. That is why these rows come after the real differences, not
+  among them: the first real difference stays the first divergence.
+- To tell, compare each address's offset from a base with `address()`
+  ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element.
+- There is one row per selector, as for `addresses only` below. The note says at how many hits:
+  `addresses differ at 2 hits (one row per selector: its first hit): …`.
+
+**5. Qualified values.** A value that a view or a note qualifies, in either run, ranks here. Its
 note says `qualified (run a: note, run b: note): not evidence by itself`.
 
 - Examples are a C local's leftovers on a `do` body's first line, or a moved Rust local's bytes
@@ -1622,8 +1640,8 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
   `intervention only in run a; qualified (run a: note)`.
 - `queries run` shows each note.
 
-**5. Address-only differences** say `addresses only`. These values differ only in heap or stack
-addresses, such as a C string's pointer.
+**6. Address-only differences** say `addresses only`. These are other values that differ only in
+addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
 
 - NULL is never treated as an address.
 - Text inside quotes is the program's data, never an address. So `"0x00000001deadbeef"` in a
@@ -1633,7 +1651,7 @@ addresses, such as a C string's pointer.
 - Where both runs label stops, there is one row per selector and stop:
   `at 2 hits at stop 1 (one row per selector and stop: its first hit)`.
 
-**6. Selectors that only one run asked for** come last. Each has one row, `only in run a`, with its
+**7. Selectors that only one run asked for** come last. Each has one row, `only in run a`, with its
 first hit's value.
 
 #### How `diff` pairs hits
@@ -1649,8 +1667,10 @@ show every later hit as a difference. Two notes say so:
 - The first names `queries join` ([3.5](#35-joining-two-runs-by-a-value)), which pairs hits by a
   selector's value instead: `--param key=a.name`. Several selectors work too:
   `--param key=p.name,n.name`.
-- The second says how many rows come after the first hit that differs. Those rows may compare
-  different calls.
+- The second says how many rows come after the first hit with a real difference (tier 3). Those
+  rows may compare different calls. A pointer, a qualified value or an address-only value is never
+  that first difference, even at an earlier hit. With no real difference at a hit, there is no
+  second note.
 
 These runs were recorded in a fresh state directory ([0](#0-setup)), so they are runs 1 to 6:
 
@@ -2268,7 +2288,8 @@ at?
 
 The heap may start at another address in each run. So one element can have another address in
 each run, and one address can be another element. Matching their last hex digits works only by
-chance.
+chance. `queries diff` sends you here from a row whose note says `addresses differ`
+([3.1](#31-two-inputs-side-by-side)).
 
 Instead, subtract a base from each address: the address of one element that every run saw, such as
 the array's first. Then join the runs on that offset. `address(value)` reads the first `0x` token

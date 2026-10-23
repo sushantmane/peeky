@@ -1,12 +1,16 @@
 """#173: in an optimized build, a range-for's structured binding withholds the outer
 local of its name where LLDB lists only that local, as it does at -O0 (the C cases are
 in tests/native/test_native_optimized_blocks.py). #283: on a one-line range-for whose
-range reads the outer local, that local's note says so, at -O0 too."""
+range reads the outer local, that local's note says so, at -O0 too. #286: so does any
+one-line statement whose header names it before the line declares the name again. #289:
+an `if constexpr` block's declaration hides the outer local too."""
 
+import json
 import os
 
 import pytest
 
+from peeky.cli import main
 from peeky.native import NativeTarget
 from peeky.probe import Probe, run_probe
 
@@ -147,3 +151,305 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(
             assert error.startswith(plain), row
     if optimization == "O0" and not split and marker != "MEMBER":
         assert any(row["hit"] == 1 and row["error"].startswith(hedged) for row in outer), found
+
+
+# #286: other statements' headers that name the outer `t` before the line declares a `t`:
+# C++17 init-statements, a classic `for` whose body binds `t`, and a range whose lambda's
+# block declares a `static` `t` (that lambda's own, run by another function).
+HEADER_SOURCE = """#include <cstdio>
+#include <utility>
+#include <vector>
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) std::vector<std::pair<long, long>> make(long v) {
+    return {{v + 1000, 1}, {v + 1001, 2}};
+}
+template <class F> __attribute__((noinline)) std::vector<std::pair<long, long>> make2(long v, F f) {
+    return {{v + f(), 1}, {v + 2000, 2}};
+}
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    if (long k = t; k) { static long t = 5; use(t + k); } // IF_INIT
+    switch (long k = t; k) { case 1: use(k); break; default: { static long t = 6; use(t + k); } } // SWITCH_INIT
+    for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); } // FOR_BINDING
+    for (const auto &[a, b] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) { use(a + b); } // LAMBDA
+    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 8; r = t; } return r; })) { // LAMBDA_HEADER
+        use(t * u);
+    }
+    use(t);
+    return 0;
+}
+"""
+STATEMENTS = {
+    # marker: (keyword, what the line declares, whether every stop is hedged)
+    "IF_INIT": ("if", "the block's `static` `t` (line {}), ", False),
+    "SWITCH_INIT": ("switch", "the block's `static` `t` (line {}), ", False),
+    "FOR_BINDING": ("for", "the structured binding `t` (line {})", True),
+    "LAMBDA": ("for", "the block's `static` `t` (line {}), ", True),
+    "LAMBDA_HEADER": ("for", "the block's `static` `t` (line {}), ", False),
+}
+
+
+def header_line(marker):
+    return next(
+        i for i, row in enumerate(HEADER_SOURCE.splitlines(), 1) if row.endswith(f"// {marker}")
+    )
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    "marker, optimization",
+    [
+        (marker, level)
+        for marker in sorted(STATEMENTS)
+        for level in ("O0", "O1")
+        # Optimized, #283 hedges this line for its binding (above).
+        if (marker, level) != ("LAMBDA_HEADER", "O1")
+    ],
+)
+def test_a_statement_header_naming_the_outer_local_hedges_its_note(
+    tmp_path, cxx, marker, optimization
+):
+    # #286: on `if (long k = t; k) { static long t = 5; use(t + k); }` the outer `t` said
+    # "not what the code reads: the code here names the block's `static`", though the
+    # header runs first and names the outer `t` there. Whether running it reads `t`, Peeky
+    # cannot tell: withheld, hedged. A classic `for`'s condition runs on each pass; a
+    # lambda's block in the range is another function's, never this frame's code.
+    adapter = target(optimization)
+    line, outer = header_line(marker), header_line("OUTER")
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    (tmp_path / "blocks.cpp").write_text(HEADER_SOURCE)
+    result = run_probe(tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=adapter)
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # The outer `t` holds 3 here; each `static` 5 to 8, and each binding 1000 or more.
+    assert not [row for row in found if row.get("value") == "3"], found
+    # The outer local's rows: selected by its line where LLDB lists several `t`s, else
+    # plain `t` (a binding's own row is a reference).
+    rows = [
+        row
+        for row in found
+        if "this row is the outer local" in row.get("error", "")
+        and "&" not in (row.get("type") or "")
+    ]
+    assert any(row["hit"] == 1 for row in rows), found
+    keyword, what, always = STATEMENTS[marker]
+    what = what.format(line)
+    listed = ("which the debugger does not list", f"listed separately as `t @ blocks.cpp:{line}`")
+    shown = listed if what.endswith(", ") else ("",)
+    hedged = {
+        f"may not be what the code reads: the code here may name {what}{how}, but the "
+        f"`{keyword}` statement's header names `t` before that declaration, and Peeky cannot "
+        "tell whether running the header reads this local: this row is the outer local of "
+        "that name"
+        for how in shown
+    }
+    for row in rows:
+        if always or optimization != "O0" or row["hit"] == 1:
+            # A part that runs on each pass, an optimized build, or the line's first stop.
+            assert row["error"] in hedged, row
+        elif marker == "LAMBDA_HEADER":
+            # Past the first instruction, on a later pass (the line table's column is the
+            # binding's or the `:`'s, after the range has run), the binding exists (#283).
+            assert row["error"].startswith(
+                f"not what the code reads: the code here names the structured binding `t` "
+                f"(line {line}): this row is the outer local"
+            ), row
+        else:
+            # Unoptimized, past the line's first instruction: a header run once has run.
+            assert row["error"].startswith(f"not what the code reads: the code here names {what}")
+            assert "header names" not in row["error"], row
+
+
+# Review of PR #287: back from a call in a one-line range-`for`'s range, the stop is past
+# the line's first instruction, but the range (`t` after `check(t)`) has not run yet.
+STEP_SOURCE = """#include <cstdio>
+#include <utility>
+#include <vector>
+__attribute__((noinline)) long check(long v) { return v + 1; } // CHECK
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; } // USE
+__attribute__((noinline)) std::vector<std::pair<long, long>> make(long a, long b) {
+    return {{a + 1000, b}};
+}
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    for (const auto &[t, u] : make(check(t), t)) { use(t * u); use(t); } // FOR
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_stop_back_inside_a_range_for_header_hedges_its_note(tmp_path, cxx, monkeypatch, capsys):
+    # Back from `check(t)` (`step --out`), the range has yet to read the outer `t`: it
+    # said "not what the code reads: the code here names the structured binding", since
+    # only the line's first instruction was hedged. Back from the body's first `use`,
+    # the line table's column is past the header's `)`: the plain note stays.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "step.cpp"
+    path.write_text(STEP_SOURCE)
+    lines = {
+        marker: next(
+            i for i, row in enumerate(STEP_SOURCE.splitlines(), 1) if f"// {marker}" in row
+        )
+        for marker in ("CHECK", "USE", "OUTER", "FOR")
+    }
+    selectors = ("t", f"t @ step.cpp:{lines['OUTER']}")
+    binding = f"the structured binding `t` (line {lines['FOR']})"
+    expected = {
+        "CHECK": (
+            f"may not be what the code reads: the code here may name {binding}, but the loop's "
+            "header names `t` before that binding exists, and Peeky cannot tell whether "
+            "running the header reads this local: this row is the outer local of that name"
+        ),
+        "USE": (
+            f"not what the code reads: the code here names {binding}: this row is the outer "
+            "local of that name"
+        ),
+    }
+    for marker, error in expected.items():
+        assert main(["session", "start", str(path), "--at", str(lines[marker])]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "step", "--out"]) == 0
+            capsys.readouterr()
+            main(["session", "get", *selectors, "--json"])
+            rows = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        assert {row.get("line") for row in rows} == {lines["FOR"]}, rows
+        # The outer local's rows (a binding's own row is a reference).
+        outer = [
+            row
+            for row in rows
+            if "this row is the outer local" in row.get("error", "")
+            and "&" not in (row.get("type") or "")
+        ]
+        assert outer and all(row["error"] == error for row in outer), (marker, rows)
+        assert not [row for row in outer if "value" in row], rows
+
+
+# Review round 2 of PR #287: a range type's own `begin` and `end` (not inlined) run at the
+# loop's `:` in clang's line table, once its range has run.
+RANGE_TYPE_SOURCE = """#include <cstdio>
+struct P { long first, second; };
+struct Range {
+    P items[2];
+    __attribute__((noinline)) const P *begin() const { return items; } // BEGIN
+    __attribute__((noinline)) const P *end() const { return items + 2; } // END
+};
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) Range make(long a) { return {{{a + 1000, 1}, {a + 1001, 2}}}; }
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    for (const auto &[t, u] : make(t)) { use(t * u); use(t); } // FOR
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("marker", ["BEGIN", "END"])
+def test_a_stop_back_from_a_range_types_begin_is_judged_by_its_column(
+    tmp_path, cxx, monkeypatch, capsys, marker
+):
+    # Back from `begin()` or `end()` (`step --out`), the stop is past the line's first
+    # instruction, after the range (`make(t)`) has run. clang places that call at the
+    # loop's `:`, which counts as past the range: the plain note. GCC places it at the
+    # range's last column, inside the range: hedged, as Peeky cannot tell it apart.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "range.cpp"
+    path.write_text(RANGE_TYPE_SOURCE)
+    lines = {
+        name: next(
+            i for i, row in enumerate(RANGE_TYPE_SOURCE.splitlines(), 1) if f"// {name}" in row
+        )
+        for name in (marker, "OUTER", "FOR")
+    }
+    selectors = ("t", f"t @ range.cpp:{lines['OUTER']}")
+    binding = f"the structured binding `t` (line {lines['FOR']})"
+    error = (
+        f"not what the code reads: the code here names {binding}: this row is the outer local "
+        "of that name"
+        if cxx == "clang"
+        else f"may not be what the code reads: the code here may name {binding}, but the "
+        "loop's header names `t` before that binding exists, and Peeky cannot tell whether "
+        "running the header reads this local: this row is the outer local of that name"
+    )
+    assert main(["session", "start", str(path), "--at", str(lines[marker])]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out"]) == 0
+        capsys.readouterr()
+        main(["session", "get", *selectors, "--json"])
+        rows = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert {row.get("line") for row in rows} == {lines["FOR"]}, rows
+    outer = [
+        row
+        for row in rows
+        if "this row is the outer local" in row.get("error", "")
+        and "&" not in (row.get("type") or "")
+    ]
+    assert outer and all(row["error"] == error for row in outer), rows
+    assert not [row for row in outer if "value" in row], rows
+
+
+# #289: an `if constexpr` block's `static`, on the stop's line.
+CONSTEXPR_SOURCE = """#include <cstdio>
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    if constexpr (sizeof(long) > 1) { static long t = 5; use(t); } // CONSTEXPR
+    if constexpr (sizeof(t) > 1) { static long t = 6; use(t); } // HEADER
+    use(t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", ["CONSTEXPR", "HEADER"])
+def test_an_if_constexpr_blocks_static_withholds_the_outer_local(
+    tmp_path, cxx, optimization, marker
+):
+    # #289: on `if constexpr (sizeof(long) > 1) { static long t = 5; use(t); }` the outer
+    # `t` showed its value (3) with no note: the scanner read the block as a function's
+    # body, though the code there names the block's `static`. Where the header names `t`
+    # too, the note is hedged as other headers' are (#286).
+    line = next(
+        i for i, row in enumerate(CONSTEXPR_SOURCE.splitlines(), 1) if row.endswith(f"// {marker}")
+    )
+    outer = next(i for i, row in enumerate(CONSTEXPR_SOURCE.splitlines(), 1) if "OUTER" in row)
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    (tmp_path / "blocks.cpp").write_text(CONSTEXPR_SOURCE)
+    result = run_probe(
+        tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # The outer `t` holds 3; the blocks' `static`s 5 and 6.
+    assert not [row for row in found if row.get("value") == "3"], found
+    rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
+    assert any(row["hit"] == 1 for row in rows), found
+    static = f"the block's `static` `t` (line {line}), "
+    listed = ("which the debugger does not list", f"listed separately as `t @ blocks.cpp:{line}`")
+    plain = {
+        f"not what the code reads: the code here names {static}{how}: this row is the outer "
+        "local of that name"
+        for how in listed
+    }
+    hedged = {
+        f"may not be what the code reads: the code here may name {static}{how}, but the `if` "
+        "statement's header names `t` before that declaration, and Peeky cannot tell whether "
+        "running the header reads this local: this row is the outer local of that name"
+        for how in listed
+    }
+    for row in rows:
+        if marker == "HEADER" and (optimization != "O0" or row["hit"] == 1):
+            assert row["error"] in hedged, row
+        else:
+            assert row["error"] in plain, row

@@ -2302,8 +2302,9 @@ def _not_framed(name, storages):
     if "through" in storages:
         return (
             f"`{name}` is reached through a pointer or reference (a C++ structured binding "
-            "of a reference, a named return value or a C `__block` variable). Change the "
-            "value where it is owned: Peeky changes only values the frame holds itself"
+            "of a reference, or of a pair or tuple, a named return value or a C `__block` "
+            "variable). Change the value where it is owned: Peeky changes only values the "
+            "frame holds itself"
         )
     return (
         f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
@@ -4293,6 +4294,22 @@ class Everywhere(str):
     everywhere = True
 
 
+def _member_object(typed, name):
+    """The Typed of the member ``name`` of the struct or class ``typed`` (one member of
+    that name, no reference or pointer), or None. Never a union's (a standard library's
+    too): which member is alive there changes as the program runs (round 2 of the #296
+    review: `auto &[a, b] = u.p;`, then `new (&u.q) …` read `u.q`)."""
+    node = typed.node() if typed is not None else None
+    if node is None or node[0] != "record" or node[2] == "union":
+        return None
+    if typed.kind() not in ("record", "library"):
+        return None
+    found = [kind for member, kind in typed.members()[0] if member == name]
+    if len(found) != 1:
+        return None
+    return None if found[0].kind() in ("reference", "pointer", "unknown") else found[0]
+
+
 class ValueNote(str):
     """What ``not_yet_declared`` gives for a local it shows, though it cannot vouch for
     the value: the row carries ``note``. As a string, why a change there is refused,
@@ -5103,6 +5120,244 @@ class NativeSession:
             "nor change it; print it from the program"
         )
 
+    def _element_binding(self, variable, frame):
+        """Whether the root local ``variable`` of ``frame`` is a C++ structured binding
+        the build holds as a reference to its element (#291), which the debugger shows as
+        the element's address: `t` in `auto [t, u] = pair;`. Its declaration's line must
+        name it in a binding's brackets (Statements.binds). GCC's is also typed so
+        (fields.element_reference, "through"), but so is a reference the code declares
+        with that type (`std::tuple_element<0, P>::type &r = p.first;`), which the line
+        tells apart; a newer clang's (Apple clang 21) is a plain reference (`long &&`).
+
+        (True, the element's Typed or None where its declarations disagree, the
+        declaration's (file name, line), Statements.binding's reading of it); a
+        Withholding where Peeky cannot tell (a GCC binding's line it cannot read, or two
+        references of its name the debugger's row may be either of); else False."""
+        from peeky.native_previews import Typed
+
+        if (
+            getattr(getattr(self, "target", None), "language", None) != "cpp"
+            or getattr(self, "fields", None) is None
+            or not str(variable.get("type") or "").rstrip().endswith("&")
+        ):
+            return False
+        function = self._function_at(frame) or {}
+        name = str(variable.get("name") or "")
+        shown = split_located(name)
+        base = shown[0] if shown else name
+        # The debugger shows a reference: only a declaration of one can be this row.
+        declared = [
+            each
+            for each in (function.get("types") or {}).get(base) or ()
+            if (not shown or each[2] == shown[1:])
+            and Typed(self.fields, each[0]).kind() == "reference"
+        ]
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+
+        def bound(each):
+            """True where the line names it in a binding's brackets, False where it does
+            not, None where GCC's type says so and the line cannot be read."""
+            readable = (
+                statements is not None and each[2] is not None and Path(source).name == each[2][0]
+            )
+            if readable:
+                return statements.binds(each[2][1], base)
+            return None if each[1] == "through" else False
+
+        states = {each: bound(each) for each in declared}
+        if all(state is False for state in states.values()):
+            return False
+        if len(declared) > 1 and (where := self._shown_where(name, self._unslid(frame))):
+            place = (Path(str(where[0])).name, where[1])
+            declared = [each for each in declared if each[2] == place] or declared
+            if all(states[each] is False for each in declared):
+                return False
+        if all(states[each] is True for each in declared):
+            kinds = {kind for kind, _, _ in declared}
+            places = {each[2] for each in declared}
+            target = Typed(self.fields, next(iter(kinds))).target() if len(kinds) == 1 else None
+            place = next(iter(places)) if len(places) == 1 else None
+            read = statements.binding(place[1], base) if place is not None else None
+            return True, target, place, read
+        if any(states[each] is None for each in declared):
+            return Withholding(
+                f"the build types `{base}` as a structured binding's reference to its "
+                "element, which the debugger shows as an address, but Peeky cannot read its "
+                "declaration's line to tell it from a reference the code declares; print it "
+                "from the program",
+                "not shown",
+                None,
+            )
+        return Withholding(
+            f"`{base}` here may be a structured binding the build holds as a reference to "
+            "its element, which the debugger shows as an address, or a reference of that "
+            "name, and Peeky cannot tell which; print it from the program",
+            "not shown",
+            None,
+        )
+
+    def _bound_alive(self, frame, base, place, read):
+        """None where what a structured binding refers to lives at every stop in its
+        scope (#296 review): a by-value binding's hidden copy, which the frame owns, or,
+        by reference (`auto &`, `const auto &`, `auto &&`), an object of this frame or a
+        member of one (`p`, `o.inner`: a local or by-value parameter in scope there,
+        through no reference or pointer), or for a range-`for`, an element of such a C
+        array. Else a Withholding: `auto &[t, u] = make(0)[0];` refers into a temporary
+        the statement destroyed, which a later one may reuse; a call, a subscript, `*p`,
+        `p->x` or a global are not proven either."""
+        if read is None:
+            return Withholding(
+                "the binding refers to an object Peeky can't prove is still alive: it can't "
+                f"read what `{base}`'s declaration binds, or whether by reference; print it "
+                "from the program",
+                "not shown",
+                None,
+            )
+        if not read[0]:
+            return None
+        chain = re.fullmatch(r"([A-Za-z_]\w*)((?:\s*\.\s*[A-Za-z_]\w*)*)", read[1])
+        typed = self._local_object(frame, chain[1], place[1]) if chain else None
+        for member in re.findall(r"[A-Za-z_]\w*", chain[2]) if chain else ():
+            typed = _member_object(typed, member)
+        if typed is not None and (not read[2] or typed.kind() == "array"):
+            return None
+        what = f"an element of `{read[1][:60]}`" if read[2] else f"`{read[1][:60]}`"
+        return Withholding(
+            f"the binding refers to an object Peeky can't prove is still alive: `{base}` "
+            f"binds {what} by reference, and only an object of this frame, or a member of "
+            "one, is proven. Read it where the code names that object, or bind by value "
+            "(`auto [...]`, no `&`)",
+            "not shown",
+            None,
+        )
+
+    def _local_object(self, frame, root, line):
+        """``native_previews.Typed`` of the object ``root`` names on ``line`` of the
+        function ``frame`` runs: each of its declarations in scope there (Statements.
+        scope_lines; a parameter, the whole function) is a local or by-value parameter of
+        one object type, no reference or pointer, nor one reached through either; else
+        None."""
+        from peeky.native_previews import Typed
+
+        function = self._function_at(frame) or {}
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+        if statements is None:
+            return None
+        found = set()
+        for kind, storage, where in (function.get("types") or {}).get(root) or ():
+            if storage != "parameter":
+                if where is None or where[0] != Path(source).name or where[1] > line:
+                    continue
+                lines = statements.scope_lines(where[1], root)
+                if lines is None:
+                    return None
+                if not lines[0] <= line <= lines[1]:
+                    continue
+            if storage == "through":
+                return None
+            found.add(kind)
+        if len(found) != 1:
+            return None
+        typed = Typed(self.fields, next(iter(found)))
+        return None if typed.kind() in ("reference", "pointer", "unknown") else typed
+
+    def display_type(self, variable, frame, top=True, path=None):
+        """The element's type for a root local the build holds as a reference to a
+        structured binding's element (#291): `std::tuple_element<0, std::pair<long,
+        long> >::type`, as the binding is declared, where LLDB names the reference (`…
+        &&`). None for any other value, whose type stays LLDB's."""
+        bare = re.fullmatch(r"(.*?\S)\s*&{1,2}\s*", str(variable.get("type") or ""))
+        if not top or bare is None or not isinstance(self._element_binding(variable, frame), tuple):
+            return None
+        return bare[1]
+
+    def bound_element(self, variable, frame, fetch, note=None):
+        """How the worker shows a root local the build holds as a reference to a
+        structured binding's element (#291: GCC's `t` in `auto [t, u] = pair;`), which
+        the debugger shows as the element's address. None for any other local. Else:
+
+        - a Withholding, where the reference may not be set (``note``: why the row would
+          be shown with a note), what it refers to may be gone (``_bound_alive``: a
+          reference-qualified binding of anything but this frame's own object), or the
+          element cannot be read;
+        - {"variable": the debugger's child that is the element (a number, a character,
+          a pointer), named as the row and listing nothing}, read as any value;
+        - {"strip": True} for a struct, class, array or standard container, whose
+          members the debugger lists as the reference's own: element_text shows it.
+
+        ``fetch(reference, count)``: the first children the debugger lists for a value."""
+        found = self._element_binding(variable, frame)
+        if found is False:
+            return None
+        if not isinstance(found, tuple):
+            return found
+        if note:
+            return Withholding(
+                "the build reads this structured binding through a reference that may not be "
+                f"set yet here, and Peeky reads nothing through it: {note[:180]}",
+                "not shown",
+                None,
+            )
+        name = str(variable.get("name") or "")
+        shown = split_located(name)
+        base = shown[0] if shown else name
+        if (dead := self._bound_alive(frame, base, found[2], found[3])) is not None:
+            return dead
+        target = found[1]
+        if target is not None and target.kind() in (
+            "record",
+            "union",
+            "library",
+            "array",
+            "incomplete",
+        ):
+            return {"strip": True}
+        unread = (
+            f"`{base}` is a structured binding the build holds as a reference to its "
+            "element, which the debugger shows as an address, and the debugger listed no "
+            "element through it{}; print it from the program"
+        )
+        reference = variable.get("variablesReference")
+        try:
+            children = fetch(reference, 2) if type(reference) is int and reference > 0 else []
+        except ValueError as exc:
+            return Withholding(unread.format(f" ({str(exc)[:80]})"), "not shown", None)
+        element = re.sub(r"\s*&{1,2}\s*$", "", str(variable.get("type") or ""))
+        if (
+            len(children) != 1
+            or not str(children[0].get("name") or "").startswith(("&", "*"))
+            or " ".join(str(children[0].get("type") or "").split()) != " ".join(element.split())
+        ):
+            return Withholding(unread.format(""), "not shown", None)
+        listed = {
+            key: value
+            for key, value in children[0].items()
+            if key not in ("indexedVariables", "namedVariables", "presentationHint")
+        }
+        return {"variable": {**listed, "name": name, "variablesReference": 0}}
+
+    def element_text(self, variable, frame, value):
+        """bound_element's {"strip": True} element as the row shows it, from ``value``,
+        the row's text (`0x… {x = 1, y = 2}`, `0x… "apple"`, `0x… size=2 [15, 16]`):
+        the text after the address, or as lldb-dap shows such a value with no text of
+        its own (`Pt @ 0x…`); a Withholding for any other text. Never the address alone."""
+        located = re.fullmatch(r"(0x[0-9a-fA-F]{1,16})(?: (.+))?", str(value or ""), re.S)
+        if located is None:
+            name = split_located(str(variable.get("name") or ""))
+            return Withholding(
+                f"`{name[0] if name else variable.get('name')}` is a structured binding the "
+                "build holds as a reference to its element, and the debugger shows it as "
+                f"{str(value)[:60]!r}, not that element's address; print it from the program",
+                "not shown",
+                None,
+            )
+        if located[2]:
+            return located[2]
+        element = self.display_type(variable, frame) or "element"
+        return f"{element} @ 0x{int(located[1], 16):x}"
+
     def not_yet_declared(
         self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
     ):
@@ -5110,7 +5365,52 @@ class NativeSession:
         None. Its storage then holds whatever an earlier call or iteration left.
         ``stack``: the frames listed with it (innermost first), when known; ``deeper()``:
         more of them, when a rule needs what runs below the listed ones. ``siblings``
-        (the frame's rows) and ``stop`` (the stop's reason) are for Rust's rules."""
+        (the frame's rows) and ``stop`` (the stop's reason) are for Rust's rules.
+
+        A local shown with a note (a ValueNote: a loop may return to its declaration's
+        first instruction) that the build holds as a reference to a structured binding's
+        element (#291) is withheld instead: until its declaration runs on this pass, that
+        reference may point anywhere, and nothing is read through it. So is one at a stop
+        on its declaration's lines in an optimized build, where whether that has run on
+        this pass cannot be told."""
+        reason = self._not_yet_declared(variable, frame, innermost, stack, deeper, siblings, stop)
+        if reason is not None and not isinstance(reason, ValueNote):
+            return reason
+        found = self._element_binding(variable, frame)
+        if isinstance(reason, ValueNote) and found is not False:
+            return (
+                f"{reason}: the build reads this structured binding through a reference its "
+                "declaration sets, which may point anywhere until then; read it after its "
+                "declaration"
+            )
+        if (
+            isinstance(found, tuple)
+            and found[2] is not None
+            and getattr(self.target, "optimization", "O0") != "O0"
+            and (place := self._place(frame)) is not None
+            and Path(place[0]).name == found[2][0]
+        ):
+            # Optimized, where in its declaration's lines a stop is cannot be told (#173),
+            # so neither can whether this pass has set the reference (#296 review).
+            line = found[2][1]
+            statements = self._statements(place[0])
+            name = split_located(str(variable.get("name")))
+            through = (
+                statements.declared_through(line, name[0] if name else variable.get("name"))
+                if statements is not None
+                else None
+            )
+            if line <= place[1] <= max(line, through or line):
+                return (
+                    f"declared on line {line}, and in an optimized build Peeky cannot tell "
+                    "whether this stop is past that declaration on this pass: the build reads "
+                    "this structured binding through a reference its declaration sets, which "
+                    "may point anywhere until then; read it below its declaration"
+                )
+        return reason
+
+    def _not_yet_declared(self, variable, frame, innermost, stack, deeper, siblings, stop):
+        """not_yet_declared's reason, before a binding held as a reference is judged."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
         line = (frame or {}).get("line")
         if (unstored := self._prologue_unstored(variable, frame)) is not None:
@@ -6333,8 +6633,9 @@ class NativeSession:
         that brings it in (the preprocessed text has its lines there instead).
         ``entering()``: whether the stop is the first instruction of the statements that
         start on the line (None: it is not), where a range-`for`'s binding there is not
-        declared yet; where the loop's header names the local too, a stop Peeky cannot
-        tell to be past it is hedged (#283). ``siblings``: the frame's rows, when known,
+        declared yet; where the loop's header names the local too, or any statement's header
+        names it before the line's declaration (#286), a stop Peeky cannot tell to be past
+        that header is hedged (#283). ``siblings``: the frame's rows, when known,
         to say whether the debugger lists what the code names."""
         # An optimized build's local in registers is listed all the same (#173).
         found = shown_declaration(self.declarations, name, self._block_pc(frame), unstored=True)
@@ -6372,19 +6673,43 @@ class NativeSession:
                 and tuple(function.get("span") or ()) == (line, line)
             )
             storage = statements.block_storage(at, base, after, True, body, own=own)
-            if storage and storage[0] == "binding":
+            header = None
+            if storage:
                 # A range-`for` header holding the line that names the outer local before
                 # its binding exists: running it may read that local, or not (#283).
-                header = None if body else statements.range_header(at, base)
-                entered = entering() if entering is not None else None
-                if entered:
-                    storage = statements.block_storage(at, base, after, True, body, True, own)
-                if storage and storage[0] == "binding":
-                    # Past the first instruction (unoptimized), a header on the line has
-                    # run; on a header over several lines, no stop can be told apart.
-                    if header is not None and (entered is not False or header[0] != header[1]):
+                ranged, entered, asked = None, None, storage[0] == "binding"
+                if asked:
+                    ranged = None if body else statements.range_header(at, base)
+                    entered = entering() if entering is not None else None
+                    if entered:
+                        storage = statements.block_storage(at, base, after, True, body, True, own)
+
+                # A header on the line has run only where the stop is proven past its `)`:
+                # unoptimized, past the line's first instruction, at a column after it
+                # (not back from a call in it: `if (check(t) && t > 2)`, #287 review), and
+                # where no part naming the local runs on each pass. On a header over
+                # several lines, no stop is told apart.
+                def ran(lines, always=False):
+                    return (
+                        entered is False
+                        and lines[0] == lines[1]
+                        and not always
+                        and self._header_ran(frame, source, line, statements, at)
+                    )
+
+                if storage and storage[0] == "binding" and ranged is not None:
+                    if not ran(ranged):
                         storage = ("binding-header", *storage[1:])
-                    elif entering is not None and entered is None:
+                elif storage and not body:
+                    # Any statement's header that names it before the line's declaration
+                    # does the same: `if (t) { static long t = 5; use(t); }` (#286).
+                    found = statements.header_before(at, base, after, bool(entered), own)
+                    if found is not None and not asked:
+                        entered = entering() if entering is not None else None
+                    if found is not None and not ran(found[1:3], found[3]):
+                        header = found[0]
+                if storage and storage[0] == "binding" and header is None:
+                    if entering is not None and entered is None:
                         # An optimized build: whether the stop starts the line, before the
                         # binding exists, cannot be told (#173).
                         before = statements.block_storage(at, base, after, True, body, True, own)
@@ -6392,7 +6717,7 @@ class NativeSession:
                             storage = ("binding-unsure", *storage[1:])
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
-                storage = None if origin is None else (storage[0], *origin)
+                storage = None if origin is None else (storage[0], *origin, header)
             verdicts.add(storage)
         if failure is None and verdicts == {False}:
             return None
@@ -6411,7 +6736,7 @@ class NativeSession:
                 f"`{base}` a block around it declares, not this local ({why}), so a change "
                 "to it may not reach that code",
             )
-        kind, declared_in, at = next(iter(verdicts))
+        kind, declared_in, at, header = next(iter(verdicts))
         place = f"line {at}" if declared_in == source else f"{Path(declared_in).name}:{at}"
         listed = f"`{base} @ {Path(declared_in).name}:{at}`"
         if siblings is not None:
@@ -6443,7 +6768,12 @@ class NativeSession:
             f"separately as {listed}",
             "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
         }.get(kind, f"the block's `{kind}` `{base}` ({place}), {unlisted}")
-        unsure = kind in ("binding-unsure", "binding-header")
+        if header is not None:
+            what += (
+                f", but the `{header}` statement's header names `{base}` before that "
+                "declaration, and Peeky cannot tell whether running the header reads this local"
+            )
+        unsure = kind in ("binding-unsure", "binding-header") or header is not None
         names, would = ("may name", "may") if unsure else ("names", "would")
         return Withholding(
             f"the code here {names} {what}: this row is the outer local of that name",
@@ -6452,6 +6782,52 @@ class NativeSession:
             f"local this row shows is the outer one, so a change to it {would} not reach "
             "that code",
         )
+
+    def _header_ran(self, frame, source, line, compiled, at):
+        """Whether the stopped ``frame``'s code on ``source:line`` is proven past the `)`
+        of every statement header on the line: the line table's column for its address
+        (lldb-dap gives it with the frame) is after each such `)`, or at a range-`for`'s
+        declaration or `:`, which carry the loop's implicit code, all emitted after its
+        range expression: the one-time `begin` and `end` setup, each pass's test and
+        binding, and the range temporary's final cleanup. Only on a line of
+        plain ASCII without tabs, whose columns clang and GCC count alike, and that no
+        macro changes: as written, it holds the tokens of the compiler's preprocessed
+        text (``compiled``, its Statements, line ``at``). A stop back from a call in a
+        condition (`if (check(t) && t > 2)`) is not past it."""
+        column = (frame or {}).get("column")
+        if type(column) is not int or column <= 0 or (frame or {}).get("line") != line:
+            return False
+        written, text = self._statements(source), self._source_text(source)
+        if written is None or text is None or written.unreadable:
+            return False
+        if not 1 <= line <= len(written.starts) or not 1 <= at <= len(compiled.starts):
+            return False
+        begin = written.starts[line - 1]
+        end = written.starts[line] if line < len(written.starts) else len(written.text)
+        raw = text.split("\n")[line - 1] if text.count("\n") >= line - 1 else None
+        if raw != written.text[begin:end].rstrip("\n") or not raw.isascii() or "\t" in raw:
+            return False
+        start = compiled.starts[at - 1]
+        stop = compiled.starts[at] if at < len(compiled.starts) else None
+        if "".join(written.blanked[begin:end].split()) != "".join(
+            compiled.blanked[start:stop].split()
+        ):
+            return False
+        headers = written._headers(line)
+        if not headers:
+            return False
+        for keyword, _, opening, closing in headers:
+            if opening < begin or closing >= end:
+                return False
+            if column > closing - begin + 1:
+                continue
+            # A range-`for`'s declaration and `:` carry its implicit code, emitted after
+            # its range expression: `begin`/`end` setup, each pass's test and binding,
+            # and the final cleanup of the range's temporary.
+            ranged = written._range_colon(opening, closing) if keyword == "for" else None
+            if ranged is None or not ranged[0] - begin < column <= ranged[1] - begin + 1:
+                return False
+        return True
 
     def _units(self, source):
         """The program's translation units that may hold ``source``'s lines: itself, and

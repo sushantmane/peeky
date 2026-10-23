@@ -13,6 +13,7 @@ from peeky.fields import (
     RUST_LIBRARIES,
     Unsettable,
     debugger_steps,
+    element_reference,
     local_types,
     referred_locals,
     settable_member,
@@ -915,6 +916,82 @@ def test_a_variable_read_through_a_pointer_is_stored_through_it():
     # Rust's walk keeps its own storages.
     assert {s for _, s, _ in local_types(dies, [0x20])["dropped"]} == {"automatic"}
     assert referred_locals(dies, [0x20]) == {"big", "dropped", "vla"}
+
+
+def typed(name, kind, location=None):
+    return {"DW_AT_name": f'"{name}"', "DW_AT_type": f"0x{kind:08x}"} | (
+        {"DW_AT_location": location} if location else {}
+    )
+
+
+# GCC's `auto [t, u] = pair;` (#291): each name is a variable holding a reference to
+# `std::tuple_element<I, E>::type`, the element, at a plain frame offset.
+TUPLE_BINDINGS = dump(
+    (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"t.cpp"'}),
+    (0x10, 1, "DW_TAG_base_type", base("long int", "DW_ATE_signed", "0x08")),
+    (0x14, 1, "DW_TAG_namespace", {"DW_AT_name": '"std"'}),
+    (
+        0x18,
+        2,
+        "DW_TAG_structure_type",
+        {"DW_AT_name": '"tuple_element<0, std::pair<long int, long int> >"'},
+    ),
+    (0x1C, 3, "DW_TAG_typedef", {"DW_AT_name": '"type"', "DW_AT_type": "0x00000010"}),
+    (0x20, 2, "DW_TAG_namespace", {"DW_AT_name": '"__1"'}),
+    (0x24, 3, "DW_TAG_structure_type", {"DW_AT_name": '"tuple_element<1, std::tuple<long> >"'}),
+    (0x28, 4, "DW_TAG_typedef", {"DW_AT_name": '"type"', "DW_AT_type": "0x00000010"}),
+    (0x2C, 1, "DW_TAG_namespace", {"DW_AT_name": '"mine"'}),
+    (0x30, 2, "DW_TAG_structure_type", {"DW_AT_name": '"tuple_element<0, P>"'}),
+    (0x34, 3, "DW_TAG_typedef", {"DW_AT_name": '"type"', "DW_AT_type": "0x00000010"}),
+    (0x38, 1, "DW_TAG_rvalue_reference_type", {"DW_AT_type": "0x0000001c"}),
+    (0x3C, 1, "DW_TAG_reference_type", {"DW_AT_type": "0x0000001c"}),
+    (0x40, 1, "DW_TAG_reference_type", {"DW_AT_type": "0x00000028"}),
+    (0x44, 1, "DW_TAG_reference_type", {"DW_AT_type": "0x00000010"}),
+    (0x48, 1, "DW_TAG_reference_type", {"DW_AT_type": "0x00000034"}),
+    (0x4C, 1, "DW_TAG_pointer_type", {"DW_AT_type": "0x0000001c"}),
+    (0x60, 1, "DW_TAG_subprogram", {"DW_AT_name": '"main"'}),
+    (0x64, 2, "DW_TAG_variable", typed("t", 0x38, "DW_OP_fbreg -200")),
+    (0x68, 2, "DW_TAG_variable", typed("r", 0x3C, "DW_OP_reg20 W20")),
+    (0x6C, 2, "DW_TAG_variable", typed("gone", 0x38)),
+    (0x70, 2, "DW_TAG_variable", typed("libcxx", 0x40, "DW_OP_fbreg -192")),
+    (0x74, 2, "DW_TAG_variable", typed("plain", 0x44, "DW_OP_fbreg -184")),
+    (0x78, 2, "DW_TAG_variable", typed("own", 0x48, "DW_OP_fbreg -176")),
+    (0x7C, 2, "DW_TAG_variable", typed("pointer", 0x4C, "DW_OP_fbreg -168")),
+    (0x80, 2, "DW_TAG_formal_parameter", typed("passed", 0x38, "DW_OP_fbreg -8")),
+)
+
+
+def test_gccs_binding_of_a_pair_or_tuple_is_reached_through_its_reference():
+    # #291: GCC's `t` of `auto [t, u] = make(i)[0];` was "automatic", its row the element's
+    # address. It is the element, reached through the reference however it is kept.
+    dies = _parse_dies(TUPLE_BINDINGS)
+    assert [element_reference(dies, f"0x{kind:08x}") for kind in (0x38, 0x3C, 0x40)] == [
+        True,
+        True,
+        True,
+    ]
+    # A reference of the program's own, one to another namespace's `tuple_element`, a
+    # pointer, and no type at all are not.
+    assert not any(
+        element_reference(dies, value) for value in ("0x00000044", "0x00000048", "0x0000004c", None)
+    )
+    storages = {
+        name: {storage for _, storage, _ in kinds}
+        for name, kinds in local_types(dies, [0x60], through=True).items()
+    }
+    assert storages == {
+        "t": {"through"},
+        "r": {"through"},
+        "gone": {"through"},
+        "libcxx": {"through"},
+        "plain": {"automatic"},
+        "own": {"automatic"},
+        "pointer": {"automatic"},
+        # A parameter is no binding, whatever its type.
+        "passed": {"parameter"},
+    }
+    # Rust's walk keeps its own storages.
+    assert {s for _, s, _ in local_types(dies, [0x60])["t"]} == {"automatic"}
 
 
 def test_a_local_read_through_a_pointer_is_refused_as_a_root_and_by_its_fields():

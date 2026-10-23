@@ -9,6 +9,10 @@ WHOLE = (
     "trim_left(std::__1::basic_string<char, std::__1::char_traits<char>, "
     "std::__1::allocator<char>> const&)"
 )
+# What a C, C++ or Rust value whose addresses differ may hide (#292).
+HOLDS = (
+    "an address in it may be another element's too; compare offsets with address() (COOKBOOK 4.8)"
+)
 
 
 def probe_result(function=WHOLE, **extra):
@@ -275,7 +279,9 @@ def store(tmp_path):
     return tmp_path / "evidence" / "evidence.db"
 
 
-def saved(store, rows, hits=None, requested="all", warnings=(), outcomes=None, **probe):
+def saved(
+    store, rows, hits=None, requested="all", warnings=(), outcomes=None, language="c", **probe
+):
     """Record a run of (hit, phase, selector, value[, stop]) rows that stopped ``hits``
     times (default: its last hit) of the ``requested``; the probe asked for exactly the
     selectors it captured. A row's stop is which of its line's 2 breakpoint locations
@@ -294,7 +300,7 @@ def saved(store, rows, hits=None, requested="all", warnings=(), outcomes=None, *
     recorded["warnings"] = list(warnings)
     if outcomes is not None:
         recorded["set_outcomes"] = outcomes
-    return evidence.record(store, recorded, language="c")
+    return evidence.record(store, recorded, language=language)
 
 
 def test_diff_leaves_out_after_set_values_the_intervention_left(store):
@@ -391,15 +397,29 @@ def test_diff_gives_one_address_only_row_per_selector(store):
         rows = [(hit, "observed", "self.values", vec(base)) for hit in (1, 2, 3, 4)]
         saved(store, rows + [(hit, "observed", "v", "3") for hit in (1, 2, 3, 4)])
     rows = evidence.run_query(store, "diff")["rows"]
+    # In a C, C++ or Rust run, another address may be another element's (#292).
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
-        (1, "self.values", "addresses only, at 4 hits (one row per selector: its first hit)")
+        (
+            1,
+            "self.values",
+            f"addresses differ at 4 hits (one row per selector: its first hit): {HOLDS}",
+        )
     ]
     assert rows[0]["value_a"] == vec(0x16B43EDB0) and rows[0]["value_b"] == vec(0x16D17EDB0)
     # A single hit keeps the plain note.
     saved(store, [(1, "observed", "p", vec(0x16B43EDB0))])
     saved(store, [(1, "observed", "p", vec(0x16D17EDB0))])
     (row,) = evidence.run_query(store, "diff")["rows"]
-    assert row["note"] == "addresses only"
+    assert row["note"] == f"addresses differ: {HOLDS}"
+    # A Python repr's address is no element's: `addresses only`, one row too.
+    for base in (0x104A5B2C0, 0x1052C3A90):
+        saved(
+            store,
+            [(hit, "observed", "n", f"<Node object at 0x{base:x}>") for hit in (1, 2)],
+            language="python",
+        )
+    (row,) = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == "addresses only, at 2 hits (one row per selector: its first hit)"
 
 
 def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
@@ -584,17 +604,29 @@ def test_a_return_whose_hits_rows_disagree_is_not_paired_by_a_guessed_stop(store
     ), result["notes"]
 
 
-def test_diff_collapses_address_only_rows_per_stop(store):
+@pytest.mark.parametrize(
+    "language, shown, kind, after",
+    [
+        ("c", "Vec<long> @ 0x{:012x}", "addresses differ", f": {HOLDS}"),
+        ("python", "<Node object at 0x{:x}>", "addresses only,", ""),
+    ],
+)
+def test_diff_collapses_address_only_rows_per_stop(store, language, shown, kind, after):
     # Finding 9 with #160's stops: one address-only row per selector and stop.
     from peeky import evidence
 
     for base in (0x16B43EDB0, 0x16D17EDB0):
-        address = f"Vec<long> @ 0x{base:012x}"
-        saved(store, [(hit, "observed", "p", address, 2 - hit % 2) for hit in (1, 2, 3, 4)])
+        address = shown.format(base)
+        rows = [(hit, "observed", "p", address, 2 - hit % 2) for hit in (1, 2, 3, 4)]
+        saved(store, rows, language=language)
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["hit"], r["note"]) for r in rows] == [
-        (1, "addresses only, at 2 hits at stop 1 (one row per selector and stop: its first hit)"),
-        (2, "addresses only, at 2 hits at stop 2 (one row per selector and stop: its first hit)"),
+        (
+            stop,
+            f"{kind} at 2 hits at stop {stop} (one row per selector and stop: its first hit)"
+            f"{after}",
+        )
+        for stop in (1, 2)
     ]
 
 

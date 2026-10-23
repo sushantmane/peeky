@@ -1353,6 +1353,82 @@ def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
     assert statements.block_storage(5, "t", 2) == ("binding", 5)
 
 
+BINDS_SOURCE = """int main() {
+    auto [t, u] = make(i)[0];
+    auto &[r, s] = held[1]; const auto&& [a, b] = three; // auto [c, d] = no;
+    for (const auto &[k, v] : pairs) { use(k); }
+    long &&w = std::move(x); auto [w2, z] = y;
+    auto lam = [&] { auto [m, n] = g(); return m; }; long &m = x;
+    auto [e, f] = make([] { long e = 4; return e; });
+    long q = 1, &[[maybe_unused]] p = q;
+    use("auto [g, h] = x;");
+    auto [first,
+          second] = p; long &&third = q();
+}
+"""
+
+
+def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
+    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &&`:
+    # only the line tells that it names the element, not a reference the code declares.
+    statements = Statements(BINDS_SOURCE, raw_strings=True)
+    names = ("t", "u", "r", "s", "a", "b", "c", "d", "k", "v", "w", "w2", "z", "m", "n")
+    found = {
+        (line, name)
+        for line in range(1, 14)
+        for name in (*names, "e", "f", "q", "p", "g", "h", "first", "second", "third")
+        if statements.binds(line, name)
+    }
+    assert found == {
+        (2, "t"),
+        (2, "u"),
+        (3, "r"),
+        (3, "s"),
+        (3, "a"),
+        (3, "b"),
+        (4, "k"),
+        (4, "v"),
+        (5, "z"),
+        (5, "w2"),
+        (7, "e"),
+        (7, "f"),
+        (10, "first"),
+        (11, "second"),
+    }
+    # A comment's or a string's brackets bind nothing (`c`, `g`), nor does a lambda's
+    # body hold the line's own (`m` is the reference `long &m` there); a plain reference
+    # (`w`, `p`, `third` after a binding's brackets that closed) is no binding; nor is any
+    # of C. Brackets over two lines bind each line's name.
+    assert not Statements(BINDS_SOURCE, raw_strings=False).binds(2, "t")
+    assert not statements.binds(0, "t") and not statements.binds(99, "t")
+
+
+def test_a_binding_says_how_it_binds_and_what():
+    # Review of #296: a binding by reference may refer into a temporary its line destroys.
+    source = """int main() {
+    auto &[t, u] = make(0)[0];
+    auto [x, y] = p;
+    for (const auto &[k, v] : m) { use(k); }
+    auto &&[g, h](one(1)); auto const &[a, b] = q . inner;
+    if (auto &[c, d] = p; c) {}
+    auto [first,
+          second]{pp};
+    long &w = x;
+}
+"""
+    statements = Statements(source, raw_strings=True)
+    assert [statements.binding(line, name) for line, name in [(2, "t"), (2, "u")]] == [
+        (True, "make(0)[0]", False)
+    ] * 2
+    assert statements.binding(3, "x") == (False, "p", False)
+    assert statements.binding(4, "v") == (True, "m", True)
+    assert statements.binding(5, "g") == (True, "one(1)", False)
+    assert statements.binding(5, "b") == (True, "q . inner", False)
+    assert statements.binding(6, "c") == (True, "p", False)
+    assert statements.binding(7, "first") == statements.binding(8, "second") == (False, "pp", False)
+    assert statements.binding(9, "w") is None and statements.binding(2, "x") is None
+
+
 RANGE_LAMBDA_SOURCE = """int f() {
     long t = 1;
     for (auto [t, u] : make([&] { long t = 40; return id(t); })) {
@@ -1437,6 +1513,159 @@ def test_a_range_for_header_says_where_it_names_the_outer_local():
     assert statements.block_storage(7, "t", 7, True) is False
     # C has no structured bindings.
     assert Statements(RANGE_HEADER_SOURCE, raw_strings=False).range_header(3, "t") is None
+
+
+STATEMENT_HEADER_SOURCE = """long f(long x, P p, P *q) {
+    long t = x;
+    if (t) { static long t = 5; use(t); }
+    while (t-- > 0) { static long t = 6; use(t); }
+    for (long i = 0; i < t; i++) { static long t = 7; use(t + i); }
+    for (long i = t; i < 3; i++) { static long t = 8; use(t + i); }
+    switch (t) { default: { static long t = 9; use(t); } }
+    if (t > 0 &&
+        t < 9) { static long t = 10; use(t); }
+    if (t) { typedef int t; t k = 4; use(k); }
+    if (t) { extern long t; use(t); }
+    if (p.t + q->t) { static long t = 11; use(t); }
+    if (u) { static long t = 12; use(t); }
+    { static long t = 13; if (t) { use(t); } }
+    { typedef int t; } if (t) { static long t = 14; use(t); }
+    do { static long t = 15; use(t); } while (--t > 0);
+    return t;
+}
+"""
+STATEMENT_HEADER_CPP = """long f(long x, P p, P *q) {
+    long t = x;
+    if (long k = t; k) { static long t = 5; use(t + k); }
+    switch (long k = t; k) { default: { static long t = 6; use(t + k); } }
+    for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); }
+    for (const auto &[a, b] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) { use(a); }
+    for (long a : make(t)) { static long t = 8; use(t + a); }
+    for (auto w = make(t); long a : w) { static long t = 9; use(t + a); }
+    if constexpr (sizeof(t) > 1) { use(t); }
+    if (p.template t<0>() + P::template t<1>() + n::t) { static long t = 10; use(t); }
+    for (const auto &[a, b] : make2(1, [] { long r; { static long t = 11; r = t; } return t; })) { use(a); }
+    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 12; r = t; } return r; })) {
+        use(t * u);
+    }
+    return t;
+}
+"""
+
+
+def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_hides_it():
+    # #286: `if (t) { static long t = 5; use(t); }` named the static at the line's first
+    # instruction, though its header runs first and names the outer `t` there. Any
+    # statement's header naming it before the line's declaration hides it counts; a
+    # `while`'s condition and a `for`'s condition or increment run on each pass.
+    statements = Statements(STATEMENT_HEADER_SOURCE, raw_strings=False)
+    found = {line: statements.header_before(line, "t", 2) for line in range(3, 17)}
+    assert found == {
+        3: ("if", 3, 3, False),
+        4: ("while", 4, 4, True),
+        5: ("for", 5, 5, True),
+        # Only the init-statement, which runs once, names it.
+        6: ("for", 6, 6, False),
+        7: ("switch", 7, 7, False),
+        # A header over two lines: on its first, nothing a block declares hides it.
+        8: None,
+        9: ("if", 8, 9, False),
+        10: ("if", 10, 10, False),
+        11: ("if", 11, 11, False),
+        # Members; a header not naming it; a `static` declared before the header (which
+        # the header names), or in a block closed before it; a `do` loop's condition,
+        # after the block that declares it.
+        **{line: None for line in (12, 13, 14, 15, 16)},
+    }, found
+    assert statements.block_storage(9, "t", 2, True) == ("static", 9)
+    # A `static`'s own name, read to its end, is what hides the local there.
+    line = STATEMENT_HEADER_SOURCE.splitlines()[2]
+    begin = statements.starts[2]
+    header, declared = begin + line.index("(t)") + 2, begin + line.index("long t = 5") + 6
+    assert statements.block_storage(3, "t", 2, True, until=header) is False
+    assert statements.block_storage(3, "t", 2, True, until=declared) == ("static", 3)
+    assert statements.block_storage(3, "t", 2, True) == ("static", 3)
+
+    statements = Statements(STATEMENT_HEADER_CPP, raw_strings=True)
+    found = {line: statements.header_before(line, "t", 2) for line in range(3, 14)}
+    assert found == {
+        3: ("if", 3, 3, False),
+        4: ("switch", 4, 4, False),
+        # A binding in the loop's body.
+        5: ("for", 5, 5, True),
+        # A lambda's `static` in the range: that lambda's own code, never this one's.
+        6: ("for", 6, 6, True),
+        # A range's expression, and a C++20 init-statement, run once.
+        7: ("for", 7, 7, False),
+        8: ("for", 8, 8, False),
+        # Nothing hides it (`if constexpr`); members, `template` ones too; a lambda's
+        # `t` after its block closes, past the `static`.
+        **{line: None for line in (9, 10, 11)},
+        # The loop's own binding hides it in its range (`range_header` tells that), but
+        # not at the line's first instruction, where a lambda's `static` is next.
+        12: None,
+        13: None,
+    }, found
+    assert statements.header_before(12, "t", 2, entering=True) == ("for", 12, 12, True)
+    assert statements.block_storage(12, "t", 2, True, entering=True) == ("static", 12)
+    assert statements.range_header(12, "t") == (12, 12)
+    assert statements.header_before(3, "u", 2) is None
+
+
+IF_CONSTEXPR_SOURCE = """long f(long x) {
+    long t = x;
+    if constexpr (sizeof(long) > 1) { static long t = 5; use(t); }
+    if consteval { static long t = 6; use(t); }
+    if !consteval { static long t = 7; use(t); }
+    if not consteval { static long t = 8; use(t); }
+    if (x) { use(x); } else if constexpr (sizeof(long) > 1) { static long t = 9; use(t); }
+    if constexpr (sizeof(t) > 1) { typedef int t; t k = 4; use(k); }
+    return t;
+}
+"""
+
+
+def test_an_if_constexpr_or_consteval_block_hides_the_outer_local():
+    # #289: the block of `if constexpr (...)` was read as a function's body (its `(...)`
+    # as parameters), and that of `if consteval` as none of a statement's: what such a
+    # block declares on the stop's line hid nothing, and the outer `t` showed its value.
+    statements = Statements(IF_CONSTEXPR_SOURCE, raw_strings=True)
+    found = {line: statements.block_storage(line, "t", 2, True) for line in range(3, 9)}
+    assert found == {
+        **{line: ("static", line) for line in range(3, 8)},
+        8: ("typedef", 8),
+    }, found
+    code = statements._code()[0]
+    braces = [at for at, char in enumerate(code) if char == "{"]
+    assert [statements._brace(at) for at in braces[1:]] == ["statement"] * 7, braces
+    # The header names `t` before the `typedef` (#286).
+    assert statements.header_before(8, "t", 2) == ("if", 8, 8, False)
+
+
+def test_a_range_for_header_says_where_its_declaration_and_colon_are():
+    # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
+    # test and binding, its range's cleanup), all emitted after its range expression,
+    # carries its declaration's and its `:`'s columns; a classic `for`'s `?:` is no `:`.
+    text = """void f(void) {
+    for (const auto &[t, u] : make(t)) {}
+    for (auto w = make(t); long a : w) {}
+    for (i = 0; i < 3 ? 1 : 2; i++) {}
+    for (auto a : c ? x : y) {}
+}
+"""
+    found = {}
+    for raw_strings in (True, False):
+        statements = Statements(text, raw_strings=raw_strings)
+        for line in range(2, 6):
+            [(_, _, opening, closing)] = statements._headers(line)
+            colon = statements._range_colon(opening, closing)
+            found[raw_strings, line] = colon and tuple(text[at] for at in colon)
+    # C has no range-`for`.
+    assert found == {
+        **{(True, line): (first, ":") for line, first in ((2, "c"), (3, "l"), (5, "a"))},
+        (True, 4): None,
+        **{(False, line): None for line in range(2, 6)},
+    }, found
 
 
 OWN_STATIC = """long work(long a) {

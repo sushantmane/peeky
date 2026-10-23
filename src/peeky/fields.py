@@ -135,6 +135,39 @@ def referred_locals(dies, bodies):
     return frozenset(found)
 
 
+def element_reference(dies, value):
+    """Whether the DW_AT_type ``value`` of a variable is GCC's for a C++ structured
+    binding of a tuple-like type (`auto [t, u] = pair;`, #291): a reference (`&` or
+    `&&`) to `std::tuple_element<I, E>::type`, the type the standard gives the element
+    each name binds. GCC describes each name as a variable that holds that reference, so
+    the debugger shows the element's address as its value. clang marks such a variable
+    artificial, and lldb-dap does not list it."""
+    die = dies.get(_target(value))
+    if die is None or die["tag"] not in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
+        return False
+    typedef = dies.get(_target(die["attrs"].get("DW_AT_type")))
+    if typedef is None or typedef["tag"] != "DW_TAG_typedef":
+        return False
+    owner = dies.get(typedef["parent"])
+    if (
+        _text(typedef["attrs"].get("DW_AT_name")) != "type"
+        or owner is None
+        or owner["tag"] not in ("DW_TAG_structure_type", "DW_TAG_class_type")
+        or not (_text(owner["attrs"].get("DW_AT_name")) or "").startswith("tuple_element<")
+    ):
+        return False
+    space = dies.get(owner["parent"])
+    # Past an inline namespace (libc++'s `std::__1`).
+    while space is not None and space["tag"] == "DW_TAG_namespace":
+        name = _text(space["attrs"].get("DW_AT_name")) or ""
+        if name == "std":
+            return True
+        if not name.startswith("__"):
+            return False
+        space = dies.get(space["parent"])
+    return False
+
+
 def local_types(dies, bodies, through=False):
     """{name: frozenset((type offset, storage, (file name, line)))} for the parameters
     and variables of a function's code (``bodies``: its concrete DIEs; nested blocks,
@@ -143,7 +176,9 @@ def local_types(dies, bodies, through=False):
     memory of its own), "static" (a fixed address) or "other" (a location list, none);
     with ``through`` (C, C++), "through" for a variable the frame reaches through a
     pointer (`DW_OP_fbreg -16, DW_OP_deref`: a C++ structured binding of a reference, a
-    named return value, a C `__block` variable), which a change would write through;
+    named return value, a C `__block` variable), which a change would write through, and
+    for GCC's structured binding of a tuple-like type, wherever it is kept: a variable
+    holding a reference to its element (``element_reference``, #291);
     the file name (no directory) and line it is declared on, as
     LLDB names a local when several of its name are in scope (`s @ main.rs:81`), or
     None. None if there are too many to list them all."""
@@ -169,6 +204,12 @@ def local_types(dies, bodies, through=False):
         )
         storage = "other"
         if (
+            through
+            and die["tag"] == "DW_TAG_variable"
+            and element_reference(dies, _first(dies, chain, "DW_AT_type"))
+        ):
+            storage = "through"
+        elif (
             framed
             and through
             and _DEREF.search(location)

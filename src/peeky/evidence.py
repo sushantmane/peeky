@@ -637,6 +637,34 @@ _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
 # as a store's upgrade to 15 does, else has none.
 _HIT_STOP = f"COALESCE(s.stop, {_hits_stop('s')})"
 
+# A value that differs only in addresses, where an address is a pointer's or a value's
+# place, which can be another element's in the other run (#292: a pointer into an array
+# held element 6's address in one run and element 4's in the other, and `diff` called it
+# `addresses only`). That is a pointer or a reference row: its type ends in `*`, `&` or
+# `&&`, after any `const`, `volatile` or `restrict` (rtrim drops their letters), or starts
+# with Rust's `&` or `*` (`&[T]`, `*const T`). Or any value of a C, C++ or Rust run: a
+# preview shows the pointers in it as addresses only, and LLDB's `T @ 0x...` is where the
+# value is. Elsewhere, a Python repr's address or a Java object number, the masking
+# stands: `addresses only`.
+_POINTER_TYPE = "(rtrim({t}, ' _aceilnorstv') GLOB '*[*&]' OR {t} GLOB '[*&]*')"
+_NATIVE_LANGUAGES = "('c', 'cpp', 'rust')"
+# Each says what to do; `diff` puts `at N hits (...)` after `addresses differ`.
+_POINTS_ELSEWHERE = (
+    "addresses differ: it may point at another element too; compare offsets with address() "
+    "(COOKBOOK 4.8)"
+)
+_HOLDS_ELSEWHERE = (
+    "addresses differ: an address in it may be another element's too; compare offsets with "
+    "address() (COOKBOOK 4.8)"
+)
+_ADDRESS_KIND = f"""CASE
+          WHEN {_POINTER_TYPE.format(t="a.t")} OR {_POINTER_TYPE.format(t="b.t")}
+            THEN '{_POINTS_ELSEWHERE.replace("'", "''")}'
+          WHEN {_LANGUAGE.format(_A)} IN {_NATIVE_LANGUAGES}
+            OR {_LANGUAGE.format(_B)} IN {_NATIVE_LANGUAGES}
+            THEN '{_HOLDS_ELSEWHERE.replace("'", "''")}'
+          ELSE 'addresses only' END"""
+
 
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
@@ -659,7 +687,7 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
-        IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 'addresses only'
+        IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN {_ADDRESS_KIND}
     END AS kind,
     CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
       WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
@@ -685,19 +713,28 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # for selectors only one run captured). Then values changed by an intervention only one
 # run made, before what may follow from them (tenth evaluation: they came after 70 rows
 # of its effects); then real divergences, in hit and capture order (a hit only one run
-# reached is one); then values a view or a note qualifies in either run (a C local's leftovers
+# reached is one); then pointers whose addresses differ, which may point at another
+# element (`_ADDRESS_KIND`): not with the real divergences, since the stack and heap move
+# between runs, so most pointers differ whether or not they point at another element,
+# and the first real difference stays the first divergence; then values a view or a note
+# qualifies in either run (a C local's leftovers
 # on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
-# their note says (`missing in run b; qualified (run a: note)`); then values
+# their note says (`missing in run b; qualified (run a: note)`); then other values
 # that differ only in memory addresses; last, one row per selector only one run asked
 # for. Nothing is dropped: an address-only or qualified difference may still be real;
 # but an after-set value equal to its run's observed value at that hit, in each run
 # with one, is no difference of its own (the observed row has any: seventh evaluation,
 # finding 10), and one selector's address-only rows are one row, its first hit's, that
-# says how many hits there were (finding 9), one for each stop where both runs label them.
-_DIFF = f"""{_PAIR}
-SELECT {_PAIR_COLUMNS} FROM (
-  SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND qualified IS NULL AND NOT unchanged
+# says how many hits there were (finding 9), one for each stop where both runs label
+# them; so are its rows whose addresses differ.
+# The tiers' ranks that code reads too: the real divergences (`_after_first` finds the
+# first among them, never an address or a qualified value: review of PR #294), and the
+# selectors only one run captured, which are at no hit of their own.
+_REAL_RANK, _ONLY_IN_RANK = 10, 14
+# Every row of `diff` with its rank (the tier it is in) and pos (its capture order).
+_RANKED = f"""(
+  SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
+    FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
@@ -707,6 +744,14 @@ SELECT {_PAIR_COLUMNS} FROM (
     FROM (SELECT *, COUNT(*) OVER (PARTITION BY selector, note, value_a, value_b) AS alike
       FROM pair WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged)
     GROUP BY selector, note, value_a, value_b, CASE WHEN alike > 3 THEN NULL ELSE pos END
+  -- As rank 13 below, but the count goes after `addresses differ`, before what to do.
+  UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs,
+    CASE WHEN COUNT(*) > 1 THEN 'addresses differ at ' || COUNT(*) || ' hits'
+      || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
+      || 'selector') || ': its first hit)' || substr(kind, length('addresses differ') + 1)
+      ELSE note END, MIN(pos) FROM pair
+    WHERE qualified IS NULL AND kind LIKE 'addresses differ:%' AND NOT unchanged
+    GROUP BY selector, phase, st, kind
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
     AND NOT unchanged
@@ -718,7 +763,7 @@ SELECT {_PAIR_COLUMNS} FROM (
     WHERE qualified IS NULL AND kind = 'addresses only' AND NOT unchanged
     GROUP BY selector, phase, st
   -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
-  UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
+  UNION ALL SELECT {_ONLY_IN_RANK}, hit, phase, selector, value_a, value_b, 1,
     kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
     MIN(pos) FROM pair WHERE kind LIKE 'only in%' GROUP BY selector, kind
   UNION ALL SELECT 0, * FROM ({_STATUS_ROW})
@@ -748,8 +793,13 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND (va IS NOT vb OR {_SETS_UNKNOWN})))
+  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND (va IS NOT vb OR {_SETS_UNKNOWN})))"""
+_DIFF = f"""{_PAIR}
+SELECT {_PAIR_COLUMNS} FROM {_RANKED}
 ORDER BY rank, hit, phase = 'after-set', pos"""
+# The same rows' tiers and hits, for `_after_first`.
+_DIFF_RANKS = f"""{_PAIR}
+SELECT rank, hit FROM {_RANKED} WHERE hit IS NOT NULL"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
 # 8-digit data (0xdeadbeef, flags) are values, never masked. One regex, no callback.
@@ -916,7 +966,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     "compare": (
         "Every value of two runs side by side, in hit and capture order; note says when a "
         "value is missing from a run, qualified in either (a view or a note: not evidence "
-        "by itself) or differs only in memory addresses. First a (status) row where either "
+        "by itself) or differs only in memory addresses (`addresses differ: ...` where an "
+        "address may be another element's: a pointer or a reference, or any C, C++ or Rust "
+        "value; else `addresses only`). First a (status) row where either "
         "run did not complete (its error too), and a (sets) row where either requested "
         'interventions: each [name, value, "requested at LINE@HIT"] with how it went, as '
         "`outputs` says it; requests that read alike are said to be made alike only where "
@@ -934,14 +986,18 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "where either run did not complete; (sets) says how each change went, as `outputs` does); "
         "then values only one run's intervention changed (an after-set value equal to its hit's "
         "observed one is left out; more than 3 alike are one row, its first hit's); then real "
-        "differences in hit and capture order (the first is the first divergence); then values a "
+        "differences in hit and capture order (the first is the first divergence); then values "
+        "whose addresses differ where an address may be another element's (a pointer or a "
+        "reference, or any C, C++ or Rust value: note `addresses differ: ...`, which says to "
+        "compare offsets with address()), one row per selector (and stop); then values a "
         "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
-        "itself: leftovers, a moved Rust local's bytes); then address-only differences, one row "
+        "itself: leftovers, a moved Rust local's bytes); then other address-only differences (a "
+        "Python repr, a Java object number), one row "
         "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
         "by stop where both runs label them (a line with several breakpoint locations): where the "
         "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
         "which pairs by value (and, for the first case, says how many rows come after the first "
-        "hit that differs); where they stopped as often, a note says what suggests the hits do not "
+        "hit with a real difference, if any); where they stopped as often, a note says what suggests the hits do not "
         "line up, or what plain values agree between the runs at every hit (that the hits line up "
         "by them only where nothing suggests otherwise, neither run made an intervention, and no "
         "selector was left out). A selector that differs after an intervention or an edit may "
@@ -2168,7 +2224,7 @@ def _run(path, name, params, limit):
         unaligned, counted = _unaligned(path, bound)
         notes += unaligned
         if counted:
-            notes += _after_first(path, sql, bound)
+            notes += _after_first(path, bound)
     if gone := [run for run in held if run not in _present(path, held)]:
         one = len(gone) == 1
         notes.append(
@@ -2250,20 +2306,21 @@ def _unaligned(path, params):
     ], True
 
 
-def _after_first(path, sql, params):
+def _after_first(path, params):
     """Where the runs stopped a different number of times (``_unaligned``): how many of
-    `diff`'s rows at a hit come after the first hit with a difference, where pairing by
-    number may compare different calls (#201: 20 of rechnung's 22 rows were). Every row
-    is kept."""
-    rows = query(path, sql, params, limit=MAX_ROWS)["rows"]
-    hits = [
-        row["hit"]
-        for row in rows
-        if row.get("hit") is not None and not str(row.get("note") or "").startswith("only in")
-    ]
-    if not hits:
+    `diff`'s rows at a hit come after the first hit with a real difference, where pairing
+    by number may compare different calls (#201: 20 of rechnung's 22 rows were). Every
+    row is kept. The first is among the real divergences only, by their tier
+    (``_REAL_RANK``): a pointer whose address differs, an address-only value and a
+    qualified one rank after them, and may be no difference (review of PR #294: a
+    pointer's row at hit 1 made the note say hit 1, though the rows led with hit 2).
+    Where no hit has a real difference, there is no note."""
+    rows = query(path, _DIFF_RANKS, params, limit=MAX_ROWS)["rows"]
+    hits = [row["hit"] for row in rows if row["rank"] != _ONLY_IN_RANK]
+    real = [row["hit"] for row in rows if row["rank"] == _REAL_RANK]
+    if not real:
         return []
-    first = min(hits)
+    first = min(real)
     later = sum(1 for hit in hits if hit > first)
     if not later:
         return []
@@ -2995,7 +3052,7 @@ def table(result, width=120, changes=None):
     For a canned query (``result["query"]``) that compares values, a long value shows
     from just before where it first differs from its pair (`_PAIRED`); `diff`'s
     `(sets)` row shows how many changes and the first; set_effect's `interventions`
-    shows each change that way, given the run's ``changes``."""
+    shows each change that way, given the run's ``changes``. Their `note` is never cut."""
     from peeky.names import function_labels, shortened_note
 
     def shown(value):
@@ -3025,6 +3082,10 @@ def table(result, width=120, changes=None):
         if query_name == "set_effect" and column == "interventions" and changes:
             if (made := _changes_text(row, changes, shown)) is not None:
                 return text(made)
+        if query_name in ("diff", "compare") and column == "note":
+            # Whole: it says what to do last (a pointer's `address()` and COOKBOOK 4.8),
+            # and as the last column it widens only its own line.
+            return shown(value)
         return text(value)
 
     cells = [[cell(row, column) for column in columns] for row in result["rows"]]

@@ -644,3 +644,505 @@ def test_a_withheld_container_row_has_no_value_handle_or_entries(tmp_path):
         member["withheld_as"] == "not listed"
         and "could not read this one's own" in member["reason"]
     )
+
+
+# #291: GCC's `auto [t, u] = pair;` names each element by a variable holding a reference
+# to `std::tuple_element<I, E>::type`; its row was the element's address.
+ELEMENT = "std::tuple_element<0, std::pair<long, long> >::type"
+POINT = "std::tuple_element<0, std::pair<Pt, int> >::type"
+BOUND = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_structure_type
+                DW_AT_name\t("Pt")
+                DW_AT_byte_size\t(0x10)
+
+0x00000018:     DW_TAG_member
+                  DW_AT_name\t("x")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000024:     DW_TAG_structure_type
+                  DW_AT_name\t("tuple_element<0, std::pair<long int, long int> >")
+
+0x00000028:       DW_TAG_typedef
+                    DW_AT_name\t("type")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000002c:     DW_TAG_structure_type
+                  DW_AT_name\t("tuple_element<0, std::pair<Pt, int> >")
+
+0x00000030:       DW_TAG_typedef
+                    DW_AT_name\t("type")
+                    DW_AT_type\t(0x00000014 "Pt")
+
+0x00000040:   DW_TAG_rvalue_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000044:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000030 "type")
+
+0x00000048:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x0000004c:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000050:   DW_TAG_subprogram
+                DW_AT_name\t("main")
+
+0x00000054:     DW_TAG_variable
+                  DW_AT_name\t("held")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(3)
+                  DW_AT_type\t(0x00000014 "Pt")
+                  DW_AT_location\t(DW_OP_fbreg -84)
+
+0x00000058:     DW_TAG_variable
+                  DW_AT_name\t("p")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(4)
+                  DW_AT_type\t(0x00000014 "Pt")
+                  DW_AT_location\t(DW_OP_fbreg -88)
+
+0x0000005c:     DW_TAG_variable
+                  DW_AT_name\t("x")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(5)
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_location\t(DW_OP_fbreg -92)
+
+0x00000060:     DW_TAG_variable
+                  DW_AT_name\t("pt")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(6)
+                  DW_AT_type\t(0x00000044 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -96)
+
+0x00000064:     DW_TAG_variable
+                  DW_AT_name\t("lr")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(7)
+                  DW_AT_type\t(0x00000048 "long int &")
+                  DW_AT_location\t(DW_OP_fbreg -100)
+
+0x00000068:     DW_TAG_variable
+                  DW_AT_name\t("t")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -104)
+
+0x0000006c:     DW_TAG_variable
+                  DW_AT_name\t("u")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -108)
+
+0x00000070:     DW_TAG_variable
+                  DW_AT_name\t("w")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -112)
+
+0x00000074:     DW_TAG_variable
+                  DW_AT_name\t("t")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(14)
+                  DW_AT_type\t(0x00000048 "long int &")
+                  DW_AT_location\t(DW_OP_fbreg -116)
+
+0x00000078:     DW_TAG_variable
+                  DW_AT_name\t("d")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(16)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -120)
+
+0x0000007c:     DW_TAG_variable
+                  DW_AT_name\t("a")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(17)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -124)
+
+0x00000080:     DW_TAG_variable
+                  DW_AT_name\t("r")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(18)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -128)
+
+0x00000084:     DW_TAG_variable
+                  DW_AT_name\t("f")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(19)
+                  DW_AT_type\t(0x0000004c "type &")
+                  DW_AT_location\t(DW_OP_fbreg -132)
+"""
+
+
+# Its source, `src/t.cpp`: by value (`t`, `pt`), by reference to a local (`a`), to a
+# member of one (`f`), and to an element of a temporary the line destroys (`d`); and a
+# reference the code declares with the element's type (`r`), and one named as a binding.
+BOUND_SOURCE = """#include <utility>
+int main(int argc, char **) {
+    Pt held{1, 2};
+    Pt p{3, 4};
+    long x = 5;
+    auto [pt, n] = both;
+    long &lr = x;
+    for (long i = 0; i < 2; i++) {
+        auto [t, u] = make(i)[0];
+        auto [w, z] = make(i)[1];
+        use(t + u + w);
+    }
+    {
+        long &t = x;
+    }
+    auto &[d, e] = make(0)[0];
+    auto &[a, b] = p;
+    std::tuple_element<0, std::pair<long, long>>::type &r = p.first;
+    auto &[f, g] = held.x;
+    return 0;
+}
+"""
+
+
+def bound(where=None, shadowed=False, readable=True):
+    """A NativeSession over BOUND's `main` (with ``shadowed``, also its plain `long &t` on
+    line 14), the debugger showing the declaration at ``where``; its source, unless not
+    ``readable``."""
+    from peeky.c_source import Statements
+    from peeky.fields import CPP_LIBRARIES, local_types, type_graph
+    from peeky.native import _parse_dies
+
+    dies = _parse_dies(BOUND)
+    types = local_types(dies, [0x50], through=True)
+    if not shadowed:
+        types["t"] = frozenset(each for each in types["t"] if each[2] == ("t.cpp", 9))
+    graph = type_graph(dies, {0x10, 0x14, 0x40, 0x44, 0x48, 0x4C}, CPP_LIBRARIES)
+    for offset, node in type_graph(dies, {0x28, 0x30}, CPP_LIBRARIES).items():
+        graph.setdefault(offset, node)
+    session = native(function={"types": types, "source": "src/t.cpp"}, fields=graph)
+    statements = Statements(BOUND_SOURCE, True)
+    session._statements = lambda path: statements if readable and path == "src/t.cpp" else None
+    session._shown_where = lambda name, pc: where
+    session._unslid = lambda frame: 0x1000
+    session._place = lambda frame: ("src/t.cpp", frame["line"]) if "line" in frame else None
+    return session
+
+
+def test_a_pair_bindings_row_is_its_element_never_its_address():
+    from peeky.native import Withholding
+
+    session, frame = bound(), {"id": 1}
+    t = variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70", 4)
+    pt = variable("pt", f"{POINT} &", "0x0000fffffffffae8", 5)
+    lr = variable("lr", "long &", "0x0000fffffffffb20", 6)
+    # Typed as the binding is declared; a reference of the program's own keeps LLDB's.
+    assert session.display_type(t, frame) == ELEMENT
+    assert session.display_type(pt, frame) == POINT
+    assert session.display_type(lr, frame) is None
+    assert session.display_type(t, frame, top=False, path=["t"]) is None
+    asked = []
+
+    def fetch(reference, count):
+        asked.append((reference, count))
+        return [{"name": "&t", "type": ELEMENT, "value": "10", "variablesReference": 0}]
+
+    # A number: the debugger's one child under the reference, named and listed as the row.
+    assert session.bound_element(t, frame, fetch) == {
+        "variable": {"name": "t", "type": ELEMENT, "value": "10", "variablesReference": 0}
+    }
+    assert asked == [(4, 2)]
+    assert session.bound_element(lr, frame, fetch) is None
+    # A struct: its members are the reference's own children, its text follows the address.
+    assert session.bound_element(pt, frame, fetch) == {"strip": True}
+    assert session.element_text(pt, frame, "0x0000fffffffffae8 {x = 3, y = 4}") == "{x = 3, y = 4}"
+    assert session.element_text(pt, frame, "0x0000fffffffffae8") == f"{POINT} @ 0xfffffffffae8"
+    odd = session.element_text(pt, frame, "<invalid>")
+    assert isinstance(odd, Withholding) and odd.label == "not shown", odd
+    # Anything else the debugger lists, or a read that fails, withholds it: never the address.
+    unread = (
+        "`t` is a structured binding the build holds as a reference to its element, which "
+        "the debugger shows as an address, and the debugger listed no element through it{}; "
+        "print it from the program"
+    )
+    for listed in ([], [{"name": "&t", "type": "long", "value": "10"}] * 2):
+        found = session.bound_element(t, frame, lambda reference, count, listed=listed: listed)
+        assert found == unread.format("") and found.label == "not shown", found
+
+    def exhausted(reference, count):
+        raise ValueError("Preview budget exhausted")
+
+    found = session.bound_element(t, frame, exhausted)
+    assert found == unread.format(" (Preview budget exhausted)"), found
+    # A row shown with a note: its reference may not be set, so nothing is read through it.
+    noted = session.bound_element(t, frame, fetch, note="may be the last pass's value")
+    assert isinstance(noted, Withholding) and noted.endswith(": may be the last pass's value")
+    # Two references named `t`, the debugger's not told apart: withheld; told: read.
+    shadowed = bound(shadowed=True).bound_element(t, frame, fetch)
+    assert isinstance(shadowed, Withholding) and "cannot tell which" in shadowed, shadowed
+    assert bound(("t.cpp", 9, True), shadowed=True).bound_element(t, frame, fetch)["variable"]
+    assert bound(("t.cpp", 14, True), shadowed=True).bound_element(t, frame, fetch) is None
+    # Never in C, nor without the build's debug information.
+    session.target.language = "c"
+    assert session.bound_element(t, frame, fetch) is None and not session.display_type(t, frame)
+    assert native(function=None).bound_element(t, frame, fetch) is None
+
+
+def test_a_pair_binding_a_loop_returns_to_is_withheld_not_noted():
+    from peeky.native import ValueNote
+
+    session = bound()
+    reason = (
+        "declared on line 14, which runs after this stop on every pass (a loop can return "
+        "to its first instruction)"
+    )
+    session._not_yet_declared = lambda *args: ValueNote(reason, "may be the last pass's", True)
+    t = variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70")
+    found = session.not_yet_declared(t, {"id": 1})
+    assert not isinstance(found, ValueNote) and found == (
+        f"{reason}: the build reads this structured binding through a reference its "
+        "declaration sets, which may point anywhere until then; read it after its declaration"
+    )
+    assert len(found) <= 300
+    # Any other local keeps its note; a reason without one stays as it is.
+    assert isinstance(
+        session.not_yet_declared(variable("lr", "long &", "0x1"), {"id": 1}), ValueNote
+    )
+    session._not_yet_declared = lambda *args: "declared at line 14, below this stop"
+    assert session.not_yet_declared(t, {"id": 1}) == "declared at line 14, below this stop"
+
+
+class Listing:
+    """lldb-dap's `variables`: {reference: children}; the requests made."""
+
+    def __init__(self, children):
+        self.children, self.requests = children, []
+
+    def request(self, command, arguments, timeout=None):
+        self.requests.append((command, arguments))
+        return {"variables": self.children.get(arguments["variablesReference"], [])}
+
+
+def test_the_worker_shows_a_pair_bindings_element_or_withholds_it(tmp_path):
+    from peeky.native import ValueNote
+    from peeky.worker import DebugWorker
+
+    session = bound()
+    pending = {
+        "u": "declared on line 14, which has not run yet at this stop",
+        "w": ValueNote("declared at line 14", "may be leftovers", True),
+    }
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        not_yet_declared=lambda variable, frame, **kwargs: pending.get(variable["name"]),
+        bound_element=session.bound_element,
+        element_text=session.element_text,
+        display_type=session.display_type,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.listed_frames = [{"id": 1, "name": "main"}]
+    worker.dap = Listing(
+        {4: [{"name": "&t", "type": ELEMENT, "value": "10", "variablesReference": 0}]}
+    )
+    worker.reset_views()
+    worker.reset_previews()
+    rows = [
+        variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70", 4),
+        variable("pt", f"{POINT} &", "0x0000fffffffffae8 {x = 3, y = 4}", 5),
+        variable("lr", "long &", "0x0000fffffffffb20", 6),
+        variable("u", f"{ELEMENT} &&", "0x0000fffff7ce0ab0", 7),
+        variable("w", f"{ELEMENT} &&", "0x0000fffff7ce0ab0", 8),
+    ]
+    t, pt, lr, u, w = worker.expose_variables(rows, {"id": 1}, ("Locals", None), ())
+    assert t["value"] == "10" and t["variablesReference"] == 0, t
+    assert t["type"] == ELEMENT and t["debugger_type"] == f"{ELEMENT} &&", t
+    assert pt["value"] == "{x = 3, y = 4}" and pt["variablesReference"] > 0, pt
+    assert pt["type"] == POINT and pt["debugger_type"] == f"{POINT} &", pt
+    assert lr["value"] == "0x0000fffffffffb20" and "debugger_type" not in lr, lr
+    # Not set yet: withheld as any local, typed as the binding.
+    assert u["value"] is None and u["withheld"] and "withheld_as" not in u, u
+    assert u["type"] == ELEMENT and u["debugger_type"] == f"{ELEMENT} &&", u
+    # Shown with a note anywhere else: here its reference may not be set, so withheld.
+    assert w["value"] is None and w["withheld_as"] == "not shown", w
+    assert w["reason"].endswith(": may be leftovers") and "note" not in w, w
+    assert not any("0x" in str(row.get("value")) for row in (t, pt, u, w))
+    # Only the number's reference was listed, once.
+    assert [arguments["variablesReference"] for _, arguments in worker.dap.requests] == [4]
+    # A struct's text that does not follow its address is no element Peeky can tell.
+    (odd,) = worker.expose_variables(
+        [variable("pt", f"{POINT} &", "{x = 3, y = 4}", 9)], {"id": 1}, ("Locals", None), ()
+    )
+    assert odd["value"] is None and odd["withheld_as"] == "not shown", odd
+    assert odd["variablesReference"] == 0 and odd["settable"] is False, odd
+
+
+def test_a_newer_clangs_binding_is_told_by_its_line():
+    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &`,
+    # not artificial: its row was the element's address after the declaration ran.
+    from peeky.c_source import Statements
+
+    source = "int main() {\n    Pt held{1, 2};\n    auto &[t, u] = held;\n    long &w = x;\n}\n"
+    session = bound()
+    session._function_at = lambda frame: {
+        "types": {
+            "held": frozenset({(0x14, "automatic", ("t.cpp", 2))}),
+            "t": frozenset({(0x48, "automatic", ("t.cpp", 3))}),
+            "w": frozenset({(0x48, "automatic", ("t.cpp", 4))}),
+        },
+        "source": "src/t.cpp",
+    }
+    session._statements = lambda path: Statements(source, True) if path == "src/t.cpp" else None
+    t, w = variable("t", "long &", "0x16af672d0", 4), variable("w", "long &", "0x16af672d8", 5)
+
+    def fetch(reference, count):
+        return [{"name": "&t", "type": "long", "value": "1001", "variablesReference": 0}]
+
+    assert session.display_type(t, {"id": 1}) == "long"
+    assert session.bound_element(t, {"id": 1}, fetch)["variable"]["value"] == "1001"
+    # A reference the code declares keeps LLDB's text: its address.
+    assert session.display_type(w, {"id": 1}) is None
+    assert session.bound_element(w, {"id": 1}, fetch) is None
+    # Another file's declaration, or a source Peeky cannot read, is not told.
+    session._statements = lambda path: None
+    assert session.bound_element(t, {"id": 1}, fetch) is None
+
+
+def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
+    # Review of #296: `auto &[d, e] = make(0)[0];` refers into a temporary the line
+    # destroyed; a later `make(7000)` reused its memory, and `d` showed `8000` with no note.
+    from peeky.native import Withholding
+
+    session, frame = bound(), {"id": 1}
+
+    def fetch(reference, count):
+        return [{"name": "&x", "type": ELEMENT, "value": "3", "variablesReference": 0}]
+
+    row = {"type": f"{ELEMENT} &", "value": "0x0000aaaaaaad32b0", "variablesReference": 4}
+    dangling = session.bound_element({**row, "name": "d"}, frame, fetch)
+    assert isinstance(dangling, Withholding) and dangling.label == "not shown", dangling
+    assert dangling == (
+        "the binding refers to an object Peeky can't prove is still alive: `d` binds "
+        "`make(0)[0]` by reference, and only an object of this frame, or a member of one, is "
+        "proven. Read it where the code names that object, or bind by value (`auto [...]`, no "
+        "`&`)"
+    )
+    assert len(dangling) <= 300
+    # A local object in scope, or a member of one: read through.
+    for name in ("a", "f"):
+        assert session.bound_element({**row, "name": name}, frame, fetch)["variable"]["value"]
+    # The code's own reference with the element's type is no binding: LLDB's text stays.
+    assert session.bound_element({**row, "name": "r"}, frame, fetch) is None
+    assert session.display_type({**row, "name": "r"}, frame) is None
+    # A line whose binding Peeky cannot read through: nor is anything read through it.
+    unknown = session._bound_alive(frame, "q", ("t.cpp", 16), None)
+    assert isinstance(unknown, Withholding) and "can't read what `q`'s declaration" in unknown
+    # GCC's type, but a line Peeky cannot read: neither read nor shown as an address.
+    unread = bound(readable=False).bound_element({**row, "name": "t"}, frame, fetch)
+    assert isinstance(unread, Withholding) and "cannot read its declaration's line" in unread
+    assert bound(readable=False).bound_element({**row, "name": "lr"}, frame, fetch) is None
+
+
+def test_an_optimized_bindings_own_line_withholds_it():
+    # Review of #296: in an optimized build, where in its declaration's lines a stop is
+    # cannot be told, so neither can whether this pass has set the reference.
+    session = bound()
+    session._not_yet_declared = lambda *args: None
+    t = variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70")
+    assert session.not_yet_declared(t, {"id": 1, "line": 9}) is None
+    session.target.optimization = "O1"
+    found = session.not_yet_declared(t, {"id": 1, "line": 9})
+    assert found == (
+        "declared on line 9, and in an optimized build Peeky cannot tell whether this stop is "
+        "past that declaration on this pass: the build reads this structured binding through "
+        "a reference its declaration sets, which may point anywhere until then; read it below "
+        "its declaration"
+    )
+    assert len(found) <= 300
+    # Below its declaration, or any other local: as before.
+    assert session.not_yet_declared(t, {"id": 1, "line": 11}) is None
+    lr = variable("lr", "long &", "0x0000fffffffffb20")
+    assert session.not_yet_declared(lr, {"id": 1, "line": 7}) is None
+
+
+UNIONS = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_structure_type
+                DW_AT_name\t("Pt")
+                DW_AT_byte_size\t(0x08)
+
+0x00000018:     DW_TAG_member
+                  DW_AT_name\t("x")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000020:   DW_TAG_union_type
+                DW_AT_name\t("U")
+                DW_AT_byte_size\t(0x08)
+
+0x00000024:     DW_TAG_member
+                  DW_AT_name\t("p")
+                  DW_AT_type\t(0x00000014 "Pt")
+
+0x00000030:   DW_TAG_structure_type
+                DW_AT_name\t("Holder")
+                DW_AT_byte_size\t(0x10)
+
+0x00000034:     DW_TAG_member
+                  DW_AT_name\t("u")
+                  DW_AT_type\t(0x00000020 "U")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000038:     DW_TAG_member
+                  DW_AT_name\t("inner")
+                  DW_AT_type\t(0x00000014 "Pt")
+                  DW_AT_data_member_location\t(0x08)
+
+0x00000040:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000044:     DW_TAG_union_type
+                  DW_AT_name\t("_Storage")
+                  DW_AT_byte_size\t(0x08)
+
+0x00000048:       DW_TAG_member
+                    DW_AT_name\t("v")
+                    DW_AT_type\t(0x00000014 "Pt")
+"""
+
+
+def test_a_member_chain_through_a_union_is_never_proven():
+    # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then `u.p.~pair(); new (&u.q)
+    # std::pair<long, long>{7, 8};` showed `a = 7, b = 8`: which member of a union is alive
+    # changes as the program runs, a standard library's union too.
+    from peeky.fields import CPP_LIBRARIES, type_graph
+    from peeky.native import _member_object, _parse_dies
+
+    graph = type_graph(_parse_dies(UNIONS), {0x14, 0x20, 0x30, 0x44}, CPP_LIBRARIES)
+    holder, union, library = (Typed(graph, offset) for offset in (0x30, 0x20, 0x44))
+    assert _member_object(holder, "inner").kind() == "record"
+    assert _member_object(holder, "u").kind() == "union"
+    assert _member_object(_member_object(holder, "u"), "p") is None
+    assert _member_object(union, "p") is None and _member_object(library, "v") is None
+    assert _member_object(holder, "missing") is None and _member_object(None, "p") is None
