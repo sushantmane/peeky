@@ -12,6 +12,7 @@ import time
 
 from peeky import processes
 from peeky.adapters import PythonAdapter
+from peeky.textlines import split_lines
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 
@@ -102,13 +103,22 @@ def read_message(stream):
 
 
 class DAP:
-    def __init__(self, command=None, *, env=None, fatal_stderr=None, provoked_exit=None):
+    def __init__(
+        self, command=None, *, env=None, fatal_stderr=None, provoked_exit=None, diagnostics=None
+    ):
         """``fatal_stderr`` maps a regex to a message: an adapter stderr line matching it
         means the adapter can no longer work (e.g. a dead event thread), and fails the
         transport with that message (``{excerpt}``: the line and its stack frames).
         ``provoked_exit``: (status, signature) of the exit this adapter is known to make
         when Peeky ends its input as it answers `disconnect` (debugpy: 1, #213), and the
-        lines its stderr then shows: close() does not take that exit for a crash."""
+        lines its stderr then shows: close() does not take that exit for a crash.
+        ``diagnostics``: a regex for the debugger's own lines that this adapter sends as
+        `stderr` output (#167: LLDB 18's errors about GCC's debug information). In the
+        launch Peeky makes, lldb-dap runs the program on a terminal, which carries both its
+        streams as `stdout`; that is no DAP rule, and lldb-dap sends a program's stderr as
+        `stderr` where it is no terminal. A `stderr` event whose every line the pattern
+        matches is kept apart (``debugger_diagnostics``), and the caller warns that a
+        program line of that exact shape would be kept apart too."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -176,6 +186,9 @@ class DAP:
         self.started = time.monotonic()
         self.output = collections.deque(maxlen=500)
         self.output_truncated = False
+        self.diagnostics = re.compile(diagnostics) if diagnostics else None
+        # The debugger's own lines left out of the output (the first 20), and how many.
+        self.debugger_diagnostics, self.diagnostic_count = [], 0
         # Output events accepted so far, evicted ones included: marks a point in them.
         self.output_count = 0
         # Set when the adapter ended its output stream (EOF): nothing more can come.
@@ -272,7 +285,12 @@ class DAP:
             elif body["type"] == "event":
                 if body["event"] == "output":
                     data = body.get("body", {})
-                    if data.get("category") in ("stdout", "stderr"):
+                    if self._diagnostic(data):
+                        lines = [line for line in split_lines(data["output"]) if line.strip()]
+                        self.diagnostic_count += len(lines)
+                        room = max(0, 20 - len(self.debugger_diagnostics))
+                        self.debugger_diagnostics += [line[:500] for line in lines[:room]]
+                    elif data.get("category") in ("stdout", "stderr"):
                         output = data.get("output", "")
                         self.output_truncated |= (
                             len(self.output) == self.output.maxlen or len(output) > 8192
@@ -787,9 +805,27 @@ class DAP:
             f"{age:.1f} s, in a session of its own and whose parent had exited, may survive"
         )
 
+    def _diagnostic(self, data):
+        """Whether an output event is the debugger's own: on its `stderr`, every line of
+        it one the adapter's ``diagnostics`` pattern matches whole."""
+        output = data.get("output")
+        if getattr(self, "diagnostics", None) is None or data.get("category") != "stderr":
+            return False
+        if not isinstance(output, str) or not output.endswith("\n") or len(output) > 8192:
+            return False
+        lines = [line for line in split_lines(output) if line.strip()]
+        return bool(lines) and all(self.diagnostics.fullmatch(line) for line in lines)
+
     def snapshot_output(self):
         with self.condition:
             return "".join(self.output), self.output_truncated
+
+    def snapshot_diagnostics(self):
+        """The debugger's own lines left out of the output, and how many there were."""
+        with self.condition:
+            return list(getattr(self, "debugger_diagnostics", ())), getattr(
+                self, "diagnostic_count", 0
+            )
 
     def close(self, terminate=True):
         """Disconnect and reap the adapter, and return what cleanup did (``cleanup``).
@@ -885,6 +921,8 @@ class DAP:
                     "output_truncated": kept[1],
                     "after_disconnect": "".join(after)[:AFTER_DISCONNECT_CHARS],
                     "exit_code": self.exit_code,
+                    "debugger_diagnostics": list(getattr(self, "debugger_diagnostics", ())),
+                    "diagnostic_count": getattr(self, "diagnostic_count", 0),
                 }
             return self.cleanup
 

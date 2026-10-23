@@ -904,6 +904,14 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                     continue
                 raise ValueError(_beyond_pointee(variable, path, pointee, segment, listed))
         if not handle and variable.get("unavailable"):
+            from peeky.native import UNLISTED
+
+            if variable.get("withheld_as") == UNLISTED:
+                # An unordered container whose count is not proven (#167): no entry of
+                # it is read, by key or by position.
+                raise ValueError(
+                    f"{_shown(segment)} not read: {path} is not listed: {variable.get('reason')}"
+                )
             raise ValueError(f"{variable['name']!r} has no value here: {variable.get('reason')}")
         if not handle:
             if variable.get("text"):
@@ -1862,6 +1870,27 @@ def _resume(worker, stop, returning, rows):
                 rows.extend(_never_returned(call, _OTHER_THREADS))
             returning.clear()
     worker.dispatch("continue", stop)
+
+
+def debugger_diagnostics(result, *sources):
+    """The warning for the `stderr` lines a session left out of the program's output as
+    LLDB's (#167: LLDB 18's errors about the build's debug information), from the first
+    of ``sources`` (the session's end, or its last report) that has any; it also sets
+    ``debugger_diagnostics`` in ``result`` (the first 20 lines). None where none."""
+    for source in sources:
+        count = source.get("diagnostic_count") if isinstance(source, dict) else None
+        lines = source.get("debugger_diagnostics") if isinstance(source, dict) else None
+        if type(count) is not int or count <= 0 or not isinstance(lines, list) or not lines:
+            continue
+        result["debugger_diagnostics"] = [str(line)[:500] for line in lines[:20]]
+        many = f"{count} `stderr` lines" if count > 1 else "A `stderr` line"
+        return (
+            f"{many} with the shape of LLDB's errors about the build's debug information "
+            f"{'were' if count > 1 else 'was'} moved here from the program's output "
+            "(debugger_diagnostics in --json); a program line that looks exactly like one "
+            f"would be moved too: {str(lines[0])[:200]}"
+        )
+    return None
 
 
 def _settle_output(result, final, known_end):
@@ -3503,6 +3532,8 @@ def run_probe(
     session = None
     # Whether the worker's session said the program ended (a wait read it, or inferred it).
     known_end = False
+    # The session's last report: the debugger's own lines left out of the output (#167).
+    reported = None
     # `(return)` (#155): after each call's hit, step out of it and read what it returned.
     # `returning` holds the calls still to return, innermost last: {hit, depth, thread}.
     wants_return, returning = RETURN in probe.capture, []
@@ -4006,7 +4037,7 @@ def run_probe(
             for call in reversed(returning):
                 rows.extend(_never_returned(call, "the probe timed out before it returned"))
             returning.clear()
-        report = worker.dispatch("report", session)
+        report = reported = worker.dispatch("report", session)
         at_hits = probe.until == "hits" and status == "completed" and hits >= probe.limit
         result.update(
             status=status,
@@ -4121,7 +4152,7 @@ def run_probe(
         if session is not None:
             # What the program printed before the failure says how far it got.
             try:
-                report = worker.dispatch("report", session)
+                report = reported = worker.dispatch("report", session)
             except Exception:
                 report = {}
             if isinstance(report.get("output"), str) and report["output"] and not discard:
@@ -4139,6 +4170,8 @@ def run_probe(
         cleanup = worker.close()
     if settled := _settle_output(result, getattr(worker, "last_final", None), known_end):
         warnings.append(settled)
+    if diagnosed := debugger_diagnostics(result, getattr(worker, "last_final", None), reported):
+        warnings.append(diagnosed)
     if cleanup and isinstance(result.get("error"), dict) and "cleanup" not in result["error"]:
         # What became of the program once the probe failed or timed out (#143).
         result["error"] = {**result["error"], "cleanup": cleanup}

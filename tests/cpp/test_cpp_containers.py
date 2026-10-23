@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import re
+import subprocess
 import sys
 
 import pytest
@@ -99,6 +100,20 @@ def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
 
 
+def built_by_gcc():
+    """Whether PEEKY_NATIVE_CXX is GCC (the test-only hatch, PEEKY_TEST_CPP_GCC=1)."""
+    shown = subprocess.run([os.environ["PEEKY_NATIVE_CXX"], "--version"], capture_output=True)
+    return b"Free Software Foundation" in shown.stdout
+
+
+def unlisted(row):
+    """A row withheld because LLDB counts GCC's unordered container as empty (#167)."""
+    return row.get("value") is None and str(row.get("error")).startswith(
+        "not listed: the debugger cannot list this build's unordered containers: it counts 0 "
+        "entries, but the container's own count (`_M_element_count`) is "
+    )
+
+
 def whole():
     """Whether strings read whole here: libc++'s summaries (macOS), or libstdc++'s bytes
     read from memory (a debugger with readMemory, as lldb-dap 20)."""
@@ -146,12 +161,17 @@ def test_probe_rows_show_a_containers_first_elements(cpp, capsys):
     result = json.loads(capsys.readouterr().out)
     rows = {row["selector"]: row.get("value") for row in result["rows"]}
     assert "moved=0 " in result["output"], result["output"]
+    # GCC's unordered containers, which LLDB counts as empty, are withheld (#167).
+    gcc = {row["selector"]: row for row in result["rows"]} if built_by_gcc() else {}
     for selector, value in EXPECTED.items():
+        if selector == "us" and gcc:
+            assert unlisted(gcc["us"]), gcc["us"]
+            continue
         assert rows[selector] == value, (selector, rows[selector])
     for selector, value in TEXTS.items():
         assert texts_match(rows[selector], value), (selector, rows[selector])
     # An unordered map's entries in its iteration order, whichever the library's is.
-    assert any(
+    assert (gcc and unlisted(gcc["um"])) or any(
         texts_match(rows["um"], f"size=2 {{{a}, {b}}}")
         for a, b in (('1: "one"', '2: "two"'), ('2: "two"', '1: "one"'))
     ), rows["um"]

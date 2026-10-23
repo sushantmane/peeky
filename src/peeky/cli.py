@@ -40,6 +40,7 @@ from peeky.probe import (
     _table,
     candidate_line,
     combine_edits,
+    debugger_diagnostics,
     parse_hits,
     parse_selector,
     parse_set_at,
@@ -2324,7 +2325,10 @@ def session(args):
             args.json,
             # The worker's request history (`history`, several per command) is JSON only:
             # a bare count of it read as the commands run (sixth evaluation, finding 14).
-            lambda r: f"state: {r['state']}\noutput:\n{r['output'].rstrip(chr(10)) or '(none)'}",
+            lambda r: (
+                f"state: {r['state']}\noutput:\n{r['output'].rstrip(chr(10)) or '(none)'}"
+                + (f"\nwarning: {warned}" if (warned := debugger_diagnostics({}, r)) else "")
+            ),
         )
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable

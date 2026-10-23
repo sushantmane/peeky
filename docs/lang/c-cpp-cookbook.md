@@ -425,6 +425,32 @@ That is the case for:
 - A set (`std::set`, `std::multiset`, `std::unordered_set`, `std::unordered_multiset`) shows its
   elements: `size=2 {1, 3}`.
 - A `std::multimap` keeps its summary, `size=2`: its keys repeat.
+- An unordered container (`std::unordered_map`, `std::unordered_set` and their multi forms) shows
+  its entries only where LLDB's count of them equals the container's own `_M_element_count`.
+  LLDB's libstdc++ formatter counts one as empty when the debug information doesn't name its
+  element type. That happens in a GCC build, and with LLDB 18 for one named by a typedef
+  (`using Ids = std::unordered_set<long>`). Such a row has no value, and no key, position or
+  listing is read in it:
+
+  ```
+  ids  Ids  <not listed: the debugger cannot list this build's unordered containers: it counts 0 entries, but the container's own count (`_M_element_count`) is 1; print its entries from the program>
+  ids[#0]   <[#0] not read: ids is not listed: the debugger cannot list this build's unordered containers: …>
+  ```
+
+  Inside a preview it shows `<not listed>`: `{us = <not listed>, n = 2}`. A pointer to one is
+  withheld the same way. Where Peeky can't read the container's own count, the row is withheld
+  too, and says so. That happens for one reached through a base class or an anonymous member.
+
+  A right count isn't enough. LLDB decodes each entry as the allocator's first template
+  argument, at a fixed place in each node. So a non-empty one is listed only where the debug
+  information proves that type and place right. These are withheld, each with why:
+
+  - an allocator whose first template argument is another type, such as
+    `WeirdAlloc<double, int>` for `int` entries;
+  - a type aligned to more than 8 bytes, such as `long double`;
+  - with LLDB 18 or 19, a map whose type's name holds `set`, such as
+    `std::unordered_map<int, Asset>`;
+  - one Peeky can't place in the build's debug information.
 - These keep the debugger's own view too: `std::forward_list`, container adaptors such as
   `std::stack` and `std::queue`, `std::pair` and `std::tuple`.
 - A container nested four levels below a local, such as `grid.idx[1]`, is past the inspection's
@@ -1159,6 +1185,11 @@ Their refusal says
 These change as usual, because the frame holds them itself: a by-value structured binding
 (`auto [a, b] = pt;`), and a by-value parameter that the ABI passes through a hidden pointer. That
 is a struct over 16 bytes on arm64, or any class with a destructor: the call's own copy.
+
+A by-value binding of a bitfield, `hi` in `auto [lo, hi] = bits;`, is one exception. GCC gives it
+no location and a 1-byte type named `__unknown__`, so no stop can read or change it. Its row and a
+refused change say so, and say to print it from the program: `not readable: the build gives it no
+location and no type of its own …`.
 
 #### When the refusal says `settable` (C)
 

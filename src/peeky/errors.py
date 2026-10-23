@@ -398,6 +398,11 @@ _MUTATION_HINTS = (
     ),
     (r"optimized build|unoptimized build", "Use an unoptimized build to change values."),
     (
+        r"no location and no type of its own",
+        "Print it from the program with a candidate edit (`--old`/`--new`): no stop of this "
+        "build reads or changes it.",
+    ),
+    (
         r"no value can be changed in this program",
         "Observe the value instead, or change the source with a candidate edit "
         "(`--old`/`--new`) and verify it.",
