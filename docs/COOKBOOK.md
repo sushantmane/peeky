@@ -1748,9 +1748,11 @@ these:
 
 - `hits pair by` some values. They agree between the runs at every hit, and they are unique across
   these hits. So pairing by hit number pairs the hits as the `queries join` the note gives would.
-  That doesn't prove they are the same moments ([below](#when-values-agree-at-every-hit)).
+  That doesn't prove they are the same moments ([below](#when-values-agree-at-every-hit)). The note
+  names the fewest such values it finds, at most 8, as `join` takes no more.
 - `hits pair as far as` some values show. They agree between the runs at every hit, but they read
-  alike at some hits, which could still trade places.
+  alike at some hits, which could still trade places. Or no 8 or fewer of them were found unique
+  across the hits, so the note names no `join`.
 
 These checks compare values with addresses and Java object numbers masked. Where a value agrees
 only so, the verdict says `with addresses masked`, and its `join` command has `--param masked=1`.

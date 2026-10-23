@@ -9,6 +9,7 @@ in rows, time and value size; SQL never reaches a debugger or a debuggee.
 
 import contextlib
 import contextvars
+import itertools
 import json
 import math
 import os
@@ -1000,9 +1001,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "which pairs by value (and, for the first case, says how many rows come after the first "
         "hit with a real difference, if any); where they stopped as often, a note says what suggests the hits do not "
         "line up, or what plain values agree between the runs at every hit (where they are "
-        "unique across the hits, that pairing by hit number is what join by them gives, named "
-        "whole, with masked=1 where they agree only with addresses masked; never that the hits "
-        "are the same moments). A selector that differs after an intervention or an edit may "
+        "unique across the hits, that pairing by hit number is what join by the fewest of them "
+        "(at most 8) gives, named whole, with masked=1 where they agree only with addresses "
+        "masked; never that the hits are the same moments). A selector that differs after an "
+        "intervention or an edit may "
         "follow from it, so it is left out of what agrees; where its values line up better at "
         "other hits, the note says so, that the change may account for it, and that the hits are "
         "not said to line up. Such a note's first line is its verdict (hits pair by, hits pair "
@@ -2646,13 +2648,35 @@ def _structure_apart(path, run):
         ], True
     if len(common) < 2 or not differs:
         return [], False
-    keys = _telling_apart(shown, [[seen(a, s, hit) for s in shown] for hit in common])
+    rows = [[seen(a, s, hit) for s in shown] for hit in common]
+    keys = _join_key(shown, rows)
     paired = keys and _paired(keys, len(common), (a, b), bool(set(keys) & masked_only))
+    # Without a key: the values read alike at some hits, or only more of them together
+    # than `join` takes are unique (review 3 of PR #308).
+    loose = agreed = None
+    if shown and not keys:
+        wide = len({tuple(row) for row in rows}) == len(rows)
+        one = len(shown) == 1
+        why = (
+            f"no `queries join` key of {MAX_KEYS} selectors or fewer among them was found "
+            "unique across these hits"
+            if wide
+            else f"{'it reads' if one else 'they read'} alike at some hits, which could still "
+            "trade places"
+        )
+        loose = [
+            f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
+            f"{_agrees(shown, len(common), pronoun=True, apart=wide, masked=alike_masked)}",
+            f"but {why}",
+            "pairing by hit number agrees with their values, but that does not prove the hits "
+            "are the same moments"
+            if wide
+            else None,
+        ]
+        agreed = f"{_agrees(shown, len(common), masked=alike_masked)}, but {why}"
     if left_out:
         return [
-            _after_change(
-                shown, paired, len(common), changes, edited, left_out, hedged, join, alike_masked
-            )
+            _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedged, join)
         ], hedged is not None
     if not shown:
         return [], False
@@ -2665,7 +2689,7 @@ def _structure_apart(path, run):
             for hit in common
         )
     ]
-    return [_agreement(shown, paired, len(common), changes, differing, (a, b), alike_masked)], False
+    return [_agreement(paired or loose, changes, differing, (a, b))], False
 
 
 def _cause(changes, edited, detail=True):
@@ -2682,7 +2706,7 @@ def _cause(changes, edited, detail=True):
     return " and ".join(causes)
 
 
-def _after_change(shown, paired, count, changes, edited, left_out, hedged, join, masked):
+def _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedged, join):
     """The note where a change left selectors out (tenth evaluation): what agrees, never
     that the hits line up (review of PR #269); what was left out, and why; and a sign
     that the hits may not line up among those left out (``hedged``: the selector and
@@ -2692,8 +2716,8 @@ def _after_change(shown, paired, count, changes, edited, left_out, hedged, join,
     it does not settle whether the calls were reordered, and is never graded (review of
     PR #308: a key may be a counter, which is no evidence against a reorder). Else the
     sign is the verdict. ``paired`` is `_paired`'s lines where some values that agree are
-    unique across the hits; ``masked``, whether ``shown`` agree only with addresses
-    masked."""
+    unique across the hits, as a `join` key; else ``loose`` is the verdict that they pair
+    as far as ``shown`` show, and ``agreed`` says what agrees and why it is no key."""
     it = "them" if any(changes.values()) else "it"
     others = [selector for selector in left_out if not hedged or selector != hedged[0]]
 
@@ -2715,10 +2739,6 @@ def _after_change(shown, paired, count, changes, edited, left_out, hedged, join,
             f"{_cause(changes, edited)} and may follow from {it}",
             "no other selector both agrees between the runs and changes from hit to hit",
         )
-    one = len(shown) == 1
-    alike = (
-        f"{'it reads' if one else 'they read'} alike at some hits, which could still trade places"
-    )
     if paired:
         lines = [*paired, leaves(True)]
         if hedged:
@@ -2731,19 +2751,14 @@ def _after_change(shown, paired, count, changes, edited, left_out, hedged, join,
             ]
         return _note(*lines)
     if not hedged:
-        return _note(
-            f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-            f"{_agrees(shown, count, pronoun=True, masked=masked)}",
-            f"but {alike}",
-            leaves(True),
-        )
+        return _note(*loose, leaves(True))
     selector, saw = hedged
     return _note(
         f"hits may not line up: {_REORDER}",
         saw,
         f"`{selector}` may differ because of {_cause(changes, edited)}, so this does not prove "
         "a reorder",
-        f"{_agrees(shown, count, masked=masked)}, but {alike}" if shown else None,
+        agreed if shown else None,
         leaves(False),
         join,
     )
@@ -2806,19 +2821,13 @@ def _paired(keys, count, runs, masked):
     ]
 
 
-def _agreement(shown, paired, count, changes, differing, runs, masked):
+def _agreement(verdict, changes, differing, runs):
     """What agrees where nothing suggests another pairing and nothing was left out
-    (#201), as `_structure_apart` says it: that the hits pair by what agrees, never that
-    they line up (review of PR #308); then, with no intervention in either run, that no
-    single selector suggests another pairing; else what differs (``differing``, as read)
-    and which interventions there were. ``paired`` and ``masked`` as for `_after_change`."""
-    one = len(shown) == 1
-    verdict = paired or [
-        f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-        f"{_agrees(shown, count, pronoun=True, masked=masked)}",
-        f"but {'it reads' if one else 'they read'} alike at some hits, which could still trade "
-        "places",
-    ]
+    (#201), as `_structure_apart` says it: its ``verdict`` lines, that the hits pair by
+    what agrees (a `join` key) or as far as it shows, never that they line up (review of
+    PR #308); then, with no intervention in either run, that no single selector suggests
+    another pairing; else what differs (``differing``, as read) and which interventions
+    there were."""
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
     if not reached:
@@ -2845,23 +2854,44 @@ def _agreement(shown, paired, count, changes, differing, runs, masked):
     )
 
 
-def _telling_apart(selectors, rows):
-    """Some of ``selectors`` (in their order) whose values, ``rows`` (one list per hit,
-    in ``selectors`` order), differ at every hit; None if all of them together do not.
-    Each is chosen in turn to tell the most hits apart, the first of equals, so one
-    that tells every hit apart alone is the one named."""
+def _join_key(selectors, rows):
+    """The fewest of ``selectors`` (in their order) whose values, ``rows`` (one list per
+    hit, in ``selectors`` order), together are unique across the hits, as a `queries
+    join` key: at most ``MAX_KEYS`` of them, as `join` takes no more (review 3 of PR
+    #308: nine named together made the command fail). None where all of them together
+    are not unique, or where no such key is found.
+
+    One that is unique alone is the first such. Else each is chosen in turn to tell the
+    most hits apart, the first of equals; then smaller sets are tried, in order, while
+    the work stays within ``_KEY_SEARCH`` values read."""
     if not rows or not selectors or len({tuple(row) for row in rows}) < len(rows):
         return None
+    columns = [tuple(row[i] for row in rows) for i in range(len(selectors))]
+
+    def unique(chosen):
+        return len(set(zip(*(columns[i] for i in chosen)))) == len(rows)
+
     chosen = []
-    while True:
-        told = len({tuple(row[i] for i in chosen) for row in rows}) if chosen else 1
-        if told == len(rows):
-            return [selectors[i] for i in sorted(chosen)]
-        best = max(
-            (i for i in range(len(selectors)) if i not in chosen),
-            key=lambda i: len({tuple(row[j] for j in [*chosen, i]) for row in rows}),
+    while not chosen or not unique(chosen):
+        chosen.append(
+            max(
+                (i for i in range(len(selectors)) if i not in chosen),
+                key=lambda i: len(set(zip(*(columns[j] for j in [*chosen, i])))),
+            )
         )
-        chosen.append(best)
+    budget = _KEY_SEARCH // len(rows)
+    for size in range(2, min(len(chosen), MAX_KEYS + 1)):
+        for smaller in itertools.combinations(range(len(selectors)), size):
+            budget -= size
+            if budget < 0:
+                break
+            if unique(smaller):
+                return [selectors[i] for i in smaller]
+    return [selectors[i] for i in sorted(chosen)] if len(chosen) <= MAX_KEYS else None
+
+
+# How many values `_join_key` may read trying smaller keys.
+_KEY_SEARCH = 2_000_000
 
 
 def _place(place):

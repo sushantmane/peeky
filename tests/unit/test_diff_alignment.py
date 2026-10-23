@@ -828,3 +828,66 @@ def test_join_guidance_names_masked_where_only_addressed_values_tell_hits_apart(
     (note,) = alignment(notes(store, 3, 4))
     assert note.endswith("--param key=<selector>[,<selector>…]`"), note
     assert "masked" not in note, note
+
+
+def indicators(count):
+    """``count`` + 1 hits: hit i (1 to ``count``) has only `ki` 1, the last every `ki` 0,
+    so only all of `k1` to `k<count>` together are unique across the hits; `x` differs
+    at the last hit only."""
+    return {
+        side: [
+            {**{f"k{j}": str(int(i == j)) for j in range(1, count + 1)}, "x": "0"}
+            for i in range(1, count + 1)
+        ]
+        + [{**{f"k{j}": "0" for j in range(1, count + 1)}, "x": x}]
+        for side, x in (("a", "1"), ("b", "2"))
+    }
+
+
+def test_a_pairing_note_names_only_a_join_that_join_takes(store):
+    # Review 3 of PR #308: `join` takes at most 8 selectors, and the note named all nine
+    # of `k1` to `k9`, so its command failed ("key names at most 8 selectors"). No 8 of
+    # them are unique across the hits: the note names no `join`, and says why.
+    hits = indicators(9)
+    saved(store, hits["a"])
+    saved(store, hits["b"])
+    (note,) = alignment(notes(store, 1, 2))
+    assert "peeky queries join" not in note, note
+    assert short(note) == [
+        "hits pair as far as `k1`, `k2`, `k3` and 6 more show: they agree between the runs at "
+        "each of the 10 hits and together are unique across these hits",
+        f"- but no `queries join` key of {evidence.MAX_KEYS} selectors or fewer among them was "
+        "found unique across these hits",
+        "- pairing by hit number agrees with their values, but that does not prove the hits are "
+        "the same moments",
+        "- no single selector's values line up better at other hits",
+    ], note
+    with pytest.raises(ValueError, match="key names at most 8 selectors"):
+        evidence.run_query(
+            store, "join", {"a": 1, "b": 2, "key": ",".join(f"k{i}" for i in range(1, 10))}
+        )
+    # Three are needed, and `join` takes three: the command is named, and pairs as said.
+    hits = indicators(3)
+    saved(store, hits["a"])
+    saved(store, hits["b"])
+    (note,) = alignment(notes(store, 3, 4))
+    assert "`peeky queries join --param a=3 --param b=4 --param key=k1,k2,k3` would" in note
+    assert [(r["hit_a"], r["hit_b"], r["matched"]) for r in suggested_join(store, note)] == [
+        (hit, hit, "both") for hit in range(1, 5)
+    ]
+    # The fewest that are unique, not the first chosen greedily: `g` tells the most hits
+    # apart alone, but `g` with `a`, `b` and `c` is one more than `a`, `b` and `c`.
+    bits = [(n >> 2 & 1, n >> 1 & 1, n & 1) for n in range(8)]
+    for x in "12":
+        saved(
+            store,
+            [
+                {"g": str(g), "a": str(i), "b": str(j), "c": str(k), "x": x if g == 3 else "0"}
+                for g, (i, j, k) in zip([0, 1, 2, 3, 0, 0, 0, 0], bits)
+            ],
+        )
+    (note,) = alignment(notes(store, 5, 6))
+    assert note.startswith("hits pair by `a`, `b` and `c`: they agree"), note
+    assert [(r["hit_a"], r["hit_b"], r["matched"]) for r in suggested_join(store, note)] == [
+        (hit, hit, "both") for hit in range(1, 9)
+    ]
