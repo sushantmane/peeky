@@ -747,8 +747,9 @@ there. So the row says `no value yet: declared at line 18, below this stop`.
 - In C++, clang puts the code that cleans up after an exception there, at `-O0`. That code ends
   in a jump and never runs into the line, so the local is withheld.
 - Sometimes Peeky can't tell which way control came. Both kinds of way in may reach the line, or
-  a call that may not return, or a computed jump. Or Peeky can't read the disassembly. Then the
-  row has a `note`: it may be leftovers. A change there is refused.
+  a call that may not return, or a computed jump. An exception may enter the line, as the
+  binary's exception tables say. Or Peeky can't read the disassembly. Then the row has a `note`:
+  it may be leftovers. A change there is refused.
 - **Mid-line,** such as a `for` counter on later passes, or after `step --out`, it shows as its
   storage reads, where the rules below allow it.
 

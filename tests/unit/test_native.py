@@ -1189,18 +1189,27 @@ def test_control_comes_to_a_line_only_past_its_declaration_on_every_way_in():
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, None}}) is None
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8, None}}) is None
     assert runs_into(order, 0x6FC, lines, {0x6FC: set()}) is None
-    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x704}}) is None
     assert runs_into(order, 0x6FC, lines, None) is None
     assert runs_into(order, 0x6FC, lines, {0x700: {0x6FC}}) is None
+    # Review round 2 of #295: only a jump back comes to it, a loop's: control enters the
+    # line there, and the loop's note says why the value may be the last pass's.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x704}}) is False
+    # Review round 2 of #295: the unwinder may enter it (a landing pad), which no
+    # disassembly shows, though line 20's code falls into it: never proof.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, frozenset({0x6FC})) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620}}, frozenset({0x6FC})) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, None) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}, frozenset({0x6E4})) is True
 
 
-def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeypatch):
+def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeypatch, tmp_path):
     # #288: one disassembly of the function says both whether a loop returns to a line's
     # start and, where another line's code lies just before it, whether control comes
     # there only past the declaration.
     monkeypatch.setattr("peeky.native.architecture", lambda binary: "arm64")
     session = NativeSession.__new__(NativeSession)
     session.load_bias, session.binary = 0x1000, None
+    session.unwinder_entries = frozenset({0x6E4})
     session.declarations = [
         {
             "ranges": ((0x600, 0x710),),
@@ -1235,6 +1244,7 @@ def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeyp
         (0x1708, "ldr     w8, [sp, #0x28]"),
         *((0x1000 + at, "nop") for at in range(0x70C, 0x720, 4)),
     )
+    original = listing
     asked = []
 
     class Adapter:
@@ -1256,6 +1266,183 @@ def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeyp
     session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x16FC)})
     assert session.runs_into == {0x6FC: None} and session.loop_targets == {0x6FC: None}
     assert session.unread_code == {0x6FC}
+    # Review round 2 of #295: line 19's row, which only line 20's code reaches in the
+    # disassembly, is also a landing pad; or the binary's exception tables cannot be read.
+    for entries in (frozenset({0x704}), "unread"):
+        session.__dict__.pop("backward_jumps")
+        session.loop_targets, session.runs_into = {}, {}
+        if entries == "unread":
+            del session.unwinder_entries
+            session.binary = tmp_path / "not-a-binary"
+            session.binary.write_bytes(b"#!/bin/sh\n")
+        else:
+            session.unwinder_entries = entries
+        listing = original
+        session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x1704)})
+        assert session.runs_into == {0x704: None}, entries
+    assert session.unwinder_entries is None
+
+
+# Apple clang's LSDA for q.cpp's `main` (#288): no LPStart, no type table, uleb128 call
+# sites; three of its four records have a landing pad, at main + 0x164, 0x1B4 and 0x1FC.
+MAIN_LSDA = bytes.fromhex(
+    "ff ff 01 17"  # LPStart, type table: none; call sites: uleb128, 23 bytes
+    " 30 4c e402 00  9801 08 b403 00  c402 8402 fc03 00  c804 64 00 00"  # start, size, pad, action
+    " 00"
+)
+
+
+def test_an_lsdas_call_sites_give_its_landing_pads():
+    from peeky.native import _lsda_pads
+
+    table = b"\xaa" * 4 + MAIN_LSDA
+    assert _lsda_pads(table, 0x24D0, 0x24D4, 0x4E8) == {0x64C, 0x69C, 0x6E4}
+    # udata4 call sites; an LPStart, pc-relative, that the landing pads count from.
+    sites = struct.pack("<IIIB", 0x30, 0x4C, 0x164, 0) + struct.pack("<IIIB", 0x98, 8, 0, 0)
+    udata = bytes([0xFF, 0xFF, 0x03, len(sites)]) + sites
+    assert _lsda_pads(udata, 0x9000, 0x9000, 0x4E8) == {0x64C}
+    based = bytes([0x1B]) + struct.pack("<i", 0x100 - 1) + bytes([0xFF, 0x03, len(sites)]) + sites
+    assert _lsda_pads(based, 0x9000, 0x9000, 0x4E8) == {0x9100 + 0x164}
+    # A type table's offset is skipped.
+    typed = bytes([0xFF, 0x9B, 0x05, 0x03, len(sites)]) + sites
+    assert _lsda_pads(typed, 0x9000, 0x9000, 0x4E8) == {0x64C}
+    for broken, where in (
+        (MAIN_LSDA[:10], 0x24D4),  # a call-site table past the section's end
+        (MAIN_LSDA, 0x2000),  # outside the section
+        (bytes([0xFF, 0xFF, 0x13, 0x04]) + bytes(4), 0x24D4),  # pc-relative call sites
+        (bytes([0xFF, 0xFF, 0x0F, 0x04]) + bytes(4), 0x24D4),  # an unknown format
+    ):
+        with pytest.raises(ValueError):
+            _lsda_pads(broken, 0x24D4, where, 0x4E8)
+
+
+def eh_frame(address, functions):
+    """An `.eh_frame` section loaded at ``address``: a "zPLR" CIE (an indirect personality,
+    pc-relative LSDAs and starts), an FDE per (start, size, LSDA or 0) under it, a "zR"
+    CIE with an FDE of its own, and the terminator."""
+
+    def record(data, body):
+        body += bytes(-len(body) % 4)
+        return data + struct.pack("<I", len(body)) + body
+
+    personal = bytes([1]) + b"zPLR\0" + bytes([1, 0x78, 30, 7, 0x9B]) + bytes(4)
+    data = record(b"", bytes(4) + personal + bytes([0x1B, 0x1B]))
+    for start, size, lsda in functions:
+        at = len(data) + 4
+        begin = start - (address + at + 4)
+        where = lsda - (address + at + 13) if lsda else 0
+        data = record(data, struct.pack("<IiiBi", at, begin, size, 4, where))
+    plain = len(data)
+    data = record(data, bytes(4) + bytes([1]) + b"zR\0" + bytes([1, 0x78, 30, 1, 0x1B]))
+    at = len(data) + 4
+    data = record(data, struct.pack("<IiiB", at - plain, 0x500 - (address + at + 4), 16, 0))
+    return data + bytes(4)
+
+
+def test_eh_frame_fdes_name_their_lsdas():
+    from peeky.native import _eh_frame_lsdas
+
+    data = eh_frame(0x2000, [(0x400, 0x80, 0x3010), (0x480, 0x20, 0)])
+    assert _eh_frame_lsdas(data, 0x2000) == [(0x400, 0x3010)]
+    # An FDE whose CIE is not before it, a truncated record, an unknown augmentation.
+    with pytest.raises(ValueError, match="names no CIE"):
+        _eh_frame_lsdas(data[28:], 0x2000 + 28)
+    with pytest.raises(ValueError, match="Truncated"):
+        _eh_frame_lsdas(data[:30], 0x2000)
+    with pytest.raises(ValueError, match="Truncated"):
+        _eh_frame_lsdas(data[:40], 0x2000)
+    with pytest.raises(ValueError):
+        _eh_frame_lsdas(data.replace(b"zPLR", b"zPXR"), 0x2000)
+
+
+def unwind_info(lsdas, base=0):
+    """A Mach-O `__unwind_info` with no encodings: two index entries (the second the
+    sentinel), and the LSDA array (function, LSDA), offsets from ``base``."""
+    array = 28 + 24
+    index = struct.pack("<III", 0x4E8, 0, array) + struct.pack(
+        "<III", 0x9000, 0, array + 8 * len(lsdas)
+    )
+    body = b"".join(struct.pack("<II", start - base, lsda - base) for start, lsda in lsdas)
+    return struct.pack("<7I", 1, 28, 0, 28, 0, 28, 2) + index + body
+
+
+def test_unwind_info_names_each_functions_lsda():
+    from peeky.native import _unwind_info_lsdas
+
+    data = unwind_info([(0x1000004E8, 0x1000024D4), (0x100000B18, 0x1000024F0)], 0x100000000)
+    assert _unwind_info_lsdas(data, 0x100000000) == [
+        (0x1000004E8, 0x1000024D4),
+        (0x100000B18, 0x1000024F0),
+    ]
+    with pytest.raises(ValueError):
+        _unwind_info_lsdas(struct.pack("<7I", 2, 28, 0, 28, 0, 28, 0), 0)
+    with pytest.raises(ValueError):
+        _unwind_info_lsdas(data[:60], 0x100000000)
+
+
+def macho_image(sections):
+    """A 64-bit Mach-O whose one segment, __TEXT at 0x100000000, holds ``sections``:
+    (name, address, bytes) each."""
+    size = 72 + 80 * len(sections)
+    commands = struct.pack(
+        "<II16sQQQQIIII", 0x19, size, b"__TEXT", 0x100000000, 0x4000, 0, 0x4000, 5, 5, 0, 0
+    )
+    commands = commands[:64] + struct.pack("<I", len(sections)) + commands[68:]
+    blob, offset = b"", 32 + size
+    for name, address, data in sections:
+        place = struct.pack("<16s16sQQI", name, b"__TEXT", address, len(data), offset + len(blob))
+        commands += place + bytes(28)
+        blob += data
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, len(commands), 0, 0)
+    return header + commands + blob
+
+
+def elf_image(sections):
+    """An ELF64 with section headers alone: `.shstrtab`, then ``sections``, (name, type,
+    address, bytes) each."""
+    names = b"\0.shstrtab\0" + b"".join(name + b"\0" for name, *_ in sections)
+    parts, label = [(1, 3, 0, names)], 11
+    for name, kind, address, data in sections:
+        parts.append((label, kind, address, data))
+        label += len(name) + 1
+    blob, headers = b"", [bytes(64)]
+    for label, kind, address, data in parts:
+        place = (label, kind, 0, address, 64 + len(blob), len(data), 0, 0, 1, 0)
+        headers.append(struct.pack("<IIQQQQIIQQ", *place))
+        blob += data
+    fields = (3, 62, 1, 0, 0, 64 + len(blob), 0, 64, 56, 0, 64, len(headers), 1)
+    header = b"\x7fELF\x02\x01\x01" + bytes(9) + struct.pack("<HHIQQQIHHHHHH", *fields)
+    return header + blob + b"".join(headers)
+
+
+def test_landing_pads_come_from_a_mach_o_or_elf_executables_tables(tmp_path):
+    from peeky.native import landing_pads
+
+    # Mach-O: `__unwind_info`'s LSDA array, and `__gcc_except_tab`.
+    program = tmp_path / "program"
+    info = unwind_info([(0x1000004E8, 0x100003000)], 0x100000000)
+    tables = [(b"__unwind_info", 0x100002000, info), (b"__gcc_except_tab", 0x100003000, MAIN_LSDA)]
+    program.write_bytes(macho_image(tables))
+    assert landing_pads(program) == {0x10000064C, 0x10000069C, 0x1000006E4}
+    # ELF: `.eh_frame` FDEs, and `.gcc_except_table`; a NOBITS section has no bytes.
+    frame = eh_frame(0x2000, [(0x14E8, 0x400, 0x3000)])
+    tables = [
+        (b".eh_frame", 1, 0x2000, frame),
+        (b".gcc_except_table", 1, 0x3000, MAIN_LSDA),
+        (b".bss", 8, 0x4000, b""),
+    ]
+    program.write_bytes(elf_image(tables))
+    assert landing_pads(program) == {0x164C, 0x169C, 0x16E4}
+    # A C program's tables name no LSDA: no landing pads.
+    program.write_bytes(elf_image([(b".eh_frame", 1, 0x2000, eh_frame(0x2000, []))]))
+    assert landing_pads(program) == frozenset()
+    # LSDAs without the table they point into, or not a binary at all: unreadable.
+    program.write_bytes(macho_image([(b"__unwind_info", 0x100002000, info)]))
+    with pytest.raises(ValueError, match="LSDAs without"):
+        landing_pads(program)
+    program.write_bytes(b"#!/bin/sh\n")
+    with pytest.raises(ValueError):
+        landing_pads(program)
 
 
 def _instructions(*pairs):

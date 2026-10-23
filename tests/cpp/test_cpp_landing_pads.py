@@ -6,6 +6,7 @@ running into the line, as a `for` header over two lines does. Now the stop's dis
 tells them apart. Each case is built with clang and with g++, which puts its landing pads
 after the function's code; a local is withheld at its line's first instruction with both."""
 
+import bisect
 import json
 
 import pytest
@@ -174,24 +175,34 @@ UNREAD = (
 PATHS = (
     "may be leftovers: this stop may be where line 16 starts, before its declaration runs. "
     "Control reaches it by more than one path, or by one Peeky cannot follow (a call that may "
-    "not return, a computed jump); read it on the next line"
+    "not return, a computed jump, an exception); read it on the next line"
 )
 
 
+class Everywhere:
+    """Landing pads at every address."""
+
+    def __contains__(self, address):
+        return True
+
+
 @pytest.mark.timeout(180)
-@pytest.mark.parametrize("unknown", ["unread", "paths"])
+@pytest.mark.parametrize("unknown", ["unread", "paths", "unwinder"])
 def test_where_peeky_cannot_tell_how_control_came_the_row_says_so(
     build, cxx, capsys, monkeypatch, unknown
 ):
     # Clang's landing pad lies just before line 16. Where Peeky cannot read the
-    # disassembly ("unread": an architecture it does not know), or where control may come
-    # both from before the declaration and past it ("paths", review of #295), the value is
-    # shown with a note, and a change is refused; never shown plainly. GCC's line 16 has
-    # no other line's code just before it.
+    # disassembly ("unread": an architecture it does not know), where control may come
+    # both from before the declaration and past it ("paths", review of #295), or where
+    # the unwinder may enter the line ("unwinder", review round 2), the value is shown
+    # with a note, and a change is refused; never shown plainly. GCC's line 16 has no
+    # other line's code just before it.
     if unknown == "unread":
         monkeypatch.setattr("peeky.native.architecture", lambda binary: None)
-    else:
+    elif unknown == "paths":
         monkeypatch.setattr("peeky.native.runs_into", lambda *_: None, raising=False)
+    else:
+        monkeypatch.setattr("peeky.native.landing_pads", lambda _: Everywhere(), raising=False)
     program = build("q.cpp", REPRO)
     code, result = probe(capsys, program, "--at", "16", "--capture", "q")
     assert code == 0, result.get("error")
@@ -206,3 +217,36 @@ def test_where_peeky_cannot_tell_how_control_came_the_row_says_so(
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
     message = result["error"]["message"]
     assert "declared on line 16, which may not have run yet at this stop" in message
+
+
+@pytest.mark.timeout(180)
+def test_the_binarys_landing_pads_are_read_where_the_compiler_put_them(
+    build, cxx, capsys, monkeypatch
+):
+    # Review round 2 of #295: the unwinder enters a function at its landing pads, which
+    # no disassembly shows. Peeky reads them from the binary's exception tables (Mach-O's
+    # `__unwind_info` and `__gcc_except_tab`, ELF's `.eh_frame` and `.gcc_except_table`).
+    # Clang and GCC both put `main`'s in code of its closing line, 20; none is line 16's.
+    from peeky.native import NativeSession, landing_pads
+
+    seen = []
+    check = NativeSession._check_loop_target
+
+    def spy(self, dap, frame):
+        if not seen:
+            seen.append((self.declarations, landing_pads(self.binary)))
+        return check(self, dap, frame)
+
+    monkeypatch.setattr(NativeSession, "_check_loop_target", spy)
+    program = build("q.cpp", REPRO)
+    code, result = probe(capsys, program, "--at", "16", "--capture", "q")
+    assert code == 0 and withheld(result["rows"][0], 16), result
+    declarations, pads = seen[0]
+    [function] = [each for each in declarations if each["name"] == "main"]
+    own = sorted(pad for pad in pads if any(low <= pad < high for low, high in function["ranges"]))
+    assert own, sorted(pads)
+    rows = function["order"]
+    for pad in own:
+        row = rows[bisect.bisect_right(rows, pad, key=lambda row: row[0]) - 1]
+        assert row[1:] == ("q.cpp", 20), (hex(pad), row)
+    assert not any(found & pads for found in function["preceded"].values())

@@ -135,9 +135,14 @@ frame's entry: the narrowest function whose code holds the frame's address.
   and each jump that names it.
 - A call's return is a way in Peeky can't follow, since the call may never return
   (`_Unwind_Resume`). So is any instruction, in a function that jumps through a register.
+- The unwinder enters a function at its landing pads, which no disassembly shows.
+  `landing_pads` reads them from the binary's exception tables, once per session. On ELF, each
+  `.eh_frame` FDE names its LSDA in `.gcc_except_table`.
+- On Mach-O, the `__unwind_info` LSDA array, and any `__eh_frame` FDE, name LSDAs in
+  `__gcc_except_tab`. Each LSDA's call-site records give the landing pads.
 - `runs_into` is True where every way in from below is another line's code, and no jump comes
-  back. It is False where every way in from below is code at or above the line. Anything else is
-  None.
+  back. It is False where every way in from below is code at or above the line, or where only
+  jumps back come. Anything else is None, and so is a landing pad, or tables Peeky can't read.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
 

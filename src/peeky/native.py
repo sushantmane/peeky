@@ -2837,17 +2837,24 @@ def control_sources(instructions, low, high, architecture):
     return found
 
 
-def runs_into(order, address, lines, sources):
+def runs_into(order, address, lines, sources, entries=frozenset()):
     """Whether control comes to ``address``, the first row of the declaration line
     ``lines`` ((source, line)), only past that declaration (True): every way in from
     below is code of another line (another file's, or a later one's) that falls or jumps
     into it, as a header over two lines does, and no jump comes back to it. False where
-    every way in from below is code at or above that line: control enters the line there
-    (a jump back is a loop's, which the stop's ``loop_targets`` judges). None otherwise:
-    both kinds, no way in from below (as where only the unwinder enters), or one Peeky
-    cannot follow (control_sources' None), or no ``sources`` for it. ``order``: the
-    function's rows, (address, source, line) by address (local_declarations)."""
-    if sources is None or address not in sources or None in sources[address]:
+    every way in from below is code at or above that line, or where only jumps back come
+    to it: control enters the line there (a jump back is a loop's, which the stop's
+    ``loop_targets`` judges). None otherwise: both kinds, no way in, one Peeky cannot
+    follow (control_sources' None), an exception's: ``address`` is among ``entries``
+    (landing_pads; None: unknown), or no ``sources`` for it. ``order``: the function's
+    rows, (address, source, line) by address (local_declarations)."""
+    if (
+        sources is None
+        or address not in sources
+        or None in sources[address]
+        or entries is None
+        or address in entries
+    ):
         return None
     kinds, back = set(), False
     for origin in sources[address]:
@@ -2859,9 +2866,271 @@ def runs_into(order, address, lines, sources):
             return None
         _, source, line = order[index]
         kinds.add(not any(source == own and line <= at for own, at in lines))
-    if kinds == {False}:
+    if kinds == {False} or (not kinds and back):
         return False
     return True if kinds == {True} and not back else None
+
+
+# The bytes of one exception-table section Peeky reads, at most, and the records.
+MAX_EXCEPTION_TABLE = 16 * 1024 * 1024
+MAX_EXCEPTION_RECORDS = 1 << 20
+# A DW_EH_PE pointer's format (its low four bits): struct format, or LEB128 (None).
+_POINTER_FORMATS = {0x00: "<Q", 0x01: None, 0x02: "<H", 0x03: "<I", 0x04: "<Q"}
+_POINTER_FORMATS.update({0x09: None, 0x0A: "<h", 0x0B: "<i", 0x0C: "<q"})
+
+
+def _leb128(data, at, signed=False):
+    """(value, next offset) of the LEB128 number at ``at`` of ``data``."""
+    value, shift = 0, 0
+    while True:
+        if at >= len(data) or shift > 63:
+            raise ValueError("Malformed LEB128 number in an exception table")
+        byte = data[at]
+        at += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+        if byte < 0x80:
+            return (value - (1 << shift) if signed and byte & 0x40 else value), at
+
+
+def _eh_pointer(data, at, encoding, address, resolve=True):
+    """(value, next offset) of the DW_EH_PE-encoded pointer at ``at`` of ``data``, a
+    section loaded at ``address``: absolute, or relative to its own place (pcrel), as the
+    unwinder reads it: 0 stays 0 (no pointer). With ``resolve`` False its value is not
+    needed (an indirect personality's), only skipped."""
+    form = encoding & 0x0F
+    if form not in _POINTER_FORMATS or encoding & 0x70 == 0x50:
+        raise ValueError("Unsupported pointer format in an exception table")
+    if (packed := _POINTER_FORMATS[form]) is None:
+        value, end = _leb128(data, at, signed=form == 0x09)
+    else:
+        end = at + struct.calcsize(packed)
+        if end > len(data):
+            raise ValueError("Truncated pointer in an exception table")
+        value = struct.unpack_from(packed, data, at)[0]
+    if not resolve:
+        return None, end
+    if encoding & 0x80 or encoding & 0x70 not in (0x00, 0x10):
+        raise ValueError("Unsupported pointer application in an exception table")
+    if encoding & 0x70 == 0x10 and value:
+        value += address + at
+    return value & ((1 << 64) - 1), end
+
+
+def _eh_frame_lsdas(data, address):
+    """[(function start, LSDA address)] of each FDE of an `.eh_frame` section (``data``,
+    loaded at ``address``) that names an LSDA: its CIE's augmentation has `L`."""
+    found, cies, at = [], {}, 0
+    while at < len(data) and len(found) < MAX_EXCEPTION_RECORDS:
+        if at + 4 > len(data):
+            raise ValueError("Truncated `.eh_frame` record")
+        start, length = at, struct.unpack_from("<I", data, at)[0]
+        at += 4
+        if length == 0:
+            break
+        if length == 0xFFFFFFFF:
+            if at + 8 > len(data):
+                raise ValueError("Truncated `.eh_frame` record")
+            length = struct.unpack_from("<Q", data, at)[0]
+            at += 8
+        end = at + length
+        if end > len(data) or length < 4:
+            raise ValueError("Truncated `.eh_frame` record")
+        pointer = struct.unpack_from("<I", data, at)[0]
+        if pointer == 0:
+            cies[start] = _eh_cie(data, at + 4, end, address)
+        else:
+            if (at - pointer) not in cies:
+                raise ValueError("An `.eh_frame` FDE names no CIE before it")
+            lsda, encoding, augmented = cies[at - pointer]
+            begin, cursor = _eh_pointer(data, at + 4, encoding, address)
+            _, cursor = _eh_pointer(data, cursor, encoding & 0x0F, address)
+            if augmented and lsda is not None:
+                _, cursor = _leb128(data, cursor)
+                where, _ = _eh_pointer(data, cursor, lsda, address)
+                if where:
+                    found.append((begin, where))
+        at = end
+    return found
+
+
+def _eh_cie(data, at, end, address):
+    """(LSDA pointer encoding or None, FDE pointer encoding, whether FDEs carry
+    augmentation data) of the CIE whose body starts at ``at``."""
+    version = data[at] if at < end else None
+    stop = data.find(b"\0", at + 1, end)
+    if version not in (1, 3) or stop < 0:
+        raise ValueError("Unsupported `.eh_frame` CIE")
+    augmentation, at = data[at + 1 : stop].decode("ascii", "replace"), stop + 1
+    if "eh" in augmentation:
+        at += 8
+    _, at = _leb128(data, at)
+    _, at = _leb128(data, at, signed=True)
+    at = at + 1 if version == 1 else _leb128(data, at)[1]
+    if not augmentation.startswith("z"):
+        return None, 0x00, False
+    _, at = _leb128(data, at)
+    lsda, encoding = None, 0x00
+    for letter in augmentation[1:]:
+        if at >= end:
+            raise ValueError("Truncated `.eh_frame` CIE")
+        if letter == "L":
+            lsda, at = data[at], at + 1
+        elif letter == "R":
+            encoding, at = data[at], at + 1
+        elif letter == "P":
+            _, at = _eh_pointer(data, at + 1, data[at], address, resolve=False)
+        elif letter not in "SBG":
+            raise ValueError("Unknown `.eh_frame` augmentation")
+    return (None if lsda == 0xFF else lsda), encoding, True
+
+
+def _unwind_info_lsdas(data, base):
+    """[(function start, LSDA address)] from a Mach-O `__unwind_info` section's LSDA
+    array; its offsets count from ``base``, the image's __TEXT address."""
+    if len(data) < 28:
+        raise ValueError("Truncated `__unwind_info`")
+    version, *_, index, count = struct.unpack_from("<7I", data, 0)
+    if version != 1 or index + 12 * count > len(data):
+        raise ValueError("Unsupported `__unwind_info`")
+    if not count:
+        return []
+    first = struct.unpack_from("<I", data, index + 8)[0]
+    last = struct.unpack_from("<I", data, index + 12 * (count - 1) + 8)[0]
+    if not first <= last <= len(data) or (last - first) % 8:
+        raise ValueError("Malformed `__unwind_info` LSDA array")
+    return [
+        (base + start, base + lsda) for start, lsda in struct.iter_unpack("<II", data[first:last])
+    ]
+
+
+def _lsda_pads(data, address, lsda, start):
+    """The landing pads of the LSDA at ``lsda``, in a section (``data``) loaded at
+    ``address``, of the function starting at ``start``: where each call-site record
+    sends the unwinder (none for a record without one)."""
+    at = lsda - address
+    if not 0 <= at < len(data):
+        raise ValueError("An LSDA lies outside its exception table")
+    base = start
+    if (encoding := data[at]) != 0xFF:
+        base, at = _eh_pointer(data, at + 1, encoding, address)
+    else:
+        at += 1
+    if at >= len(data):
+        raise ValueError("Truncated LSDA")
+    if data[at] != 0xFF:
+        _, at = _leb128(data, at + 1)
+    else:
+        at += 1
+    if at >= len(data) or data[at] & 0xF0:
+        raise ValueError("Unsupported LSDA call-site encoding")
+    encoding = data[at]
+    length, at = _leb128(data, at + 1)
+    end, pads = at + length, set()
+    if end > len(data):
+        raise ValueError("Truncated LSDA call-site table")
+    while at < end:
+        _, at = _eh_pointer(data, at, encoding, address)
+        _, at = _eh_pointer(data, at, encoding, address)
+        pad, at = _eh_pointer(data, at, encoding, address)
+        _, at = _leb128(data, at)
+        if pad:
+            pads.add(base + pad)
+    return pads
+
+
+def _exception_sections(binary):
+    """{name: (address, bytes)} of the binary's exception-table sections: ELF
+    `.eh_frame` and `.gcc_except_table`; Mach-O `__eh_frame`, `__unwind_info` and
+    `__gcc_except_tab` (and `__TEXT`: its address, with no bytes)."""
+    wanted = {".eh_frame", ".gcc_except_table", "__eh_frame", "__unwind_info", "__gcc_except_tab"}
+    found = {}
+    with Path(binary).open("rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        header = stream.read(64)
+        places = []
+        if len(header) >= 32 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+            count, length = struct.unpack_from("<II", header, 16)
+            if not 0 < count <= 4096 or not 0 < length <= 1 << 20:
+                raise ValueError("Invalid Mach-O load commands")
+            stream.seek(32)
+            commands = stream.read(length)
+            cursor = 0
+            for _ in range(count):
+                if cursor + 8 > len(commands):
+                    raise ValueError("Truncated Mach-O load command")
+                kind, step = struct.unpack_from("<II", commands, cursor)
+                if step < 8 or cursor + step > len(commands):
+                    raise ValueError("Invalid Mach-O load command size")
+                if kind == 0x19 and step >= 72:  # LC_SEGMENT_64
+                    segment = commands[cursor + 8 : cursor + 24].rstrip(b"\0").decode("latin-1")
+                    address, _, offset = struct.unpack_from("<QQQ", commands, cursor + 24)
+                    if segment == "__TEXT" and offset == 0:
+                        found["__TEXT"] = (address, b"")
+                    sections = struct.unpack_from("<I", commands, cursor + 64)[0]
+                    if 72 + 80 * sections > step:
+                        raise ValueError("Invalid Mach-O segment sections")
+                    for index in range(sections):
+                        at = cursor + 72 + 80 * index
+                        name = commands[at : at + 16].rstrip(b"\0").decode("latin-1")
+                        address, length, offset = struct.unpack_from("<QQI", commands, at + 32)
+                        places.append((name, address, offset, length))
+                cursor += step
+        elif len(header) == 64 and header[:6] == b"\x7fELF\x02\x01":
+            table = struct.unpack_from("<Q", header, 40)[0]
+            entry, count, names = struct.unpack_from("<HHH", header, 58)
+            if entry != 64 or not 0 < count <= 65535 or names >= count:
+                raise ValueError("Invalid ELF section header table")
+            if table + 64 * count > size:
+                raise ValueError("Invalid ELF section header table")
+            stream.seek(table)
+            headers = [struct.unpack_from("<IIQQQQ", stream.read(64)) for _ in range(count)]
+            _, _, _, _, offset, length = headers[names]
+            if offset + length > size or length > MAX_EXCEPTION_TABLE:
+                raise ValueError("Invalid ELF section names")
+            stream.seek(offset)
+            strings = stream.read(length)
+            for label, kind, _, address, offset, length in headers:
+                end = strings.find(b"\0", label)
+                name = strings[label:end].decode("latin-1") if 0 <= label < end else ""
+                if kind != 8:  # SHT_NOBITS has no bytes
+                    places.append((name, address, offset, length))
+        else:
+            raise ValueError("Expected a 64-bit Mach-O or ELF executable")
+        for name, address, offset, length in places:
+            if name not in wanted:
+                continue
+            if name in found or length > MAX_EXCEPTION_TABLE or offset + length > size:
+                raise ValueError(f"Invalid or repeated exception table section {name}")
+            stream.seek(offset)
+            found[name] = (address, stream.read(length))
+    return found
+
+
+def landing_pads(binary):
+    """The addresses (unslid) where the unwinder enters the program's code, as an
+    exception passes (#295 review): the landing pads of every LSDA the binary's
+    exception tables name. ELF: `.eh_frame` FDEs and `.gcc_except_table`. Mach-O: the
+    `__unwind_info` LSDA array, `__eh_frame` FDEs and `__gcc_except_tab`. Empty without
+    an LSDA (a C program). Raises ValueError where Peeky cannot read them."""
+    sections = _exception_sections(binary)
+    lsdas = []
+    for name in (".eh_frame", "__eh_frame"):
+        if name in sections:
+            lsdas += _eh_frame_lsdas(sections[name][1], sections[name][0])
+    if "__unwind_info" in sections:
+        if "__TEXT" not in sections:
+            raise ValueError("Missing Mach-O __TEXT segment")
+        lsdas += _unwind_info_lsdas(sections["__unwind_info"][1], sections["__TEXT"][0])
+    if not lsdas:
+        return frozenset()
+    table = sections.get(".gcc_except_table") or sections.get("__gcc_except_tab")
+    if table is None or len(lsdas) > MAX_EXCEPTION_RECORDS:
+        raise ValueError("LSDAs without a readable exception table")
+    pads = set()
+    for start, lsda in dict.fromkeys(lsdas):
+        pads |= _lsda_pads(table[1], table[0], lsda, start)
+    return frozenset(pads)
 
 
 def architecture(binary):
@@ -5041,8 +5310,8 @@ class NativeSession:
                 "reaches it by more than one path, or by one Peeky cannot follow)",
                 f"may be leftovers: this stop may be where line {line} starts, before its "
                 "declaration runs. Control reaches it by more than one path, or by one Peeky "
-                "cannot follow (a call that may not return, a computed jump); read it on the "
-                "next line",
+                "cannot follow (a call that may not return, a computed jump, an exception); "
+                "read it on the next line",
                 refuses=True,
             )
         if on_line is not None and getattr(self, "loop_targets", {}).get(address) is not False:
@@ -7903,7 +8172,7 @@ class NativeSession:
         ``preceded``), also whether control comes to it only past its declaration
         (``runs_into``: True, False, or None), and, in ``unread_code``, where the
         disassembly could not be read. Each function is disassembled at most once per
-        session."""
+        session; the binary's landing pads (``unwinder_entries``) are read once."""
         cache = self.__dict__.setdefault("loop_targets", {})
         into = self.__dict__.setdefault("runs_into", {})
         jumps = self.__dict__.setdefault("backward_jumps", {})
@@ -7946,7 +8215,14 @@ class NativeSession:
             if address in found
         }
         if lines:
-            into[address] = runs_into(function.get("order", ()), address, lines, sources)
+            if "unwinder_entries" not in self.__dict__:
+                try:
+                    self.unwinder_entries = landing_pads(self.binary)
+                except (OSError, ValueError, TypeError, struct.error, IndexError):
+                    self.unwinder_entries = None
+            into[address] = runs_into(
+                function.get("order", ()), address, lines, sources, self.unwinder_entries
+            )
             if sources is None:
                 self.__dict__.setdefault("unread_code", set()).add(address)
 
