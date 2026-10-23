@@ -17,10 +17,24 @@ PROTOCOL_VERSION = 3
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        r"^Evidence query failed: --schema has no ",
+        "INVALID_QUERY",
+        "Name a table, view or part the message lists, or --schema all for everything; "
+        "`peeky sql --schema` alone lists them in short.",
+        False,
+    ),
+    (
+        r"^Evidence query failed: (no canned query |\w+ does not take |\w+ needs --param )",
+        "INVALID_QUERY",
+        "`peeky queries --help` lists each canned query's --param names: a and b pick two "
+        "runs, run picks one.",
+        False,
+    ),
+    (
         r"^Evidence query failed",
         "INVALID_QUERY",
         "Fix the SQL or the --param values: one read-only SELECT. `peeky sql --schema` lists "
-        "the tables, columns and canned queries.",
+        "the tables; `--schema NAME` gives one's columns.",
         False,
     ),
     (

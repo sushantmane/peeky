@@ -2132,11 +2132,54 @@ bounded. They need no rerun.
 **What it answers:** Which tables, functions and canned queries can I use?
 
 ```sh
-peeky sql --schema          # tables, columns, views, canned queries, examples
-peeky queries               # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, wide, join, unreadable, failures
+peeky sql --schema                    # a short index: a line per table, view and other part
+peeky sql --schema captures evidence  # those in full; --schema all prints everything
+peeky queries --help                  # each canned query with the --param names it takes
+peeky queries                         # each canned query and parameter described in full
 ```
 
-A canned query is a question Peeky has ready, such as `peeky queries diff`.
+```
+store: /home/me/.peeky/evidence/evidence.db (SQLite 3.50.4)
+
+tables:
+  runs           One row per probe run (31 columns)
+  captures       One row per captured selector, per hit and phase (17 columns)
+  ...
+views:
+  evidence       captures joined with their run, so no join is needed
+  last_run       The evidence rows of the newest run
+...
+other parts:
+  queries        12 canned queries, each described in full; `peeky queries --help` lists their parameters
+  functions      SQL functions Peeky adds: no_addresses, first_difference, difference_position, ...
+  ...
+
+`peeky sql --schema NAME [NAME ...]` shows those in full (e.g. --schema captures functions); --schema all shows everything.
+```
+
+- `--schema` alone prints this index, under 2 KB. The whole schema is about 20 KB.
+- `--schema NAME` prints each table, view or other part it names in full: its columns, the
+  canned queries, the functions, the examples or the rules. `--schema all` prints everything.
+- `--schema --json` gives the whole schema, as before. With names, it gives only those, in the
+  same shape.
+- An unknown name is `INVALID_QUERY`. The message lists the names there are.
+
+A canned query is a question Peeky has ready, such as `peeky queries diff`. `peeky queries --help`
+lists each with the parameters it takes:
+
+```
+  set_effect [run]                               values before and after one run's interventions
+  values selector                                one selector's distinct values across all runs
+  join [a] [b] key [phase] [masked] [unchanged]  two runs paired by a selector's value, not by hit
+```
+
+- Pass each as `--param name=value`. A name in brackets is optional.
+- `a` and `b` pick the two runs of `compare`, `diff`, `outputs` and `join`. They default to the
+  last two runs.
+- `run` picks the one run of `run`, `hits`, `wide`, `set_effect` and `unreadable`. It defaults to
+  the newest.
+- A parameter the query doesn't take is `INVALID_QUERY`, such as `set_effect does not take a, b;
+  it takes: run`.
 
 | Table or SQL view | One row per |
 | --- | --- |
