@@ -329,6 +329,12 @@ _MUTATION_HINTS = (
         "function's prologue, as the message says.",
     ),
     (
+        # A frame whose function Peeky cannot place (#167: GCC's lambdas, a `#line`).
+        r"cannot place this function's declarations",
+        "Change the value in a function `peeky describe` lists (the caller, before the call), "
+        "or edit the source with `--old`/`--new`.",
+    ),
+    (
         r"cannot be changed here",
         "Stop on the statement's first line (`--at`, `session continue --to LINE`), or "
         "`session step` to it.",

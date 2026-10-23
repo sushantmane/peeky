@@ -2122,3 +2122,73 @@ def test_a_frame_whose_address_is_unknown_is_withheld_on_a_prologues_line(tmp_pa
     assert "the debugger gave no instruction address for this frame" in (
         session.not_yet_declared({"name": "a"}, pointless)
     )
+
+
+def unplaced_session(tmp_path, language="cpp"):
+    """A NativeSession whose table holds `main` (0x100-0x200, rows on lines 2 and 5 of
+    a.cpp) and nothing else: GCC's lambdas and implicit constructors had no entry (#167)."""
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias = 0x1000
+    session.declarations = [
+        {
+            "source": "a.cpp",
+            "ranges": ((0x100, 0x200),),
+            "order": ((0x100, "a.cpp", 2), (0x180, "a.cpp", 5)),
+            "locals": {"x": {("a.cpp", 3, True)}},
+        }
+    ]
+    session.target = SimpleNamespace(language=language, verification_inputs=("a.cpp",))
+    session.prepared = SimpleNamespace(workspace=tmp_path)
+    (tmp_path / "a.cpp").write_text("\n" * 12)
+    return session
+
+
+def test_a_cpp_frame_peeky_cannot_place_withholds_its_locals(tmp_path):
+    # #167: GCC gives a lambda's `operator()` and an implicit constructor no source, so the
+    # table had no entry for them, no rule ran, and their locals showed leftovers
+    # (`x = 281474976709584` before `long x = a * 2;` ran) with no note.
+    session = unplaced_session(tmp_path)
+
+    def frame(address, path=None, line=8):
+        return {
+            "id": 1,
+            "name": "operator()",
+            "instructionPointerReference": None if address is None else hex(0x1000 + address),
+            "source": {"path": str(path or tmp_path / "a.cpp")},
+            "line": line,
+        }
+
+    reason = session.not_yet_declared({"name": "x"}, frame(0x300))
+    assert reason == (
+        "Peeky cannot place this function's declarations in the program's sources (its debug "
+        "information ties it to none), so it cannot tell whether this is set yet: it may hold "
+        "leftovers. Read what the function returns (`step --out`), or stop in a function "
+        "`peeky describe` lists"
+    )
+    assert reason.label == "not shown" and len(reason) <= 300
+    # Its parameters too, and a change is refused for the same reason.
+    assert session.not_yet_declared({"name": "a"}, frame(0x300)) == reason
+    assert reason.refusal == (
+        "'x' cannot be changed here: Peeky cannot place this function's declarations in the "
+        "program's sources, so it cannot tell whether the function's code overwrites a "
+        "change. Change it in a function `peeky describe` lists"
+    )
+    with pytest.raises(ValueError, match="cannot place this function's declarations"):
+        session.validate_mutation_target({"name": "a"}, frame(0x300))
+    # A step's returned value is the callee's, not this frame's.
+    assert session._unplaced({"name": "(Return Value)"}, frame(0x300)) is None
+    # A function the table holds is judged by its rules, as before.
+    assert session._unplaced({"name": "x"}, frame(0x150)) is None
+    # The standard library's code, a frame with no source, and C are not judged so.
+    header = tmp_path.parent / "usr" / "include" / "stl_algo.h"
+    assert session._unplaced({"name": "x"}, frame(0x300, header)) is None
+    assert session._unplaced({"name": "x"}, {**frame(0x300), "source": {}}) is None
+    assert unplaced_session(tmp_path, "c")._unplaced({"name": "x"}, frame(0x300)) is None
+    # Nothing read of the build: unjudged, as before.
+    session.declarations = None
+    assert session.not_yet_declared({"name": "x"}, frame(0x300)) is None
+    # Where the frame's address is unknown, a line no function of the table runs.
+    session = unplaced_session(tmp_path)
+    session.load_bias = None
+    assert session.not_yet_declared({"name": "x"}, frame(0x300)) == reason
+    assert session._unplaced({"name": "x"}, frame(None, line=5)) is None

@@ -4002,6 +4002,8 @@ class NativeSession:
             )
         if not self.declarations and self.__dict__.get("unjudged") and isinstance(name, str):
             return self._unjudged(name, frame)
+        if (unplaced := self._unplaced(variable, frame)) is not None:
+            return unplaced
         if not self.declarations or not isinstance(name, str) or not isinstance(path, str):
             return None
         try:
@@ -4667,6 +4669,38 @@ class NativeSession:
             ]
             cache[address] = self.declarations[min(holding)[1]] if holding else None
         return cache[address]
+
+    def _unplaced(self, variable, frame):
+        """Why a root local of a C++ frame whose function Peeky cannot place is withheld
+        (a Withholding), or None. Every rule above judges a local by its function's
+        declarations; a frame that runs a line of the program's own sources in a function
+        the build's table does not hold (``_function_at`` finds none) has none to judge
+        it by, so none of its locals or parameters is shown. Where the frame's address is
+        unknown, that is a frame on a line no function of the table runs. Frames outside
+        the program's sources (the standard library's) and C builds are not judged so."""
+        language = getattr(getattr(self, "target", None), "language", None)
+        if not getattr(self, "declarations", None) or language != "cpp":
+            return None
+        name = variable.get("name")
+        # `(Return Value)` is the function a step left's, not this frame's.
+        if not isinstance(name, str) or name.startswith("(") or not self._in_program(frame):
+            return None
+        if self._function_at(frame) is not None:
+            return None
+        if self._block_pc(frame) is None:
+            place = self._place(frame)
+            if place is None or self._line_entries(*place):
+                return None
+        return Withholding(
+            "Peeky cannot place this function's declarations in the program's sources (its "
+            "debug information ties it to none), so it cannot tell whether this is set yet: "
+            "it may hold leftovers. Read what the function returns (`step --out`), or stop "
+            "in a function `peeky describe` lists",
+            "not shown",
+            f"{name!r} cannot be changed here: Peeky cannot place this function's declarations "
+            "in the program's sources, so it cannot tell whether the function's code "
+            "overwrites a change. Change it in a function `peeky describe` lists",
+        )
 
     def _line_entries(self, source, line):
         """The declarations entries a stop on ``line`` of ``source`` can be in: for each
