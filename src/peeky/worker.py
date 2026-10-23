@@ -4865,11 +4865,14 @@ def make_server(root, token, port=8765, *, adapter=None):
         if not isinstance(set_at, list) or not all(
             isinstance(point, list)
             and len(point) == 4
-            and all(type(part) is int for part in point[:2])
+            and type(point[0]) is int
+            and (type(point[1]) is int or point[1] == "all")
             and all(isinstance(part, str) for part in point[2:])
             for point in set_at
         ):
-            raise ValueError("Probe set_at must be a list of [line, hit, name, value]")
+            raise ValueError(
+                "Probe set_at must be a list of [line, hit, name, value] (hit: a number, or 'all')"
+            )
         edit = args.get("edit")
         # One {old, new} object, or a list of them for several edits.
         edits = edit if isinstance(edit, list) else [edit]

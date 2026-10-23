@@ -1207,6 +1207,11 @@ NAME=VALUE` ([COOKBOOK 2.8](../COOKBOOK.md#28-change-a-value-then-restore-it)). 
 line's own stops. Repeat it for several stops: in `kitty`, `--set-at 72@1 payer=3 --set-at 72@3
 payer=0` credits the first and third expenses to other friends in one run.
 
+`--set-at LINE@all NAME=VALUE` changes it at every stop of the line, up to 100
+([COOKBOOK 2.8](../COOKBOOK.md#change-it-at-every-stop-all)). On a line that runs only in some case, that tests a change in that case.
+The value must be the stopped frame's own: a field through a `&mut` parameter is refused before
+the run, `@all` or not.
+
 Peeky never changes these:
 
 - anything through a reference, a raw pointer or a `Box`

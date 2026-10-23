@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -49,7 +49,8 @@ TABLES = {
             "capture": "JSON list of requested selectors",
             "sets": "JSON list of requested interventions: [name, value] for --set (at "
             "set_hit of line), [name, value, 'LINE@HIT'] for --set-at (at hit HIT of LINE, "
-            "counting that line's own stops, in the original's numbering)",
+            "counting that line's own stops, in the original's numbering), or "
+            "[name, value, 'LINE@all'] for one made at every stop of LINE",
             "set_hit": "Hit at which the --set interventions were applied; NULL without --set",
             "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
@@ -81,6 +82,16 @@ TABLES = {
             "build had; NULL otherwise. Values never come from your files when this is set",
             "notes_kept": "1 where the run's notes are in captures.note (schema 9 on); NULL "
             "for a run saved before: a value its probe marked with a note shows unmarked",
+            "set_outcomes": "JSON list, one per entry of sets, in its order: how each "
+            "requested change went, {option, at, name, value, made: the stops it was made "
+            "at, ended: made (a change at a hit, made), exit (the program ended), "
+            "until_hits (the probe ended after its last hit), cap (a LINE@all's 100 "
+            "stops), refused or failed (at hit: its own change there), timeout or failed "
+            "(the probe's, first), or lost_stop (the debugger lost a stop, which may have "
+            "run without it), complete: carried out in full}; NULL for a run saved before "
+            "schema 16, or with no interventions. Queries read it only where every entry "
+            "matches its request (option, at, name, value, each key of its type); else "
+            "they read the run's warnings",
         },
     ),
     "captures": (
@@ -142,7 +153,8 @@ TABLES = {
         },
     ),
     "interventions": (
-        "One row per applied --set or --set-at, in the order they were applied.",
+        "One row per applied --set or --set-at, in the order they were applied: a "
+        "--set-at LINE@all has one per stop it was made at.",
         {
             "run_id": "-> runs.run_id",
             "hit": "Hit of its line at which it was applied (that line's own stops)",
@@ -215,7 +227,7 @@ _DDL = (
         status TEXT, error_code TEXT, error_message TEXT, hits INTEGER, seconds REAL,
         max_pause_ms REAL, optimized TEXT, output TEXT, output_truncated INTEGER,
         output_complete INTEGER, warnings TEXT, artifact_manifest_id TEXT,
-        source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER)""",
+        source_sha256 TEXT, target_identity TEXT, edit TEXT, notes_kept INTEGER, set_outcomes TEXT)""",
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
     "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT, "
@@ -243,7 +255,8 @@ _DDL = (
 # version 14 adds captures.stop and interventions.stop (#157), which of a line's breakpoint
 # locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop
 # (#174), from that hit's other rows where they agree (NULL where they give none, as with
-# `--capture return` alone, or disagree).
+# `--capture return` alone, or disagree); version 16 adds runs.set_outcomes, how each
+# requested change went (NULL for earlier runs).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -356,6 +369,10 @@ _MIGRATIONS = {
         *_DROP_VIEWS,
         f"UPDATE captures SET stop = {_hits_stop('captures')} WHERE phase = 'returned' AND "
         "stop IS NULL",
+    ),
+    15: (
+        *_DROP_VIEWS,
+        _add_columns(("set_outcomes", "TEXT"), table="runs"),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -410,30 +427,208 @@ _SAME = (
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 
 
-def _requested(alias):
+def _requested(alias, outcomes=True):
     """SQL: a run's requested interventions (runs.sets), each as [name, value, "requested
     at LINE@HIT"], a --set at its probe line's set_hit too (ninth evaluation: `diff`'s
-    `(sets)` row and `outputs` did not say which hit a --set was for). runs.sets holds
-    requests: one whose hit never came adds ", not made: that hit never came", from the
-    probe's own warning (the one for a run's --sets names them all, as they share their
-    hit; a --set-at's names its LINE@HIT, name and value). Review of PR #214."""
+    `(sets)` row and `outputs` did not say which hit a --set was for). With ``outcomes``,
+    each says how it went, from runs.set_outcomes where the run recorded it (`_RECORDED`;
+    `_set_outcome`: review of PR #278, a `LINE@all` made at some stops only read like one
+    made at all). A run that did not (saved before schema 16, or with an outcome that does
+    not match its request) says what the probe's own warning did: ", not made: that hit
+    never came" (", not made: its line never stopped" for a `LINE@all`), or ", made only
+    at the first N stops: the cap" (the warning for a run's --sets names them all, as they
+    share their hit; a --set-at's names its LINE@HIT, name and value; review of PR #214);
+    else nothing, which claims nothing of how it was applied. Without ``outcomes``: the
+    requests alone, which say whether two runs asked for the same changes."""
     at = (
         f"CASE WHEN json_array_length(s.value) = 2 THEN {alias}.line || '@' || "
         f"COALESCE({alias}.set_hit, 1) ELSE json_extract(s.value, '$[2]') END"
     )
+    if not outcomes:
+        return (
+            "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
+            f"json_extract(s.value, '$[1]'), 'requested at ' || {at})) FROM "
+            f"json_each(COALESCE({alias}.sets, '[]')) s)"
+        )
+    warned = f"json_each(COALESCE({alias}.warnings, '[]')) w"
+    asked = (
+        f"':' || {at} || ' ' || json_extract(s.value, '$[0]') || '=' || "
+        "json_extract(s.value, '$[1]')"
+    )
     unmade = (
-        f"EXISTS (SELECT 1 FROM json_each(COALESCE({alias}.warnings, '[]')) w WHERE "
+        f"EXISTS (SELECT 1 FROM {warned} WHERE "
         "CASE WHEN json_array_length(s.value) = 2 THEN w.value LIKE '--set %' AND "
         "instr(w.value, ' not applied: the program stopped ') > 0 ELSE w.value LIKE "
-        f"'--set-at %' AND instr(w.value, ':' || {at} || ' ' || json_extract(s.value, '$[0]') "
-        "|| '=' || json_extract(s.value, '$[1]') || ' was not applied: ') > 0 END)"
+        f"'--set-at %' AND instr(w.value, {asked} || ' was not applied: ') > 0 END)"
+    )
+    first = f"{asked} || ' was made only at the first '"
+    # How many stops an @all cut short at its cap was made at, from its warning.
+    capped = (
+        "(SELECT substr(rest, 1, instr(rest, ' stops of line ') - 1) FROM (SELECT "
+        f"substr(w.value, instr(w.value, {first}) + length({first})) AS rest FROM {warned} "
+        "WHERE json_array_length(s.value) = 3 AND w.value LIKE '--set-at %' AND "
+        f"instr(w.value, {first}) > 0 LIMIT 1))"
+    )
+    warning = (
+        f"CASE WHEN {unmade} THEN ', not made: ' || CASE WHEN {at} LIKE '%@all' THEN 'its "
+        f"line never stopped' ELSE 'that hit never came' END WHEN {capped} IS NOT NULL THEN "
+        f"', made only at the first ' || {capped} || ' stops: the cap' ELSE '' END"
+    )
+    outcome = (
+        f"CASE WHEN {_RECORDED.format(r=alias)} THEN set_outcome(json_extract("
+        f"{alias}.set_outcomes, '$[' || s.key || ']'), s.value, {alias}.line, "
+        f"{alias}.set_hit) END"
     )
     return (
         "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
-        f"json_extract(s.value, '$[1]'), 'requested at ' || {at} || CASE WHEN {unmade} "
-        "THEN ', not made: that hit never came' ELSE '' END)) FROM "
-        f"json_each(COALESCE({alias}.sets, '[]')) s)"
+        f"json_extract(s.value, '$[1]'), 'requested at ' || {at} || COALESCE({outcome}, "
+        f"{warning}))) FROM json_each(COALESCE({alias}.sets, '[]')) s)"
     )
+
+
+# Whether a run recorded how each of its requested changes was applied: a runs.set_outcomes
+# array with, for each entry of runs.sets in its order, an outcome `_set_outcome` accepts
+# for that request (schema 16 on). Its outcomes are read only then; two runs whose requests
+# are the same were made alike only where both recorded it (reviews 2 and 3 of PR #278).
+_RECORDED = (
+    "(CASE WHEN {r}.set_outcomes IS NULL OR NOT json_valid({r}.set_outcomes) THEN 0 WHEN "
+    "json_type({r}.set_outcomes) IS NOT 'array' THEN 0 ELSE json_array_length("
+    "{r}.set_outcomes) = json_array_length(COALESCE({r}.sets, '[]')) AND NOT EXISTS (SELECT "
+    "1 FROM json_each({r}.set_outcomes) o WHERE set_outcome(o.value, json_extract({r}.sets, "
+    "'$[' || o.key || ']'), {r}.line, {r}.set_hit) IS NULL) END)"
+)
+# What `ended` may say (probe.py's `_set_outcomes`), and which need the `hit` they name.
+_ENDED = {"made", "exit", "until_hits", "cap", "refused", "failed", "timeout", "lost_stop"}
+_OUTCOME_KEYS = {"option", "at", "name", "value", "made", "ended", "complete"}
+
+
+def _checked_outcome(text, entry, line, set_hit):
+    """The outcome in ``text`` (a runs.set_outcomes entry) where it is one for the request
+    ``entry`` (its runs.sets entry: [name, value] for a --set at ``line``@``set_hit``,
+    [name, value, "LINE@HIT"] for a --set-at): every key, of its type, with the request's
+    option, location, name and value, and what such a request can end with (review 3 of
+    PR #278: an outcome without `at`, another request's, or entries swapped read as
+    recorded). Else None."""
+    try:
+        outcome, request = json.loads(text), json.loads(entry)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(outcome, dict) or not isinstance(request, list):
+        return None
+    if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {"hit"}:
+        return None
+    made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
+    # `ended` is checked as text first: a list or an object is no set member.
+    if type(made) is not int or made < 0 or type(ended) is not str or ended not in _ENDED:
+        return None
+    if type(outcome["complete"]) is not bool:
+        return None
+    if ("hit" in outcome) != (ended == "refused" or (ended == "failed" and "hit" in outcome)):
+        return None
+    if "hit" in outcome and (type(hit) is not int or hit < 1):
+        return None
+    if len(request) == 2 and type(set_hit) in (int, type(None)) and type(line) is int:
+        option, at = "--set", f"{line}@{1 if set_hit is None else set_hit}"
+    elif len(request) == 3 and isinstance(request[2], str):
+        option, at = "--set-at", request[2]
+    else:
+        return None
+    if [outcome["option"], outcome["at"], outcome["name"], outcome["value"]] != [
+        option,
+        at,
+        *request[:2],
+    ]:
+        return None
+    every = option == "--set-at" and at.endswith("@all")
+    # A change at one hit is refused or fails only at that hit (review 4 of PR #278).
+    if not every and "hit" in outcome and str(hit) != at.rpartition("@")[2]:
+        return None
+    if every:
+        # Each stop before the one it ended at was changed; a cap ends after some.
+        if ended == "made" or (ended == "cap" and not made) or (hit and made != hit - 1):
+            return None
+    elif ended in ("cap", "lost_stop") or made not in (0, 1) or (made == 1) != (ended == "made"):
+        return None
+    if outcome["complete"] != (ended == "made" or (ended == "exit" and every and made > 0)):
+        return None
+    return outcome
+
+
+def _set_outcome(text, entry, line, set_hit):
+    """One requested change's outcome (a runs.set_outcomes entry, probe.py's
+    `_set_outcomes`), checked against its request (`_checked_outcome`), as `outputs`,
+    `compare` and `diff` say it after "requested at LINE@HIT": nothing for a change at a
+    hit that was made; else how many stops it was made at and why no more were (`, made
+    at 6 stops; refused at hit 7`). None where ``text`` is no outcome of that request."""
+    outcome = _checked_outcome(text, entry, line, set_hit)
+    if outcome is None:
+        return None
+    made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
+    every = outcome["at"].endswith("@all") and outcome["option"] == "--set-at"
+    stops = f"{made} stop{'' if made == 1 else 's'}"
+    if ended == "made":
+        return ""
+    if hit is not None:
+        what = f"{ended} at hit {hit}" if every else f"{ended} at that hit"
+        return f", made at {stops}; {what}" if made else f", {what}"
+    if not made:
+        never = "its line never stopped" if every else "that hit never came"
+        return {
+            "exit": f", not made: {never}",
+            "until_hits": f", not made: {never} before --until hits ended the probe",
+            "lost_stop": f", not made: {never}, but the debugger lost a stop",
+            "timeout": ", not made: the probe timed out first",
+            "failed": ", not made: the probe failed first",
+        }.get(ended)
+    return {
+        "exit": f", made at {stops}, to the program's end",
+        "until_hits": f", made at {stops} before --until hits ended the probe",
+        "cap": f", made at the first {stops}: the cap",
+        "lost_stop": f", made at {stops}; the debugger lost a stop, which may have run without it",
+        "timeout": f", made at {stops} before the probe timed out",
+        "failed": f", made at {stops} before the probe failed",
+    }.get(ended)
+
+
+# A run's outcome: its status, and the error it ended with.
+_OUTCOME = (
+    "{r}.status || COALESCE(' [' || {r}.error_code || ']', '') || "
+    "COALESCE(': ' || {r}.error_message, '')"
+)
+_OUTCOMES = (_OUTCOME.format(r="ra"), _OUTCOME.format(r="rb"))
+# Run-level rows `diff` and `compare` share, each (hit, phase, selector, value_a, value_b,
+# differs, note, pos): `(status)` where the runs' outcomes differ or either did not
+# complete, with its error (review of PR #278: two runs refused at different hits read
+# alike), and `(sets)`.
+_STATUS_ROW = f"""SELECT NULL, NULL, '(status)', {_OUTCOMES[0]}, {_OUTCOMES[1]},
+    {_OUTCOMES[0]} IS NOT {_OUTCOMES[1]}, CASE WHEN {_OUTCOMES[0]} IS NOT {_OUTCOMES[1]}
+    THEN 'outcome differs' ELSE 'neither run completed, and both ended the same way' END, -2
+    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
+    AND ({_OUTCOMES[0]} IS NOT {_OUTCOMES[1]} OR ra.status IS NOT 'completed'
+    OR rb.status IS NOT 'completed')"""
+# `(sets)`: each run's requests with how they went (`va`, `vb`), told apart by the requests
+# alone (`qa`, `qb`) first (review 3 of PR #278: a schema-15 run against a schema-16 one
+# with the same request read as different requests), then by how they went, only where
+# both runs recorded it (`kept`). Callers add to its WHERE: `asked`, how many changes run
+# a requested; `unknown`, whether the requests are the same but not both recorded.
+_SETS_ROW = f"""SELECT NULL, NULL, '(sets)', va, vb, va IS NOT vb, CASE
+    WHEN qa IS NOT qb THEN 'the runs requested different interventions (--set, --set-at), '
+      || 'or made different ones'
+    WHEN NOT kept THEN 'the same requested interventions; how they were applied wasn''t '
+      || 'recorded for one or both older runs'
+    WHEN va IS NOT vb THEN 'the runs requested different interventions (--set, --set-at), '
+      || 'or made different ones'
+    ELSE 'the same interventions, made alike' END, -1
+    FROM (SELECT {_requested("ra")} AS va, {_requested("rb")} AS vb,
+      {_requested("ra", outcomes=False)} AS qa, {_requested("rb", outcomes=False)} AS qb,
+      {_RECORDED.format(r="ra")} AND {_RECORDED.format(r="rb")} AS kept,
+      json_array_length(COALESCE(ra.sets, '[]')) AS asked_a,
+      json_array_length(COALESCE(rb.sets, '[]')) AS asked_b
+      FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B})
+    WHERE 1"""
+# The same requests, but how they went was not recorded for both runs: said, never taken
+# for "made alike".
+_SETS_UNKNOWN = "(qa IS qb AND asked_a > 0 AND NOT kept)"
 
 
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
@@ -504,8 +699,14 @@ SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
-  UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged
+  -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
+  -- the values are those of the MIN(pos) row (SQLite's bare columns).
+  UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
+    CASE WHEN alike > 3 THEN note || ', at ' || alike || ' hits (one row per selector and '
+      || 'value: its first hit)' ELSE note END, MIN(pos)
+    FROM (SELECT *, COUNT(*) OVER (PARTITION BY selector, note, value_a, value_b) AS alike
+      FROM pair WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged)
+    GROUP BY selector, note, value_a, value_b, CASE WHEN alike > 3 THEN NULL ELSE pos END
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
     AND NOT unchanged
@@ -520,9 +721,7 @@ SELECT {_PAIR_COLUMNS} FROM (
   UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
     kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
     MIN(pos) FROM pair WHERE kind LIKE 'only in%' GROUP BY selector, kind
-  UNION ALL SELECT 0, NULL, NULL, '(status)', ra.status, rb.status, 1, 'outcome differs', 0
-    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND ra.status IS NOT rb.status
+  UNION ALL SELECT 0, * FROM ({_STATUS_ROW})
   UNION ALL SELECT 1, NULL, NULL, '(output)', output_window(ra.output, rb.output),
     output_window(rb.output, ra.output), 1,
     'output differs at ' || difference_position(ra.output, rb.output), 0
@@ -549,10 +748,7 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, NULL, NULL, '(sets)', {_requested("ra")}, {_requested("rb")}, 1,
-    'the runs requested different interventions (--set, --set-at), or made different ones', 0
-    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
-    AND {_requested("ra")} IS NOT {_requested("rb")})
+  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND (va IS NOT vb OR {_SETS_UNKNOWN})))
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -720,42 +916,49 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     "compare": (
         "Every value of two runs side by side, in hit and capture order; note says when a "
         "value is missing from a run, qualified in either (a view or a note: not evidence "
-        "by itself) or differs only in memory addresses",
-        f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM pair{_PAIR_ORDER}",
+        "by itself) or differs only in memory addresses. First a (status) row where either "
+        "run did not complete (its error too), and a (sets) row where either requested "
+        'interventions: each [name, value, "requested at LINE@HIT"] with how it went, as '
+        "`outputs` says it; requests that read alike are said to be made alike only where "
+        "both runs recorded how (runs.set_outcomes)",
+        f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM (SELECT hit, phase, selector, value_a, "
+        f"value_b, differs, note, pos FROM pair UNION ALL SELECT * FROM ({_STATUS_ROW}) "
+        f"UNION ALL SELECT * FROM ({_SETS_ROW} AND (asked_a > 0 OR asked_b > 0))){_PAIR_ORDER}",
         _PAIR_PARAMS,
         (),
     ),
     "diff": (
-        "Only the values that differ between two runs. First (status), (output), (edit), "
-        "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
-        "source, stop lines, program arguments or interventions differ; then values only "
-        "one run's intervention changed (an after-set value equal to its hit's observed "
-        "one is left out); then real differences in hit and capture order (the first is "
-        "the first divergence); then values a view or a note qualifies in "
-        "either run (note: qualified (run a: note), not evidence by itself: leftovers, a "
-        "moved Rust local's bytes); then address-only differences, one row per selector "
-        "(and stop); last, selectors only one run captured. Hits pair by number, and by "
-        "stop where both runs label them (a line with several breakpoint locations): "
-        "where the runs stopped a different number of times, or a hit at another stop, a "
-        "note names `join`, which pairs by value (and, for the first case, says how many "
-        "rows come after the first hit that differs); where they stopped as often, a note "
-        "says what suggests the hits do not line up, or what plain values agree between "
-        "the runs at every hit (that the hits line up by them only where nothing suggests "
-        "otherwise, neither run made an intervention, and no selector was left out). A "
-        "selector that differs after an intervention or an edit may follow from it, so it "
-        "is left out of what agrees; where its values line up better at other hits, the note "
-        "says so, that the change may account for it, and that the hits are not said to "
-        "line up. The text "
-        "table shows a long value from just before where it first differs from the other "
-        "run's, and (sets) as a count and the first change; --json has them whole",
+        "Only the values that differ between two runs. First (status), (output), (edit), (source), "
+        "(line), (args) and (sets) rows when the runs' outcomes, outputs, edits, source, stop "
+        "lines, program arguments or interventions differ ((status), with each run's error, also "
+        "where either run did not complete; (sets) says how each change went, as `outputs` does); "
+        "then values only one run's intervention changed (an after-set value equal to its hit's "
+        "observed one is left out; more than 3 alike are one row, its first hit's); then real "
+        "differences in hit and capture order (the first is the first divergence); then values a "
+        "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
+        "itself: leftovers, a moved Rust local's bytes); then address-only differences, one row "
+        "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
+        "by stop where both runs label them (a line with several breakpoint locations): where the "
+        "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
+        "which pairs by value (and, for the first case, says how many rows come after the first "
+        "hit that differs); where they stopped as often, a note says what suggests the hits do not "
+        "line up, or what plain values agree between the runs at every hit (that the hits line up "
+        "by them only where nothing suggests otherwise, neither run made an intervention, and no "
+        "selector was left out). A selector that differs after an intervention or an edit may "
+        "follow from it, so it is left out of what agrees; where its values line up better at "
+        "other hits, the note says so, that the change may account for it, and that the hits are "
+        "not said to line up. The text table shows a long value from just before where it first "
+        "differs from the other run's, and (sets) as a count and the first change that differs; "
+        "--json has them whole",
         _DIFF,
         _PAIR_PARAMS,
         (),
     ),
     "outputs": (
         'Inputs, requested interventions (sets: each [name, value, "requested at '
-        'LINE@HIT"], a --set\'s too, with ", not made: that hit never came" where the '
-        "probe warned so), outcome and program output of two runs",
+        'LINE@HIT"], a --set\'s too, with how it went: ", not made: that hit never came", '
+        '", made at 6 stops; refused at hit 7", ", made at 1 stop before --until hits ended '
+        'the probe"), outcome and program output of two runs',
         f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
         f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
@@ -1060,6 +1263,10 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         ),
         "edit": candidate.get("diff") if edited else None,
         "notes_kept": 1,
+        # How each requested change went, in the order of sets.
+        "set_outcomes": json.dumps(result["set_outcomes"])
+        if isinstance(result.get("set_outcomes"), list)
+        else None,
     }
     connection = _ensure(path)
     try:
@@ -1316,6 +1523,7 @@ def _reader(path, *, snapshot=False):
     connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
     connection.create_function("short_function", 1, bounded(_short_function), deterministic=True)
     connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
+    connection.create_function("set_outcome", 4, bounded(_set_outcome), deterministic=True)
     connection.create_function("address", 1, bounded(_address), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
@@ -2711,26 +2919,41 @@ def _window(value, other, width, lead=_LEAD):
     return "…" + value[start : start + width - 2] + "…"
 
 
-def _sets_text(value):
-    """A `diff` `(sets)` cell in text: how many changes, the first, and `…` for the rest
-    (tenth evaluation: six `--set-at`s made every line of the table 230 columns wide).
-    None where the cell is not such a list."""
-    try:
-        sets = json.loads(value)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(sets, list) or not all(
-        isinstance(item, list) and len(item) == 3 for item in sets
-    ):
+def _sets_text(value, other=None):
+    """A `diff` or `compare` `(sets)` cell in text: how many changes, one of them, and `…`
+    for the others (tenth evaluation: six `--set-at`s made every line of the table 230
+    columns wide). The one shown is the first that differs from the ``other`` run's, so
+    that a difference in a later change's outcome shows (review of PR #278); else the
+    first. Where one is a `LINE@all` (#265), made at every stop of its line, they are
+    counted as requests. None where the cell is not such a list."""
+
+    def parsed(text):
+        try:
+            sets = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(sets, list) or not all(
+            isinstance(item, list) and len(item) == 3 for item in sets
+        ):
+            return None
+        return sets
+
+    sets, others = parsed(value), parsed(other) or []
+    if sets is None:
         return None
     if not sets:
         return "none"
-    name, set_value, where = (str(part) for part in sets[0])
+    index = next((i for i, item in enumerate(sets) if i >= len(others) or others[i] != item), 0)
+    name, set_value, where = (str(part) for part in sets[index])
     if len(set_value) > _CHANGE_WIDTH:
         set_value = set_value[: _CHANGE_WIDTH - 1] + "…"
     many = len(sets) > 1
-    return f"{len(sets)} change{'s' if many else ''}: {name}={set_value} ({where})" + (
-        ", …" if many else ""
+    noun = "request" if any(re.search(r"@all\b", str(item[2])) for item in sets) else "change"
+    return (
+        f"{len(sets)} {noun}{'s' if many else ''}: "
+        + ("…, " if index else "")
+        + f"{name}={set_value} ({where})"
+        + (", …" if index < len(sets) - 1 else "")
     )
 
 
@@ -2794,8 +3017,8 @@ def table(result, width=120, changes=None):
         value = row[column]
         if column == "function":
             return text(shortened.get(value, value))
-        if query_name == "diff" and row.get("selector") == "(sets)" and column in paired:
-            if (summary := _sets_text(value)) is not None:
+        if query_name in ("diff", "compare") and row.get("selector") == "(sets)":
+            if column in paired and (summary := _sets_text(value, row.get(paired[column]))):
                 return text(summary)
         if column in paired and value is not None and row.get(paired[column]) is not None:
             return _window(shown(value), shown(row[paired[column]]), width)

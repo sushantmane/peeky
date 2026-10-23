@@ -139,7 +139,9 @@ def v1_store(path, version=1, views=True):
                 continue
             statement = statement.replace(", r.edit IS NOT NULL AS candidate", "")
             statement = statement.replace(" c.note,", "")
-        # Columns later versions added (8: captures.note; 9: runs.notes_kept).
+        # Columns later versions added (8: captures.note; 9: runs.notes_kept; 16:
+        # runs.set_outcomes).
+        statement = statement.replace(", set_outcomes TEXT)", ")")
         statement = statement.replace(", note TEXT)", ")").replace(", notes_kept INTEGER)", ")")
         if version == 1:
             statement = statement.replace(", edit TEXT)", ")")

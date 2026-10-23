@@ -615,7 +615,8 @@ def describe(args):
         "program": program,
         "commands": {
             "probe": f"peeky probe {target} --at {program}:<line>{run} --capture <a,b.c> "
-            "[--set name=value] [--set-hit N] [--set-at LINE@HIT name=value] [--hits N] [--json]",
+            "[--set name=value] [--set-hit N] [--set-at LINE@HIT|LINE@all name=value] [--hits N] "
+            "[--json]",
             "session": f"peeky session start {target} --at {program}:<line>{run} [--hit N]; then "
             "peeky session inspect | get <a.b> | set <name>=<value> | step [--into|--out] | "
             "continue [--count N|--to LINE|--to-exit] | "
@@ -3555,13 +3556,15 @@ def main(argv=None, _job=False, _edits=None):
         nargs=2,
         action="append",
         default=[],
-        metavar=("[PATH:]LINE[@HIT]", "NAME=VALUE"),
+        metavar=("[PATH:]LINE[@HIT|@all]", "NAME=VALUE"),
         help="Change a value at its own stop: at hit HIT (default 1) of LINE, counting that "
         "line's own stops, in the --at file, whether or not values are captured there. "
         "Repeatable, at several lines and hits (shorten at 22@3, restore at 23@3); each is "
-        "applied once. HIT counts every stop of LINE, in any function (a lambda or closure "
-        "on the line, a recursive call); each change says which function's variable it "
-        "changed. One the program never reaches is reported, and the probe exits with 4",
+        "applied once. LINE@all applies it at every stop of LINE, up to "
+        f"{MAX_HITS}: on a line reached only in the case to test, that is the condition. HIT "
+        "counts every stop of LINE, in any function (a lambda or closure on the line, a "
+        "recursive call); each change says which function's variable it changed. One the "
+        "program never reaches is reported, and the probe exits with 4",
     )
     sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
