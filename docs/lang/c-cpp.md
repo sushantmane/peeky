@@ -73,6 +73,9 @@ A C++ compiler that isn't clang is refused before anything runs
 - A reference or pointer is saved with its address first: `0x000000016d78b298 "apple"`. To compare
   or group such values, use `no_addresses(value)`, or take the text after the address
   ([C and C++ 4.7](c-cpp-cookbook.md#47-c-references-and-pointers-in-sql)).
+- `address(value)` reads that address as an integer. To see which element a pointer points at in
+  another run, join the runs on it minus a base each run has
+  ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
 
 ## Change values
 

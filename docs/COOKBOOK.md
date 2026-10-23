@@ -76,13 +76,14 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [3.4 One Row per Hit](#34-one-row-per-hit): `queries wide`: a row per hit, a column per selector
    - [3.5 Joining Two Runs by a Value](#35-joining-two-runs-by-a-value): `queries join`: pair two runs' hits by a value
 4. [SQL over Saved Runs](#4-sql-over-saved-runs): your own SQL over saved runs
-   - [4.1 What Is in the Store?](#41-what-is-in-the-store): tables, views and SQL functions (`no_addresses`, `object_ref`)
+   - [4.1 What Is in the Store?](#41-what-is-in-the-store): tables, views and SQL functions (`no_addresses`, `object_ref`, `address`)
    - [4.2 The Newest Run](#42-the-newest-run): `last_run`
    - [4.3 Numeric Filters](#43-numeric-filters): `num`: numbers, not text
    - [4.4 Values Seen Across All Runs](#44-values-seen-across-all-runs): `queries values`, and counts across runs
    - [4.5 Parameters and Export](#45-parameters-and-export): `--param`, JSON and CSV export
    - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python): Java object numbers and Python identities
    - [4.7 C++ References and Pointers in SQL](#47-c-references-and-pointers-in-sql): addresses in C++ references and pointers
+   - [4.8 Compare Addresses Across Runs](#48-compare-addresses-across-runs): `address(value)`, and offsets from a base each run has
 5. [Step-by-Step Sessions](#5-step-by-step-sessions): several looks at one stop
    - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish): `start`, `inspect`, `get`, `set`, `close`; caller frames
    - [5.2 Stepping and Running to a Line](#52-stepping-and-running-to-a-line): `step`, its notes, `continue --to`, `--count`, `--hit`
@@ -2008,6 +2009,7 @@ The program's output is not in `evidence`. Read it from `runs.output`.
 | `no_addresses(value)` | The value with heap and stack addresses masked, to compare runs. It never masks NULL, short hex or quoted text. |
 | `no_addresses(value, language)` | The same, and it also masks Java object numbers in Java runs. `evidence` has `language`. |
 | `object_ref(value)` | The Java object a value is, such as `Balance$Worker@100`. Within one run, equal means the same object. |
+| `address(value)` | The first `0x` token in the value, as an integer, to compare addresses across runs ([4.8](#48-compare-addresses-across-runs)). Call it on a pointer's own selector. NULL where there is none, or it is zero. |
 
 `object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element
 ([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)). Python records which
@@ -2131,6 +2133,90 @@ A `const std::string &`, or a pointer, is saved as the debugger shows it, with i
 address before you compare.
 
 The recipe is in [C and C++ 4.7](lang/c-cpp-cookbook.md#47-c-references-and-pointers-in-sql).
+
+### 4.8 Compare Addresses Across Runs
+
+**What it answers:** Two runs saw pointers into the same array. Which element did each one point
+at?
+
+The heap may start at another address in each run. So one element can have another address in
+each run, and one address can be another element. Matching their last hex digits works only by
+chance.
+
+Instead, subtract a base from each address: the address of one element that every run saw, such as
+the array's first. Then join the runs on that offset. `address(value)` reads the first `0x` token
+in a value, of 1 to 16 hex digits, as an integer:
+
+| Value | `address(value)` |
+| --- | --- |
+| `0x0000000102ec5850`, a pointer | `4344010832`: the address it holds |
+| `0x00000000004052a0`, a pointer into a Linux program's heap, built without PIE | `4215456` |
+| `0x000000016d78b298 "apple"`, a C string | `6131593880`: the pointer's. Hex inside quotes is text. |
+| `&str @ 0x104afcf50`, LLDB's summary | `4373598032`: where the value itself is stored |
+| `{x = 0x1234567890, p = 0x0000600000c04000}`, a struct | `78187493520`: `x`, the first hex token, not `p` |
+| `0x0000000000000000`, a null pointer | NULL |
+| `"0x0000000102ec5850"`, `'abc'` | NULL: a string's text |
+| `Merge$Interval@143 {start=1}` | NULL: a Java object number isn't an address. Use `object_ref`. |
+
+`address` is lexical: it takes the first hex token, whatever the type. So call it on a pointer's
+own selector, such as `h.p`, not on a struct's preview. A Python identity (`[id 6]` in tables)
+isn't an address. It is in the `identity` column, not in the value.
+
+`no_addresses` masks less: only hex of 9 to 16 significant digits, which is surely an address. So it
+leaves `0x4052a0` and `0xdeadbeef` as they are, and `address` reads both.
+
+This SQL gives each address of selector `p` in run 7, and of `q` in run 8, as an offset from its
+run's lowest. Then it pairs equal offsets:
+
+```sh
+peeky sql "WITH a AS (SELECT run_id, hit, phase, selector, value,
+    address(value) - MIN(address(value)) OVER (PARTITION BY run_id, selector) AS from_base
+  FROM evidence WHERE run_id IN (:a, :b) AND phase = 'observed' AND address(value) > 0)
+SELECT x.hit AS hit_a, y.hit AS hit_b, x.from_base FROM a x
+  JOIN a y ON y.run_id = :b AND y.phase = x.phase AND y.selector = 'q'
+    AND y.from_base = x.from_base
+  WHERE x.run_id = :a AND x.selector = 'p' ORDER BY x.hit" --param a=7 --param b=8
+```
+
+Keep only the rows of one moment and one place in each run, or the base and the pairs mix them:
+
+- The SQL keeps `observed` rows. An `after-set` row, after a change, and a `(return)` row are other
+  moments. A join to another selector's rows also needs `phase`.
+- A line with several breakpoint locations gives each row a `stop` number. Keep one location per
+  run: `AND (run_id != :a OR stop = 2)` in the CTE's `WHERE` keeps run a's location 2.
+- `address(value) > 0` skips values that read negative, such as sentinels and pointers tagged in their
+  top bit, so `MAP_FAILED` (-1) never becomes the base.
+
+[Rust 4.8](lang/rust-cookbook.md#48-compare-addresses-across-runs) runs it on a real bug: pointers
+that a sort left at their old slots.
+
+Choose the base with care:
+
+- It must be the same element in every run. A run's lowest address is the first element's only if
+  that run saw the first element.
+- Otherwise take a known element's address, such as the first hit's:
+  `FIRST_VALUE(address(value)) OVER (PARTITION BY run_id, selector ORDER BY hit)`.
+- Take it from addresses in one block of memory. A copy on the stack, or a global, is elsewhere.
+- An offset is in bytes. Divide it by the element's size for its index.
+- An offset holds only while the block stays put. A `Vec` or `std::vector` that grows may move.
+
+Read an address with its row's view and note, as you read the value:
+
+- `[unproven]` on a raw pointer is about what it points at. Its address is the pointer's own value.
+- `[stale]` bytes are leftovers, not what the variable holds now.
+
+SQLite's integers are signed. So an address at or above 2^63 comes back negative, as its 64-bit
+two's complement. Such a value is a kernel's address, a tagged pointer, garbage, or a sentinel such
+as `MAP_FAILED`: `0xffffffffffffffff` reads as -1. User-space addresses on macOS and Linux are far
+below 2^63.
+
+- Two such addresses still subtract and order correctly.
+- Against an address below 2^63, SQLite's subtraction overflows into an inexact REAL.
+- The recipe's `address(value) > 0` leaves them out. To compare such addresses, drop it, and take a
+  known element's address as the base.
+- `printf('0x%x', address(value))` gives the hex back. It prints NULL as `0x0`.
+
+Peeky has no canned query for this: the base, and what pairs the runs, depend on the program.
 
 ---
 
