@@ -19,7 +19,9 @@ typedef int reading;
 static int peak(const int *level, int n) {
   const int *top = level;
   for (const int *p = level; p < level + n; p++) {
-    if (*p >= *top) top = p;
+    if (*p >= *top) { /* WALK */
+      top = p;
+    }
   }
   return (int)(top - level); /* PEAK */
 }
@@ -76,11 +78,14 @@ def test_a_pointer_says_which_element_of_a_captured_array_it_holds(program, caps
     assert "points_into" not in rows["level"], rows
     assert [rows[name]["element_size"] for name in ("top", "end", "first", "level")] == [4] * 4
 
-    # Where the array is a parameter, `level` is a pointer: its length is not known.
+    # Where the array is a parameter, `level` is a pointer: its length is not known, so
+    # no element is named, only how far `top` is from it by address.
     inner = probed(capsys, program, "PEAK", "top,level")
     rows = {row["selector"]: row for row in inner["rows"]}
     assert not any("points_into" in row for row in rows.values()), rows
     assert rows["top"]["element_size"] == rows["level"]["element_size"] == 4, rows
+    assert rows["top"]["offset_from"] == {"selector": "level", "offset": 2}, rows
+    assert "offset_from" not in rows["level"], rows
 
     at = f"levels.c:{line_of('MAIN')}"
     assert main(["probe", str(program), "--at", at, "--capture", "top,end,level", *ARGS]) == 0
@@ -99,6 +104,57 @@ def test_a_pointer_says_which_element_of_a_captured_array_it_holds(program, caps
         "element_index": 2,
     }
     assert stored["level"]["points_into"] is None and stored["level"]["element_size"] == 4
+
+
+@pytest.mark.timeout(240)
+def test_pointers_walking_a_parameter_say_how_far_they_are_from_it(program, capsys):
+    # tides' line 40: `find_waters(const int *level, ...)` walks `p` and `turn` along the
+    # readings. `level` is the parameter, so each is counted from it, at every pass.
+    result = probed(capsys, program, "WALK", "top,p,level,n", "--hits", "all")
+    offsets = [
+        (row["selector"], row["offset_from"]["offset"])
+        for row in result["rows"]
+        if "offset_from" in row
+    ]
+    assert all(
+        row["offset_from"]["selector"] == "level" for row in result["rows"] if "offset_from" in row
+    )
+    assert offsets == [
+        ("top", 0),
+        ("p", 0),
+        ("top", 0),
+        ("p", 1),
+        ("top", 1),
+        ("p", 2),
+        ("top", 2),
+        ("p", 3),
+    ]
+    at = f"levels.c:{line_of('WALK')}"
+    command = ["probe", str(program), "--at", at, "--capture", "top,p,level", "--hits", "1"]
+    assert main([*command, *ARGS]) == 0
+    table = capsys.readouterr().out
+    assert "  [level + 0 by address; same array not proven]" in table, table
+    assert "points at" not in table, table
+    sql = "SELECT selector, offset_from, element_offset, points_into FROM last_run"
+    assert main(["sql", sql, "--json"]) == 0
+    stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert stored["p"] == {
+        "selector": "p",
+        "offset_from": "level",
+        "element_offset": 0,
+        "points_into": None,
+    }
+
+    # The edit takes the first of equal readings: `top` is another offset from `level`.
+    for extra in ([], EDIT):
+        probed(capsys, program, "PEAK", "top,level", *extra)
+    assert main(["queries", "diff", "--json"]) == 0
+    rows = json.loads(capsys.readouterr().out)["rows"]
+    notes = {row["selector"]: row["note"] for row in rows}
+    assert notes["top"] == (
+        "another offset from `level` by address: `level + 2` in run a, `level + 1` in run b; "
+        "same array not proven"
+    ), rows
 
 
 @pytest.mark.timeout(240)

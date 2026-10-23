@@ -15,6 +15,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a pointer](#read-through-a-pointer)
   - [Which element a pointer points at](#which-element-a-pointer-points-at)
+  - [How far a pointer is from a pointer parameter](#how-far-a-pointer-is-from-a-pointer-parameter)
   - [Read a C++ map or set](#read-a-c-map-or-set)
 - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop)
   - [Loop headers in a GCC build](#loop-headers-in-a-gcc-build)
@@ -22,7 +23,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Compare a reference's text in SQL](#compare-a-references-text-in-sql)
 - [4.8 Compare Addresses Across Runs](#48-compare-addresses-across-runs)
   - [Which element in each run](#which-element-in-each-run)
-  - [Elements between two pointers](#elements-between-two-pointers)
+  - [Offsets from a pointer in each run](#offsets-from-a-pointer-in-each-run)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
   - [Read a caller's local](#read-a-callers-local)
 - [7.1 C and C++](#71-c-and-c)
@@ -154,9 +155,43 @@ Otherwise the row shows the address alone. A C++ reference never says, nor does 
 alone. `--json` rows have `points_into`, such as `{"selector": "level", "index": 2, "length": 6}`,
 and `element_size`, the bytes of one element. An object has no `length`.
 
-An array passed to a function is a pointer there. In `peak(const int *level, int n)`, `level` has
-no length, so its pointers say nothing. Probe a line in the function that declares the array, or
-count elements between the pointers ([4.8](#elements-between-two-pointers)).
+An array passed to a function is a pointer there, with no length. So no element is named in it.
+Rows there say less ([below](#how-far-a-pointer-is-from-a-pointer-parameter)).
+
+### How far a pointer is from a pointer parameter
+
+In `peak(const int *level, int n)`, `level` is a pointer, and `p` and `top` walk the array it points
+at. Peeky can't tell how long that array is, or that `p` is in it. But how far apart two addresses
+are is a fact. Capture the pointers together:
+
+```sh
+peeky probe levels.c --at levels.c:8 --capture top,p,level --hits all -- 1 5 5 2
+```
+
+```
+hit  phase     line  function  selector  type         value
+3    observed  8     peak      top       const int *  0x000000016b42b2c4  [level + 1 by address; same array not proven]
+3    observed  8     peak      p         const int *  0x000000016b42b2c8  [level + 2 by address; same array not proven]
+3    observed  8     peak      level     const int *  0x000000016b42b2c0
+```
+
+`level + 2` is the C expression whose address `p` holds. It names no element, and Peeky reads
+nothing there. A row says it only where all of this holds:
+
+- Both pointers are read at one stop, in one frame.
+- Both point at the same type, as for an element above: `const int *` and `int *` count.
+- Their addresses are a whole number of elements apart, at most 2^20 of them. Pointers further
+  apart, such as one into the stack and one into the heap, say nothing.
+- A pointer that is before the base says so: `[level - 2 by address; same array not proven]`.
+
+Every pointer of one type is counted from one base. It is the first of them that is a parameter
+of the function, such as `level`, else the first you capture. The base itself says nothing. A
+pointer proven to point into a captured array says that instead
+([above](#which-element-a-pointer-points-at)).
+
+`--json` rows have `offset_from`, such as `{"selector": "level", "offset": 2}`. The store keeps
+it in `offset_from` and `element_offset`, apart from `points_into`, so SQL never takes one for the
+other ([4.8](#offsets-from-a-pointer-in-each-run)).
 
 ### Read a C++ map or set
 
@@ -251,11 +286,25 @@ A pointer or reference whose text after the address reads the same, such as a
 `const std::string &` that reads `"Maya"` in both runs, ranks with the address-only values too.
 It may still be another element with the same text.
 
-### Elements between two pointers
+### Offsets from a pointer in each run
 
-Where the array is a pointer, such as a parameter, nothing proves which element. Count the
-elements between two pointers of one type instead. `element_size` is the size of what a pointer
-points at. In `peak`, capture `top,level`, then:
+Where the array is a pointer, such as a parameter, `diff` compares each pointer's offset from the
+same base in both runs ([2.1](#how-far-a-pointer-is-from-a-pointer-parameter)). With the same
+edit, at the `return` in `peak`:
+
+```
+run_a  run_b  hit  phase     selector  value_a             value_b             differs  note
+1      2      1    observed  top       0x000000016d2b72c8  0x000000016f63f2c4  1        another offset from `level` by address: `level + 2` in run a, `level + 1` in run b; same array not proven
+1      2      1    observed  level     0x000000016d2b72c0  0x000000016f63f2c0  1        addresses differ: it may point at another element too; compare offsets with address() (COOKBOOK 4.8)
+```
+
+- Another offset is a real difference: the two pointers lie otherwise. It names no element.
+- The same offset says ``addresses only: the same offset from `level` in both runs, by address``.
+- The base itself says `addresses differ: it may point at another element too`. Nothing tells
+  where it points.
+
+To count from another pointer than the base Peeky chose, use SQL. `element_size` is the size of
+what a pointer points at:
 
 ```sh
 peeky sql "SELECT t.run_id, t.hit,
@@ -264,9 +313,6 @@ peeky sql "SELECT t.run_id, t.hit,
     AND l.phase = t.phase AND l.selector = 'level'
   WHERE t.selector = 'top' AND t.phase = 'observed' ORDER BY t.run_id, t.hit"
 ```
-
-This is arithmetic on two addresses. It says how many elements `top` is past `level`, not that
-both point into one array.
 
 ## 5.1 Stop, Look, Change, Finish
 

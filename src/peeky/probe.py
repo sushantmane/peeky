@@ -1896,6 +1896,35 @@ def pointed_element(value, pointer, base):
     return offset // size
 
 
+# How many elements apart two pointers may be for their offset to be said (#302): past
+# that, they are unrelated (the stack against the heap), and the row says nothing.
+OFFSET_CAP = 1 << 20
+
+
+def pointer_offset(value, pointer, base_value, base):
+    """How many elements past the pointer ``base`` (its row's value ``base_value``) the
+    pointer whose row's value is ``value`` holds the address of, by address arithmetic
+    alone (#302): negative where it is before. Unlike ``pointed_element``, nothing proves
+    that both point into one array, so it never names an element. ``pointer`` and ``base``
+    are what their addresses can tell (``NativeSession.value_extent``), read at one stop of
+    one frame. None unless both point at the same type of the same size, neither is null,
+    the difference is a whole number of elements, and at most ``OFFSET_CAP`` of them."""
+    held = _HELD.match(value) if isinstance(value, str) else None
+    other = _HELD.match(base_value) if isinstance(base_value, str) else None
+    size = pointer.get("element_size")
+    if held is None or other is None or pointer.get("pointee") is None:
+        return None
+    if pointer.get("pointee") != base.get("pointee") or size != base.get("element_size"):
+        return None
+    if type(size) is not int or size < 1:
+        return None
+    address, start = int(held[1], 16), int(other[1], 16)
+    if not address or not start or (address - start) % size:
+        return None
+    offset = (address - start) // size
+    return offset if abs(offset) <= OFFSET_CAP else None
+
+
 def _plain(row):
     """A value shown with nothing that qualifies it: no note, view or stale bytes."""
     return "value" in row and not any(
@@ -1908,7 +1937,13 @@ def _pointed(rows, extents):
     (`element_size`), and says on each pointer row which element of another captured
     array or object it holds the address of, where ``pointed_element`` proves it
     (`points_into`: {selector, index, and the array's length}; #302). An element inside
-    the base comes before one past another's end (two neighbours), then capture order."""
+    the base comes before one past another's end (two neighbours), then capture order.
+
+    A pointer it proves none for says how far it is from another captured pointer of its
+    type, by address alone (`offset_from`: {selector, offset}; ``pointer_offset``): from
+    one base for all of them, the first that is a parameter of the function (the array a
+    caller passed, as `level` in `find_waters(const int *level, ...)`), else the first
+    captured. The base itself says nothing."""
     bases = [
         (index, extent)
         for index, extent in extents.items()
@@ -1934,12 +1969,42 @@ def _pointed(rows, extents):
                 "index": element,
                 **({"length": base["length"]} if "length" in base else {}),
             }
+    pointers = [
+        (index, extent)
+        for index, extent in extents.items()
+        if "pointee" in extent and _plain(rows[index])
+    ]
+    for index, extent in pointers:
+        row = rows[index]
+        if "points_into" in row:
+            continue
+        alike = [
+            each
+            for each in pointers
+            if each[1]["pointee"] == extent["pointee"]
+            and each[1].get("element_size") == extent.get("element_size")
+        ]
+        other, base = min(alike, key=lambda each: (not each[1].get("parameter"), each[0]))
+        if other == index or rows[other]["selector"] == row["selector"]:
+            continue
+        offset = pointer_offset(row["value"], extent, rows[other]["value"], base)
+        if offset is not None:
+            row["offset_from"] = {"selector": rows[other]["selector"], "offset": offset}
 
 
 def pointed_text(row):
     """A row's `points_into` as tables show it: `points at level[6]`, `points at x`, or
-    `level + 96: one past its end` (`&x + 1` for an object), which is never read."""
+    `level + 96: one past its end` (`&x + 1` for an object), which is never read. Or its
+    `offset_from`, which names no element: `level + 6 by address; same array not
+    proven` (`level - 2` before it)."""
     into = row.get("points_into")
+    apart = row.get("offset_from")
+    if not isinstance(into, dict) and isinstance(apart, dict):
+        base, offset = apart.get("selector"), apart.get("offset")
+        if not isinstance(base, str) or type(offset) is not int:
+            return ""
+        sign = "-" if offset < 0 else "+"
+        return f"{base} {sign} {abs(offset)} by address; same array not proven"
     if not isinstance(into, dict):
         return ""
     base, index, length = into.get("selector"), into.get("index"), into.get("length")

@@ -164,6 +164,15 @@ TABLES = {
             "element_index": "With points_into: which element, from 0. The array's length "
             "(1 for another object) means one past its end, which C lets a pointer hold but "
             "never read; else NULL",
+            "offset_from": "C and C++, a pointer with no points_into: the selector of another "
+            "pointer to the same type, captured at the same hit, phase and frame, that its "
+            "address is counted from by address arithmetic alone: not proven to point into "
+            "one array, so no element is named. The base is the first such pointer that is "
+            "a parameter of the function (an array a caller passed), else the first "
+            "captured; it has none itself. NULL where the difference is not a whole number "
+            "of elements or over 2**20 of them, and for runs saved before schema 17",
+            "element_offset": "With offset_from: how many elements (element_size bytes each) "
+            "past that pointer this one's address is; negative where it is before. Else NULL",
         },
     ),
     "interventions": (
@@ -202,8 +211,8 @@ _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
     "instance, selector, type, "
     "value, num, unavailable, error, view, note, identity, scope, element_size, "
-    "points_into, element_index, args, sets, artifact_manifest_id, source_sha256, "
-    "candidate, language"
+    "points_into, element_index, offset_from, element_offset, args, sets, "
+    "artifact_manifest_id, source_sha256, candidate, language"
 )
 VIEWS = {
     "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS} "
@@ -217,7 +226,8 @@ _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.lab
         c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
         c.type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, c.element_size,
-        c.points_into, c.element_index, r.args, r.sets, r.artifact_manifest_id,
+        c.points_into, c.element_index, c.offset_from, c.element_offset, r.args, r.sets,
+        r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
 _LAST_RUN_VIEW = (
@@ -229,7 +239,8 @@ _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
         error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
-        stop INTEGER, element_size INTEGER, points_into TEXT, element_index INTEGER)"""
+        stop INTEGER, element_size INTEGER, points_into TEXT, element_index INTEGER,
+        offset_from TEXT, element_offset INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -273,7 +284,8 @@ _DDL = (
 # `--capture return` alone, or disagree); version 16 adds runs.set_outcomes, how each
 # requested change went (NULL for earlier runs); version 17 adds captures.element_size,
 # points_into and element_index (#302), which element of a captured array a C or C++
-# pointer holds the address of (NULL for earlier runs).
+# pointer holds the address of, and offset_from and element_offset, how far it is from
+# another pointer by address alone (NULL for earlier runs).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -391,7 +403,11 @@ _MIGRATIONS = {
     16: (
         *_DROP_VIEWS,
         _add_columns(
-            ("element_size", "INTEGER"), ("points_into", "TEXT"), ("element_index", "INTEGER")
+            ("element_size", "INTEGER"),
+            ("points_into", "TEXT"),
+            ("element_index", "INTEGER"),
+            ("offset_from", "TEXT"),
+            ("element_offset", "INTEGER"),
         ),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
@@ -709,17 +725,33 @@ _ADDRESS_KIND = f"""CASE
 # a real difference, even where the addresses read the same; the same one, with
 # addresses that differ, is no more than that.
 _ELSEWHERE = "a.pi IS NOT NULL AND a.pi IS b.pi AND a.ei IS NOT b.ei"
+# A pointer counted from the same captured pointer in both runs by address alone
+# (captures.offset_from): another offset is a real difference of how the two pointers
+# lie, the same one no more than their addresses; neither names an element.
+_SHIFTED = "a.ofs IS NOT NULL AND a.ofs IS b.ofs AND a.eo IS NOT b.eo"
+
+
+def _from(run, offset):
+    """SQL: `level + 6` (`level - 2`), the offset column ``offset`` of ``run`` from its
+    base."""
+    return (
+        f"'`' || {run}.ofs || CASE WHEN {offset} < 0 THEN ' - ' || -{offset} ELSE ' + ' || "
+        f"{offset} END || '`'"
+    )
+
+
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
-    points_into AS pi, element_index AS ei
+    points_into AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
     FROM captures s WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
-    points_into AS pi, element_index AS ei
+    points_into AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
-    a.v IS NOT b.v OR ({_ELSEWHERE}) AS differs, COALESCE(a.pos, b.pos) AS pos,
+    a.v IS NOT b.v OR ({_ELSEWHERE}) OR ({_SHIFTED}) AS differs,
+    COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
       WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
@@ -736,6 +768,12 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       WHEN a.v IS NOT b.v AND a.pi IS NOT NULL AND a.pi IS b.pi
         AND no_addresses(a.v, {_LANGUAGE.format(_A)}) IS no_addresses(b.v, {_LANGUAGE.format(_B)})
         THEN 'addresses only: the same element of `' || a.pi || '` in both runs'
+      WHEN {_SHIFTED} THEN 'another offset from `' || a.ofs || '` by address: '
+        || {_from("a", "a.eo")} || ' in run a, ' || {_from("b", "b.eo")}
+        || ' in run b; same array not proven'
+      WHEN a.v IS NOT b.v AND a.ofs IS NOT NULL AND a.ofs IS b.ofs
+        AND no_addresses(a.v, {_LANGUAGE.format(_A)}) IS no_addresses(b.v, {_LANGUAGE.format(_B)})
+        THEN 'addresses only: the same offset from `' || a.ofs || '` in both runs, by address'
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN {_ADDRESS_KIND}
     END AS kind,
@@ -748,9 +786,11 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       AND a.st IS k.st
     LEFT JOIN b ON b.hit = k.hit AND b.phase = k.phase AND b.selector = k.selector
       AND b.st IS k.st),
-  -- Whatever else a row says, a qualified value says so too (review 3 of #139).
-  pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
-    ELSE kind || '; ' || qualified END AS note FROM kinds)"""
+  -- Whatever else a row says, a qualified value says so too (review 3 of #139). Read once:
+  -- flattened into each tier's GROUP BY, its many columns passed SQLite's limit of 100
+  -- aggregate terms (#302).
+  pair AS MATERIALIZED (SELECT *, CASE WHEN qualified IS NULL THEN kind
+    WHEN kind IS NULL THEN qualified ELSE kind || '; ' || qualified END AS note FROM kinds)"""
 _PAIR_COLUMNS = (
     f"{_A} AS run_a, {_B} AS run_b, hit, phase, selector, value_a, value_b, differs, note"
 )
@@ -789,7 +829,7 @@ _RANKED = f"""(
   SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %'
-      OR kind LIKE 'another element of %')
+      OR kind LIKE 'another element of %' OR kind LIKE 'another offset from %')
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -1026,7 +1066,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "address may be another element's: a pointer or a reference, or any C, C++ or Rust "
         "value; else `addresses only`); a C or C++ pointer into an array both runs captured "
         "says which element in each (`another element of ...`, `addresses only: the same "
-        "element of ...`). First a (status) row where either "
+        "element of ...`), and one counted from the same pointer by address its offset "
+        "(`another offset from ...`). First a (status) row where either "
         "run did not complete (its error too), and a (sets) row where either requested "
         'interventions: each [name, value, "requested at LINE@HIT"] with how it went, as '
         "`outputs` says it; requests that read alike are said to be made alike only where "
@@ -1046,14 +1087,15 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "observed one is left out; more than 3 alike are one row, its first hit's); then real "
         "differences in hit and capture order (the first is the first divergence; a C or C++ "
         "pointer to another element of an array both runs captured is one: `another element "
-        "of ...`); then values "
+        "of ...`, and so is one at another offset from the same pointer by address: `another "
+        "offset from ...`); then values "
         "whose addresses differ where an address may be another element's (a pointer or a "
         "reference, or any C, C++ or Rust value: note `addresses differ: ...`, which says to "
         "compare offsets with address()), one row per selector (and stop); then values a "
         "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
         "itself: leftovers, a moved Rust local's bytes); then other address-only differences (a "
-        "Python repr, a Java object number, a C or C++ pointer to the same element, or one "
-        "whose text after its address reads the same), one row "
+        "Python repr, a Java object number, a C or C++ pointer to the same element or at the "
+        "same offset, or one whose text after its address reads the same), one row "
         "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
         "by stop where both runs label them (a line with several breakpoint locations): where the "
         "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
@@ -1319,13 +1361,14 @@ def _ensure(path):
     return connection
 
 
-def _points_into(row):
-    """(points_into, element_index) of a probe row's `points_into` (#302), else NULLs."""
-    into = row.get("points_into")
-    if not isinstance(into, dict) or type(into.get("index")) is not int:
+def _points_into(row, key="points_into", number="index"):
+    """(points_into, element_index) of a probe row's `points_into` (#302), or with ``key``
+    "offset_from" and ``number`` "offset", (offset_from, element_offset); else NULLs."""
+    into = row.get(key)
+    if not isinstance(into, dict) or type(into.get(number)) is not int:
         return None, None
     base = into.get("selector")
-    return (base, into["index"]) if isinstance(base, str) and base else (None, None)
+    return (base, into[number]) if isinstance(base, str) and base else (None, None)
 
 
 def record(path, result, *, language=None, target=None, label=None, worker=None):
@@ -1404,8 +1447,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
             "num, unavailable, error, view, identity, scope, note, instance, stop, "
-            "element_size, points_into, element_index) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "element_size, points_into, element_index, offset_from, element_offset) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1429,6 +1472,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     row["stop"] if type(row.get("stop")) is int else None,
                     row["element_size"] if type(row.get("element_size")) is int else None,
                     *_points_into(row),
+                    *_points_into(row, "offset_from", "offset"),
                 )
                 for row in result.get("rows") or []
             ],
@@ -2480,9 +2524,9 @@ def _structure_apart(path, run):
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
-        f"c.value, {_caveat('c')} AS caveat, r.language, c.points_into, c.element_index FROM "
-        "captures c JOIN runs r ON r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY "
-        "c.run_id, c.hit, c.rowid",
+        f"c.value, {_caveat('c')} AS caveat, r.language, c.points_into, c.element_index, "
+        "c.offset_from, c.element_offset FROM captures c JOIN runs r ON r.run_id = c.run_id "
+        "WHERE c.run_id IN (:a, :b) ORDER BY c.run_id, c.hit, c.rowid",
         {"a": run["a"], "b": run["b"]},
         limit=MAX_ROWS,
     )["rows"]
@@ -2501,6 +2545,9 @@ def _structure_apart(path, run):
         if masked is not None and row["points_into"] is not None:
             # Which element a C or C++ pointer holds (#302): another is another value.
             masked = f"{masked} [{row['points_into']} + {row['element_index']}]"
+        elif masked is not None and row["offset_from"] is not None:
+            # Or how far it is from another pointer, by address: so is another offset.
+            masked = f"{masked} [{row['offset_from']} by {row['element_offset']}]"
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue

@@ -97,14 +97,19 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   proves it: `[points at level[6]]`, or `[level + 96: one past its end]`. The array must be one,
   not a pointer such as a parameter
   ([C and C++ 2.1](c-cpp-cookbook.md#which-element-a-pointer-points-at)).
-- `--json` rows and the store give such a pointer's `points_into` and its element's index. Pointer
-  and array rows give `element_size`, the bytes of one element.
+- Where the array is a pointer, such as a parameter, a pointer says how far it is from it by
+  address alone: `[level + 6 by address; same array not proven]`. It names no element
+  ([C and C++ 2.1](c-cpp-cookbook.md#how-far-a-pointer-is-from-a-pointer-parameter)).
+- `--json` rows and the store give `points_into` and its element's index, or `offset_from` and
+  its offset, in columns of their own. Pointer and array rows give `element_size`, the bytes of
+  one element.
 - `address(value)` reads that address as an integer. To see which element a pointer points at in
   another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
 - `queries diff` compares the elements a pointer holds where both runs captured the array.
   ``another element of `level`: index 6 in run a, 4 in run b`` is a real difference. The same
   element is `addresses only` ([C and C++ 4.8](c-cpp-cookbook.md#which-element-in-each-run)).
+  It compares offsets from the same base pointer the same way, and names no element there.
 - Otherwise `diff` never calls a pointer's other address `addresses only`. It says
   `addresses differ: it may point at another element too`, right after the real differences
   ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)). Where the text after the address reads the

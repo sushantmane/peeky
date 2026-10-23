@@ -1608,6 +1608,9 @@ divergence.
   each run: ``another element of `level`: index 6 in run a, 4 in run b``. It is a real difference
   even where its address reads the same in both
   ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
+- Where that array is a pointer, such as a parameter, an offset from it by address is compared
+  instead: ``another offset from `level` by address: `level + 6` in run a, `level + 4` in run b``.
+  It names no element.
 - A value whose type changed says so, for example after an edit to `long long`:
   `type unsigned int -> long long`.
 
@@ -1650,7 +1653,8 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
 
 - A C or C++ pointer that holds the same element of an array both runs captured says
-  ``addresses only: the same element of `level` in both runs``. Only the array moved.
+  ``addresses only: the same element of `level` in both runs``. Only the array moved. The same
+  offset from a base pointer says ``addresses only: the same offset from `level` in both runs``.
 - A C or C++ pointer or reference whose text after its address reads the same in both runs is
   here too, such as `0x… "Maya"`. It says `what it points at reads the same in both runs, though
   it may be another element that reads the same`. Two elements can hold the same text.
@@ -2384,7 +2388,8 @@ Peeky has no canned query for this: the base, and what pairs the runs, depend on
 C and C++ need it less. Capture the array with the pointer, at the same stop. Where Peeky proves
 which element the pointer holds, its row says `[points at level[6]]`. The store keeps it in
 `points_into` and `element_index`, and `diff` compares it
-([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
+([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)). Where the array is a
+pointer, the row gives only an offset from it by address, in `offset_from` and `element_offset`.
 
 ---
 

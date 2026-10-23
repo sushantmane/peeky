@@ -16,7 +16,15 @@ from peeky import evidence
 from peeky.cli import _get_lines
 from peeky.native import NativeSession, own_address
 from peeky.native_previews import Typed
-from peeky.probe import _capture, _pointed, _table, pointed_element, pointed_text
+from peeky.probe import (
+    OFFSET_CAP,
+    _capture,
+    _pointed,
+    _table,
+    pointed_element,
+    pointed_text,
+    pointer_offset,
+)
 from peeky.rust import RustSession
 from peeky.worker import DebugWorker
 
@@ -71,16 +79,20 @@ def test_byte_sizes_come_from_the_debug_information():
     assert typed(15).byte_size() is None and typed(1, bits=3).byte_size() is None
 
 
-def session(offset):
-    """A NativeSession whose `_typed` reads ``offset`` in GRAPH, for any value."""
-    return SimpleNamespace(_typed=lambda frame, steps: None if offset is None else typed(offset))
+def session(offset, storages=frozenset({"automatic"})):
+    """A NativeSession whose `_typed` reads ``offset`` in GRAPH, for any value, each local
+    declared with ``storages``."""
+    return SimpleNamespace(
+        _typed=lambda frame, steps: None if offset is None else typed(offset),
+        _storages=lambda frame, root: set(storages),
+    )
 
 
-def extent(offset, value="", kind="", reference=None):
+def extent(offset, value="", kind="", reference=None, steps=("v",), **storages):
     variable = {"value": value, "type": kind}
     if reference:
         variable["memoryReference"] = reference
-    return NativeSession.value_extent(session(offset), variable, {"id": 1}, ["v"])
+    return NativeSession.value_extent(session(offset, **storages), variable, {"id": 1}, steps)
 
 
 def test_an_array_says_where_it_is_its_length_and_its_element():
@@ -102,6 +114,11 @@ def test_a_pointer_says_what_it_points_at_and_its_size():
     # `const int *`: the type under its qualifier, as an `int` array's element is.
     assert extent(4, "0x000000016d26b040") == {"pointee": 1, "element_size": 4}
     assert extent(20, "0x000000016d26b040") == {"pointee": 4, "element_size": 8}
+    # A parameter (the array a caller passed) is the first pointer offsets count from; a
+    # name also declared as a local, or a field, is not one.
+    assert extent(4, "0x1000", storages={"parameter"})["parameter"] is True
+    assert "parameter" not in extent(4, "0x1000", storages={"parameter", "automatic"})
+    assert "parameter" not in extent(4, "0x1000", steps=("s", "p"), storages={"parameter"})
     # What an incomplete type's pointer or `void *` points at has no known size.
     assert extent(14, "0x1000") is None and extent(15, "0x1000") is None
     # A reference is no pointer here, and a type the build does not give is unknown.
@@ -186,6 +203,8 @@ def test_a_pointer_base_a_qualified_value_or_itself_proves_nothing():
     _pointed(rows, {0: INT, 1: dict(INT)})
     assert not any("points_into" in each for each in rows)
     assert [each["element_size"] for each in rows] == [4, 4]
+    # Only its offset by address, which names no element.
+    assert rows[1]["offset_from"] == {"selector": "turn", "offset": -6}
     for qualified in ({"note": "leftovers"}, {"view": "stale"}, {"stale": True}):
         rows = [
             row("p", "0x0000000000001018", "int *", **qualified),
@@ -220,6 +239,97 @@ def test_an_element_inside_one_array_comes_before_one_past_another():
     assert rows[0]["points_into"] == {"selector": "a", "index": 4, "length": 4}
 
 
+PARAMETER = {**INT, "parameter": True}
+
+
+@pytest.mark.parametrize(
+    "value, pointer, base_value, base, found",
+    [
+        ("0x0000000000001018", INT, "0x0000000000001000", INT, 6),
+        # Before the base: negative, and nothing is read there.
+        ("0x0000000000000ff8", INT, "0x0000000000001000", INT, -2),
+        ("0x0000000000001000", INT, "0x0000000000001000 {x = 1}", INT, 0),
+        (
+            '0x0000000000001003 "lo"',
+            {"pointee": 2, "element_size": 1},
+            '0x1000 "hello"',
+            {"pointee": 2, "element_size": 1},
+            3,
+        ),
+        # Another type, or another size, is not counted.
+        ("0x0000000000001018", INT, "0x0000000000001000", {"pointee": 2, "element_size": 1}, None),
+        ("0x0000000000001018", INT, "0x0000000000001000", {"pointee": 1, "element_size": 8}, None),
+        # Not a whole number of elements apart.
+        ("0x0000000000001002", INT, "0x0000000000001000", INT, None),
+        # Further apart than the cap (the stack against the heap): unrelated.
+        (f"0x{0x1000 + 4 * OFFSET_CAP:016x}", INT, "0x0000000000001000", INT, OFFSET_CAP),
+        (f"0x{0x1000 + 4 * OFFSET_CAP + 4:016x}", INT, "0x0000000000001000", INT, None),
+        (
+            f"0x{0x1000 + 4 * OFFSET_CAP:016x}",
+            INT,
+            f"0x{0x1000 + 8 * OFFSET_CAP + 4:016x}",
+            INT,
+            None,
+        ),
+        # Null, or no address read.
+        ("0x0000000000000000", INT, "0x0000000000001000", INT, None),
+        ("0x0000000000001018", INT, "0x0000000000000000", INT, None),
+        ("0x0000000000001018", INT, "<not found>", INT, None),
+        ("0x0000000000001018", INT, None, INT, None),
+    ],
+)
+def test_an_offset_by_address_is_counted_or_not_told(value, pointer, base_value, base, found):
+    assert pointer_offset(value, pointer, base_value, base) == found
+
+
+def test_pointers_into_an_unproven_array_say_their_offset_from_a_parameter():
+    # tides' line 40: `turn` and `p` walk `level`, a parameter (`const int *level`).
+    rows = [
+        row("turn", "0x0000000000001018", "const int *"),
+        row("p", "0x000000000000101c", "const int *"),
+        row("level", "0x0000000000001000", "const int *"),
+        row("trend", "1", "int"),
+    ]
+    _pointed(rows, {0: INT, 1: INT, 2: PARAMETER})
+    assert rows[0]["offset_from"] == {"selector": "level", "offset": 6}
+    assert rows[1]["offset_from"] == {"selector": "level", "offset": 7}
+    assert not any("offset_from" in each or "points_into" in each for each in rows[2:])
+    # Shown as arithmetic, never an element.
+    assert pointed_text(rows[0]) == "level + 6 by address; same array not proven"
+    assert pointed_text({"offset_from": {"selector": "level", "offset": -2}}) == (
+        "level - 2 by address; same array not proven"
+    )
+    # With no parameter among them, the first captured is the base.
+    rows = [row("p", "0x000000000000101c", "const int *"), row("turn", "0x1018", "const int *")]
+    _pointed(rows, {0: INT, 1: INT})
+    assert "offset_from" not in rows[0]
+    assert rows[1]["offset_from"] == {"selector": "p", "offset": -1}
+
+
+def test_an_offset_needs_a_captured_base_of_its_type_and_a_plain_value():
+    # The base not captured: one pointer alone, or beside values of other types.
+    rows = [row("turn", "0x0000000000001018", "const int *"), row("bytes", "0x1000", "char *")]
+    _pointed(rows, {0: INT, 1: {"pointee": 2, "element_size": 1}})
+    assert not any("offset_from" in each for each in rows)
+    # A base with a note, and one over the cap, say nothing.
+    rows = [row("level", "0x1000", "const int *", note="leftovers"), row("p", "0x1018", "int *")]
+    _pointed(rows, {0: PARAMETER, 1: INT})
+    assert "offset_from" not in rows[1]
+    far = f"0x{0x1000 + 4 * OFFSET_CAP + 4:016x}"
+    rows = [row("level", "0x0000000000001000", "const int *"), row("heap", far, "int *")]
+    _pointed(rows, {0: PARAMETER, 1: INT})
+    assert "offset_from" not in rows[1]
+    # A proven element says that, never an offset too.
+    rows = [
+        row("level", "0x0000000000001000", "const int *"),
+        row("p", "0x0000000000002008", "int *"),
+        row("data", "[1, 2]", "int[4]"),
+    ]
+    _pointed(rows, {0: PARAMETER, 1: INT, 2: {**LEVEL, "address": 0x2000, "length": 4}})
+    assert rows[1]["points_into"] == {"selector": "data", "index": 2, "length": 4}
+    assert "offset_from" not in rows[1]
+
+
 def test_tables_and_session_get_show_the_element():
     assert pointed_text({"points_into": {"selector": "level", "index": 6, "length": 96}}) == (
         "points at level[6]"
@@ -251,16 +361,22 @@ class Frames:
     `level` and `q` in frame 1, each with what its address can tell."""
 
     def __init__(self):
-        self.requests = []
+        self.requests, self.pointers = [], False
 
     def dispatch(self, operation, args):
         assert operation == "inspect"
         self.requests.append(args)
         frame = args.get("frame", 0)
+        # With `pointers`, frame 1's `level` is a `const int *` parameter instead.
+        level = (
+            {"value": "0x0000000000001008", "type": "const int *", "extent": PARAMETER}
+            if self.pointers
+            else {"value": "[1, 2]", "type": "int[96]", "extent": LEVEL}
+        )
         names = {
             0: [{"name": "p", "value": "0x0000000000001018", "type": "int *", "extent": INT}],
             1: [
-                {"name": "level", "value": "[1, 2]", "type": "int[96]", "extent": LEVEL},
+                {"name": "level", **level},
                 {"name": "q", "value": "0x0000000000001008", "type": "int *", "extent": INT},
             ],
         }[frame]
@@ -283,6 +399,13 @@ def test_only_values_of_one_frame_at_one_stop_are_compared():
     assert worker.requests[0]["extents"] == ["p"]
     rows = _capture(worker, stop, ("q", "level"), 1, "observed", frame=1)
     assert rows[0]["points_into"] == {"selector": "level", "index": 2, "length": 96}
+    # Pointers of two frames are never counted from each other either.
+    worker.pointers = True
+    (pointer,) = _capture(worker, stop, ("p",), 1, "observed")
+    (other,) = _capture(worker, stop, ("q",), 1, "observed", frame=1)
+    assert "offset_from" not in pointer and "offset_from" not in other
+    rows = _capture(worker, stop, ("level", "q"), 1, "observed", frame=1)
+    assert rows[1]["offset_from"] == {"selector": "level", "offset": 0}
 
 
 def test_the_worker_tells_extents_only_for_the_roots_asked_and_c_or_cpp():
@@ -346,6 +469,10 @@ def captured(rows, language="c", output="TIDES:H 03:00\n"):
 
 def into(index):
     return {"element_size": 4, "points_into": {"selector": "level", "index": index, "length": 96}}
+
+
+def apart(offset, base="level"):
+    return {"element_size": 4, "offset_from": {"selector": base, "offset": offset}}
 
 
 POINTS = (
@@ -439,11 +566,14 @@ def test_a_pointer_proven_in_one_run_only_may_point_elsewhere(store):
     )
 
 
-def test_a_pointer_to_another_element_never_agrees_in_the_alignment_note(store):
-    # `word` reads "a", "b", "c" in both runs, at other elements of `text`: the note said
-    # it agreed between the runs at each hit, under rows that said another element.
+@pytest.mark.parametrize("key", ["points_into", "offset_from"])
+def test_a_pointer_to_another_element_never_agrees_in_the_alignment_note(store, key):
+    # `word` reads "a", "b", "c" in both runs, at other elements of `text` (or other
+    # offsets from it): the note said it agreed between the runs at each hit, under rows
+    # that said otherwise.
     def at(index):
-        return {"element_size": 1, "points_into": {"selector": "text", "index": index}}
+        number = "index" if key == "points_into" else "offset"
+        return {"element_size": 1, key: {"selector": "text", number: index}}
 
     for base, starts, quiz in ((0x16B42B028, 4, (87, 88, 90)), (0x16F527038, 16, (84, 87, 88))):
         rows = []
@@ -456,12 +586,89 @@ def test_a_pointer_to_another_element_never_agrees_in_the_alignment_note(store):
             ]
         evidence.record(store, captured(rows, output=f"{base}\n"), language="c")
     found = evidence.run_query(store, "diff")
-    assert [r["note"] for r in found["rows"] if r["selector"] == "word"] == [
-        f"another element of `text`: index {8 + 4 * hit} in run a, {20 + 4 * hit} in run b"
-        for hit in (0, 1, 2)
-    ]
+    said = [r["note"] for r in found["rows"] if r["selector"] == "word"]
+    if key == "points_into":
+        assert said == [
+            f"another element of `text`: index {8 + 4 * hit} in run a, {20 + 4 * hit} in run b"
+            for hit in (0, 1, 2)
+        ]
+    else:
+        assert said == [
+            f"another offset from `text` by address: `text + {8 + 4 * hit}` in run a, "
+            f"`text + {20 + 4 * hit}` in run b; same array not proven"
+            for hit in (0, 1, 2)
+        ]
     notes = " ".join(found.get("notes") or [])
     assert "`quiz`" in notes and "`word` agrees" not in notes, notes
+
+
+def test_diff_compares_offsets_by_address_from_the_same_pointer(store):
+    # tides' line 40: `level` is a parameter, so no element is proven, but `turn` is 6
+    # ints past it in one run and 4 in the other.
+    def run(base, turns, firsts, output):
+        rows = []
+        for hit, (element, first) in enumerate(zip(turns, firsts), 1):
+            rows += [
+                (hit, "turn", "const int *", f"0x{base + 4 * element:016x}", apart(element)),
+                (hit, "first", "const int *", f"0x{base + 4 * first:016x}", apart(first)),
+                (hit, "level", "const int *", f"0x{base:016x}", {"element_size": 4}),
+                (hit, "trend", "int", str(hit)),
+            ]
+        return captured(rows, output=output)
+
+    evidence.record(store, run(0x16B42B028, [6, 17], [-2, 0], "H 03:00\n"), language="c")
+    evidence.record(store, run(0x16F527038, [4, 16], [-2, 0], "H 02:00\n"), language="c")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (None, "(output)", "output differs at line 1, column 4"),
+        # Another offset is a real difference; it names no element.
+        (
+            1,
+            "turn",
+            "another offset from `level` by address: `level + 6` in run a, `level + 4` in "
+            "run b; same array not proven",
+        ),
+        (
+            2,
+            "turn",
+            "another offset from `level` by address: `level + 17` in run a, `level + 16` in "
+            "run b; same array not proven",
+        ),
+        # The base itself proves nothing of where it points.
+        (1, "level", POINTS),
+        # The same offset, where only the stack moved: addresses only.
+        (
+            1,
+            "first",
+            "addresses only, at 2 hits (one row per selector: its first hit): the same "
+            "offset from `level` in both runs, by address",
+        ),
+    ]
+    assert all("[" not in (r["note"] or "") for r in rows)
+    found = evidence.query(
+        store,
+        "SELECT offset_from, element_offset, points_into FROM evidence WHERE selector = "
+        "'first' AND hit = 1 ORDER BY run_id",
+    )["rows"]
+    assert found == [{"offset_from": "level", "element_offset": -2, "points_into": None}] * 2
+
+
+def test_offsets_from_other_bases_or_one_run_only_are_not_compared(store):
+    for address, extra in (
+        ("0x000000016b42b040", apart(-2)),
+        ("0x000000016f527048", apart(-2, "p")),
+    ):
+        rows = [(1, "turn", "const int *", address, extra)]
+        evidence.record(store, captured(rows), language="c")
+    for address, extra in (("0x000000016b42b040", apart(3)), ("0x000000016f527048", {})):
+        rows = [(1, "turn", "const int *", address, extra)]
+        evidence.record(store, captured(rows), language="c")
+    for a, b in ((1, 2), (3, 4)):
+        [found] = evidence.run_query(store, "diff", {"a": a, "b": b})["rows"]
+        assert found["note"] == (
+            "addresses differ: it may point at another element too; compare offsets with "
+            "address() (COOKBOOK 4.8)"
+        ), found
 
 
 READS_ALIKE = (
@@ -513,15 +720,15 @@ def test_a_rust_pointers_text_is_left_as_it_was(store):
     assert found["note"].startswith("addresses differ: it may point at another element too")
 
 
+COLUMNS = ("element_size", "points_into", "element_index", "offset_from", "element_offset")
+
+
 def test_a_schema_16_store_gains_the_columns_and_keeps_its_runs(store):
     evidence.record(store, captured([(1, "turn", "const int *", "0x1018")]), language="c")
     connection = sqlite3.connect(store)
     connection.executescript(
         "DROP VIEW last_run; DROP VIEW evidence;"
-        + "".join(
-            f"ALTER TABLE captures DROP COLUMN {column};"
-            for column in ("element_size", "points_into", "element_index")
-        )
+        + "".join(f"ALTER TABLE captures DROP COLUMN {column};" for column in COLUMNS)
         + """
         CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
             c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
@@ -535,26 +742,26 @@ def test_a_schema_16_store_gains_the_columns_and_keeps_its_runs(store):
         """
     )
     connection.close()
-    rows = [(1, "turn", "const int *", "0x1018", into(6))]
+    rows = [
+        (1, "turn", "const int *", "0x1018", into(6)),
+        (1, "p", "const int *", "0x1018", apart(-2)),
+    ]
     evidence.record(store, captured(rows), language="c")
-    sql = "SELECT run_id, selector, element_size, points_into, element_index FROM evidence"
-    assert evidence.query(store, sql + " ORDER BY run_id")["rows"] == [
-        {
-            "run_id": 1,
-            "selector": "turn",
-            "element_size": None,
-            "points_into": None,
-            "element_index": None,
-        },
+    sql = f"SELECT run_id, selector, {', '.join(COLUMNS)} FROM evidence"
+    assert evidence.query(store, sql + " ORDER BY run_id, selector DESC")["rows"] == [
+        {"run_id": 1, "selector": "turn", **dict.fromkeys(COLUMNS)},
         {
             "run_id": 2,
             "selector": "turn",
-            "element_size": 4,
-            "points_into": "level",
-            "element_index": 6,
+            **dict(zip(COLUMNS, (4, "level", 6, None, None))),
+        },
+        {
+            "run_id": 2,
+            "selector": "p",
+            **dict(zip(COLUMNS, (4, None, None, "level", -2))),
         },
     ]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (17,)
-    for column in ("element_size", "points_into", "element_index"):
+    for column in COLUMNS:
         assert column in evidence.TABLES["captures"][1], column
