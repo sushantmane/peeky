@@ -80,6 +80,8 @@ _RAW_POINTER = re.compile(
     r"\*const |\*mut |(?:(?:std|core)::ptr::)?NonNull<|(?:(?:std|core)::sync::atomic::)?AtomicPtr<"
 )
 _FN_POINTER = re.compile(r"(?:for<[^<>]*> )?(?:unsafe )?(?:extern \S+ )?fn\(")
+# A raw pointer itself (`*const Engineer`), not a value holding one.
+_RAW_ONLY = re.compile(r"\*(?:const|mut) ")
 # A type that borrows: a reference, a raw pointer, one holding a lifetime, or a closure
 # or coroutine (whose captures may be references).
 _BORROWING = re.compile(r"&|\*const |\*mut |NonNull<|AtomicPtr<|'|\{closure@|\{coroutine@|\{async")
@@ -1139,7 +1141,7 @@ class Body:
             self._live[drops] = (out, effects)
         return self._live[drops]
 
-    def copies_of(self, local, formatting=True):
+    def copies_of(self, local, formatting=True, safe=False, traced=False):
         """The temporaries (locals no variable names, other than the return place) that
         may hold a value read from ``local``'s storage, which a later change to it does
         not reach (#105): one assigned from a read of it (`_4 = copy (_1.0: i32)`, not a
@@ -1148,11 +1150,13 @@ class Body:
         into it is not a copy (reads through it see the change), but makes what a call
         returns one, except `format_args!`'s constructors where ``formatting`` (the crate
         names nothing `core` or `std` that could pass for them). The program's own
-        variables are not counted here: ``copies_at`` follows its direct copies (#192)."""
+        variables are not counted here: ``copies_at`` follows its direct copies (#192).
+        ``safe`` and ``traced`` as for ``_copy_verdict``."""
         if self._copies is None:
             self._copies = {}
-        if (local, formatting) in self._copies:
-            return self._copies[local, formatting]
+        key = (local, formatting, safe, traced)
+        if key in self._copies:
+            return self._copies[key]
         parts, mentions, seeds, _, named = self._copy_parts()
         # From what holds or points with no local given, then along what mentions each
         # temporary found: the least fixpoint, as passes over every assignment reach.
@@ -1162,18 +1166,12 @@ class Body:
         while work:
             index = work.pop()
             queued.discard(index)
-            target, mentioned, through, borrow, call, formats, pointers = parts[index]
+            target = parts[index][0]
             if target == local or target in named:
                 continue
-            pointing = bool(mentioned & points) or any(n != local for n in pointers)
-            if borrow:
-                hold = bool(mentioned & holds)
-                point = local in mentioned or through or pointing
-            else:
-                hold = local in mentioned or through or bool(mentioned & holds)
-                # `format_args!`'s constructors keep the pointers they are given.
-                hold = hold or (call and pointing and not (formatting and formats))
-                point = pointing
+            hold, point = _copy_verdict(
+                parts[index], local, holds, points, formatting, safe, traced
+            )
             for found, into in ((hold, holds), (point, points)):
                 if found and target not in into:
                     into.add(target)
@@ -1181,8 +1179,8 @@ class Body:
                         if other not in queued:
                             queued.add(other)
                             work.append(other)
-        self._copies[local, formatting] = frozenset(holds)
-        return self._copies[local, formatting]
+        self._copies[key] = frozenset(holds)
+        return self._copies[key]
 
     def lent_from(self, local, generics=None, free_types=frozenset()):
         """The locals that may hold a pointer into ``local``'s storage or into what it
@@ -1286,9 +1284,10 @@ class Body:
         the program's own bindings, for ``copies_at``'s direct copies, #192: `n` of `x =
         match x { n => … }`), once per body: ([(its target, the locals its value
         mentions, whether it reads through a pointer, is a borrow, is a call, is
-        `format_args!`'s constructor, the reference variables it mentions)], {local: the
-        indexes of those mentioning it}, the indexes of those that may hold or point
-        whatever local is judged, {(block, index): its part}, the named locals)."""
+        `format_args!`'s constructor, the reference variables it mentions, the raw
+        pointers it mentions)], {local: the indexes of those mentioning it}, the indexes
+        of those that may hold or point whatever local is judged, {(block, index): its
+        part}, the named locals)."""
         if self._copy_reads is None:
             named = {
                 binding[0]
@@ -1325,6 +1324,9 @@ class Body:
                                 and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
                             ),
                             pointers,
+                            frozenset(
+                                n for n in mentioned if _RAW_ONLY.match(self.types.get(n, ""))
+                            ),
                         )
                     )
                     at[number, index] = len(parts) - 1
@@ -1335,7 +1337,7 @@ class Body:
             self._copy_reads = (parts, mentions, seeds, at, frozenset(named))
         return self._copy_reads
 
-    def copies_at(self, local, position, formatting=True):
+    def copies_at(self, local, position, formatting=True, safe=False, traced=False):
         """The temporaries that may hold a value read from ``local``'s current value at
         ``position`` ((block, index): before that statement), on some path from bb0
         (#183): ``copies_of``'s reading of each assignment, taken in the order the code
@@ -1343,11 +1345,14 @@ class Body:
         storage, leaves none. A temporary set before ``local`` took its current value
         holds an earlier one, which a change to it does not touch either (`for entry in
         args`: the iterator's `next` into a temporary, then `entry` moved out of it).
-        ``copies_of`` where the flow is past its budget."""
-        state = self._copy_state(local, position, formatting)
-        return self.copies_of(local, formatting) if state is None else state[0]
+        ``copies_of`` where the flow is past its budget; ``safe`` and ``traced`` as for
+        ``_copy_verdict``."""
+        state = self._copy_state(local, position, formatting, (), safe, traced)
+        return self.copies_of(local, formatting, safe, traced) if state is None else state[0]
 
-    def direct_copies_at(self, local, position, formatting=True, projection=()):
+    def direct_copies_at(
+        self, local, position, formatting=True, projection=(), safe=False, traced=False
+    ):
         """The locals, the program's own bindings among them, that hold a value taken
         from ``local``'s current value at ``position`` by value (#192): a copy or move of
         it or of a part (`n` of `x = match x { n => … }`, `let y = x;`), a value computed
@@ -1356,27 +1361,30 @@ class Body:
         `let r = &x;`); not what a call given a pointer to it returns (`x.len()`), which
         ``copies_at`` judges for temporaries only. With ``projection`` (``_root_access``),
         only what may have been taken from that part counts (#192 review: `seen = r.end`
-        holds none of `o.marks`). None where the flow is past its budget."""
-        state = self._copy_state(local, position, formatting, projection)
+        holds none of `o.marks`). None where the flow is past its budget. ``safe`` and
+        ``traced`` (``_copy_verdict``) change none of these, only the flow's key."""
+        state = self._copy_state(local, position, formatting, projection, safe, traced)
         return None if state is None else state[2]
 
-    def _copy_state(self, local, position, formatting, projection=()):
+    def _copy_state(self, local, position, formatting, projection=(), safe=False, traced=False):
         """(holds, points, direct, own) at ``position``, or None past the budget."""
         if self._copy_flows is None:
             self._copy_flows = {}
-        key = (local, formatting, projection)
+        key = (local, formatting, projection, safe, traced)
         if key not in self._copy_flows:
-            self._copy_flows[key] = self._copy_flow(local, formatting, projection)
+            self._copy_flows[key] = self._copy_flow(local, formatting, projection, safe, traced)
         entry = self._copy_flows[key]
         number, index = position
         if entry is None or number not in entry:
             return None
         state = entry[number]
         for at in range(min(index, len(self.blocks[number].statements))):
-            state = self._copy_step(local, formatting, number, at, state, projection)
+            state = self._copy_step(local, formatting, number, at, state, projection, safe, traced)
         return state
 
-    def _copy_step(self, local, formatting, number, index, state, projection=()):
+    def _copy_step(
+        self, local, formatting, number, index, state, projection=(), safe=False, traced=False
+    ):
         """``copies_at``'s transfer over one statement: (holds, points, direct, own)
         after it: ``copies_of``'s holds and points, for temporaries; and the locals,
         named or not, holding a direct copy (``direct_copies_at``), and the pointers made
@@ -1394,7 +1402,7 @@ class Body:
         found = at.get((number, index))
         if found is None:
             return state
-        target, mentioned, through, borrow, called, formats, pointers = parts[found]
+        target, mentioned, through, borrow, called, _, _, _ = parts[found]
         if target == local:
             return state
         # A place of it that may hold part of ``projection`` (#192 review).
@@ -1416,14 +1424,9 @@ class Body:
         own = own | {target} if mine else own
         if target in named:
             return holds, points, direct, own
-        pointing = bool(mentioned & points) or any(n != local for n in pointers)
-        if borrow:
-            hold = bool(mentioned & holds)
-            point = local in mentioned or through or pointing
-        else:
-            hold = local in mentioned or through or bool(mentioned & holds)
-            hold = hold or (called and pointing and not (formatting and formats))
-            point = pointing
+        hold, point = _copy_verdict(
+            parts[found], local, holds, points, formatting, safe, traced, own
+        )
         return (
             holds | {target} if hold else holds,
             points | {target} if point else points,
@@ -1431,7 +1434,7 @@ class Body:
             own,
         )
 
-    def _copy_flow(self, local, formatting, projection=()):
+    def _copy_flow(self, local, formatting, projection=(), safe=False, traced=False):
         """{block: (holds, points, direct, own) on entry} for ``copies_at``: its
         transfer, merged by union up from nothing (the least fixpoint); None past the
         budget."""
@@ -1455,10 +1458,12 @@ class Body:
             state = entry[number]
             last = len(block.statements) - 1
             for index in range(last):
-                state = self._copy_step(local, formatting, number, index, state, projection)
+                state = self._copy_step(
+                    local, formatting, number, index, state, projection, safe, traced
+                )
             # A call sets its result on its return edge only; the others leave all as was.
             after = (
-                self._copy_step(local, formatting, number, last, state, projection)
+                self._copy_step(local, formatting, number, last, state, projection, safe, traced)
                 if last >= 0
                 else state
             )
@@ -2545,6 +2550,31 @@ def _overlaps(steps, projection):
     if projection is None:
         return not steps
     return all(mine == theirs and mine[1] is not None for mine, theirs in zip(steps, projection))
+
+
+def _copy_verdict(part, local, holds, points, formatting, safe, traced, own=frozenset()):
+    """(hold, point): whether the assignment ``part`` (``Body._copy_parts``) may make its
+    target hold a value read from ``local``, or point into it, given the temporaries that
+    may already (``holds``, ``points``; ``own``: the pointers made from a borrow of it).
+
+    With ``safe`` (the crate has no unsafe code: rust.unsafe_source), a raw pointer is no
+    way to read anything (#300): only unsafe code reads through one, so what a call given
+    one returns (`ptr::eq(e, l)`) holds nothing read through it. With ``traced``, a read
+    through a pointer, or a reference variable used, counts only where the flow shows the
+    pointer may point into ``local`` (``points``, ``own``): otherwise it counts as one
+    Peeky does not follow, which may point anywhere, so a refusal can tell the two apart."""
+    _, mentioned, through, borrow, call, formats, pointers, raw = part
+    if traced:
+        through = through and bool(mentioned & (points | own))
+        points, pointers = points | own, frozenset()
+    if safe:
+        mentioned, pointers = mentioned - raw, pointers - raw
+    pointing = bool(mentioned & points) or any(n != local for n in pointers)
+    if borrow:
+        return bool(part[1] & holds), local in part[1] or through or pointing
+    # `format_args!`'s constructors keep the pointers they are given.
+    hold = local in part[1] or through or bool(part[1] & holds)
+    return hold or (call and pointing and not (formatting and formats)), pointing
 
 
 def _touches(text, local, projection):
@@ -4307,6 +4337,7 @@ class OwnedLocals:
         block=None,
         projection=(),
         named=True,
+        traced=False,
     ):
         """``copied_in_progress``'s finding: [(a place the stop can be, the temporaries
         that may hold a value read from the local's current value and are used again
@@ -4314,7 +4345,11 @@ class OwnedLocals:
         temporaries were made). ``projection``: the part of the local a change makes
         (``_root_access``; () for all of it, None where not known), which a binding's
         copy is judged by (#192 review); without ``named``, those copies are left out
-        (what holds for every part of an aggregate, whose parts are judged each)."""
+        (what holds for every part of an aggregate, whose parts are judged each). In a
+        crate without unsafe code, a raw pointer is no way to read it (#300:
+        ``_copy_verdict``). With ``traced``, only the temporaries the MIR shows reading
+        it, not those that may have read it through a pointer Peeky does not follow
+        (#300: what a refusal may say as a fact)."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -4336,6 +4371,7 @@ class OwnedLocals:
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
         formatting, bindings = self._formatting(), body.named_locals()
+        mode = {"safe": not self.unsafe_code, "traced": traced}
         # What a call std's printing makes reads (#192 review 4: by its file and path).
         sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
 
@@ -4344,10 +4380,10 @@ class OwnedLocals:
             # holding a direct copy (or a temporary taken from one) the program goes on
             # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
-            direct = body.direct_copies_at(local, position, formatting, projection)
+            direct = body.direct_copies_at(local, position, formatting, projection, **mode)
             if direct is None:
                 return None
-            temporaries = body.copies_at(local, position, formatting) - bindings
+            temporaries = body.copies_at(local, position, formatting, **mode) - bindings
             return frozenset(n for n in temporaries if live >> n & 1) | frozenset(
                 n
                 for n in (direct - temporaries if named else ())
@@ -4375,6 +4411,37 @@ class OwnedLocals:
                     found.add((file, number_line))
         return found
 
+    def untraced_reads(self, hashed, temporaries):
+        """Where ``temporaries`` (``copy_hazards``'s, none shown reading the local) may
+        have read it through a pointer Peeky does not follow (#300): ({(file, line)} of
+        each read through a pointer, or use of a reference variable, they are made from;
+        the program's own names of those reference variables, sorted)."""
+        body = self.body(hashed)
+        if body is None:
+            return set(), []
+        parts, _, _, at, named = body._copy_parts()
+        made = {}
+        for place, part in at.items():
+            made.setdefault(parts[part][0], []).append((place, parts[part]))
+        lines, references, seen, pending = set(), set(), set(), list(temporaries)
+        while pending:
+            local = pending.pop()
+            if local in seen:
+                continue
+            seen.add(local)
+            for (number, index), part in made.get(local, ()):
+                _, mentioned, through, _, _, _, pointers, raw = part
+                if not self.unsafe_code:
+                    # Never read through (``_copy_verdict``).
+                    mentioned, pointers = mentioned - raw, pointers - raw
+                if through or pointers:
+                    _, file, number_line = body.blocks[number].statements[index]
+                    if file is not None and number_line is not None:
+                        lines.add((file, number_line))
+                    references |= pointers
+                pending.extend(n for n in mentioned if n not in named)
+        return lines, self.copy_names(hashed, references)
+
     def copy_names(self, hashed, locals_):
         """The program's own names (sorted) of those of ``locals_`` a binding names in the
         body of ``hashed`` (#192: `n`, where `x = match x { n => … }` copied `x`)."""
@@ -4390,13 +4457,15 @@ class OwnedLocals:
             }
         )
 
-    def copied_everywhere(self, hashed, variable_name, line, path, projection=()):
+    def copied_everywhere(self, hashed, variable_name, line, path, projection=(), traced=False):
         """The temporaries (a frozenset) that hold a value read from the frame's local
         ``variable_name`` at every place of ``line`` and are used again from each, so no
         stop on the line can change it for the statement under way (#183: refused before
         the program runs); None where some place has none, or that is not understood.
-        ``projection`` as for ``copy_hazards``."""
-        found = self.copy_hazards(hashed, variable_name, line, path, projection=projection)
+        ``projection`` and ``traced`` as for ``copy_hazards``."""
+        found = self.copy_hazards(
+            hashed, variable_name, line, path, projection=projection, traced=traced
+        )
         body = self.body(hashed)
         if not found or body is None:
             return None

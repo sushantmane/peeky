@@ -371,6 +371,20 @@ used again. Such a temporary is:
 - what a call given such a pointer returns. `format_args!`'s calls don't count, because they keep
   the pointer, unless the crate itself names something `core` or `std` that could pass for them.
 
+A pointer that Peeky doesn't follow may point into any local: a read through a reference variable,
+or a call given one. Two rules narrow that (`_copy_verdict`):
+
+- In a crate without unsafe code (`rust.unsafe_source`), a raw pointer given to a call counts for
+  nothing. Only unsafe code reads through one, so `ptr::eq(&raw const *e, …)` returns no copy.
+- `copy_hazards(traced=True)` counts such a pointer only where the flow made it from a borrow of
+  the local. Where that leaves nothing, the refusal says the statement may hold a copy.
+  `untraced_reads` names the reference variables and lines it used.
+
+A rule by type isn't used, though a `*const Engineer` can't point into a `u32` in safe code. It
+holds only for a pointee of the crate's own type that holds no pointer, which only the debug
+information shows. Standard types can view a local as another type: `Cell::from_mut`,
+`slice::from_ref`.
+
 - The line's first MIR place may emit no code, as `&k` in `let t = (&k,` / `s.a,` / `s.b);`. So the
   stop's column places a breakpoint on its line.
 - `let arr = [s.a,` / `k,` / `s.b];` builds its array on line 1, after reading `s.a`.

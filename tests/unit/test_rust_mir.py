@@ -2630,6 +2630,182 @@ def test_a_breakpoints_place_on_its_line_is_told_by_its_column_or_not_at_all():
     assert judged(None) is None
 
 
+# #300 (eleventh evaluation, `rota`): `if let Some(l) = &last {` / `if ptr::eq(e, l) {`,
+# as rustc 1.96 builds it at -Zmir-opt-level=0, cut to what line 39 needs. `e` points
+# into `team`, `l` into `last`; `week` and `pick` are read by neither.
+RAW_EQ = """// MIR for `plan` after PreCodegen
+
+fn plan(_1: &mut [Engineer], _2: u32) -> () {
+    debug team => _1;                    // in scope 0 at src/main.rs:28:9: 28:13
+    debug weeks => _2;                   // in scope 0 at src/main.rs:28:32: 28:37
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:28:40: 28:40
+    let mut _6: &std::option::Option<Engineer>; // in scope 0 at src/main.rs:38:30: 38:35
+    let mut _7: isize;                   // in scope 0 at src/main.rs:38:20: 38:27
+    let mut _9: bool;                    // in scope 0 at src/main.rs:39:20: 39:33
+    let mut _10: *const Engineer;        // in scope 0 at src/main.rs:39:28: 39:29
+    let mut _11: *const Engineer;        // in scope 0 at src/main.rs:39:31: 39:32
+    let mut _14: usize;                  // in scope 0 at src/main.rs:43:16: 43:20
+    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20
+    scope 1 {
+        debug last => _3;                // in scope 1 at src/main.rs:31:9: 31:17
+        let mut _3: std::option::Option<Engineer>; // in scope 1 at src/main.rs:31:9: 31:17
+        debug week => _4;                // in scope 1 at src/main.rs:32:9: 32:13
+        let _4: u32;                     // in scope 1 at src/main.rs:32:9: 32:13
+        debug pick => _12;               // in scope 1 at src/main.rs:33:13: 33:21
+        let mut _12: usize;              // in scope 1 at src/main.rs:33:13: 33:21
+        debug e => _13;                  // in scope 1 at src/main.rs:34:17: 34:18
+        let _13: &Engineer;              // in scope 1 at src/main.rs:34:17: 34:18
+        scope 2 {
+            debug l => _8;               // in scope 2 at src/main.rs:38:25: 38:26
+            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26
+        }
+    }
+
+    bb0: {
+        _3 = Option::<Engineer>::None;   // scope 0 at src/main.rs:31:38: 31:42
+        _4 = copy _2;                    // scope 1 at src/main.rs:32:9: 32:13
+        _12 = const usize::MAX;          // scope 1 at src/main.rs:33:24: 33:34
+        _13 = first(copy _1) -> [return: bb1, unwind continue]; // scope 1 at src/main.rs:34:23: 34:34
+    }
+
+    bb1: {
+        _6 = &_3;                        // scope 1 at src/main.rs:38:30: 38:35
+        _7 = discriminant((*_6));        // scope 1 at src/main.rs:38:30: 38:35
+        switchInt(move _7) -> [1: bb2, otherwise: bb4]; // scope 1 at src/main.rs:38:20: 38:27
+    }
+
+    bb2: {
+        _8 = &(((*_6) as Some).0: Engineer); // scope 2 at src/main.rs:38:25: 38:26
+        _10 = &raw const (*_13);         // scope 2 at src/main.rs:39:28: 39:29
+        _11 = &raw const (*_8);          // scope 2 at src/main.rs:39:31: 39:32
+        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:33
+    }
+
+    bb3: {
+        switchInt(move _9) -> [0: bb4, otherwise: bb5]; // scope 2 at src/main.rs:39:20: 39:33
+    }
+
+    bb4: {
+        _14 = copy _12;                  // scope 1 at src/main.rs:43:16: 43:20
+        _15 = copy _4;                   // scope 1 at src/main.rs:44:16: 44:20
+        goto -> bb5;                     // scope 1 at src/main.rs:43:13: 45:14
+    }
+
+    bb5: {
+        return;                          // scope 0 at src/main.rs:47:2: 47:2
+    }
+}
+"""
+HASH = "h0123456789abcdef"
+RAW_EQ_FUNCTION = IrFunction(
+    "plan",
+    "rota",
+    "src/main.rs",
+    {
+        "start": {31, 32, 33, 34},
+        "bb1": {38},
+        "bb2": {38, 39},
+        "bb3": {39},
+        "bb4": {43, 44},
+        "bb5": {47},
+    },
+    {},
+    28,
+)
+
+
+def raw_eq_owned(text=RAW_EQ):
+    """OwnedLocals over ``text``. Its proofs judge every place of a line: LLVM inlines
+    `ptr::eq` at -O0, and a line breakpoint on line 39 stops inside it, which the MIR
+    places past the call."""
+    return OwnedLocals([parse_body(text)], {HASH: RAW_EQ_FUNCTION}, ("src/main.rs",))
+
+
+def test_a_raw_pointer_given_to_a_call_reads_nothing_in_a_crate_without_unsafe_code():
+    # #300: back from `ptr::eq(e, l)`, every local was refused, as if the call read it:
+    # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
+    # point anywhere. Only unsafe code reads through a raw pointer, and the crate has none.
+    owned = raw_eq_owned()
+    names = ("week", "pick", "last", "e", "l", "team")
+
+    def judged():
+        return [owned.copied_in_progress(HASH, name, 39, "/w/src/main.rs") for name in names]
+
+    assert judged() == [False] * len(names)
+    # With unsafe code anywhere in the crate, a raw pointer may be read through.
+    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
+    assert judged() == [True] * len(names)
+    # Of those, the MIR shows a read only where a pointer was made from the local: `l`
+    # points into `last` (`&_3`), and `e` is copied into one; `week` only may be read.
+    sure = [
+        bool(owned.copy_hazards(HASH, name, 39, "/w/src/main.rs", traced=True)[-1][1])
+        for name in names
+    ]
+    assert sure == [False, False, True, True, True, False]
+    # What may have read `week` there: through `e` and `l`, made on line 39.
+    held = owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs")[-1][1]
+    assert owned.untraced_reads(HASH, held) == (
+        {("src/main.rs", 39)},
+        ["e", "l"],
+    )
+
+
+def test_a_refusal_through_a_pointer_peeky_does_not_follow_says_it_only_may_hold_a_copy():
+    # #300: at `if ptr::eq(e, l) {`, `week` was refused because "a statement under way at
+    # the stop has already read it into a temporary (at line 39)"; line 39 reads none of
+    # it. In a crate with unsafe code it may have, through `e` or `l`, and says that.
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    owned = raw_eq_owned()
+    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
+    judge = owned.copy_hazards
+    owned.copy_hazards = lambda *args, **asked: judge(*args, **{**asked, "breakpoint": False})
+    session = object.__new__(RustSession)
+    session.owned = owned
+    session.prepared = SimpleNamespace(source_root="/w")
+    session._optimized = lambda: False
+    session._stop_block = lambda hashed, frame: None
+    session._projection = lambda *args: ()
+    session._frame_scope = lambda frame, variable: None
+    session._settable_names = lambda source, line: []
+    frame = {"name": f"rota::plan::{HASH}", "line": 39, "column": 20}
+    frame["source"] = {"path": "/w/src/main.rs"}
+
+    def why(name):
+        return session.mid_statement({"name": name}, frame, "breakpoint")
+
+    week = why("week")
+    assert week == (
+        "a statement under way at the stop used `e` and `l` (at line 39), references Peeky "
+        "can't trace that may point at it, so it may hold a copy of it, which it uses after "
+        "the stop"
+    )
+    assert week.row == "a statement under way may hold a copy (line 39)"
+    assert week.advice.startswith("That statement may already hold a copy of the old value")
+    # `l` points into `last`, as the MIR shows: the call was given a pointer into it.
+    last = why("last")
+    assert last.startswith("a statement under way at the stop has already read it into a")
+    assert last.row == "a statement under way read it (line 39)"
+    # Before the program runs, where every place of the line were past such a use (a
+    # statement's later line): as if `_9` held at each.
+    owned.copied_everywhere = lambda *args, traced=False, **kwargs: (
+        None if traced else frozenset({9})
+    )
+    kind, text = session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert kind == "statement" and text == (
+        "every place line 39 can stop at is inside a statement that used `e` and `l` (at line "
+        "39), references Peeky can't trace that may point at `week`, so it may hold a copy "
+        "of it, which it uses after the stop, and a change there may not reach it"
+    )
+    refusal = session._never_message("week", "week", [], "src/main.rs", 39, [("f", (kind, text))])
+    assert "(`--set-at` it), before it starts;" in refusal, refusal
+    # Without unsafe code, a raw pointer reads nothing: no statement under way holds one.
+    owned.unsafe_code = None
+    assert why("week") is None and why("last") is None
+
+
 def test_format_args_constructors_count_only_where_nothing_else_can_pass_for_them():
     # Review of #105 (round 3): the crate's own `mod core { pub mod fmt { ... } }` prints
     # its `core::fmt::Arguments::new(&s.a)` just as the standard library's.
