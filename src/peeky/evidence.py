@@ -727,10 +727,14 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # finding 10), and one selector's address-only rows are one row, its first hit's, that
 # says how many hits there were (finding 9), one for each stop where both runs label
 # them; so are its rows whose addresses differ.
-_DIFF = f"""{_PAIR}
-SELECT {_PAIR_COLUMNS} FROM (
-  SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE differs AND qualified IS NULL AND NOT unchanged
+# The tiers' ranks that code reads too: the real divergences (`_after_first` finds the
+# first among them, never an address or a qualified value: review of PR #294), and the
+# selectors only one run captured, which are at no hit of their own.
+_REAL_RANK, _ONLY_IN_RANK = 10, 14
+# Every row of `diff` with its rank (the tier it is in) and pos (its capture order).
+_RANKED = f"""(
+  SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
+    FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
@@ -759,7 +763,7 @@ SELECT {_PAIR_COLUMNS} FROM (
     WHERE qualified IS NULL AND kind = 'addresses only' AND NOT unchanged
     GROUP BY selector, phase, st
   -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
-  UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, 1,
+  UNION ALL SELECT {_ONLY_IN_RANK}, hit, phase, selector, value_a, value_b, 1,
     kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
     MIN(pos) FROM pair WHERE kind LIKE 'only in%' GROUP BY selector, kind
   UNION ALL SELECT 0, * FROM ({_STATUS_ROW})
@@ -789,8 +793,13 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND (va IS NOT vb OR {_SETS_UNKNOWN})))
+  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND (va IS NOT vb OR {_SETS_UNKNOWN})))"""
+_DIFF = f"""{_PAIR}
+SELECT {_PAIR_COLUMNS} FROM {_RANKED}
 ORDER BY rank, hit, phase = 'after-set', pos"""
+# The same rows' tiers and hits, for `_after_first`.
+_DIFF_RANKS = f"""{_PAIR}
+SELECT rank, hit FROM {_RANKED} WHERE hit IS NOT NULL"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
 # 8-digit data (0xdeadbeef, flags) are values, never masked. One regex, no callback.
@@ -988,7 +997,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "by stop where both runs label them (a line with several breakpoint locations): where the "
         "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
         "which pairs by value (and, for the first case, says how many rows come after the first "
-        "hit that differs); where they stopped as often, a note says what suggests the hits do not "
+        "hit with a real difference, if any); where they stopped as often, a note says what suggests the hits do not "
         "line up, or what plain values agree between the runs at every hit (that the hits line up "
         "by them only where nothing suggests otherwise, neither run made an intervention, and no "
         "selector was left out). A selector that differs after an intervention or an edit may "
@@ -2215,7 +2224,7 @@ def _run(path, name, params, limit):
         unaligned, counted = _unaligned(path, bound)
         notes += unaligned
         if counted:
-            notes += _after_first(path, sql, bound)
+            notes += _after_first(path, bound)
     if gone := [run for run in held if run not in _present(path, held)]:
         one = len(gone) == 1
         notes.append(
@@ -2297,20 +2306,21 @@ def _unaligned(path, params):
     ], True
 
 
-def _after_first(path, sql, params):
+def _after_first(path, params):
     """Where the runs stopped a different number of times (``_unaligned``): how many of
-    `diff`'s rows at a hit come after the first hit with a difference, where pairing by
-    number may compare different calls (#201: 20 of rechnung's 22 rows were). Every row
-    is kept."""
-    rows = query(path, sql, params, limit=MAX_ROWS)["rows"]
-    hits = [
-        row["hit"]
-        for row in rows
-        if row.get("hit") is not None and not str(row.get("note") or "").startswith("only in")
-    ]
-    if not hits:
+    `diff`'s rows at a hit come after the first hit with a real difference, where pairing
+    by number may compare different calls (#201: 20 of rechnung's 22 rows were). Every
+    row is kept. The first is among the real divergences only, by their tier
+    (``_REAL_RANK``): a pointer whose address differs, an address-only value and a
+    qualified one rank after them, and may be no difference (review of PR #294: a
+    pointer's row at hit 1 made the note say hit 1, though the rows led with hit 2).
+    Where no hit has a real difference, there is no note."""
+    rows = query(path, _DIFF_RANKS, params, limit=MAX_ROWS)["rows"]
+    hits = [row["hit"] for row in rows if row["rank"] != _ONLY_IN_RANK]
+    real = [row["hit"] for row in rows if row["rank"] == _REAL_RANK]
+    if not real:
         return []
-    first = min(hits)
+    first = min(real)
     later = sum(1 for hit in hits if hit > first)
     if not later:
         return []

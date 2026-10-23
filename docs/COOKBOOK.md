@@ -1667,8 +1667,10 @@ show every later hit as a difference. Two notes say so:
 - The first names `queries join` ([3.5](#35-joining-two-runs-by-a-value)), which pairs hits by a
   selector's value instead: `--param key=a.name`. Several selectors work too:
   `--param key=p.name,n.name`.
-- The second says how many rows come after the first hit that differs. Those rows may compare
-  different calls.
+- The second says how many rows come after the first hit with a real difference (tier 3). Those
+  rows may compare different calls. A pointer, a qualified value or an address-only value is never
+  that first difference, even at an earlier hit. With no real difference at a hit, there is no
+  second note.
 
 These runs were recorded in a fresh state directory ([0](#0-setup)), so they are runs 1 to 6:
 

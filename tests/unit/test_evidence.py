@@ -636,7 +636,8 @@ def test_a_null_pointer_is_a_real_divergence(store):
 
 
 def typed(rows):
-    """A probe result of (hit, selector, type, value[, note]) observed rows."""
+    """A probe result of (hit, selector, type, value[, note]) observed rows, which stopped
+    at its last hit."""
     recorded = captured(
         [(hit, "observed", selector, value) for hit, selector, _, value, *_ in rows]
     )
@@ -644,6 +645,7 @@ def typed(rows):
         row["type"] = kind
         if note:
             row["note"] = note[0]
+    recorded["hits"] = max(row[0] for row in rows)
     return recorded
 
 
@@ -770,6 +772,94 @@ def test_a_pointer_whose_address_differs_is_grouped_per_stop(store):
         )
         for stop in (1, 2)
     ]
+
+
+QUALIFIED = "qualified ({}): not evidence by itself; queries run shows why"
+
+
+@pytest.mark.parametrize(
+    "language, kind, a, b, note, first, last",
+    [
+        # A pointer whose address differs (review of PR #294).
+        (
+            "c",
+            "const int *",
+            "0x000000016b42b040",
+            "0x000000016f527048",
+            None,
+            f"addresses differ: {POINTS}",
+            "missing in run a",
+        ),
+        (
+            "python",
+            "Node",
+            "<Node object at 0x104a5b2c0>",
+            "<Node object at 0x1052c3a90>",
+            None,
+            "addresses only",
+            "missing in run a",
+        ),
+        # A qualified value: not evidence by itself.
+        (
+            "c",
+            "int",
+            "7",
+            "9",
+            "leftovers",
+            QUALIFIED.format("run a: note, run b: note"),
+            "missing in run a; " + QUALIFIED.format("run b: note"),
+        ),
+    ],
+)
+def test_the_first_difference_after_unequal_stops_is_a_real_one(
+    store, language, kind, a, b, note, first, last
+):
+    """Runs that stopped 3 and 4 times: `p` differs at hit 1 only as a pointer's address,
+    an object's repr or a qualified value, and `x` at hit 2. The rows lead with hit 2,
+    and so does the note: it said `the first difference at a hit is at hit 1`."""
+    for value, hits in ((a, 3), (b, 4)):
+        rows = []
+        for hit in range(1, hits + 1):
+            rows.append((hit, "p", kind, value if hit == 1 else a, *([note] if note else [])))
+            rows.append((hit, "x", "int", "5" if hit == 2 and hits == 4 else "1"))
+        evidence.record(store, typed(rows), language=language)
+    result = evidence.run_query(store, "diff")
+    shown = [(r["hit"], r["selector"], r["note"]) for r in result["rows"]]
+    if note:
+        assert shown == [
+            (2, "x", None),
+            (4, "x", "missing in run a"),
+            (1, "p", first),
+            (4, "p", last),
+        ]
+    else:
+        assert shown == [
+            (2, "x", None),
+            (4, "p", last),
+            (4, "x", "missing in run a"),
+            (1, "p", first),
+        ]
+    count, after = result["notes"]
+    assert "Run 1 stopped 3 times at its line and run 2 4" in count, count
+    assert after == (
+        "the first difference at a hit is at hit 2; 2 of the 4 rows at a hit come after it, "
+        "where pairing by hit number may compare different calls: read those with `join`"
+    )
+
+
+def test_no_first_difference_is_named_where_no_hit_has_a_real_one(store):
+    """Only a pointer's address and a qualified value differ at a hit: the note naming
+    `join` stays, and none names a first difference."""
+    for p, hits in (("0x000000016b42b040", 1), ("0x000000016f527048", 2)):
+        rows = [(1, "p", "const int *", p)] + [(2, "p", "const int *", p, "leftovers")][: hits - 1]
+        evidence.record(store, typed(rows), language="c")
+    result = evidence.run_query(store, "diff")
+    assert [(r["hit"], r["note"][:16]) for r in result["rows"]] == [
+        (1, "addresses differ"),
+        (2, "missing in run a"),
+    ]
+    [count] = result["notes"]
+    assert count.startswith("pair the hits by a value instead"), count
 
 
 def test_a_run_that_never_stopped_is_missing_hits_not_selectors(store):
