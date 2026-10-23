@@ -24,6 +24,23 @@ from peeky.errors import Refused, classify
         ("'s' in a caller's frame, whose values cannot be changed", "--set-hit N"),
         ("Changing values is refused in an optimized build (-O1)", "unoptimized build"),
         ("`f.ch` cannot be changed: `f.ch` is a character (char)", "candidate edit"),
+        (
+            # #279: not "Stop on the statement's first line", where this stop already is.
+            "'a' cannot be changed here: the stop is at its function's start, before the "
+            "prologue stores the parameters, and the function's code may overwrite a change",
+            "argument at the call",
+        ),
+        (
+            "'a' cannot be changed here: the stop is in its function's prologue, before it "
+            "has stored the parameters, and the function's code may overwrite a change",
+            "past the function's prologue",
+        ),
+        (
+            "'a' cannot be changed here: Peeky cannot tell whether the stop is before or after "
+            "its function's prologue stores the parameters: the debugger did not report where "
+            "the program is loaded, so it cannot place the stop's instruction",
+            "argument at the call",
+        ),
     ],
 )
 def test_a_refused_change_hints_the_one_action_its_rule_leaves(message, action):

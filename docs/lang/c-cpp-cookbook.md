@@ -643,7 +643,9 @@ Peeky withholds a C or C++ local when its storage may still hold leftovers. The 
 - `this`, in a constructor;
 - hidden by a block's `static` or `extern`;
 - declared on the stop line, where control enters that line: `declared on line 3, which has not
-  run yet`. Part-way through the line, after `step --out`, the rules below decide.
+  run yet`. Part-way through the line, after `step --out`, the rules below decide;
+- a parameter or local of a function stopped at its start, before it stores its parameters. A GCC
+  build's one-line function stops there.
 
 The cases in detail follow.
 
@@ -685,6 +687,38 @@ counts, because constructing one before it may call a function. These are still 
   - `goto inside;` to a label in the loop's body;
   - a `case` of a `switch` around the loop;
   - any label, once the source has a GNU `asm goto`, whose labels are operands.
+
+#### At a function's start, before it stores its parameters
+
+A function's prologue runs first: it sets up the frame and stores the parameters there. Until it
+has run, the frame's storage holds what an earlier call left. So a stop in the prologue withholds
+every parameter and local: `no value yet: the stop is at its function's start, before the
+prologue stores the parameters`. These keep their values:
+
+- a `static`;
+- what an optimized build's location list places;
+- a parameter the caller passed on the stack: past the eighth on arm64, or the sixth on x86-64.
+
+Clang marks where the prologue ends in the line table, and LLDB stops there. GCC marks nothing. So
+LLDB looks a few rows ahead for a mark, or for a row of another line. If what it finds is past the
+function's end, LLDB stops at the function's first instruction. That is common in a function whose
+code is all on its first line. A `step --into` stops there too.
+
+For `static int one(int a) { return a * 2; }`, a GCC build stops on `one` before `a` is stored:
+
+- read the argument at the call, on the caller's line;
+- or put the body on a line of its own: `static int one(int a) {`, then `return a * 2;`. LLDB then
+  moves the breakpoint to that line, past the prologue, and says so;
+- or build with clang.
+
+A function whose body has lines of its own usually stops past its prologue. Rarely, it stops at
+its start too, as when the next function's prologue is empty. Then stop on a later line of the
+function. A change at either stop is refused for the same reason.
+
+Peeky places a stop by its address, which needs the debugger to report where the program is
+loaded. Where it doesn't, any stop on a line where a prologue runs is withheld the same way. That
+includes clang's, where a fault or a signal can stop. The row says `Peeky cannot tell whether the
+stop is before or after its function's prologue stores the parameters`, and why.
 
 #### While its declaration runs
 
@@ -1252,6 +1286,10 @@ and the line table. All of these must hold:
   function's entry. For example,
   `long one(struct P p) { long t =` / `p.x + g();` runs the second line first, so neither line
   qualifies.
+- **The stop is past the function's prologue,** which stores its parameters. A GCC build's
+  one-line function can stop before it. There, `set` says `the stop is at its function's start,
+  before the prologue stores the parameters`
+  ([above](#at-a-functions-start-before-it-stores-its-parameters)).
 - **No call in those statements was inlined** by the compiler (`always_inline`, `flatten`). Peeky
   reads which from the debug information. An inlined body's code carries its own function's lines
   and runs before the statement's lowest row: `t = inl(&p) + p.y;`.

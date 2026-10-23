@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from peeky.adapters import PythonAdapter, locals_only
 from peeky.assembler import ASSEMBLER_REFUSAL, c_refusal
@@ -205,7 +206,14 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
 
 
 def _line_rows(
-    text, workspace, declared, limit=MAX_METADATA, replaced=None, epilogues=None, rust=False
+    text,
+    workspace,
+    declared,
+    limit=MAX_METADATA,
+    replaced=None,
+    epilogues=None,
+    rust=False,
+    prologues=None,
 ):
     """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
 
@@ -214,7 +222,8 @@ def _line_rows(
     address (GCC -O2), LLDB keeps the last: each earlier one of another line or file
     runs no code. It is skipped if it is not a statement; a statement row is kept,
     since a breakpoint can be set on its line, and added to ``replaced`` when given.
-    ``epilogues``, when given, gets the address of each row that begins an epilogue.
+    ``epilogues``, when given, gets the address of each row that begins an epilogue;
+    ``prologues``, that of each row marked `prologue_end`, in any file (#279).
     """
     if len(text.encode()) > limit:
         raise ValueError("Native line metadata exceeds limit")
@@ -299,6 +308,8 @@ def _line_rows(
             ending = "end_sequence" in fields or number == 0
             if epilogues is not None and "epilogue_begin" in fields and not ending:
                 epilogues.add(address)
+            if prologues is not None and "prologue_end" in fields and "end_sequence" not in fields:
+                prologues.add(address)
             if name is not None and not ending and not 0 < number <= counts[name]:
                 raise ValueError("Native line exceeds declared source length")
             if group and group[0][0] != address:
@@ -1132,26 +1143,147 @@ def _code_ranges(die):
     return [(lo, hi) for lo, hi in spans if 0 < lo < hi and lo < _TOMBSTONE]
 
 
+# A parameter the caller passed on the stack, at or above the frame base where that is the
+# call's frame address (GCC's): the caller's memory, stored before the call.
+_PASSED_ON_STACK = re.compile(r"\(?\s*DW_OP_fbreg \+?[0-9]+(?:, DW_OP_deref)?\)?\s*")
+
+
+def _prologue_kept(dies, offset):
+    """The names of the parameters and locals of the function at ``offset`` (its nested
+    blocks too) that its prologue leaves alone, each declaration of them: a `static`
+    (a fixed or thread-local address, no register or frame in it), one with no one-line
+    location (a location list, an optimized build's own account of each address, which
+    dwarfdump writes over several lines; or none at all), or a parameter passed on the
+    stack (past the eighth on arm64, the sixth on x86-64)."""
+    frame_base = dies[offset]["attrs"].get("DW_AT_frame_base") or ""
+    cfa = frame_base.strip("() ") == "DW_OP_call_frame_cfa"
+    names, pending = {}, list(dies[offset]["children"])
+    while pending:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        name = _text(_first(dies, _chain(dies, child), "DW_AT_name"))
+        if not name:
+            continue
+        location = die["attrs"].get("DW_AT_location")
+        kept = (
+            location is None
+            or bool(_STATIC.search(location) and not re.search(r"DW_OP_(?:fbreg|b?reg)", location))
+            or (
+                cfa
+                and die["tag"] == "DW_TAG_formal_parameter"
+                and bool(_PASSED_ON_STACK.fullmatch(location))
+            )
+        )
+        names[name] = names.get(name, True) and kept
+    return frozenset(name for name, kept in names.items() if kept)
+
+
+class PrologueWindow(NamedTuple):
+    """Where a function's prologue runs (_prologue_windows)."""
+
+    entry: int
+    end: int
+    marked: bool
+    kept: frozenset
+    single: bool
+    lines: frozenset
+
+
+def _prologue_windows(dies, rows, marks):
+    """Where each function's prologue runs, before it has stored its parameters (#279):
+    a PrologueWindow per function with code on the program's lines (``rows``: their
+    (address, source, line), sorted), whether Peeky places it or not (GCC's lambdas name
+    no file), sorted by ``entry``, the start of its first range (its low_pc). ``end`` is
+    its first row there marked `prologue_end` (``marks``): clang and rustc mark the first
+    instruction past the parameters' stores. A build that marks none (GCC's) starts the
+    body at the function's second row (at its entry where the prologue is empty), as GDB
+    reads it; with no row at its entry, at its first. ``marked``: whether a mark gave it.
+    ``kept``: _prologue_kept. ``single``: whether all its code there is on one line (a
+    one-line function's). ``lines``: the (source, line) of its rows in the window, where
+    the debugger shows a stop there. Only windows that hold code: an empty prologue has
+    none."""
+    addresses = [row[0] for row in rows]
+    marks = sorted(marks or ())
+    windows = {}
+    for offset, die in dies.items():
+        if die["tag"] != "DW_TAG_subprogram":
+            continue
+        spans = _code_ranges(die)
+        if not spans:
+            continue
+        # Its entry starts its first range (an optimized GCC build's `.cold` part may lie
+        # below it); its rows there are what runs first.
+        entry, high = spans[0]
+        first, last = bisect.bisect_left(addresses, entry), bisect.bisect_left(addresses, high)
+        if first == last:
+            # No row of the program's sources: not its code.
+            continue
+        mark = bisect.bisect_left(marks, entry)
+        marked = mark < len(marks) and marks[mark] < high
+        if marked:
+            end = marks[mark]
+        elif addresses[first] != entry:
+            end = addresses[first]
+        else:
+            end = addresses[first + 1] if first + 1 < last else high
+        if end <= entry:
+            continue
+        kept = _prologue_kept(dies, offset)
+        single = len({row[1:] for row in rows[first:last]}) == 1
+        if entry in windows:
+            # Two functions at one address (folded copies): the wider window, and only
+            # what both keep.
+            other = windows[entry]
+            end, marked, kept = max(end, other.end), marked and other.marked, kept & other.kept
+            single = single and other.single
+        inside = rows[first : bisect.bisect_left(addresses, end)]
+        lines = frozenset(row[1:] for row in inside)
+        windows[entry] = PrologueWindow(entry, end, marked, kept, single, lines)
+    return sorted(windows.values(), key=lambda window: window.entry)
+
+
 def _function_entries(
-    info, line_text, workspace, declared, replaced=None, epilogues=None, rust=False
+    info,
+    line_text,
+    workspace,
+    declared,
+    replaced=None,
+    epilogues=None,
+    rust=False,
+    prologues=None,
 ):
     """(dies, {root: entry}, {root: {line: span}}, files, {root: {(source, line): span}})
     for functions in declared sources; see function_scopes. ``replaced``: see
     _line_rows. A span is the lowest and
     highest address of a function's rows on a line. The first mapping keeps rows of the
     function's own file (describe); the last keeps every row the function runs, in any
-    declared file (clang runs a header struct's member initializers in its caller)."""
+    declared file (clang runs a header struct's member initializers in its caller).
+    ``prologues``, when given, gets _prologue_windows."""
     import bisect
 
     workspace = Path(workspace).resolve()
     inputs = {str((workspace / name).resolve()): name for name in declared}
+    marks = set() if prologues is not None else None
     rows = sorted(
         _line_rows(
-            line_text, workspace, declared, replaced=replaced, epilogues=epilogues, rust=rust
+            line_text,
+            workspace,
+            declared,
+            replaced=replaced,
+            epilogues=epilogues,
+            rust=rust,
+            prologues=marks,
         )
     )
     addresses = [row[0] for row in rows]
     dies = _dies(info)
+    if prologues is not None:
+        prologues.extend(_prologue_windows(dies, rows, marks))
     owner = [None] * len(rows)
     runner = [None] * len(rows)
     functions, sources = {}, {}
@@ -1576,7 +1708,7 @@ def _declared(dies, offset, files, workspace, parameters=None, unstored=None):
     return found
 
 
-def local_declarations(info, line_text, workspace, declared):
+def local_declarations(info, line_text, workspace, declared, prologues=None):
     """Each function in a declared source: its source; ``rows``, the lowest and highest
     address of its code on each (source, line) it runs, in any declared file and even
     above its declaration (member initializers run where their class is built); for each local
@@ -1592,12 +1724,13 @@ def local_declarations(info, line_text, workspace, declared):
     see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
     it runs, (address, source, line) by address. ``classes``: _local_classes.
     ``types``: fields.local_types, the type and storage of each local (#105);
-    ``referred``: fields.referred_locals, those the frame reaches through a pointer."""
+    ``referred``: fields.referred_locals, those the frame reaches through a pointer.
+    ``prologues``, when given, gets _prologue_windows: every function's, placed or not."""
     from peeky.fields import local_types, referred_locals
 
     epilogues = set()
     dies, functions, _, files, runs, addresses = _function_entries(
-        info, line_text, workspace, declared, epilogues=epilogues
+        info, line_text, workspace, declared, epilogues=epilogues, prologues=prologues
     )
     workspace = Path(workspace).resolve()
     classes = _local_classes(dies)
@@ -2777,7 +2910,7 @@ class NativeTarget:
                 prepared.workspace,
                 self.sources + self.headers,
             )
-            typedefs, fields, unjudged, returns_twice = {}, None, None, None
+            typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -2798,8 +2931,13 @@ class NativeTarget:
                         # the SDK's own setjmp.h names `setjmp`, so only the builtin counts.
                         or mentions_nonlocal_jumps(external, (b"__builtin_setjmp",))
                     )
+                    prologues = []
                     declarations = local_declarations(
-                        info, text, prepared.workspace, self.sources + self.headers
+                        info,
+                        text,
+                        prepared.workspace,
+                        self.sources + self.headers,
+                        prologues=prologues,
                     )
                     if nonlocal_jumps:
                         # Which functions may call setjmp is read from their source:
@@ -2840,7 +2978,7 @@ class NativeTarget:
                 # Without it, values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
                 # can be changed).
-                declarations, fields = None, None
+                declarations, fields, prologues = None, None, None
                 unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
             session = NativeSession(
                 self,
@@ -2856,6 +2994,7 @@ class NativeTarget:
                 fields=fields,
                 unjudged=unjudged,
                 returns_twice=returns_twice,
+                prologues=prologues,
             )
             session.assert_current()
             return session
@@ -3133,14 +3272,53 @@ def breakpoint_locations(text, ids):
 
 
 class Withholding(str):
-    """A reason ``not_yet_declared`` withholds a row for that is not about its value
-    being set yet: ``label`` heads the row's error (in place of `no value yet`), and
-    ``refusal`` is why a change to it is refused."""
+    """A reason ``not_yet_declared`` withholds a row for: ``label`` heads the row's error
+    in place of `no value yet`, for a reason that is not about its value being set yet
+    (None keeps `no value yet`), and ``refusal`` is why a change to it is refused."""
 
     def __new__(cls, reason, label, refusal):
         made = super().__new__(cls, reason)
         made.label, made.refusal = label, refusal
         return made
+
+
+class Advised(str):
+    """A ``mid_statement`` reason with its own ``advice``: where to change the value
+    instead, as no other stop on the statement helps (a stop in a prologue, #279)."""
+
+    def __new__(cls, reason, advice):
+        made = super().__new__(cls, reason)
+        made.advice = advice
+        return made
+
+
+def _prologue_texts(window):
+    """(where the stop is, why it stops there, where to read, where to change) for a stop
+    in a function's prologue (#279), by its _prologue_windows window. A build that marks
+    the prologue's end has only a stop no breakpoint makes there (a fault, a signal)."""
+    marked, single = window.marked, window.single
+    if marked:
+        return (
+            "the stop is in its function's prologue, before it has stored the parameters",
+            "",
+            "Read it at a later stop in the function",
+            "Change it at a later stop in the function",
+        )
+    where = "the stop is at its function's start, before the prologue stores the parameters"
+    if single:
+        return (
+            where,
+            " (the build marks no prologue end, as GCC's never do, so LLDB stops a one-line "
+            "function here)",
+            "Read the arguments at the call, or put the body on a line of its own",
+            "Change the argument at the call, or put the body on a line of its own and stop there",
+        )
+    return (
+        where,
+        " (the build marks no prologue end, as GCC's never do, and LLDB did not find it)",
+        "Read the arguments at the call, or stop on a later line of the function",
+        "Change the argument at the call, or change it on a later line of the function",
+    )
 
 
 class Everywhere(str):
@@ -3202,12 +3380,16 @@ class NativeSession:
         fields=None,
         unjudged=None,
         returns_twice=None,
+        prologues=None,
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
         self.declarations = declarations
+        # _prologue_windows of the build: where each function has not stored its
+        # parameters yet (#279); None (unknown) where the declarations are.
+        self.prologues = None if declarations is None or prologues is None else tuple(prologues)
         self.unjudged = unjudged
         # In a program that may call setjmp: the macros of headers outside the program
         # that may expand to it (see _returns_twice); None in one that cannot.
@@ -3806,6 +3988,8 @@ class NativeSession:
         (the frame's rows) and ``stop`` (the stop's reason) are for Rust's rules."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
         line = (frame or {}).get("line")
+        if (unstored := self._prologue_unstored(variable, frame)) is not None:
+            return unstored
         if name == "this" and (building := self._under_construction(frame, stack, deeper)):
             return building
         if looks_located(name) and split_located(name) is None:
@@ -4082,6 +4266,77 @@ class NativeSession:
                 f"storage may hold leftovers; stop after line {line} to read it"
             )
         return None
+
+    def _prologue(self, frame):
+        """The _prologue_windows window ``frame`` runs in, or None: there its function has
+        not stored its parameters yet (#279)."""
+        windows, pc = getattr(self, "prologues", None), self._block_pc(frame)
+        if not windows or pc is None:
+            return None
+        index = bisect.bisect_right(windows, pc, key=lambda window: window.entry) - 1
+        if index >= 0 and windows[index].entry <= pc < windows[index].end:
+            return windows[index]
+        return None
+
+    def _prologue_unstored(self, variable, frame):
+        """Why the root local ``variable`` of ``frame`` holds leftovers in its function's
+        prologue (#279), or None. GCC marks no prologue end, so LLDB stops a function
+        whose code is all on its first line at its first instruction, before the
+        parameters are stored; a step into it stops there too. Every parameter and local
+        is withheld there, but those the prologue leaves alone (``kept``). Where the
+        frame's address is unknown, _prologue_unplaced says why it may be there."""
+        name = variable.get("name")
+        if not isinstance(name, str):
+            return None
+        base = (split_located(name) or (name,))[0]
+        if (window := self._prologue(frame)) is None:
+            return self._prologue_unplaced(base, name, frame)
+        if base in window.kept:
+            return None
+        where, why, read, change = _prologue_texts(window)
+        return Withholding(
+            f"{where}: its storage holds leftovers{why}. {read}",
+            None,
+            f"{name!r} cannot be changed here: {where}, and the function's code may "
+            f"overwrite a change. {change}",
+        )
+
+    def _prologue_unplaced(self, base, name, frame):
+        """Why a root local (``base``: its plain name) of ``frame``, whose address Peeky
+        cannot read, may hold leftovers, or None (review of #279). A frame on a line where
+        a prologue runs may be stopped before it stored the parameters: at a GCC
+        function's start, which marks no prologue end, or in any prologue on a fault or a
+        signal. So its locals are withheld there, but what that prologue leaves alone."""
+        windows = getattr(self, "prologues", None)
+        if not windows or self._block_pc(frame) is not None:
+            return None
+        place = self._place(frame)
+        found = [window for window in windows if place in window.lines] if place else []
+        if not found or all(base in window.kept for window in found):
+            return None
+        pointer = (frame or {}).get("instructionPointerReference")
+        if getattr(self, "load_bias_unknown", False):
+            why = "the debugger did not report where the program is loaded"
+        elif not isinstance(pointer, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer):
+            why = "the debugger gave no instruction address for this frame"
+        else:
+            why = "Peeky could not read where the program is loaded"
+        where = (
+            "Peeky cannot tell whether the stop is before or after its function's prologue "
+            f"stores the parameters: {why}, so it cannot place the stop's instruction"
+        )
+        if all(window.single for window in found):
+            read = "Read the arguments at the call, or put the body on a line of its own"
+            change = "put the body on a line of its own and change it there"
+        else:
+            read = "Read the arguments at the call, or stop past the function's first line"
+            change = "change it past the function's first line"
+        return Withholding(
+            f"{where}. {read}",
+            None,
+            f"{name!r} cannot be changed here: {where}. Change the argument at the call, or "
+            f"{change}",
+        )
 
     def _statement_end(self, source, line, name):
         """Where the declaration of ``name`` on ``line`` of the prepared ``source`` ends
@@ -5145,9 +5400,14 @@ class NativeSession:
         Peeky cannot tell, is refused. ``stop``: the stop's reason (unused: the address
         says it). A local the frame reaches through a pointer or reference (a structured
         binding of a reference) is refused at every stop: a change would write through
-        it."""
+        it. A stop in the function's prologue (a GCC build's one-line function, #279) is
+        refused as such: the statements have not started, but the parameters are not
+        stored yet."""
         if "through" in (storages := self._storages(frame, variable)):
             return Everywhere(_not_framed(variable.get("name"), storages))
+        if (window := self._prologue(frame)) is not None:
+            where, _, _, change = _prologue_texts(window)
+            return Advised(f"{where}, and the function's code may overwrite a change", change)
         if not getattr(self, "declarations", None) and (unread := self._unread_statements()):
             # No stop of this run is placed: no other stop would allow a change.
             return unread
@@ -6653,10 +6913,11 @@ class NativeSession:
         if not valid:
             raise RuntimeError("Native module identity or symbols do not match prepared build")
         try:
-            # Display aid only (a local declared on the stop line): unknown never withholds.
-            self.load_bias = load_bias(self.binary, module)
+            # Most rules that read it are display aids (a local declared on the stop line):
+            # unknown never withholds there. A GCC prologue's does (review of #279).
+            self.load_bias, self.load_bias_unknown = load_bias(self.binary, module), False
         except (OSError, ValueError, struct.error):
-            self.load_bias = None
+            self.load_bias, self.load_bias_unknown = None, True
         # scripts/probe_rust.py validates with a plain namespace, which records nothing.
         if check := getattr(self, "_check_loop_target", None):
             check(dap, frame)

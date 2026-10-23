@@ -52,6 +52,10 @@ A C++ compiler that isn't clang is refused before anything runs
 - **`no value yet`** means the local isn't initialized at this stop. Read it below its
   declaration; the row says where
   ([C and C++ 7.1](c-cpp-cookbook.md#why-a-local-shows-no-value-yet)).
+- **A GCC build's one-line function** can stop at its first instruction, before it stores its
+  parameters. There, its parameters and locals show `no value yet`, and none can be changed. Read
+  the arguments at the call, or put the body on a line of its own. The note says what to do
+  ([C and C++ 7.1](c-cpp-cookbook.md#at-a-functions-start-before-it-stores-its-parameters)).
 - **A `note`** marks a value Peeky can't vouch for. Don't trust it, or anything read through it.
   On a line a loop returns to, such as a `do` body's first line, read it on the next line. Below a
   `setjmp` call, a local declared at or below the stop shows a `note`; read it below its
