@@ -397,3 +397,158 @@ def test_a_bitfields_binding_with_no_location_says_so(cpp, capsys):
     else:
         # Clang before 19 describes no binding of a bitfield; 19 and later read them.
         assert rows["hi"].get("value") in (None, "2"), rows["hi"]
+
+
+TUPLES = """#include <cstdio>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+struct Pt { long x; long y; };
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) std::vector<std::pair<long, long>> make(long v) {
+    return {{v + 1000, 1}, {v + 1001, 2}};
+}
+int main(int argc, char **argv) {
+    long t = argc + 1; // OUTER
+    for (long i = 0; i < t; i++) {
+        auto [t, u] = make(i)[0]; // BY_VALUE
+        use(t + u); // VALUE_READ
+        std::vector<std::pair<long, long>> held = make(i);
+        auto &[r, s] = held[1]; // BY_REFERENCE
+        use(r * s); // REFERENCE_READ
+    }
+    for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); } // ONE_LINE
+    std::pair<Pt, std::string> both{{3, 4}, "apple"};
+    std::tuple<long, double, char> three{7, 8.5, 'c'};
+    auto &[pt, name] = both;
+    const auto &[a, b, c] = three;
+    use(pt.x + (long)name.size() + a + (long)b + c); // KINDS
+    return 0;
+}
+"""
+
+
+def hidden(compiler, row):
+    """Whether a row is clang 18's for a binding: clang 18 marks the variable holding the
+    reference artificial, and lldb-dap does not list it (`t` is then main's own, which
+    the code there does not read). A newer clang's (Apple clang 21) is a plain reference
+    (`long &&`), read as GCC's is."""
+    return (
+        compiler == "clang"
+        and row.get("value") is None
+        and row["error"].startswith(
+            ("not found", "not what the code reads: the code here names the structured binding")
+        )
+    )
+
+
+def bound_rows(source, marker, capture, capsys):
+    """The rows of ``capture`` at every stop of ``marker``'s line of TUPLES."""
+    code, result = probe(source, line_of(TUPLES, f"// {marker}"), capture, capsys, "--hits", "all")
+    assert result["status"] == "completed", result
+    return result["rows"]
+
+
+@pytest.mark.timeout(300)
+def test_a_pair_or_tuple_binding_shows_its_element_never_its_address(cpp, capsys):
+    # #291: GCC holds `t` of `auto [t, u] = make(i)[0];` as a reference to the element
+    # (`std::tuple_element<0, std::pair<long, long> >::type &&`), and every row showed
+    # the element's address (`0x0000fffffffffb70`) as its value: before the declaration
+    # ran (with a note at the loop's next pass, none on a one-line loop), and after. So
+    # did Apple clang 21's (`long &&`) after it ran.
+    compiler, root = cpp
+    source = root / "tuples.cpp"
+    source.write_text(TUPLES)
+    declared = {
+        "BY_VALUE": line_of(TUPLES, "// BY_VALUE"),
+        "BY_REFERENCE": line_of(TUPLES, "// BY_REFERENCE"),
+    }
+    for marker, line in declared.items():
+        found = bound_rows(source, marker, "t,u" if marker == "BY_VALUE" else "r,s", capsys)
+        assert len(found) == 4, found
+        for row in found:
+            # Before its declaration runs: never a value, nor a note on a value.
+            assert row.get("value") is None and "note" not in row, row
+            if hidden(compiler, row):
+                continue
+            assert row["error"].startswith(f"no value yet: declared on line {line}"), row
+            if "runs after this stop on every pass" in row["error"]:
+                # GCC's loop returns to it: the reference may be the last pass's.
+                assert row["error"].endswith(
+                    "the build reads this structured binding through a reference its "
+                    "declaration sets, which may point anywhere until then; read it after "
+                    "its declaration"
+                ), row
+    reads = {
+        "VALUE_READ": ("t,u", lambda i: {"t": str(1000 + i), "u": "1"}, " &&"),
+        "REFERENCE_READ": ("r,s", lambda i: {"r": str(1001 + i), "s": "2"}, " &"),
+    }
+    for marker, (capture, expected, reference) in reads.items():
+        found = bound_rows(source, marker, capture, capsys)
+        assert len(found) == 4, found
+        for row in found:
+            if hidden(compiler, row):
+                continue
+            # The element, as the program reads it, and its type as the binding declares
+            # it; LLDB's, of the reference, beside it.
+            assert row["value"] == expected(row["hit"] - 1)[row["selector"]], row
+            assert row["debugger_type"] == row["type"] + reference, row
+            assert row["type"].startswith("std::tuple_element<") or compiler == "clang", row
+            assert row.get("settable") is not True, row
+    # A one-line loop: its first stop shows the outer `t` withheld; the next ones, the
+    # binding before its declaration runs. No stop shows a value.
+    for row in bound_rows(source, "ONE_LINE", "t", capsys):
+        assert row.get("value") is None and "note" not in row, row
+    # A struct, a string and a tuple's number, character and double: each the element.
+    kinds = line_of(TUPLES, "// KINDS")
+    code, result = probe(source, kinds, "pt,pt.x,name,a,b,c", capsys, "--hits", "1")
+    rows = {row["selector"]: row for row in result["rows"]}
+    elements = {
+        "pt": "{x = 3, y = 4}",
+        "pt.x": "3",
+        "name": '"apple"',
+        "a": "7",
+        "b": "8.5",
+        "c": "'c'",
+    }
+    for selector, row in rows.items():
+        assert hidden(compiler, row) or row.get("value") == elements[selector], row
+    assert compiler == "clang" or code == 0, result
+    assert rows["pt.x"].get("settable") is not True, rows["pt.x"]
+    # Never changed: a change would write through the reference.
+    code, result = probe(source, kinds, "a", capsys, "--set", "a=9")
+    assert code != 0 and result["error"]["code"] == "MUTATION_REJECTED", result
+    if compiler == "gcc":
+        assert rows["pt.x"].get("not_settable") == "reference", rows["pt.x"]
+        message = result["error"]["message"]
+        assert "is reached through a pointer or reference" in message, result
+        assert "Refused before the program runs" in message, result
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_an_optimized_pair_binding_never_shows_its_elements_address(cpp, optimization):
+    # #291: at -O1 GCC keeps the reference `r` in a register; its row was its address.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "tuples.cpp").write_text(TUPLES)
+    adapter = NativeTarget(
+        sources=("tuples.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    line = line_of(TUPLES, "// REFERENCE_READ")
+    result = run_probe(root, Probe("tuples.cpp", line, ("r", "s"), hits="all"), adapter=adapter)
+    assert result["status"] == "completed", result.get("error")
+    for row in result["rows"]:
+        if row.get("value") is not None:
+            # The element, or nothing: never its address.
+            assert row["value"] == {"r": str(1001 + row["hit"] - 1), "s": "2"}[row["selector"]]

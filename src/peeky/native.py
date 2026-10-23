@@ -2294,8 +2294,9 @@ def _not_framed(name, storages):
     if "through" in storages:
         return (
             f"`{name}` is reached through a pointer or reference (a C++ structured binding "
-            "of a reference, a named return value or a C `__block` variable). Change the "
-            "value where it is owned: Peeky changes only values the frame holds itself"
+            "of a reference, or of a pair or tuple, a named return value or a C `__block` "
+            "variable). Change the value where it is owned: Peeky changes only values the "
+            "frame holds itself"
         )
     return (
         f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
@@ -4676,6 +4677,156 @@ class NativeSession:
             "nor change it; print it from the program"
         )
 
+    def _element_binding(self, variable, frame):
+        """Whether the root local ``variable`` of ``frame`` is a C++ structured binding
+        the build holds as a reference to its element (#291), which the debugger shows as
+        the element's address: `t` in `auto [t, u] = pair;`. GCC's says so by its type
+        (fields.element_reference, "through"); a newer clang's (Apple clang 21) is a
+        plain reference (`long &&`) declared on a line that declares that name only as a
+        structured binding's (Statements.binds). (True, the element's Typed, or None
+        where its declarations disagree); a Withholding where a reference of its name
+        may be one but Peeky cannot tell which declaration the debugger shows; else
+        False."""
+        from peeky.native_previews import Typed
+
+        if (
+            getattr(getattr(self, "target", None), "language", None) != "cpp"
+            or getattr(self, "fields", None) is None
+            or not str(variable.get("type") or "").rstrip().endswith("&")
+        ):
+            return False
+        function = self._function_at(frame) or {}
+        name = str(variable.get("name") or "")
+        shown = split_located(name)
+        base = shown[0] if shown else name
+        # The debugger shows a reference: only a declaration of one can be this row.
+        declared = [
+            each
+            for each in (function.get("types") or {}).get(base) or ()
+            if (not shown or each[2] == shown[1:])
+            and Typed(self.fields, each[0]).kind() == "reference"
+        ]
+        source = function.get("source")
+
+        def bound(each):
+            if each[1] == "through":
+                return True
+            if each[2] is None or not isinstance(source, str) or Path(source).name != each[2][0]:
+                return False
+            statements = self._statements(source)
+            return statements is not None and statements.binds(each[2][1], base)
+
+        found = [each for each in declared if bound(each)]
+        if not found:
+            return False
+        if len(declared) > 1 and (where := self._shown_where(name, self._unslid(frame))):
+            place = (Path(str(where[0])).name, where[1])
+            declared = [each for each in declared if each[2] == place] or declared
+            found = [each for each in found if each in declared]
+            if not found:
+                return False
+        if len(found) == len(declared):
+            kinds = {kind for kind, _, _ in found}
+            return True, Typed(self.fields, next(iter(kinds))).target() if len(kinds) == 1 else None
+        return Withholding(
+            f"`{base}` here may be a structured binding the build holds as a reference to "
+            "its element, which the debugger shows as an address, or a reference of that "
+            "name, and Peeky cannot tell which; print it from the program",
+            "not shown",
+            None,
+        )
+
+    def display_type(self, variable, frame, top=True, path=None):
+        """The element's type for a root local the build holds as a reference to a
+        structured binding's element (#291): `std::tuple_element<0, std::pair<long,
+        long> >::type`, as the binding is declared, where LLDB names the reference (`…
+        &&`). None for any other value, whose type stays LLDB's."""
+        bare = re.fullmatch(r"(.*?\S)\s*&{1,2}\s*", str(variable.get("type") or ""))
+        if not top or bare is None or not isinstance(self._element_binding(variable, frame), tuple):
+            return None
+        return bare[1]
+
+    def bound_element(self, variable, frame, fetch, note=None):
+        """How the worker shows a root local the build holds as a reference to a
+        structured binding's element (#291: GCC's `t` in `auto [t, u] = pair;`), which
+        the debugger shows as the element's address. None for any other local. Else:
+
+        - a Withholding, where the reference may not be set (``note``: why the row would
+          be shown with a note), or the element cannot be read;
+        - {"variable": the debugger's child that is the element (a number, a character,
+          a pointer), named as the row and listing nothing}, read as any value;
+        - {"strip": True} for a struct, class, array or standard container, whose
+          members the debugger lists as the reference's own: element_text shows it.
+
+        ``fetch(reference, count)``: the first children the debugger lists for a value."""
+        found = self._element_binding(variable, frame)
+        if found is False:
+            return None
+        if not isinstance(found, tuple):
+            return found
+        if note:
+            return Withholding(
+                "Peeky reads no structured binding through a reference that may not be set "
+                f"yet, as the one the build holds for this one may not be: {note[:180]}",
+                "not shown",
+                None,
+            )
+        name = str(variable.get("name") or "")
+        shown = split_located(name)
+        base = shown[0] if shown else name
+        target = found[1]
+        if target is not None and target.kind() in (
+            "record",
+            "union",
+            "library",
+            "array",
+            "incomplete",
+        ):
+            return {"strip": True}
+        unread = (
+            f"`{base}` is a structured binding the build holds as a reference to its "
+            "element, which the debugger shows as an address, and the debugger listed no "
+            "element through it{}; print it from the program"
+        )
+        reference = variable.get("variablesReference")
+        try:
+            children = fetch(reference, 2) if type(reference) is int and reference > 0 else []
+        except ValueError as exc:
+            return Withholding(unread.format(f" ({str(exc)[:80]})"), "not shown", None)
+        element = re.sub(r"\s*&{1,2}\s*$", "", str(variable.get("type") or ""))
+        if (
+            len(children) != 1
+            or not str(children[0].get("name") or "").startswith(("&", "*"))
+            or " ".join(str(children[0].get("type") or "").split()) != " ".join(element.split())
+        ):
+            return Withholding(unread.format(""), "not shown", None)
+        listed = {
+            key: value
+            for key, value in children[0].items()
+            if key not in ("indexedVariables", "namedVariables", "presentationHint")
+        }
+        return {"variable": {**listed, "name": name, "variablesReference": 0}}
+
+    def element_text(self, variable, frame, value):
+        """bound_element's {"strip": True} element as the row shows it, from ``value``,
+        the row's text (`0x… {x = 1, y = 2}`, `0x… "apple"`, `0x… size=2 [15, 16]`):
+        the text after the address, or as lldb-dap shows such a value with no text of
+        its own (`Pt @ 0x…`); a Withholding for any other text. Never the address alone."""
+        located = re.fullmatch(r"(0x[0-9a-fA-F]{1,16})(?: (.+))?", str(value or ""), re.S)
+        if located is None:
+            name = split_located(str(variable.get("name") or ""))
+            return Withholding(
+                f"`{name[0] if name else variable.get('name')}` is a structured binding the "
+                "build holds as a reference to its element, and the debugger shows it as "
+                f"{str(value)[:60]!r}, not that element's address; print it from the program",
+                "not shown",
+                None,
+            )
+        if located[2]:
+            return located[2]
+        element = self.display_type(variable, frame) or "element"
+        return f"{element} @ 0x{int(located[1], 16):x}"
+
     def not_yet_declared(
         self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
     ):
@@ -4683,7 +4834,23 @@ class NativeSession:
         None. Its storage then holds whatever an earlier call or iteration left.
         ``stack``: the frames listed with it (innermost first), when known; ``deeper()``:
         more of them, when a rule needs what runs below the listed ones. ``siblings``
-        (the frame's rows) and ``stop`` (the stop's reason) are for Rust's rules."""
+        (the frame's rows) and ``stop`` (the stop's reason) are for Rust's rules.
+
+        A local shown with a note (a ValueNote: a loop may return to its declaration's
+        first instruction) that the build holds as a reference to a structured binding's
+        element (#291) is withheld instead: until its declaration runs on this pass, that
+        reference may point anywhere, and nothing is read through it."""
+        reason = self._not_yet_declared(variable, frame, innermost, stack, deeper, siblings, stop)
+        if isinstance(reason, ValueNote) and self._element_binding(variable, frame) is not False:
+            return (
+                f"{reason}: the build reads this structured binding through a reference its "
+                "declaration sets, which may point anywhere until then; read it after its "
+                "declaration"
+            )
+        return reason
+
+    def _not_yet_declared(self, variable, frame, innermost, stack, deeper, siblings, stop):
+        """not_yet_declared's reason, before a binding held as a reference is judged."""
         name, path = variable.get("name"), ((frame or {}).get("source") or {}).get("path")
         line = (frame or {}).get("line")
         if (unstored := self._prologue_unstored(variable, frame)) is not None:

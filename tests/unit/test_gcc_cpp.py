@@ -644,3 +644,279 @@ def test_a_withheld_container_row_has_no_value_handle_or_entries(tmp_path):
         member["withheld_as"] == "not listed"
         and "could not read this one's own" in member["reason"]
     )
+
+
+# #291: GCC's `auto [t, u] = pair;` names each element by a variable holding a reference
+# to `std::tuple_element<I, E>::type`; its row was the element's address.
+ELEMENT = "std::tuple_element<0, std::pair<long, long> >::type"
+POINT = "std::tuple_element<0, std::pair<Pt, int> >::type"
+BOUND = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_structure_type
+                DW_AT_name\t("Pt")
+                DW_AT_byte_size\t(0x10)
+
+0x00000018:     DW_TAG_member
+                  DW_AT_name\t("x")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000024:     DW_TAG_structure_type
+                  DW_AT_name\t("tuple_element<0, std::pair<long int, long int> >")
+
+0x00000028:       DW_TAG_typedef
+                    DW_AT_name\t("type")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000002c:     DW_TAG_structure_type
+                  DW_AT_name\t("tuple_element<0, std::pair<Pt, int> >")
+
+0x00000030:       DW_TAG_typedef
+                    DW_AT_name\t("type")
+                    DW_AT_type\t(0x00000014 "Pt")
+
+0x00000040:   DW_TAG_rvalue_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000044:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000030 "type")
+
+0x00000048:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x00000050:   DW_TAG_subprogram
+                DW_AT_name\t("main")
+
+0x00000054:     DW_TAG_variable
+                  DW_AT_name\t("t")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(14)
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -200)
+
+0x00000058:     DW_TAG_variable
+                  DW_AT_name\t("pt")
+                  DW_AT_type\t(0x00000044 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -192)
+
+0x0000005c:     DW_TAG_variable
+                  DW_AT_name\t("lr")
+                  DW_AT_type\t(0x00000048 "long int &")
+                  DW_AT_location\t(DW_OP_fbreg -184)
+
+0x00000060:     DW_TAG_variable
+                  DW_AT_name\t("t")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(20)
+                  DW_AT_type\t(0x00000048 "long int &")
+                  DW_AT_location\t(DW_OP_fbreg -176)
+
+0x00000064:     DW_TAG_variable
+                  DW_AT_name\t("u")
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -168)
+
+0x00000068:     DW_TAG_variable
+                  DW_AT_name\t("w")
+                  DW_AT_type\t(0x00000040 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -160)
+"""
+
+
+def bound(where=None, shadowed=False):
+    """A NativeSession over BOUND's `main` (with ``shadowed``, also its plain `long &t` on
+    line 20), the debugger showing the declaration at ``where``."""
+    from peeky.fields import CPP_LIBRARIES, local_types, type_graph
+    from peeky.native import _parse_dies
+
+    dies = _parse_dies(BOUND)
+    types = local_types(dies, [0x50], through=True)
+    if not shadowed:
+        types["t"] = frozenset(each for each in types["t"] if each[2] == ("t.cpp", 14))
+    graph = type_graph(dies, {0x40, 0x44, 0x48}, CPP_LIBRARIES)
+    for offset, node in type_graph(dies, {0x28, 0x30}, CPP_LIBRARIES).items():
+        graph.setdefault(offset, node)
+    session = native(function={"types": types}, fields=graph)
+    session._shown_where = lambda name, pc: where
+    session._unslid = lambda frame: 0x1000
+    return session
+
+
+def test_a_pair_bindings_row_is_its_element_never_its_address():
+    from peeky.native import Withholding
+
+    session, frame = bound(), {"id": 1}
+    t = variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70", 4)
+    pt = variable("pt", f"{POINT} &", "0x0000fffffffffae8", 5)
+    lr = variable("lr", "long &", "0x0000fffffffffb20", 6)
+    # Typed as the binding is declared; a reference of the program's own keeps LLDB's.
+    assert session.display_type(t, frame) == ELEMENT
+    assert session.display_type(pt, frame) == POINT
+    assert session.display_type(lr, frame) is None
+    assert session.display_type(t, frame, top=False, path=["t"]) is None
+    asked = []
+
+    def fetch(reference, count):
+        asked.append((reference, count))
+        return [{"name": "&t", "type": ELEMENT, "value": "10", "variablesReference": 0}]
+
+    # A number: the debugger's one child under the reference, named and listed as the row.
+    assert session.bound_element(t, frame, fetch) == {
+        "variable": {"name": "t", "type": ELEMENT, "value": "10", "variablesReference": 0}
+    }
+    assert asked == [(4, 2)]
+    assert session.bound_element(lr, frame, fetch) is None
+    # A struct: its members are the reference's own children, its text follows the address.
+    assert session.bound_element(pt, frame, fetch) == {"strip": True}
+    assert session.element_text(pt, frame, "0x0000fffffffffae8 {x = 3, y = 4}") == "{x = 3, y = 4}"
+    assert session.element_text(pt, frame, "0x0000fffffffffae8") == f"{POINT} @ 0xfffffffffae8"
+    odd = session.element_text(pt, frame, "<invalid>")
+    assert isinstance(odd, Withholding) and odd.label == "not shown", odd
+    # Anything else the debugger lists, or a read that fails, withholds it: never the address.
+    unread = (
+        "`t` is a structured binding the build holds as a reference to its element, which "
+        "the debugger shows as an address, and the debugger listed no element through it{}; "
+        "print it from the program"
+    )
+    for listed in ([], [{"name": "&t", "type": "long", "value": "10"}] * 2):
+        found = session.bound_element(t, frame, lambda reference, count, listed=listed: listed)
+        assert found == unread.format("") and found.label == "not shown", found
+
+    def exhausted(reference, count):
+        raise ValueError("Preview budget exhausted")
+
+    found = session.bound_element(t, frame, exhausted)
+    assert found == unread.format(" (Preview budget exhausted)"), found
+    # A row shown with a note: its reference may not be set, so nothing is read through it.
+    noted = session.bound_element(t, frame, fetch, note="may be the last pass's value")
+    assert isinstance(noted, Withholding) and noted.endswith(": may be the last pass's value")
+    # Two references named `t`, the debugger's not told apart: withheld; told: read.
+    shadowed = bound(shadowed=True).bound_element(t, frame, fetch)
+    assert isinstance(shadowed, Withholding) and "cannot tell which" in shadowed, shadowed
+    assert bound(("t.cpp", 14, True), shadowed=True).bound_element(t, frame, fetch)["variable"]
+    assert bound(("t.cpp", 20, True), shadowed=True).bound_element(t, frame, fetch) is None
+    # Never in C, nor without the build's debug information.
+    session.target.language = "c"
+    assert session.bound_element(t, frame, fetch) is None and not session.display_type(t, frame)
+    assert native(function=None).bound_element(t, frame, fetch) is None
+
+
+def test_a_pair_binding_a_loop_returns_to_is_withheld_not_noted():
+    from peeky.native import ValueNote
+
+    session = bound()
+    reason = (
+        "declared on line 14, which runs after this stop on every pass (a loop can return "
+        "to its first instruction)"
+    )
+    session._not_yet_declared = lambda *args: ValueNote(reason, "may be the last pass's", True)
+    t = variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70")
+    found = session.not_yet_declared(t, {"id": 1})
+    assert not isinstance(found, ValueNote) and found == (
+        f"{reason}: the build reads this structured binding through a reference its "
+        "declaration sets, which may point anywhere until then; read it after its declaration"
+    )
+    assert len(found) <= 300
+    # Any other local keeps its note; a reason without one stays as it is.
+    assert isinstance(
+        session.not_yet_declared(variable("lr", "long &", "0x1"), {"id": 1}), ValueNote
+    )
+    session._not_yet_declared = lambda *args: "declared at line 14, below this stop"
+    assert session.not_yet_declared(t, {"id": 1}) == "declared at line 14, below this stop"
+
+
+class Listing:
+    """lldb-dap's `variables`: {reference: children}; the requests made."""
+
+    def __init__(self, children):
+        self.children, self.requests = children, []
+
+    def request(self, command, arguments, timeout=None):
+        self.requests.append((command, arguments))
+        return {"variables": self.children.get(arguments["variablesReference"], [])}
+
+
+def test_the_worker_shows_a_pair_bindings_element_or_withholds_it(tmp_path):
+    from peeky.native import ValueNote
+    from peeky.worker import DebugWorker
+
+    session = bound()
+    pending = {
+        "u": "declared on line 14, which has not run yet at this stop",
+        "w": ValueNote("declared at line 14", "may be leftovers", True),
+    }
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        not_yet_declared=lambda variable, frame, **kwargs: pending.get(variable["name"]),
+        bound_element=session.bound_element,
+        element_text=session.element_text,
+        display_type=session.display_type,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.listed_frames = [{"id": 1, "name": "main"}]
+    worker.dap = Listing(
+        {4: [{"name": "&t", "type": ELEMENT, "value": "10", "variablesReference": 0}]}
+    )
+    worker.reset_views()
+    worker.reset_previews()
+    rows = [
+        variable("t", f"{ELEMENT} &&", "0x0000fffffffffb70", 4),
+        variable("pt", f"{POINT} &", "0x0000fffffffffae8 {x = 3, y = 4}", 5),
+        variable("lr", "long &", "0x0000fffffffffb20", 6),
+        variable("u", f"{ELEMENT} &&", "0x0000fffff7ce0ab0", 7),
+        variable("w", f"{ELEMENT} &&", "0x0000fffff7ce0ab0", 8),
+    ]
+    t, pt, lr, u, w = worker.expose_variables(rows, {"id": 1}, ("Locals", None), ())
+    assert t["value"] == "10" and t["variablesReference"] == 0, t
+    assert t["type"] == ELEMENT and t["debugger_type"] == f"{ELEMENT} &&", t
+    assert pt["value"] == "{x = 3, y = 4}" and pt["variablesReference"] > 0, pt
+    assert pt["type"] == POINT and pt["debugger_type"] == f"{POINT} &", pt
+    assert lr["value"] == "0x0000fffffffffb20" and "debugger_type" not in lr, lr
+    # Not set yet: withheld as any local, typed as the binding.
+    assert u["value"] is None and u["withheld"] and "withheld_as" not in u, u
+    assert u["type"] == ELEMENT and u["debugger_type"] == f"{ELEMENT} &&", u
+    # Shown with a note anywhere else: here its reference may not be set, so withheld.
+    assert w["value"] is None and w["withheld_as"] == "not shown", w
+    assert w["reason"].endswith(": may be leftovers") and "note" not in w, w
+    assert not any("0x" in str(row.get("value")) for row in (t, pt, u, w))
+    # Only the number's reference was listed, once.
+    assert [arguments["variablesReference"] for _, arguments in worker.dap.requests] == [4]
+
+
+def test_a_newer_clangs_binding_is_told_by_its_line():
+    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &`,
+    # not artificial: its row was the element's address after the declaration ran.
+    from peeky.c_source import Statements
+
+    source = "int main() {\n    auto &[t, u] = held[1];\n    long &w = x;\n}\n"
+    session = bound()
+    plain = {(0x48, "automatic", ("t.cpp", 2))}
+    session._function_at = lambda frame: {
+        "types": {"t": frozenset(plain), "w": frozenset({(0x48, "automatic", ("t.cpp", 3))})},
+        "source": "src/t.cpp",
+    }
+    session._statements = lambda path: Statements(source, True) if path == "src/t.cpp" else None
+    t, w = variable("t", "long &", "0x16af672d0", 4), variable("w", "long &", "0x16af672d8", 5)
+
+    def fetch(reference, count):
+        return [{"name": "&t", "type": "long", "value": "1001", "variablesReference": 0}]
+
+    assert session.display_type(t, {"id": 1}) == "long"
+    assert session.bound_element(t, {"id": 1}, fetch)["variable"]["value"] == "1001"
+    # A reference the code declares keeps LLDB's text: its address.
+    assert session.display_type(w, {"id": 1}) is None
+    assert session.bound_element(w, {"id": 1}, fetch) is None
+    # Another file's declaration, or a source Peeky cannot read, is not told.
+    session._statements = lambda path: None
+    assert session.bound_element(t, {"id": 1}, fetch) is None

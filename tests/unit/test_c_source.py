@@ -1353,6 +1353,51 @@ def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
     assert statements.block_storage(5, "t", 2) == ("binding", 5)
 
 
+BINDS_SOURCE = """int main() {
+    auto [t, u] = make(i)[0];
+    auto &[r, s] = held[1]; const auto&& [a, b] = three; // auto [c, d] = no;
+    for (const auto &[k, v] : pairs) { use(k); }
+    long &&w = std::move(x); auto [w2, z] = y;
+    auto lam = [&] { auto [m, n] = g(); return m; }; long &m = x;
+    auto [e, f] = make([] { long e = 4; return e; });
+    long q = 1, &[[maybe_unused]] p = q;
+    use("auto [g, h] = x;");
+}
+"""
+
+
+def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
+    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &&`:
+    # only the line tells that it names the element, not a reference the code declares.
+    statements = Statements(BINDS_SOURCE, raw_strings=True)
+    names = ("t", "u", "r", "s", "a", "b", "c", "d", "k", "v", "w", "w2", "z", "m", "n")
+    found = {
+        (line, name)
+        for line in range(1, 11)
+        for name in (*names, "e", "f", "q", "p", "g", "h")
+        if statements.binds(line, name)
+    }
+    assert found == {
+        (2, "t"),
+        (2, "u"),
+        (3, "r"),
+        (3, "s"),
+        (3, "a"),
+        (3, "b"),
+        (4, "k"),
+        (4, "v"),
+        (5, "z"),
+        (5, "w2"),
+        (7, "e"),
+        (7, "f"),
+    }
+    # A comment's or a string's brackets bind nothing (`c`, `g`), nor does a lambda's
+    # body hold the line's own (`m` is the reference `long &m` there); a plain reference
+    # (`w`, `p`) is no binding; nor is any of C.
+    assert not Statements(BINDS_SOURCE, raw_strings=False).binds(2, "t")
+    assert not statements.binds(0, "t") and not statements.binds(99, "t")
+
+
 RANGE_LAMBDA_SOURCE = """int f() {
     long t = 1;
     for (auto [t, u] : make([&] { long t = 40; return id(t); })) {

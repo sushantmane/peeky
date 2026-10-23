@@ -1996,6 +1996,13 @@ class Statements:
         """Whether ``line`` declares ``name`` otherwise than by a structured binding,
         outside the bodies of lambdas (or functions) there (#169): a local of the name
         in one is that function's own, whose frame no binding outside it names."""
+        return any(
+            self._declares(low, high, name, bindings=False) for low, high in self._outside(line)
+        )
+
+    def _outside(self, line):
+        """The (start, end) spans of ``line``'s code outside the bodies of lambdas (or
+        functions) there, in order."""
         code, pairs = self._code()
         begin = self.starts[line - 1]
         finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
@@ -2012,12 +2019,32 @@ class Statements:
                 "lambda",
             ):
                 cuts.append(cut)
-        position = begin
+        spans, position = [], begin
         for low, high in sorted(cuts):
-            if low > position and self._declares(position, low, name, bindings=False):
-                return True
+            if low > position:
+                spans.append((position, low))
             position = max(position, high)
-        return position < finish and self._declares(position, finish, name, bindings=False)
+        if position < finish:
+            spans.append((position, finish))
+        return spans
+
+    def binds(self, line, name):
+        """Whether ``line`` declares ``name`` as a C++ structured binding's name (`auto [t,
+        u] = make(i)[0];`, `const auto &[t, u]`, a range-`for`'s) and in no other way,
+        outside the bodies of lambdas (or functions) there (#291). A variable of reference
+        type that the build declares there is then the reference it holds to a pair's or
+        tuple's element, which the binding names."""
+        if (
+            not self.raw_strings
+            or self.unreadable
+            or type(line) is not int
+            or not 1 <= line <= len(self.starts)
+        ):
+            return False
+        spans = self._outside(line)
+        return any(self._declares(low, high, name) for low, high in spans) and not any(
+            self._declares(low, high, name, bindings=False) for low, high in spans
+        )
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
