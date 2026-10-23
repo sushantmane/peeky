@@ -1129,9 +1129,6 @@ No `String` takes a text either, as in `--set 'name="x"'`. The refusal gives the
 raw pointer, or an address kept as an integer (`s.as_ptr() as usize`), could read its bytes at
 their old length where no borrow shows it.
 
-A raw pointer given to a call may also have read any local there. So `ptr::eq(e, l)` withholds
-`[settable]` from them ([why](#reads-through-a-pointer-peeky-cant-trace)).
-
 #### What counts as unsafe code
 
 The check is broad on purpose: anything that might be unsafe code counts. Peeky checks every file
@@ -1369,17 +1366,24 @@ change at the loop body's first line.
 #### Reads through a pointer Peeky can't trace
 
 Peeky doesn't follow what a reference variable points at, such as a `for` loop's `e`. So a read
-through one may have read any local, and a call given one may return a copy of any local.
+through one may have read any local, and a call given one may return a copy of any local. That
+holds for raw pointers too, whether or not the source has `unsafe`. A standard-library macro can
+bring unsafe code that reads through one.
 
-- A raw pointer reads nothing unless the crate has [unsafe code](#crates-with-unsafe-code). Only
-  unsafe code reads through one. So `ptr::eq(e, l)` returns no copy, though it is given
-  `&raw const *e` and `&raw const *l`.
+- The standard library's `ptr::eq` and `ptr::addr_eq` read only the two addresses. So a call of
+  one holds a copy only of what its pointers hold, never of what they point at.
+- That is so only where Peeky proves the call is the standard library's. The crate must have no
+  `std` or `core` of its own (`mod std`, `use x as core`), nor its own function of that name.
 - A breakpoint on `if ptr::eq(e, l) {` stops inside the inlined `ptr::eq`. There, `week` and
   `pick` are `[settable]`.
-- Where only such a reference may have read the local, the refusal says so, and names it:
-  ``used `e` and `l` (at line 39), references Peeky can't trace that may point at it``.
-  It says the statement may hold a copy, not that it read one.
-- A read the MIR shows keeps the wording above: `has already read it into a temporary`.
+
+A refusal says that the statement has read the local only where the MIR shows that read, at every
+place the stop can be. Otherwise it says what the statement does, and that it may hold a copy:
+
+- ``reads it into a temporary (at line 12)``, where the stop may be before that read;
+- ``gives a call a pointer into it (at line 13)``: the call may read through it, or not;
+- ``uses `p` and `q` (at line 23), raw pointers Peeky can't trace that may point at it``. Each name
+  is called what it is: a reference, a raw pointer, a closure, or a value holding a pointer.
 
 Peeky doesn't rule out a local by its type. A `&Engineer` can't point into a `u32` local in safe
 code. But proving that needs every field of the crate's own types, since a struct may hold a
@@ -1387,7 +1391,7 @@ reference to the local.
 
 Rows withheld at such a stop say why, as `session inspect` does:
 
-- `[not settable: a statement under way may hold a copy (line 39)]`;
+- `[not settable: a statement under way may hold a copy (line 23)]`;
 - `[not settable: a statement under way read it (line 17)]`;
 - ``[not settable: copied into `n` (line 35)]``;
 - `[not settable: part-way through line 12]`, after a step back from a call.

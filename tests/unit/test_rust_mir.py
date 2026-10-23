@@ -2696,6 +2696,45 @@ fn plan(_1: &mut [Engineer], _2: u32) -> () {
     }
 }
 """
+# Its source, as far as the proofs read it: line 39 is `if ptr::eq(e, l) {`.
+RAW_EQ_SOURCE = "\n".join(
+    [
+        "//! An on-call rota.",
+        "use std::ptr;",
+        "",
+        "struct Engineer {",
+        "    name: String,",
+        "    shifts: u32,",
+        "}",
+        *[""] * 20,
+        "fn plan(team: &mut [Engineer], weeks: u32) {",
+        "",
+        "",
+        "    let mut last: Option<Engineer> = None;",
+        "    let week = weeks;",
+        "    let mut pick = usize::MAX;",
+        "    let e = first(team);",
+        "",
+        "",
+        "",
+        "    if let Some(l) = &last {",
+        "        if ptr::eq(e, l) {",
+        "",
+        "",
+        "",
+        "        let _ = pick;",
+        "        let _ = week;",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ]
+)
+# The crate's own `std::ptr::eq`, which the dump names as the standard library's.
+SHADOWED_SOURCE = RAW_EQ_SOURCE.replace(
+    "use std::ptr;",
+    "mod std { pub mod ptr { pub fn eq<T>(_: *const T, _: *const T) -> bool { true } } }",
+)
 HASH = "h0123456789abcdef"
 RAW_EQ_BLOCKS = {
     "start": {31, 32, 33, 34},
@@ -2705,87 +2744,38 @@ RAW_EQ_BLOCKS = {
     "bb4": {43, 44},
     "bb5": {47},
 }
+RAW_EQ_CALL = (
+    "        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue];"
+)
+ALL_NAMES = ("week", "pick", "last", "e", "l", "team")
 
 
-def raw_eq_owned(text=RAW_EQ, **blocks):
-    """OwnedLocals over ``text`` (with ``blocks``, the IR's other blocks). Its proofs judge
-    every place of a line: LLVM inlines `ptr::eq` at -O0, and a line breakpoint on line
-    39 stops inside it, which the MIR places past the call."""
+def raw_eq_owned(text=RAW_EQ, source=RAW_EQ_SOURCE, **blocks):
+    """OwnedLocals over ``text`` (with ``blocks``, the IR's other blocks) and ``source``.
+    Its proofs judge every place of a line: LLVM inlines `ptr::eq` at -O0, and a line
+    breakpoint on line 39 stops inside it, which the MIR places past the call."""
     function = IrFunction("plan", "rota", "src/main.rs", {**RAW_EQ_BLOCKS, **blocks}, {}, 28)
-    return OwnedLocals([parse_body(text)], {HASH: function}, ("src/main.rs",))
+    texts = {"src/main.rs": source} if source is not None else {}
+    return OwnedLocals([parse_body(text)], {HASH: function}, ("src/main.rs",), texts=texts)
 
 
-def test_a_raw_pointer_given_to_a_call_reads_nothing_in_a_crate_without_unsafe_code():
-    # #300: back from `ptr::eq(e, l)`, every local was refused, as if the call read it:
-    # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
-    # point anywhere. Only unsafe code reads through a raw pointer, and the crate has none.
-    owned = raw_eq_owned()
-    names = ("week", "pick", "last", "e", "l", "team")
-
-    def judged():
-        return [owned.copied_in_progress(HASH, name, 39, "/w/src/main.rs") for name in names]
-
-    assert judged() == [False] * len(names)
-    # With unsafe code anywhere in the crate, a raw pointer may be read through.
-    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
-    assert judged() == [True] * len(names)
-    # Of those, the MIR shows a read only where a pointer was made from the local: `l`
-    # points into `last` (`&_3`), and `e` is copied into one; `week` only may be read.
-    sure = [
-        bool(owned.copy_hazards(HASH, name, 39, "/w/src/main.rs", traced=True)[-1][1])
-        for name in names
-    ]
-    assert sure == [False, False, True, True, True, False]
-    # What may have read `week` there: through `e` and `l`, made on line 39.
-    held = owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs")[-1][1]
-    assert owned.untraced_reads(HASH, held) == (
-        {("src/main.rs", 39)},
-        ["e", "l"],
-    )
+def raw_eq_variant(call, *changes):
+    """RAW_EQ with line 39's call ``call``, and each (old, new) of ``changes`` made."""
+    assert RAW_EQ.count(RAW_EQ_CALL) == 1
+    text = RAW_EQ.replace(RAW_EQ_CALL, f"        _9 = {call} -> [return: bb3, unwind continue];")
+    for old, new in changes:
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    return text
 
 
-def test_a_raw_pointer_a_call_returns_may_hold_a_copy_and_names_what_it_was_given():
-    # Review of #300: `ptr::eq(e.as_ptr(), l.as_ptr())`: what a call given `e` returns
-    # may hold a copy, raw pointer or not, so the comparison may too; the refusal names
-    # `e` and `l`, which the walk back from it reached only through the raw pointers.
-    text = RAW_EQ.replace(
-        """        _10 = &raw const (*_13);         // scope 2 at src/main.rs:39:28: 39:29
-        _11 = &raw const (*_8);          // scope 2 at src/main.rs:39:31: 39:32
-        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:33
-    }
-""",
-        """        _10 = as_ptr(copy _13) -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:39:28: 39:38
-    }
-
-    bb6: {
-        _11 = as_ptr(copy _8) -> [return: bb7, unwind continue]; // scope 2 at src/main.rs:39:40: 39:50
-    }
-
-    bb7: {
-        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:51
-    }
-""",
-    )
-    assert text != RAW_EQ
-    owned = raw_eq_owned(text, bb6={39}, bb7={39})
-    # Past the comparison, `_9` may hold a copy of `week`, though the MIR shows no read.
-    found = dict(owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs"))
-    assert found[3, 0] == {9}
-    traced = owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs", traced=True)
-    assert not any(hazards for _, hazards in traced)
-    assert owned.untraced_reads(HASH, {9}) == ({("src/main.rs", 39)}, ["e", "l"])
-
-
-def test_a_refusal_through_a_pointer_peeky_does_not_follow_says_it_only_may_hold_a_copy():
-    # #300: at `if ptr::eq(e, l) {`, `week` was refused because "a statement under way at
-    # the stop has already read it into a temporary (at line 39)"; line 39 reads none of
-    # it. In a crate with unsafe code it may have, through `e` or `l`, and says that.
+def raw_eq_session(owned):
+    """A RustSession stopped on line 39 of RAW_EQ's `plan` (the frame's own hash), over
+    ``owned``: the reasons `inspect` and a probe's refusal give."""
     from types import SimpleNamespace
 
     from peeky.rust import RustSession
 
-    owned = raw_eq_owned()
-    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
     judge = owned.copy_hazards
     owned.copy_hazards = lambda *args, **asked: judge(*args, **{**asked, "breakpoint": False})
     session = object.__new__(RustSession)
@@ -2798,38 +2788,181 @@ def test_a_refusal_through_a_pointer_peeky_does_not_follow_says_it_only_may_hold
     session._settable_names = lambda source, line: []
     frame = {"name": f"rota::plan::{HASH}", "line": 39, "column": 20}
     frame["source"] = {"path": "/w/src/main.rs"}
+    return lambda name: session.mid_statement({"name": name}, frame, "breakpoint")
 
-    def why(name):
-        return session.mid_statement({"name": name}, frame, "breakpoint")
 
-    week = why("week")
-    assert week == (
-        "a statement under way at the stop used `e` and `l` (at line 39), references Peeky "
+def withheld(owned, names=ALL_NAMES):
+    return [owned.copied_in_progress(HASH, name, 39, "/w/src/main.rs") for name in names]
+
+
+def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local():
+    # #300: back from `ptr::eq(e, l)`, every local was refused, as if the call read it:
+    # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
+    # point anywhere. The standard library's `ptr::eq` compares the two addresses only.
+    owned = raw_eq_owned()
+    assert withheld(owned) == [False] * len(ALL_NAMES)
+    # Whatever else the crate holds: the call is still the standard library's.
+    owned = raw_eq_owned()
+    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
+    assert withheld(owned) == [False] * len(ALL_NAMES)
+    # A `std::ptr::eq` of the crate's own, or a source Peeky cannot read, may read them.
+    for source in (SHADOWED_SOURCE, None):
+        assert withheld(raw_eq_owned(source=source)) == [True] * len(ALL_NAMES)
+    # `addr_eq` too, but `<*const T>::eq` and any other call are judged as before.
+    owned = raw_eq_owned(
+        raw_eq_variant("std::ptr::addr_eq::<Engineer, Engineer>(move _10, move _11)")
+    )
+    assert withheld(owned) == [False] * len(ALL_NAMES)
+    owned = raw_eq_owned(raw_eq_variant("<*const Engineer as PartialEq>::eq(move _10, move _11)"))
+    assert withheld(owned) == [True] * len(ALL_NAMES)
+
+
+def test_a_call_given_a_raw_pointer_may_read_through_it_whatever_the_source_shows():
+    # Review of #300: whether the crate has unsafe code was read from its source, but a
+    # standard-library macro brings its own (`#[allow_internal_unsafe]`) with no `unsafe`
+    # in the source. Here one expands on line 39 to `ptr::read` of a pointer to `week`:
+    # `week` stays refused, though the crate shows no unsafe code.
+    macro = "/rustc/0123456789abcdef/library/core/src/macros/mod.rs:60"
+    text = raw_eq_variant(
+        "core::ptr::read::<u32>(move _10)",
+        ("        _10 = &raw const (*_13);  ", "        _10 = &raw const _4;      "),
+        ("// scope 2 at src/main.rs:39:28: 39:29", f"// scope 2 at {macro}:9: 60:30"),
+        (
+            "(move _10) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:33",
+            f"(move _10) -> [return: bb3, unwind continue]; // scope 2 at {macro}:9: 60:40",
+        ),
+    )
+    source = RAW_EQ_SOURCE.replace("        if ptr::eq(e, l) {", "        if peek!(week) == 0 {")
+    owned = raw_eq_owned(text, source)
+    owned.unsafe_code = None
+    assert withheld(owned, ["week", "pick"]) == [True, False]
+    why = raw_eq_session(owned)("week")
+    assert why == (
+        "a statement under way at the stop gives a call a pointer into it (at "
+        "core/src/macros/mod.rs:60), so it may hold a copy of it, which it uses after the stop"
+    )
+    assert why.row == "a statement under way may hold a copy (core/src/macros/mod.rs:60)"
+
+
+UNSAFE_CODE = "the crate has unsafe code (in src/main.rs)"
+
+
+def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it():
+    # Review of #300: a call given a pointer into the local, or a reference Peeky does not
+    # follow, was said to have "already read it into a temporary". Here `std::ptr::eq` is
+    # the crate's own, so it may read what it is given; and the crate has unsafe code,
+    # which changes nothing.
+    owned = raw_eq_owned(source=SHADOWED_SOURCE)
+    owned.unsafe_code = UNSAFE_CODE
+    why = raw_eq_session(owned)
+    # `last`: `l` points into it, and the call is given a pointer made from `l`.
+    assert why("last") == (
+        "a statement under way at the stop gives a call a pointer into it (at line 39), so it "
+        "may hold a copy of it, which it uses after the stop"
+    )
+    assert why("last").row == "a statement under way may hold a copy (line 39)"
+    assert why("e") == why("last")
+    # `week`: only through `e` and `l`, which Peeky does not follow.
+    assert why("week") == (
+        "a statement under way at the stop uses `e` and `l` (at line 39), references Peeky "
         "can't trace that may point at it, so it may hold a copy of it, which it uses after "
         "the stop"
     )
-    assert week.row == "a statement under way may hold a copy (line 39)"
-    assert week.advice.startswith("That statement may already hold a copy of the old value")
-    # `l` points into `last`, as the MIR shows: the call was given a pointer into it.
-    last = why("last")
-    assert last.startswith("a statement under way at the stop has already read it into a")
-    assert last.row == "a statement under way read it (line 39)"
-    # Before the program runs, where every place of the line were past such a use (a
-    # statement's later line): as if `_9` held at each.
-    owned.copied_everywhere = lambda *args, traced=False, **kwargs: (
-        None if traced else frozenset({9})
+
+
+def test_a_refusal_says_the_statement_read_it_only_where_every_place_it_can_stop_did():
+    # Review of #300: the places a stop on line 39 can be were joined, so the call's copy
+    # of `e`, made past the call, was said to be read at the places before it too.
+    owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
+    why = raw_eq_session(owned)
+    assert why("e") == (
+        "a statement under way at the stop reads it into a temporary (at line 39), so it may "
+        "hold a copy of it, which it uses after the stop"
     )
-    kind, text = session._copied_everywhere(HASH, "week", "src/main.rs", 39)
-    assert kind == "statement" and text == (
-        "every place line 39 can stop at is inside a statement that used `e` and `l` (at line "
-        "39), references Peeky can't trace that may point at `week`, so it may hold a copy "
-        "of it, which it uses after the stop, and a change there may not reach it"
+    # Where the stop can only be past the call, a crate function given a copy of `e` has
+    # read it.
+    owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
+    owned._positions = lambda site, line, facts, block=None: [(3, 0)]
+    why = raw_eq_session(owned)
+    assert why("e") == (
+        "a statement under way at the stop has already read it into a temporary (at line "
+        "39), which it uses after the stop"
     )
-    refusal = session._never_message("week", "week", [], "src/main.rs", 39, [("f", (kind, text))])
-    assert "(`--set-at` it), before it starts;" in refusal, refusal
-    # Without unsafe code, a raw pointer reads nothing: no statement under way holds one.
-    owned.unsafe_code = None
-    assert why("week") is None and why("last") is None
+    assert why("e").row == "a statement under way read it (line 39)"
+    assert why("l").startswith("a statement under way at the stop has already read it")
+    assert why("week").startswith("a statement under way at the stop uses `e` and `l` (at")
+
+
+def test_a_refusal_names_each_variable_it_cannot_trace_by_what_it_is():
+    # Review of #300: every name was called "a reference", raw pointers too.
+    named = (
+        "            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26\n",
+        "            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26\n"
+        "            debug p => _10;              // in scope 2 at src/main.rs:39:13: 39:14\n"
+        "            debug q => _11;              // in scope 2 at src/main.rs:39:16: 39:17\n",
+    )
+
+    def why(call):
+        owned = raw_eq_owned(raw_eq_variant(call, named))
+        owned.unsafe_code = UNSAFE_CODE
+        return raw_eq_session(owned)("week")
+
+    assert why("same(copy _10, copy _11)").startswith(
+        "a statement under way at the stop uses `p` and `q` (at line 39), raw pointers Peeky "
+        "can't trace that may point at it,"
+    )
+    assert why("same(copy _13, copy _11)").startswith(
+        "a statement under way at the stop uses `e` and `q` (at line 39), values holding "
+        "pointers Peeky can't trace that may point at it,"
+    )
+    owned = raw_eq_owned(raw_eq_variant("same(copy _10, copy _8)", named))
+    held = owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs")[-1][1]
+    assert owned.untraced_reads(HASH, held) == (
+        {("src/main.rs", 39)},
+        [("l", "reference"), ("p", "raw pointer")],
+    )
+
+
+def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be_did():
+    # Review of #300: the places a stop can be were joined, so one with a read the MIR
+    # shows made the claim for all, though another held only what may have been read.
+    from types import SimpleNamespace
+
+    from peeky.rust import _copy_reason
+
+    proofs = SimpleNamespace(
+        body=lambda hashed: SimpleNamespace(named_locals=lambda: frozenset({20})),
+        copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", min(held))},
+        copy_names=lambda hashed, held: ["n"],
+        untraced_reads=lambda hashed, held: ({("src/main.rs", 9)}, [("e", "reference")]),
+    )
+
+    def reason(found, explicit, traced):
+        return _copy_reason(proofs, "h", found, explicit, traced, "/w/src/main.rs")[:2]
+
+    a, b = (1, 0), (2, 0)
+    assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})], None) == ("read", None)
+    assert reason([(a, {5}), (b, {7})], [(a, {5}), (b, set())], [(a, {5}), (b, set())]) == (
+        "may",
+        "reads it into a temporary (at line 5) or uses `e` (at line 9), a reference Peeky "
+        "can't trace that may point at it",
+    )
+    assert reason([(a, {5}), (b, set())], [(a, {5}), (b, set())], None)[1] == (
+        "reads it into a temporary (at line 5)"
+    )
+    assert reason([(a, {7}), (b, {7})], [(a, set()), (b, set())], [(a, {7}), (b, {7})]) == (
+        "may",
+        "gives a call a pointer into it (at line 7)",
+    )
+    # The program's own binding: named where every place holds a copy the MIR shows (at
+    # one, what it took from the binding, `let z = y + 1;`).
+    assert reason([(a, {20}), (b, {20})], [(a, {20}), (b, {20})], None) == ("named", ["n"])
+    assert reason([(a, {20}), (b, {5})], [(a, {20}), (b, {5})], None) == ("named", ["n"])
+    assert reason([(a, {20}), (b, {7})], [(a, {20}), (b, set())], [(a, {20}), (b, set())]) == (
+        "may",
+        "copies it into `n` (at line 20) or uses `e` (at line 9), a reference Peeky can't "
+        "trace that may point at it",
+    )
 
 
 def test_format_args_constructors_count_only_where_nothing_else_can_pass_for_them():

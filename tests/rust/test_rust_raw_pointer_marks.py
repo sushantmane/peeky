@@ -1,8 +1,8 @@
 """#300 (eleventh evaluation, `rota`): at `if ptr::eq(e, l) {`, a line breakpoint stops
 inside the inlined `ptr::eq`, past `&raw const *e`. Every local was withheld from a change
-as if the call had read it into a temporary, though only unsafe code reads through a raw
-pointer; where the crate has some, the refusal says what it may have read, not that it
-did, and rows say why too."""
+as if the call had read it into a temporary. The standard library's `ptr::eq` reads only
+the two addresses. Any other call given a pointer Peeky does not follow may read through
+it: the refusal says so, naming it, and rows say why too."""
 
 import json
 import os
@@ -35,6 +35,11 @@ struct Engineer {
     shifts: u32,
 }
 
+#[inline(always)]
+fn same(a: *const Engineer, b: *const Engineer) -> bool {
+    a == b
+}
+
 fn plan(team: &mut [Engineer], weeks: u32) -> String {
     let mut log = String::new();
     let mut last: Option<Engineer> = None;
@@ -42,6 +47,10 @@ fn plan(team: &mut [Engineer], weeks: u32) -> String {
         let mut pick = usize::MAX;
         for (i, e) in team.iter().enumerate() {
             if let Some(l) = &last {
+                let (p, q): (*const Engineer, *const Engineer) = (e, l);
+                if same(p, q) { // SAME
+                    continue;
+                }
                 if ptr::eq(e, l) { // EQ
                     continue;
                 }
@@ -66,12 +75,16 @@ fn main() {
     println!("ROTA:{log}");
 }
 """
-# Unsafe code anywhere in the crate, never called: a raw pointer may be read through.
+# Unsafe code in the crate, never called: it changes nothing for the standard library's
+# `ptr::eq`.
 UNSAFE = """
 #[allow(dead_code)]
 unsafe fn never() {}
 """
-LINE = next(i for i, text in enumerate(ROTA.splitlines(), 1) if "// EQ" in text)
+EQ, SAME = (
+    next(i for i, text in enumerate(ROTA.splitlines(), 1) if marker in text)
+    for marker in ("// EQ", "// SAME")
+)
 ARGS = ("--", "Ana", "Bo")
 
 
@@ -93,8 +106,8 @@ def crate(tmp_path, monkeypatch):
     return make
 
 
-def probe(capsys, root, *argv):
-    at = ["probe", str(root), "--at", f"src/main.rs:{LINE}", "--json", "--quiet"]
+def probe(capsys, root, line, *argv):
+    at = ["probe", str(root), "--at", f"src/main.rs:{line}", "--json", "--quiet"]
     code = main([*at, *argv, *ARGS])
     return code, json.loads(capsys.readouterr().out)
 
@@ -104,47 +117,48 @@ def rows(result, selector):
 
 
 @pytest.mark.timeout(400)
-def test_a_local_no_raw_pointer_can_read_is_settable_at_the_ptr_eq_line(crate, capsys):
+def test_a_local_ptr_eq_cannot_read_is_settable_at_its_line(crate, capsys):
     root = crate("rota")
-    code, result = probe(capsys, root, "--capture", "week,pick", "--hits", "1")
+    code, result = probe(capsys, root, EQ, "--capture", "week,pick", "--hits", "1")
     assert code == 0, result.get("error")
-    # Week 2 (week 1 has no `last`): `ptr::eq` reads neither, nor what `e` and `l` point at.
+    # Week 2 (week 1 has no `last`): `ptr::eq` reads neither, nor what `e` or `l` point at.
     (week,), (pick,) = rows(result, "week"), rows(result, "pick")
     assert (week["value"], week.get("settable")) == ("2", True), week
     assert pick.get("settable") is True and "not_settable" not in pick, pick
     # And the change reaches the program: week 2's line reads 7.
-    code, result = probe(capsys, root, "--set", "week=7", "--set-hit", "1", "--hits", "1")
+    code, result = probe(capsys, root, EQ, "--set", "week=7", "--set-hit", "1", "--hits", "1")
     assert code == 0, result.get("error")
     assert "ROTA:1=Ana,7=Bo,3=Ana," in result["output"], result["output"]
+    # Unsafe code elsewhere in the crate changes nothing for the standard library's call.
+    code, result = probe(capsys, crate("rotaunsafe", UNSAFE), EQ, "--capture", "week")
+    assert code == 0 and rows(result, "week")[0].get("settable") is True, result
 
 
 @pytest.mark.timeout(400)
-def test_a_crate_with_unsafe_code_says_the_pointer_may_have_read_it(crate, capsys):
-    root = crate("rotaunsafe", UNSAFE)
-    code, result = probe(capsys, root, "--capture", "week", "--hits", "1")
+def test_a_call_given_raw_pointers_may_read_through_them_and_its_refusal_names_them(crate, capsys):
+    # `same(p, q)`, the crate's own, inlined: what it reads through `p` and `q` is not
+    # followed, so a statement under way may hold a copy of any local.
+    root = crate("rota")
+    code, result = probe(capsys, root, SAME, "--capture", "week", "--hits", "1")
     assert code == 0, result.get("error")
     (week,) = rows(result, "week")
     assert week.get("settable") is False, week
-    assert week.get("not_settable") == f"a statement under way may hold a copy (line {LINE})"
-    # `session inspect` says what may have read it, and where.
-    at = ["session", "start", str(root), "--at", f"src/main.rs:{LINE}"]
+    assert week.get("not_settable") == f"a statement under way may hold a copy (line {SAME})"
+    at = ["session", "start", str(root), "--at", f"src/main.rs:{SAME}"]
     assert main([*at, *ARGS]) == 0
     capsys.readouterr()
     try:
         assert main(["session", "inspect"]) == 0
         text = capsys.readouterr().out
+        assert main(["session", "set", "week=5", "--json"]) != 0
+        error = json.loads(capsys.readouterr().out)["error"]
     finally:
         main(["session", "close"])
         capsys.readouterr()
-    note = next(line for line in text.splitlines() if "nothing here is [settable]" in line)
-    (group,) = [part for part in note.split("; ") if "`week`, `pick`" in part]
+    reason = f"week: u32 = 2  [not settable: a statement under way may hold a copy (line {SAME})]"
+    assert reason in text, text
     assert (
-        f"a statement under way at the stop used `e` and `l` (at line {LINE}), references "
+        f"a statement under way at the stop uses `p` and `q` (at line {SAME}), raw pointers "
         "Peeky can't trace that may point at it, so it may hold a copy of it, which it uses "
         "after the stop"
-    ) in group, note
-    assert "already read" not in group, note
-    assert (
-        f"week: u32 = 2  [not settable: a statement under way may hold a copy (line {LINE})]"
-        in text
-    ), text
+    ) in error["message"], error

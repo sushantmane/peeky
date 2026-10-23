@@ -979,17 +979,81 @@ class _Copied(str):
         return made
 
 
-def _untraced(proofs, hashed, held, home):
-    """How a refusal names what may have read a value through a pointer Peeky does not
-    follow (#300; ``held``: the temporaries that may hold it): ("`e` (at line 39), a
-    reference Peeky can't trace", the lines)."""
-    places, names = proofs.untraced_reads(hashed, held)
+# What a variable holding a pointer is called in a refusal (OwnedLocals.untraced_reads),
+# alone and as several; None: another value, or variables of different kinds.
+_POINTER_KINDS = {
+    "reference": ("a reference", "references"),
+    "raw pointer": ("a raw pointer", "raw pointers"),
+    "closure": ("a closure", "closures"),
+    "coroutine": ("a coroutine", "coroutines"),
+    None: ("a value holding a pointer", "values holding pointers"),
+}
+
+
+def _untraced(proofs, hashed, held, home, target):
+    """The clause of a refusal naming what a statement under way used that may point at
+    ``target`` ("it", or the local's name), where Peeky does not follow it (#300;
+    ``held``: the temporaries that may hold a copy): ("uses `e` and `l` (at line 39),
+    references Peeky can't trace that may point at it", their places)."""
+    places, variables = proofs.untraced_reads(hashed, held)
     made = _line_list(places, home)
     where = f" (at {made})" if made else ""
-    if not names:
-        return f"a pointer{where} Peeky can't trace", made
-    kind = "a reference" if len(names) == 1 else "references"
-    return f"{_names(names)}{where}, {kind} Peeky can't trace", made
+    if not variables:
+        return f"reads through a pointer{where} Peeky can't trace that may point at {target}", (
+            places
+        )
+    kinds = {kind for _, kind in variables}
+    one, many = _POINTER_KINDS[kinds.pop() if len(kinds) == 1 else None]
+    names = _names([name for name, _ in variables])
+    what = one if len(variables) == 1 else many
+    return f"uses {names}{where}, {what} Peeky can't trace that may point at {target}", places
+
+
+def _either(clauses):
+    """`a`, `a or b`, `a, b or c`: clauses for a message."""
+    return clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" or {clauses[-1]}"
+
+
+def _copy_reason(proofs, hashed, found, explicit, traced, home, target="it"):
+    """How sure a refusal may be of what a statement under way holds (#300), from
+    ``copy_hazards`` at the same places reading pointers each way (``found``: "any";
+    ``explicit``, ``traced``; each [(place, hazards)], or None where not understood):
+
+    - where at every place something the MIR shows reading it is used again (a copy, a
+      read through a pointer made from it, or what holds either): ("named", the
+      program's own bindings, their places) where any of them holds a copy the program
+      goes on with (#192: one taken from it is used at the other places), else ("read",
+      None, the places of those temporaries);
+    - else ("may", what the statement does that may leave a copy of ``target``, places):
+      it reads it at some place but maybe not the stop's, gives a call a pointer into it,
+      or uses one Peeky does not follow."""
+    bindings = proofs.body(hashed).named_locals()
+    every, sure, calls = dict(found), dict(explicit or ()), dict(traced or ())
+    named = [hazards & bindings for hazards in every.values()]
+    reads = [sure.get(place, frozenset()) - bindings for place in every]
+    if all(sure.get(place) for place in every):
+        if held := frozenset().union(*named):
+            return "named", proofs.copy_names(hashed, held), proofs.copy_lines(hashed, held, True)
+        return "read", None, proofs.copy_lines(hashed, frozenset().union(*reads))
+    shown = frozenset().union(*sure.values()) | bindings
+    given = frozenset().union(*calls.values()) - shown
+    rest = frozenset().union(*every.values()) - shown - given
+    clauses, places = [], set()
+    if read := frozenset().union(*reads):
+        places |= (lines := proofs.copy_lines(hashed, read))
+        clauses.append(f"reads {target} into a temporary (at {_line_list(lines, home)})")
+    if copied := frozenset().union(*named):
+        places |= (lines := proofs.copy_lines(hashed, copied, True))
+        names = _names(proofs.copy_names(hashed, copied))
+        clauses.append(f"copies {target} into {names} (at {_line_list(lines, home)})")
+    if given:
+        places |= (lines := proofs.copy_lines(hashed, given))
+        clauses.append(f"gives a call a pointer into {target} (at {_line_list(lines, home)})")
+    if rest or not clauses:
+        clause, lines = _untraced(proofs, hashed, rest or given or read, home, target)
+        places |= lines
+        clauses.append(clause)
+    return "may", _either(clauses), places
 
 
 # A `for` loop's item from a standard slice iterator's `next()` (`for e in expenses`,
@@ -2395,39 +2459,42 @@ class RustSession(NativeSession):
 
     def _copied_everywhere(self, hashed, plain, source, line, projection=()):
         """("statement", why) where every place ``line`` can stop at in ``hashed`` is
-        inside a statement that has already read ``plain`` into a temporary it uses again
-        (a statement's later line: `let arr = [s.a,` / `k,` / `s.b];` at `k,`), so no stop
-        there can change it for that statement (#183); else None. Where the MIR shows no
-        such read, only one through a pointer Peeky does not follow, it says so (#300)."""
+        inside a statement that may hold a copy of ``plain`` it uses again (a statement's
+        later line: `let arr = [s.a,` / `k,` / `s.b];` at `k,`), so no stop there can
+        change it for that statement (#183); else None. It says the statement has read
+        it only where the MIR shows that at every place (#300: ``_copy_reason``)."""
         proofs = getattr(self, "owned", None)
         check = getattr(proofs, "copied_everywhere", None)
         if check is None or self._optimized():
             return None
         path = str(Path(self.prepared.source_root) / source)
-        held = check(hashed, plain, line, path, projection=projection)
-        if not held:
+        if not check(hashed, plain, line, path, projection=projection):
             return None
-        if names := proofs.copy_names(hashed, held):
-            made = _line_list(proofs.copy_lines(hashed, held, named_only=True), source)
+        found, explicit, traced = (
+            proofs.coded_hazards(hashed, plain, line, path, projection, reads)
+            for reads in ("any", "explicit", "traced")
+        )
+        kind, detail, places = _copy_reason(
+            proofs, hashed, found, explicit, traced, source, f"`{plain}`"
+        )
+        made = _line_list(places, source)
+        if kind == "named":
             # #192: a binding of the program's own holds the old value it goes on with.
             return (
                 "statement",
                 f"at every place line {line} can stop at, the program has already copied "
-                f"`{plain}` into {_names(names)}" + (f" (at {made})" if made else "") + " and "
+                f"`{plain}` into {_names(detail)}" + (f" (at {made})" if made else "") + " and "
                 "goes on with that copy, so a change there may never be seen: Peeky proves no "
                 "read of the changed part first (a reference lent to a call, or `{:?}`, is not "
                 "one)",
             )
-        sure = check(hashed, plain, line, path, projection=projection, traced=True)
-        if not sure:
-            used, _ = _untraced(proofs, hashed, held, source)
+        if kind == "may":
             return (
                 "statement",
-                f"every place line {line} can stop at is inside a statement that used {used} "
-                f"that may point at `{plain}`, so it may hold a copy of it, which it uses after "
-                "the stop, and a change there may not reach it",
+                f"every place line {line} can stop at is inside a statement that {detail}, so "
+                "it may hold a copy, which it uses after the stop, and a change there may not "
+                "reach it",
             )
-        made = _line_list(proofs.copy_lines(hashed, sure), source)
         return (
             "statement",
             f"every place line {line} can stop at is inside a statement that has already "
@@ -2665,22 +2732,30 @@ class RustSession(NativeSession):
         if found is not None and not any(hazards for _, hazards in found):
             return None
         if found:
-            # #183: where the copy was made, not an example of where one may be.
-            held = frozenset().union(*dict(found).values())
+            # #183: where the copy was made, not an example of where one may be; #300: as a
+            # fact only what the MIR shows at every place the stop can be.
             home = (place.get("source") or {}).get("path")
-            if names := proofs.copy_names(hashed[1], held):
+            kind, detail, places = _copy_reason(
+                proofs,
+                hashed[1],
+                found,
+                proofs.copy_hazards(**asked, reads="explicit"),
+                proofs.copy_hazards(**asked, reads="traced"),
+                home,
+            )
+            made = _line_list(places, home)
+            if kind == "named":
                 # #192: the program's own binding goes on with the old value.
-                made = _line_list(proofs.copy_lines(hashed[1], held, named_only=True), home)
-                name = variable.get("name")
+                name, names = variable.get("name"), _names(detail)
                 return _Copied(
-                    f"the program has already copied its value into {_names(names)}"
+                    f"the program has already copied its value into {names}"
                     + (f" (at {made})" if made else "")
                     + f" and goes on with that copy, so a change to `{name}` may never be seen: "
                     "Peeky proves no read of the changed part first (a reference lent to a "
                     "call, or `{:?}`, is not one)",
-                    f"Change it before {_names(names)} copies it (a stop on an earlier line), "
-                    f"or change {_names(names)} instead",
-                    f"copied into {_names(names)}" + (f" ({made})" if made else ""),
+                    f"Change it before {names} copies it (a stop on an earlier line), "
+                    f"or change {names} instead",
+                    f"copied into {names}" + (f" ({made})" if made else ""),
                 )
             advice = (
                 "That statement may already hold a copy of the old value and would not see "
@@ -2688,23 +2763,16 @@ class RustSession(NativeSession):
                 f"line than {line}, or at an earlier stop of line {line} (a probe's "
                 "`--set-hit`), where `inspect` marks it [settable]"
             )
-            sure = frozenset().union(
-                *dict(proofs.copy_hazards(**asked, traced=True) or ()).values()
-            )
-            if not sure:
-                # #300: the MIR shows no read of it, only one through a pointer Peeky does
-                # not follow, which may point at it (as far as Peeky can tell).
-                used, made = _untraced(proofs, hashed[1], held, home)
+            if kind == "may":
                 return _Copied(
-                    f"a statement under way at the stop used {used} that may point at it, so "
-                    "it may hold a copy of it, which it uses after the stop",
+                    f"a statement under way at the stop {detail}, so it may hold a copy of it, "
+                    "which it uses after the stop",
                     advice,
                     "a statement under way may hold a copy" + (f" ({made})" if made else ""),
                 )
             # The stop is where its line's code starts (a line breakpoint's, or a step's
             # landing there): the statement under way began before it, on an earlier
             # line or at an earlier stop of this one, never at this stop (#222).
-            made = _line_list(proofs.copy_lines(hashed[1], sure), home)
             return _Copied(
                 "a statement under way at the stop has already read it into a temporary"
                 + (f" (at {made})" if made else "")

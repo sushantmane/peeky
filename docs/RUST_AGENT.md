@@ -372,13 +372,19 @@ used again. Such a temporary is:
   the pointer, unless the crate itself names something `core` or `std` that could pass for them.
 
 A pointer that Peeky doesn't follow may point into any local: a read through a reference variable,
-or a call given one. Two rules narrow that (`_copy_verdict`):
+or a call given one. A raw pointer counts as any other, since the source alone doesn't show unsafe
+code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
 
-- In a crate without unsafe code (`rust.unsafe_source`), a raw pointer given to a call counts for
-  nothing. Only unsafe code reads through one, so `ptr::eq(&raw const *e, …)` returns no copy.
-- `copy_hazards(traced=True)` counts such a pointer only where the flow made it from a borrow of
-  the local. Where that leaves nothing, the refusal says the statement may hold a copy.
-  `untraced_reads` names the reference variables and lines it used.
+- A call the dump names `std::ptr::eq`, `core::ptr::eq` or `addr_eq` (`_ADDRESS_COMPARISON`) reads
+  only the two addresses. Where `OwnedLocals._std_compares` proves it the standard library's, as
+  for a reference's last use above, its result holds only what its operands hold
+  (`_copy_verdict`).
+- A refusal states a read only where `copy_hazards(reads="explicit")` finds one at every place:
+  the local by value, through a pointer made from a borrow of it (`own`), or a temporary holding
+  either. `rust._copy_reason` decides the wording.
+- Otherwise it hedges. `reads="traced"` adds a call given a pointer the flow shows may point into
+  the local: "gives a call a pointer into it". What only `reads="any"` finds is a pointer Peeky
+  doesn't follow. `untraced_reads` names those variables, each by its kind.
 
 A rule by type isn't used, though a `*const Engineer` can't point into a `u32` in safe code. It
 holds only for a pointee of the crate's own type that holds no pointer, which only the debug
