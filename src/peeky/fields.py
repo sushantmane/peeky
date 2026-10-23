@@ -58,6 +58,38 @@ class Unsettable(ValueError):
     """Why a field or element cannot be changed."""
 
 
+CALL_ADVICE = (
+    "change the value where it is owned, before the call that passed it: `--at <call line> "
+    "--hits N --set-hit N`, where N counts that line's own stops, not the called function's "
+    "(find N with `--capture <argument> --hits all` there)"
+)
+# What else can change a pointer's target, where nothing proves a frame holds it.
+_ELSEWHERE = (
+    "if what it points at is also a root local in some frame, change it there, where its "
+    "row is [settable]; otherwise edit the source with `--old`/`--new`"
+)
+
+
+def pointer_advice(root, kind):
+    """settable_member's advice for the pointer or reference root local ``root``, by
+    what it is in the frame (tenth evaluation: kitty's `e.payer`): "parameter", proven,
+    gets the call advice; "local" (a `for` loop's item, `let r = &mut x;`), which no
+    call passed, and None (not proven either: a static, a shadowed or unclear
+    declaration) get no call claim; "element", a local proven to point at a slice's or
+    Vec's element, which nothing changes, is told to edit the source."""
+    if kind == "parameter":
+        return CALL_ADVICE
+    if kind == "element":
+        return (
+            f"`{root}` is a local here, not a parameter, so no call passed it: it points at "
+            "an element of a slice or Vec, which Peeky never changes, so edit the source "
+            "with `--old`/`--new`"
+        )
+    if kind == "local":
+        return f"`{root}` is a local here, not a parameter, so no call passed it: {_ELSEWHERE}"
+    return f"`{root}` isn't proven a parameter here, so Peeky names no call: {_ELSEWHERE}"
+
+
 def _target(value):
     found = _REFERENCE.fullmatch(value or "")
     return int(found[1], 16) if found else None
@@ -559,7 +591,8 @@ def settable_member(graph, root, name, steps, owner=None):
     signed, its width, and the type names (typedefs, then the base type) it has. Raises
     Unsettable with the reason when anything on the way is not a plain value.
     ``owner()``, where the local is itself a pointer: where to change the value
-    instead, if the caller can tell (the one call that passed it), else None."""
+    instead (``pointer_advice``, or the one call that passed it), else None: then no
+    call is claimed."""
     offset, path = root, name
     pending = None  # the remaining dimensions of a multidimensional array
     for step in steps:
@@ -572,13 +605,8 @@ def settable_member(graph, root, name, steps, owner=None):
                 raise Unsettable(
                     f"`{path}` is a {node[0]}: Peeky does not write through a {node[0]}, "
                     "since what it reaches may be freed or moved; "
-                    + (
-                        advice
-                        or "change the value where it is owned, before the call that passed "
-                        "it: `--at <call line> --hits N --set-hit N`, where N counts that "
-                        "line's own stops, not the called function's (find N with `--capture "
-                        "<argument> --hits all` there)"
-                    )
+                    # The call advice only where the caller proved a parameter.
+                    + (advice or (pointer_advice(path, None) if path == name else _ELSEWHERE))
                 )
             if node[0] == "record":
                 _, record, kind, _, _, members, _, variant, incomplete, library = node[:10]

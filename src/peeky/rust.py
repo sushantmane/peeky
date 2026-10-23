@@ -52,6 +52,7 @@ from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inpu
 from peeky.rust_mir import (
     _BORROWING,
     _FN_POINTER,
+    _MENTIONED,
     OwnedLocals,
     frame_shape,
     ir_functions,
@@ -82,7 +83,7 @@ from peeky.rust_symbols import (
     without_numbered_structs,
 )
 from peeky.text_sets import text_kind
-from peeky.textlines import split_lines
+from peeky.textlines import read_source, source_lines, split_lines
 
 DEPS = "target/debug/deps"
 MIR_DIR = "target/peeky-mir"
@@ -969,6 +970,93 @@ class _Copied(str):
         return made
 
 
+# A `for` loop's item from a standard slice iterator's `next()` (`for e in expenses`,
+# `.iter()`, `.iter_mut()`), and that call: such an item points at a slice's or Vec's
+# element. MIR prints the iterator's whole path (`std::slice::Iter`); an adapter's
+# (`Enumerate<…>`) is shortened, so it could be the crate's own, and isn't counted.
+_FOR_ITEM = re.compile(r"(?:copy|move) \(\(_([0-9]+) as Some\)\.0: &.+\)")
+_SLICE_NEXT = re.compile(
+    r"<std::slice::Iter(?:Mut)?<'_, .+> as Iterator>::next\((?:move|copy) _[0-9]+\) -> "
+)
+
+
+def _binding_at(proofs, body, root, line, path):
+    """The MIR local of the binding of ``root`` (`p`, or `p @ main.rs:3`) that code on
+    ``line`` of ``path`` names, or None. OwnedLocals._local's, where one binding is in
+    scope there. Where several are (a `let p` shadowing a parameter `p`), the innermost
+    of those declared above the line, if their scopes nest: a `let` on the stop's own
+    line hasn't run at a line breakpoint, and Rust names the innermost binding. A
+    selector naming its declaration, or bindings in scopes that don't nest, give
+    None."""
+    local = proofs._local(body, root, line, path)
+    name, at, _ = root.partition(" @ ")
+    if local is not None or at:
+        return local
+    bindings = body.bindings.get(name, [])
+    visible = proofs._visible(body, line, path, None, None, bindings)
+    shown = str(path).replace("\\", "/")
+    above = [
+        binding
+        for binding in bindings
+        if visible is not None
+        and binding[4] in visible
+        and binding[2] < line
+        and (shown == binding[1] or shown.endswith("/" + binding[1]))
+    ]
+    if not above or any(binding[0] is None for binding in above):
+        return None
+
+    def enclosing(scope):
+        found = set()
+        for _ in range(4096):
+            scope = body.scopes.get(scope)
+            if scope is None:
+                break
+            found.add(scope)
+        return found
+
+    inner = [
+        binding
+        for binding in above
+        if all(other is binding or other[4] in enclosing(binding[4]) for other in above)
+    ]
+    return inner[0][0] if len(inner) == 1 else None
+
+
+def _slice_element(proofs, body, assigned):
+    """Whether the values ``assigned`` to a reference local (``body._assignments()``'s)
+    are all a standard slice iterator's items, in a crate whose `std` paths are the
+    standard library's (OwnedLocals._std_compares)."""
+    found = [_FOR_ITEM.fullmatch(value) for value in assigned]
+    if not found or not all(found):
+        return False
+    every = body._assignments()
+    for match in found:
+        calls = every.get(int(match[1]), ())
+        if not calls or not all(_SLICE_NEXT.match(call) for call in calls):
+            return False
+    # A crate's own `trait Iterator` (`impl Iterator for std::slice::Iter<…>`) is dumped
+    # `<std::slice::Iter<…> as Iterator>::next` too (review of #276).
+    return bool(proofs._std_compares()) and bool(proofs._std_iterator())
+
+
+def _redirected(body, local):
+    """Whether the argument ``local`` of the MIR ``body`` may hold another value than
+    the call passed, at some stop: the body assigns to it, whole or in part, or takes
+    it by `&mut` or as a raw pointer, which can write it (review of #276: `p = &GLOBAL;`).
+    Also any `asm!` in the body, which may write any operand (`inout(reg) copy _1 =>
+    _1`, round 3), as for C and C++; and a body Peeky doesn't fully read
+    (``supported``). Anywhere in the body counts, before the stop or not."""
+    if not body.supported or body._assignments().get(local):
+        return True
+    taken = re.compile(rf"&(?:mut |raw (?:mut|const) )_{local}(?![0-9])")
+    return any(
+        text.startswith("asm!") or taken.search(text)
+        for block in body.blocks.values()
+        for text, _, _ in block.statements
+    )
+
+
 def _names(names):
     """`n`, `n` and `m`, `a`, `b` and `c`: names for a message."""
     shown = [f"`{name}`" for name in names]
@@ -1647,13 +1735,18 @@ class RustSession(NativeSession):
         declared where the body places no binding of that name in the program's
         sources, while every binding of the name the body places there has a
         declaration of its own (one moved to the invoking line, by a
-        `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Shown when
-        unsure: a function with no body matched, and anything without the MIR (an
-        optimized build)."""
+        `#[collapse_debuginfo(yes)]` macro of the crate's, keeps them all). Also the
+        bindings a `?` desugars to (`residual`, `val`: tenth evaluation, prep 7), which
+        the DWARF does not mark artificial: every binding the body places on that line
+        under that name has a span ending right after a `?` of the source, where a
+        binding the program writes spans its name (``_try_bindings``). Shown when unsure: a
+        function with no body matched, and anything without the MIR (an optimized
+        build)."""
         proofs = getattr(self, "owned", None)
         if proofs is None:
             return None
         declared = set(self.lines)
+        texts = {}
 
         def hidden(linkages, positions):
             bodies = []
@@ -1673,6 +1766,8 @@ class RustSession(NativeSession):
                             foreign.add(name)
 
             def left_out(source, name, line):
+                if self._try_bindings(bodies, source, name, line, texts):
+                    return True
                 places = own.get(name, set())
                 if name not in foreign or source is None or (source, line) in places:
                     return False
@@ -1682,6 +1777,46 @@ class RustSession(NativeSession):
             return left_out
 
         return hidden
+
+    def _try_bindings(self, bodies, source, name, line, texts):
+        """Whether ``bodies`` (the MIR of one function's copies) bind ``name`` on
+        ``line`` of ``source`` only as a `?` desugars it: each such binding's span ends
+        right after a `?` in the source (`residual` spans only the `?`, `val` the
+        expression the `?` tries), which an identifier's never does. False where any span is missing or the source
+        can't be read as rustc read it. ``texts``: {source: its lines}, read once."""
+        if source is None or source not in self.lines:
+            return False
+        bindings = [
+            binding
+            for body in bodies
+            for binding in body.bindings.get(name, ())
+            if binding[1] == source and binding[2] == line
+        ]
+        ends = [end for body in bodies for end in body.binding_ends.get((name, source, line), ())]
+        if not bindings or len(ends) != len(bindings):
+            # A binding whose span the MIR did not give: unsure, so shown.
+            return False
+        if source not in texts:
+            try:
+                text = read_source(Path(self.prepared.source_root) / source)
+            except (OSError, UnicodeDecodeError):
+                text = None
+            # As rustc counts columns: in characters, with no byte order mark.
+            texts[source] = (
+                None if text is None else source_lines(text.removeprefix("\ufeff"), True)
+            )
+        lines = texts[source]
+        if lines is None:
+            return False
+        for end_line, end_column in ends:
+            if (
+                not 1 <= end_line <= len(lines)
+                or not 2 <= end_column <= len(lines[end_line - 1]) + 1
+            ):
+                return False
+            if lines[end_line - 1][end_column - 2] != "?":
+                return False
+        return True
 
     def launch_args(self, program, root, args=None):
         launch = super().launch_args(program, root, args)
@@ -2148,7 +2283,13 @@ class RustSession(NativeSession):
         """Why ``root`` (and the path ``steps`` into it) can never change in the function
         ``hashed``: (kind, detail), or None. Raises fields.Unsettable when the debug
         information Peeky needs could not be read (nothing is ruled out then)."""
-        from peeky.fields import Unsettable, debugger_steps, member_indexes, settable_member
+        from peeky.fields import (
+            Unsettable,
+            debugger_steps,
+            member_indexes,
+            pointer_advice,
+            settable_member,
+        )
 
         plain = _plain(root)
         # The part a change makes, which the program's own copies are judged by (#192).
@@ -2199,7 +2340,16 @@ class RustSession(NativeSession):
                 named = debugger_steps(graph, kind, root, steps)
                 if named is None:
                     return None
-                settable_member(graph, kind, root, named)
+                settable_member(
+                    graph,
+                    kind,
+                    root,
+                    named,
+                    # The call advice only for a proven parameter (tenth evaluation).
+                    owner=lambda: pointer_advice(
+                        root, self._pointer_kind(hashed, root, line, source)
+                    ),
+                )
                 projection = member_indexes(graph, kind, root, named)
                 if not framed:
                     raise Unsettable(
@@ -2567,6 +2717,42 @@ class RustSession(NativeSession):
                 rows = []
             self._rows = sorted(rows)
         return self._rows
+
+    def _pointer_advice(self, frame, root, steps):
+        """At a stop: fields.pointer_advice for the binding of ``root`` the frame's line
+        shows (``_pointer_kind``)."""
+        from peeky.fields import pointer_advice
+
+        hashed, place = _frame_hash(frame), frame or {}
+        path = (place.get("source") or {}).get("path")
+        kind = self._pointer_kind(hashed[1], root, place.get("line"), path) if hashed else None
+        return pointer_advice(root, kind)
+
+    def _pointer_kind(self, hashed, root, line, path):
+        """What the reference or raw pointer root local ``root`` (`e`, or `e @
+        main.rs:64`) of the function ``hashed`` is at ``line`` of ``path``: the MIR's
+        binding in scope there (OwnedLocals._local), compared with the body's
+        arguments. "parameter", an argument the body never reassigns or lends mutably
+        (``_redirected``); "element", a local proven to be a standard slice
+        iterator's item (``_slice_element``); "local", one whose value comes from no
+        argument; or None where Peeky can't tell (no single whole-local binding in
+        scope, a closure's capture, a copy or a pattern of a parameter, a parameter
+        that may have been pointed elsewhere)."""
+        proofs = getattr(self, "owned", None)
+        body = proofs.body(hashed) if proofs is not None and hashed else None
+        if body is None or type(line) is not int or not path:
+            return None
+        local = _binding_at(proofs, body, str(root), line, path)
+        if local is None:
+            return None
+        if local in body.arguments:
+            # Only a parameter that still holds what the call passed.
+            return None if _redirected(body, local) else "parameter"
+        assigned = body._assignments().get(local, ())
+        mentioned = {int(n) for value in assigned for n in _MENTIONED.findall(value)}
+        if not assigned or mentioned & body.arguments:
+            return None
+        return "element" if _slice_element(proofs, body, assigned) else "local"
 
     def _root_type(self, frame, root):
         """(type offset, whether the frame keeps it in its own memory, type graph) of the

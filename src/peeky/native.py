@@ -4656,7 +4656,9 @@ class NativeSession:
                             kind,
                             root,
                             named,
-                            owner=lambda e=entry, n=named: self._caller_advice(e, root, n),
+                            owner=lambda e=entry, n=named, w=shown: self._caller_advice(
+                                e, root, n, w
+                            ),
                         )
                         if not framed:
                             raise Unsettable(_not_framed(root, storages))
@@ -5235,7 +5237,7 @@ class NativeSession:
                 kind,
                 name,
                 steps,
-                owner=lambda: self._caller_advice(self._function_at(frame), name, steps),
+                owner=lambda: self._pointer_advice(frame, name, steps),
             )
             if not framed:
                 raise Unsettable(_not_framed(name, self._storages(frame, root)))
@@ -5274,7 +5276,115 @@ class NativeSession:
                 f"{low} to {high})"
             )
 
-    def _caller_advice(self, function, root, steps):
+    def _pointer_advice(self, frame, root, steps):
+        """Where to change what the pointer local ``root`` of ``frame`` reaches, at a
+        stop (validate_member): ``_caller_advice``, for the declaration the debugger
+        shows there."""
+        where = self._shown_where(root, self._unslid(frame))
+        return self._caller_advice(self._function_at(frame), root, steps, where)
+
+    def _pointer_kind(self, function, root, where):
+        """What the pointer root local ``root`` (`p`, or `p @ file:line`) of
+        ``function`` (a declarations entry) is, by its declaration ``where`` that
+        applies at the stop (``_named_where``, ``_shown_where``): "parameter",
+        "local" (an automatic of the frame), or None where Peeky can't tell (no single
+        declaration, a static, a register, a declaration the debug information doesn't
+        match). Same-named declarations are never pooled: an inner local shadowing a
+        parameter is a local."""
+        if function is None:
+            return None
+        shown = split_located(str(root))
+        base = shown[0] if shown else str(root)
+        types = (function.get("types") or {}).get(base) or ()
+        if shown:
+            # `p @ file:line` names its declaration (LLDB's name where another `p` is in
+            # scope too): a parameter's, or an automatic's, there.
+            parameters = (function.get("parameters") or {}).get(base) or ()
+            if any((Path(str(at)).name, number) == shown[1:] for at, number in parameters):
+                return None if self._redirected(function, base) else "parameter"
+            where = (shown[1], shown[2], True)
+        if not where:
+            return None
+        if where[0] is None and where[1] is None:
+            # The function's parameter (shown_declaration's place for one; C++'s `this`
+            # has no line, but is one in the frame).
+            if base in (function.get("parameters") or {}) or any(
+                storage == "parameter" for _, storage, _ in types
+            ):
+                # Only a parameter that still holds what the call passed.
+                return None if self._redirected(function, base) else "parameter"
+            return None
+        if len(where) < 3 or not where[2]:
+            return None
+        place = (Path(str(where[0])).name, where[1])
+        declared = [each for each in types if each[2] == place]
+        if declared and all(storage == "automatic" for _, storage, _ in declared):
+            return "local"
+        return None
+
+    def _redirected(self, function, name):
+        """Whether the pointer parameter ``name`` of the C or C++ function ``function``
+        (a declarations entry) may hold another value than its call passed, at some stop
+        in it (review of #276: `p = &global; p->x++;`). Read from its body as each
+        translation unit holding it preprocesses it (``_uses``): an assignment (`p = …`,
+        `p += …`), a step (`++`, `--`) or its address (`&p`), and inline assembly or an
+        address builtin, which may write it unseen. In C++ also any mention but through
+        it (`p->x`, `p[i]`, `*p`): a reference to it (`S *&r = p;`, a `S *&` parameter)
+        can write it. True where Peeky can't read the body, or the function declares
+        another local of that name."""
+        source = function.get("source")
+        if not source:
+            return True
+        cplusplus = getattr(self.target, "language", None) != "c"
+        defined = False
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                return True
+            uses = self._uses({"unit": read, "caller": function, "argument_span": (0, 0)}, name)
+            if uses is None:
+                # Not defined in this unit, or not readable: it is judged by the others.
+                continue
+            defined = True
+            if any(use in ("changes", "assembly") or use.startswith("builtin:") for use in uses):
+                return True
+            if cplusplus and self._bare_mention(read, function, name):
+                return True
+        return not defined
+
+    def _bare_mention(self, unit, function, name):
+        """Whether the C++ function ``function``'s body in ``unit`` names ``name`` other
+        than through it (`name->x`, `name[i]`, `*name`), or can't be read."""
+        defined = self._definition(unit, function)
+        if defined is None:
+            return True
+        inner = defined[1]
+        for found in re.finditer(rf"(?<![\w$]){re.escape(name)}(?![\w$])", inner):
+            before, after = inner[: found.start()].rstrip(), inner[found.end() :]
+            if before.endswith((".", "->", "::")):
+                continue  # a member's name, or a qualified one
+            if not (re.match(r"\s*(?:->|\[)", after) or before.endswith("*")):
+                return True
+        return False
+
+    def _caller_advice(self, function, root, steps, where=None):
+        """Where to change what the pointer root local ``root`` of ``function`` (a
+        declarations entry) reaches, by what its declaration that applies at the stop
+        (``where``) is (``_pointer_kind``; tenth evaluation): a proven parameter gets
+        ``_chain_advice`` in C, else the call advice; a local or an unknown gets
+        fields.pointer_advice's, which claims no call."""
+        from peeky.fields import pointer_advice
+
+        kind = self._pointer_kind(function, root, where)
+        if kind != "parameter":
+            return pointer_advice(root, kind)
+        shown = split_located(str(root))
+        chained = None
+        if getattr(self.target, "language", None) == "c":
+            chained = self._chain_advice(function, shown[0] if shown else str(root), steps)
+        return chained or pointer_advice(root, "parameter")
+
+    def _chain_advice(self, function, root, steps):
         """Where to change a field (``steps``, the debugger's child names) reached
         through the pointer parameter ``root`` of the C function ``function`` (a
         declarations entry), when the program's sources call it once (seventh
@@ -5292,10 +5402,7 @@ class NativeSession:
         function on the way with several callers, a pointer computed or kept elsewhere, a
         static), no frame is named for the change: the message says so and points to
         `describe`'s `mutable:` line. None, for the general advice, where the function
-        itself has several or unknown callers, and in C++ (overloads, argument-dependent
-        lookup and member calls make a call's target unclear from the text)."""
-        if function is None or getattr(self.target, "language", None) != "c":
-            return None
+        itself has several or unknown callers, or declares other locals of the name."""
         declared = (function.get("types") or {}).get(root) or ()
         if not declared or {storage for _, storage, _ in declared} != {"parameter"}:
             return None

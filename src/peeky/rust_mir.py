@@ -294,6 +294,11 @@ class Body:
     # {(name, file, line, scope): place} for bindings through a projection (a closure's
     # capture `(*((*_1).0: &mut T))`, an async local).
     places: dict = field(default_factory=dict)
+    # {(name, file, line): [(end line, end column)]}: where each binding's span ends, as
+    # the MIR prints it (characters, 1-based, past the end). A `?`'s desugared bindings
+    # end right after the `?` (`residual` spans only it, `val` the expression it tries);
+    # a binding the program writes spans its name.
+    binding_ends: dict = field(default_factory=dict)
     scopes: dict = field(default_factory=lambda: {0: None})  # {scope: its parent}
     # {(file, line): the scopes of the statements with a span on that line}
     line_scopes: dict = field(default_factory=dict)
@@ -3197,6 +3202,10 @@ def parse_body(text):
                     int(debug[3]),
                 )
             )
+            if full := _FULL_SPAN.match(line[debug.start(4) :]):
+                body.binding_ends.setdefault((debug[1], debug[4], int(debug[5])), []).append(
+                    (int(full[4]), int(full[5]))
+                )
             spans.append((debug[4], int(debug[5])))
             continue
         if block is None and (scope := _SCOPE.match(line)):

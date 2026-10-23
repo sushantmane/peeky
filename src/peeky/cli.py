@@ -1006,7 +1006,7 @@ def _sets(items):
 
 def probe(args):
     from peeky.client import WorkerUnreachable
-    from peeky.errors import PeekyError
+    from peeky.errors import PeekyError, Refused, classify
 
     try:
         root, request, edit, original, language, adapter = _probe_request(args)
@@ -1016,6 +1016,16 @@ def probe(args):
         # Refused before the probe request was sent (here, or in the worker's version
         # handshake; #190): the debugger's launch or attach request was not sent.
         exc.before_launch = True
+        if isinstance(exc, Refused) and exc.code == "MUTATION_REJECTED":
+            # A change refused here (Python's field `--set`) reads as the worker's
+            # refusals before launch do: `error [MUTATION_REJECTED]: …` (tenth evaluation).
+            result = {
+                "status": "failed",
+                "error": classify(exc, session_closed=False),
+                "refused_before_launch": True,
+            }
+            _emit(result, args.json, lambda shown: _probe_text(shown, quiet=args.quiet))
+            return probe_exit_code(result)
         raise
     if args.worker is not None:
         try:
@@ -1297,6 +1307,10 @@ def _first_time(name):
     return True
 
 
+# More probe rows than this, of several selectors, get a pointer to `queries wide`.
+_WIDE_ROWS = 40
+
+
 def _probe_text(result, quiet=False):
     from peeky.probe import _short_note
 
@@ -1343,6 +1357,13 @@ def _probe_text(result, quiet=False):
             f"\nevidence: saved as run {saved['run_id']}; query it with `{saved['next']}` or "
             "`peeky sql` (see `peeky sql --schema`)"
         )
+        selectors = {row.get("selector") for row in result.get("rows", ())}
+        if len(result.get("rows", ())) > _WIDE_ROWS and len(selectors) > 1:
+            # A long table, a row per selector per hit (debounce 3, tenth evaluation).
+            text += (
+                f"\nevidence: one line per hit, a column per selector: "
+                f"`peeky queries wide --param run={saved['run_id']}`"
+            )
         if compare := saved.get("compare"):
             text += (
                 f"\ncompare: {compare['command']} (run {compare['run']}: this probe without "
@@ -1999,6 +2020,14 @@ def _shell_word(text):
     return f'"{text}"'
 
 
+def _repeats_shortened(rows):
+    """``rows`` for text, each `visible:` list a row above gave already said so."""
+    from peeky.probe import repeated_visible
+
+    errors = repeated_visible(rows, lambda row: "above")
+    return [{**row, "error": errors[i]} if i in errors else row for i, row in enumerate(rows)]
+
+
 def _get_lines(row, session="default"):
     """`session get` text: the value, then one level of children with their selectors."""
     if "value" not in row and not row.get("unavailable"):
@@ -2164,7 +2193,7 @@ def session(args):
             args.json,
             lambda rows: "\n".join(
                 [_read_frame(rows[0])] * bool(args.frame and rows)
-                + [line for row in rows for line in _get_lines(row, args.name)]
+                + [line for row in _repeats_shortened(rows) for line in _get_lines(row, args.name)]
                 + ([f"note: this stop is in {place}"] if place else [])
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
             ),
@@ -2172,6 +2201,9 @@ def session(args):
         if failed := [row["selector"] for row in rows if "error" in row]:
             # Every row was still printed; the exit status says one selector failed, and
             # this line which (ninth evaluation: exit 1 with no word of which, or why).
+            # The rows first: a pipe buffers stdout, so the line it calls "above" came
+            # before them where both streams share one (tenth evaluation).
+            sys.stdout.flush()
             print(
                 f"peeky: no value for {', '.join(failed[:10])}"
                 + (f" and {len(failed) - 10} more" if len(failed) > 10 else "")
@@ -3811,6 +3843,8 @@ def main(argv=None, _job=False, _edits=None):
                 # As a probe the worker refused (#190): its launch request was not sent.
                 shown = {"status": "failed", **shown, "refused_before_launch": True}
             print(json.dumps(shown, indent=2))
+        # Whatever the command printed comes before why it failed.
+        sys.stdout.flush()
         print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
         print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
         if payload.get("cleanup"):
