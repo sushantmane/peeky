@@ -141,13 +141,16 @@ The two runs' heaps start at different addresses: `0x102ec5800` and `0x102cad800
 each address's offset from its run's lowest:
 
 ```sh
-peeky sql "WITH a AS (SELECT run_id, hit, selector, value,
+peeky sql "WITH a AS (SELECT run_id, hit, phase, selector, value,
     address(value) - MIN(address(value)) OVER (PARTITION BY run_id, selector) AS from_base
-  FROM evidence WHERE run_id IN (:payers, :slots))
+  FROM evidence WHERE run_id IN (:payers, :slots) AND phase = 'observed')
 SELECT p.hit AS expense, c.value AS cents, p.from_base, n.value AS credited FROM a p
-  JOIN evidence c ON c.run_id = p.run_id AND c.hit = p.hit AND c.selector = 'cents @ main.rs:49'
-  JOIN a f ON f.run_id = :slots AND f.selector = 'f' AND f.from_base = p.from_base
-  JOIN evidence n ON n.run_id = f.run_id AND n.hit = f.hit AND n.selector = 'f.name'
+  JOIN evidence c ON c.run_id = p.run_id AND c.hit = p.hit AND c.phase = p.phase
+    AND c.selector = 'cents @ main.rs:49'
+  JOIN a f ON f.run_id = :slots AND f.phase = p.phase AND f.selector = 'f'
+    AND f.from_base = p.from_base
+  JOIN evidence n ON n.run_id = f.run_id AND n.hit = f.hit AND n.phase = f.phase
+    AND n.selector = 'f.name'
   WHERE p.run_id = :payers AND p.selector = 'payer @ main.rs:54' ORDER BY p.hit" \
   --param payers=7 --param slots=8
 ```
@@ -167,6 +170,11 @@ Zoë's slot didn't move, so her balance is right.
   lowest of the payers' pointers. At line 67, `f` visits every slot, slot 0 first.
 - A `Friend` is 40 bytes, so offset 80 is slot 2.
 - Pass the run numbers that `evidence: saved as run N` printed. A `--label` may name several runs.
+- Each side keeps `observed` rows. A run with `--set` or `--set-at` also has `after-set` rows.
+  Mixed in, they would move the base and pair the wrong hits
+  ([COOKBOOK 4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
+- Call `address` on a pointer, such as `f` or `e.payer`. On a struct's preview, it reads the first
+  hex token, whichever field holds it.
 - `[unproven]` on `payer @ main.rs:54` is about what the raw pointer points at. Its address is the
   pointer's own value.
 - Read the slots after the sort, as here. At line 96, the sort's comparator sees some friends as

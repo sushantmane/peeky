@@ -965,20 +965,30 @@ def test_object_ref_says_which_values_are_the_same_java_object(store):
         # Linux: a PIE program's heap, and the stack.
         ("0x000055555556a2c0", 0x55555556A2C0),
         ("0x00007fffffffe3a8", 0x7FFFFFFFE3A8),
+        # Review of PR #277: a non-PIE x86-64 program's brk heap, below 4 GiB. Any nonzero
+        # token of 1 to 16 hex digits counts, though no_addresses masks only 9 or more.
+        ("0x00000000004052a0", 0x4052A0),
+        ("0x4052a0", 0x4052A0),
+        ("0x00000000deadbeef", 0xDEADBEEF),
+        ("0x10", 0x10),
+        # Lexical, not typed: a preview's first hex token, whichever field holds it.
+        ("{x = 0x1234567890, p = 0x0000600000c04000}", 0x1234567890),
         # SQLite's integers are signed 64-bit: from 2**63 on, the two's complement.
         ("0x7fffffffffffffff", 2**63 - 1),
         ("0x8000000000000000", -(2**63)),
         ("0xffff800000001000", 0xFFFF800000001000 - 2**64),
         ("0xfffffffffffffffe", -2),
-        # No address: what no_addresses leaves (NULL, all-ones, 8 significant digits or
-        # fewer), a string's text, and Java and Python object numbers.
+        ("0xffffffffffffffff", -1),
+        # No address: none, a zero first token (a null pointer), more than 16 hex digits,
+        # a string's text, and Java and Python object numbers.
         (None, None),
         ("", None),
         ("4500", None),
         ("0x0000000000000000", None),
-        ("0xffffffffffffffff", None),
-        ("0x00000000deadbeef", None),
-        ("0x10", None),
+        ("0x0", None),
+        ("{next = 0x0000000000000000, prev = 0x0000600000c04040}", None),
+        ("0x1" + "0" * 16, None),
+        ("0x12g4567890", None),
         ("0x…", None),
         ("<not shown: may point at freed memory>", None),
         ('"0x0000000102ec5850"', None),
@@ -1056,6 +1066,10 @@ def test_the_cookbooks_address_recipe_pairs_pointers_across_runs(store):
                 (3, "observed", "payer @ main.rs:47", "<not shown: may point at freed memory>"),
                 (3, "observed", "payer @ main.rs:54", "0x0000000100e4d828"),
                 (3, "observed", "cents @ main.rs:49", "900"),
+                # Review of PR #277: after-set rows (synthetic) are another moment; pooled,
+                # they moved the base and doubled the joins to `cents` and `f.name`.
+                (1, "after-set", "cents @ main.rs:49", "0"),
+                (2, "after-set", "payer @ main.rs:54", "0x0000000100e4d7d8"),
             ]
         ),
         language="rust",
@@ -1070,16 +1084,21 @@ def test_the_cookbooks_address_recipe_pairs_pointers_across_runs(store):
                 )
                 for selector, value in (("f", f"0x0000000100b51{at:x}"), ("f.name", f'"{name}"'))
             ]
+            + [(1, "after-set", "f.name", '"Zed"'), (3, "after-set", "f", "0x0000000100b51c18")]
         ),
         language="rust",
     )
     sql = _documented_sql("lang/rust-cookbook.md", "### Find who sits at a pointer's old slot")
     rows = evidence.query(store, sql, {"payers": payers, "slots": slots})["rows"]
-    assert rows == [
+    expected = [
         {"expense": 1, "cents": "4500", "from_base": 0, "credited": '"Bo"'},
         {"expense": 2, "cents": "1000", "from_base": 80, "credited": '"Zoë"'},
         {"expense": 3, "cents": "900", "from_base": 40, "credited": '"Chloé"'},
     ]
+    assert rows == expected
+    pooled = re.sub(r" AND \w\.phase = \w\.phase| AND phase = 'observed'", "", sql)
+    assert pooled.count("phase") == 1  # the CTE's column alone
+    assert evidence.query(store, pooled, {"payers": payers, "slots": slots})["rows"] != expected
     # Neither the addresses nor their last three hex digits match between the runs.
     assert not evidence.query(
         store,
@@ -1102,6 +1121,75 @@ def test_the_cookbooks_address_recipe_pairs_pointers_across_runs(store):
             {"hit_a": 2, "hit_b": 3, "from_base": 80},
             {"hit_a": 3, "hit_b": 2, "from_base": 40},
         ]
+
+
+def _pairs(store, sql, a, b):
+    rows = evidence.query(store, sql, {"a": a, "b": b})["rows"]
+    return [(row["hit_a"], row["hit_b"], row["from_base"]) for row in rows]
+
+
+def test_the_address_recipe_keeps_observed_rows_only(store):
+    # Review of PR #277: the recipe pooled phases. Run a observed 0x100000000, then
+    # 0x100000028 after a change; run b observed 0x200000028, then 0x200000000. Pooled,
+    # each run's base was its lowest of both, so the observed and after-set rows
+    # cross-paired, and run a's hit 2 paired run b's hit 1.
+    a = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "p", "0x0000000100000000"),
+                (1, "after-set", "p", "0x0000000100000028"),
+                (2, "observed", "p", "0x0000000100000028"),
+            ]
+        ),
+        language="c",
+    )
+    b = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "q", "0x0000000200000028"),
+                (1, "after-set", "q", "0x0000000200000000"),
+                (2, "observed", "q", "0x0000000200000050"),
+            ]
+        ),
+        language="c",
+    )
+    sql = _documented_sql("COOKBOOK.md", "### 4.8 Compare Addresses Across Runs")
+    assert _pairs(store, sql, a, b) == [(1, 1, 0), (2, 2, 40)]
+    pooled = sql.replace(" AND phase = 'observed'", "")
+    assert pooled != sql and _pairs(store, pooled, a, b) == [(2, 1, 40)]
+
+
+def test_the_address_recipe_keeps_one_stop_location_as_documented(store):
+    # Review of PR #277: a line with two breakpoint locations stops at each. Here location
+    # 1 sees a copy on the stack, below the heap, so pooled it became run a's base.
+    stack, heap = "0x000000016fdff000", "0x0000600000c04{:03x}".format
+    recorded = captured(
+        [
+            (1, "observed", "p", stack),
+            (2, "observed", "p", heap(0)),
+            (3, "observed", "p", stack),
+            (4, "observed", "p", heap(0x28)),
+        ]
+    )
+    for row, stop in zip(recorded["rows"], (1, 2, 1, 2)):
+        row["stop"] = stop
+    a = evidence.record(store, recorded, language="c")
+    b = evidence.record(
+        store,
+        captured(
+            [(1, "observed", "q", "0x0000600000d08000"), (2, "observed", "q", "0x0000600000d08028")]
+        ),
+        language="c",
+    )
+    sql = _documented_sql("COOKBOOK.md", "### 4.8 Compare Addresses Across Runs")
+    text = (DOCS / "COOKBOOK.md").read_text()
+    pin = re.search(r"`(AND \(run_id != :a OR stop = 2\))` in the CTE's `WHERE`", text)[1]
+    pinned = sql.replace("AND phase = 'observed')", f"AND phase = 'observed' {pin})")
+    assert pinned != sql
+    assert _pairs(store, pinned, a, b) == [(2, 1, 0), (4, 2, 40)]
+    assert _pairs(store, sql, a, b) == [(1, 1, 0), (3, 1, 0)]
 
 
 def test_the_evidence_view_has_language_and_output_stays_one_join_away(store):

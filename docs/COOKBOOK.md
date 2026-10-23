@@ -2009,7 +2009,7 @@ The program's output is not in `evidence`. Read it from `runs.output`.
 | `no_addresses(value)` | The value with heap and stack addresses masked, to compare runs. It never masks NULL, short hex or quoted text. |
 | `no_addresses(value, language)` | The same, and it also masks Java object numbers in Java runs. `evidence` has `language`. |
 | `object_ref(value)` | The Java object a value is, such as `Balance$Worker@100`. Within one run, equal means the same object. |
-| `address(value)` | The first address in the value, as an integer, to compare addresses across runs ([4.8](#48-compare-addresses-across-runs)). NULL where the value has none. |
+| `address(value)` | The first `0x` token in the value, as an integer, to compare addresses across runs ([4.8](#48-compare-addresses-across-runs)). Call it on a pointer's own selector. NULL where there is none, or it is zero. |
 
 `object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element
 ([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)). Python records which
@@ -2144,33 +2144,46 @@ each run, and one address can be another element. Matching their last hex digits
 chance.
 
 Instead, subtract a base from each address: the address of one element that every run saw, such as
-the array's first. Then join the runs on that offset. `address(value)` reads the first address in
-a value as an integer:
+the array's first. Then join the runs on that offset. `address(value)` reads the first `0x` token
+in a value, of 1 to 16 hex digits, as an integer:
 
 | Value | `address(value)` |
 | --- | --- |
 | `0x0000000102ec5850`, a pointer | `4344010832`: the address it holds |
+| `0x00000000004052a0`, a pointer into a Linux program's heap, built without PIE | `4215456` |
 | `0x000000016d78b298 "apple"`, a C string | `6131593880`: the pointer's. Hex inside quotes is text. |
 | `&str @ 0x104afcf50`, LLDB's summary | `4373598032`: where the value itself is stored |
+| `{x = 0x1234567890, p = 0x0000600000c04000}`, a struct | `78187493520`: `x`, the first hex token, not `p` |
+| `0x0000000000000000`, a null pointer | NULL |
 | `"0x0000000102ec5850"`, `'abc'` | NULL: a string's text |
 | `Merge$Interval@143 {start=1}` | NULL: a Java object number isn't an address. Use `object_ref`. |
-| `0x0000000000000000`, `0x00000000deadbeef`, `0xffffffffffffffff` | NULL: hex with 8 significant digits or fewer, or all ones, which `no_addresses` leaves too |
 
-So an address below 4 GiB is NULL too, such as a global's in a Linux program built without PIE. A
-Python identity (`[id 6]` in tables) isn't an address. It is in the `identity` column, not in the
-value.
+`address` is lexical: it takes the first hex token, whatever the type. So call it on a pointer's
+own selector, such as `h.p`, not on a struct's preview. A Python identity (`[id 6]` in tables)
+isn't an address. It is in the `identity` column, not in the value.
+
+`no_addresses` masks less: only hex of 9 to 16 significant digits, which is surely an address. So it
+leaves `0x4052a0` and `0xdeadbeef` as they are, and `address` reads both.
 
 This SQL gives each address of selector `p` in run 7, and of `q` in run 8, as an offset from its
 run's lowest. Then it pairs equal offsets:
 
 ```sh
-peeky sql "WITH a AS (SELECT run_id, hit, selector, value,
+peeky sql "WITH a AS (SELECT run_id, hit, phase, selector, value,
     address(value) - MIN(address(value)) OVER (PARTITION BY run_id, selector) AS from_base
-  FROM evidence WHERE run_id IN (:a, :b))
+  FROM evidence WHERE run_id IN (:a, :b) AND phase = 'observed')
 SELECT x.hit AS hit_a, y.hit AS hit_b, x.from_base FROM a x
-  JOIN a y ON y.run_id = :b AND y.selector = 'q' AND y.from_base = x.from_base
+  JOIN a y ON y.run_id = :b AND y.phase = x.phase AND y.selector = 'q'
+    AND y.from_base = x.from_base
   WHERE x.run_id = :a AND x.selector = 'p' ORDER BY x.hit" --param a=7 --param b=8
 ```
+
+Keep only the rows of one moment and one place in each run, or the base and the pairs mix them:
+
+- The SQL keeps `observed` rows. An `after-set` row, after a change, and a `(return)` row are other
+  moments. A join to another selector's rows also needs `phase`.
+- A line with several breakpoint locations gives each row a `stop` number. Keep one location per
+  run: `AND (run_id != :a OR stop = 2)` in the CTE's `WHERE` keeps run a's location 2.
 
 [Rust 4.8](lang/rust-cookbook.md#48-compare-addresses-across-runs) runs it on a real bug: pointers
 that a sort left at their old slots.
@@ -2191,8 +2204,9 @@ Read an address with its row's view and note, as you read the value:
 - `[stale]` bytes are leftovers, not what the variable holds now.
 
 SQLite's integers are signed. So an address at or above 2^63 comes back negative, as its 64-bit
-two's complement. Such an address is a kernel's, a tagged pointer or garbage. User-space addresses
-on macOS and Linux are far below it.
+two's complement. Such a value is a kernel's address, a tagged pointer, garbage, or a sentinel such
+as `MAP_FAILED`: `0xffffffffffffffff` reads as -1. User-space addresses on macOS and Linux are far
+below 2^63.
 
 - Two such addresses still subtract and order correctly.
 - Against an address below 2^63, SQLite's subtraction overflows into an inexact REAL.
