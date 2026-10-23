@@ -1953,11 +1953,14 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
     ``starts``: for each automatic local, (name, source, line) -> the addresses where
     control enters its declaration line's code in the block declaring it: the line's
     first row in that block, and on a function's first line also the row after the
-    prologue, where its breakpoint is. ``ranges``: the function's code. ``scopes``: for
-    each automatic local, (name, source, line) -> the code ranges of the block declaring
-    it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
-    see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
-    it runs, (address, source, line) by address. ``classes``: _local_classes.
+    prologue, where its breakpoint is. ``preceded``: likewise, the first rows that would
+    be starts but for code of another line (a later one, or another file's) just before
+    them, which may run into them, or end in a jump. ``ranges``: the function's code.
+    ``scopes``: for each automatic local, (name, source, line) -> the code ranges of the
+    block declaring it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and
+    ``defined``: see _class_role. ``span``: its own lines in its source, or None.
+    ``order``: every row it runs, (address, source, line) by address. ``classes``:
+    _local_classes.
     ``types``: fields.local_types, the type and storage of each local (#105);
     ``referred``: fields.referred_locals, those the frame reaches through a pointer.
     ``prologues``, when given, gets _prologue_windows: every function's, placed or not;
@@ -1977,7 +1980,7 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
             continue
         ranges = sorted(span for body in entry["bodies"] for span in _code_ranges(dies[body]))
         entries = {min(span)[0] for body in entry["bodies"] if (span := _code_ranges(dies[body]))}
-        names, jumps, starts, scopes = {}, False, {}, {}
+        names, jumps, starts, scopes, preceded = {}, False, {}, {}, {}
         # Every row this function runs, by address: what runs just before a line's start.
         ordered = sorted(
             (address, source, line)
@@ -2010,9 +2013,13 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 index = bisect.bisect_left(ordered, (found[0],)) - 1
                 before = ordered[index] if index >= 0 else None
                 if before is not None and (before[1] != source or before[2] > line):
-                    # Code of a later line runs straight into this one (a header over
+                    # Code of a later line may run straight into this one (a header over
                     # several lines: `for (` then `i = 10; i < 13; i++)`), so control can
-                    # reach the first row with the local already assigned.
+                    # reach the first row with the local already assigned. Or it ends in a
+                    # jump, and only a jump reaches the row: clang puts exception landing
+                    # pads, on a closing `}`'s line, among the function's code at -O0
+                    # (#288). The stop's disassembly tells which (_check_loop_target).
+                    preceded.setdefault((name, source, line), set()).add(found[0])
                     continue
                 first = {found[0]}
                 if found[0] in entries and (later := [a for a in found if a > found[0]]):
@@ -2043,6 +2050,7 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 "locals": names,
                 "jumps": jumps,
                 "starts": starts,
+                "preceded": preceded,
                 "ranges": tuple(ranges),
                 "scopes": scopes,
                 "root": root,
@@ -2671,11 +2679,24 @@ def declared_skipped(table, name, source, line, address, skipped):
     return None
 
 
-def declared_on_line(table, name, source, line, address):
+def _enters(function, key, address, runs_into):
+    """Whether control enters the declaration line ``key`` (name, source, line) of
+    ``function`` in the block declaring it at ``address`` (True), not (False), or
+    unknown (None): a start of local_declarations, or one ``preceded`` by another line's
+    code that ``runs_into(address)`` says does not run into it (False; True: it does)."""
+    if address in function.get("starts", {}).get(key, ()):
+        return True
+    if address not in function.get("preceded", {}).get(key, ()):
+        return False
+    into = runs_into(address) if runs_into is not None else None
+    return None if into is None else not into
+
+
+def declared_on_line(table, name, source, line, address, runs_into=None):
     """``(line, why)``, when the C/C++ local shown at the stop line is declared on it
     and the stop is where control enters that line in the block declaring it
-    (``address``, unslid; see local_declarations ``starts``): the declaration has not
-    run on this pass, so the local holds leftovers. Else None.
+    (``address``, unslid; see local_declarations ``starts`` and ``preceded``): the
+    declaration has not run on this pass, so the local holds leftovers. Else None.
 
     Only there: a one-line loop, or a return from a call (`step --out`), stops
     mid-line, where the local is live. The declaration judged is the one the debugger
@@ -2683,8 +2704,10 @@ def declared_on_line(table, name, source, line, address):
     is None; "label" in a function with a label: a `goto` may have returned above the
     line with the local live, or this is its first pass, which Peeky cannot tell apart,
     so it is withheld all the same (sixth agent evaluation); "unknown" where the
-    declaration shown cannot be singled out and one of the name starts here. The caller
-    also rules out an address a loop branches back to.
+    declaration shown cannot be singled out and one of the name starts here;
+    "preceded" where another line's code just before the stop may run into it, which
+    ``runs_into(address)`` (True, False, or None: unknown) cannot tell. The caller also
+    rules out an address a loop branches back to.
     """
     if address is None:
         return None
@@ -2693,23 +2716,26 @@ def declared_on_line(table, name, source, line, address):
     found = shown_declaration(table, name, address)
     if found is None:
         return None
+    key = (base, source, line)
     if found is False:
-        starting = any(
-            address in function.get("starts", {}).get((base, source, line), ())
-            and any(
+        entered = {
+            _enters(function, key, address, runs_into)
+            for function in table
+            if any(
                 automatic and declared_in == source and at == line
                 for declared_in, at, automatic in function["locals"].get(base, ())
             )
-            for function in table
-        )
-        return (line, "unknown") if starting else None
+        }
+        if True in entered:
+            return line, "unknown"
+        return (line, "preceded") if None in entered else None
     function, (declared_in, at, automatic) = found
-    if (
-        automatic
-        and declared_in == source
-        and at == line
-        and address in function.get("starts", {}).get((base, source, line), ())
-    ):
+    if not (automatic and declared_in == source and at == line):
+        return None
+    entered = _enters(function, key, address, runs_into)
+    if entered is None:
+        return line, "preceded"
+    if entered:
         return line, "label" if function["jumps"] else None
     return None
 
@@ -2752,6 +2778,68 @@ def backward_targets(instructions, low, high, architecture):
             return None
         targets.update(target for target in named if target <= at)
     return targets
+
+
+# What control never falls through (an unconditional jump, a return, a trap), by the
+# mnemonic LLDB prints.
+_ENDS = {
+    "arm64": lambda m: m in _ARM64_ENDS,
+    "x86_64": lambda m: m.startswith(("jmp", "ret")) or m in ("ud2", "hlt"),
+}
+_ARM64_ENDS = {"b", "br", "braa", "brab", "braaz", "brabz", "ret", "retaa", "retab", "brk", "udf"}
+
+
+def control_sources(instructions, low, high, architecture):
+    """{address: the addresses control comes to it from} for each instruction in [low,
+    high) of a DAP disassembly of that range (#288): the instruction listed just before,
+    unless control never falls through it (an unconditional jump, a return, a trap), and
+    each jump in the range that names it (clang at -O0 ends a block with a jump to the
+    next instruction). A call falls through, even one that never returns; a jump through
+    a register names nothing. None when unknown: another architecture, or an address
+    that cannot be read."""
+    is_jump, ends = _JUMPS.get(architecture), _ENDS.get(architecture)
+    if is_jump is None or ends is None:
+        return None
+    found, previous = {}, None
+    for instruction in instructions:
+        try:
+            at = int(instruction["address"], 16)
+        except (KeyError, TypeError, ValueError):
+            return None
+        # LLDB's trailing comment (`; <+24> at a.c:6`) names no operand.
+        text = str(instruction.get("instruction", "")).split(";")[0].split()
+        mnemonic = text[0].lower() if text else ""
+        if low <= at < high:
+            sources = found.setdefault(at, set())
+            if previous is not None and not ends(previous[1]):
+                sources.add(previous[0])
+            if is_jump(mnemonic):
+                for token in re.findall(r"0x[0-9a-fA-F]+", " ".join(text[1:])):
+                    if low <= (target := int(token, 16)) < high:
+                        found.setdefault(target, set()).add(at)
+        previous = (at, mnemonic)
+    return found
+
+
+def runs_into(order, address, lines, sources):
+    """Whether code of another line (another file's, or a line below ``lines``, the
+    (source, line) whose first row ``address`` is) comes to ``address`` from below it:
+    falling through, or by a jump (True); not (False); unknown (None). ``order``: the
+    function's rows, (address, source, line) by address (local_declarations);
+    ``sources``: control_sources of the function. A jump back to it is a loop's, which
+    the stop's ``loop_targets`` judges."""
+    if sources is None or address not in sources:
+        return None
+    for origin in sources[address]:
+        if origin >= address:
+            continue
+        index = bisect.bisect_right(order, origin, key=lambda row: row[0]) - 1
+        if index < 0:
+            return None
+        _, source, line = order[index]
+        if not any(source == own and line <= at for own, at in lines):
+            return True
+    return False
 
 
 def architecture(binary):
@@ -4909,7 +4997,20 @@ class NativeSession:
         # A loop that branches back to this address can bring control here with the
         # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
         # address the disassembly shows no loop returns to is withheld.
-        on_line = declared_on_line(self.declarations, name, here, line, address)
+        on_line = declared_on_line(
+            self.declarations, name, here, line, address, getattr(self, "runs_into", {}).get
+        )
+        if on_line is not None and on_line[1] == "preceded":
+            # Code of another line lies just before this stop, and Peeky could not read
+            # whether it runs into it (with the local set) or ends in a jump (#288).
+            return ValueNote(
+                f"declared on line {line}, which may not have run yet at this stop (Peeky "
+                "could not read whether the code just before it runs into it)",
+                f"may be leftovers: this stop may be where line {line} starts, before its "
+                "declaration runs, and Peeky could not read the code just before it to tell; "
+                "read it on the next line",
+                refuses=True,
+            )
         if on_line is not None and getattr(self, "loop_targets", {}).get(address) is not False:
             # A loop returns to this first instruction (a `do` body's first line), or
             # Peeky cannot tell: on a later pass the local holds the last pass's value,
@@ -7763,9 +7864,12 @@ class NativeSession:
 
     def _check_loop_target(self, dap, frame):
         """Record whether the stop's address, when it starts a declaration line, is one a
-        loop jumps back to (True), not (False), or unknown (None). Each function is
-        disassembled at most once per session."""
+        loop jumps back to (``loop_targets``: True, False, or None: unknown). Where it
+        would start one but for another line's code just before it (local_declarations
+        ``preceded``), also whether another line's code runs into it (``runs_into``:
+        True, False, or None). Each function is disassembled at most once per session."""
         cache = self.__dict__.setdefault("loop_targets", {})
+        into = self.__dict__.setdefault("runs_into", {})
         jumps = self.__dict__.setdefault("backward_jumps", {})
         pointer, bias = frame.get("instructionPointerReference"), self.load_bias
         declarations = getattr(self, "declarations", None)
@@ -7779,11 +7883,15 @@ class NativeSession:
         address = int(pointer, 16) - bias
         if address in cache:
             return
+
+        def holds(function, key):
+            return any(address in found for found in function.get(key, {}).values())
+
         function = next(
             (
                 function
                 for function in declarations
-                if any(address in starts for starts in function.get("starts", {}).values())
+                if holds(function, "starts") or holds(function, "preceded")
             ),
             None,
         )
@@ -7794,20 +7902,28 @@ class NativeSession:
         )
         if span is not None and span not in jumps:
             jumps[span] = self._backward_jumps(dap, span, bias)
-        targets = jumps.get(span)
+        targets, sources = jumps.get(span) or (None, None)
         cache[address] = None if targets is None else address in targets
+        lines = {
+            (source, line)
+            for (_, source, line), found in function.get("preceded", {}).items()
+            if address in found
+        }
+        if lines:
+            into[address] = runs_into(function.get("order", ()), address, lines, sources)
 
     def _backward_jumps(self, dap, span, bias):
-        """The unslid addresses in ``span`` that a jump there goes back to, or None."""
+        """(The unslid addresses in ``span`` that a jump there goes back to, or None;
+        control_sources of ``span``, unslid, or None), from one disassembly of it."""
         low, high = span
         try:
             kind = architecture(self.binary)
         except (OSError, struct.error):
-            return None
+            return None, None
         # Enough instructions to pass the function's end: arm64's are 4 bytes each.
         count = (high - low) // 4 + 8 if kind == "arm64" else high - low + 16
         if kind is None or count > 8192:
-            return None
+            return None, None
         try:
             reply = dap.request(
                 "disassemble",
@@ -7821,11 +7937,17 @@ class NativeSession:
             )
             instructions = reply.get("instructions") or []
             if not any(int(item["address"], 16) >= high + bias for item in instructions):
-                return None
+                return None, None
             targets = backward_targets(instructions, low + bias, high + bias, kind)
+            sources = control_sources(instructions, low + bias, high + bias, kind)
         except (RuntimeError, TimeoutError, ValueError, TypeError, KeyError, AttributeError):
-            return None
-        return None if targets is None else {target - bias for target in targets}
+            return None, None
+        return (
+            None if targets is None else {target - bias for target in targets},
+            None
+            if sources is None
+            else {at - bias: {origin - bias for origin in found} for at, found in sources.items()},
+        )
 
     def close(self):
         self.prepared.cleanup()

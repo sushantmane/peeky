@@ -121,6 +121,21 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - An inlined call shows in the debug information as a `DW_TAG_inlined_subroutine` with its
   `DW_AT_call_line` on the statement's lines, or from another file.
 
+## A local declared on the stop line
+
+- `local_declarations` gives each local's `starts`: the first row of its declaration line in the
+  block declaring it. A stop there withholds the local (`declared_on_line`).
+- A first row with another line's code just before it, by address, is `preceded` instead. That
+  code may be a later line's, or another file's.
+- A header over two lines runs that code first, then falls into the line with the local set.
+- At `-O0`, clang puts a C++ landing pad there, on a closing `}`'s line. It ends in a jump, so
+  only a jump reaches the line.
+- At the stop, `_check_loop_target` disassembles the function once. `control_sources` lists where
+  control comes to each instruction from. `runs_into` says whether any of those, from below, is
+  another line's code.
+- A `preceded` row that no such code reaches is a start. Where Peeky can't read the disassembly,
+  the row is shown with a note.
+
 ## Preview bounds and types
 
 - `native_previews` sets the bounds: 8 members or elements per level, two levels, 40 characters
@@ -359,6 +374,7 @@ required test calls a model.
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output and a bitfield's binding, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_landing_pads.py` | A local declared on the stop line, after clang's landing pad, is withheld; built by clang and by g++ | macOS (Apple clang); Linux (clang 18 and g++, lldb-dap 18 and 20) |
 | The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
 

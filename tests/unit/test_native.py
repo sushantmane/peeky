@@ -648,9 +648,10 @@ def test_lambdas_under_an_inlined_only_function_keep_its_name(tmp_path):
     assert _qualified(_dies(info), 0x30) == "apply_twice::operator()"
 
 
-def declaration_dumps(workspace):
+def declaration_dumps(workspace, rows=None):
     """A C unit: `take` (lines 5-12) with a parameter, two automatics, a static and a
-    local in a nested block; the static has an address, not a frame location."""
+    local in a nested block; the static has an address, not a frame location. ``rows``:
+    the line table's (address, line), offsets from 0x100000000."""
     source = workspace / "bucket.c"
     info = f"""{workspace}/program: file format Mach-O arm64
 
@@ -695,7 +696,7 @@ def declaration_dumps(workspace):
 0x00000061:     NULL
 0x00000062:   NULL
 """
-    rows = [(0x400, 5), (0x410, 6), (0x420, 7), (0x430, 8), (0x440, 11), (0x460, 12)]
+    rows = rows or [(0x400, 5), (0x410, 6), (0x420, 7), (0x430, 8), (0x440, 11), (0x460, 12)]
     line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "bucket.c"\ndir_index: 0\n'
     line += "Address Line Column File\n"
     base = 0x100000000
@@ -731,6 +732,29 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
         "refill": {("bucket.c", 8, True)},
         "calls": {("bucket.c", 9, False)},
     }
+
+
+def test_a_declaration_lines_first_row_after_another_lines_code_is_only_preceded(tmp_path):
+    from peeky.native import local_declarations
+
+    # #288: at -O0 clang puts an exception landing pad (on a closing `}`'s line, 12 here)
+    # among the function's code, just before line 11's. Whether that code runs into line 11
+    # (a header over two lines does) or ends in a jump, the stop's disassembly tells.
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    rows = [(0x400, 5), (0x410, 6), (0x420, 7), (0x430, 8), (0x438, 12), (0x440, 11), (0x460, 12)]
+    info, dump = declaration_dumps(tmp_path, rows)
+    [take] = local_declarations(info, dump, tmp_path, ("bucket.c",))
+    base = 0x100000000
+    assert take["starts"] == {
+        ("elapsed", "bucket.c", 6): {base + 0x410},
+        ("refill", "bucket.c", 8): {base + 0x430},
+    }
+    assert take["preceded"] == {("now", "bucket.c", 11): {base + 0x440}}
+    # Without the landing pad, line 11's first row is a start.
+    info, dump = declaration_dumps(tmp_path)
+    [take] = local_declarations(info, dump, tmp_path, ("bucket.c",))
+    assert take["starts"][("now", "bucket.c", 11)] == {base + 0x440}
+    assert take["preceded"] == {}
 
 
 @pytest.mark.parametrize(
@@ -1022,6 +1046,169 @@ def test_a_local_declared_on_the_stop_line_is_withheld_only_where_its_line_start
     twice = {**main, "locals": {"i": {("a.c", 8, True), ("a.c", 3, True)}}}
     assert declared_on_line([twice], "i", "a.c", 8, 0x80) == (8, None)
     assert declared_on_line([twice], "i @ a.c:8", "a.c", 8, 0x80) == (8, None)
+
+
+def test_a_first_row_after_another_lines_code_is_a_start_where_that_code_ends_in_a_jump():
+    from peeky.native import declared_on_line
+
+    # #288: line 20's code (a landing pad) lies just before line 16's first row, 0x80.
+    main = {
+        "source": "q.cpp",
+        "rows": rows({16: (0x80, 0x84), 20: (0x70, 0x7C)}, "q.cpp"),
+        "jumps": False,
+        "ranges": ((0x60, 0xA0),),
+        "locals": {"q": {("q.cpp", 16, True)}},
+        "visible": {("q", "q.cpp", 16, True): ((0x60, 0xA0),)},
+        "starts": {},
+        "preceded": {("q", "q.cpp", 16): {0x80}},
+    }
+    # It ends in a jump: control enters line 16 there, before `q` is set.
+    assert declared_on_line([main], "q", "q.cpp", 16, 0x80, {0x80: False}.get) == (16, None)
+    labelled = [{**main, "jumps": True}]
+    assert declared_on_line(labelled, "q", "q.cpp", 16, 0x80, {0x80: False}.get) == (16, "label")
+    # It runs into line 16 (`for (` over two lines), with the local set.
+    assert declared_on_line([main], "q", "q.cpp", 16, 0x80, {0x80: True}.get) is None
+    # Not read: unknown, said.
+    assert declared_on_line([main], "q", "q.cpp", 16, 0x80, {}.get) == (16, "preceded")
+    assert declared_on_line([main], "q", "q.cpp", 16, 0x80) == (16, "preceded")
+    # Past the line's first row, the local is live.
+    assert declared_on_line([main], "q", "q.cpp", 16, 0x84, {0x80: False}.get) is None
+    # Two `q` in one block: whichever is shown, withheld where the line starts; with
+    # where it starts unknown, said so.
+    twice = {**main, "locals": {"q": {("q.cpp", 16, True), ("q.cpp", 12, True)}}}
+    twice["visible"] = {**main["visible"], ("q", "q.cpp", 12, True): ((0x60, 0xA0),)}
+    assert declared_on_line([twice], "q", "q.cpp", 16, 0x80, {0x80: False}.get) == (16, "unknown")
+    assert declared_on_line([twice], "q", "q.cpp", 16, 0x80, {}.get) == (16, "preceded")
+    assert declared_on_line([twice], "q", "q.cpp", 16, 0x80, {0x80: True}.get) is None
+
+
+def test_the_disassembly_says_where_control_comes_from():
+    from peeky.native import control_sources
+
+    # #288: clang's landing pad ends in `b`, out to the unwinder's resume; line 16's code
+    # follows it, reached by the inner loop's exit (`b.ge`). At -O0 clang ends a block
+    # with a jump to the next instruction.
+    arm = _instructions(
+        (0x620, "b.ge    0x6FC"),
+        (0x624, "b       0x628                     ; <+320> at q.cpp:13:9"),
+        (0x628, "bl      0x100000964"),
+        (0x62C, "b       0x620"),
+        (0x6F8, "b       0x10000078c               ; <+676> at q.cpp:10:38"),
+        (0x6FC, "str     wzr, [sp, #0x50]"),
+        (0x700, "ret"),
+        (0x704, "brk     #0x1"),
+        (0x708, "nop"),
+    )
+    assert control_sources(arm, 0x620, 0x70C, "arm64") == {
+        0x620: {0x62C},
+        0x624: {0x620},  # after a conditional jump
+        0x628: {0x624},  # a jump to the next instruction
+        0x62C: {0x628},  # after a call
+        0x6F8: set(),  # after a jump back
+        0x6FC: {0x620},
+        0x700: {0x6FC},
+        0x704: set(),
+        0x708: set(),
+    }
+    # Only the range's own instructions, and jumps into it.
+    assert control_sources(arm, 0x6F8, 0x700, "arm64") == {0x6F8: set(), 0x6FC: set()}
+    x86 = _instructions(
+        (0x1130, "jmp    0x1141"),
+        (0x1135, "callq  0x1120"),
+        (0x113A, "jne    0x1130"),
+        (0x113C, "jmpq   *%rax"),
+        (0x113E, "retq"),
+        (0x113F, "ud2"),
+        (0x1141, "nop"),
+    )
+    assert control_sources(x86, 0x1130, 0x1150, "x86_64") == {
+        0x1130: {0x113A},
+        0x1135: set(),
+        0x113A: {0x1135},
+        0x113C: {0x113A},
+        0x113E: set(),
+        0x113F: set(),
+        0x1141: {0x1130},
+    }
+    assert control_sources(arm, 0x620, 0x70C, "riscv64") is None
+    assert control_sources([{"address": "nope"}], 0x10, 0x18, "arm64") is None
+
+
+def test_another_lines_code_runs_into_a_line_falling_through_or_by_a_jump():
+    from peeky.native import runs_into
+
+    # Line 16's first row is 0x6FC; a landing pad on line 20 lies just before it.
+    order = (
+        (0x610, "q.cpp", 13),
+        (0x628, "q.cpp", 14),
+        (0x6E4, "q.cpp", 20),
+        (0x6FC, "q.cpp", 16),
+        (0x700, "q.cpp", 17),
+    )
+    lines = {("q.cpp", 16)}
+    # Reached from line 13's loop exit only: no later line's code runs into it.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620}}) is False
+    # Line 20's code falls through into it, or jumps to it (`for (` over two lines).
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, 0x6F8}}) is True
+    # Another file's code too (a member initializer clang runs in its caller).
+    other = (*order[:2], (0x6E4, "q.hpp", 3), *order[3:])
+    assert runs_into(other, 0x6FC, lines, {0x6FC: {0x6F8}}) is True
+    # A jump back from below is a loop's, judged apart.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, 0x704}}) is False
+    # Unknown: no disassembly, or not an instruction it lists.
+    assert runs_into(order, 0x6FC, lines, None) is None
+    assert runs_into(order, 0x6FC, lines, {0x700: {0x6FC}}) is None
+
+
+def test_the_stops_disassembly_says_whether_another_lines_code_runs_into_it(monkeypatch):
+    # #288: one disassembly of the function says both whether a loop returns to a line's
+    # start and, where another line's code lies just before it, whether that runs into it.
+    monkeypatch.setattr("peeky.native.architecture", lambda binary: "arm64")
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias, session.binary = 0x1000, None
+    session.declarations = [
+        {
+            "ranges": ((0x600, 0x710),),
+            "starts": {("k", "q.cpp", 13): {0x610}},
+            "preceded": {("q", "q.cpp", 16): {0x6FC}, ("i2", "q.cpp", 19): {0x704}},
+            "order": (
+                (0x600, "q.cpp", 12),
+                (0x610, "q.cpp", 13),
+                (0x6F0, "q.cpp", 20),
+                (0x6FC, "q.cpp", 16),
+                (0x700, "q.cpp", 20),
+                (0x704, "q.cpp", 19),
+            ),
+        }
+    ]
+    listing = _instructions(
+        *((0x1000 + at, "nop") for at in range(0x600, 0x620, 4)),
+        (0x1620, "b.ge    0x16FC"),
+        *((0x1000 + at, "nop") for at in range(0x624, 0x6F8, 4)),
+        (0x16F8, "b       0x1708"),
+        (0x16FC, "str     wzr, [sp, #0x50]"),
+        (0x1700, "b       0x1704"),
+        (0x1704, "b.lt    0x1610"),
+        *((0x1000 + at, "nop") for at in range(0x708, 0x720, 4)),
+    )
+    asked = []
+
+    class Adapter:
+        def request(self, command, arguments, timeout=None):
+            asked.append((command, arguments["memoryReference"]))
+            return {"instructions": listing}
+
+    for pc in (0x6FC, 0x704, 0x610, 0x650):
+        session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x1000 + pc)})
+    assert session.runs_into == {0x6FC: False, 0x704: True}
+    assert session.loop_targets == {0x6FC: False, 0x704: False, 0x610: True}
+    assert asked == [("disassemble", "0x1600")]
+    # A disassembly that cannot be read leaves both unknown.
+    session.__dict__.pop("backward_jumps")
+    session.loop_targets, session.runs_into = {}, {}
+    listing = []
+    session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x16FC)})
+    assert session.runs_into == {0x6FC: None} and session.loop_targets == {0x6FC: None}
 
 
 def _instructions(*pairs):
