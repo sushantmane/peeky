@@ -3024,6 +3024,10 @@ def _unwind_info_lsdas(data, base):
         raise ValueError("Unsupported `__unwind_info`")
     if any(at < header or at % 4 or at + size > len(data) for at, size in arrays):
         raise ValueError("Malformed `__unwind_info` arrays")
+    # The non-empty arrays must not share bytes (a shared offset is fine where one is empty).
+    spans = sorted((at, at + size) for at, size in arrays if size)
+    if any(end > after for (_, end), (after, _) in zip(spans, spans[1:])):
+        raise ValueError("Overlapping `__unwind_info` arrays")
     if index < max(common + 4 * commons, personal + 4 * personals):
         raise ValueError("Malformed `__unwind_info` index")
     offsets = [struct.unpack_from("<I", data, index + 12 * n + 8)[0] for n in range(count)]
@@ -3037,8 +3041,18 @@ def _unwind_info_lsdas(data, base):
     ):
         raise ValueError("Malformed `__unwind_info` LSDA array")
     return [
-        (base + start, base + lsda) for start, lsda in struct.iter_unpack("<II", data[first:last])
+        (_eh_address(base, start), _eh_address(base, lsda))
+        for start, lsda in struct.iter_unpack("<II", data[first:last])
     ]
+
+
+def _eh_address(base, offset):
+    """``base`` + ``offset`` as an address, or ValueError where the sum leaves the 64-bit
+    address space: a malformed table, never an address (review 4 of PR #295)."""
+    value = base + offset
+    if not 0 <= value < 1 << 64:
+        raise ValueError("An exception-table address leaves the address space")
+    return value
 
 
 def _lsda_pads(data, address, lsda, start):
@@ -3069,7 +3083,7 @@ def _lsda_pads(data, address, lsda, start):
         pad, at = _eh_pointer(data, at, encoding, address, end)
         _, at = _leb128(data, at, end)
         if pad:
-            pads.add(base + pad)
+            pads.add(_eh_address(base, pad))
     return pads
 
 

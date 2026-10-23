@@ -1306,6 +1306,11 @@ def test_an_lsdas_call_sites_give_its_landing_pads():
     # A type table's offset is skipped.
     typed = bytes([0xFF, 0x9B, 0x05, 0x03, len(sites)]) + sites
     assert _lsda_pads(typed, 0x9000, 0x9000, 0x4E8) == {0x64C}
+    # Review 4 of PR #295: an LPStart of 2**64 - 1 plus a landing pad's offset leaves the
+    # address space: malformed, never an address.
+    huge = bytes([0x00]) + struct.pack("<Q", (1 << 64) - 1) + bytes([0xFF, 0x03, len(sites)])
+    with pytest.raises(ValueError, match="address space"):
+        _lsda_pads(huge + sites, 0x9000, 0x9000, 0x4E8)
     for broken, where in (
         (MAIN_LSDA[:10], 0x24D4),  # a call-site table past the section's end
         (MAIN_LSDA, 0x2000),  # outside the section
@@ -1378,6 +1383,24 @@ def test_unwind_info_names_each_functions_lsda():
         _unwind_info_lsdas(struct.pack("<7I", 2, 28, 0, 28, 0, 28, 0), 0)
     with pytest.raises(ValueError):
         _unwind_info_lsdas(data[:60], 0x100000000)
+    # Review 4 of PR #295: offsets from a base past the address space's end are malformed,
+    # never an address.
+    with pytest.raises(ValueError):
+        _unwind_info_lsdas(data, (1 << 64) - 0x100)
+    # Non-empty common and personality arrays at one offset share bytes.
+    entries = struct.pack("<3I", 0x4E8, 0, 56) + struct.pack("<3I", 0x4E9, 0, 64)
+    shared = (
+        struct.pack("<7I", 1, 28, 1, 28, 1, 32, 2)
+        + bytes(4)
+        + entries
+        + struct.pack("<II", 0x4E8, 0x24D4)
+    )
+    with pytest.raises(ValueError, match="Overlapping"):
+        _unwind_info_lsdas(shared, 0x100000000)
+    apart = struct.pack("<7I", 1, 28, 1, 32, 1, 36, 2) + bytes(8)
+    apart += struct.pack("<3I", 0x4E8, 0, 60) + struct.pack("<3I", 0x4E9, 0, 68)
+    apart += struct.pack("<II", 0x4E8, 0x24D4)
+    assert _unwind_info_lsdas(apart, 0x100000000) == [(0x1000004E8, 0x1000024D4)]
 
 
 def macho_image(sections):
