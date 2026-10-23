@@ -1697,6 +1697,34 @@ def test_a_lambdas_specifiers_keep_its_body_a_lambdas():
     assert statements.block_storage(10, "t", 2, True, others=True) == ("enumerator", 10)
 
 
+NESTED_SPECIFIERS = """long f(long x) {
+    long t = x;
+    auto a = [](long t) noexcept((((((true)))))) { { enum { t = 9 }; } return t; };
+    auto b = [](long t) __attribute__((section(("x")), noinline)) { { enum { t = 8 }; } return t; };
+    auto c = [](long t) [[deprecated(("y"))]] noexcept(noexcept(f(g((1))))) { { enum { t = 7 }; } return t; };
+    auto d = [](long t) -> decltype((((t)))) { { enum { t = 6 }; } return t; };
+    auto e = [](long t) unknown { { enum { t = 5 }; } return t; };
+    return t;
+}
+"""
+
+
+def test_a_lambdas_specifiers_are_read_to_their_paired_brackets():
+    # Review round 2 of PR #299: `noexcept(...)` and `__attribute__((...))` were read by a
+    # regular expression three parentheses deep, so a deeper group left the brace `other`
+    # (and the lambda's blocks counted for `f`). Each group is read to its paired bracket
+    # now, however deep; a word that is no specifier still makes no lambda's head.
+    statements = Statements(NESTED_SPECIFIERS, raw_strings=True)
+    code = statements._code()[0]
+    kinds = {
+        line: statements._brace(code.index("{", statements.starts[line - 1]))
+        for line in range(3, 8)
+    }
+    assert kinds == {**{line: "lambda" for line in range(3, 7)}, 7: "other"}, kinds
+    found = {line: statements.block_storage(line, "t", 2, True, others=True) for line in kinds}
+    assert found == {**{line: False for line in range(3, 7)}, 7: ("enumerator", 7)}, found
+
+
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():
     # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
     # test and binding, its range's cleanup), all emitted after its range expression,

@@ -88,14 +88,22 @@ _TRIGRAPH = re.compile(r"\?\?([=(/)'<!>-])")
 _TRIGRAPHS = dict(zip("=(/)'<!>-", "#[\\]^{|}~"))
 # Words a `(` follows in an expression, never in a function's head.
 _EXPRESSIONS = _USES | {"decltype", "noexcept", "and", "or", "not", "static_assert", "requires"}
-# What may stand between a function's (or a lambda's) parameters and its body: its
-# qualifiers and specifiers (a lambda's `constexpr`, `consteval`, `static`), an exception
-# specification, attributes, a trailing return type and a trailing `requires` clause.
-_GROUP = r"\((?:[^;{}()]|\((?:[^;{}()]|\([^;{}()]*\))*\))*\)"
-_QUALIFIED = re.compile(
-    r"(?:\s|&|(?:const|volatile|noexcept|override|final|mutable|constexpr|consteval|static)\b"
-    rf"|(?:noexcept|throw|__attribute__|__declspec)\s*{_GROUP}|\[\[[^\[\]]*\]\]"
-    r"|->[^;{}]*|requires\b[^;{}]*)*"
+# What may stand between a function's (or a lambda's) parameters and its body
+# (`Statements._qualified`): its qualifiers and specifiers (a lambda's `constexpr`,
+# `consteval`, `static`), an exception specification, attributes, a trailing return type
+# and a trailing `requires` clause.
+_QUALIFIERS = frozenset(
+    (
+        "const",
+        "volatile",
+        "noexcept",
+        "override",
+        "final",
+        "mutable",
+        "constexpr",
+        "consteval",
+        "static",
+    )
 )
 # A group of parentheses that may stand there: `noexcept(true)`, `__attribute__((cold))`,
 # `-> decltype(x)`, `requires (N > 1)`.
@@ -2591,25 +2599,86 @@ class Statements:
         """Where the parentheses before the brace at ``opening`` open, when only what may
         follow a function's parameters stands between them (`const`, `noexcept(true)`,
         `mutable`, `override`, a lambda's `constexpr`, attributes, a trailing return type:
-        `_QUALIFIED`), else None. A header's or a macro's parentheses count too (`if (c)
+        `_qualified`), else None. A header's or a macro's parentheses count too (`if (c)
         {`, `FOR_EACH(x) {`): the caller tells them apart."""
         code = self._code()[0]
-        end = opening
-        for _ in range(16):
-            closing = code.rfind(")", 0, end)
-            start = self._opening(closing) if closing >= 0 else None
+        at = opening
+        for _ in range(64):
+            before = self._before(at)
+            if before is None or before[0] in (";", "{", "}", "<%", "%>"):
+                return None
+            token, position = before
+            if token in ("]", ":>"):
+                # Past an attribute, `[[deprecated("x")]]`; a lambda's introducer or a
+                # subscript has no parameters before it.
+                bracket = self._opening(position)
+                if bracket is None or not code.startswith(("[[", "<:<:", "[<:", "<:["), bracket):
+                    return None
+                at = bracket
+                continue
+            if token != ")":
+                # A specifier's or a trailing return type's word or punctuator.
+                at = position
+                continue
+            start = self._opening(position)
             if start is None:
                 return None
-            before = self._before(start)
-            if before is None or before[0] not in _SPECIFYING:
+            word = self._before(start)
+            if word is None or word[0] not in _SPECIFYING:
+                closing = position
                 break
-            # Past `noexcept(...)`, `__attribute__((...))`, `decltype(...)`.
-            end = before[1]
+            # Past `noexcept(...)`, `__attribute__((...))`, `decltype(...)`, read to their
+            # paired parentheses.
+            at = word[1]
         else:
             return None
-        if not _QUALIFIED.fullmatch(code, closing + 1, opening):
+        if not self._qualified(closing + 1, opening):
             return None
         return start
+
+    def _qualified(self, start, end):
+        """Whether only what may follow a function's parameters stands from ``start`` to
+        ``end`` (its brace): qualifiers and specifiers (``_QUALIFIERS``), `&`, `&&`,
+        `noexcept(...)`, `throw(...)`, `__attribute__((...))`, `__declspec(...)` and
+        `[[...]]` (each group read to its paired bracket, however deep), then maybe a
+        trailing return type or `requires` clause, with no `;`, `{` or `}`."""
+        code, pairs = self._code()
+        at = start
+        while at < end:
+            found = _NONBLANK.search(code, at, end)
+            if found is None:
+                return True
+            at = found.start()
+            if code.startswith(("->", "requires"), at):
+                if code.startswith("requires", at) and _word_char(code[at + 8 : at + 9] or " "):
+                    return False
+                return not any(char in ";{}" for char in code[at:end])
+            if code[at] == "&":
+                at += 1
+                continue
+            if code.startswith("[[", at):
+                closing = (pairs or {}).get(at)
+                if closing is None or closing >= end:
+                    return False
+                at = closing + 1
+                continue
+            word = _WORD.match(code, at)
+            if word is None:
+                return False
+            at = word.end()
+            if word[0] in ("noexcept", "throw", "__attribute__", "__declspec"):
+                group = _NONBLANK.search(code, at, end)
+                if group is not None and code[group.start()] == "(":
+                    closing = (pairs or {}).get(group.start())
+                    if closing is None or closing >= end:
+                        return False
+                    at = closing + 1
+                    continue
+                if word[0] != "noexcept":
+                    return False
+            elif word[0] not in _QUALIFIERS:
+                return False
+        return True
 
     def _angle(self, closing):
         """Where the `<` matching the `>` at ``closing`` is (`]<class T>`), or None."""
