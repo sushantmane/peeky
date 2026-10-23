@@ -635,6 +635,143 @@ def test_a_null_pointer_is_a_real_divergence(store):
     ]
 
 
+def typed(rows):
+    """A probe result of (hit, selector, type, value[, note]) observed rows."""
+    recorded = captured(
+        [(hit, "observed", selector, value) for hit, selector, _, value, *_ in rows]
+    )
+    for row, (_, _, kind, _, *note) in zip(recorded["rows"], rows):
+        row["type"] = kind
+        if note:
+            row["note"] = note[0]
+    return recorded
+
+
+POINTS = "it may point at another element too; compare offsets with address() (COOKBOOK 4.8)"
+HOLDS = (
+    "an address in it may be another element's too; compare offsets with address() (COOKBOOK 4.8)"
+)
+
+
+def test_a_pointer_whose_address_differs_is_not_addresses_only(store):
+    """A pointer into an array held element 6's address in one run and element 4's in
+    the other, but `diff` said `addresses only` and ranked it after everything else. A
+    pointer's address is its value: it ranks right after the real differences, and the
+    note says it may point at another element and how to tell."""
+
+    def run(base, peaks, count, left):
+        marks = f"[{{tag = 'A', at = 0x{base + 4 * peaks[0]:012x}}}]"
+        rows = []
+        for hit, peak in enumerate(peaks, 1):
+            rows += [
+                (hit, "peak", "const int *", f"0x{base + 4 * peak:016x}"),
+                (hit, "first", "const int *", f"0x{base:016x}"),
+                (hit, "peak[0]", "const int", ["9", "2"][hit - 1]),
+                (hit, "count", "int", str(count + hit)),
+                (hit, "left", "int", left, "leftovers"),
+            ]
+        return typed(rows + [(1, "marks", "mark[8]", marks)])
+
+    evidence.record(store, run(0x16B42B028, [6, 17], 0, "7"), language="c")
+    evidence.record(store, run(0x16F527038, [4, 16], 1, "9"), language="c")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (1, "count", None),
+        (2, "count", None),
+        (1, "peak", f"addresses differ at 2 hits (one row per selector: its first hit): {POINTS}"),
+        (1, "first", f"addresses differ at 2 hits (one row per selector: its first hit): {POINTS}"),
+        # A struct's preview shows its pointers as addresses only: `at` moved too.
+        (1, "marks", f"addresses differ: {HOLDS}"),
+        (
+            1,
+            "left",
+            "qualified (run a: note, run b: note): not evidence by itself; queries run shows why",
+        ),
+        (
+            2,
+            "left",
+            "qualified (run a: note, run b: note): not evidence by itself; queries run shows why",
+        ),
+    ]
+    # Its first hit's values, which `address()` reads (offsets 24 and 16: elements 6, 4).
+    assert (rows[2]["value_a"], rows[2]["value_b"]) == ("0x000000016b42b040", "0x000000016f527048")
+    # The table shows the note whole, though it is longer than a cell: what to do is last.
+    _, shown = evidence.canned(store, "diff", table=True)
+    assert any(line.endswith(rows[2]["note"]) for line in shown.splitlines() if " peak " in line)
+    compared = evidence.run_query(store, "compare")["rows"]
+    assert {(r["hit"], r["selector"], r["note"]) for r in compared} >= {
+        (2, "peak", f"addresses differ: {POINTS}"),
+        (1, "peak[0]", None),
+    }
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "const int *",
+        "int *const",
+        "char *restrict",
+        "int **",
+        "const std::string &",
+        "std::string &&",
+        "demo::Pt *",
+        "&str",
+        "&mut [i32]",
+        "*const u8",
+    ],
+)
+def test_a_pointer_or_reference_type_says_it_may_point_elsewhere_in_any_run(store, kind):
+    """By its type alone, where the run's language does not tell (a store saved before
+    runs had one)."""
+    for address in ("0x000000016b42b040", "0x000000016f527048"):
+        evidence.record(store, typed([(1, "p", kind, f'{address} "abc"')]))
+    [row] = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == f"addresses differ: {POINTS}"
+
+
+@pytest.mark.parametrize(
+    "language, kind, a, b",
+    [
+        # A Python object's repr: its address is its identity, which `identity` holds.
+        ("python", "Node", "<Node object at 0x104a5b2c0>", "<Node object at 0x1052c3a90>"),
+        # A Java object number counts as an address in a Java run's values.
+        ("java", "Merge$Interval", "Merge$Interval@143 {start=1}", "Merge$Interval@151 {start=1}"),
+        # A run of no known language, whose type is no pointer.
+        (None, "Node", "{next = 0x00000001051a8660}", "{next = 0x00000001056bc660}"),
+    ],
+)
+def test_other_text_that_differs_only_in_addresses_stays_addresses_only(
+    store, language, kind, a, b
+):
+    for value, real in ((a, "1"), (b, "2")):
+        rows = [(1, "self", kind, value), (1, "n", "int", real), (1, "m", "int", real, "x")]
+        evidence.record(store, typed(rows), language=language)
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["selector"], (r["note"] or "")[:14]) for r in rows] == [
+        ("n", ""),
+        ("m", "qualified (run"),
+        ("self", "addresses only"),
+    ]
+
+
+def test_a_pointer_whose_address_differs_is_grouped_per_stop(store):
+    for base in (0x16B43EDB0, 0x16D17EDB0):
+        rows = [(hit, "p", "Node *", f"0x{base:016x}") for hit in (1, 2, 3, 4)]
+        recorded = typed(rows)
+        for row in recorded["rows"]:
+            row.update(stop=2 - row["hit"] % 2, stops=2)
+        evidence.record(store, recorded, language="cpp")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["note"]) for r in rows] == [
+        (
+            stop,
+            f"addresses differ at 2 hits at stop {stop} (one row per selector and stop: its "
+            f"first hit): {POINTS}",
+        )
+        for stop in (1, 2)
+    ]
+
+
 def test_a_run_that_never_stopped_is_missing_hits_not_selectors(store):
     evidence.record(store, captured([(1, "observed", "item", "1"), (2, "observed", "item", "2")]))
     no_stop = captured([], capture=["item"])

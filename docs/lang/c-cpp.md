@@ -89,6 +89,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - `address(value)` reads that address as an integer. To see which element a pointer points at in
   another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
+- `queries diff` never calls a pointer's other address `addresses only`. It says
+  `addresses differ: it may point at another element too`, right after the real differences
+  ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)).
 
 ## Change values
 

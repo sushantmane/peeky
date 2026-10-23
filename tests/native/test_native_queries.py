@@ -253,3 +253,51 @@ def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
         else:
             assert any(row["note"].startswith(said + "; qualified (run a: note") for row in noted)
         assert all("qualified (" in (row["note"] or "") for row in noted), diff
+
+
+PEAK = """#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv) {
+  int level[8] = {0};
+  int n = 0;
+  for (int i = 1; i < argc && n < 8; i++) level[n++] = atoi(argv[i]);
+  const int *first = level, *top = level;
+  for (const int *p = level; p < level + n; p++) {
+    if (*p >= *top) top = p;
+  }
+  printf("TOP:%d\\n", *top);
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_diff_says_a_pointer_to_another_element_may_differ(bins, capsys):
+    # #292: `top` points at the last 5 in run 1 and at the first in the candidate. The
+    # output and `top[0]` agree, and `diff` said `addresses only`, ranked last.
+    root = bins.parent / "peak"
+    root.mkdir()
+    (root / "peak.c").write_text(PEAK)
+    probe = ["probe", str(root), "--at", "peak.c:11", "--capture", "top,first,top[0]", "--quiet"]
+    edit = ["--old", "*p >= *top", "--new", "*p > *top"]
+    for extra in ([], edit):
+        code = main([*probe, *extra, "--", "1", "5", "5", "2"])
+        assert code == 0, capsys.readouterr().out
+    capsys.readouterr()
+    rows = queried(capsys, "diff", "--param", "a=1", "--param", "b=2")["rows"]
+    notes = {row["selector"]: row["note"] for row in rows}
+    assert notes["(edit)"].startswith("the runs built different edits"), rows
+    assert "(output)" not in notes and "top[0]" not in notes, rows
+    assert notes["top"] == (
+        "addresses differ: it may point at another element too; compare offsets with "
+        "address() (COOKBOOK 4.8)"
+    ), rows
+    # COOKBOOK 4.8's offsets tell: element 2 against element 1.
+    sql = (
+        "SELECT t.run_id, (address(t.value) - address(f.value)) / 4 AS element FROM evidence t "
+        "JOIN evidence f ON f.run_id = t.run_id AND f.hit = t.hit AND f.selector = 'first' "
+        "WHERE t.selector = 'top' ORDER BY t.run_id"
+    )
+    assert main(["sql", sql, "--json"]) == 0
+    found = json.loads(capsys.readouterr().out)["rows"]
+    assert [(row["run_id"], row["element"]) for row in found] == [(1, 2), (2, 1)]
