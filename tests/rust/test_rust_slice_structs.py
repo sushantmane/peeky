@@ -2,14 +2,19 @@
 parameter, were never read, because `Friend` has a `name: String`. `friends[0].name` said
 to read it as a `&[T]` parameter, which it was; `friends.data_ptr.name` blamed the debug
 information. A closure's captured `&str` showed only LLDB's summary with no note, and a
-`Vec<&str>` the line moves got the Box note, and a shadowed binding's register reason."""
+`Vec<&str>` the line moves got the Box note, and a shadowed binding's register reason.
+Also the tenth evaluation's address comparison across runs (rust-cookbook 4.8)."""
 
 import json
 import os
+import re
+from pathlib import Path
 
 import pytest
 
 from peeky.cli import main
+
+DOCS = Path(__file__).resolve().parents[2] / "docs"
 
 MANIFEST = """[package]
 name = "{name}"
@@ -237,6 +242,31 @@ def test_a_vec_s_length_is_not_blamed_on_another_binding_of_its_name(crate, caps
     length = rows[(1, f"{vec}.len")]
     assert length["value"] == "3" and length.get("settable") is not True, length
     assert "another binding" not in str(length.get("not_settable")), length
+
+
+@pytest.mark.timeout(400)
+def test_two_runs_pointers_pair_by_their_offset_from_each_runs_base(crate, capsys):
+    # Eval 10: heap addresses differ per run, so kitty's agent matched the payers' pointers
+    # to the slots after the sort by `substr(value, -3)`. rust-cookbook 4.8's SQL pairs
+    # them by `address(value)` minus each run's lowest address.
+    payer = f"payer @ main.rs:{line_of('let payer = trip.friend(payer)?;')}"
+    cents = f"cents @ main.rs:{line_of('let cents: i64')}"
+    probe(capsys, crate, line_of("// BUILT"), f"{payer},{cents}", "--hits", "all")
+    slots = probe(capsys, crate, line_of("if ptr::eq(f, e.payer)"), "f,f.name", "--hits", "4")
+    text = (DOCS / "lang/rust-cookbook.md").read_text()
+    text = text[text.index("### Find who sits at a pointer's old slot") :]
+    sql = re.search(r'peeky sql "(.*?)"', text, re.S)[1]
+    sql = sql.replace("payer @ main.rs:54", payer).replace("cents @ main.rs:49", cents)
+    code = main(["sql", sql, "--param", "payers=1", "--param", "slots=2", "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    rows = [(row["expense"], row["cents"], row["from_base"]) for row in result["rows"]]
+    # Each payer's old slot: Åsa's (0), Zoë's (80) and Bo's (40), 40-byte friends apart.
+    assert rows == [(1, "4500", 0), (2, "1000", 80), (3, "900", 40)], result
+    if reads(slots[(1, "f.name")]):
+        # Who sits there after the sort: the friend each payer's money goes to.
+        credited = [row["credited"] for row in result["rows"]]
+        assert credited == ['"Bo"', '"Zoë"', '"Chloé"'], result
 
 
 RETAIN = """struct Friend {

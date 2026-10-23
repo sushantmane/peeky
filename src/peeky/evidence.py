@@ -101,7 +101,8 @@ TABLES = {
             "value": "Value as the debugger displays it; NULL when there is none",
             "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
             "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
-            "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not)",
+            "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not). A hex "
+            "address is NULL here: address(value) reads it",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option); 'stale' (whatever its view) "
@@ -643,6 +644,27 @@ def _object_ref(value):
     if not isinstance(value, str) or not (match := _OBJECT_REF.match(value)):
         return None
     return match[0]
+
+
+def _address(value):
+    """The first address in a value's text, as an INTEGER, else NULL: 0x and 9 to 16
+    significant hex digits outside quoted text, as no_addresses masks.
+
+    Registered as the SQL function address(text), to compare addresses across runs by
+    their offset from a base each run has (eval 10: kitty's agent joined runs on
+    `substr(value, -3)`). A string's text (a value that starts with a quote; a Java String
+    is java-debug's unescaped text) and a Java object (object_ref) have none. SQLite's
+    integers are signed 64-bit, so an address at or above 2**63 comes back as its two's
+    complement, a negative number: two such addresses still subtract and order correctly,
+    and printf('0x%x', ...) gives the hex back.
+    """
+    if not isinstance(value, str) or value[:1] in ('"', "'") or _OBJECT_REF.match(value):
+        return None
+    for part in _TEXT.split(value):
+        if part[:1] not in ('"', "'") and (match := _ADDRESS.search(part)):
+            number = int(match[0], 16)
+            return number - (1 << 64) if number >= 1 << 63 else number
+    return None
 
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -1286,6 +1308,7 @@ def _reader(path, *, snapshot=False):
     connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
     connection.create_function("short_function", 1, bounded(_short_function), deterministic=True)
     connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
+    connection.create_function("address", 1, bounded(_address), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
@@ -2619,6 +2642,15 @@ def schema(path):
             "captures.identity (an integer), not in their text: within one hit equal means "
             "the same object; across hits equal may also be a new object in a freed one's "
             "place, while different always means different objects",
+            "address(text)": "The first address in the text, as an INTEGER, else NULL: 0x "
+            "and 9 to 16 significant hex digits outside quoted text, as no_addresses masks. A "
+            "null pointer, all-ones, short hex, a string's text, a Java object and a Python "
+            "identity (`[id 6]`) have none. For a pointer it is the address the pointer holds; "
+            "in LLDB's `T @ 0x...` it is where the value itself is stored. Addresses differ "
+            "between runs: join runs on each address minus a base, the same element's address "
+            "in each run (COOKBOOK 4.8). An address at or above 2^63 is its two's complement, a "
+            "negative INTEGER: printf('0x%x', address(value)) gives its hex back (and 0x0 for "
+            "NULL)",
         },
         "examples": list(EXAMPLES),
         "rules": [

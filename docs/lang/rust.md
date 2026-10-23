@@ -118,6 +118,9 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   runs. A call of `std::ptr::eq` or `std::ptr::addr_eq` doesn't count. Past that, it shows only its
   pointer, and its note names the call or drop and its line
   ([Rust 7.2](rust-cookbook.md#when-a-reference-reads)).
+- A raw pointer shows only its address, `[unproven]`. To see which element it points at in
+  another run, join the runs on `address(value)` minus a base each run has
+  ([Rust 4.8](rust-cookbook.md#48-compare-addresses-across-runs)).
 - A local whose slot may hold leftovers is withheld: the row says `no value yet:` and why. That is
   a local not assigned on some path (`let x;`), or not kept across an `.await`
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).

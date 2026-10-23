@@ -2,11 +2,13 @@
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -942,6 +944,164 @@ def test_object_ref_says_which_values_are_the_same_java_object(store):
         "load": None,
         "label": None,
     }
+
+
+@pytest.mark.parametrize(
+    "value, address",
+    [
+        # LLDB's pointers in C, C++ and Rust, with or without a type before them.
+        ("0x00000001028f9800", 0x1028F9800),
+        ("kitty::Friend * 0x0000000102ec5800", 0x102EC5800),
+        ("(debounce *) 0x000000016fdfe8c0", 0x16FDFE8C0),
+        # LLDB's text for a value with no value or summary of its own: where it is stored.
+        ("&str @ 0x104afcf50", 0x104AFCF50),
+        ("alloc::vec::Vec<&str, alloc::alloc::Global> @ 0x16b5e6a80", 0x16B5E6A80),
+        # A C string: the pointer's address. Hex in the text is the program's data.
+        ('0x000000016d78b298 "apple"', 0x16D78B298),
+        ('0x16fc5ef38 "0x00000001deadbeef"', 0x16FC5EF38),
+        # Two addresses in one value: the first.
+        ("{next = 0x0000600000c04000, prev = 0x0000600000c04040}", 0x600000C04000),
+        ("[<Node object at 0x104a5b2c0>, <Node object at 0x104a5b300>]", 0x104A5B2C0),
+        # Linux: a PIE program's heap, and the stack.
+        ("0x000055555556a2c0", 0x55555556A2C0),
+        ("0x00007fffffffe3a8", 0x7FFFFFFFE3A8),
+        # SQLite's integers are signed 64-bit: from 2**63 on, the two's complement.
+        ("0x7fffffffffffffff", 2**63 - 1),
+        ("0x8000000000000000", -(2**63)),
+        ("0xffff800000001000", 0xFFFF800000001000 - 2**64),
+        ("0xfffffffffffffffe", -2),
+        # No address: what no_addresses leaves (NULL, all-ones, 8 significant digits or
+        # fewer), a string's text, and Java and Python object numbers.
+        (None, None),
+        ("", None),
+        ("4500", None),
+        ("0x0000000000000000", None),
+        ("0xffffffffffffffff", None),
+        ("0x00000000deadbeef", None),
+        ("0x10", None),
+        ("0x…", None),
+        ("<not shown: may point at freed memory>", None),
+        ('"0x0000000102ec5850"', None),
+        ("'0x0000000102ec5850'", None),
+        # java-debug shows a String's text unescaped.
+        ('"say "0x0000000102ec5850" twice"', None),
+        ("Holder@12 {raw=0x0000000102ec5850}", None),
+        ("int[3]@64 [1, 2, 3]", None),
+        ("['a']  [id 6]", None),
+    ],
+)
+def test_address_reads_the_first_address_in_a_value(value, address):
+    # Eval 10 (kitty, Rust): heap addresses differ per run, so the agent matched pointers
+    # across three runs by `substr(value, -3)`.
+    assert evidence._address(value) == address
+
+
+def test_address_is_in_ad_hoc_sql_where_large_addresses_subtract_and_order(store):
+    evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "p", "0x0000000102ec5850"),
+                (1, "observed", "q", "0x0000000102ec5800"),
+                (1, "observed", "hi", "0xffff800000001100"),
+                (1, "observed", "lo", "0xffff800000001000"),
+                (1, "observed", "s", '"Bo"'),
+            ]
+        ),
+        language="rust",
+    )
+    at = "(SELECT address(value) FROM last_run WHERE selector = '{}')".format
+    [row] = evidence.query(
+        store,
+        f"SELECT {at('p')} - {at('q')} AS near, {at('hi')} - {at('lo')} AS far, "
+        f"typeof({at('hi')} - {at('lo')}) AS kind, {at('hi')} > {at('lo')} AS ordered, "
+        f"printf('0x%x', {at('hi')}) AS hex, {at('s')} AS text",
+    )["rows"]
+    assert row == {
+        "near": 0x50,
+        "far": 0x100,
+        "kind": "integer",
+        "ordered": 1,
+        "hex": "0xffff800000001100",
+        "text": None,
+    }
+    described = evidence.schema(store)
+    assert "COOKBOOK 4.8" in described["functions"]["address(text)"]
+    assert "address(text)" in evidence.schema_text(described)
+
+
+DOCS = Path(__file__).resolve().parents[2] / "docs"
+
+
+def _documented_sql(page, heading):
+    """The SQL of the first `peeky sql "..."` after ``heading`` on a docs page."""
+    text = (DOCS / page).read_text()
+    return re.search(r'peeky sql "(.*?)"', text[text.index(heading) :], re.S)[1]
+
+
+def test_the_cookbooks_address_recipe_pairs_pointers_across_runs(store):
+    # Kitty (eval 10): `parse` keeps each payer as a raw pointer into `trip.friends`; `main`
+    # sorts the friends by name, so each pointer now finds whoever sits in its old slot.
+    # Each run's heap starts elsewhere, and here its last hex digits differ too.
+    payers = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "payer @ main.rs:47", "<not shown: may point at freed memory>"),
+                (1, "observed", "payer @ main.rs:54", "0x0000000100e4d800"),
+                (1, "observed", "cents @ main.rs:49", "4500"),
+                (2, "observed", "payer @ main.rs:47", "<not shown: may point at freed memory>"),
+                (2, "observed", "payer @ main.rs:54", "0x0000000100e4d850"),
+                (2, "observed", "cents @ main.rs:49", "1000"),
+                (3, "observed", "payer @ main.rs:47", "<not shown: may point at freed memory>"),
+                (3, "observed", "payer @ main.rs:54", "0x0000000100e4d828"),
+                (3, "observed", "cents @ main.rs:49", "900"),
+            ]
+        ),
+        language="rust",
+    )
+    slots = evidence.record(
+        store,
+        captured(
+            [
+                (hit, "observed", selector, value)
+                for hit, (at, name) in enumerate(
+                    [(0xC40, "Bo"), (0xC68, "Chloé"), (0xC90, "Zoë"), (0xCB8, "Åsa")], 1
+                )
+                for selector, value in (("f", f"0x0000000100b51{at:x}"), ("f.name", f'"{name}"'))
+            ]
+        ),
+        language="rust",
+    )
+    sql = _documented_sql("lang/rust-cookbook.md", "### Find who sits at a pointer's old slot")
+    rows = evidence.query(store, sql, {"payers": payers, "slots": slots})["rows"]
+    assert rows == [
+        {"expense": 1, "cents": "4500", "from_base": 0, "credited": '"Bo"'},
+        {"expense": 2, "cents": "1000", "from_base": 80, "credited": '"Zoë"'},
+        {"expense": 3, "cents": "900", "from_base": 40, "credited": '"Chloé"'},
+    ]
+    # Neither the addresses nor their last three hex digits match between the runs.
+    assert not evidence.query(
+        store,
+        "SELECT 1 FROM evidence p JOIN evidence f ON substr(f.value, -3) = substr(p.value, -3) "
+        "WHERE p.run_id = :payers AND f.run_id = :slots",
+        {"payers": payers, "slots": slots},
+    )["rows"]
+    # COOKBOOK 4.8's general form, with each run's lowest address as its base or, the
+    # other base it names, the address at its first hit.
+    sql = _documented_sql("COOKBOOK.md", "### 4.8 Compare Addresses Across Runs")
+    lowest = "MIN(address(value)) OVER (PARTITION BY run_id, selector)"
+    first = "FIRST_VALUE(address(value)) OVER (PARTITION BY run_id, selector ORDER BY hit)"
+    assert lowest in sql
+    for base in (lowest, first):
+        documented = sql.replace("'p'", "'payer @ main.rs:54'").replace("'q'", "'f'")
+        documented = documented.replace(lowest, base)
+        rows = evidence.query(store, documented, {"a": payers, "b": slots})["rows"]
+        assert rows == [
+            {"hit_a": 1, "hit_b": 1, "from_base": 0},
+            {"hit_a": 2, "hit_b": 3, "from_base": 80},
+            {"hit_a": 3, "hit_b": 2, "from_base": 40},
+        ]
 
 
 def test_the_evidence_view_has_language_and_output_stays_one_join_away(store):
