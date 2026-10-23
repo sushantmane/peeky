@@ -429,29 +429,61 @@ def _requested(alias):
     at LINE@HIT"], a --set at its probe line's set_hit too (ninth evaluation: `diff`'s
     `(sets)` row and `outputs` did not say which hit a --set was for), with its outcome
     from runs.set_outcomes (`_set_outcome`: review of PR #278, a `LINE@all` made at some
-    stops only read like one made at all). A run saved before outcomes were kept says
-    ", not made: that hit never came" from the probe's own warning (the one for a run's
-    --sets names them all, as they share their hit; a --set-at's names its LINE@HIT, name
-    and value). Review of PR #214."""
+    stops only read like one made at all). A run saved before outcomes were kept (schema
+    15), or an entry that is no outcome, says what the probe's own warning did: ", not
+    made: that hit never came" (", not made: its line never stopped" for a `LINE@all`), or
+    ", made only at the first N stops: the cap" (the warning for a run's --sets names them
+    all, as they share their hit; a --set-at's names its LINE@HIT, name and value; review
+    of PR #214); else nothing, which claims nothing of how it was applied (`_RECORDED`
+    says whether that was recorded)."""
     at = (
         f"CASE WHEN json_array_length(s.value) = 2 THEN {alias}.line || '@' || "
         f"COALESCE({alias}.set_hit, 1) ELSE json_extract(s.value, '$[2]') END"
     )
+    warned = f"json_each(COALESCE({alias}.warnings, '[]')) w"
+    asked = (
+        f"':' || {at} || ' ' || json_extract(s.value, '$[0]') || '=' || "
+        "json_extract(s.value, '$[1]')"
+    )
     unmade = (
-        f"EXISTS (SELECT 1 FROM json_each(COALESCE({alias}.warnings, '[]')) w WHERE "
+        f"EXISTS (SELECT 1 FROM {warned} WHERE "
         "CASE WHEN json_array_length(s.value) = 2 THEN w.value LIKE '--set %' AND "
         "instr(w.value, ' not applied: the program stopped ') > 0 ELSE w.value LIKE "
-        f"'--set-at %' AND instr(w.value, ':' || {at} || ' ' || json_extract(s.value, '$[0]') "
-        "|| '=' || json_extract(s.value, '$[1]') || ' was not applied: ') > 0 END)"
+        f"'--set-at %' AND instr(w.value, {asked} || ' was not applied: ') > 0 END)"
     )
-    outcome = f"set_outcome(json_extract({alias}.set_outcomes, '$[' || s.key || ']'))"
+    first = f"{asked} || ' was made only at the first '"
+    # How many stops an @all cut short at its cap was made at, from its warning.
+    capped = (
+        "(SELECT substr(rest, 1, instr(rest, ' stops of line ') - 1) FROM (SELECT "
+        f"substr(w.value, instr(w.value, {first}) + length({first})) AS rest FROM {warned} "
+        "WHERE json_array_length(s.value) = 3 AND w.value LIKE '--set-at %' AND "
+        f"instr(w.value, {first}) > 0 LIMIT 1))"
+    )
+    warning = (
+        f"CASE WHEN {unmade} THEN ', not made: ' || CASE WHEN {at} LIKE '%@all' THEN 'its "
+        f"line never stopped' ELSE 'that hit never came' END WHEN {capped} IS NOT NULL THEN "
+        f"', made only at the first ' || {capped} || ' stops: the cap' ELSE '' END"
+    )
+    outcome = (
+        f"CASE WHEN json_valid({alias}.set_outcomes) THEN set_outcome(json_extract("
+        f"{alias}.set_outcomes, '$[' || s.key || ']')) END"
+    )
     return (
         "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
-        f"json_extract(s.value, '$[1]'), 'requested at ' || {at} || CASE WHEN "
-        f"{alias}.set_outcomes IS NOT NULL THEN COALESCE({outcome}, '') WHEN {unmade} "
-        "THEN ', not made: that hit never came' ELSE '' END)) FROM "
-        f"json_each(COALESCE({alias}.sets, '[]')) s)"
+        f"json_extract(s.value, '$[1]'), 'requested at ' || {at} || COALESCE({outcome}, "
+        f"{warning}))) FROM json_each(COALESCE({alias}.sets, '[]')) s)"
     )
+
+
+# Whether a run recorded how each of its requested changes was applied: a valid
+# runs.set_outcomes with an outcome for each entry of runs.sets (schema 16 on). Two runs
+# whose requests read alike were made alike only where both did (review 2 of PR #278).
+_RECORDED = (
+    "(CASE WHEN {r}.set_outcomes IS NULL OR NOT json_valid({r}.set_outcomes) THEN 0 WHEN "
+    "json_type({r}.set_outcomes) IS NOT 'array' THEN 0 ELSE json_array_length("
+    "{r}.set_outcomes) = json_array_length(COALESCE({r}.sets, '[]')) AND NOT EXISTS (SELECT "
+    "1 FROM json_each({r}.set_outcomes) o WHERE set_outcome(o.value) IS NULL) END)"
+)
 
 
 def _set_outcome(text):
@@ -509,10 +541,16 @@ _STATUS_ROW = f"""SELECT NULL, NULL, '(status)', {_OUTCOMES[0]}, {_OUTCOMES[1]},
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ({_OUTCOMES[0]} IS NOT {_OUTCOMES[1]} OR ra.status IS NOT 'completed'
     OR rb.status IS NOT 'completed')"""
+_UNRECORDED = (
+    f"(json_array_length(COALESCE(ra.sets, '[]')) > 0 AND NOT ({_RECORDED.format(r='ra')} "
+    f"AND {_RECORDED.format(r='rb')}))"
+)
 _SETS_ROW = f"""SELECT NULL, NULL, '(sets)', {_requested("ra")}, {_requested("rb")},
     {_requested("ra")} IS NOT {_requested("rb")}, CASE WHEN {_requested("ra")} IS NOT
     {_requested("rb")} THEN 'the runs requested different interventions (--set, --set-at), '
-    || 'or made different ones' ELSE 'the same interventions, made alike' END, -1
+    || 'or made different ones' WHEN {_UNRECORDED} THEN 'the same requested interventions; '
+    || 'how they were applied wasn''t recorded for one or both older runs' ELSE 'the same '
+    || 'interventions, made alike' END, -1
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}"""
 
 
@@ -633,7 +671,8 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND {_requested("ra")} IS NOT {_requested("rb")}))
+  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND ({_requested("ra")} IS NOT {_requested("rb")}
+    OR {_UNRECORDED})))
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -775,7 +814,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "by itself) or differs only in memory addresses. First a (status) row where either "
         "run did not complete (its error too), and a (sets) row where either requested "
         'interventions: each [name, value, "requested at LINE@HIT"] with how it went, as '
-        "`outputs` says it",
+        "`outputs` says it; requests that read alike are said to be made alike only where "
+        "both runs recorded how (runs.set_outcomes)",
         f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM (SELECT hit, phase, selector, value_a, "
         f"value_b, differs, note, pos FROM pair UNION ALL SELECT * FROM ({_STATUS_ROW}) "
         f"UNION ALL SELECT * FROM ({_SETS_ROW} AND (json_array_length(COALESCE(ra.sets, "

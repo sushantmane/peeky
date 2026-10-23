@@ -1272,7 +1272,12 @@ lists each function's stops.
   - `, not made: its line never stopped`.
 - `runs.set_outcomes` (schema 16) keeps each request's outcome, in the order of `runs.sets`: `made`,
   the stops it was made at; `ended`, why no more were; and `complete`. The probe's JSON has the same
-  list as `set_outcomes`. Runs saved before schema 16 say only `, not made: that hit never came`.
+  list as `set_outcomes`. Runs saved before schema 16 say what their warnings did:
+  `, not made: that hit never came`, `, not made: its line never stopped`, or
+  `, made only at the first 100 stops: the cap`.
+- Two runs whose requests read alike count as made alike only where both recorded their outcomes.
+  Otherwise `diff` and `compare` show a `(sets)` row that says
+  `the same requested interventions; how they were applied wasn't recorded for one or both older runs`.
 - So runs whose changes differ in their hit, in which were made, or in how far an `@all` got, tell
   apart. Two runs that changed the same first hit alike, but one to the program's end and one until
   `--until hits` ended it, differ in `(sets)`.

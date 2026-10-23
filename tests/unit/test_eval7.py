@@ -275,11 +275,11 @@ def store(tmp_path):
     return tmp_path / "evidence" / "evidence.db"
 
 
-def saved(store, rows, hits=None, requested="all", warnings=(), **probe):
+def saved(store, rows, hits=None, requested="all", warnings=(), outcomes=None, **probe):
     """Record a run of (hit, phase, selector, value[, stop]) rows that stopped ``hits``
     times (default: its last hit) of the ``requested``; the probe asked for exactly the
     selectors it captured. A row's stop is which of its line's 2 breakpoint locations
-    it was at (#157)."""
+    it was at (#157). ``outcomes``: its set_outcomes, as a probe since schema 16 gives."""
     from peeky import evidence
 
     recorded = probe_result()
@@ -292,6 +292,8 @@ def saved(store, rows, hits=None, requested="all", warnings=(), **probe):
     recorded["probe"].update(capture=list(dict.fromkeys(row[2] for row in rows)), **probe)
     recorded["hits"] = hits if hits is not None else max([row[0] for row in rows], default=0)
     recorded["warnings"] = list(warnings)
+    if outcomes is not None:
+        recorded["set_outcomes"] = outcomes
     return evidence.record(store, recorded, language="c")
 
 
@@ -339,7 +341,12 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
         ("after-set", "r.tail", "intervention only in run b"),
     ]
     # Both runs set something: an after-set value equal to its run's observed value is
-    # no difference of its own; the observed row has any.
+    # no difference of its own; the observed row has any. Both recorded how the change
+    # went (schema 16), so their equal requests are no difference either.
+    made = [
+        {"option": "--set", "at": "36@4", "name": "r.tail", "value": "3", "made": 1}
+        | {"ended": "made", "complete": True}
+    ]
     saved(
         store,
         [
@@ -349,6 +356,7 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
             (4, "after-set", "r.buf", "[1, 2, 3, 0]"),
         ],
         set=[["r.tail", "3"]],
+        outcomes=made,
     )
     saved(
         store,
@@ -359,6 +367,7 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
             (4, "after-set", "r.buf", "[1, 2, 3, 4]"),
         ],
         set=[["r.tail", "3"]],
+        outcomes=made,
     )
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["phase"], r["selector"], r["note"]) for r in rows] == [

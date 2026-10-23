@@ -607,3 +607,109 @@ def test_a_schema_15_store_gains_outcomes_and_its_runs_keep_their_warnings(tmp_p
         [["x", "7", "requested at 9@4, not made: that hit never came"]],
         [["x", "7", "requested at 9@4, refused at that hit"]],
     ]
+
+
+# Review 2 of PR #278: runs saved before schema 16 have no outcomes. Their `@all` warnings
+# still say how it went where they can, and two such runs with the same request are never
+# said to have made it alike.
+UNRECORDED = (
+    "the same requested interventions; how they were applied wasn't recorded for one or both "
+    "older runs"
+)
+
+
+def as_schema_15(store):
+    """The store as schema 15 kept these runs: no runs.set_outcomes."""
+    import sqlite3
+
+    connection = sqlite3.connect(store)
+    connection.executescript("ALTER TABLE runs DROP COLUMN set_outcomes; PRAGMA user_version = 15;")
+    connection.close()
+
+
+def test_a_schema_15_capped_or_never_stopped_all_keeps_what_its_warning_said(monkeypatch, tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    recorded(
+        monkeypatch,
+        store,
+        (Stops([8, *[9] * (MAX_HITS + 1)]), ALL_AT_9),
+        (Stops([8]), ALL_AT_9),
+    )
+    as_schema_15(store)
+    rows = evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+    assert [json.loads(row["sets"]) for row in rows] == [
+        [["x", "5", f"requested at 9@all, made only at the first {MAX_HITS} stops: the cap"]],
+        [["x", "5", "requested at 9@all, not made: its line never stopped"]],
+    ]
+    import sqlite3
+
+    connection = sqlite3.connect(store)
+    assert connection.execute("SELECT COUNT(set_outcomes) FROM runs").fetchone() == (0,)
+    # An entry that is no outcome reads as its warning did too.
+    connection.execute("UPDATE runs SET set_outcomes = 'not json' WHERE run_id = 1")
+    connection.commit()
+    connection.close()
+    (row,) = evidence.run_query(store, "outputs", {"a": 1, "b": 1})["rows"]
+    assert json.loads(row["sets"])[0][2].endswith(
+        f"made only at the first {MAX_HITS} stops: the cap"
+    )
+
+
+def test_two_schema_15_runs_with_the_same_request_are_not_said_to_be_made_alike(
+    monkeypatch, tmp_path
+):
+    # One changed every stop to the program's end, the other one stop before --until hits
+    # ended it: schema 15 kept neither, and their requests read alike.
+    store = tmp_path / "evidence" / "evidence.db"
+    every = ((8, ALL, "x", "5"),)
+    recorded(
+        monkeypatch,
+        store,
+        (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)),
+        (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), until="hits", set_at=every)),
+        (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)),
+    )
+    as_schema_15(store)
+    for query in ("compare", "diff"):
+        sets_a, sets_b, differs, note = run_rows(store, query, 1, 2)["(sets)"]
+        assert sets_a == sets_b == '[["x","5","requested at 8@all"]]', (query, sets_a)
+        assert (differs, note) == (0, UNRECORDED), query
+    # A run saved since (schema 16) against an older one: still not recorded for both.
+    recorded(monkeypatch, store, (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)))
+    for query in ("compare", "diff"):
+        assert run_rows(store, query, 1, 4)["(sets)"][2:] == (1, RECORDED_APART), query
+    recorded(monkeypatch, store, (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)))
+    # Two runs that recorded it, made alike: `compare` says so, and `diff` has no row.
+    assert run_rows(store, "compare", 4, 5)["(sets)"][2:] == (
+        0,
+        "the same interventions, made alike",
+    )
+    assert "(sets)" not in run_rows(store, "diff", 4, 5)
+
+
+RECORDED_APART = (
+    "the runs requested different interventions (--set, --set-at), or made different ones"
+)
+
+
+def test_an_unrecorded_run_is_never_counted_as_recorded():
+    import sqlite3
+
+    connection = sqlite3.connect(":memory:")
+    connection.create_function("set_outcome", 1, evidence._set_outcome)
+    made = {"at": "9@all", "made": 2, "ended": "exit"}
+    for sets, outcomes, expected in (
+        ('[["x", "5", "9@all"]]', json.dumps([made]), 1),
+        ('[["x", "5", "9@all"]]', None, 0),
+        ('[["x", "5", "9@all"]]', "not json", 0),
+        ('[["x", "5", "9@all"]]', "{}", 0),
+        ('[["x", "5", "9@all"]]', "[]", 0),
+        ('[["x", "5", "9@all"]]', json.dumps([{"made": "2"}]), 0),
+        ('[["x", "5", "9@all"], ["y", "1", "9@2"]]', json.dumps([made]), 0),
+    ):
+        sql = (
+            "SELECT "
+            + evidence._RECORDED.format(r="r")
+            + " FROM (SELECT ? AS sets, ? AS set_outcomes) r"
+        )
+        assert connection.execute(sql, (sets, outcomes)).fetchone() == (expected,), outcomes
