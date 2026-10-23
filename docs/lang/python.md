@@ -65,7 +65,8 @@ Peeky debugs Python with debugpy, Python's debugger.
   object that `seen` named keeps its contents, such as a default argument or a module global
   ([2.3](../COOKBOOK.md#23-test-a-hypothesis-by-changing-a-value)).
 - To change values at several lines or hits, repeat `--set-at LINE@HIT name=value`
-  ([2.8](../COOKBOOK.md#28-change-a-value-then-restore-it)).
+  ([2.8](../COOKBOOK.md#28-change-a-value-then-restore-it)). `--set-at LINE@all name=value`
+  changes a local at every stop of the line ([2.8](../COOKBOOK.md#change-it-at-every-stop-all)).
 
 ## See what a function returned
 

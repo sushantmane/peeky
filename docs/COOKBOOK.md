@@ -67,7 +67,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [2.5 A Module Imported by a Script, with Arguments](#25-a-module-imported-by-a-script-with-arguments): `--run` for a module a script imports, and program arguments
    - [2.6 Stop Right After the Last Hit](#26-stop-right-after-the-last-hit): `--until hits`: stop once the values are in
    - [2.7 JSON for Scripts](#27-json-for-scripts): `--json` and `jq`
-   - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another
+   - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another; `LINE@all`: at every stop
    - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what a call returned, in C, C++, Rust and Java
 3. [Comparing Runs](#3-comparing-runs): what differs between saved runs
    - [3.1 Two Inputs Side by Side](#31-two-inputs-side-by-side): `queries diff`: what else differed, then the first divergence
@@ -893,6 +893,9 @@ output:
 With `best` at -3 from the first hit, the running maximum is right. In C, C++ and Rust,
 `--set-hit` counts stops, not passes ([2.2](#stops-not-passes)).
 
+To change a value at every stop of a line, not at one hit, use `--set-at LINE@all`
+([2.8](#change-it-at-every-stop-all)).
+
 ### 2.5 A Module Imported by a Script, with Arguments
 
 **What it answers:** What happens inside a library for one specific input?
@@ -1044,7 +1047,7 @@ Branch on the exit status:
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
 | 2 | An error, or a refusal. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
-| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
+| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran. This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
 
 - Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
   whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
@@ -1067,6 +1070,8 @@ Branch on the exit status:
 - Values are captured only at `--at`. A change there gets `after-set` rows, as `--set` does.
 - `HIT` counts every stop of the line, in any function, a lambda's too. Each change says whose
   variable it changed.
+- `--set-at LINE@all name=value` changes it at every stop of `LINE`, up to 100
+  ([below](#change-it-at-every-stop-all)).
 - A change that never happened, because its stop never came, makes the probe exit 4.
 
 #### Example: change a value for one line
@@ -1119,6 +1124,84 @@ set name: "pear " -> "pear"  (--set-at line 23@4, in main)
 output:
   STOCK:apple=7,pear=3
 ```
+
+#### Change it at every stop: `@all`
+
+`--set-at LINE@all name=value` makes the change at each stop of `LINE` while the probe runs. Peeky
+takes no conditions, since a selector is a path, never an expression. To change a value only in
+some case, put `@all` on a line that runs only in that case.
+
+`debounce.c` (C) turns a button's noisy signal into presses and releases. Its `settle` returns
+early at line 36 when a sample agrees with the accepted level, without resetting the count
+`db->count`. To test "reset it there", reset it at every stop of line 36. But `db` is `settle`'s
+pointer, so `--set-at 36@all db.count=0` is refused before the run, as one change there would be.
+The refusal names line 80, in `main`, which owns `db`:
+
+```
+error [MUTATION_REJECTED]: `db.count` cannot be changed at debounce.c:36, at any stop of this build: in settle, `db` is a pointer: …; feed has one caller: debounce.c:80 in main, which passes `&db`, where `db.count` is settable: a probe's `--set-at 80@N db.count=<value>`, N counting line 80's own stops (…); `--set-at 80@all` would make the change at every stop of line 80, whether or not the call made there reaches line 36: to make it only where line 36 runs, try it in a candidate edit (`--old`/`--new`). Refused before the program runs: nothing ran
+```
+
+`main`'s line 80 runs once per sample, so `--set-at 80@all db.count=0` resets the count before
+every sample. That is another experiment: the program prints `DEBOUNCE:0:`. A candidate edit makes the
+change only where line 36 runs, in one run ([6.6](#66-see-what-a-fix-does-before-making-it)):
+
+```sh
+peeky probe debounce.c --at 35 --capture level,db.count --hits all \
+  --old 'return 0; /* the input agrees with the accepted level */' \
+  --new $'db->count = 0; /* a blip, if any, is over */\n        return 0;' \
+  -- 3 00101101111110100100001101100000
+```
+
+```
+...
+output:
+  DEBOUNCE:2:P@9,R@20
+```
+
+`@all` does it in one option where the frame that owns the value has such a line.
+`debounce_main.c` is the same debouncer with its loop in `main`, where line 18 runs only when a
+sample agrees with the accepted level:
+
+```sh
+peeky probe debounce_main.c --at 18 --capture ms,db.count --hits all \
+  --set-at 18@all db.count=0 -- 00101101111110100100001101100000
+```
+
+```
+...
+set db.count: 0 -> 0  (--set-at line 18@all, hit 1, in main)
+set db.count: 0 -> 0  (--set-at line 18@all, hit 2, in main)
+set db.count: 1 -> 0  (--set-at line 18@all, hit 3, in main)
+set db.count: 13 more changes by --set-at line 18@all, at hits 4 to 16 (`--json` lists each)
+status: completed  hits: 16 (all)  seconds: 1.498  max pause: 63.7 ms
+output:
+  DEBOUNCE:P@9,R@20, quiet 16
+```
+
+In Java, `set` changes a field through the reference a method holds. So in a Java `settle`,
+`--set-at LINE@all db.count=0` on its early `return` works as it is
+([Java 7.3](lang/java-cookbook.md#change-a-field-or-an-array-element)).
+
+How `@all` works:
+
+- Each stop's change is made and checked as one `LINE@N`'s is: the check before the run, the rules
+  at the stop, and the read-back.
+- A refusal at any stop ends the probe, as one `--set-at`'s does. The error names that stop's hit,
+  and how many changes were already made. A change made at some stops only isn't the experiment
+  asked for.
+- On a line that stops more than once per pass ([2.2](#stops-not-passes)), every stop counts. In C,
+  C++ and Rust, a stop part-way through a line refuses a change, so pick a line with one stop per
+  pass.
+- At most 100 stops get the change, as `--hits all` captures at most 100. If the line stops again,
+  the probe leaves that stop unchanged and removes the line's breakpoint. It warns, lists the change
+  in `unapplied` with `made`, the number of stops changed, and exits 4.
+- An `@all` whose line never stops isn't made. A warning and `unapplied` say so, and the probe
+  exits 4.
+- One `@all` counts as one of the 8 changes a probe may make.
+- With `--until hits`, the probe ends after its last hit, and its `@all` with it. A warning says
+  that any later stop ran without the change.
+- The text shows the first 3 changes, each with its hit, then one line that counts the rest. In
+  JSON, each change is in `interventions`, with its own `at` (`18@4`) and `"all": true`.
 
 #### Where and when a change is made
 
@@ -1177,11 +1260,17 @@ lists each function's stops.
 - `queries diff`'s `(sets)` row and `queries outputs` show each change, a `--set`'s too, as
   `[name, value, "requested at LINE@HIT"]`: `["gleich", "true", "requested at 56@4"]`. They add
   `, not made: that hit never came` where the probe warned so.
+- An `@all` is one request, `"requested at 80@all"`. It adds `, not made: its line never stopped`,
+  or `, made only at the first 100 stops: the cap`, where the probe warned so.
 - So runs whose changes differ only in their hit, or in which changes were made, tell apart.
 - `diff`'s table shows its `(sets)` row short: how many changes, and the first. `--json` has them
-  all.
+  all. With an `@all` among them, it counts requests: `1 request: db.count=0 (requested at
+  18@all)`.
+- `diff` shows more than 3 alike `intervention only in run b` rows as one, its first hit's. Its note
+  says how many hits there were: `intervention only in run b, at 15 hits`.
 - The `interventions` table lists each change made: its `line`, `hit`, `capture_hit`, `function`
-  and `instance` (schema 12). `captures.instance` (schema 13) labels captured values the same way.
+  and `instance` (schema 12). An `@all` has one row per stop it changed. `captures.instance`
+  (schema 13) labels captured values the same way.
 - `queries set_effect` lists the changes in the order they were made.
 - `queries wide` puts each change in the `sets` column of the row it comes before.
 

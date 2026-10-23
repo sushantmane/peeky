@@ -1096,6 +1096,12 @@ N counts the call line's own stops, not the called function's. To find N, run
 `peeky probe ... --at <call line> --capture <argument> --hits all`. `session continue --to` the
 call's line reaches only the next call.
 
+`--set-at 36@all db.count=0`, a change at every stop of `settle`'s line 36, is refused the same way.
+Its refusal also says what `--set-at 80@all` would do: change the count before every call at line
+80, whether or not that call reaches line 36. That is another experiment. To make a change only
+where a callee's line runs, use a candidate edit there ([COOKBOOK 2.8](../COOKBOOK.md#change-it-at-every-stop-all)). Where the owner
+has such a line itself, `@all` on it works.
+
 #### What counts as behind a pointer
 
 Every local whose storage the debug information reaches through a pointer:

@@ -110,7 +110,7 @@ class Client:
         """One stateless request: stop at `path:line`, capture, optionally set, report.
 
         ``set_at`` holds (line, hit, name, value) interventions, each at its own stop of
-        the same file (#137).
+        the same file (#137); a hit of "all" makes it at every stop of its line (#265).
 
         ``edit=(old, new)`` probes a candidate fix: the worker builds the program with
         ``old`` replaced once by ``new``; ``at`` is in the original's line numbering. A

@@ -113,6 +113,7 @@ debugpy gives two lambdas on one line the same name, `<lambda>`, and no column. 
 their stops apart:
 
 - `--set-at LINE@HIT` counts the stops of both lambdas together, and a warning says so.
+  `LINE@all` makes the change at each stop, in either lambda.
 - A change in one of them says `one of 2 on the line the debugger names alike`.
 
 Lambdas on separate lines are counted separately.

@@ -49,7 +49,8 @@ TABLES = {
             "capture": "JSON list of requested selectors",
             "sets": "JSON list of requested interventions: [name, value] for --set (at "
             "set_hit of line), [name, value, 'LINE@HIT'] for --set-at (at hit HIT of LINE, "
-            "counting that line's own stops, in the original's numbering)",
+            "counting that line's own stops, in the original's numbering), or "
+            "[name, value, 'LINE@all'] for one made at every stop of LINE",
             "set_hit": "Hit at which the --set interventions were applied; NULL without --set",
             "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "
@@ -141,7 +142,8 @@ TABLES = {
         },
     ),
     "interventions": (
-        "One row per applied --set or --set-at, in the order they were applied.",
+        "One row per applied --set or --set-at, in the order they were applied: a "
+        "--set-at LINE@all has one per stop it was made at.",
         {
             "run_id": "-> runs.run_id",
             "hit": "Hit of its line at which it was applied (that line's own stops)",
@@ -415,22 +417,38 @@ def _requested(alias):
     `(sets)` row and `outputs` did not say which hit a --set was for). runs.sets holds
     requests: one whose hit never came adds ", not made: that hit never came", from the
     probe's own warning (the one for a run's --sets names them all, as they share their
-    hit; a --set-at's names its LINE@HIT, name and value). Review of PR #214."""
+    hit; a --set-at's names its LINE@HIT, name and value). Review of PR #214. A
+    `LINE@all` (#265) adds ", not made: its line never stopped", or ", made only at the
+    first N stops: the cap", from its warning."""
     at = (
         f"CASE WHEN json_array_length(s.value) = 2 THEN {alias}.line || '@' || "
         f"COALESCE({alias}.set_hit, 1) ELSE json_extract(s.value, '$[2]') END"
     )
+    warned = f"json_each(COALESCE({alias}.warnings, '[]')) w"
+    asked = (
+        f"':' || {at} || ' ' || json_extract(s.value, '$[0]') || '=' || "
+        "json_extract(s.value, '$[1]')"
+    )
     unmade = (
-        f"EXISTS (SELECT 1 FROM json_each(COALESCE({alias}.warnings, '[]')) w WHERE "
+        f"EXISTS (SELECT 1 FROM {warned} WHERE "
         "CASE WHEN json_array_length(s.value) = 2 THEN w.value LIKE '--set %' AND "
         "instr(w.value, ' not applied: the program stopped ') > 0 ELSE w.value LIKE "
-        f"'--set-at %' AND instr(w.value, ':' || {at} || ' ' || json_extract(s.value, '$[0]') "
-        "|| '=' || json_extract(s.value, '$[1]') || ' was not applied: ') > 0 END)"
+        f"'--set-at %' AND instr(w.value, {asked} || ' was not applied: ') > 0 END)"
+    )
+    first = f"{asked} || ' was made only at the first '"
+    # How many stops an @all cut short at its cap was made at, from its warning.
+    capped = (
+        "(SELECT substr(rest, 1, instr(rest, ' stops of line ') - 1) FROM (SELECT "
+        f"substr(w.value, instr(w.value, {first}) + length({first})) AS rest FROM {warned} "
+        "WHERE json_array_length(s.value) = 3 AND w.value LIKE '--set-at %' AND "
+        f"instr(w.value, {first}) > 0 LIMIT 1))"
     )
     return (
         "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
         f"json_extract(s.value, '$[1]'), 'requested at ' || {at} || CASE WHEN {unmade} "
-        "THEN ', not made: that hit never came' ELSE '' END)) FROM "
+        f"THEN ', not made: ' || CASE WHEN {at} LIKE '%@all' THEN 'its line never stopped' "
+        f"ELSE 'that hit never came' END WHEN {capped} IS NOT NULL THEN ', made only at the "
+        f"first ' || {capped} || ' stops: the cap' ELSE '' END)) FROM "
         f"json_each(COALESCE({alias}.sets, '[]')) s)"
     )
 
@@ -503,8 +521,14 @@ SELECT {_PAIR_COLUMNS} FROM (
   SELECT 10 AS rank, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
-  UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
-    WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged
+  -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
+  -- the values are those of the MIN(pos) row (SQLite's bare columns).
+  UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
+    CASE WHEN alike > 3 THEN note || ', at ' || alike || ' hits (one row per selector and '
+      || 'value: its first hit)' ELSE note END, MIN(pos)
+    FROM (SELECT *, COUNT(*) OVER (PARTITION BY selector, note, value_a, value_b) AS alike
+      FROM pair WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged)
+    GROUP BY selector, note, value_a, value_b, CASE WHEN alike > 3 THEN NULL ELSE pos END
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
     AND NOT unchanged
@@ -700,8 +724,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "(source), (line), (args) and (sets) rows when the runs' outcomes, outputs, edits, "
         "source, stop lines, program arguments or interventions differ; then values only "
         "one run's intervention changed (an after-set value equal to its hit's observed "
-        "one is left out); then real differences in hit and capture order (the first is "
-        "the first divergence); then values a view or a note qualifies in "
+        "one is left out; more than 3 alike are one row, its first hit's); then real "
+        "differences in hit and capture order (the first is the first divergence); then values a view or a note qualifies in "
         "either run (note: qualified (run a: note), not evidence by itself: leftovers, a "
         "moved Rust local's bytes); then address-only differences, one row per selector "
         "(and stop); last, selectors only one run captured. Hits pair by number, and by "
@@ -2673,7 +2697,8 @@ def _window(value, other, width, lead=_LEAD):
 def _sets_text(value):
     """A `diff` `(sets)` cell in text: how many changes, the first, and `…` for the rest
     (tenth evaluation: six `--set-at`s made every line of the table 230 columns wide).
-    None where the cell is not such a list."""
+    Where one is a `LINE@all` (#265), made at every stop of its line, they are counted
+    as requests. None where the cell is not such a list."""
     try:
         sets = json.loads(value)
     except (TypeError, ValueError):
@@ -2688,7 +2713,8 @@ def _sets_text(value):
     if len(set_value) > _CHANGE_WIDTH:
         set_value = set_value[: _CHANGE_WIDTH - 1] + "…"
     many = len(sets) > 1
-    return f"{len(sets)} change{'s' if many else ''}: {name}={set_value} ({where})" + (
+    noun = "request" if any(re.search(r"@all\b", str(item[2])) for item in sets) else "change"
+    return f"{len(sets)} {noun}{'s' if many else ''}: {name}={set_value} ({where})" + (
         ", …" if many else ""
     )
 

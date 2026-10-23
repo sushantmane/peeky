@@ -49,7 +49,7 @@ the commands.
    MIR proves it, and never after `step --out`. Rows mark what can change `[settable]`. A probe
    whose change its build rules out is refused before it runs, with exit 2 (2.3, 7.1 to 7.3).
 4. **`--set` applies once, at hit 1.** Use `--set-hit N` for another; other hits only observe.
-   `--set-at LINE@HIT` changes at that line's hit, the `--at` line's too; repeat it per hit (2.4,
+   `--set-at LINE@HIT` changes at that line's hit, the `--at` line's too; `@all`: every hit (2.4,
    2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can
    stop several times per pass. Read `warnings`, and each row's `stop` and `function`. A loop

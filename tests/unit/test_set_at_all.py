@@ -1,0 +1,379 @@
+"""`--set-at LINE@all` (#265): a change at every stop of a line, each made and checked as
+one `--set-at LINE@N` is, up to the probe's hit cap (tenth evaluation, debounce: six
+hand-computed hits, near the cap of eight changes)."""
+
+import json
+
+import pytest
+
+import peeky.probe as probe_module
+from peeky import evidence
+from peeky.errors import Refused
+from peeky.probe import ALL, MAX_HITS, MAX_SETS, Probe, parse_set_at, probe_exit_code
+
+
+class Stops:
+    """Stops at the lines of main.py in ``order``, each in `main`, then ends. Only lines
+    with a breakpoint stop. `set_variable` refuses its calls numbered in ``refuse``."""
+
+    def __init__(self, order, refuse=()):
+        self.order, self.refuse = list(order), set(refuse)
+        self.placed, self.calls, self.sets, self.line, self.value = [], [], 0, None, "1"
+
+    def _keep(self, points):
+        self.placed.append([point["line"] for point in points])
+        asked = {point["line"] for point in points}
+        self.order = [line for line in self.order if line in asked]
+
+    def dispatch(self, operation, args):
+        self.calls.append(operation)
+        if operation == "launch":
+            self._keep(args["breakpoints"])
+            return {
+                "session_id": "s",
+                "breakpoints": [
+                    {"id": index, "verified": True, "line": point["line"]}
+                    for index, point in enumerate(args["breakpoints"], 1)
+                ],
+                "artifact_manifest_id": None,
+                "target_identity": None,
+                "source_sha256": "x",
+            }
+        if operation == "breakpoints":
+            self._keep(args["breakpoints"])
+            return {"breakpoints": [{"line": point["line"]} for point in args["breakpoints"]]}
+        if operation == "wait":
+            if not self.order:
+                return {"state": "terminated"}
+            self.line, self.value = self.order.pop(0), "1"
+            return {
+                "state": "stopped",
+                "stop_id": "t",
+                "event": {"body": {"reason": "breakpoint"}},
+                "location": f"main.py:{self.line}",
+            }
+        if operation == "inspect":
+            return {
+                "frames": [{"name": "main", "source": {"path": "/w/main.py"}, "line": self.line}],
+                "scopes": [
+                    {
+                        "name": "Locals",
+                        "reference": 1,
+                        "variables": [{"name": "x", "value": self.value, "variablesReference": 0}],
+                    }
+                ],
+            }
+        if operation == "set_variable":
+            self.sets += 1
+            if self.sets in self.refuse:
+                raise Refused("MUTATION_REJECTED", "'x' cannot be changed here")
+            before, self.value = self.value, args["value"]
+            return {"name": args["name"], "before": before, "after": args["value"]}
+        if operation == "report":
+            return {"output": "", "output_truncated": False}
+        return {}
+
+    def close(self):
+        self.calls.append("close")
+
+
+def run(monkeypatch, worker, request):
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    return probe_module.run_probe("/w", request)
+
+
+def made(result):
+    return [
+        (change["hit"], change["at"], change.get("all"), change["capture_hit"])
+        for change in result["interventions"]
+    ]
+
+
+def test_all_parses_as_every_stop_and_counts_as_one_option():
+    assert parse_set_at("36@all", "db.count=0") == (None, 36, ALL, "db.count", "0")
+    assert parse_set_at("debounce.c:36@all", "n = 0") == ("debounce.c", 36, ALL, "n", "0")
+    for where in ("36@ALL", "36@al", "36@all@2", "36@every", "@all", "36@0"):
+        with pytest.raises(ValueError, match=r"--set-at expects .*or <line>@all"):
+            parse_set_at(where, "x=1")
+    assert Probe("a.c", 3, set_at=((4, ALL, "x", "1"),)).set_at == ((4, ALL, "x", "1"),)
+    for hit in ("every", "All", None, 0, 1.0):
+        with pytest.raises(ValueError, match="or 'all'"):
+            Probe("a.c", 3, set_at=((4, hit, "x", "1"),))
+    # One @all is one of the eight changes a probe may ask for, however often it is made.
+    singles = tuple((4, hit, "x", "1") for hit in range(1, MAX_SETS))
+    assert len(Probe("a.c", 3, set_at=(*singles, (5, ALL, "x", "0"))).set_at) == MAX_SETS
+    with pytest.raises(ValueError, match="--set and --set-at together"):
+        Probe("a.c", 3, set=(("x", "1"),), set_at=(*singles, (5, ALL, "x", "0")))
+    with pytest.raises(Exception, match="map and dict entries cannot be changed"):
+        Probe("a.c", 3, set_at=((4, ALL, "m['k']", "1"),))
+
+
+def test_an_all_on_the_capture_line_leaves_room_for_after_set_rows_at_every_hit():
+    many = tuple(f"a{i}" for i in range(20))
+    # 20 observed and 20 after-set rows per hit, in the 2000-row budget.
+    assert Probe("a.c", 3, many, hits="all", set_at=((3, ALL, "a0", "1"),)).limit == 50
+    assert Probe("a.c", 3, many, hits="all", set_at=((4, ALL, "a0", "1"),)).limit == 100
+    assert Probe("a.c", 3, ("a",), hits="all", set_at=((3, ALL, "a", "1"),)).limit == MAX_HITS
+
+
+def test_an_all_is_made_at_every_stop_of_its_line(monkeypatch):
+    worker = Stops([8, 9, 9, 8, 9])
+    result = run(monkeypatch, worker, Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),)))
+    assert result["status"] == "completed" and "unapplied" not in result
+    # Each with its own hit of line 9, after the one hit of line 8 that was captured.
+    assert made(result) == [(1, "9@1", True, 1), (2, "9@2", True, 1), (3, "9@3", True, 1)]
+    assert [change["function"] for change in result["interventions"]] == ["main"] * 3
+    # Line 9's breakpoint stays for its every stop; line 8's goes after its one hit.
+    assert worker.placed == [[8, 9], [9]] and worker.calls.count("set_variable") == 3
+    assert probe_exit_code(result) == 0
+    text = probe_module._table(result)
+    assert "set x: 1 -> 5  (--set-at line 9@all, hit 2, in main)" in text
+    assert "more change" not in text and "status: completed  hits: 1" in text
+
+
+def test_an_all_on_the_capture_line_gets_after_set_rows_at_each_hit(monkeypatch):
+    worker = Stops([8, 8, 8])
+    request = Probe("main.py", 8, ("x",), hits="all", set_at=((8, ALL, "x", "5"),))
+    result = run(monkeypatch, worker, request)
+    assert made(result) == [(1, "8@1", True, 1), (2, "8@2", True, 2), (3, "8@3", True, 3)]
+    assert [(row["hit"], row["phase"]) for row in result["rows"]] == [
+        (hit, phase) for hit in (1, 2, 3) for phase in ("observed", "after-set")
+    ]
+
+
+def test_an_all_whose_line_never_stops_is_reported_never_dropped(monkeypatch):
+    worker = Stops([8])
+    result = run(monkeypatch, worker, Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),)))
+    assert result["status"] == "completed" and result["interventions"] == []
+    assert result["unapplied"] == [
+        {"option": "--set-at", "at": "9@all", "name": "x", "value": "5", "stops": 0}
+    ]
+    assert (
+        "--set-at main.py:9@all x=5 was not applied: line 9 never stopped before the probe "
+        "ended." in result["warnings"]
+    )
+    assert probe_exit_code(result) == 4
+    assert "status: completed (1 requested change not made)" in probe_module._table(result)
+
+
+def test_an_all_stops_at_the_cap_and_says_so(monkeypatch):
+    worker = Stops([8, *[9] * (MAX_HITS + 5)])
+    result = run(monkeypatch, worker, Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),)))
+    assert result["status"] == "completed"
+    assert [change["hit"] for change in result["interventions"]] == list(range(1, MAX_HITS + 1))
+    # The stop past the cap is not changed, and line 9's breakpoint goes with it.
+    assert worker.calls.count("set_variable") == MAX_HITS and worker.placed[-1] == []
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": "9@all",
+            "name": "x",
+            "value": "5",
+            "stops": MAX_HITS + 1,
+            "made": MAX_HITS,
+        }
+    ]
+    assert (
+        f"--set-at main.py:9@all x=5 was made only at the first {MAX_HITS} stops of line 9, the "
+        "cap: the line stopped again, and the program ran on from there without the change. "
+        "Probe a smaller input, or a line that runs less often." in result["warnings"]
+    )
+    assert probe_exit_code(result) == 4
+    text = probe_module._table(result)
+    # The first three changes, then one line for the rest.
+    assert "set x: 1 -> 5  (--set-at line 9@all, hit 3, in main)" in text
+    assert "hit 4," not in text
+    assert (
+        f"set x: {MAX_HITS - 3} more changes by --set-at line 9@all, at hits 4 to {MAX_HITS} "
+        "(`--json` lists each)" in text
+    )
+    assert "status: completed (1 --set-at @all cut short at the cap)  hits: 1" in text
+
+
+def test_a_refusal_at_one_stop_ends_the_probe_and_names_that_hit(monkeypatch):
+    # As for one --set-at: a change made at some stops only is not the experiment asked.
+    worker = Stops([8, 9, 9, 9, 9], refuse=(3,))
+    result = run(monkeypatch, worker, Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"),)))
+    assert result["status"] == "failed" and result["error"]["code"] == "MUTATION_REJECTED"
+    message = result["error"]["message"]
+    assert message.startswith(
+        "--set-at main.py:9@all x=5 was refused at hit 3 of line 9 (in main): 'x' cannot be "
+        "changed here"
+    ), message
+    assert message.endswith(
+        "(2 earlier intervention(s) applied; the run is not the experiment asked for)"
+    )
+    assert made(result) == [(1, "9@1", True, 1), (2, "9@2", True, 1)]
+    assert worker.calls.count("set_variable") == 3 and probe_exit_code(result) == 1
+
+
+def test_an_all_never_keeps_an_until_hits_probe_running(monkeypatch):
+    worker = Stops([8, 9, 8, 9, 9])
+    request = Probe("main.py", 8, ("x",), hits=2, until="hits", set_at=((9, ALL, "x", "5"),))
+    result = run(monkeypatch, worker, request)
+    assert result["status"] == "completed" and result["ended"] == "hits"
+    assert made(result) == [(1, "9@1", True, 1)] and worker.order == [9, 9]
+    assert "unapplied" not in result and probe_exit_code(result) == 0
+    assert (
+        "--set-at main.py:9@all x=5 was made at each of the 1 stops of line 9 before the probe "
+        "ended after its last hit (--until hits): any later stop ran without it."
+        in result["warnings"]
+    )
+
+
+DEBOUNCE_REFUSAL = (
+    "`db.count` cannot be changed at debounce.c:36, at any stop of this build: in settle, "
+    "`db` is a pointer: Peeky does not write through a pointer, since what it reaches may be "
+    "freed or moved; feed has one caller: debounce.c:80 in main, which passes `&db`, where "
+    "`db.count` is settable: a probe's `--set-at 80@N db.count=<value>`, N counting line 80's "
+    "own stops (find N with `--at 80 --capture db.count --hits all`). Refused before the "
+    "program runs: nothing ran"
+)
+
+
+def test_an_all_refused_in_a_callee_says_what_all_does_in_the_owning_frame(monkeypatch):
+    # debounce: line 36 runs only when the input is back at the accepted level, but there
+    # `db` is a pointer; line 80, in main, runs once per sample, so `80@all` is another
+    # experiment.
+    class Refusing(Stops):
+        def dispatch(self, operation, args):
+            if operation == "launch":
+                refused = Refused("MUTATION_REJECTED", DEBOUNCE_REFUSAL)
+                refused.before_launch = True
+                raise refused
+            return super().dispatch(operation, args)
+
+    request = Probe("debounce.c", 36, set_at=((36, ALL, "db.count", "0"),))
+    result = run(monkeypatch, Refusing([]), request)
+    assert result["refused_before_launch"] and probe_exit_code(result) == 2
+    assert result["error"]["message"] == DEBOUNCE_REFUSAL.replace(
+        "--hits all`).",
+        "--hits all`); `--set-at 80@all` would make the change at every stop of line 80, "
+        "whether or not the call made there reaches line 36: to make it only where line 36 "
+        "runs, try it in a candidate edit (`--old`/`--new`).",
+    )
+    # Not for one --set-at at a hit, nor an @all of another line or name.
+    for set_at in (
+        ((36, 5, "db.count", "0"),),
+        ((80, ALL, "db.count", "0"),),
+        ((36, ALL, "db.candidate", "0"),),
+    ):
+        result = run(monkeypatch, Refusing([]), Probe("debounce.c", 36, set_at=set_at))
+        assert result["error"]["message"] == DEBOUNCE_REFUSAL
+
+
+def test_the_http_probe_passes_an_all_and_refuses_another_word(tmp_path, monkeypatch):
+    import subprocess
+    import threading
+
+    from peeky import worker as worker_module
+    from peeky.client import Client
+
+    seen = {}
+
+    class Process:
+        pid = 0
+
+        def __init__(self, command, **kwargs):
+            seen["command"] = command
+
+        def communicate(self, timeout=None):
+            return b'{"status": "completed"}', b""
+
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    request = Probe("x.c", 3, set_at=((4, ALL, "n", "0"),))
+    worker_module._run_probe_process(tmp_path, request, None, 60)
+    command = seen["command"]
+    at = command.index("--set-at")
+    assert command[at + 1 : at + 3] == ["4@all", "n=0"]
+    # The probe child reads it back as the same request.
+    assert probe_module._own_set_at("x.c", "4@all", "n=0") == (4, ALL, "n", "0")
+
+    server = worker_module.make_server(tmp_path, "unit-test-secret-token-1234", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", "unit-test-secret-token-1234")
+        for set_at in ([[4, "every", "x", "1"]], [[4, "All", "x", "1"]], [["4", "all", "x", "1"]]):
+            with pytest.raises(Exception, match="set_at"):
+                client.call("probe", at="x.c:1", set_at=set_at)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_the_evidence_keeps_each_change_and_says_how_the_request_went(monkeypatch, tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    workers = [
+        Stops([8, 9, 9, 9, 9, 9]),
+        Stops([8]),
+        Stops([8, *[9] * (MAX_HITS + 1)]),
+        Stops([8]),
+    ]
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: workers.pop(0))
+    for set_at in (((9, ALL, "x", "5"),),) * 3 + ((),):
+        evidence.record(
+            store, probe_module.run_probe("/w", Probe("main.py", 8, ("x",), set_at=set_at))
+        )
+    changes = evidence.query(
+        store, "SELECT run_id, hit, line, name, after FROM interventions WHERE run_id = 1", {}
+    )["rows"]
+    assert [(row["hit"], row["line"], row["after"]) for row in changes] == [
+        (hit, 9, "5") for hit in range(1, 6)
+    ]
+    sets = {
+        row["run_id"]: json.loads(row["sets"])
+        for row in evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+        + evidence.run_query(store, "outputs", {"a": 3, "b": 4})["rows"]
+    }
+    assert sets == {
+        1: [["x", "5", "requested at 9@all"]],
+        2: [["x", "5", "requested at 9@all, not made: its line never stopped"]],
+        3: [["x", "5", f"requested at 9@all, made only at the first {MAX_HITS} stops: the cap"]],
+        4: [],
+    }
+    # `diff`'s (sets) row counts an @all as one request, however many changes it made.
+    (row,) = [
+        r
+        for r in evidence.run_query(store, "diff", {"a": 4, "b": 1})["rows"]
+        if r["selector"] == "(sets)"
+    ]
+    assert evidence._sets_text(row["value_b"]) == "1 request: x=5 (requested at 9@all)"
+    assert evidence._sets_text(row["value_a"]) == "none"
+    assert (
+        evidence._sets_text(
+            json.dumps([["x", "5", "requested at 9@2"], ["y", "1", "requested at 9@3"]])
+        )
+        == "2 changes: x=5 (requested at 9@2), …"
+    )
+
+
+def test_diff_shows_many_alike_changes_as_one_row(tmp_path, monkeypatch):
+    # 50 changes at captured stops: one row, its first hit's, says how many there were.
+    store = tmp_path / "evidence" / "evidence.db"
+    workers = [Stops([8] * 50), Stops([8] * 50), Stops([8] * 3), Stops([8] * 3)]
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: workers.pop(0))
+    for count, set_at in (
+        (50, ()),
+        (50, ((8, ALL, "x", "5"),)),
+        (3, ()),
+        (3, ((8, ALL, "x", "5"),)),
+    ):
+        request = Probe("main.py", 8, ("x",), hits="all", set_at=set_at)
+        evidence.record(store, probe_module.run_probe("/w", request))
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
+    changed = [row for row in rows if row["phase"] == "after-set"]
+    assert [(row["hit"], row["value_b"], row["note"]) for row in changed] == [
+        (
+            1,
+            "5",
+            "intervention only in run b, at 50 hits (one row per selector and value: its "
+            "first hit)",
+        )
+    ]
+    # Three or fewer stay one row each.
+    rows = evidence.run_query(store, "diff", {"a": 3, "b": 4})["rows"]
+    assert [(row["hit"], row["note"]) for row in rows if row["phase"] == "after-set"] == [
+        (hit, "intervention only in run b") for hit in (1, 2, 3)
+    ]

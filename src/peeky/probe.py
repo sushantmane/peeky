@@ -39,6 +39,10 @@ MAX_SETS = 8
 MAX_HITS = 100
 # The highest hit a --set-at may name: its line's stops are counted, not captured.
 MAX_SET_AT_HIT = 1000
+# `--set-at LINE@all` (#265): the change at every stop of LINE, up to MAX_HITS of them.
+ALL = "all"
+# An @all's changes the text shows one by one; a line counts the rest.
+_ALL_SHOWN = 3
 MAX_ROWS = 2000
 MAX_SECONDS = 300
 # HTTP probes must finish inside Client.call's 45 s timeout.
@@ -325,22 +329,25 @@ def parse_location(text):
     return program, int(line)
 
 
-_SET_AT = re.compile(r"(?:(?P<path>.+):)?(?P<line>[1-9][0-9]{0,6})(?:@(?P<hit>[1-9][0-9]{0,6}))?")
+_SET_AT = re.compile(
+    r"(?:(?P<path>.+):)?(?P<line>[1-9][0-9]{0,6})(?:@(?P<hit>[1-9][0-9]{0,6}|all))?"
+)
 
 
 def parse_set_at(where, assignment):
-    """`--set-at [<path>:]<line>[@<hit>] <name>=<value>` -> (path or None, line, hit,
-    name, value); the hit defaults to 1 and counts that line's own stops."""
+    """`--set-at [<path>:]<line>[@<hit>|@all] <name>=<value>` -> (path or None, line,
+    hit, name, value); the hit defaults to 1 and counts that line's own stops, and `all`
+    (ALL) is every stop of the line (#265)."""
     found = _SET_AT.fullmatch(where or "")
     if not found:
         raise ValueError(
-            f"--set-at expects [<path>:]<line>[@<hit>] then name=value, got {where!r} "
-            "(e.g. --set-at stock.cpp:22@3 colon=6)"
+            f"--set-at expects [<path>:]<line>[@<hit>] or <line>@all, then name=value, got "
+            f"{where!r} (e.g. --set-at stock.cpp:22@3 colon=6, or --set-at 36@all count=0)"
         )
     name, separator, value = (assignment or "").partition("=")
     if not separator or not name.strip():
         raise ValueError(f"--set-at {where} expects name=value, got {assignment!r}")
-    hit = int(found["hit"] or 1)
+    hit = ALL if found["hit"] == ALL else int(found["hit"] or 1)
     return found["path"], int(found["line"]), hit, name.strip(), value.strip()
 
 
@@ -369,7 +376,8 @@ class Probe:
     # Interventions at their own stops (#137): (line, hit, selector, value), each applied
     # once at that hit of that line of `program` (its own stops counted, in the original's
     # numbering), whether or not it is the capture line; `set`/`set_hit` stay as they are.
-    set_at: tuple[tuple[int, int, str, str], ...] = ()
+    # A hit of ALL applies it at every stop of the line, up to MAX_HITS of them (#265).
+    set_at: tuple[tuple[int, int | str, str, str], ...] = ()
     # Remote clients (#249): (path, sha256) of every source the target reads; the worker
     # refuses before launching when its own set differs.
     expect_inputs: tuple[tuple[str, str], ...] | None = None
@@ -383,11 +391,15 @@ class Probe:
         """
         if self.hits != "all":
             return self.hits
-        # One set of after-set rows per captured stop that gets interventions.
+        # One set of after-set rows per captured stop that gets interventions: every one,
+        # with an @all on the capture line.
+        per_hit = max(1, len(self.capture))
+        if any(line == self.line and hit == ALL for line, hit, _, _ in self.set_at):
+            return max(1, min(MAX_HITS, MAX_ROWS // (2 * per_hit)))
         stops = {self.set_hit} if self.set else set()
         stops |= {hit for line, hit, _, _ in self.set_at if line == self.line}
         after_set = len(self.capture) * len(stops)
-        return max(1, min(MAX_HITS, (MAX_ROWS - after_set) // max(1, len(self.capture))))
+        return max(1, min(MAX_HITS, (MAX_ROWS - after_set) // per_hit))
 
     def __post_init__(self):
         if not isinstance(self.program, str) or not self.program:
@@ -416,13 +428,14 @@ class Probe:
                 or len(point) != 4
                 or type(point[0]) is not int
                 or not 1 <= point[0] <= 9_999_999
-                or type(point[1]) is not int
-                or not 1 <= point[1] <= MAX_SET_AT_HIT
+                or not (
+                    point[1] == ALL or (type(point[1]) is int and 1 <= point[1] <= MAX_SET_AT_HIT)
+                )
                 or not all(isinstance(part, str) for part in point[2:])
             ):
                 raise ValueError(
                     "A --set-at intervention is (line, hit, selector, value): a positive "
-                    f"line, a hit within 1..{MAX_SET_AT_HIT}, and strings"
+                    f"line, a hit within 1..{MAX_SET_AT_HIT} or 'all', and strings"
                 )
         for change in (*self.set, *(point[2:] for point in self.set_at)):
             if (
@@ -3293,13 +3306,45 @@ def _moved(placed, state):
                 placed[number] = {**known, **point}
 
 
+def _waiting(point):
+    """Whether a --set-at still needs its line's stops: one at a hit until it is made, an
+    @all until the first stop past its cap (#265)."""
+    return point["capped"] is None if point["hit"] == ALL else point["change"] is None
+
+
+# A refusal's advice to change the value in the frame that owns it (#202).
+_OWNER_LINE = re.compile(r"`--set-at ([0-9]+)@N ")
+
+
+def _all_elsewhere(message, points):
+    """A refusal before the run of a `--set-at LINE@all` whose advice names another line's
+    `--set-at M@N`, in the frame that owns the value: with what `@all` there would do
+    instead, every stop of M (#265). Else the message as it is."""
+    named = _OWNER_LINE.search(message)
+    refused = re.match(r"`([^`]+)` cannot be changed at [^,]*:([0-9]+), ", message)
+    if not named or not refused:
+        return message
+    other, line = int(named[1]), int(refused[2])
+    if other == line or not any(
+        point["hit"] == ALL and point["build_line"] == line and point["name"] == refused[1]
+        for point in points
+    ):
+        return message
+    head, tail, rest = message.partition(". Refused before the program runs")
+    return (
+        f"{head}; `--set-at {other}@all` would make the change at every stop of line {other}, "
+        f"whether or not the call made there reaches line {line}: to make it only where line "
+        f"{line} runs, try it in a candidate edit (`--old`/`--new`){tail}{rest}"
+    )
+
+
 def _set_at_moved(points, placed, program):
     """Refuse a --set-at whose line the debugger moved (no code of its own there): a
     change is made where it was asked, never at a line nearby."""
     for point in points:
         number = point["build_line"]
         where = (placed.get(number) or {}).get("line", number)
-        if point["change"] is None and type(where) is int and where != number:
+        if _waiting(point) and type(where) is int and where != number:
             raise Refused(
                 "INVALID_REQUEST",
                 f"--set-at {program}:{point['line']}@{point['hit']}: line {number} has no "
@@ -3377,8 +3422,19 @@ def run_probe(
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # Each --set-at, with its line in the build that runs (#137).
+    # `change`: a hit's once made; `changes`: each made (an @all's, #265, one per stop, up
+    # to MAX_HITS); `capped`: the @all's first stop past that cap, made without it.
     points = [
-        {"line": at, "build_line": at, "hit": hit, "name": name, "value": value, "change": None}
+        {
+            "line": at,
+            "build_line": at,
+            "hit": hit,
+            "name": name,
+            "value": value,
+            "change": None,
+            "changes": [],
+            "capped": None,
+        }
         for at, hit, name, value in probe.set_at
     ]
     # Stops seen per breakpoint line (the build's numbering): a --set-at's hit counts its
@@ -3454,7 +3510,7 @@ def run_probe(
         # Where the debugger placed each line's breakpoint (later `breakpoint` events
         # update it): {build line: DAP breakpoint}.
         placed = dict(zip(lines, [*(launch["breakpoints"] or []), *([{}] * len(lines))]))
-        active = list(lines)
+        active = owed = list(lines)
         result.update(
             breakpoint=(launch["breakpoints"] or [{}])[0],
             artifact_manifest_id=launch["artifact_manifest_id"],
@@ -3531,7 +3587,7 @@ def run_probe(
             if state["state"] == "running":
                 if time.monotonic() - noted >= 10:
                     noted = time.monotonic()
-                    pending = hits < probe.limit or any(p["change"] is None for p in points)
+                    pending = hits < probe.limit or any(_waiting(p) for p in points)
                     phase = "for the next stop" if pending else "for the program to exit"
                     say(f"still waiting {phase} ({int(noted - started)} s elapsed)")
                 continue
@@ -3602,7 +3658,7 @@ def run_probe(
                 # it returns. Each return is checked against its own hit's frames.
                 _resume(worker, stop, returning, rows)
                 pauses.append(round((time.monotonic() - paused) * 1000, 1))
-                if not returning and not active and probe.until == "hits":
+                if not returning and not owed and probe.until == "hits":
                     status = "completed"
                     say("all requested hits captured; ending the probe now")
                     break
@@ -3612,7 +3668,7 @@ def run_probe(
             # Every line placed counts: another thread's stop at a line whose breakpoint
             # was just removed may still be served (LLDB stops all threads together).
             expected = {number: _expected_line(placed[number], state, number) for number in lines}
-            roots = _roots([*selectors, *(p["name"] for p in points if p["change"] is None)])
+            roots = _roots([*selectors, *(p["name"] for p in points if _waiting(p))])
             # Previews (#136) of the captured roots only: each costs debugger requests. A
             # stop the wait places at another line (a --set-at's) reads none.
             where = str(state.get("location") or "").rpartition(":")[2]
@@ -3689,14 +3745,25 @@ def run_probe(
             due = []
             if captured and hits == probe.set_hit and probe.set:
                 due += [(name, value, hits, None) for name, value in probe.set]
+            # An @all, at each stop of its line up to the cap (#265).
             for point in points:
                 number = point["build_line"]
-                if point["change"] is None and number in matched and seen[number] == point["hit"]:
-                    due.append((point["name"], point["value"], point["hit"], point))
+                if number not in matched or not _waiting(point):
+                    continue
+                if point["hit"] != ALL:
+                    if seen[number] == point["hit"]:
+                        due.append((point["name"], point["value"], point["hit"], point))
+                elif len(point["changes"]) < MAX_HITS:
+                    due.append((point["name"], point["value"], seen[number], point))
+                else:
+                    # Past the cap: this stop, and any later one, runs without the change
+                    # (a warning says so) and the line's breakpoint goes.
+                    point["capped"] = seen[number]
             for name, value, hit, point in due:
-                if point is not None:
+                if point is not None and not (point["hit"] == ALL and point["changes"]):
                     say(
-                        f"--set-at {probe.program}:{point['line']}@{hit}: setting {name}"
+                        f"--set-at {probe.program}:{point['line']}@{point['hit']}: setting {name}"
+                        + (" at every stop of the line" if point["hit"] == ALL else "")
                         + (
                             f" (line {point['build_line']} of the candidate)"
                             if point["build_line"] != point["line"]
@@ -3712,8 +3779,13 @@ def run_probe(
                     # (shorten, then restore) half applied is not the experiment asked.
                     raise Refused(
                         exc.code,
-                        f"--set-at {probe.program}:{point['line']}@{hit} {name}={value} was "
-                        "refused at that stop (in "
+                        f"--set-at {probe.program}:{point['line']}@{point['hit']} {name}={value} "
+                        + (
+                            f"was refused at hit {hit} of line {point['line']}"
+                            if point["hit"] == ALL
+                            else "was refused at that stop"
+                        )
+                        + " (in "
                         + (snapshot.get("instance") or display_function(frame.get("name")) or "?")
                         + ")"
                         f": {exc}"
@@ -3744,7 +3816,11 @@ def run_probe(
                 }
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
-                    point["change"] = change
+                    if point["hit"] == ALL:
+                        change["all"] = True
+                    else:
+                        point["change"] = change
+                    point["changes"].append(change)
                 changes.append(change)
             if captured and due:
                 rows.extend(
@@ -3771,7 +3847,10 @@ def run_probe(
                 raise ValueError("Probe row budget exceeded")
             # Keep only the breakpoints a later stop still needs.
             needed = [line] if hits < probe.limit else []
-            needed += [p["build_line"] for p in points if p["change"] is None]
+            # What the probe still owes: an @all keeps its line's breakpoint, but never
+            # keeps an --until hits probe running (#265).
+            owed = [*needed, *(p["build_line"] for p in points if p["hit"] != ALL and _waiting(p))]
+            needed += [p["build_line"] for p in points if _waiting(p)]
             needed = [number for number in lines if number in needed]
             if needed != active:
                 answer = worker.dispatch(
@@ -3850,15 +3929,15 @@ def run_probe(
             (pauses if captured else set_pauses).append(
                 round((time.monotonic() - paused) * 1000, 1)
             )
+            if not owed and not returning and probe.until == "hits":
+                status = "completed"
+                say(
+                    "all requested hits captured"
+                    + (" and --set-at applied" if points else "")
+                    + "; ending the probe now"
+                )
+                break
             if not active and not returning:
-                if probe.until == "hits":
-                    status = "completed"
-                    say(
-                        "all requested hits captured"
-                        + (" and --set-at applied" if points else "")
-                        + "; ending the probe now"
-                    )
-                    break
                 say(
                     f"reached the {probe.limit}-hit cap; letting the program finish"
                     if probe.hits == "all"
@@ -3973,6 +4052,9 @@ def run_probe(
     except Exception as exc:
         from peeky.errors import classify
 
+        if getattr(exc, "before_launch", False) and len(exc.args) == 1 and points:
+            # An @all refused for a change in its caller's frame: what @all there means.
+            exc.args = (_all_elsewhere(str(exc.args[0]), points),)
         result.update(status="failed", error=classify(exc, session_closed=True))
         # Values and output from sources that changed during the run are not evidence.
         discard = result["error"].get("code") == "PROVENANCE_CHANGED"
@@ -4039,7 +4121,10 @@ def run_probe(
         except (OSError, ValueError):
             alike = {}
     for change in changes:
-        number = next((p["build_line"] for p in points if p["change"] is change), line)
+        number = next(
+            (p["build_line"] for p in points if any(made is change for made in p["changes"])),
+            line,
+        )
         if many := alike.get(number, {}).get(change.get("function")):
             change["alike"] = many
         if change.get("instance"):
@@ -4110,7 +4195,17 @@ def run_probe(
                     "change says which function's variable it changed."
                 )
             )
-    unapplied = [point for point in points if point["change"] is None]
+    # An @all (#265) is not made where its line never stopped, and is cut short where the
+    # line stopped past its cap: either way, the run is not the experiment asked for.
+    unapplied = [
+        point
+        for point in points
+        if (
+            point["change"] is None
+            if point["hit"] != ALL
+            else not point["changes"] or point["capped"] is not None
+        )
+    ]
     if probe.set and not any("at" not in change for change in changes) and hits < probe.set_hit:
         # A --set whose hit never came: reported like a --set-at's (exit code 4).
         result["unapplied"] = [
@@ -4132,6 +4227,8 @@ def run_probe(
                 "name": point["name"],
                 "value": point["value"],
                 "stops": seen.get(point["build_line"], 0),
+                # An @all cut short at its cap: the stops it was made at.
+                **({"made": len(point["changes"])} if point["capped"] is not None else {}),
             }
             for point in unapplied
         )
@@ -4143,11 +4240,39 @@ def run_probe(
             )
             for point in unapplied:
                 stops = seen.get(point["build_line"], 0)
+                asked = (
+                    f"--set-at {probe.program}:{point['line']}@{ALL} "
+                    f"{point['name']}={point['value']}"
+                )
+                if point["capped"] is not None:
+                    warnings.append(
+                        f"{asked} was made only at the first {len(point['changes'])} stops of "
+                        f"line {point['build_line']}, the cap: the line stopped again, and the "
+                        "program ran on from there without the change. Probe a smaller input, "
+                        "or a line that runs less often."
+                    )
+                    continue
+                if point["hit"] == ALL:
+                    warnings.append(
+                        f"{asked} was not applied: line {point['build_line']} never stopped "
+                        f"{ended}."
+                    )
+                    continue
                 warnings.append(
                     f"--set-at {probe.program}:{point['line']}@{point['hit']} "
                     f"{point['name']}={point['value']} was not applied: line "
                     f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
                     f"{point['hit']} never came."
+                )
+    if result.get("ended") == "hits":
+        for point in points:
+            if point["hit"] == ALL and point["changes"] and point["capped"] is None:
+                # It applies while the probe runs; the program may run on after (#203).
+                warnings.append(
+                    f"--set-at {probe.program}:{point['line']}@{ALL} {point['name']}="
+                    f"{point['value']} was made at each of the {len(point['changes'])} stops "
+                    f"of line {point['build_line']} before the probe ended after its last hit "
+                    "(--until hits): any later stop ran without it."
                 )
     if discard:
         rows, changes = [], []
@@ -4349,28 +4474,58 @@ def _table(result, short_names=True):
     if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
+    # An @all's changes (#265): the first few, then how many more at which hits.
+    every, more = {}, {}
     for change in result["interventions"]:
+        at = str(change.get("at"))
+        if change.get("all"):
+            at = f"{at.partition('@')[0]}@{ALL}"
+            key = (at, change.get("name"))
+            every[key] = every.get(key, 0) + 1
+            if every[key] > _ALL_SHOWN:
+                more.setdefault(key, []).append(change.get("hit"))
+                continue
         where = change.get("instance") or named.get(change.get("function"), change.get("function"))
         if change.get("alike"):
             where = f"{where}, one of {change['alike']} on the line the debugger names alike"
         # Which of the line's breakpoint locations the stop was at, where it has several.
         stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
+        hit = f", hit {change.get('hit')}" if change.get("all") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + (
-                f"  (--set-at line {change['at']}{stop}" + (f", in {where})" if where else ")")
+                f"  (--set-at line {at}{hit}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
                 else f"  ({stop[2:]})"
                 if stop
                 else ""
             )
         )
-    unmade = len(result.get("unapplied") or ())
+    for (at, name), numbers in more.items():
+        known = [number for number in numbers if type(number) is int]
+        span = f", at hits {min(known)} to {max(known)}" if len(known) == len(numbers) else ""
+        lines.append(
+            f"set {name}: {len(numbers)} more change{'s' if len(numbers) > 1 else ''} by "
+            f"--set-at line {at}{span} (`--json` lists each)"
+        )
+    unmade = [entry for entry in result.get("unapplied") or () if "made" not in entry]
+    capped = len(result.get("unapplied") or ()) - len(unmade)
     lines.append(
         f"status: {result['status']}"
         + (
-            f" ({unmade} requested change{'s' if unmade > 1 else ''} not made)"
-            if unmade and result["status"] == "completed"
+            " ("
+            + "; ".join(
+                part
+                for part in (
+                    f"{len(unmade)} requested change{'s' if len(unmade) > 1 else ''} not made"
+                    if unmade
+                    else "",
+                    f"{capped} --set-at @all cut short at the cap" if capped else "",
+                )
+                if part
+            )
+            + ")"
+            if (unmade or capped) and result["status"] == "completed"
             else ""
         )
         + f"  hits: {result['hits']}"
@@ -4476,8 +4631,9 @@ def main(argv=None):
         nargs=2,
         action="append",
         default=[],
-        metavar=("LINE[@HIT]", "NAME=VALUE"),
-        help="Intervention at hit HIT (default 1) of LINE of the --at file (repeatable)",
+        metavar=("LINE[@HIT|@all]", "NAME=VALUE"),
+        help="Intervention at hit HIT (default 1) of LINE of the --at file, or at every stop "
+        f"of it (LINE@all, up to {MAX_HITS}); repeatable",
     )
     parser.add_argument("--run", help="Python script to run when --at is in an imported module")
     parser.add_argument("--arg", action="append", default=[], help="Python program argument")

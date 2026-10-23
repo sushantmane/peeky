@@ -320,6 +320,10 @@ for `end`.
 
 - `this.count=0`, `arr[0]=1` and `arr[-1]=9` work the same way, where the
   [table above](#what-can-be-set) allows them.
+- A parameter's field works too, since Java changes the object it refers to. So
+  `--set-at 15@all db.count=0`, on a `settle(Debounce db, int level)`'s early `return false;`,
+  resets the count each time the input agrees with the accepted level
+  ([COOKBOOK 2.8](../COOKBOOK.md#change-it-at-every-stop-all)).
 - In a session, `session set current.end=10` changes a field.
 - Peeky reads the value back from the object after the change.
 - A field is refused unless its name means exactly one instance field. It is refused if a static
