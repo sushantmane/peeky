@@ -199,6 +199,24 @@ variable of the member's type, at a location read through the hidden reference. 
   through a pointer. That is a structured binding of a reference, a class passed by value through
   a hidden pointer, and a named return value.
 
+GCC describes a structured binding of a pair or tuple (`auto [t, u] = p;`) another way. Each name
+is a variable that holds a reference to `std::tuple_element<0, E>::type`, the element. lldb-dap
+shows that reference's address as the variable's value.
+
+- `fields.element_reference` tells such a variable by that type. `local_types` stores it as
+  `through`, wherever it is kept, so a change is refused before the program runs.
+- Apple clang 21 types it as a plain reference (`long &&`), not marked artificial. There,
+  `Statements.binds` reads the declaration's line: the name must be in a binding's brackets, and
+  declared no other way. Clang 18 marks it artificial, and lldb-dap doesn't list it.
+- `NativeSession.bound_element` gives the worker the element in the variable's place. For a
+  number, a character or a pointer, that is the debugger's one child under the reference, with
+  nothing listed under it. For a struct, a string or a container, `element_text` keeps the text
+  after the address, and the members stay listed.
+- `display_type` gives the binding's type, and `debugger_type` keeps LLDB's reference.
+- Where `not_yet_declared` would show it with a note, as at a loop's return to its line, it is
+  withheld. Until its declaration runs, the reference may point anywhere. One the debugger lists
+  no element under is `not shown`.
+
 ## Function names
 
 LLDB's demangled C++ signatures run to about 100 characters, which made a probe table about 200
@@ -358,7 +376,7 @@ required test calls a model.
 | `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
-| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output and a bitfield's binding, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, and a pair's or tuple's bindings, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
 | The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
 

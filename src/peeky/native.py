@@ -4766,8 +4766,8 @@ class NativeSession:
             return found
         if note:
             return Withholding(
-                "Peeky reads no structured binding through a reference that may not be set "
-                f"yet, as the one the build holds for this one may not be: {note[:180]}",
+                "the build reads this structured binding through a reference that may not be "
+                f"set yet here, and Peeky reads nothing through it: {note[:180]}",
                 "not shown",
                 None,
             )

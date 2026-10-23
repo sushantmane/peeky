@@ -86,6 +86,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - A reference or pointer is saved with its address first: `0x000000016d78b298 "apple"`. To compare
   or group such values, use `no_addresses(value)`, or take the text after the address
   ([C and C++ 4.7](c-cpp-cookbook.md#47-c-references-and-pointers-in-sql)).
+- A structured binding of a pair or tuple shows its element, never an address: `t = 10` in
+  `auto [t, u] = p;`. GCC and newer clang hold each name as a reference. The row's `type` is the
+  binding's, and `debugger_type` is LLDB's reference
+  ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 - `address(value)` reads that address as an integer. To see which element a pointer points at in
   another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
@@ -105,8 +109,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   `data()` pointer, or an iterator keeps the old size, and Peeky can't see them
   ([C and C++ 7.1](c-cpp-cookbook.md#change-a-text)).
 - A field through a pointer can't be set: `r->tail` in `push(struct ring *r)`, or `this.count`.
-  Nor can a structured binding of a reference: `n` and `at.x` in `auto &[at, n] = *owner`. To
-  change one, set it in the frame that owns the struct, before the call
+  Nor can a structured binding of a reference: `n` and `at.x` in `auto &[at, n] = *owner`. Nor can
+  one of a pair or tuple, which is read through a reference. To change one, set it in the frame
+  that owns the struct, before the call
   ([C and C++ 7.1](c-cpp-cookbook.md#change-a-field-behind-a-pointer)).
 - In C, when the program's sources call the function only once, the refusal names that call. It
   follows a pointer that a caller only passes on, such as `fits(lay, …)` in `wrap`. It names the

@@ -892,6 +892,12 @@ def test_the_worker_shows_a_pair_bindings_element_or_withholds_it(tmp_path):
     assert not any("0x" in str(row.get("value")) for row in (t, pt, u, w))
     # Only the number's reference was listed, once.
     assert [arguments["variablesReference"] for _, arguments in worker.dap.requests] == [4]
+    # A struct's text that does not follow its address is no element Peeky can tell.
+    (odd,) = worker.expose_variables(
+        [variable("pt", f"{POINT} &", "{x = 3, y = 4}", 9)], {"id": 1}, ("Locals", None), ()
+    )
+    assert odd["value"] is None and odd["withheld_as"] == "not shown", odd
+    assert odd["variablesReference"] == 0 and odd["settable"] is False, odd
 
 
 def test_a_newer_clangs_binding_is_told_by_its_line():

@@ -2041,10 +2041,13 @@ class Statements:
             or not 1 <= line <= len(self.starts)
         ):
             return False
-        spans = self._outside(line)
-        return any(self._declares(low, high, name) for low, high in spans) and not any(
-            self._declares(low, high, name, bindings=False) for low, high in spans
-        )
+        key = ("binds", line, name)
+        if key not in self._ends:
+            spans = self._outside(line)
+            self._ends[key] = any(
+                self._declares(low, high, name) for low, high in spans
+            ) and not any(self._declares(low, high, name, bindings=False) for low, high in spans)
+        return self._ends[key]
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;

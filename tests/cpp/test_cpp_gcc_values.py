@@ -14,6 +14,8 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
 - LLDB 18's errors about that debug information come on its own stderr, apart from the
   program's output: they are a warning, not output.
 - A structured binding of a bitfield, which GCC gives no location: a true note.
+- A structured binding of a pair or tuple, which GCC (and Apple clang 21) hold as a
+  reference to the element: the element, never its address (#291).
 
 The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
 C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
