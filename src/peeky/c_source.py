@@ -2045,9 +2045,35 @@ class Statements:
         if key not in self._ends:
             spans = self._outside(line)
             self._ends[key] = any(
-                self._declares(low, high, name) for low, high in spans
+                self._bracketed(low, high, name) for low, high in spans
             ) and not any(self._declares(low, high, name, bindings=False) for low, high in spans)
         return self._ends[key]
+
+    def _bracketed(self, start, end, name):
+        """Whether ``name`` between ``start`` and ``end`` is in a structured binding's
+        brackets (`auto [t, u]`, `const auto &[t, u]`), which may open on an earlier line
+        (`auto [first,` / `second] = p;`)."""
+        blanked = self.blanked
+        for word in _IDENTIFIER.finditer(blanked, start, end):
+            if word[0] != name:
+                continue
+            at, depth = word.start() - 1, 0
+            while at >= max(0, word.start() - 4096):
+                char = blanked[at]
+                if char in ")]":
+                    depth += 1
+                elif char in "([":
+                    if depth == 0:
+                        if char == "[" and re.search(
+                            r"\bauto\s*&{0,2}\s*$", blanked[max(0, at - 64) : at]
+                        ):
+                            return True
+                        break
+                    depth -= 1
+                elif depth == 0 and char in ";{}=?":
+                    break
+                at -= 1
+        return False
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;

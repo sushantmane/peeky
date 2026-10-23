@@ -1362,6 +1362,8 @@ BINDS_SOURCE = """int main() {
     auto [e, f] = make([] { long e = 4; return e; });
     long q = 1, &[[maybe_unused]] p = q;
     use("auto [g, h] = x;");
+    auto [first,
+          second] = p; long &&third = q();
 }
 """
 
@@ -1373,8 +1375,8 @@ def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
     names = ("t", "u", "r", "s", "a", "b", "c", "d", "k", "v", "w", "w2", "z", "m", "n")
     found = {
         (line, name)
-        for line in range(1, 11)
-        for name in (*names, "e", "f", "q", "p", "g", "h")
+        for line in range(1, 14)
+        for name in (*names, "e", "f", "q", "p", "g", "h", "first", "second", "third")
         if statements.binds(line, name)
     }
     assert found == {
@@ -1390,10 +1392,13 @@ def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
         (5, "w2"),
         (7, "e"),
         (7, "f"),
+        (10, "first"),
+        (11, "second"),
     }
     # A comment's or a string's brackets bind nothing (`c`, `g`), nor does a lambda's
     # body hold the line's own (`m` is the reference `long &m` there); a plain reference
-    # (`w`, `p`) is no binding; nor is any of C.
+    # (`w`, `p`, `third` after a binding's brackets that closed) is no binding; nor is any
+    # of C. Brackets over two lines bind each line's name.
     assert not Statements(BINDS_SOURCE, raw_strings=False).binds(2, "t")
     assert not statements.binds(0, "t") and not statements.binds(99, "t")
 
