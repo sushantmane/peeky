@@ -586,8 +586,9 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
   so it counts each one as empty. Peeky withholds the container's entries, keys and positions,
   unless LLDB's count is the container's own ([details](#standard-containers)).
 - **A lambda's captures** can't be read. GCC passes them through `__closure`, which lldb-dap
-  doesn't list. So a captured name is `not found` in the lambda: read it in the function that
-  declares it.
+  doesn't list. So a captured name is `not found` in the lambda. To see a by-value capture, stop
+  in the declaring function on the line that creates the lambda, or print it inside the lambda.
+  Later, the outer variable may no longer match the copy the lambda holds.
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).
