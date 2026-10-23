@@ -1,6 +1,7 @@
 """C++ loop headers (#161), on a real build: a counted `for` stops only before its loop
 and says so; a range `for` binds its element at each pass (a location in the body's
-block, #157), so it stops at every pass and gets no such note."""
+block, #157), so it stops at every pass and gets no such note. GCC gives a range `for`
+header one location, before its loop (#167): it stops once, and says so."""
 
 import json
 import os
@@ -46,13 +47,18 @@ def probe(source, capsys, marker):
 
 
 @pytest.mark.timeout(180)
-def test_a_counted_for_says_it_stops_before_its_loop_and_a_range_for_does_not(loops, capsys):
+def test_a_counted_for_says_it_stops_before_its_loop_and_a_range_for_does_not(loops, cxx, capsys):
     line, result = probe(loops, capsys, "FOR")
     assert result["hits"] == 1
     assert f"Line {line} is a loop header: it stops once each time its loop starts" in "".join(
         result["warnings"]
     ), result["warnings"]
     line, result = probe(loops, capsys, "RANGE_FOR")
+    if cxx == "gcc":
+        assert result["hits"] == 1 and [row["value"] for row in result["rows"]] == ["3"]
+        header = f"Line {line} is a loop header: it stops once each time its loop starts"
+        assert header in "".join(result["warnings"]), result["warnings"]
+        return
     assert result["hits"] == 4
     assert not [w for w in result["warnings"] if "loop header" in w], result["warnings"]
     assert [row["stop"] for row in result["rows"]] == [1, 2, 2, 2]

@@ -10,6 +10,13 @@ import pytest
 from peeky.cli import main
 from peeky.probe import RETURN
 
+# What LLDB names `before`: GCC gives a static function no linkage name, so LLDB names it
+# from its declaration, from the global scope (#167).
+BEFORE = {
+    "clang": "before(Task const&, Task const&)",
+    "gcc": "::before(const Task &, const Task &)",
+}
+
 # The evaluation's case (/tmp/peeky-eval7/sched/sched.cpp): a later deadline runs first.
 SCHED = """#include <algorithm>
 #include <cstdio>
@@ -119,7 +126,7 @@ def task(rows, side):
 
 
 @pytest.mark.timeout(180)
-def test_every_comparator_call_returns_what_it_computed(cpp, capsys):
+def test_every_comparator_call_returns_what_it_computed(cpp, cxx, capsys):
     source = cpp("sched.cpp", SCHED)
     capture = ",".join(f"{side}.{field}" for side in "ab" for field in FIELDS) + ",return"
     code = main(
@@ -138,7 +145,7 @@ def test_every_comparator_call_returns_what_it_computed(cpp, capsys):
         # One row per call: what it returned, into std::sort's code (sort.h or libstdc++).
         assert returned["type"] == "bool" and returned["value"] in ("true", "false"), rows
         assert expected is None or returned["value"] == str(expected).lower(), rows
-        assert returned["function"].startswith("before(") and returned["phase"] == "returned"
+        assert returned["function"] == BEFORE[cxx] and returned["phase"] == "returned", rows
         assert "sched.cpp" not in returned["location"]
     # The proof of the bug: test (2:10) is not "before" build (2:30), deadline 10 first.
     assert any(
@@ -150,7 +157,7 @@ def test_every_comparator_call_returns_what_it_computed(cpp, capsys):
 
 
 @pytest.mark.timeout(180)
-def test_step_out_into_the_library_shows_what_before_returned(cpp, capsys):
+def test_step_out_into_the_library_shows_what_before_returned(cpp, cxx, capsys):
     source = cpp("sched.cpp", SCHED)
     line = line_of(SCHED, "if (a.prio != b.prio)")
     assert main(["session", "start", str(source), "--at", str(line), "--", INPUT]) == 0
@@ -168,7 +175,7 @@ def test_step_out_into_the_library_shows_what_before_returned(cpp, capsys):
         assert main(["session", "inspect", "--json"]) == 0
         snapshot = json.loads(capsys.readouterr().out)
         assert snapshot["returned"] == {
-            "function": "before(Task const&, Task const&)",
+            "function": BEFORE[cxx],
             "type": "bool",
             "value": expected,
         }
@@ -178,7 +185,7 @@ def test_step_out_into_the_library_shows_what_before_returned(cpp, capsys):
         )
         main(["session", "inspect"])
         text = capsys.readouterr().out
-        assert f"before(Task const&, Task const&) returned: bool = {expected}" in text
+        assert f"{BEFORE[cxx]} returned: bool = {expected}" in text, text
         assert main(["session", "get", "return", "a"]) == 1
         text = capsys.readouterr().out
         assert f"(return): bool = {expected}" in text

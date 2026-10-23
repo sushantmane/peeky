@@ -127,7 +127,7 @@ pip install -e .
 | Language | Also needs | Peeky finds it from |
 | --- | --- | --- |
 | Python | nothing | the interpreter running `peeky` |
-| C, C++ | clang, lldb-dap and dwarfdump: on macOS the Command Line Tools, on Linux LLVM 18 | `xcrun` or `PATH`. Set `PEEKY_NATIVE_*` to override |
+| C, C++ | clang (or GCC: set `PEEKY_NATIVE_CC` or `PEEKY_NATIVE_CXX`), lldb-dap and dwarfdump: on macOS the Command Line Tools, on Linux LLVM 18 | `xcrun` or `PATH`. Set `PEEKY_NATIVE_*` to override |
 | Rust | the rustup toolchain 1.96.0, and lldb-dap | `rustup which`. Set `PEEKY_RUST_*` to override |
 | Java | JDK 17, and the [adapter bundle](lang/java.md#words-used-here): `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"` | the target's `--config target.json` |
 

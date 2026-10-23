@@ -4,6 +4,7 @@ import json
 import os
 
 import pytest
+from native_compilers import cxx_is_gcc
 
 from peeky.cli import main
 
@@ -49,6 +50,17 @@ def bucket(tmp_path, monkeypatch):
 def probe(capsys, *argv):
     code = main(["probe", *map(str, argv), "--json", "--quiet", "--no-save"])
     return code, json.loads(capsys.readouterr().out)
+
+
+def never_stops_at(capsys, program, line):
+    """GCC runs a default member initializer's code on another line, the constructor's or
+    the one building the object (#167): `describe` leaves the member's line out, and
+    `--at` it never stops."""
+    assert main(["describe", str(program), "--json"]) == 0
+    lines = json.loads(capsys.readouterr().out)["breakpoint_lines"]
+    assert line not in lines[program.name], lines
+    code, result = probe(capsys, program, "--at", str(line), "--capture", "x")
+    assert code == 1 and result["error"]["code"] == "NO_STOP", result
 
 
 @pytest.mark.timeout(120)
@@ -339,6 +351,18 @@ def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, cap
         finally:
             main(["session", "close"])
             capsys.readouterr()
+    if suffix == "cpp" and cxx_is_gcc():
+        # GCC gives an aggregate's declaration line no code of its own (#167): its stores
+        # carry its elements' lines, so Peeky cannot tell when it is done, and withholds.
+        for hit in (3, 4, 5):
+            for selector, line in (("t", 21), ("t.p", 21), ("t.p.y", 21), ("q.y", 17)):
+                row = rows[hit][selector]
+                assert "value" not in row and (
+                    f"declared on line {line}, which has no code of its own (an aggregate is "
+                    "stored element by element)" in row["error"]
+                ), (hit, row)
+            assert rows[hit]["arr[1]"]["value"] == "18" and rows[hit]["ptrs"]["unavailable"]
+        return
     for hit in (3, 4):
         for selector in ("t", "t.p", "t.p.y"):
             row = rows[hit][selector]
@@ -619,6 +643,7 @@ def test_a_local_a_backward_goto_can_keep_live_above_its_declaration_is_withheld
         assert "value" not in row and "a `goto` return above it" in row["error"], row
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(120)
 def test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_local(bucket, capsys):
     # Review of #81: the constructor runs `w = helper(3)` on line 5, above its own
@@ -627,7 +652,12 @@ def test_a_constructor_parameter_is_never_withheld_for_an_enclosing_functions_lo
     directory.mkdir()
     program = directory / "box.cpp"
     program.write_text(LOCAL_CTOR)
-    code, result = probe(capsys, program, "--at", "5", "--capture", "v")
+    line = 5
+    if cxx_is_gcc():
+        never_stops_at(capsys, program, line)
+        # The constructor's own body, below main's `v`'s line too.
+        line = 8
+    code, result = probe(capsys, program, "--at", line, "--capture", "v")
     assert code == 0, result.get("error")
     assert result["rows"][0].get("value") == "7", result["rows"]
 
@@ -668,6 +698,7 @@ int main(void) {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(120)
 def test_a_member_initializer_run_by_its_caller_withholds_nothing(bucket, capsys):
     # Review of #81: clang runs `weight = default_weight()` in main on line 5, inside
@@ -676,7 +707,12 @@ def test_a_member_initializer_run_by_its_caller_withholds_nothing(bucket, capsys
     directory.mkdir()
     program = directory / "items.cpp"
     program.write_text(ITEMS)
-    code, result = probe(capsys, program, "--at", "5", "--capture", "i,total", "--hits", "3")
+    line = 5
+    if cxx_is_gcc():
+        never_stops_at(capsys, program, line)
+        # The line building `it`, where GCC runs its initializer.
+        line = 10
+    code, result = probe(capsys, program, "--at", line, "--capture", "i,total", "--hits", "3")
     assert code == 0, result.get("error")
     values = [(row["selector"], row.get("value")) for row in result["rows"]]
     assert values == [("i", "0"), ("total", "0"), ("i", "1"), ("total", "10")] + [
@@ -739,6 +775,7 @@ def session_inspect(capsys, program, line, *steps, hit=1):
     return snapshot, {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(120)
 def test_a_header_structs_initializer_run_in_main_withholds_nothing(bucket, capsys):
     # Review of #81: stepping from main.cpp:5 lands on geo.hpp:2 in main (clang runs
@@ -748,7 +785,9 @@ def test_a_header_structs_initializer_run_in_main_withholds_nothing(bucket, caps
     (directory / "geo.hpp").write_text(GEO)
     (directory / "main.cpp").write_text(GEO_MAIN)
     snapshot, shown = session_inspect(capsys, directory / "main.cpp", 5, 1)
-    assert snapshot["location"].endswith("geo.hpp:2"), snapshot["location"]
+    # GCC runs the initializer on `p`'s own line (#167): the step ends on main's next.
+    landed = "main.cpp:6" if cxx_is_gcc() else "geo.hpp:2"
+    assert snapshot["location"].endswith(landed), snapshot["location"]
     assert shown["x"].get("value") == "41", shown["x"]
 
 

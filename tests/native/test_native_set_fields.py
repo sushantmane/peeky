@@ -182,7 +182,7 @@ def test_c_fields_and_elements_change_and_the_program_sees_them(directory, capsy
 
 
 @pytest.mark.timeout(240)
-def test_cpp_fields_change_only_in_objects_the_frame_holds(directory, capsys):
+def test_cpp_fields_change_only_in_objects_the_frame_holds(directory, cxx, capsys):
     path = directory / "fields.cpp"
     path.write_text(CPP_SOURCE)
     assert main(["session", "start", str(path), "--at", str(line_of(CPP_SOURCE, "STOP"))]) == 0
@@ -198,7 +198,14 @@ def test_cpp_fields_change_only_in_objects_the_frame_holds(directory, capsys):
         assert code == 0 and result["after"] == after, (assignment, result)
     refused(capsys, "h.ref.end=3", "`h.ref` is a reference")
     refused(capsys, "rs.end=3", "`rs` is a reference")
-    refused(capsys, "cs.end=3", "`cs` is const")
+    if cxx == "gcc":
+        # GCC places a `const` aggregate it can build at compile time in read-only data,
+        # which lldb-dap lists among no frame's locals (#167): not found, and said why.
+        code, result = change(capsys, "cs.end=3")
+        assert code == 2 and result["error"]["code"] == "NOT_FOUND", result
+        assert "main declares 'cs' in static storage" in result["error"]["message"], result
+    else:
+        refused(capsys, "cs.end=3", "`cs` is const")
     refused(capsys, "pr.first=3", "standard-library type")
     refused(capsys, "v[0]=3", "standard-library type")
     assert main(["session", "continue", "--to", str(line_of(CPP_SOURCE, "BUMP"))]) == 0
@@ -870,7 +877,7 @@ def test_c_inspect_says_why_nothing_is_settable_on_a_loops_later_pass(directory,
 
 
 @pytest.mark.timeout(240)
-def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, capsys):
+def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, cxx, capsys):
     # Sixth evaluation, finding 7, in C++: through a reference member, a reference, a
     # const object or a standard-library type, never marked.
     path = directory / "fields.cpp"
@@ -882,6 +889,10 @@ def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, capsys
     at = str(line_of(CPP_SOURCE, "STOP"))
     code = main(["probe", str(path), "--at", at, "--capture", ",".join(marked), "--json"])
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
+    if cxx == "gcc":
+        # GCC's `cs` is in read-only data, which lldb-dap does not list (#167).
+        assert "main declares 'cs' in static storage" in rows["cs.end"]["error"], rows
+        marked["cs.end"] = None
     assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
 
 

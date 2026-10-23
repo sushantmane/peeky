@@ -7,10 +7,10 @@ import contextlib
 import json
 import os
 import re
-import subprocess
 import sys
 
 import pytest
+from native_compilers import cxx_is_gcc
 
 from peeky.cli import main
 
@@ -100,12 +100,6 @@ def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
 
 
-def built_by_gcc():
-    """Whether PEEKY_NATIVE_CXX is GCC (the test-only hatch, PEEKY_TEST_CPP_GCC=1)."""
-    shown = subprocess.run([os.environ["PEEKY_NATIVE_CXX"], "--version"], capture_output=True)
-    return b"Free Software Foundation" in shown.stdout
-
-
 def unlisted(row):
     """A row withheld because LLDB counts GCC's unordered container as empty (#167)."""
     return row.get("value") is None and str(row.get("error")).startswith(
@@ -162,7 +156,7 @@ def test_probe_rows_show_a_containers_first_elements(cpp, capsys):
     rows = {row["selector"]: row.get("value") for row in result["rows"]}
     assert "moved=0 " in result["output"], result["output"]
     # GCC's unordered containers, which LLDB counts as empty, are withheld (#167).
-    gcc = {row["selector"]: row for row in result["rows"]} if built_by_gcc() else {}
+    gcc = {row["selector"]: row for row in result["rows"]} if cxx_is_gcc() else {}
     for selector, value in EXPECTED.items():
         if selector == "us" and gcc:
             assert unlisted(gcc["us"]), gcc["us"]

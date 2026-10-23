@@ -2464,6 +2464,14 @@ class DebugWorker:
                     if (receiver := getattr(runtime, "implicit_receiver", None))
                     else {}
                 ),
+                # What the function keeps in static storage, which lldb-dap does not list
+                # among a frame's locals (C, C++).
+                **(
+                    {"statics": statics}
+                    if (lister := getattr(runtime, "static_locals", None))
+                    and (statics := lister(selected_frame))
+                    else {}
+                ),
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
                 # C++ string keys: whether LLDB's summary of a std::string is all of it.

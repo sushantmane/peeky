@@ -657,6 +657,7 @@ def test_compiled_programs_take_per_run_arguments(tmp_path, native_config, capsy
     assert code == 2 or json.loads(capsys.readouterr().out)["status"] == "failed"
 
 
+@pytest.mark.cpp
 def test_describe_lists_each_functions_span_and_locals(tmp_path, native_config, capsys):
     from peeky.cli import main
 
@@ -872,6 +873,7 @@ def test_a_step_interrupted_by_another_threads_hit_can_still_step(
         assert main(["session", "close"]) == 0
 
 
+@pytest.mark.cpp
 def test_describe_leaves_out_types_a_program_cannot_write(tmp_path, native_config, capsys):
     # Review of #97: dwarfdump names unnamed types by their tag (`structure `).
     from peeky.cli import main
@@ -1292,6 +1294,7 @@ def test_a_pointers_first_element_is_its_pointee(tmp_path, native_config, capsys
         capsys.readouterr()
 
 
+@pytest.mark.cpp
 def test_a_pointer_to_an_array_or_container_indexes_as_c_does(tmp_path, native_config, capsys):
     # #102: the debugger lists a pointer's pointee elements as its own children, so
     # `parr[1]` read `(*parr)[1]`, where C means the next row. Now p[0] is the pointee and
@@ -1445,6 +1448,18 @@ def _session_rows(main, capsys, *selectors):
     return {row["selector"]: row for row in (shown["rows"] if isinstance(shown, dict) else shown)}
 
 
+def unlisted(row, name):
+    """Whether a row of GCC's unordered container ``name`` is withheld, and says why: LLDB
+    finds no element type in GCC's `std::allocator`, so it counts the container as empty
+    (#167)."""
+    said = (
+        "not listed: the debugger cannot list this build's unordered containers: it counts 0 "
+        "entries, but the container's own count (`_M_element_count`) is "
+    )
+    error = row.get("error", "")
+    return "value" not in row and (error.startswith(said) or f"{name} is {said}" in error)
+
+
 @contextlib.contextmanager
 def _maps_session(tmp_path, capsys, monkeypatch, marker="// OBSERVE", program=None):
     """A session on MAPS (or ``program``) stopped at ``marker``; yields `session get` as
@@ -1465,7 +1480,9 @@ def _maps_session(tmp_path, capsys, monkeypatch, marker="// OBSERVE", program=No
         capsys.readouterr()
 
 
-def test_a_cpp_maps_index_is_the_value_for_that_key(tmp_path, native_config, capsys, monkeypatch):
+def test_a_cpp_maps_index_is_the_value_for_that_key(
+    tmp_path, native_config, cxx, capsys, monkeypatch
+):
     # #119: LLDB lists a map's entries as [0], [1], ... in iteration order, so `m[1]` read
     # the second entry ({2, 20}; `m[1].second` was 20) where C++'s m[1] is 10. Now [K] is
     # the value for key K, and [#N] is the Nth entry.
@@ -1482,8 +1499,11 @@ def test_a_cpp_maps_index_is_the_value_for_that_key(tmp_path, native_config, cap
         assert "m has no key 3 (keys: 1, 2, 5)" in errors["m[3]"]
         assert values["m[#1].first"] == "2" and values["m[#1].second"] == "20"
         assert "m[1] is the value for that key, as in C++" in errors["m[1].second"]
-        assert values["um[1]"] == "10" and values["um[5]"] == "50"
-        assert "um has no key 7" in errors["um[7]"]
+        if cxx == "gcc":
+            assert all(unlisted(rows[key], "um") for key in ("um[1]", "um[5]", "um[7]")), rows
+        else:
+            assert values["um[1]"] == "10" and values["um[5]"] == "50"
+            assert "um has no key 7" in errors["um[7]"]
         assert values['sm["a"]'] == "1" and values["sm['b']"] == "2"
         assert 'sm\'s keys are strings; select one as sm["key"]' in errors["sm[0]"]
         assert "dm's keys are double, which Peeky does not compare" in errors["dm[0]"]
@@ -1508,7 +1528,7 @@ def test_a_cpp_maps_index_is_the_value_for_that_key(tmp_path, native_config, cap
         assert "read ip[0][1], its value for key 1" in rows["ip[1]"]["error"]
 
 
-def test_a_cpp_set_or_multimap_index_is_refused(tmp_path, native_config, capsys, monkeypatch):
+def test_a_cpp_set_or_multimap_index_is_refused(tmp_path, native_config, cxx, capsys, monkeypatch):
     # #119: `s[1]` read a set's second element and `mm[1]` a multimap's second entry,
     # where C++ has no [] for either. Now they are refused with the [#N] that reads one.
     with _maps_session(tmp_path, capsys, monkeypatch) as get:
@@ -1523,23 +1543,31 @@ def test_a_cpp_set_or_multimap_index_is_refused(tmp_path, native_config, capsys,
         # Equal keys keep their insertion order, in both standard libraries.
         assert values["mm[#1].second"] == "11"
         assert "is a C++ set" in errors["ms[0]"] and values["ms[#2]"] == "2"
-        assert "is a C++ set" in errors["us[0]"] and values["us[#0]"] in ("1", "2", "3")
+        if cxx == "gcc":
+            assert unlisted(rows["us[0]"], "us") and unlisted(rows["us[#0]"], "us"), rows
+        else:
+            assert "is a C++ set" in errors["us[0]"] and values["us[#0]"] in ("1", "2", "3")
         # A typedef'd set, by the class the build's debug information gives.
         assert "is a C++ set" in errors["is[1]"] and values["is[#0]"] == "1"
 
 
 def test_a_cpp_map_or_set_listing_never_labels_an_entry_by_position(
-    tmp_path, native_config, capsys, monkeypatch
+    tmp_path, native_config, cxx, capsys, monkeypatch
 ):
     # #119: `session get m` listed m[0], m[1], m[2], each read by position.
     with _maps_session(tmp_path, capsys, monkeypatch) as get:
         listed = get("m", "um", "s", "mm", "sm", "dm", "im", "is")
+        if cxx == "gcc":
+            row = listed.pop("um")
+            assert unlisted(row, "um") and "children" not in row, row
         selectors = {
             name: [(child.get("selector"), child.get("value")) for child in row["children"]]
             for name, row in listed.items()
         }
         assert selectors["m"] == [("m[1]", "10"), ("m[2]", "20"), ("m[5]", "50")]
-        assert sorted(selectors["um"]) == [("um[1]", "10"), ("um[2]", "20"), ("um[5]", "50")]
+        if cxx == "clang":
+            expected = [("um[1]", "10"), ("um[2]", "20"), ("um[5]", "50")]
+            assert sorted(selectors["um"]) == expected
         assert selectors["sm"] == [('sm["a"]', "1"), ('sm["b"]', "2")]
         assert selectors["im"] == [("im[1]", "10"), ("im[2]", "20")]
         assert "m[K] is the value for key K, as in C++" in listed["m"]["note"]
@@ -1550,7 +1578,7 @@ def test_a_cpp_map_or_set_listing_never_labels_an_entry_by_position(
         assert "s[#N] is its Nth element in iteration order" in listed["s"]["note"]
         assert "dm is a C++ map whose keys Peeky does not compare" in listed["dm"]["note"]
         # Each listed selector reads the value its row shows.
-        for name in ("m", "um", "sm", "s"):
+        for name in ("m", "um", "sm", "s") if cxx == "clang" else ("m", "sm", "s"):
             shown = dict(selectors[name])
             assert {s: r.get("value") for s, r in get(*shown).items()} == shown
     with _maps_session(tmp_path, capsys, monkeypatch, "// IN_TOTAL") as get:
@@ -1651,6 +1679,7 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 def test_a_string_key_matches_only_a_string_of_its_length(
     tmp_path, native_config, capsys, monkeypatch
 ):
@@ -1678,8 +1707,9 @@ def test_a_string_key_matches_only_a_string_of_its_length(
         assert labels == ['cfg.opts["k"]', "cfg.opts[#1]"], labels
 
 
+@pytest.mark.cpp
 def test_a_custom_comparison_never_says_a_key_is_missing(
-    tmp_path, native_config, capsys, monkeypatch
+    tmp_path, native_config, cxx, capsys, monkeypatch
 ):
     # Review of #119 (PR #127): with `ByAbs`, C++'s am[1] reads key -1's -10, but `am[1]`
     # said "not found ... would insert it". Absence is now claimed only under std::less,
@@ -1689,15 +1719,23 @@ def test_a_custom_comparison_never_says_a_key_is_missing(
             *("am[1]", "am[-1]", "mod[3]", "mod[13]", "bigabs[-3]", "bigabs[3]", "plain[4]"),
             *('ci["alpha"]', 'ci["Alpha"]', 'hci["ALPHA"]', 'hci["Alpha"]', "am"),
         )
-        for selector in ("am[1]", "mod[3]", "bigabs[3]", 'ci["alpha"]', 'hci["ALPHA"]'):
+        hashed = ('hci["ALPHA"]', 'hci["Alpha"]')
+        if cxx == "gcc":
+            # LLDB counts GCC's unordered map as empty: withheld, never "no key" (#167).
+            assert all(unlisted(rows.pop(selector), "hci") for selector in hashed), rows
+        for selector in ("am[1]", "mod[3]", "bigabs[3]", 'ci["alpha"]', *hashed[:1]):
+            if selector not in rows:
+                continue
             error = rows[selector].get("error", "")
             assert "would insert" not in error and "no key equals" in error, (selector, error)
             assert "[#N]" in error, error
         assert "comparator" in rows["am[1]"]["error"]
-        assert "hash or equality" in rows['hci["ALPHA"]']["error"]
         assert rows["am[-1]"]["value"] == "-10" and rows["mod[13]"]["value"] == "1"
         assert rows["bigabs[-3]"]["value"] == "3"
-        assert rows['ci["Alpha"]']["value"] == rows['hci["Alpha"]']["value"] == "1"
+        assert rows['ci["Alpha"]']["value"] == "1"
+        if cxx == "clang":
+            assert "hash or equality" in rows['hci["ALPHA"]']["error"]
+            assert rows['hci["Alpha"]']["value"] == "1"
         assert (
             "plain has no key 4 (keys: 1, 2); in C++, plain[4] would insert"
             in (rows["plain[4]"]["error"])
@@ -1707,6 +1745,7 @@ def test_a_custom_comparison_never_says_a_key_is_missing(
         assert shown == {"am[-1]": "-10", "am[2]": "20", "am[-3]": "-30", "am[5]": "50"}
 
 
+@pytest.mark.cpp
 def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
     tmp_path, native_config, capsys, monkeypatch
 ):
@@ -1726,6 +1765,7 @@ def test_a_set_or_map_behind_a_member_typedef_is_not_indexed_by_position(
             assert labels == [f"{name}[#0]", f"{name}[#1]", f"{name}[#2]"], labels
 
 
+@pytest.mark.cpp
 def test_a_key_no_selector_can_write_is_listed_by_position(
     tmp_path, native_config, capsys, monkeypatch
 ):

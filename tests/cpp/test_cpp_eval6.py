@@ -174,10 +174,13 @@ def test_a_string_shows_its_text_and_no_library_members(cpp, capsys):
 
 
 @pytest.mark.timeout(120)
-def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, capsys):
+def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     # Eval 6, finding 16: the function column read `trim_left(std::__1::basic_string<char,
     # std::__1::char_traits<char>, std::__1::allocator<char>> const&)`, so the table was
-    # about 200 columns wide. JSON and the evidence store keep the whole name.
+    # about 200 columns wide. JSON and the evidence store keep the whole name. GCC gives
+    # a static function no linkage name, so LLDB names it from its declaration, from the
+    # global scope: `::trim_left`, `::twice(int)` (#167). The hints name what is stored.
+    scope = "::" if cxx == "gcc" else ""
     source = cpp("stock.cpp", STOCK)
     assert main(["probe", str(source), "--at", "9", *ARGS, "--capture", "i", "--hits", "2"]) == 0
     text = capsys.readouterr().out
@@ -186,24 +189,30 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, capsys):
     # Review of the eval-6 fixes: SQL compares the stored name, which `WHERE function =
     # 'trim_left'` does not match; the probe's table says how to match it.
     assert "note: function shows short frame names" in text, text
-    assert "short_function(function) = 'trim_left'" in text, text
+    assert f"short_function(function) = '{scope}trim_left'" in text, text
     assert main(["sql", "SELECT count(*) AS n FROM last_run WHERE function = 'trim_left'"]) == 0
     assert "\n0" in capsys.readouterr().out
     assert main(["sql", "SELECT DISTINCT function FROM last_run", "--json"]) == 0
     (stored,) = [row["function"] for row in json.loads(capsys.readouterr().out)["rows"]]
-    assert stored.startswith("trim_left(") and "basic_string" in stored, stored
+    if cxx == "gcc":
+        assert stored == "::trim_left(const std::string &)", stored
+    else:
+        assert stored.startswith("trim_left(") and "basic_string" in stored, stored
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
     assert "note: function shows short frame names" in text, text
-    query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'trim_left'"
+    query = (
+        f"SELECT count(*) AS n FROM last_run WHERE short_function(function) = '{scope}trim_left'"
+    )
     assert main(["sql", query, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
     # Two overloads in one table keep their parameters, so they stay apart.
     source = cpp("overloads.cpp", OVERLOADS)
     assert main(["probe", str(source), "--at", "3", "--capture", "x", "--hits", "all"]) == 0
     text = capsys.readouterr().out
-    assert "twice(int)" in text and "twice(std::string const&)" in text, text
+    by_text = "twice(const std::string &)" if cxx == "gcc" else "twice(std::string const&)"
+    assert "twice(int)" in text and by_text in text, text
     assert "basic_string" not in text, text
     # A probe's table says the note once per state directory (seventh evaluation,
     # finding 8); a query's table always does. Its example is what short_function
@@ -211,13 +220,17 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, capsys):
     assert "note: function shows short frame names" not in text, text
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out
-    assert "short_function(function) = 'twice'" in text, text
-    query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'twice'"
+    if cxx == "gcc":
+        # GCC's names are what the column shows, unshortened: nothing to say.
+        assert "note: function shows short frame names" not in text, text
+    else:
+        assert "short_function(function) = 'twice'" in text, text
+    query = f"SELECT count(*) AS n FROM last_run WHERE short_function(function) = '{scope}twice'"
     assert main(["sql", query, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
     # A session names the frame with its parameters, as code writes their types.
     with session(source, 3, capsys, "--hit", "2") as (_, started):
-        assert " in twice(std::string const&), hit 2" in started, started
+        assert f" in {scope}{by_text}, hit 2" in started, started
 
 
 @pytest.mark.timeout(120)
@@ -270,7 +283,7 @@ def test_a_value_shortened_at_one_line_is_restored_at_the_next_in_one_probe(cpp,
 
 
 @pytest.mark.timeout(240)
-def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, capsys):
+def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, cxx, capsys):
     # #137 part 2 (sixth evaluation, `stock`): the names with a trailing space were the
     # bug; setting `name` to the trimmed text, which a string's change now does, shows
     # that trimming them is the fix, without changing the parser's offsets.
@@ -282,9 +295,16 @@ def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, capsys):
     code = main([*argv, *sets, "--json", "--quiet", "--", "apple:3, pear:2, apple :4,pear :1"])
     result = json.loads(capsys.readouterr().out)
     reads = sys.platform == "darwin" or any(row.get("view") == "memory" for row in result["rows"])
+    # A GCC build's names read whole from LLDB's summary, with no memory read to see.
+    reads = reads or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
     if not reads:
         # lldb-dap 18 cannot tell whether a libstdc++ string's text is in the string.
         assert code == 1 and "cannot read memory" in result["error"]["message"], result
+        return
+    if cxx == "gcc" and sys.platform != "darwin":
+        # LLDB 20 reads GCC's string buffer as char[0], and cannot write memory (#167).
+        misread = "the debugger misreads this build's string buffer as char[0]"
+        assert code == 1 and misread in result["error"]["message"], result["error"]
         return
     assert code == 0, result.get("error")
     assert "STOCK:apple=7,pear=3" in result["output"], result["output"]
@@ -307,21 +327,34 @@ int main() {
 
 
 @pytest.mark.timeout(240)
-def test_a_set_at_line_that_stops_in_a_lambda_says_whose_variable_changed(cpp, capsys):
+def test_a_set_at_line_that_stops_in_a_lambda_says_whose_variable_changed(cpp, cxx, capsys):
     # #151 review: line BOTH stops in `main` and in the lambda it declares, and @HIT counts
     # both, so `6@2` changed the lambda's `v`; nothing said so.
     source = cpp("lam.cpp", LAMBDA)
     both, end = line_of(LAMBDA, "BOTH"), line_of(LAMBDA, "END")
     argv = ["probe", str(source), "--at", str(end), "--capture", "total"]
-    assert main([*argv, "--set-at", f"{both}@2", "v=100", "--quiet"]) == 0
-    text = capsys.readouterr().out
-    assert f"set v: 0 -> 100  (--set-at line {both}@2, in main::$_0::operator())" in text, text
-    assert f"warning: --set-at line {both} stopped in 2 functions: main (stop 1); main::" in text
-    assert "T 133" in text
-    assert main(["sql", "SELECT name, line, hit, function FROM interventions", "--json"]) == 0
-    (stored,) = json.loads(capsys.readouterr().out)["rows"]
-    assert stored["line"] == both and stored["hit"] == 2
-    assert stored["function"].startswith("main::$_0::operator()"), stored
+    code = main([*argv, "--set-at", f"{both}@2", "v=100", "--quiet"])
+    shown = capsys.readouterr()
+    text = shown.out
+    if cxx == "gcc":
+        # GCC marks no prologue end, so the lambda's one-line body stops at its first
+        # instruction, before its prologue stores `v` (#279): the change is refused, and
+        # says why. GCC names the lambda plain `operator()` (#167).
+        warned = f"warning: --set-at line {both} stopped in 2 functions: main (stop 1); "
+        assert code == 1 and warned + "operator() (stop 2)." in text, text
+        assert "MUTATION_REJECTED" in text and "(in operator())" in text, text
+        assert "the stop is at its function's start, before the prologue stores the " in text
+    else:
+        assert code == 0, shown
+        expected = f"set v: 0 -> 100  (--set-at line {both}@2, in main::$_0::operator())"
+        assert expected in text, text
+        warned = f"warning: --set-at line {both} stopped in 2 functions: main (stop 1); main::"
+        assert warned in text, text
+        assert "T 133" in text
+        assert main(["sql", "SELECT name, line, hit, function FROM interventions", "--json"]) == 0
+        (stored,) = json.loads(capsys.readouterr().out)["rows"]
+        assert stored["line"] == both and stored["hit"] == 2
+        assert stored["function"].startswith("main::$_0::operator()"), stored
     # main's own `v` on the second pass is that line's third stop.
     assert main([*argv, "--set-at", f"{both}@3", "v=100", "--json", "--quiet"]) == 0
     result = json.loads(capsys.readouterr().out)

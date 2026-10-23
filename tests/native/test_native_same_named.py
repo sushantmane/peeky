@@ -418,7 +418,7 @@ int main(int argc, char **argv) { return run(argc) - 1; }
 
 
 @pytest.mark.timeout(300)
-def test_cpp_a_line_only_an_exception_runs_singles_out_nothing(directory, capsys):
+def test_cpp_a_line_only_an_exception_runs_singles_out_nothing(directory, cxx, capsys):
     # The function's closing line has code only in exception landing pads, inside the
     # block's ranges: a breakpoint there is never reached, so it singles out no `t`
     # (the probe ran to NO_STOP).
@@ -426,7 +426,9 @@ def test_cpp_a_line_only_an_exception_runs_singles_out_nothing(directory, capsys
     path.write_text(CLOSING)
     code, result = probed(capsys, path, line_of(CLOSING, "// CLOSING"), "t.deadline=5", "t")
     assert code == 2 and result.get("refused_before_launch") is True, result
-    assert "several locals named `t` of different types" in result["error"]["message"]
+    # GCC's code for the line lies outside the block (#167): there `t` is the `int`.
+    said = "`t` has no fields" if cxx == "gcc" else "several locals named `t` of different types"
+    assert said in result["error"]["message"], result["error"]
 
 
 # Review of PR #159 (round 2): a header a macro writes was read as a plain statement,
@@ -894,11 +896,20 @@ def test_cpp_a_range_for_binding_names_nothing_in_a_lambda_in_its_range(director
 
 
 @pytest.mark.timeout(300)
-def test_cpp_a_range_for_header_reads_the_outer_local_before_its_range_runs(directory, capsys):
+def test_cpp_a_range_for_header_reads_the_outer_local_before_its_range_runs(directory, cxx, capsys):
     path = directory / "range_header.cpp"
     path.write_text(RANGE_LAMBDA)
     line = line_of(RANGE_LAMBDA, "// HEADER")
     code, result = captured(capsys, path, line, "t", "--set", "t=7", "--hits", "1")
+    if cxx == "gcc":
+        # LLDB lists GCC's binding `t` at the header's first instruction (#167), so `t`
+        # names it: withheld as not declared yet, and the change refused, naming the
+        # outer local's own row.
+        outer = f"settable here: t @ range_header.cpp:{line - 1}"
+        assert code == 1 and outer in result["error"]["message"], result["error"]
+        observed = next(row for row in result["rows"] if row["phase"] == "observed")
+        assert f"declared on line {line}, which has not run yet" in observed["error"], observed
+        return
     assert code == 0 and result["status"] == "completed", result.get("error")
     observed = next(row for row in result["rows"] if row["phase"] == "observed")
     assert (observed["type"], observed["value"]) == ("long", "1"), observed

@@ -34,6 +34,7 @@ stays deferred.
 [i248]: https://github.com/sushantmane/peeky/issues/248
 [i249]: https://github.com/sushantmane/peeky/issues/249
 [i252]: https://github.com/sushantmane/peeky/issues/252
+[i167]: https://github.com/sushantmane/peeky/issues/167
 [adr4]: adr/0004-stateless-probes.md
 
 All eight issues are in the MVP milestone. #6, #7 and #8 are its foundation. The language issues
@@ -154,6 +155,10 @@ extend it. Kubernetes stays deferred.
   the deferred list.
 - **Rule:** each language slice gets an adversarial review, conformance tests on the real adapter
   and its own parallel CI lane. Only then does Peeky claim support.
+- **C++ built by GCC** ([#167][i167]) followed the same rule. A survey ran every C++ test with g++.
+  Then each wrong value it found was fixed or withheld, and the tests became compiler-aware. The
+  `cpp-gcc` and `cpp-gcc-llvm20` lanes run every C++ case with g++. Its known gaps are in the
+  [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
 
 ### Stateless probes (ADR 0004)
 
@@ -190,6 +195,19 @@ Sanitizer, Nsight profiling and support for ML workloads.
 - **Rule:** CPU-only CI does not claim CUDA support. Without a real NVIDIA GPU, GPU tests report
   "not qualified on this host". They never pass, and never go missing silently.
 
+### C++ built by GCC: reading what is withheld
+
+GCC's C++ builds withhold what LLDB misreads ([gaps](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
+Reading it would take about 2 weeks:
+
+- read an unordered container's entries from its own nodes;
+- read a lambda's captures through `__closure`;
+- set a text in a string's own buffer, which LLDB reads as `char[0]`;
+- tell when a caller's aggregate is stored, from its elements' lines.
+
+GDB's DAP reads much of this right, but Peeky's native layer is built on lldb-dap. A GDB backend
+would take about 4 to 6 weeks, and is deferred.
+
 ### Mixed-runtime inference engines
 
 Inference engines combine Python orchestration, C++ extensions and CUDA kernels.
@@ -224,6 +242,7 @@ order:
 - Multi-tenant authorization. A worker has one controller and one session.
 - Production data policies, and a production mutation policy.
 - Attach for languages other than Java.
+- A GDB backend, for GCC's builds. GDB's DAP isn't supported.
 
 [p15]: https://github.com/sushantmane/peeky/pull/15
 [p16]: https://github.com/sushantmane/peeky/pull/16

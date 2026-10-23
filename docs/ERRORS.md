@@ -96,7 +96,7 @@ The last column is the `retryable` field.
 | --- | --- |
 | An operation or capability that isn't offered, such as `--capture return` for Python | Call `version` to see what is offered, or do what the message names |
 | A Java adapter bundle built before a required java-debug patch | Rebuild the adapter with `scripts/setup_java_adapter.py` |
-| A C++ target whose compiler isn't clang: `C++ targets need clang++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ |
+| A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
 
 Inline assembly that can read a file means `.incbin`, `.include` or an assembler macro. This

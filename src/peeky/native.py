@@ -79,8 +79,8 @@ _FAMILIES = {}
 VERSION_TIMEOUT = 10
 _FAMILIES_LOCK = threading.Lock()
 CPP_COMPILER_REFUSAL = (
-    "C++ targets need clang++ (Peeky's C++ rules are checked against clang's debug "
-    "info); set PEEKY_NATIVE_CXX to clang++"
+    "C++ targets need clang++ or g++ (Peeky's C++ rules are checked only against their "
+    "debug info); set PEEKY_NATIVE_CXX to one of them"
 )
 
 
@@ -3024,23 +3024,24 @@ class NativeTarget:
 
     def _compile_flags(self):
         """(driver, every flag a source is compiled with, the sysroot, its resolved SDK).
-        A C++ target's compiler must be clang (#167): refused before anything runs."""
+        A C++ target's compiler must be clang or GCC (#167), by what its `--version`
+        says: any other is refused before anything runs."""
         driver = ()
         if self.language == "cpp":
             compiler = _tool(self.compiler)
-            if (family := compiler_family(compiler)) != "clang":
+            if (family := compiler_family(compiler)) not in ("clang", "gcc"):
                 said = {
-                    "gcc": "is GCC",
                     "timeout": f"timed out: no answer to --version within {VERSION_TIMEOUT} s",
-                }.get(family, "is not clang, by its --version")
+                }.get(family, "is neither clang nor GCC, by its --version")
                 refused = ValueError(f"{CPP_COMPILER_REFUSAL} ({compiler} {said})")
                 # Nothing was built or run: no run is kept as evidence.
                 refused.before_launch = True
                 raise refused
-            # The compiler path is resolved (clang++ is a symlink to clang), and clang
-            # picks its language from the name it runs as; keep C++ mode so libc++ is
-            # linked. A clang-only option.
-            driver = ("--driver-mode=g++",)
+            if family == "clang":
+                # The compiler path is resolved (clang++ is a symlink to clang), and clang
+                # picks its language from the name it runs as; keep C++ mode so libc++ is
+                # linked. A clang-only option: g++ is always in C++ mode.
+                driver = ("--driver-mode=g++",)
         flags = [*driver, *self.compiler_options]
         # Without an explicit sysroot, use the SDK the /usr/bin xcrun stub would have
         # supplied; it is part of the recorded build commands either way.
@@ -3070,7 +3071,8 @@ class NativeTarget:
                 if self.language == "c"
                 else "Native candidate edits require a declared C++ source"
             )
-        # The compiler is judged first: a C++ target refuses GCC before anything runs.
+        # The compiler is judged first: a C++ target refuses any but clang or GCC before
+        # anything runs.
         driver, flags, sysroot, sdk = self._compile_flags()
         compiler, adapter, dwarfdump = map(_tool, (self.compiler, self.adapter, self.dwarfdump))
         # Keep objects until dsymutil finishes; single-step clang removes its
@@ -3908,6 +3910,19 @@ class NativeSession:
         """C++ selectors name members of `this` without it, as C++ code does; in C a
         local may itself be called `this`."""
         return "this" if getattr(self.target, "language", None) == "cpp" else None
+
+    def static_locals(self, frame):
+        """The names the function a frame runs declares in static storage (a fixed
+        address): a `static` local, or a `const` local GCC places in read-only data
+        (#167). lldb-dap lists none of them among a frame's locals. Empty where Peeky
+        cannot place the function."""
+        function = self._function_at(frame)
+        types = (function or {}).get("types") or {}
+        return sorted(
+            name
+            for name, declared in types.items()
+            if any(storage == "static" for _, storage, _ in declared)
+        )[:50]
 
     def __init__(
         self,

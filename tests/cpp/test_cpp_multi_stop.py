@@ -47,20 +47,28 @@ def probe(source, capsys, line):
 
 
 @pytest.mark.timeout(180)
-def test_a_range_for_header_stops_once_before_the_loop_and_at_each_pass(ranged, capsys):
+def test_a_range_for_header_stops_once_before_the_loop_and_at_each_pass(ranged, cxx, capsys):
     line = line_of("// RANGE_FOR")
     result = probe(ranged, capsys, line)
-    assert result["hits"] == 4
-    (warning,) = [w for w in result["warnings"] if "times per pass" in w]
-    assert warning.startswith(
-        f"Line {line} stops up to 2 times per pass in main (2 breakpoint locations)"
-    ), warning
-    assert [(row["stop"], row["stops"], row["value"]) for row in result["rows"]] == [
-        (1, 2, "0"),
-        (2, 2, "0"),
-        (2, 2, "4"),
-        (2, 2, "9"),
-    ]
+    if cxx == "gcc":
+        # GCC's range `for` header gets one breakpoint location, before the loop (#167):
+        # one stop, which the loop-header warning says.
+        assert result["hits"] == 1 and [row["value"] for row in result["rows"]] == ["0"]
+        assert not [w for w in result["warnings"] if "times per pass" in w], result
+        header = f"Line {line} is a loop header: it stops once each time its loop starts"
+        assert any(w.startswith(header) for w in result["warnings"]), result["warnings"]
+    else:
+        assert result["hits"] == 4
+        (warning,) = [w for w in result["warnings"] if "times per pass" in w]
+        assert warning.startswith(
+            f"Line {line} stops up to 2 times per pass in main (2 breakpoint locations)"
+        ), warning
+        assert [(row["stop"], row["stops"], row["value"]) for row in result["rows"]] == [
+            (1, 2, "0"),
+            (2, 2, "0"),
+            (2, 2, "4"),
+            (2, 2, "9"),
+        ]
     # A lambda on a line is another function, not another stop: main has one location
     # there (both calls are in one block) and stops once; the lambda at each call.
     result = probe(ranged, capsys, line_of("// LAMBDA"))

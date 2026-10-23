@@ -583,6 +583,20 @@ def _visible(snapshot, module=True):
     return shown
 
 
+def _static_hint(snapshot, name):
+    """Why a name the stopped function keeps in static storage is not found (C, C++):
+    lldb-dap lists none of them among a frame's locals. A `static` local, or a `const`
+    local GCC places in read-only data (#167)."""
+    if name not in (snapshot.get("statics") or ()):
+        return ""
+    function = display_function(snapshot.get("function")) or "this function"
+    return (
+        f": {function} declares {name!r} in static storage (a `static` local, or a `const` "
+        "one the compiler placed there), which the debugger does not list among a frame's "
+        "locals, so Peeky cannot read it here; print it from the program"
+    )
+
+
 def _member_hint(worker, stop, snapshot, name):
     """`; select it as this.name` when the stopped method's object (C++, Java) has a
     member of that name. Never read implicitly: the debugger's list of locals can be
@@ -802,7 +816,7 @@ def _root(worker, stop, snapshot, name):
     # Python reads a module global by its NFKC-normalized name, never by another.
     if not snapshot.get("globals_available") or (twin and not is_normalized("NFKC", name)):
         raise ValueError(
-            f"not found; visible: {_visible(snapshot)}"
+            f"not found{_static_hint(snapshot, name)}; visible: {_visible(snapshot)}"
             + _member_hint(worker, stop, snapshot, name)
             + twin
         )

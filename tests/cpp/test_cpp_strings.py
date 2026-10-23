@@ -5,6 +5,10 @@ first NUL: `"a\\0b"` showed as `"a"`. A `std::string` LLDB names by that typedef
 `error: summary string parsing error` instead. libc++ (macOS) prints every byte, so
 there the values are LLDB's own, unchanged. Where the debugger reads memory (lldb-dap
 20), the worker reads a libstdc++ string's bytes; elsewhere it adds a note.
+
+Built by clang and by g++ (#167). GCC describes `std::string` whole, where clang's default
+leaves it bare, so with lldb-dap 18 LLDB's summary of a GCC build works: it ends at the
+first NUL, and Peeky says where (`"a" (shown up to a NUL at byte 1 of 3)`).
 """
 
 import contextlib
@@ -57,12 +61,20 @@ WHOLE = {
     "wide": 'L"a\\0b"',
     "u16": 'u"a\\0b"',
 }
+# What GCC's builds show where the debugger reads no memory (lldb-dap 18): LLDB's summary,
+# which ends at the first NUL, and where it ends.
+CUT = {
+    "sso": '"a" (shown up to a NUL at byte 1 of 3)',
+    "heap": '"abcdefghijklmnopqrstuvwxyz" (shown up to a NUL at byte 26 of 31)',
+    "trail": '"q" (shown up to a NUL at byte 1 of 2)',
+    "plain": '"hello"',
+    "grown": '"x" (shown up to a NUL at byte 1 of 3)',
+    "wide": 'L"a" (shown up to a NUL at character 1 of 3)',
+}
 
 
 @pytest.fixture
-def strings(tmp_path, monkeypatch):
-    if not os.environ.get("PEEKY_NATIVE_DAP"):
-        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+def strings(cxx, tmp_path, monkeypatch):
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     source = tmp_path / "strings.cpp"
     source.write_text(STRINGS)
@@ -97,7 +109,7 @@ def whole(row):
     )
 
 
-def test_a_string_with_a_nul_is_never_shown_cut_short(strings, capsys):
+def test_a_string_with_a_nul_is_never_shown_cut_short(strings, cxx, capsys):
     # #128: on Linux `sso` ("a\0b", in the local buffer), `heap` (31 bytes on the heap),
     # `trail` ("q\0") and `grown` (3 bytes in a heap buffer) showed LLDB's
     # `error: summary string parsing error`, and a `std::basic_string<char>` showed "a".
@@ -109,6 +121,9 @@ def test_a_string_with_a_nul_is_never_shown_cut_short(strings, capsys):
                 if sys.platform == "darwin":
                     # libc++'s values are LLDB's own, as before.
                     assert "view" not in row, row
+            elif cxx == "gcc":
+                # LLDB's summary of GCC's string, cut at the first NUL: said.
+                assert row["value"] == CUT[name], row
             else:
                 # No readMemory: the debugger's text is never passed off as the value.
                 assert row.get("unavailable") and "summary failed" in row["error"], row
@@ -116,7 +131,7 @@ def test_a_string_with_a_nul_is_never_shown_cut_short(strings, capsys):
                 assert f"it holds {length} bytes" in row["error"], row
 
 
-def test_a_string_inside_a_struct_a_vector_or_a_map_is_never_cut_short(strings, capsys):
+def test_a_string_inside_a_struct_a_vector_or_a_map_is_never_cut_short(strings, cxx, capsys):
     # #128: `vs[0]` and `ms[1]` (LLDB names them `std::basic_string<char>`) showed "v"
     # and "m" on Linux, with no note; `rec.name` showed the summary's parsing error.
     with session(strings, capsys) as get:
@@ -125,7 +140,7 @@ def test_a_string_inside_a_struct_a_vector_or_a_map_is_never_cut_short(strings, 
             row = rows[name]
             if whole(row):
                 assert row["value"] == WHOLE[name], row
-            elif name == "rec.name":
+            elif name == "rec.name" and cxx == "clang":
                 assert row.get("unavailable") and "it holds 3 bytes" in row["error"], row
             elif name == "vs[1]":
                 assert row["value"] == '"ok"', row
@@ -142,7 +157,7 @@ def test_a_string_inside_a_struct_a_vector_or_a_map_is_never_cut_short(strings, 
             assert listed[name].get("value") == rows[name].get("value"), (name, listed[name])
 
 
-def test_a_strings_pointer_reference_and_wide_string_are_never_cut_short(strings, capsys):
+def test_a_strings_pointer_reference_and_wide_string_are_never_cut_short(strings, cxx, capsys):
     # #128: `ref` and `ptr` showed their address and the summary's parsing error; `wide`
     # (an std::wstring) too, and `u16` (std::u16string) showed no text where it can.
     with session(strings, capsys) as get:
@@ -151,6 +166,10 @@ def test_a_strings_pointer_reference_and_wide_string_are_never_cut_short(strings
             assert rows["ref"]["value"].endswith(" " + WHOLE["sso"]), rows["ref"]
             assert rows["ptr"]["value"].endswith(" " + WHOLE["heap"]), rows["ptr"]
             assert rows["ptr[0]"]["value"] == WHOLE["heap"]
+        elif cxx == "gcc":
+            assert rows["ref"]["value"].endswith(" " + CUT["sso"]), rows["ref"]
+            assert rows["ptr"]["value"].endswith(" " + CUT["heap"]), rows["ptr"]
+            assert rows["ptr[0]"]["value"] == CUT["heap"]
         else:
             assert "<no text: the string's summary failed" in rows["ref"]["value"]
             assert "it holds 31 bytes>" in rows["ptr"]["value"]
@@ -159,6 +178,8 @@ def test_a_strings_pointer_reference_and_wide_string_are_never_cut_short(strings
         wide = rows["wide"]
         if sys.platform == "darwin" or wide.get("view") == "memory":
             assert wide["value"] == WHOLE["wide"], wide
+        elif cxx == "gcc":
+            assert wide["value"] == CUT["wide"], wide
         else:
             # This build leaves libstdc++'s std::wstring without members: no length to
             # check, and LLDB's summary of it fails.
@@ -260,7 +281,7 @@ def named(tmp_path, capsys, marker="// OBSERVE"):
         capsys.readouterr()
 
 
-def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, tmp_path, capsys):
+def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, cxx, tmp_path, capsys):
     # Review of #128: `Bytes b` (typedef std::basic_string<char>) showed "b" for "b\0y",
     # and `bx.b` "x", `b2` (std::__cxx11::basic_string<char>) "c": no note. A typedef of
     # std::string (`Name`) showed `error: summary string parsing error`, as the value.
@@ -271,8 +292,8 @@ def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, tmp_path, capsy
             assert "summary string parsing error" not in str(row.get("value")), row
             if whole(row):
                 assert row["value"] == NAMED_WHOLE[name], row
-            elif name in ("b", "b2", "bx.b", "hs"):
-                # LLDB's libstdc++ summary, cut at the NUL: noted.
+            elif name in ("b", "b2", "bx.b", "hs") or cxx == "gcc":
+                # LLDB's libstdc++ summary, cut at the NUL: noted. GCC's names it too.
                 text = NAMED_WHOLE[name][:2] + '"'
                 assert row["value"] == f"{text} (shown up to a NUL at byte 1 of 3)", row
             else:
@@ -288,14 +309,15 @@ def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, tmp_path, capsy
             assert value.startswith("0x") and not value.split(" ", 1)[1].startswith("error:")
             if whole(rows[name]):
                 assert value.endswith(" " + text), rows[name]
-            elif name == "nref":
+            elif name == "nref" and cxx == "clang":
                 assert "<no text: the string's summary failed" in value, rows[name]
             else:
-                assert value.endswith(' "b" (shown up to a NUL at byte 1 of 3)'), rows[name]
+                cut = f' {text[:2]}" (shown up to a NUL at byte 1 of 3)'
+                assert value.endswith(cut), rows[name]
         assert rows["bp[0]"]["value"] == rows["bp"]["value"].split(" ", 1)[1]
 
 
-def test_a_nul_or_byte_before_a_digit_reads_back_as_the_same_bytes(strings, tmp_path, capsys):
+def test_a_nul_or_byte_before_a_digit_reads_back_as_the_same_bytes(strings, cxx, tmp_path, capsys):
     # Review of #128: "n\0" "64" showed `"n\064"`, which C reads as "n4", and "x\0" "5"
     # `"x\05"`; also LLDB's own libc++ text on macOS. A raw byte before a hex digit the
     # same: `"\xffa"` is one character to C.
@@ -308,6 +330,8 @@ def test_a_nul_or_byte_before_a_digit_reads_back_as_the_same_bytes(strings, tmp_
                 assert row["value"] == NAMED_WHOLE[name], row
             elif name == "v[0]":
                 assert row["value"] == '"n" (shown up to a NUL at byte 1 of 4)', row
+            elif cxx == "gcc":
+                assert row["value"] == '"x" (shown up to a NUL at byte 1 of 3)', row
             else:
                 assert row.get("unavailable"), row
 
@@ -327,7 +351,7 @@ def test_a_long_string_is_cut_between_characters_and_says_so(strings, tmp_path, 
             assert value.endswith("(shown up to a NUL at byte 500 of 502)"), value[-80:]
 
 
-def test_a_named_strings_evidence_is_never_lldbs_error_text(strings, tmp_path, capsys):
+def test_a_named_strings_evidence_is_never_lldbs_error_text(strings, cxx, tmp_path, capsys):
     # Review of #128: `queries run` showed `tn  Name  error: summary string parsing error`.
     from peeky.cli import main
 
@@ -342,4 +366,7 @@ def test_a_named_strings_evidence_is_never_lldbs_error_text(strings, tmp_path, c
         assert "summary string parsing error" not in str(saved[name]["value"]), saved[name]
         if whole(saved[name]):
             assert saved[name]["value"] == NAMED_WHOLE[name], saved[name]
-    assert saved["tn"]["value"] == NAMED_WHOLE["tn"] or saved["tn"]["unavailable"]
+    if cxx == "gcc" and not whole(saved["tn"]):
+        assert saved["tn"]["value"] == '"t" (shown up to a NUL at byte 1 of 3)', saved["tn"]
+    else:
+        assert saved["tn"]["value"] == NAMED_WHOLE["tn"] or saved["tn"]["unavailable"]

@@ -62,7 +62,7 @@ def state_of(capsys, *argv):
 
 
 @pytest.mark.timeout(180)
-def test_a_step_out_an_exception_cut_short_never_says_returned(program, capsys):
+def test_a_step_out_an_exception_cut_short_never_says_returned(program, cxx, capsys):
     # Review of #274: `step --out` of `g(0)`, which throws, stopped in `f(1)`'s call of
     # `g` from the same place (the return watch), and the state said "returned from".
     assert main(["session", "start", str(program), "--at", str(line_of("THROW"))]) == 0
@@ -71,8 +71,10 @@ def test_a_step_out_an_exception_cut_short_never_says_returned(program, capsys):
         assert main(["session", "step", "--out"]) == 0
         out = capsys.readouterr().out
         lines = out.splitlines()
-        assert lines[0].startswith("state: stopped at ") and " in f(int) " in lines[0], out
-        assert lines[1] == "note: left `g(int)`; now in `f(int)`", out
+        # GCC's names for static functions, from their declarations (#167).
+        scope = "::" if cxx == "gcc" else ""
+        assert lines[0].startswith("state: stopped at ") and f" in {scope}f(int) " in lines[0], out
+        assert lines[1] == f"note: left `{scope}g(int)`; now in `{scope}f(int)`", out
         assert "it never returned" in out and "returned from" not in out, out
     finally:
         main(["session", "close"])
