@@ -344,7 +344,7 @@ def test_diff_leaves_out_after_set_values_the_intervention_left(store):
     # no difference of its own; the observed row has any. Both recorded how the change
     # went (schema 16), so their equal requests are no difference either.
     made = [
-        {"option": "--set", "at": "36@4", "name": "r.tail", "value": "3", "made": 1}
+        {"option": "--set", "at": "3@1", "name": "r.tail", "value": "3", "made": 1}
         | {"ended": "made", "complete": True}
     ]
     saved(

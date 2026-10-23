@@ -526,30 +526,83 @@ def main_text(capsys, store, query, a, b):
     return capsys.readouterr().out
 
 
-def test_each_outcome_reads_as_how_far_the_change_got():
-    def said(**outcome):
-        return evidence._set_outcome(json.dumps(outcome))
+def outcome(at="9@all", name="x", value="5", option="--set-at", **said):
+    """A runs.set_outcomes entry as a probe gives it; ``said``: made, ended[, hit]."""
+    every = option == "--set-at" and at.endswith("@all")
+    complete = said["ended"] == "made" or (said["ended"] == "exit" and every and said["made"])
+    return {"option": option, "at": at, "name": name, "value": value, **said} | {
+        "complete": bool(complete)
+    }
 
-    every = {"at": "9@all"}
+
+def said(entry=None, **fields):
+    """How `outputs` says ``fields``' outcome, of the request ``entry`` (default: its own)."""
+    made = outcome(**fields)
+    entry = entry or [made["name"], made["value"], made["at"]]
+    return evidence._set_outcome(json.dumps(made), json.dumps(entry), 8, None)
+
+
+def test_each_outcome_reads_as_how_far_the_change_got():
     assert said(made=1, ended="made", at="9@2") == ""
     assert said(made=0, ended="exit", at="9@4") == ", not made: that hit never came"
     assert said(made=0, ended="refused", hit=4, at="9@4") == ", refused at that hit"
     assert said(made=0, ended="timeout", at="9@4") == ", not made: the probe timed out first"
-    assert said(made=32, ended="exit", **every) == ", made at 32 stops, to the program's end"
-    assert said(made=1, ended="until_hits", **every) == (
+    assert said(made=32, ended="exit") == ", made at 32 stops, to the program's end"
+    assert said(made=1, ended="until_hits") == (
         ", made at 1 stop before --until hits ended the probe"
     )
-    assert said(made=0, ended="until_hits", **every) == (
+    assert said(made=0, ended="until_hits") == (
         ", not made: its line never stopped before --until hits ended the probe"
     )
-    assert said(made=6, ended="refused", hit=7, **every) == ", made at 6 stops; refused at hit 7"
-    assert said(made=6, ended="failed", hit=7, **every) == ", made at 6 stops; failed at hit 7"
-    assert said(made=6, ended="failed", **every) == ", made at 6 stops before the probe failed"
-    assert said(made=100, ended="cap", **every) == ", made at the first 100 stops: the cap"
-    assert said(made=3, ended="lost_stop", **every) == (
+    assert said(made=6, ended="refused", hit=7) == ", made at 6 stops; refused at hit 7"
+    assert said(made=6, ended="failed", hit=7) == ", made at 6 stops; failed at hit 7"
+    assert said(made=6, ended="failed") == ", made at 6 stops before the probe failed"
+    assert said(made=100, ended="cap") == ", made at the first 100 stops: the cap"
+    assert said(made=3, ended="lost_stop") == (
         ", made at 3 stops; the debugger lost a stop, which may have run without it"
     )
-    assert evidence._set_outcome("not json") is None and evidence._set_outcome("[]") is None
+    # A --set: at its probe line's set_hit (1 where runs.set_hit is NULL).
+    assert said(
+        ["x", "2"], made=0, ended="refused", hit=1, at="8@1", option="--set", value="2"
+    ) == (", refused at that hit")
+    assert evidence._set_outcome("not json", '["x", "5", "9@all"]', 8, None) is None
+    assert evidence._set_outcome("[]", '["x", "5", "9@all"]', 8, None) is None
+
+
+def test_an_outcome_is_read_only_where_it_is_one_for_its_request():
+    # Review 3 of PR #278: `[{"made": 2, "ended": "refused", "hit": 3}]` for a `9@all`
+    # read "refused at that hit", and counted as recorded.
+    bare = {"made": 2, "ended": "refused", "hit": 3}
+    assert evidence._set_outcome(json.dumps(bare), '["x", "5", "9@all"]', 8, None) is None
+    good = outcome(made=2, ended="refused", hit=3)
+    for broken in (
+        {key: value for key, value in good.items() if key != "at"},
+        {key: value for key, value in good.items() if key != "complete"},
+        good | {"at": "9@2"},
+        good | {"name": "y"},
+        good | {"value": "6"},
+        good | {"option": "--set"},
+        good | {"complete": 0},
+        good | {"complete": True},
+        good | {"made": -1},
+        good | {"made": True},
+        good | {"made": 1},
+        good | {"ended": "stopped"},
+        good | {"hit": "3"},
+        good | {"hit": 0},
+        good | {"extra": 1},
+        {key: value for key, value in good.items() if key != "hit"},
+        outcome(made=2, ended="exit") | {"hit": 3},
+        outcome(made=1, ended="made"),
+        outcome(made=0, ended="cap"),
+        outcome(made=1, ended="exit", at="9@4"),
+        outcome(made=0, ended="cap", at="9@4"),
+        outcome(made=0, ended="lost_stop", at="9@4"),
+    ):
+        assert (
+            evidence._checked_outcome(json.dumps(broken), '["x", "5", "9@all"]', 8, None) is None
+        ), broken
+    assert evidence._checked_outcome(json.dumps(good), '["x", "5", "9@all"]', 8, None) == good
 
 
 def test_outcomes_follow_the_runs_sets_order_and_a_set_refused_is_said(monkeypatch):
@@ -677,7 +730,9 @@ def test_two_schema_15_runs_with_the_same_request_are_not_said_to_be_made_alike(
     # A run saved since (schema 16) against an older one: still not recorded for both.
     recorded(monkeypatch, store, (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)))
     for query in ("compare", "diff"):
-        assert run_rows(store, query, 1, 4)["(sets)"][2:] == (1, RECORDED_APART), query
+        # Review 3: the same request, so the note is that it wasn't recorded; the values
+        # differ, as one says how it went and the other cannot.
+        assert run_rows(store, query, 1, 4)["(sets)"][2:] == (1, UNRECORDED), query
     recorded(monkeypatch, store, (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)))
     # Two runs that recorded it, made alike: `compare` says so, and `diff` has no row.
     assert run_rows(store, "compare", 4, 5)["(sets)"][2:] == (
@@ -696,20 +751,63 @@ def test_an_unrecorded_run_is_never_counted_as_recorded():
     import sqlite3
 
     connection = sqlite3.connect(":memory:")
-    connection.create_function("set_outcome", 1, evidence._set_outcome)
-    made = {"at": "9@all", "made": 2, "ended": "exit"}
+    connection.create_function("set_outcome", 4, evidence._set_outcome)
+    made = outcome(made=2, ended="exit")
+    single = outcome(made=1, ended="made", at="9@2", name="y", value="1")
+    two = '[["x", "5", "9@all"], ["y", "1", "9@2"]]'
     for sets, outcomes, expected in (
         ('[["x", "5", "9@all"]]', json.dumps([made]), 1),
+        (two, json.dumps([made, single]), 1),
         ('[["x", "5", "9@all"]]', None, 0),
         ('[["x", "5", "9@all"]]', "not json", 0),
         ('[["x", "5", "9@all"]]', "{}", 0),
         ('[["x", "5", "9@all"]]', "[]", 0),
         ('[["x", "5", "9@all"]]', json.dumps([{"made": "2"}]), 0),
-        ('[["x", "5", "9@all"], ["y", "1", "9@2"]]', json.dumps([made]), 0),
+        (two, json.dumps([made]), 0),
+        # Swapped: each entry is another request's.
+        (two, json.dumps([single, made]), 0),
     ):
         sql = (
             "SELECT "
             + evidence._RECORDED.format(r="r")
-            + " FROM (SELECT ? AS sets, ? AS set_outcomes) r"
+            + " FROM (SELECT ? AS sets, ? AS set_outcomes, 8 AS line, NULL AS set_hit) r"
         )
         assert connection.execute(sql, (sets, outcomes)).fetchone() == (expected,), outcomes
+
+
+def tamper(store, run_id, outcomes):
+    import sqlite3
+
+    connection = sqlite3.connect(store)
+    connection.execute(
+        "UPDATE runs SET set_outcomes = ? WHERE run_id = ?", (json.dumps(outcomes), run_id)
+    )
+    connection.commit()
+    connection.close()
+
+
+def test_an_outcome_that_is_not_its_requests_falls_back_to_the_warning(monkeypatch, tmp_path):
+    # Review 3 of PR #278: a capped run whose outcome lacks `at`, names another request, or
+    # whose entries are swapped reads as its warning did, and is not counted as recorded.
+    store = tmp_path / "evidence" / "evidence.db"
+    capped = Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"), (9, 1, "x", "1")))
+    workers = [Stops([8, *[9] * (MAX_HITS + 1)]) for _ in range(5)]
+    results = recorded(monkeypatch, store, *((worker, capped) for worker in workers))
+    kept = results[0]["set_outcomes"]
+    assert [o["ended"] for o in kept] == ["cap", "made"]
+    no_at = {key: value for key, value in kept[0].items() if key != "at"}
+    tamper(store, 2, [no_at, kept[1]])
+    tamper(store, 3, [kept[0] | {"name": "z"}, kept[1]])
+    tamper(store, 4, [kept[1], kept[0]])
+    # The review's own: no option, location, name, value or `complete`.
+    tamper(store, 5, [{"made": 2, "ended": "refused", "hit": 3}, kept[1]])
+    cap = f"requested at 9@all, made only at the first {MAX_HITS} stops: the cap"
+    for run_id in (2, 3, 4, 5):
+        (row,) = evidence.run_query(store, "outputs", {"a": run_id, "b": run_id})["rows"]
+        assert json.loads(row["sets"]) == [["x", "5", cap], ["x", "1", "requested at 9@1"]]
+        for query in ("compare", "diff"):
+            assert run_rows(store, query, 1, run_id)["(sets)"][2:] == (1, UNRECORDED), query
+    (row,) = evidence.run_query(store, "outputs", {"a": 1, "b": 1})["rows"]
+    assert json.loads(row["sets"])[0][2] == (
+        f"requested at 9@all, made at the first {MAX_HITS} stops: the cap"
+    )

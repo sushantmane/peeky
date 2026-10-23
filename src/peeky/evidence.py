@@ -89,7 +89,9 @@ TABLES = {
             "stops), refused or failed (at hit: its own change there), timeout or failed "
             "(the probe's, first), or lost_stop (the debugger lost a stop, which may have "
             "run without it), complete: carried out in full}; NULL for a run saved before "
-            "schema 16, or with no interventions",
+            "schema 16, or with no interventions. Queries read it only where every entry "
+            "matches its request (option, at, name, value, each key of its type); else "
+            "they read the run's warnings",
         },
     ),
     "captures": (
@@ -425,22 +427,29 @@ _SAME = (
 _STOPPED = "EXISTS (SELECT 1 FROM captures WHERE run_id = {} AND stop IS NOT NULL)"
 
 
-def _requested(alias):
+def _requested(alias, outcomes=True):
     """SQL: a run's requested interventions (runs.sets), each as [name, value, "requested
     at LINE@HIT"], a --set at its probe line's set_hit too (ninth evaluation: `diff`'s
-    `(sets)` row and `outputs` did not say which hit a --set was for), with its outcome
-    from runs.set_outcomes (`_set_outcome`: review of PR #278, a `LINE@all` made at some
-    stops only read like one made at all). A run saved before outcomes were kept (schema
-    15), or an entry that is no outcome, says what the probe's own warning did: ", not
-    made: that hit never came" (", not made: its line never stopped" for a `LINE@all`), or
-    ", made only at the first N stops: the cap" (the warning for a run's --sets names them
-    all, as they share their hit; a --set-at's names its LINE@HIT, name and value; review
-    of PR #214); else nothing, which claims nothing of how it was applied (`_RECORDED`
-    says whether that was recorded)."""
+    `(sets)` row and `outputs` did not say which hit a --set was for). With ``outcomes``,
+    each says how it went, from runs.set_outcomes where the run recorded it (`_RECORDED`;
+    `_set_outcome`: review of PR #278, a `LINE@all` made at some stops only read like one
+    made at all). A run that did not (saved before schema 16, or with an outcome that does
+    not match its request) says what the probe's own warning did: ", not made: that hit
+    never came" (", not made: its line never stopped" for a `LINE@all`), or ", made only
+    at the first N stops: the cap" (the warning for a run's --sets names them all, as they
+    share their hit; a --set-at's names its LINE@HIT, name and value; review of PR #214);
+    else nothing, which claims nothing of how it was applied. Without ``outcomes``: the
+    requests alone, which say whether two runs asked for the same changes."""
     at = (
         f"CASE WHEN json_array_length(s.value) = 2 THEN {alias}.line || '@' || "
         f"COALESCE({alias}.set_hit, 1) ELSE json_extract(s.value, '$[2]') END"
     )
+    if not outcomes:
+        return (
+            "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
+            f"json_extract(s.value, '$[1]'), 'requested at ' || {at})) FROM "
+            f"json_each(COALESCE({alias}.sets, '[]')) s)"
+        )
     warned = f"json_each(COALESCE({alias}.warnings, '[]')) w"
     asked = (
         f"':' || {at} || ' ' || json_extract(s.value, '$[0]') || '=' || "
@@ -466,8 +475,9 @@ def _requested(alias):
         f"', made only at the first ' || {capped} || ' stops: the cap' ELSE '' END"
     )
     outcome = (
-        f"CASE WHEN json_valid({alias}.set_outcomes) THEN set_outcome(json_extract("
-        f"{alias}.set_outcomes, '$[' || s.key || ']')) END"
+        f"CASE WHEN {_RECORDED.format(r=alias)} THEN set_outcome(json_extract("
+        f"{alias}.set_outcomes, '$[' || s.key || ']'), s.value, {alias}.line, "
+        f"{alias}.set_hit) END"
     )
     return (
         "(SELECT json_group_array(json_array(json_extract(s.value, '$[0]'), "
@@ -476,35 +486,85 @@ def _requested(alias):
     )
 
 
-# Whether a run recorded how each of its requested changes was applied: a valid
-# runs.set_outcomes with an outcome for each entry of runs.sets (schema 16 on). Two runs
-# whose requests read alike were made alike only where both did (review 2 of PR #278).
+# Whether a run recorded how each of its requested changes was applied: a runs.set_outcomes
+# array with, for each entry of runs.sets in its order, an outcome `_set_outcome` accepts
+# for that request (schema 16 on). Its outcomes are read only then; two runs whose requests
+# are the same were made alike only where both recorded it (reviews 2 and 3 of PR #278).
 _RECORDED = (
     "(CASE WHEN {r}.set_outcomes IS NULL OR NOT json_valid({r}.set_outcomes) THEN 0 WHEN "
     "json_type({r}.set_outcomes) IS NOT 'array' THEN 0 ELSE json_array_length("
     "{r}.set_outcomes) = json_array_length(COALESCE({r}.sets, '[]')) AND NOT EXISTS (SELECT "
-    "1 FROM json_each({r}.set_outcomes) o WHERE set_outcome(o.value) IS NULL) END)"
+    "1 FROM json_each({r}.set_outcomes) o WHERE set_outcome(o.value, json_extract({r}.sets, "
+    "'$[' || o.key || ']'), {r}.line, {r}.set_hit) IS NULL) END)"
 )
+# What `ended` may say (probe.py's `_set_outcomes`), and which need the `hit` they name.
+_ENDED = {"made", "exit", "until_hits", "cap", "refused", "failed", "timeout", "lost_stop"}
+_OUTCOME_KEYS = {"option", "at", "name", "value", "made", "ended", "complete"}
 
 
-def _set_outcome(text):
-    """One requested change's outcome (a runs.set_outcomes entry, probe.py's
-    `_set_outcomes`) as `outputs`, `compare` and `diff` say it after "requested at
-    LINE@HIT": nothing for a change at a hit that was made; else how many stops it was
-    made at and why no more were (`, made at 6 stops; refused at hit 7`). None where
-    ``text`` is no such entry."""
+def _checked_outcome(text, entry, line, set_hit):
+    """The outcome in ``text`` (a runs.set_outcomes entry) where it is one for the request
+    ``entry`` (its runs.sets entry: [name, value] for a --set at ``line``@``set_hit``,
+    [name, value, "LINE@HIT"] for a --set-at): every key, of its type, with the request's
+    option, location, name and value, and what such a request can end with (review 3 of
+    PR #278: an outcome without `at`, another request's, or entries swapped read as
+    recorded). Else None."""
     try:
-        outcome = json.loads(text)
+        outcome, request = json.loads(text), json.loads(entry)
     except (TypeError, ValueError):
         return None
-    if not isinstance(outcome, dict) or type(made := outcome.get("made")) is not int:
+    if not isinstance(outcome, dict) or not isinstance(request, list):
         return None
-    ended, hit = outcome.get("ended"), outcome.get("hit")
-    every = str(outcome.get("at", "")).endswith("@all")
+    if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {"hit"}:
+        return None
+    made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
+    if type(made) is not int or made < 0 or ended not in _ENDED:
+        return None
+    if type(outcome["complete"]) is not bool:
+        return None
+    if ("hit" in outcome) != (ended == "refused" or (ended == "failed" and "hit" in outcome)):
+        return None
+    if "hit" in outcome and (type(hit) is not int or hit < 1):
+        return None
+    if len(request) == 2 and type(set_hit) in (int, type(None)) and type(line) is int:
+        option, at = "--set", f"{line}@{1 if set_hit is None else set_hit}"
+    elif len(request) == 3 and isinstance(request[2], str):
+        option, at = "--set-at", request[2]
+    else:
+        return None
+    if [outcome["option"], outcome["at"], outcome["name"], outcome["value"]] != [
+        option,
+        at,
+        *request[:2],
+    ]:
+        return None
+    every = option == "--set-at" and at.endswith("@all")
+    if every:
+        # Each stop before the one it ended at was changed; a cap ends after some.
+        if ended == "made" or (ended == "cap" and not made) or (hit and made != hit - 1):
+            return None
+    elif ended in ("cap", "lost_stop") or made not in (0, 1) or (made == 1) != (ended == "made"):
+        return None
+    if outcome["complete"] != (ended == "made" or (ended == "exit" and every and made > 0)):
+        return None
+    return outcome
+
+
+def _set_outcome(text, entry, line, set_hit):
+    """One requested change's outcome (a runs.set_outcomes entry, probe.py's
+    `_set_outcomes`), checked against its request (`_checked_outcome`), as `outputs`,
+    `compare` and `diff` say it after "requested at LINE@HIT": nothing for a change at a
+    hit that was made; else how many stops it was made at and why no more were (`, made
+    at 6 stops; refused at hit 7`). None where ``text`` is no outcome of that request."""
+    outcome = _checked_outcome(text, entry, line, set_hit)
+    if outcome is None:
+        return None
+    made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
+    every = outcome["at"].endswith("@all") and outcome["option"] == "--set-at"
     stops = f"{made} stop{'' if made == 1 else 's'}"
     if ended == "made":
         return ""
-    if ended in ("refused", "failed") and type(hit) is int:
+    if hit is not None:
         what = f"{ended} at hit {hit}" if every else f"{ended} at that hit"
         return f", made at {stops}; {what}" if made else f", {what}"
     if not made:
@@ -542,17 +602,29 @@ _STATUS_ROW = f"""SELECT NULL, NULL, '(status)', {_OUTCOMES[0]}, {_OUTCOMES[1]},
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ({_OUTCOMES[0]} IS NOT {_OUTCOMES[1]} OR ra.status IS NOT 'completed'
     OR rb.status IS NOT 'completed')"""
-_UNRECORDED = (
-    f"(json_array_length(COALESCE(ra.sets, '[]')) > 0 AND NOT ({_RECORDED.format(r='ra')} "
-    f"AND {_RECORDED.format(r='rb')}))"
-)
-_SETS_ROW = f"""SELECT NULL, NULL, '(sets)', {_requested("ra")}, {_requested("rb")},
-    {_requested("ra")} IS NOT {_requested("rb")}, CASE WHEN {_requested("ra")} IS NOT
-    {_requested("rb")} THEN 'the runs requested different interventions (--set, --set-at), '
-    || 'or made different ones' WHEN {_UNRECORDED} THEN 'the same requested interventions; '
-    || 'how they were applied wasn''t recorded for one or both older runs' ELSE 'the same '
-    || 'interventions, made alike' END, -1
-    FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}"""
+# `(sets)`: each run's requests with how they went (`va`, `vb`), told apart by the requests
+# alone (`qa`, `qb`) first (review 3 of PR #278: a schema-15 run against a schema-16 one
+# with the same request read as different requests), then by how they went, only where
+# both runs recorded it (`kept`). Callers add to its WHERE: `asked`, how many changes run
+# a requested; `unknown`, whether the requests are the same but not both recorded.
+_SETS_ROW = f"""SELECT NULL, NULL, '(sets)', va, vb, va IS NOT vb, CASE
+    WHEN qa IS NOT qb THEN 'the runs requested different interventions (--set, --set-at), '
+      || 'or made different ones'
+    WHEN NOT kept THEN 'the same requested interventions; how they were applied wasn''t '
+      || 'recorded for one or both older runs'
+    WHEN va IS NOT vb THEN 'the runs requested different interventions (--set, --set-at), '
+      || 'or made different ones'
+    ELSE 'the same interventions, made alike' END, -1
+    FROM (SELECT {_requested("ra")} AS va, {_requested("rb")} AS vb,
+      {_requested("ra", outcomes=False)} AS qa, {_requested("rb", outcomes=False)} AS qb,
+      {_RECORDED.format(r="ra")} AND {_RECORDED.format(r="rb")} AS kept,
+      json_array_length(COALESCE(ra.sets, '[]')) AS asked_a,
+      json_array_length(COALESCE(rb.sets, '[]')) AS asked_b
+      FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B})
+    WHERE 1"""
+# The same requests, but how they went was not recorded for both runs: said, never taken
+# for "made alike".
+_SETS_UNKNOWN = "(qa IS qb AND asked_a > 0 AND NOT kept)"
 
 
 _BOTH_STOPPED = f"({_STOPPED.format(_A)} AND {_STOPPED.format(_B)})"
@@ -672,8 +744,7 @@ SELECT {_PAIR_COLUMNS} FROM (
     'the runs had different program arguments: values also differ by input', 0
     FROM runs ra, runs rb WHERE ra.run_id = {_A} AND rb.run_id = {_B}
     AND ra.args IS NOT rb.args
-  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND ({_requested("ra")} IS NOT {_requested("rb")}
-    OR {_UNRECORDED})))
+  UNION ALL SELECT 5, * FROM ({_SETS_ROW} AND (va IS NOT vb OR {_SETS_UNKNOWN})))
 ORDER BY rank, hit, phase = 'after-set', pos"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
@@ -848,8 +919,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "both runs recorded how (runs.set_outcomes)",
         f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM (SELECT hit, phase, selector, value_a, "
         f"value_b, differs, note, pos FROM pair UNION ALL SELECT * FROM ({_STATUS_ROW}) "
-        f"UNION ALL SELECT * FROM ({_SETS_ROW} AND (json_array_length(COALESCE(ra.sets, "
-        f"'[]')) > 0 OR json_array_length(COALESCE(rb.sets, '[]')) > 0))){_PAIR_ORDER}",
+        f"UNION ALL SELECT * FROM ({_SETS_ROW} AND (asked_a > 0 OR asked_b > 0))){_PAIR_ORDER}",
         _PAIR_PARAMS,
         (),
     ),
@@ -1449,7 +1519,7 @@ def _reader(path, *, snapshot=False):
     connection.create_function("output_window", 2, bounded(_output_window), deterministic=True)
     connection.create_function("short_function", 1, bounded(_short_function), deterministic=True)
     connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
-    connection.create_function("set_outcome", 1, bounded(_set_outcome), deterministic=True)
+    connection.create_function("set_outcome", 4, bounded(_set_outcome), deterministic=True)
     connection.create_function("address", 1, bounded(_address), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
