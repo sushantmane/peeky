@@ -518,7 +518,8 @@ def _checked_outcome(text, entry, line, set_hit):
     if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {"hit"}:
         return None
     made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
-    if type(made) is not int or made < 0 or ended not in _ENDED:
+    # `ended` is checked as text first: a list or an object is no set member.
+    if type(made) is not int or made < 0 or type(ended) is not str or ended not in _ENDED:
         return None
     if type(outcome["complete"]) is not bool:
         return None
@@ -539,6 +540,9 @@ def _checked_outcome(text, entry, line, set_hit):
     ]:
         return None
     every = option == "--set-at" and at.endswith("@all")
+    # A change at one hit is refused or fails only at that hit (review 4 of PR #278).
+    if not every and "hit" in outcome and str(hit) != at.rpartition("@")[2]:
+        return None
     if every:
         # Each stop before the one it ended at was changed; a cap ends after some.
         if ended == "made" or (ended == "cap" and not made) or (hit and made != hit - 1):

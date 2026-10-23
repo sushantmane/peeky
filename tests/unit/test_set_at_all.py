@@ -605,6 +605,30 @@ def test_an_outcome_is_read_only_where_it_is_one_for_its_request():
     assert evidence._checked_outcome(json.dumps(good), '["x", "5", "9@all"]', 8, None) == good
 
 
+def test_an_outcome_of_another_type_or_hit_is_not_read():
+    # Review 4 of PR #278: an `ended` that is a list raised TypeError (failing the query),
+    # and a `9@4` change "refused at hit 7" read as recorded.
+    for ended in ([], {}, 3, None):
+        broken = outcome(made=2, ended="refused", hit=3) | {"ended": ended}
+        assert evidence._checked_outcome(json.dumps(broken), '["x", "5", "9@all"]', 8, None) is None
+    fixed = '["x", "5", "9@4"]'
+    right = outcome(made=0, ended="refused", hit=4, at="9@4")
+    assert evidence._checked_outcome(json.dumps(right), fixed, 8, None) == right
+    for hit in (7, 3):
+        wrong = right | {"hit": hit}
+        assert evidence._checked_outcome(json.dumps(wrong), fixed, 8, None) is None
+        failed = outcome(made=0, ended="failed", hit=hit, at="9@4")
+        assert evidence._checked_outcome(json.dumps(failed), fixed, 8, None) is None
+    # A --set at the probe's line, at its --set-hit (default 1).
+    plain = '["x", "5"]'
+    at_two = outcome(made=0, ended="refused", hit=2, at="8@2", option="--set")
+    assert evidence._checked_outcome(json.dumps(at_two), plain, 8, 2) == at_two
+    assert evidence._checked_outcome(json.dumps(at_two | {"hit": 5}), plain, 8, 2) is None
+    at_one = outcome(made=0, ended="refused", hit=1, at="8@1", option="--set")
+    assert evidence._checked_outcome(json.dumps(at_one), plain, 8, None) == at_one
+    assert evidence._checked_outcome(json.dumps(at_one | {"hit": 2}), plain, 8, None) is None
+
+
 def test_outcomes_follow_the_runs_sets_order_and_a_set_refused_is_said(monkeypatch):
     # A --set refused at its hit, after a --set-at made at line 9's first stop.
     worker = Stops([9, 8, 9], refuse=(2,))
