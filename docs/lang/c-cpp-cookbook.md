@@ -616,7 +616,31 @@ Some things only look different:
 - **Loops:** GCC tests a `for` loop at its bottom, which branches back to the body's first line. A
   local declared on that line shows a `note` there: its value may be the last pass's, or leftovers
   on the first pass. A `do` body's first line does the same
-  ([details](#why-a-local-shows-no-value-yet)).
+  ([details](#why-a-local-shows-no-value-yet)). A pair's or tuple's structured binding shows `no
+  value yet` there instead. Until its declaration runs, the reference it is read through may point
+  anywhere.
+- **A structured binding of a pair or tuple:** GCC holds `t` in `auto [t, u] = make(i)[0];` as a
+  reference to its element. LLDB shows that reference's address as `t`'s value. Peeky shows the
+  element instead: `t = 10`, `{x = 3, y = 4}` for a struct, `"apple"` for a string.
+  - The row's `type` is the binding's: `std::tuple_element<0, std::pair<long, long> >::type`. Its
+    `debugger_type` keeps LLDB's, with `&&`.
+  - Apple clang 21 does the same, with `long &&`. Clang 18 marks the reference as its own, so
+    LLDB doesn't list `t`, and it is `not found`.
+  - An element that is a pointer shows its value, but Peeky doesn't follow it: `p[0]` can't be
+    read. Read what it points at where the pair is made.
+  - It can't be changed, nor can its fields: a change would write through the reference.
+  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where it names an
+    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A union's
+    member doesn't count, since another member may become active. Anything else may be gone by
+    the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
+    line destroys. So a binding of a call, a subscript, a range `for`'s element, `*p` or a global
+    shows `not shown: the binding refers to an object Peeky can't prove is still alive`. Read it
+    where the code names that object, or bind by value.
+  - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
+    tell whether that pass has set its reference yet.
+  - Peeky reads the binding's line to tell it from a reference the code declares with the
+    element's type: `std::tuple_element<0, P>::type &r = p.first;` keeps its address first. If
+    it can't read that line, the row is `not shown`.
 - **Strings with lldb-dap 18:** GCC describes `std::string` whole, so LLDB's summary works. A text
   cut at a NUL keeps its note: `"a" (shown up to a NUL at byte 1 of 3)`.
 - **A const pointer:** GCC's `this` is `Widget *const`. A change through it is refused as a
@@ -740,7 +764,8 @@ there. So the row says `no value yet: declared at line 18, below this stop`.
 - **At the line's first instruction,** a local declared on the stop line is withheld: its
   declaration hasn't run yet. To read it, probe the next line.
 - **On a line a loop returns to,** such as a `do` body's first line, it has a `note`: it may be
-  the last pass's value.
+  the last pass's value. A structured binding of a pair or tuple is withheld there instead. It is
+  read through a reference that its declaration sets, which may point anywhere until then.
 - **Mid-line,** such as a `for` counter on later passes, or after `step --out`, it shows as its
   storage reads, where the rules below allow it.
 
@@ -1248,6 +1273,8 @@ Every local whose storage the debug information reaches through a pointer:
 - a structured binding of a reference: `dropped` in `auto &[at, dropped] = *owner;`. It has no
   storage of its own, and is never marked `[settable]`. Its fields show
   `[not settable: reference]`;
+- in a GCC build, a structured binding of a pair or tuple: `t` in `auto [t, u] = p;`. GCC holds it
+  as a reference to its element;
 - a named return value, whose object is the caller's;
 - in C on macOS, a `__block` variable;
 - the elements of GCC's variable-length arrays.
@@ -1255,9 +1282,10 @@ Every local whose storage the debug information reaches through a pointer:
 Their refusal says
 `` `dropped` is reached through a pointer or reference …. Change the value where it is owned: Peeky changes only values the frame holds itself ``.
 
-These change as usual, because the frame holds them itself: a by-value structured binding
-(`auto [a, b] = pt;`), and a by-value parameter that the ABI passes through a hidden pointer. That
-is a struct over 16 bytes on arm64, or any class with a destructor: the call's own copy.
+These change as usual, because the frame holds them itself: a by-value structured binding of a
+struct (`auto [a, b] = pt;`), and a by-value parameter that the ABI passes through a hidden
+pointer. That is a struct over 16 bytes on arm64, or any class with a destructor: the call's own
+copy.
 
 A by-value binding of a bitfield, `hi` in `auto [lo, hi] = bits;`, is one exception. GCC gives it
 no location and a 1-byte type named `__unknown__`, so no stop can read or change it. Its row and a

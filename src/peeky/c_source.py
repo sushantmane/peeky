@@ -28,6 +28,9 @@ _ID = r"[^\s\x00-\x2f\x3a-\x40\x5b-\x5e\x60\x7b-\x7f]"
 _NAME = r"[^\s\x00-\x40\x5b-\x5e\x60\x7b-\x7f]" + _ID + "*"
 # An identifier, not the tail of a number or of another identifier (`1e5`).
 _IDENTIFIER = re.compile(f"(?<!{_ID}){_NAME}")
+# What leads a structured binding's `[`: `auto`, `const auto`, `auto const`, and its `&` or
+# `&&` (group 1).
+_BINDING_LEAD = re.compile(r"\bauto(?:\s+(?:const|volatile)\b)*\s*(&{0,2})\s*$")
 # A GNU `asm goto` (`asm volatile goto`, `__asm__ goto`, `__asm goto`): it may jump to
 # any label it lists as an operand.
 _ASM_GOTO = re.compile(rf"(?<!{_ID})(?:asm|__asm__|__asm)(?!{_ID})[^(;]*?(?<!{_ID})goto(?!{_ID})")
@@ -2121,6 +2124,13 @@ class Statements:
         """Whether ``line`` declares ``name`` otherwise than by a structured binding,
         outside the bodies of lambdas (or functions) there (#169): a local of the name
         in one is that function's own, whose frame no binding outside it names."""
+        return any(
+            self._declares(low, high, name, bindings=False) for low, high in self._outside(line)
+        )
+
+    def _outside(self, line):
+        """The (start, end) spans of ``line``'s code outside the bodies of lambdas (or
+        functions) there, in order."""
         code, pairs = self._code()
         begin = self.starts[line - 1]
         finish = self.starts[line] if line < len(self.starts) else len(self.blanked)
@@ -2137,12 +2147,126 @@ class Statements:
                 "lambda",
             ):
                 cuts.append(cut)
-        position = begin
+        spans, position = [], begin
         for low, high in sorted(cuts):
-            if low > position and self._declares(position, low, name, bindings=False):
-                return True
+            if low > position:
+                spans.append((position, low))
             position = max(position, high)
-        return position < finish and self._declares(position, finish, name, bindings=False)
+        if position < finish:
+            spans.append((position, finish))
+        return spans
+
+    def binds(self, line, name):
+        """Whether ``line`` declares ``name`` as a C++ structured binding's name (`auto [t,
+        u] = make(i)[0];`, `const auto &[t, u]`, a range-`for`'s) and in no other way,
+        outside the bodies of lambdas (or functions) there (#291). A variable of reference
+        type that the build declares there is then the reference it holds to a pair's or
+        tuple's element, which the binding names."""
+        if (
+            not self.raw_strings
+            or self.unreadable
+            or type(line) is not int
+            or not 1 <= line <= len(self.starts)
+        ):
+            return False
+        key = ("binds", line, name)
+        if key not in self._ends:
+            spans = self._outside(line)
+            self._ends[key] = any(
+                self._bracketed(low, high, name) for low, high in spans
+            ) and not any(self._declares(low, high, name, bindings=False) for low, high in spans)
+        return self._ends[key]
+
+    def _bracketed(self, start, end, name):
+        """Whether ``name`` between ``start`` and ``end`` is in a structured binding's
+        brackets (`auto [t, u]`, `const auto &[t, u]`), which may open on an earlier line
+        (`auto [first,` / `second] = p;`)."""
+        return any(
+            self._binding_bracket(word.start()) is not None
+            for word in _IDENTIFIER.finditer(self.blanked, start, end)
+            if word[0] == name
+        )
+
+    def _binding_bracket(self, position):
+        """(where the `[` of the structured binding whose brackets hold the name at
+        ``position`` opens, its `&` or `&&` or ""), or None where none does."""
+        blanked = self.blanked
+        at, depth = position - 1, 0
+        while at >= max(0, position - 4096):
+            char = blanked[at]
+            if char in ")]":
+                depth += 1
+            elif char in "([":
+                if depth == 0:
+                    found = _BINDING_LEAD.search(blanked[max(0, at - 64) : at])
+                    return (at, found[1]) if char == "[" and found else None
+                depth -= 1
+            elif depth == 0 and char in ";{}=?":
+                return None
+            at -= 1
+        return None
+
+    def binding(self, line, name):
+        """``(reference, initializer, ranged)`` of the C++ structured binding that names
+        ``name`` on ``line`` (as ``binds`` finds it, #291): whether it binds by reference
+        (`auto &`, `const auto &`, `auto &&`), the text of what it binds (`make(0)[0]` in
+        `auto &[t, u] = make(0)[0];`, `p` in `auto [t, u](p)`, the range `m` of `for (const
+        auto &[k, v] : m)`), and whether it is a range-`for`'s. None where no binding names
+        it there, or its initializer does not end."""
+        if not self.binds(line, name):
+            return None
+        blanked = self.blanked
+        for low, high in self._outside(line):
+            for word in _IDENTIFIER.finditer(blanked, low, high):
+                found = self._binding_bracket(word.start()) if word[0] == name else None
+                if found is None:
+                    continue
+                opened, reference = found
+                closing = self._closing_bracket(opened)
+                if closing is None:
+                    return None
+                lead = re.compile(r"\s*").match(blanked, closing + 1).end()
+                mark = blanked[lead : lead + 1]
+                if mark in ("(", "{"):
+                    shut = self._closing_bracket(lead)
+                    text = None if shut is None else blanked[lead + 1 : shut]
+                elif mark in ("=", ":"):
+                    text = self._expression(lead + 1)
+                else:
+                    text = None
+                if text is None:
+                    return None
+                return bool(reference), " ".join(text.split()), mark == ":"
+        return None
+
+    def _closing_bracket(self, opened):
+        """Where the bracket that opens at ``opened`` closes, or None."""
+        blanked, depth = self.blanked, 0
+        for at in range(opened, min(len(blanked), opened + 65536)):
+            char = blanked[at]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+                if depth == 0:
+                    return at
+        return None
+
+    def _expression(self, start):
+        """The text from ``start`` to the `;` or the unopened `)` that ends it (a
+        range-`for`'s range), or None."""
+        blanked, depth = self.blanked, 0
+        for at in range(start, min(len(blanked), start + 65536)):
+            char = blanked[at]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    return blanked[start:at] if char == ")" else None
+                depth -= 1
+            elif char == ";" and depth == 0:
+                return blanked[start:at]
+        return None
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;
