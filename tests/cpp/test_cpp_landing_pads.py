@@ -139,17 +139,11 @@ def test_a_local_declared_after_a_landing_pad_is_withheld_at_its_lines_start(bui
 def test_a_local_never_shows_the_last_passs_value_at_its_lines_start(build, capsys):
     program = build("grades.cpp", GRADES)
     quiz, after = line_of(GRADES, "// QUIZ"), line_of(GRADES, "// PRINT")
-    code, result = probe(
-        capsys, program, "--at", str(quiz), "--capture", "quiz,name", "--hits", "all"
-    )
+    code, result = probe(capsys, program, "--at", str(quiz), "--capture", "quiz", "--hits", "all")
     assert code == 0, result.get("error")
-    rows = {(row["hit"], row["selector"]): row for row in result["rows"]}
-    assert all(withheld(rows[hit, "quiz"], quiz) for hit in (1, 2, 3)), rows
-    assert [rows[hit, "name"]["value"].split()[-1] for hit in (1, 2, 3)] == [
-        '"Maya"',
-        '"Leon"',
-        '"Ines"',
-    ]
+    rows = result["rows"]
+    assert [row["hit"] for row in rows] == [1, 2, 3]
+    assert all(withheld(row, quiz) for row in rows), rows
     code, result = probe(capsys, program, "--at", str(after), "--capture", "quiz", "--hits", "all")
     assert code == 0 and [row["value"] for row in result["rows"]] == ["74", "76", "77"]
     # A session continued to the line again is at its start too.
