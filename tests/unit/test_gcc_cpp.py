@@ -388,6 +388,67 @@ def test_the_provider_rules_and_the_hashtables_value():
         assert undecoded_reason(reason).endswith("print its entries from the program")
 
 
+LONG = "std::unordered_set<long double>"
+
+
+@pytest.mark.parametrize(
+    "base, pointer, container, proven",
+    [
+        # Review round 2 of #281: an 8-byte `_M_nxt` in a 16-byte `_Hash_node_base`, with a
+        # 16-aligned value: the value sits 16 bytes in, where LLDB reads 8 in. Proven by
+        # `_Hash_node_base`'s size alone, it was listed.
+        (
+            record("_Hash_node_base", [("_M_nxt", 21, 0)], size=16),
+            ("pointer", "", None, 8),
+            37,
+            None,
+        ),
+        (record("_Hash_node_base", [("_M_nxt", 21, 0)], size=16), ("pointer", "", None), 31, None),
+        # `_M_nxt` elsewhere, of another type, or missing: not proven.
+        (
+            record("_Hash_node_base", [("_M_nxt", 21, 8)], size=16),
+            ("pointer", "", None, 8),
+            31,
+            None,
+        ),
+        (record("_Hash_node_base", [("_M_nxt", 22, 0)]), ("pointer", "", None, 8), 31, None),
+        (record("_Hash_node_base", [("_M_next", 21, 0)]), ("pointer", "", None, 8), 31, None),
+        # A pointer's own size, where the debug information gives one: a 4-byte pointer
+        # skips 4 bytes, past an `int`, short of a `double`'s 8-byte alignment.
+        (record("_Hash_node_base", [("_M_nxt", 21, 0)], size=4), ("pointer", "", None, 4), 31, 4),
+        (
+            record("_Hash_node_base", [("_M_nxt", 21, 0)], size=8),
+            ("pointer", "", None, 4),
+            31,
+            None,
+        ),
+        (record("_Hash_node_base", [("_M_nxt", 21, 0)]), ("pointer", "", None, 8), 31, 8),
+    ],
+)
+def test_an_entry_is_where_lldb_reads_only_past_one_pointer(base, pointer, container, proven):
+    graph = {**GRAPH, 20: base, 21: pointer}
+    held = hashed_value(graph, graph[container])
+    assert (held[1] if held else None) == proven
+    if proven is None:
+        assert unordered_proof(graph, graph[container], ("last",), [LONG, SET]) == "unknown"
+
+
+def test_a_value_aligned_past_the_pointer_lldb_skips_is_in_the_wrong_place():
+    four = {
+        **GRAPH,
+        20: record("_Hash_node_base", [("_M_nxt", 21, 0)], size=4),
+        21: ("pointer", "", None, 4),
+    }
+    assert unordered_proof(four, four[31], ("last",), [SET]) is None
+    doubles = {
+        **four,
+        **hashed("std::unordered_set<double>", 2, 15, [("_Value", 2), ("_Alloc", 15)], 40),
+        15: record("std::allocator<double>", parameters=[("_Tp", 2)], size=1),
+    }
+    assert unordered_proof(doubles, doubles[41], ("last",), ["x"]) == "place"
+    assert unordered_proof(GRAPH, GRAPH[37], ("last",), [LONG]) == "place"
+
+
 class Versions:
     def __init__(self, reply):
         self.reply, self.asked = reply, []

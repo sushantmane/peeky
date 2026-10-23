@@ -275,9 +275,11 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             encoding = (attrs.get("DW_AT_encoding") or "").strip()
             graph[offset] = ("base", name, encoding, size)
         elif tag in ("DW_TAG_pointer_type", "DW_TAG_ptr_to_member_type"):
-            # What it points at, never walked here: previews read one level (#136).
+            # What it points at, never walked here: previews read one level (#136). Its
+            # byte size where the debug information gives one (GCC's; clang's leave it to
+            # the target's address size): how far LLDB skips past `_M_nxt` (#167).
             aimed = target if tag == "DW_TAG_pointer_type" else None
-            graph[offset] = ("pointer", name, aimed)
+            graph[offset] = ("pointer", name, aimed, size)
             if pointees and aimed is not None:
                 pending.append(aimed)
         elif tag in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):

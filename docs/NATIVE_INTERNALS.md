@@ -205,8 +205,11 @@ tests (`tests/cpp_gcc_survey.py`). These rules hold for any build, and clang's b
     its allocator's first template argument, `skip_size` bytes into the node: the size of
     `_M_nxt`.
   - So a non-empty one is listed only where `unordered_proof` holds. The type the provider takes
-    must be the hashtable's own `_Value`. And `_Value`'s alignment must divide
-    `_Hash_node_base`'s size, so the entry sits where the provider reads.
+    must be the hashtable's own `_Value`. And the entry must sit where the provider reads.
+  - The entry follows `_Hash_node_base`, and the provider skips the size of `_M_nxt`'s type. So
+    `_M_nxt` must be a pointer at offset 0 of `_Hash_node_base`, and `_Hash_node_base` exactly
+    that pointer's size. `fields.type_graph` keeps a pointer's `DW_AT_byte_size`, which GCC
+    gives; else it is 8 bytes, a 64-bit target's. `_Value`'s alignment must divide that size.
   - `WeirdAlloc<double, int>` (`value_type` `int`) would read `7` as a `double`. A `long double`,
     16-byte aligned, sits 16 bytes in: clang's read `size=1 {0}`.
   - Which argument is the allocator depends on LLDB's version, which `lldb_major` reads once

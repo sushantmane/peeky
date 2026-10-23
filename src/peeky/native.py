@@ -3434,8 +3434,12 @@ def provider_type(graph, node, rule, names):
 
 def hashed_value(graph, node):
     """(the type a libstdc++ unordered container's nodes hold, its hashtable's `_Value`,
-    past typedefs and qualifiers; the byte size of `_Hash_node_base`, which precedes it in
-    each node), or None where the debug information does not say."""
+    past typedefs and qualifiers; how far into each node LLDB's provider reads it), or None
+    where the debug information does not prove that. The provider skips the byte size of
+    `_M_nxt`'s type (`self.next.GetType().GetByteSize()`), and the value sits right after
+    `_Hash_node_base`. So `_M_nxt` must be a pointer at offset 0 of `_Hash_node_base`, and
+    `_Hash_node_base` exactly as large: the pointer's own size where the debug information
+    gives one, else the 8 bytes of a 64-bit target's."""
     table = next((member for member in node[5] if member[0] == "_M_h"), None)
     found = graph.get(_resolved(graph, table[1])) if table is not None else None
     if found is None or found[0] != "record" or len(found) < 13 or len(found[12]) < 2:
@@ -3447,20 +3451,30 @@ def hashed_value(graph, node):
     base = graph.get(_resolved(graph, before[1])) if before is not None else None
     if base is None or base[0] != "record" or type(base[3]) is not int:
         return None
-    return _resolved(graph, value[2]), base[3]
+    following = next((member for member in base[5] if member[0] == "_M_nxt"), None)
+    if following is None or following[2] != 0:
+        return None
+    pointer = graph.get(_resolved(graph, following[1]))
+    if pointer is None or pointer[0] != "pointer":
+        return None
+    skip = pointer[3] if len(pointer) > 3 and pointer[3] is not None else 8
+    if type(skip) is not int or skip <= 0 or base[3] != skip:
+        return None
+    return _resolved(graph, value[2]), skip
 
 
 def unordered_proof(graph, node, rules, names):
     """None where LLDB's provider is proven to read the unordered container ``node``'s
     entries as the type its nodes hold, where they hold it, under each of ``rules``;
     else why not: "type" (it would decode another type), "place" (the type is aligned
-    past where it reads: it reads right after `_Hash_node_base`) or "unknown"."""
+    past where it reads: `_M_nxt`'s size into the node, right after `_Hash_node_base`)
+    or "unknown"."""
     from peeky.fields import _alignment
 
     held = hashed_value(graph, node)
     if held is None:
         return "unknown"
-    value, base = held
+    value, skip = held
     for rule in rules:
         decoded = provider_type(graph, node, rule, names)
         if decoded is None:
@@ -3470,7 +3484,7 @@ def unordered_proof(graph, node, rules, names):
     alignment = _alignment(graph, value)
     if not alignment:
         return "unknown"
-    return "place" if base % alignment else None
+    return "place" if skip % alignment else None
 
 
 def undecoded_reason(why, pointer=False):
