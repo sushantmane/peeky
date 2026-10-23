@@ -35,6 +35,12 @@ from peeky.errors import Refused, classify
             "has stored the parameters, and the function's code may overwrite a change",
             "past the function's prologue",
         ),
+        (
+            "'a' cannot be changed here: Peeky cannot tell whether the stop is past its "
+            "function's prologue, which stores the parameters: the debugger did not report "
+            "where the program is loaded",
+            "argument at the call",
+        ),
     ],
 )
 def test_a_refused_change_hints_the_one_action_its_rule_leaves(message, action):

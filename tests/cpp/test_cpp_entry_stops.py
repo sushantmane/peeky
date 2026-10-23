@@ -1,7 +1,8 @@
 """A one-line lambda's parameter at a stop on its line (#279): the value passed, or
 withheld where the stop is before the lambda's prologue stores it. A GCC build stops
 there (`v` read 0, then 7, for 7 and 8); clang marks the prologue's end, so every value
-reads. C++ builds with clang only, so GCC runs this only where a lane lets it build."""
+reads. C++ builds with clang only, so with GCC this test skips: its GCC expectations wait
+for #167 (C++ with GCC), and pass with that survey's test-only hatch."""
 
 import json
 import os
@@ -48,7 +49,9 @@ def test_a_one_line_lambdas_parameter_is_the_one_passed_or_withheld(tmp_path, mo
     code = main([*command, "--hits", "all", "--json", "--quiet"])
     result = json.loads(capsys.readouterr().out)
     if code != 0 and (result.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"this C++ compiler is refused: {result['error']['message'][:120]}")
+        # Waiting for #167: C++ with GCC is refused until its rules are checked against
+        # GCC's debug information.
+        pytest.skip(f"waits for #167 (C++ with GCC): {result['error']['message'][:120]}")
     assert code == 0 and "r=31" in result["output"], result
     rows = result["rows"]
     assert [row["hit"] for row in rows] == [1, 2], rows

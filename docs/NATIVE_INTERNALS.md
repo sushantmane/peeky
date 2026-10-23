@@ -41,6 +41,8 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   as GDB reads it. A stop in a window withholds the frame's parameters and locals, and refuses
   changes. These are kept: a `static`, one that a location list places, and a parameter at or
   above GCC's frame base (`DW_OP_call_frame_cfa`), which the caller passed on the stack.
+- Without the load address (a module with no `addressRange`), no stop is placed by its address.
+  Then a frame on a line of a window with no `prologue_end` withholds the same way.
 - An inlined call shows in the debug information as a `DW_TAG_inlined_subroutine` with its
   `DW_AT_call_line` on the statement's lines, or from another file.
 

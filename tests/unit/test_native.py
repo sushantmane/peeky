@@ -1925,9 +1925,22 @@ def test_a_functions_prologue_runs_to_its_mark_or_else_to_its_second_row(tmp_pat
     # (at or above the call's frame address); not one in a register. The lambda's frame
     # base is unknown, so its `w` is not kept.
     keep = frozenset({"calls", "each", "listed", "ninth"})
+    three, five = frozenset({("entry.c", 3)}), frozenset({("entry.c", 5)})
     for marked, windows in (
-        (False, [(0x400, 0x408, False, keep, True), (0x430, 0x43C, False, frozenset(), False)]),
-        (True, [(0x400, 0x40C, True, keep, True), (0x430, 0x43C, True, frozenset(), False)]),
+        (
+            False,
+            [
+                (0x400, 0x408, False, keep, True, three),
+                (0x430, 0x43C, False, frozenset(), False, five),
+            ],
+        ),
+        (
+            True,
+            [
+                (0x400, 0x40C, True, keep, True, three),
+                (0x430, 0x43C, True, frozenset(), False, five),
+            ],
+        ),
     ):
         info, line = prologue_dumps(tmp_path, marked)
         found = []
@@ -1936,9 +1949,11 @@ def test_a_functions_prologue_runs_to_its_mark_or_else_to_its_second_row(tmp_pat
 
 
 def prologue_session(windows):
+    from peeky.native import PrologueWindow
+
     session = NativeSession.__new__(NativeSession)
     session.load_bias = 0x1000
-    session.prologues = tuple(windows)
+    session.prologues = tuple(PrologueWindow(*window) for window in windows)
     # Nothing else of the build is known: only the prologue rule judges.
     session.declarations, session.fields = None, None
     return session
@@ -1947,9 +1962,13 @@ def prologue_session(windows):
 def test_a_stop_in_a_prologue_withholds_what_it_has_not_stored(tmp_path):
     from peeky.native import _prologue_windows
 
-    window = (0x400, 0x408, False, frozenset({"calls"}), True)
+    lines = frozenset()
     session = prologue_session(
-        [window, (0x430, 0x43C, True, frozenset(), True), (0x460, 0x468, False, frozenset(), False)]
+        [
+            (0x400, 0x408, False, frozenset({"calls"}), True, lines),
+            (0x430, 0x43C, True, frozenset(), True, lines),
+            (0x460, 0x468, False, frozenset(), False, lines),
+        ]
     )
 
     def frame(address):
@@ -2016,3 +2035,89 @@ def test_a_stop_in_a_prologue_withholds_what_it_has_not_stored(tmp_path):
     session.frames_listed([frame(0x500), {**frame(0x408), "id": 2}])
     assert session.not_yet_declared({"name": "a"}, {**frame(0x408), "id": 2}, innermost=False)
     assert _prologue_windows({}, [], set()) == []
+
+
+def test_a_frame_whose_address_is_unknown_is_withheld_on_a_gcc_prologues_line(
+    tmp_path, monkeypatch
+):
+    # Review of #279: where the debugger gives no load address (`addressRange` missing or
+    # unreadable, which a frame with a `moduleId` allows), no pc can be placed. On a line
+    # where a GCC prologue runs, the stop may be before it stored the parameters.
+    monkeypatch.setattr("peeky.native.sys.platform", "linux")
+    source = tmp_path / "entry.c"
+    source.write_text("\n" * 10)
+    session = prologue_session(
+        [
+            (0x400, 0x408, False, frozenset({"calls"}), True, frozenset({("entry.c", 3)})),
+            (0x420, 0x428, False, frozenset(), False, frozenset({("entry.c", 4)})),
+            (0x430, 0x43C, True, frozenset(), True, frozenset({("entry.c", 5)})),
+        ]
+    )
+    session.prepared = SimpleNamespace(workspace=tmp_path)
+    session.binary = session.symbols = elf_load_fixture(tmp_path, address=0)
+    session.module_identity = "AABB"
+    module = {
+        "id": "AA-BB",
+        "path": str(session.binary),
+        "symbolStatus": "Symbols loaded.",
+        "symbolFilePath": str(session.binary),
+    }
+    adapter = SimpleNamespace(request=lambda *_: {"modules": [module]})
+
+    def frame(line, address=0x1400):
+        return {
+            "id": 1,
+            "moduleId": "AA-BB",
+            "instructionPointerReference": hex(address),
+            "source": {"path": str(source)},
+            "line": line,
+        }
+
+    note = (
+        "Peeky cannot tell whether the stop is past its function's prologue, which stores "
+        "the parameters: the debugger did not report where the program is loaded, and the "
+        "build marks no prologue end (GCC's never do)."
+    )
+    for loaded in (None, "elsewhere"):
+        if loaded is None:
+            module.pop("addressRange", None)
+        else:
+            module["addressRange"] = loaded
+        # The module's identity is verified all the same.
+        session.validate_debugger(adapter, frame(3))
+        assert session.load_bias is None and session.load_bias_unknown is True
+        reason = session.not_yet_declared({"name": "a"}, frame(3))
+        assert reason == note + (
+            " Read the arguments at the call, or put the body on a line of its own"
+        )
+        assert len(reason) <= 300 and reason.label is None
+        assert reason.refusal == (
+            "'a' cannot be changed here: " + note[:-1] + ". Change the argument at the call, "
+            "or put the body on a line of its own and change it there"
+        )
+        with pytest.raises(ValueError, match="cannot tell whether the stop is past"):
+            session.validate_mutation_target({"name": "a"}, frame(3))
+        # A function on several lines says to stop past its first line.
+        assert session.not_yet_declared({"name": "k"}, frame(4)).endswith(
+            "Read the arguments at the call, or stop past the function's first line"
+        )
+        # What the prologue leaves alone, a line no GCC prologue runs on, and a prologue
+        # whose end is marked (clang's, where no breakpoint stops) are not withheld.
+        assert session.not_yet_declared({"name": "calls"}, frame(3)) is None
+        assert session.not_yet_declared({"name": "a"}, frame(6)) is None
+        assert session.not_yet_declared({"name": "v"}, frame(5)) is None
+    # With the load address, the address decides: past the prologue, the value reads.
+    module["addressRange"] = str(0x1000)
+    session.validate_debugger(adapter, frame(3))
+    assert session.load_bias == 0x1000 and session.load_bias_unknown is False
+    assert session.not_yet_declared({"name": "a"}, frame(3, 0x1408)) is None
+    assert session.not_yet_declared({"name": "a"}, frame(3)).startswith(
+        "the stop is at its function's start"
+    )
+    # A frame the debugger gives no address for says so.
+    pointless = {
+        key: value for key, value in frame(3).items() if key != "instructionPointerReference"
+    }
+    assert "the debugger gave no instruction address for this frame" in (
+        session.not_yet_declared({"name": "a"}, pointless)
+    )

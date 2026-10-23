@@ -715,6 +715,10 @@ A function whose body has lines of its own usually stops past its prologue. Rare
 its start too, as when the next function's prologue is empty. Then stop on a later line of the
 function. A change at either stop is refused for the same reason.
 
+Peeky places a stop by its address, which needs the debugger to report where the program is
+loaded. Where it doesn't, any stop on a line where a GCC prologue runs is withheld the same way.
+The row says `Peeky cannot tell whether the stop is past its function's prologue`, and why.
+
 #### While its declaration runs
 
 A local is withheld while its own declaration is still running at the stop. For example,

@@ -323,7 +323,8 @@ _MUTATION_HINTS = (
     ),
     (
         # A stop in a function's prologue (a GCC build's one-line function, #279).
-        r"before (?:the prologue stores|it has stored) the parameters",
+        r"before (?:the prologue stores|it has stored) the parameters"
+        r"|whether the stop is past its function's prologue",
         "Change the argument at the call (a stop on the caller's line), or at a stop past the "
         "function's prologue, as the message says.",
     ),

@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from peeky.adapters import PythonAdapter, locals_only
 from peeky.assembler import ASSEMBLER_REFUSAL, c_refusal
@@ -1182,18 +1183,30 @@ def _prologue_kept(dies, offset):
     return frozenset(name for name, kept in names.items() if kept)
 
 
+class PrologueWindow(NamedTuple):
+    """Where a function's prologue runs (_prologue_windows)."""
+
+    entry: int
+    end: int
+    marked: bool
+    kept: frozenset
+    single: bool
+    lines: frozenset
+
+
 def _prologue_windows(dies, rows, marks):
     """Where each function's prologue runs, before it has stored its parameters (#279):
-    sorted (entry, end, marked, kept, single), one per function with code on the
-    program's lines (``rows``: their (address, source, line), sorted), whether Peeky
-    places it or not (GCC's
-    lambdas name no file). ``entry`` starts its first range (its low_pc). ``end`` is its
-    first row there marked `prologue_end` (``marks``): clang and rustc mark the first
+    a PrologueWindow per function with code on the program's lines (``rows``: their
+    (address, source, line), sorted), whether Peeky places it or not (GCC's lambdas name
+    no file), sorted by ``entry``, the start of its first range (its low_pc). ``end`` is
+    its first row there marked `prologue_end` (``marks``): clang and rustc mark the first
     instruction past the parameters' stores. A build that marks none (GCC's) starts the
     body at the function's second row (at its entry where the prologue is empty), as GDB
     reads it; with no row at its entry, at its first. ``marked``: whether a mark gave it.
     ``kept``: _prologue_kept. ``single``: whether all its code there is on one line (a
-    one-line function's). Only windows that hold code: an empty prologue has none."""
+    one-line function's). ``lines``: the (source, line) of its rows in the window, where
+    the debugger shows a stop there. Only windows that hold code: an empty prologue has
+    none."""
     addresses = [row[0] for row in rows]
     marks = sorted(marks or ())
     windows = {}
@@ -1226,10 +1239,12 @@ def _prologue_windows(dies, rows, marks):
             # Two functions at one address (folded copies): the wider window, and only
             # what both keep.
             other = windows[entry]
-            end, marked, kept = max(end, other[1]), marked and other[2], kept & other[3]
-            single = single and other[4]
-        windows[entry] = (entry, end, marked, kept, single)
-    return sorted(windows.values(), key=lambda window: window[0])
+            end, marked, kept = max(end, other.end), marked and other.marked, kept & other.kept
+            single = single and other.single
+        inside = rows[first : bisect.bisect_left(addresses, end)]
+        lines = frozenset(row[1:] for row in inside)
+        windows[entry] = PrologueWindow(entry, end, marked, kept, single, lines)
+    return sorted(windows.values(), key=lambda window: window.entry)
 
 
 def _function_entries(
@@ -3281,7 +3296,7 @@ def _prologue_texts(window):
     """(where the stop is, why it stops there, where to read, where to change) for a stop
     in a function's prologue (#279), by its _prologue_windows window. A build that marks
     the prologue's end has only a stop no breakpoint makes there (a fault, a signal)."""
-    _, _, marked, _, single = window
+    marked, single = window.marked, window.single
     if marked:
         return (
             "the stop is in its function's prologue, before it has stored the parameters",
@@ -4258,8 +4273,8 @@ class NativeSession:
         windows, pc = getattr(self, "prologues", None), self._block_pc(frame)
         if not windows or pc is None:
             return None
-        index = bisect.bisect_right(windows, pc, key=lambda window: window[0]) - 1
-        if index >= 0 and windows[index][0] <= pc < windows[index][1]:
+        index = bisect.bisect_right(windows, pc, key=lambda window: window.entry) - 1
+        if index >= 0 and windows[index].entry <= pc < windows[index].end:
             return windows[index]
         return None
 
@@ -4268,11 +4283,15 @@ class NativeSession:
         prologue (#279), or None. GCC marks no prologue end, so LLDB stops a function
         whose code is all on its first line at its first instruction, before the
         parameters are stored; a step into it stops there too. Every parameter and local
-        is withheld there, but those the prologue leaves alone (``kept``)."""
-        window, name = self._prologue(frame), variable.get("name")
-        if window is None or not isinstance(name, str):
+        is withheld there, but those the prologue leaves alone (``kept``). Where the
+        frame's address is unknown, _prologue_unplaced says why it may be there."""
+        name = variable.get("name")
+        if not isinstance(name, str):
             return None
-        if (split_located(name) or (name,))[0] in window[3]:
+        base = (split_located(name) or (name,))[0]
+        if (window := self._prologue(frame)) is None:
+            return self._prologue_unplaced(base, name, frame)
+        if base in window.kept:
             return None
         where, why, read, change = _prologue_texts(window)
         return Withholding(
@@ -4280,6 +4299,44 @@ class NativeSession:
             None,
             f"{name!r} cannot be changed here: {where}, and the function's code may "
             f"overwrite a change. {change}",
+        )
+
+    def _prologue_unplaced(self, base, name, frame):
+        """Why a root local (``base``: its plain name) of ``frame``, whose address Peeky
+        cannot read, may hold leftovers, or None (review of #279). A frame on a line of a
+        prologue that marks no end (GCC's) may be stopped before the parameters are
+        stored, so its locals are withheld, but what that prologue leaves alone. A clang
+        build's breakpoints never stop in a prologue: nothing is withheld."""
+        windows = getattr(self, "prologues", None)
+        if not windows or self._block_pc(frame) is not None:
+            return None
+        place = self._place(frame)
+        found = [w for w in windows if not w.marked and place in w.lines] if place else []
+        if not found or all(base in window.kept for window in found):
+            return None
+        pointer = (frame or {}).get("instructionPointerReference")
+        if getattr(self, "load_bias_unknown", False):
+            why = "the debugger did not report where the program is loaded"
+        elif not isinstance(pointer, str) or not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", pointer):
+            why = "the debugger gave no instruction address for this frame"
+        else:
+            why = "Peeky could not read where the program is loaded"
+        where = (
+            f"Peeky cannot tell whether the stop is past its function's prologue, which "
+            f"stores the parameters: {why}, and the build marks no prologue end (GCC's never "
+            "do)"
+        )
+        if all(window.single for window in found):
+            read = "Read the arguments at the call, or put the body on a line of its own"
+            change = "put the body on a line of its own and change it there"
+        else:
+            read = "Read the arguments at the call, or stop past the function's first line"
+            change = "change it past the function's first line"
+        return Withholding(
+            f"{where}. {read}",
+            None,
+            f"{name!r} cannot be changed here: {where}. Change the argument at the call, or "
+            f"{change}",
         )
 
     def _statement_end(self, source, line, name):
@@ -6857,10 +6914,11 @@ class NativeSession:
         if not valid:
             raise RuntimeError("Native module identity or symbols do not match prepared build")
         try:
-            # Display aid only (a local declared on the stop line): unknown never withholds.
-            self.load_bias = load_bias(self.binary, module)
+            # Most rules that read it are display aids (a local declared on the stop line):
+            # unknown never withholds there. A GCC prologue's does (review of #279).
+            self.load_bias, self.load_bias_unknown = load_bias(self.binary, module), False
         except (OSError, ValueError, struct.error):
-            self.load_bias = None
+            self.load_bias, self.load_bias_unknown = None, True
         # scripts/probe_rust.py validates with a plain namespace, which records nothing.
         if check := getattr(self, "_check_loop_target", None):
             check(dap, frame)

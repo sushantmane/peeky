@@ -222,3 +222,36 @@ def test_a_step_into_a_one_line_function_withholds_what_is_not_stored(entries, c
             assert code == 1 and row["error"] == NOTE, row
     finally:
         main(["session", "close"])
+
+
+@pytest.mark.timeout(300)
+def test_a_stop_whose_address_is_unknown_is_withheld_on_a_gcc_prologues_line(
+    entries, capsys, monkeypatch
+):
+    # Review of #279: where the debugger reports no load address (a module with no
+    # `addressRange`, which lldb-dap 20 and Apple's may send with a frame's `moduleId`),
+    # no stop's address can be placed. The rule then fails closed on a GCC prologue's line.
+    compiler, root, config = entries
+
+    def unknown(binary, module):
+        raise ValueError("Missing or invalid native module load address")
+
+    monkeypatch.setattr("peeky.native.load_bias", unknown)
+    code, result = probe(root, config, capsys, "ONE", "a")
+    assert code == 0 and OUTPUT in result["output"], result
+    values = [row.get("value") for row in result["rows"]]
+    if compiler == "clang":
+        # Clang's breakpoints stop past the prologue's mark: nothing to withhold.
+        assert values == ["3", "4"], result["rows"]
+    else:
+        unplaced = (
+            "no value yet: Peeky cannot tell whether the stop is past its function's prologue, "
+            "which stores the parameters: the debugger did not report where the program is "
+            "loaded, and the build marks no prologue end (GCC's never do). Read the arguments "
+            "at the call, or put the body on a line of its own"
+        )
+        shown = [(row.get("value"), row.get("error")) for row in result["rows"]]
+        assert shown == [(None, unplaced)] * 2, result["rows"]
+    # A line no prologue runs on reads as before.
+    code, result = probe(root, config, capsys, "MULTI", "m")
+    assert code == 0 and [row["value"] for row in result["rows"]] == ["8"], result["rows"]
