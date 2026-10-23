@@ -451,6 +451,20 @@ def _strip(graph, offset, path):
     raise Unsettable(f"The type of `{path}` is nested too deeply")
 
 
+def _pointer_under(graph, offset):
+    """(offset, node) of the pointer or reference under typedefs and qualifiers at
+    ``offset``, or None where there is none."""
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None:
+            return None
+        if node[0] in ("typedef", "qualifier"):
+            offset = node[2]
+            continue
+        return (offset, node) if node[0] in ("pointer", "reference") else None
+    return None
+
+
 def debugger_steps(graph, root, name, steps):
     """A selector's ``steps`` from the local ``name`` of type ``root`` as the debugger
     names the children they reach, which is how the stop's walk reads them (#138): an
@@ -607,7 +621,10 @@ def settable_member(graph, root, name, steps, owner=None):
         if pending is not None:
             element, counts = pending
         else:
-            offset, node, _ = _strip(graph, offset, path)
+            # A const pointer (`Counter *const`, GCC's `this`) is refused as a pointer: what
+            # it points at need not be const (#167).
+            under = _pointer_under(graph, offset)
+            offset, node = under if under else _strip(graph, offset, path)[:2]
             if node[0] in ("pointer", "reference"):
                 advice = owner() if owner is not None and path == name else None
                 raise Unsettable(

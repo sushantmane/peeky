@@ -256,6 +256,7 @@ Both operations are read-only.
 | Field | On | Meaning |
 | --- | --- | --- |
 | `whole_string_summaries` | a stop | `true` when LLDB's summary of a `std::string` is all of it: libc++, known by `std::__1` in the debug information. libstdc++ (`std::__cxx11`) gets no such field |
+| `statics` | a stop | The names the frame's function keeps in static storage: a `static` local, or a `const` local GCC places in read-only data. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none |
 | `string_length` | a variable | A libstdc++ string's length, checked against its `_M_string_length`. A map key matches only a string shown whole and of its length, or one read from memory |
 | `view: memory` | a variable | Peeky read the string's text from memory |
 | `text: true` | a variable | A standard string shown as its text, or as Peeky's reason it has none. It gets no handle, as Rust's text views get none |

@@ -15,53 +15,29 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   program's output: they are a warning, not output.
 - A structured binding of a bitfield, which GCC gives no location: a true note.
 
-GCC is refused for C++ targets; the g++ cases run only under the test-only hatch
-(PEEKY_TEST_CPP_GCC=1, tests/cpp_gcc_survey.py), else they skip. lldb-dap 18 or 20, as
-the lane sets it."""
+The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
+C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
 
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 
-import cpp_gcc_survey
 import pytest
+from native_compilers import cxx_for, is_gcc
 
 from peeky.cli import main
-
-
-def _is_gcc(compiler):
-    try:
-        version = subprocess.run([compiler, "--version"], capture_output=True, text=True)
-    except OSError:
-        return False
-    return "Free Software Foundation" in version.stdout
-
-
-def _gxx():
-    """A g++ that is GCC, where the test-only hatch lets Peeky build C++ with it."""
-    if not cpp_gcc_survey.wanted():
-        return None
-    for name in ("g++", "g++-13", "g++-14"):
-        if (found := shutil.which(name)) and _is_gcc(found):
-            return found
-    return None
 
 
 @pytest.fixture(params=["clang", "gcc"])
 def cpp(request, tmp_path, monkeypatch):
     """(the build's compiler family, a directory) with PEEKY_NATIVE_CXX set to it."""
-    if not os.environ.get("PEEKY_NATIVE_DAP") or not os.environ.get("PEEKY_NATIVE_CXX"):
-        pytest.skip("set PEEKY_NATIVE_DAP and PEEKY_NATIVE_CXX to enable C++ conformance")
-    compiler = os.environ["PEEKY_NATIVE_CXX"] if request.param == "clang" else _gxx()
+    compiler, why = cxx_for(request.param)
     if compiler is None:
-        pytest.skip("needs g++, and PEEKY_TEST_CPP_GCC=1: GCC is refused for C++ targets")
+        pytest.skip(why)
     monkeypatch.setenv("PEEKY_NATIVE_CXX", compiler)
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    # What the build does, not the parameter's name: a lane may set PEEKY_NATIVE_CXX to g++.
-    return ("gcc" if _is_gcc(compiler) else "clang"), tmp_path
+    return ("gcc" if is_gcc(compiler) else "clang"), tmp_path
 
 
 def line_of(text, marker):

@@ -58,11 +58,20 @@ def rows(tmp_path, adapter, text, marker, selector):
 @pytest.mark.parametrize("optimization", ["O1", "O2"])
 @pytest.mark.parametrize("marker", ["HEADER", "ONE_LINE"])
 def test_a_range_for_binding_withholds_the_outer_local_where_lldb_lists_only_it(
-    tmp_path, optimization, marker
+    tmp_path, cxx, optimization, marker
 ):
     found = rows(tmp_path, target(optimization), CPP_SOURCE, marker, "t")
     shown = [row for row in found if "value" in row]
     # Before: a stop of the header listed only the outer `t` (argc, 1) as plain `t`.
     assert not shown, shown
+    if cxx == "gcc":
+        # LLDB lists both of GCC's `t`s here, so plain `t` names neither, and names both
+        # (#167); the outer one, by its line, is withheld as clang's is.
+        line = next(i for i, row in enumerate(CPP_SOURCE.splitlines(), 1) if marker in row)
+        for row in found:
+            assert row["error"].startswith("not found; visible: "), row
+            assert f"t @ blocks.cpp:{line}, t @ blocks.cpp:9" in row["error"], row
+        found = rows(tmp_path, target(optimization), CPP_SOURCE, marker, "t @ blocks.cpp:9")
+        assert found and not [row for row in found if "value" in row], found
     withheld = [row for row in found if "structured binding `t`" in row.get("error", "")]
     assert withheld, found

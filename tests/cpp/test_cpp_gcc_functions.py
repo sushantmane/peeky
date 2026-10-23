@@ -1,47 +1,27 @@
 """C++ functions Peeky cannot place among the program's declarations, whose locals it
 withholds, and GCC's lambdas and implicit constructors, which it places by their class
-(#167). Each case runs with clang++ and with g++. C++ with GCC is refused until #167 is
-done, so the g++ cases run with the test-only hatch (PEEKY_TEST_CPP_GCC=1,
-tests/cpp_gcc_survey.py) and skip without it, or where no g++ is GCC (macOS)."""
+(#167). Each case runs with clang++ and with g++: the g++ cases skip where no g++ is GCC
+(macOS), and the clang cases where the lane builds C++ with g++."""
 
 import json
 import os
-import shutil
-import subprocess
 
 import pytest
+from native_compilers import cxx_for, is_gcc
 
 from peeky.cli import main
-
-
-def _is_gcc(compiler):
-    try:
-        version = subprocess.run([compiler, "--version"], capture_output=True, text=True)
-    except OSError:
-        return False
-    return "Free Software Foundation" in version.stdout
-
-
-def _gxx():
-    for name in ("g++", "g++-13", "g++-14"):
-        found = shutil.which(name)
-        if found and _is_gcc(found):
-            return found
-    return None
 
 
 @pytest.fixture(params=["clang++", "g++"])
 def compiler(request, tmp_path, monkeypatch):
     """The family of the C++ compiler this case builds with: what the build does, not the
-    parameter's name (a lane may set PEEKY_NATIVE_CXX to g++)."""
-    if not os.environ.get("PEEKY_NATIVE_DAP"):
-        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
-    found = os.environ.get("PEEKY_NATIVE_CXX", "clang++") if request.param == "clang++" else _gxx()
+    parameter's name."""
+    found, why = cxx_for("clang" if request.param == "clang++" else "gcc")
     if found is None:
-        pytest.skip("needs a g++ that is GCC")
+        pytest.skip(why)
     monkeypatch.setenv("PEEKY_NATIVE_CXX", found)
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    return "gcc" if _is_gcc(found) else "clang"
+    return "gcc" if is_gcc(found) else "clang"
 
 
 def line_of(source, marker):
@@ -53,11 +33,7 @@ def probed(capsys, path, line, capture, *more):
         ["probe", str(path), "--at", str(line), "--capture", capture, *more]
         + ["--json", "--quiet", "--no-save"]
     )
-    result = json.loads(capsys.readouterr().out)
-    if code != 0 and (result.get("error") or {}).get("code") == "UNSUPPORTED":
-        # C++ with GCC is refused until #167 is done (PEEKY_TEST_CPP_GCC=1 lifts it in tests).
-        pytest.skip(f"waits for #167 (C++ with GCC): {result['error']['message'][:120]}")
-    return code, result
+    return code, json.loads(capsys.readouterr().out)
 
 
 UNPLACED = (

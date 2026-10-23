@@ -130,9 +130,11 @@ INFO = dump(
     (0x150, 1, "DW_TAG_array_type", {"DW_AT_type": "0x00000010"}),
     (0x152, 2, "DW_TAG_subrange_type", {}),
     (0x160, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000060"}),
+    # A const pointer, as GCC types C++'s `this` (`Counter *const`).
+    (0x170, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000040"}),
 )
 ROOTS = (0x70, 0x40, 0x44, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xF4, 0x110, 0x120, 0x130, 0x140)
-GRAPH = type_graph(_parse_dies(INFO), (*ROOTS, 0x150, 0x160), CPP_LIBRARIES)
+GRAPH = type_graph(_parse_dies(INFO), (*ROOTS, 0x150, 0x160, 0x170), CPP_LIBRARIES)
 
 
 @pytest.mark.parametrize(
@@ -188,6 +190,8 @@ def test_a_selectors_indexes_are_read_as_the_debugger_names_elements(root, steps
         (0x90, ["a"], "`s.a` is a bitfield"),
         (0xA0, ["fixed"], "`s.fixed` is const"),
         (0x160, ["x"], "`s` is const"),
+        # #167: a const pointer said "`s` is const", as if what it points at were.
+        (0x170, ["x"], "`s` is a pointer"),
         (0xA0, ["v"], "`s.v` is volatile"),
         (0xB0, ["i"], "`s` is a union"),
         (0xC0, ["i"], "`s` is a packed struct (pk)"),

@@ -178,10 +178,9 @@ _RULES = (
         False,
     ),
     (
-        r"C\+\+ targets need clang\+\+",
+        r"C\+\+ targets need clang\+\+ or g\+\+",
         "UNSUPPORTED",
-        "Install clang and point PEEKY_NATIVE_CXX (or the target's `compiler`) at its "
-        "clang++; C targets build with GCC as well.",
+        "Point PEEKY_NATIVE_CXX (or the target's `compiler`) at clang++ or g++.",
         False,
     ),
     (

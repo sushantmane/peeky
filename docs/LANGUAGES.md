@@ -15,7 +15,7 @@ has as a whole:
 | Python | Runtime experiments and candidate verification. | [DESIGN.md](DESIGN.md) |
 | Java | Fresh compilation, generated source maps, guarded HTTP runtime operations and real failure-cleanup tests. A deterministic full investigation loop, with fresh candidate compilation and independent verification. | [worker](WORKER.md#start-a-java-worker), [loop](AGENT_LOOP.md#java-paginationbugjava) |
 | C | An experimental LLDB worker. A deterministic full investigation loop, with fresh candidate builds, frozen headers and independent executable checks. | [worker](WORKER.md), [loop](AGENT_LOOP.md#c-pagination_bugc) |
-| C++ | Explicit C++17 builds, bounded expansion of classes, references and arrays, and deterministic candidate repair. | [internals](NATIVE_INTERNALS.md), [worker](WORKER.md#configure-a-c-target), [loop](AGENT_LOOP.md#c-pagination_bugcpp) |
+| C++ | Explicit C++17 builds with clang or GCC, bounded expansion of classes, references and arrays, and deterministic candidate repair. GCC's builds withhold what LLDB misreads ([gaps](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build)). | [internals](NATIVE_INTERNALS.md), [worker](WORKER.md#configure-a-c-target), [loop](AGENT_LOOP.md#c-pagination_bugcpp) |
 | Rust | An experimental HTTP worker for one dependency-free Cargo binary, with application-unit symbols and compiler-validated `Option<i32>` views. A deterministic investigation loop: the hashed compiled Cargo test and an independent checker must both pass on a fresh build. | [worker](RUST_AGENT.md#the-cargo-build), [loop](AGENT_LOOP.md#rusts-two-gates) |
 
 All five languages are qualified on a separate host, through a worker

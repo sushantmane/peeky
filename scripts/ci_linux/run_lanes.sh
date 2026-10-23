@@ -3,8 +3,8 @@
 # each lane of .github/workflows/ci.yml except the remote SSH e2e (run that on the
 # host with PEEKY_E2E_DOCKER=1), plus Rust and C++ with LLVM 20's lldb-dap, whose
 # readMemory qualifies Rust memory views and libstdc++ strings with a NUL byte (#128),
-# C built by GCC with it (#279), and GDB's DAP, which CUDA qualification drives
-# (scripts/cuda/qualify.py). One PASS/FAIL line per lane; non-zero on failure.
+# C and C++ built by GCC with it (#279, #167), and GDB's DAP, which CUDA qualification
+# drives (scripts/cuda/qualify.py). One PASS/FAIL line per lane; non-zero on failure.
 set -u
 python3 -m venv /v >/dev/null && /v/bin/pip install -q -e '.[dev]' || exit 90
 export PATH=/v/bin:$PATH
@@ -37,6 +37,13 @@ lane c-gcc-llvm20 PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-20 PEEKY_NATIVE_DWARFDUMP=/
   tests/native/test_native_previews.py
 lane cpp-llvm20 PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-20 PEEKY_NATIVE_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 \
   PEEKY_NATIVE_CXX=/usr/bin/clang++-18 PEEKY_EXPECT_READ_MEMORY=1 pytest -q -p no:cacheprovider tests/cpp
+# C++ built by GCC (#167): every C++ case (`-m cpp`: tests/cpp and those of tests/native),
+# with g++ 13. The clang lanes also run the GCC side of cases parametrized over both.
+lane cpp-gcc "${native[@]}" PEEKY_NATIVE_CXX=/usr/bin/g++ \
+  pytest -q -p no:cacheprovider -m cpp tests/cpp tests/native
+lane cpp-gcc-llvm20 PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-20 PEEKY_NATIVE_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 \
+  PEEKY_NATIVE_CXX=/usr/bin/g++ PEEKY_EXPECT_READ_MEMORY=1 \
+  pytest -q -p no:cacheprovider -m cpp tests/cpp tests/native
 lane rust "${rust[@]}" pytest -q -p no:cacheprovider tests/rust
 lane rust-llvm20 "${rust[@]}" PEEKY_RUST_DAP=/usr/bin/lldb-dap-20 \
   PEEKY_RUST_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 PEEKY_EXPECT_READ_MEMORY=1 \

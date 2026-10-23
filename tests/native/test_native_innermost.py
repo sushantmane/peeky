@@ -5,6 +5,7 @@ import json
 import os
 
 import pytest
+from native_compilers import cxx_is_gcc
 
 from peeky.cli import main
 
@@ -98,6 +99,18 @@ def shown_at(capsys, path, line, *selectors, hit=1, steps=0, frame=0, out=False)
         capsys.readouterr()
 
 
+def never_stops_at(capsys, path, line):
+    """GCC runs a default member initializer's code on the line that builds the object
+    (#167): `describe` leaves the member's line out, and `--at` it never stops."""
+    assert main(["describe", str(path), "--json"]) == 0
+    lines = json.loads(capsys.readouterr().out)["breakpoint_lines"]
+    assert line not in lines[path.name], lines
+    command = ["probe", str(path), "--at", str(line), "--capture", "this"]
+    code = main([*command, "--json", "--quiet", "--no-save"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 1 and result["error"]["code"] == "NO_STOP", result
+
+
 def withheld(row, *phrases):
     return "value" not in row and all(phrase in row.get("error", "") for phrase in phrases)
 
@@ -181,8 +194,9 @@ int main() {
 )
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
-def test_this_is_withheld_while_its_object_is_being_built(directory, capsys):
+def test_this_is_withheld_while_its_object_is_being_built(directory, cxx, capsys):
     # #121: the stopped `Widget::Widget` showed `this.a = 20908` and `this.b = 20909`, and
     # a lambda called inside `t`'s initializer showed `this.t.p` (its capture) unset.
     path = directory / "building.cpp"
@@ -197,12 +211,20 @@ def test_this_is_withheld_while_its_object_is_being_built(directory, capsys):
     rows = shown_at(capsys, path, line_of(BUILDING, "return w;"), "this", hit=3, frame=1)
     assert rows["this"]["frame"] == 1 and withheld(rows["this"], "is building")
     rows = shown_at(capsys, path, line_of(BUILDING, "// lambda in t's"), "this", "this.t")
-    assert withheld(rows["this"], "this lambda is defined in the declaration of `t`")
+    if cxx == "gcc":
+        # GCC passes a lambda its captures through `__closure`, which lldb-dap does not
+        # list (#167): nothing to read, so nothing shown.
+        assert all(row["error"].startswith("not found; visible: ") for row in rows.values())
+    else:
+        assert withheld(rows["this"], "this lambda is defined in the declaration of `t`")
     # Built: a member function called later, and a lambda called after its declaration.
     rows = shown_at(capsys, path, line_of(BUILDING, "// called once built"), "this.a", "this.b")
     assert [rows["this.a"]["value"], rows["this.b"]["value"]] == ["6", "13"]
     rows = shown_at(capsys, path, line_of(BUILDING, "// lambda called later"), "this.t.p.y")
-    assert rows["this.t.p.y"]["value"] == "8"
+    if cxx == "gcc":
+        assert rows["this.t.p.y"]["error"] == "not found; visible: (none)", rows
+    else:
+        assert rows["this.t.p.y"]["value"] == "8"
 
 
 JUMPS = (
@@ -390,17 +412,21 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
-def test_an_object_a_default_member_initializer_builds_is_withheld(directory, capsys):
+def test_an_object_a_default_member_initializer_builds_is_withheld(directory, cxx, capsys):
     # Review of #126: breaking on `Cfg`'s member line stops in `run()`, which showed
     # `cfg.b = 20907`; so did `run()` as frame 1 of `twice`.
     path = directory / "members.cpp"
     path.write_text(MEMBERS)
     member = line_of(MEMBERS, "// member b")
-    rows = shown_at(capsys, path, member, "cfg", "cfg.b", "seed")
-    assert rows["cfg"]["function"] == "run()" and rows["seed"]["value"] == "6"
-    assert withheld(rows["cfg"], f"frame runs members.cpp:{member}, outside its function's")
-    assert withheld(rows["cfg.b"], "'cfg' has no value here")
+    if cxx == "gcc":
+        never_stops_at(capsys, path, member)
+    else:
+        rows = shown_at(capsys, path, member, "cfg", "cfg.b", "seed")
+        assert rows["cfg"]["function"] == "run()" and rows["seed"]["value"] == "6"
+        assert withheld(rows["cfg"], f"frame runs members.cpp:{member}, outside its function's")
+        assert withheld(rows["cfg.b"], "'cfg' has no value here")
     rows = shown_at(capsys, path, line_of(MEMBERS, "return w;"), "cfg", "seed", hit=3, frame=1)
     assert withheld(rows["cfg"]) and rows["seed"]["value"] == "6"
     rows = shown_at(capsys, path, line_of(MEMBERS, "// after"), "cfg.b")
@@ -552,13 +578,22 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
-def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(directory, capsys):
+def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(
+    directory, cxx, capsys
+):
     # Review of #126: through `std::function`, `run` (where `cb` is defined) is more than
     # ten frames below the lambda, so its `this` was withheld; up to 64 are read now.
     path = directory / "deep.cpp"
     path.write_text(DEEP)
     line = line_of(DEEP, "// in the lambda")
+    if cxx == "gcc":
+        # GCC passes the lambda its captures through `__closure`, which lldb-dap does not
+        # list (#167): no `this` to judge, and none shown.
+        rows = shown_at(capsys, path, line, "this", hit=3)
+        assert rows["this"]["error"] == "not found; visible: doubled, v", rows
+        return
     for hit in (1, 2):
         rows = shown_at(capsys, path, line, "this", hit=hit)
         assert "value" in rows["this"], rows
@@ -622,6 +657,7 @@ int main() {
 )
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(400)
 def test_a_header_variable_whose_initializer_calls_is_withheld_after_the_call(directory, capsys):
     # Review of #126 (round 2): back from the call in a header's own initializer
@@ -721,17 +757,24 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
-def test_a_header_class_initializer_reads_from_the_line_that_runs_it(directory, capsys):
+def test_a_header_class_initializer_reads_from_the_line_that_runs_it(directory, cxx, capsys):
     # Review of #126 (round 2): stopped in `cfg.hpp`'s member initializer inside `run()`,
     # `after = 20911 [settable]` and a garbage `where` were shown; the stop now reads
     # as `main.cpp:16`, the line whose code runs it.
     (directory / "cfg.hpp").write_text(HEADER_CFG)
     path = directory / "main.cpp"
     path.write_text(HEADER_CFG_MAIN)
-    rows = shown_at(
-        capsys, path, line_of(HEADER_CFG_MAIN, "// cfg"), "after", "where", "before", "cfg", steps=1
-    )
+    built = line_of(HEADER_CFG_MAIN, "// cfg")
+    rows = shown_at(capsys, path, built, "after", "where", "before", "cfg", steps=1)
+    if cxx == "gcc":
+        # GCC runs the initializers on `cfg`'s own line (#167): the step ends on the next.
+        assert rows["before"]["line"] == built + 1 and rows["before"]["value"] == "4", rows
+        assert withheld(rows["after"], "which has not run yet")
+        assert withheld(rows["where"], "below this stop")
+        assert rows["cfg"]["value"] == "{a = 2, b = 4}", rows["cfg"]
+        return
     assert rows["before"]["line"] in (3, 4), rows["before"]
     assert withheld(rows["after"], "below this stop") and withheld(rows["where"], "below this stop")
     assert rows["before"]["value"] == "4" and withheld(
@@ -768,6 +811,7 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_goto_in_another_function_of_a_namespace_reaches_no_label_here(directory, capsys):
     # Review of #126 (round 2): `app::f`'s `goto out;` counted for `app::g`'s own `out:`
@@ -817,9 +861,10 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_caller_frame_on_a_member_initializer_above_its_function_reads_from_its_line(
-    directory, capsys
+    directory, cxx, capsys
 ):
     # Review of #126 (round 3): `run()` as frame 1 on `Cfg::b`'s line showed `x = 20908`
     # and a garbage `px`: the remapping to the line running it was the stopped frame's.
@@ -828,23 +873,33 @@ def test_a_caller_frame_on_a_member_initializer_above_its_function_reads_from_it
     rows = shown_at(
         capsys, path, line_of(LOCAL_CLASS, "return w;"), "x", "px", "cfg", "before", hit=4, frame=1
     )
-    assert rows["x"]["line"] == line_of(LOCAL_CLASS, "// Cfg::b"), rows["x"]
+    # GCC runs the initializers on the line that builds `cfg` (#167).
+    marker = "Cfg cfg{};" if cxx == "gcc" else "// Cfg::b"
+    assert rows["x"]["line"] == line_of(LOCAL_CLASS, marker), rows["x"]
     assert withheld(rows["x"]) and withheld(rows["px"]) and withheld(rows["cfg"])
     assert rows["before"]["value"] == "1"
     rows = shown_at(capsys, path, line_of(LOCAL_CLASS, "// end"), "loc.b", "x", "px")
     assert [rows["loc.b"]["value"], rows["x"]["value"]] == ["8", "5"] and "value" in rows["px"]
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
-def test_a_local_classes_member_initializer_is_not_its_functions_own_line(directory, capsys):
+def test_a_local_classes_member_initializer_is_not_its_functions_own_line(directory, cxx, capsys):
     # Review of #126 (round 3): on the initializer of `Local`, defined inside `run()`
     # (within its own lines), `loc.b = 4366860288` was shown, stopped and as frame 1.
     path = directory / "localcls.cpp"
     path.write_text(LOCAL_CLASS)
-    rows = shown_at(capsys, path, line_of(LOCAL_CLASS, "// loc"), "loc", "after", "before", steps=1)
-    assert rows["loc"]["line"] == line_of(LOCAL_CLASS, "// Local::b"), rows["loc"]
-    assert withheld(rows["loc"], "outside its function's own lines")
-    assert withheld(rows["after"], "below this stop") and rows["before"]["value"] == "1"
+    built = line_of(LOCAL_CLASS, "// loc")
+    rows = shown_at(capsys, path, built, "loc", "after", "before", steps=1)
+    if cxx == "gcc":
+        # GCC runs the initializers on `loc`'s own line (#167): the step ends on the next.
+        assert rows["loc"]["line"] == built + 1 and rows["loc"]["value"] == "{a = 6, b = 8}"
+        assert withheld(rows["after"], "which has not run yet")
+    else:
+        assert rows["loc"]["line"] == line_of(LOCAL_CLASS, "// Local::b"), rows["loc"]
+        assert withheld(rows["loc"], "outside its function's own lines")
+        assert withheld(rows["after"], "below this stop")
+    assert rows["before"]["value"] == "1"
     rows = shown_at(
         capsys, path, line_of(LOCAL_CLASS, "return w;"), "loc", "after", "before", hit=2, frame=1
     )
@@ -896,6 +951,7 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_member_initializer_lambda_capturing_this_withholds_it(directory, capsys):
     # Review of #126 (round 4): `Agg` has no constructor, so its initializers run in
@@ -911,6 +967,7 @@ def test_a_member_initializer_lambda_capturing_this_withholds_it(directory, caps
     assert [rows["agg.b"]["value"], rows["after"]["value"]] == ["6", "38"]
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
     # Review of #126 (round 4): frame 1 `nested(long)::$_0::$_0()` showed `this.t = 2`
@@ -1004,6 +1061,7 @@ int main(void) {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_local_below_a_line_with_temporaries_is_withheld_and_refused(directory, capsys):
     path = directory / "stock.cpp"
@@ -1174,6 +1232,13 @@ def test_locals_below_the_stop_are_withheld_whatever_the_line_runs_after(
     path = directory / name
     path.write_text(source)
     rows = shown_at(capsys, path, line_of(source, f"// {marker}"), *below, *above, hit=hit)
+    if marker == "TEMPS" and cxx_is_gcc():
+        # GCC tests a `for` loop at its bottom, which branches back to the body's first
+        # instruction (#167): there `head` holds the last pass's string, or leftovers on
+        # the first pass, and says so.
+        note = "may be the last pass's value, or leftovers on the first pass: this line is "
+        assert rows["head"]["note"].startswith(note + "reached again by the loop"), rows
+        below = below[1:]
     assert all(withheld(rows[local], "no value yet") for local in below), rows
     # Read, or unreadable for another reason (a libstdc++ string where memory is not
     # read): never withheld.
@@ -1446,6 +1511,7 @@ int main() {
 """
 
 
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_a_noted_maps_entries_carry_its_note_beside_how_to_read_them(directory, capsys):
     # #148: `session get m` replaced the map's own note (#140) with how to read its
@@ -1665,6 +1731,30 @@ def test_an_outer_local_a_blocks_static_or_extern_hides_is_withheld(
         capsys.readouterr()
 
 
+STATICS = """#include <stdio.h>
+int main(void) {
+    static int q = 5;
+    int a = 1;
+    printf("%d\\n", q + a); // HERE
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_static_local_says_why_the_debugger_does_not_list_it(directory, capsys):
+    # #167 (B4): lldb-dap lists no frame's static storage, so a function's `static` read
+    # "not found; visible: a", as if main had no `q`.
+    path = directory / "statics.c"
+    path.write_text(STATICS)
+    rows = shown_at(capsys, path, line_of(STATICS, "// HERE"), "q", "a")
+    assert rows["a"]["value"] == "1", rows
+    error = rows["q"]["error"]
+    assert error.startswith("not found: main declares 'q' in static storage"), error
+    assert error.endswith("Peeky cannot read it here; print it from the program; visible: a")
+
+
+@pytest.mark.cpp
 @pytest.mark.timeout(300)
 def test_outer_locals_are_read_outside_the_blocks_that_hide_them(directory, capsys):
     path = directory / "shadow.c"

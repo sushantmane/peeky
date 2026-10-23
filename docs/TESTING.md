@@ -2,7 +2,7 @@
 
 ## Required CI: parallel from the first commit
 
-The CI workflow, `.github/workflows/ci.yml`, runs ten jobs. They all start independently: no build
+The CI workflow, `.github/workflows/ci.yml`, runs eleven jobs. They all start independently: no build
 or install job sits ahead of the tests.
 
 | Lane | Scope | Design budget |
@@ -13,7 +13,8 @@ or install job sits ahead of the tests.
 | integration (Python 3.13) | Same integration contract on the newer interpreter | 180s |
 | Java headless conformance (`java`) | `tests/java` on JDK 17 (Temurin), with an adapter that `scripts/setup_java_adapter.py` builds | — |
 | C LLVM 18 conformance (`native-c`) | `tests/native`: real C debugging, on Ubuntu 24.04, with clang-18, lldb-18 and llvm-18 from signed Ubuntu repositories. The LLVM major is pinned; distribution patch versions can change, and each run prints them. It acquires its tools explicitly, never relying on a hosted image's toolchain, and starts independently of the Python, Java, package and quality lanes. It reports the acquisition and conformance times. Cold hosted timing must be measured before claiming the budget | — |
-| C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`: real C++ debugging and agent verification, with the same LLVM 18 packages and `clang++-18`. It records the installed package revisions, and depends on no C or Java lane. Measured hosted runs show whether it meets its budget | — |
+| C++ LLVM 18 conformance (`native-cpp`) | `tests/cpp`: real C++ debugging and agent verification, with the same LLVM 18 packages and `clang++-18`. Cases whose expectations depend on the compiler also run with the runner's g++. It records the installed package revisions, and depends on no C or Java lane. Measured hosted runs show whether it meets its budget | — |
+| C++ GCC 13 conformance (`native-cpp-gcc`) | Every C++ case, built by g++ 13 with LLVM 18's lldb-dap: `pytest -m cpp tests/cpp tests/native`. The `cpp` marker selects all of `tests/cpp`, and the C++ cases of `tests/native`. It acquires g++-13 with the LLVM 18 packages | — |
 | Rust 1.96 LLVM 18 conformance (`rust-probe`) | `tests/rust`: raw Rust debugging and the experimental Rust worker, with the pinned Rust 1.96.0 toolchain and LLVM 18 | — |
 | wheel smoke | Build wheel/sdist, install clean, import and CLI entry points outside source tree | 90s |
 | remote SSH e2e | A second host (Linux container with key-only sshd) reached through a real `ssh -L`: probe, session, tunnel drop and recovery, source-mismatch refusal, worker loss; Java: a launched JVM and an attached one; C, C++ and Rust: a probe with a change, a session, and a changed source and header or module refused (`tests/remote`, `PEEKY_E2E_DOCKER=1`) | 120s |
@@ -23,7 +24,10 @@ A dash means that no design budget is recorded. The job's timeout still applies.
 
 **Timeouts and goals:**
 
-- Every hosted CI job has a four-minute timeout, except remote SSH e2e, which has six.
+- Every hosted CI job has a four-minute timeout, except three. Remote SSH e2e and C++ LLVM 18
+  conformance have six minutes, and C++ GCC 13 conformance has ten. The C++ jobs run each
+  compiler-aware case with g++ as well (in the Docker mirror, `cpp` takes 141 s and `cpp-gcc` 222
+  s).
 - The Docker mirror's lanes have no timeout.
 - The goal is under 5 minutes of execution wall time for the required checks, and ideally under 3.
 - Queue delays are recorded separately. They are outside the workflow's control.
@@ -54,13 +58,22 @@ that hosted CI doesn't have:
 - `c-gcc-llvm20`: C built by GCC, with LLVM 20's lldb-dap. It runs the `tests/native` files whose
   cases depend on what GCC builds: prologues, loop headers, `.incbin` and previews. The rest
   expect clang's lines and text. The `c` lane runs these files' GCC cases with lldb-dap 18;
+- `cpp-gcc-llvm20`: every C++ case built by GCC, with LLVM 20's lldb-dap, as `cpp-gcc` (the
+  `native-cpp-gcc` job) runs them with lldb-dap 18;
 - `gdb-dap`: GDB's DAP, which the CUDA qualification drives (`scripts/cuda/qualify.py`).
 
 It prints one PASS or FAIL line per lane, and exits non-zero on a failure.
 
-C++ built by GCC is refused for users. With `PEEKY_TEST_CPP_GCC=1`, the test harness builds it all
-the same (`tests/cpp_gcc_survey.py`); Peeky itself never reads the variable. The g++ cases of
-`tests/cpp/test_cpp_gcc_functions.py` run only with it, and skip otherwise.
+C++ cases whose lines, frame names or notes depend on the compiler take the `cxx` fixture
+(`tests/conftest.py`). Each runs once per compiler, with each compiler's expectations, as C's
+`["clang", "gcc"]` cases do:
+
+- a lane whose `PEEKY_NATIVE_CXX` is clang runs both, with a g++ on the path for the GCC side;
+- a lane whose `PEEKY_NATIVE_CXX` is g++ runs only the GCC side;
+- macOS, whose `g++` is clang, runs only the clang side.
+
+Other C++ cases build with `PEEKY_NATIVE_CXX`. Where their expectations differ, they ask
+`native_compilers.cxx_is_gcc()`.
 
 ## Test layers
 

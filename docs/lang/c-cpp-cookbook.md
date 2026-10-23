@@ -552,28 +552,74 @@ How Peeky reads these values is in [NATIVE_INTERNALS.md](../NATIVE_INTERNALS.md)
 
 ### Which C++ builds Peeky supports
 
-Peeky builds `.cpp`, `.cc` and `.cxx` files as C++17, with debug information, and only with
-clang. Its C++ rules are checked against clang's debug information alone. Those rules cover
-locals declared below the stop or not yet initialized, previews, map lookups, libstdc++ strings,
-setting a string's text, and same-named locals. C builds with clang or GCC.
+Peeky builds `.cpp`, `.cc` and `.cxx` files as C++17, with debug information, with clang or GCC.
+Its C++ rules are checked against both compilers' debug information. Those rules cover locals
+declared below the stop or not yet initialized, previews, map lookups, libstdc++ strings, setting
+a string's text, and same-named locals. C builds with clang or GCC too.
 
-Before a C++ build, Peeky asks the compiler for its `--version`. A compiler that doesn't say
-`clang version` is refused before anything is built:
+Before a C++ build, Peeky asks the compiler for its `--version`. Clang gets `--driver-mode=g++`,
+which keeps it in C++ mode; g++ needs nothing. A compiler that is neither clang nor GCC is refused
+before anything is built:
 
 ```
-UNSUPPORTED: C++ targets need clang++ (Peeky's C++ rules are checked against clang's debug info); set PEEKY_NATIVE_CXX to clang++ (/usr/bin/aarch64-linux-gnu-g++-13 is GCC)
+UNSUPPORTED: C++ targets need clang++ or g++ (Peeky's C++ rules are checked only against their debug info); set PEEKY_NATIVE_CXX to one of them (/opt/intel/bin/icpx is neither clang nor GCC, by its --version)
 ```
 
-To fix it, set `PEEKY_NATIVE_CXX` to a clang++.
+To fix it, set `PEEKY_NATIVE_CXX` to a clang++ or a g++.
 
-- Peeky goes by what the compiler says, never by its name. macOS's `g++` is Apple clang, so it is
-  accepted.
-- A `ccache` or `distcc` symlink named `clang++` is refused: its own `--version` isn't clang's.
+- Peeky goes by what the compiler says, never by its name. macOS's `g++` is Apple clang, so it
+  builds as clang.
+- A `ccache` or `distcc` symlink named `clang++` is refused: its own `--version` is neither
+  clang's nor GCC's.
 - A wrapper script that runs clang++, such as `exec ccache clang++ "$@"`, passes clang's
   `--version` through. So it works.
 - Peeky asks once per compiler file, which it knows by its path, modification time and size.
 - A compiler that doesn't answer within 10 s is refused as timed out. Peeky ends it, and every
   process in its process group.
+
+#### What is different in a GCC build
+
+GCC's debug information differs from clang's, and LLDB misreads some of it. Where Peeky can't
+prove a value, it withholds it, and the row says why. These are the known gaps:
+
+- **Unordered containers** show no entries. LLDB finds no element type in GCC's `std::allocator`,
+  so it counts each one as empty. Peeky withholds the container's entries, keys and positions,
+  unless LLDB's count is the container's own ([details](#standard-containers)).
+- **A lambda's captures** can't be read. GCC passes them through `__closure`, which lldb-dap
+  doesn't list. So a captured name is `not found` in the lambda: read it in the function that
+  declares it.
+- **A one-line function or lambda** stops before it stores its parameters. They show `no value
+  yet` there, and can't be changed
+  ([details](#at-a-functions-start-before-it-stores-its-parameters)).
+- **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
+  is placed in read-only data. lldb-dap lists no static storage among a frame's locals. So `cs` is
+  `not found`, and the row says that `main` declares it in static storage. A `static` local gets
+  the same note, in C too.
+- **A text change** to a `std::string` that holds its text in its own buffer is refused with
+  lldb-dap 20. LLDB reads that buffer as `char[0]`, so Peeky can't set its characters one by one.
+  The refusal says so ([details](#change-a-text)).
+- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, is
+  withheld in a caller frame. GCC gives its declaration's first line no code of its own, so Peeky
+  can't tell when it is stored.
+- **GDB's DAP** isn't supported. Peeky debugs GCC's builds with lldb-dap.
+
+Some things only look different:
+
+- **Function names:** LLDB names a `static` function from its declaration, from the global scope:
+  `::trim_left(const std::string &)`, where clang's build gives `trim_left(std::string const&)`.
+  A lambda is plain `operator()`, and an unnamed class's constructor is `<constructor>`. The
+  `short_function()` hint names what the store holds.
+- **Lines:** GCC runs a default member initializer on the line that builds the object. So `--at`
+  the member's line never stops, and `describe` leaves that line out. A range `for` header stops
+  once, before its loop, and says so.
+- **Loops:** GCC tests a `for` loop at its bottom, which branches back to the body's first line. A
+  local declared on that line shows a `note` there: its value may be the last pass's, or leftovers
+  on the first pass. A `do` body's first line does the same
+  ([details](#why-a-local-shows-no-value-yet)).
+- **Strings with lldb-dap 18:** GCC describes `std::string` whole, so LLDB's summary works. A text
+  cut at a NUL keeps its note: `"a" (shown up to a NUL at byte 1 of 3)`.
+- **A const pointer:** GCC's `this` is `Widget *const`. A change through it is refused as a
+  pointer's, as clang's is.
 
 Peeky's C++ support doesn't cover these:
 
@@ -866,7 +912,8 @@ string is different:
 
 - LLDB's summary of it is a C string, which ends at the first NUL.
 - On clang's Linux builds, a value LLDB names `std::string` gets
-  `error: summary string parsing error`.
+  `error: summary string parsing error`. GCC's builds describe `std::string` whole, so there the
+  summary works.
 
 So on Linux, the worker checks each string against its `_M_string_length`. It does this in
 `inspect`, `get`, listings, probe rows and the evidence store alike.

@@ -69,7 +69,7 @@ def run(capsys, *argv):
 
 
 @pytest.mark.timeout(180)
-def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, capsys):
+def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, cxx, capsys):
     # Finding 15: `session get a.name` at the wrong stop printed `<cannot expand 'a'
     # (leaf; value 4)>` without naming the stop's function (`main`).
     code, out = run(capsys, "session", "start", sched, "--at", "30", *ARGS)
@@ -89,7 +89,13 @@ def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, capsys):
             code, out = run(capsys, "session", "continue", "--to", "17")
         code, out = run(capsys, "session", "get", "a.name", "b.nope")
         assert code == 1 and "cannot expand 'a'" not in out, out
-        assert "note: this stop is in before(Task const&, Task const&) at sched.cpp:17" in out
+        # GCC's name for a static function, from its declaration (#167).
+        before = (
+            "::before(const Task &, const Task &)"
+            if cxx == "gcc"
+            else "before(Task const&, Task const&)"
+        )
+        assert f"note: this stop is in {before} at sched.cpp:17" in out, out
     finally:
         run(capsys, "session", "close")
 

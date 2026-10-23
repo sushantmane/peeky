@@ -21,8 +21,11 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 
 ## Building C++
 
+- Peeky builds C++ with clang or GCC, by what the compiler's `--version` says
+  (`native.compiler_family`). It refuses any other compiler before the build.
 - Peeky passes clang `--driver-mode=g++`. The resolved `clang++` is often `clang` itself, which
-  picks its language from the name it was run by.
+  picks its language from the name it was run by. g++ gets no such option: it knows no
+  `--driver-mode`, and is always in C++ mode.
 - Debugger display types, and the standard library's member names, differ between platforms.
   Tests check the values, and never assume that libc++ and libstdc++ share a layout.
 
@@ -252,8 +255,8 @@ clang's lexical blocks are right, but their code isn't contiguous.
 
 ## What LLDB misreads in GCC's C++
 
-C++ built by GCC is still refused. A test-only hatch, `PEEKY_TEST_CPP_GCC=1`, builds it for the
-tests (`tests/cpp_gcc_survey.py`). These rules hold for any build, and clang's builds pass them.
+These rules hold for any build, and clang's builds pass them. The user-facing list of GCC's gaps is
+in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
 
 - **Unordered containers.** LLDB's libstdc++ formatter (`gnu_libstdcpp.py`) takes an unordered
   container's element type from its allocator's first template argument. GCC gives
@@ -317,6 +320,17 @@ tests (`tests/cpp_gcc_survey.py`). These rules hold for any build, and clang's b
   1-byte type named `__unknown__`, which LLDB shows as `char`. `NativeSession.unlocated` says so
   on the row and on a refused change. It replaces the advice to stop after the declaration, which
   no stop can follow.
+- **Static storage.** GCC places a `const` local aggregate it can build at compile time in
+  read-only data (`DW_OP_addr`). lldb-dap lists no static storage among a frame's locals, a
+  `static` local's neither. `NativeSession.static_locals` names the function's locals with a fixed
+  address (`fields.local_types`' storage `static`), and the worker's `inspect` passes them as
+  `statics`. A selector rooted at one says so (`probe._static_hint`).
+- **A const pointer.** GCC types `this` as `Widget *const`. `fields.settable_member` refuses a
+  change through a pointer under a `const` as a pointer's, not as a const object's
+  (`_pointer_under`).
+- **A lambda's captures.** GCC passes them through `__closure`, and describes each one as an
+  artificial variable read through it. lldb-dap lists neither, so a capture is `not found` in the
+  lambda. Peeky doesn't read them yet.
 
 ## Which tests check what
 
@@ -344,7 +358,8 @@ required test calls a model.
 | `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
-| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output and a bitfield's binding, built by clang and by g++ (under the test-only hatch) | Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output and a bitfield's binding, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20) |
+| The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
 
 ## References

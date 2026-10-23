@@ -128,7 +128,7 @@ jobs:
   native-cpp:
     name: C++ LLVM 18 conformance
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 6
     env:
       PEEKY_NATIVE_CXX: /usr/bin/clang++-18
       PEEKY_NATIVE_DAP: /usr/bin/lldb-dap-18
@@ -156,6 +156,39 @@ jobs:
         run: |
           started=$SECONDS
           pytest tests/cpp --durations=10
+          echo "Native conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+
+  native-cpp-gcc:
+    name: C++ GCC 13 conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PEEKY_NATIVE_CXX: /usr/bin/g++-13
+      PEEKY_NATIVE_DAP: /usr/bin/lldb-dap-18
+      PEEKY_NATIVE_DWARFDUMP: /usr/bin/llvm-dwarfdump-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements-dev.txt
+      - name: Acquire g++ 13 and LLVM 18 from signed Ubuntu repositories
+        run: |
+          started=$SECONDS
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends g++-13 clang-18 lldb-18 llvm-18
+          dpkg-query -W g++-13 clang-18 lldb-18 llvm-18
+          echo "Native toolchain acquisition: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+          test -x "$PEEKY_NATIVE_DAP"
+          "$PEEKY_NATIVE_CXX" --version
+      - run: python -m pip install -e '.[dev]'
+      - name: Exercise C++ built by GCC (tests/cpp and the C++ cases of tests/native)
+        run: |
+          started=$SECONDS
+          pytest -m cpp tests/cpp tests/native --durations=10
           echo "Native conformance: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
 
   rust-probe:

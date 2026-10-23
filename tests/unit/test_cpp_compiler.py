@@ -1,6 +1,7 @@
-"""C++ targets build with clang only (#167): `--driver-mode=g++` is a clang option, and
-Peeky's C++ rules are checked against clang's debug information. A GCC compiler is
-refused before anything is built, named by what its `--version` says."""
+"""C++ targets build with clang or GCC (#167), told apart by what the compiler's
+`--version` says: only clang gets `--driver-mode=g++`, a clang option. Any other compiler
+is refused before anything is built, since Peeky's C++ rules are checked against clang's
+and GCC's debug information only."""
 
 import json
 import os
@@ -55,38 +56,45 @@ def target(compiler, language="cpp"):
     return NativeTarget(sources=(source,), compiler=str(compiler), language=language)
 
 
-def test_a_cpp_target_built_with_gcc_is_refused_before_anything_runs(tmp_path):
-    gcc, _ = fake_compiler(tmp_path, "g++", GCC)
+def test_a_cpp_target_built_with_neither_clang_nor_gcc_is_refused_before_anything_runs(tmp_path):
+    other, _ = fake_compiler(tmp_path, "icpx", "Intel(R) oneAPI DPC++/C++ Compiler 2024.0.0")
     (tmp_path / "a.cpp").write_text("int main() { return 0; }\n")
     # Refused before the build, with the adapter and dwarfdump never needed.
     with pytest.raises(ValueError) as refused:
-        target(gcc).prepare(tmp_path / "a.cpp", tmp_path)
+        target(other).prepare(tmp_path / "a.cpp", tmp_path)
     assert str(refused.value).startswith(CPP_COMPILER_REFUSAL)
-    assert "is GCC" in str(refused.value) and refused.value.before_launch is True
+    assert "is neither clang nor GCC" in str(refused.value)
+    assert refused.value.before_launch is True
     error = classify(refused.value)
     assert error["code"] == "UNSUPPORTED" and "PEEKY_NATIVE_CXX" in error["hint"]
+    assert "g++" in error["hint"] and len(error["hint"]) <= 150
     assert not (tmp_path / "program").exists()
 
 
-def test_clang_keeps_its_cpp_driver_and_c_targets_take_gcc(tmp_path):
+def test_only_clang_gets_its_cpp_driver_and_gcc_builds_cpp_and_c(tmp_path):
     clang, _ = fake_compiler(tmp_path, "clang", CLANG)
     driver, flags, _, _ = target(clang)._compile_flags()
     assert driver == ("--driver-mode=g++",) and flags[0] == "--driver-mode=g++"
+    # GCC builds C++ (#167), without clang's option, which g++ does not know: before, it
+    # was refused.
+    gxx, count = fake_compiler(tmp_path, "g++", GCC)
+    driver, flags, _, _ = target(gxx)._compile_flags()
+    assert driver == () and "--driver-mode=g++" not in flags and runs(count) == 1
     # C targets build with GCC as they did, and never ask the compiler what it is.
     gcc, count = fake_compiler(tmp_path, "gcc", GCC)
     driver, flags, _, _ = target(gcc, "c")._compile_flags()
     assert driver == () and "--driver-mode=g++" not in flags and runs(count) == 0
 
 
-def test_a_probe_with_gcc_for_cpp_keeps_no_run(tmp_path, monkeypatch, capsys):
+def test_a_probe_with_an_unknown_compiler_for_cpp_keeps_no_run(tmp_path, monkeypatch, capsys):
     from peeky.cli import main
 
-    gcc, _ = fake_compiler(tmp_path, "g++", GCC)
+    other, _ = fake_compiler(tmp_path, "c++", "Intel(R) oneAPI DPC++/C++ Compiler 2024.0.0")
     tools = tmp_path / "tools"
     tools.mkdir()
     for name in ("lldb-dap", "llvm-dwarfdump", "dsymutil"):
         fake_compiler(tools, name, "LLVM version 18")
-    monkeypatch.setenv("PEEKY_NATIVE_CXX", str(gcc))
+    monkeypatch.setenv("PEEKY_NATIVE_CXX", str(other))
     monkeypatch.setenv("PEEKY_NATIVE_DAP", str(tools / "lldb-dap"))
     monkeypatch.setenv("PEEKY_NATIVE_DWARFDUMP", str(tools / "llvm-dwarfdump"))
     monkeypatch.setenv("PEEKY_NATIVE_DSYMUTIL", str(tools / "dsymutil"))

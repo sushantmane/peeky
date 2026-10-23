@@ -26,7 +26,10 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "--strict-markers --import-mode=importlib -ra"
 timeout = 45
-markers = ["integration: launches a real debugger and target process"]
+markers = [
+    "integration: launches a real debugger and target process",
+    "cpp: a C++ case, in tests/cpp or tests/native (the cpp-gcc lanes run them with g++)",
+]
 
 [tool.ruff]
 target-version = "py311"

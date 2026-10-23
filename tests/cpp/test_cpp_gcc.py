@@ -1,42 +1,51 @@
-"""A real GCC for a C++ target (#167): refused before building, with what to set, never
-a build failure on clang's `--driver-mode=g++`. Runs where a `g++` that is GCC exists
+"""A real GCC builds a C++ target (#167): without clang's `--driver-mode=g++`, which g++
+does not know, and a probe and `describe` read it. Runs where a `g++` that is GCC exists
 (the Linux lanes); macOS's `g++` is clang."""
 
 import json
-import os
-import shutil
 
 import pytest
+from native_compilers import cxx_for
 
 from peeky.cli import main
-from peeky.native import CPP_COMPILER_REFUSAL, compiler_family
+
+SOURCE = """#include <cstdio>
+#include <string>
+int main() {
+    std::string name = "named";
+    int t = 1;
+    std::printf("%s %d\\n", name.c_str(), t); // HERE
+    return 0;
+}
+"""
 
 
 @pytest.fixture
 def gcc():
-    if not os.environ.get("PEEKY_NATIVE_DAP"):
-        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
-    found = next(
-        (path for name in ("g++", "g++-13", "g++-14") if (path := shutil.which(name))), None
-    )
-    if found is None or compiler_family(os.path.realpath(found)) != "gcc":
-        pytest.skip("no g++ that is GCC here")
+    found, why = cxx_for("gcc")
+    if found is None:
+        pytest.skip(why)
     return found
 
 
-@pytest.mark.timeout(60)
-def test_gcc_for_cpp_is_refused_before_building(gcc, tmp_path, monkeypatch, capsys):
+@pytest.mark.timeout(120)
+def test_gcc_builds_cpp_and_peeky_reads_it(gcc, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("PEEKY_NATIVE_CXX", gcc)
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    (tmp_path / "a.cpp").write_text("int main() {\n    int t = 1;\n    return t;\n}\n")
-    code = main(["probe", str(tmp_path / "a.cpp"), "--at", "2", "--capture", "t", "--json"])
+    path = tmp_path / "a.cpp"
+    path.write_text(SOURCE)
+    line = next(i for i, text in enumerate(SOURCE.splitlines(), 1) if "// HERE" in text)
+    command = ["probe", str(path), "--at", str(line), "--capture", "t,name"]
+    code = main([*command, "--json", "--quiet"])
     shown = json.loads(capsys.readouterr().out)
-    error = shown["error"]
-    # Before: BUILD_FAILED, "unrecognized command-line option '--driver-mode=g++'".
-    assert code == 2 and error["code"] == "UNSUPPORTED", error
-    assert error["message"].startswith(CPP_COMPILER_REFUSAL) and "is GCC" in error["message"]
+    # Before: UNSUPPORTED, "C++ targets need clang++ ... (.../g++ is GCC)", and before that,
+    # BUILD_FAILED on "unrecognized command-line option '--driver-mode=g++'".
+    assert code == 0, shown
     assert "driver-mode" not in json.dumps(shown)
-    assert shown.get("refused_before_launch") is True and "evidence" not in shown
-    code = main(["describe", str(tmp_path / "a.cpp"), "--json"])
+    rows = {row["selector"]: row for row in shown["rows"]}
+    assert rows["t"]["value"] == "1", rows
+    assert rows["name"]["value"] == '"named"', rows
+    assert "named 1" in shown["output"], shown["output"]
+    code = main(["describe", str(path), "--json"])
     described = json.loads(capsys.readouterr().out)
-    assert code != 0 and described["error"]["code"] == "UNSUPPORTED"
+    assert code == 0, described

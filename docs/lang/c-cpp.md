@@ -4,10 +4,19 @@ This page lists what is different for C and C++ targets, one rule per line. Each
 its details, in the [C and C++ cookbook](c-cpp-cookbook.md) or the [COOKBOOK](../COOKBOOK.md).
 Read [AGENT_GUIDE.md](../AGENT_GUIDE.md) first: it has the steps and rules every language shares.
 
-Peeky builds C with clang or GCC, C++ with clang++, and debugs both with lldb-dap, LLVM's
-debugger. C uses clang unless `PEEKY_NATIVE_CC`, or a target's `compiler`, names another compiler.
-A C++ compiler that isn't clang is refused before anything runs
+Peeky builds C and C++ with clang or GCC, and debugs both with lldb-dap, LLVM's debugger. It uses
+clang unless `PEEKY_NATIVE_CC` or `PEEKY_NATIVE_CXX`, or a target's `compiler`, names another
+compiler. A C++ compiler that is neither clang nor GCC is refused before anything runs
 ([C and C++ 7.1](c-cpp-cookbook.md#which-c-builds-peeky-supports)).
+
+**GCC's C++ builds have known gaps.** Peeky withholds what LLDB misreads, and the row says why
+([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
+
+- unordered containers show no entries, unless LLDB's count is the container's own;
+- a lambda's captures can't be read: they are `not found` in the lambda;
+- a one-line function's parameters can show `no value yet` at a stop on its line;
+- a `const` local aggregate GCC builds at compile time is in read-only data, and `not found`;
+- GDB's DAP isn't supported.
 
 ## Choose the target
 
