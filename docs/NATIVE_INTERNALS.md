@@ -41,8 +41,9 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - GCC gives a lambda's `operator()` and a class's implicit members `DW_AT_artificial`, but no file
   or line. Clang gives them their class's.
 - So `_declared_at` takes such a member's file and line from its class, as clang does. A lambda's
-  closure type has the lambda's line. A member whose class has none takes them from its first
-  line-table row.
+  closure type has the lambda's line.
+- A member whose class has no file either gets no entry. A line-table row proves nothing: the
+  first row in its code may be an inlined callee's, or a cold fragment's.
 - `_class_role` tells a constructor of an unnamed class by its name: clang's
   `(unnamed struct at f.cpp:5:3)`, or GCC's `<constructor>`. GCC also names a closure's
   constructor `<lambda>`.
@@ -59,15 +60,32 @@ frame's entry: the narrowest function whose code holds the frame's address.
   `<lambda>` and `~<lambda>` still mark it as a closure.
 - `describe` leaves out GCC's `__closure`, and the variables GCC adds for a lambda's captures.
   lldb-dap lists none of them, but the one for a captured `this`, which `describe` keeps.
-- **A safety net:** a C++ frame on a line of the program's sources whose function has no entry
-  withholds every local and parameter (`_unplaced`). The row says `not shown`, and that Peeky
-  can't place the function's declarations.
+- **A safety net:** a C++ frame on a line of the program's sources or headers withholds every
+  local and parameter when its function has no entry (`_unplaced`). The row says `not shown`, and
+  that Peeky can't place the function's declarations.
 - Before GCC's lambdas and implicit constructors were placed, the net took them. A `#line` that
   names another file for a function's declaration, as bison writes, still takes it there, with
   clang too.
-- Without the load address, the net takes a frame on a line that no entry runs.
+- `_function_entries` also gives a `CodeDie` for every `DW_TAG_subprogram` and
+  `DW_TAG_inlined_subroutine` with code, placed or not. Each has its ranges, depth, entry root
+  (None where unplaced), enclosing code, call site, and the row at each range's start.
+- An inlined call shares its caller's code, so the narrowest entry holding the address can be the
+  caller's. `frame_level` finds the code the frame runs, and `_function_at` gives no entry where
+  that is unplaced.
+- The innermost frame runs the deepest code holding its address. lldb-dap gives an inlined call's
+  caller the address where the call's code starts, and a call's caller its return address. One
+  before either is in the caller's own code.
+- At the start of an inlined call's code, a frame that shows the call's line is the caller: LLDB
+  shows such a stop at the call. If the call's own first row is on that line too, either may be
+  meant.
+- Where the code may be unplaced, the row says Peeky can't tell which function the frame runs.
+- GCC gives an inlined call with no code left the same `DW_AT_low_pc` and `DW_AT_high_pc`, and
+  dwarfdump writes both as addresses. `_code_ranges` reads that as no code. Read as an offset, it
+  held twice its address, and took the frames of `main` after it.
+- Without the load address, the frame's line must be one placed function's own code: each of its
+  rows must be that function's, as the deepest code there. Else the row is withheld, saying why.
 - Frames outside the program's sources, such as the standard library's, aren't judged so. Nor are
-  C frames.
+  C targets.
 - Clang's `cpp` lane and all of `tests/native` never reach the net.
 
 ## Changing a value

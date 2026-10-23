@@ -115,6 +115,64 @@ def test_a_function_peeky_cannot_place_withholds_its_locals(compiler, tmp_path, 
     assert code == 0 and row["error"].startswith("no value yet: declared on line 15"), row
 
 
+# Review of #282: the same helper, forced inline into `main`. Its frame shares `main`'s code,
+# where Peeky found `main`'s entry, so nothing was withheld.
+INLINED = """#include <cstdio>
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;  // TWICE
+}
+#line 1 "generated.y"
+static inline __attribute__((always_inline)) long helper(long a)
+#line 9 "inlined.cpp"
+{
+    long x = a * 3;  // X
+    long y = twice(x);
+    return y;
+}
+int main() {
+    long seed = 3;
+    long r = helper(seed);  // CALL
+    std::printf("%ld\\n", r);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_an_inlined_function_peeky_cannot_place_withholds_its_locals(compiler, tmp_path, capsys):
+    # Before (the reviewed head): `x = 281474976709728`, `y = 4294967295` (clang; g++
+    # alike) in the inlined `helper`, as values with no note.
+    path = tmp_path / "inlined.cpp"
+    path.write_text(INLINED)
+    code, result = probed(capsys, path, line_of(INLINED, "// X"), "a,x,y")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    for row in result["rows"]:
+        assert row.get("unavailable") and row["error"] == UNPLACED, row
+    # Below a call it makes, its frame is withheld too. The callee's and `main`'s are judged
+    # by their own rules (the `#line` hides where their declarations end, so those
+    # withhold `w` and `seed`), never this one.
+    line = line_of(INLINED, "// TWICE")
+    code = main(["session", "start", str(path), "--at", str(line), "--json"])
+    started = json.loads(capsys.readouterr().out)
+    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
+        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
+    assert code == 0, started
+    try:
+        code, rows = run(capsys, "session", "get", "x", "--frame", "1")
+        assert [row.get("error") for row in rows] == [UNPLACED], rows
+        for frame, name, function in ((0, "w", "twice(long)"), (2, "seed", "main")):
+            code, rows = run(capsys, "session", "get", name, "--frame", str(frame))
+            [row] = rows
+            assert row["function"].endswith(function), row
+            assert row["error"].startswith("no value yet: "), row
+            assert "Peeky cannot place" not in row["error"], row
+            assert "which function" not in row["error"], row
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 def run(capsys, *argv):
     code = main([*argv, "--json"])
     return code, json.loads(capsys.readouterr().out)
