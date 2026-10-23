@@ -4303,15 +4303,15 @@ class NativeSession:
 
     def _prologue_unplaced(self, base, name, frame):
         """Why a root local (``base``: its plain name) of ``frame``, whose address Peeky
-        cannot read, may hold leftovers, or None (review of #279). A frame on a line of a
-        prologue that marks no end (GCC's) may be stopped before the parameters are
-        stored, so its locals are withheld, but what that prologue leaves alone. A clang
-        build's breakpoints never stop in a prologue: nothing is withheld."""
+        cannot read, may hold leftovers, or None (review of #279). A frame on a line where
+        a prologue runs may be stopped before it stored the parameters: at a GCC
+        function's start, which marks no prologue end, or in any prologue on a fault or a
+        signal. So its locals are withheld there, but what that prologue leaves alone."""
         windows = getattr(self, "prologues", None)
         if not windows or self._block_pc(frame) is not None:
             return None
         place = self._place(frame)
-        found = [w for w in windows if not w.marked and place in w.lines] if place else []
+        found = [window for window in windows if place in window.lines] if place else []
         if not found or all(base in window.kept for window in found):
             return None
         pointer = (frame or {}).get("instructionPointerReference")
@@ -4322,9 +4322,8 @@ class NativeSession:
         else:
             why = "Peeky could not read where the program is loaded"
         where = (
-            f"Peeky cannot tell whether the stop is past its function's prologue, which "
-            f"stores the parameters: {why}, and the build marks no prologue end (GCC's never "
-            "do)"
+            "Peeky cannot tell whether the stop is before or after its function's prologue "
+            f"stores the parameters: {why}, so it cannot place the stop's instruction"
         )
         if all(window.single for window in found):
             read = "Read the arguments at the call, or put the body on a line of its own"

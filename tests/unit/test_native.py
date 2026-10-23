@@ -2037,12 +2037,11 @@ def test_a_stop_in_a_prologue_withholds_what_it_has_not_stored(tmp_path):
     assert _prologue_windows({}, [], set()) == []
 
 
-def test_a_frame_whose_address_is_unknown_is_withheld_on_a_gcc_prologues_line(
-    tmp_path, monkeypatch
-):
+def test_a_frame_whose_address_is_unknown_is_withheld_on_a_prologues_line(tmp_path, monkeypatch):
     # Review of #279: where the debugger gives no load address (`addressRange` missing or
     # unreadable, which a frame with a `moduleId` allows), no pc can be placed. On a line
-    # where a GCC prologue runs, the stop may be before it stored the parameters.
+    # where a prologue runs, the stop may be before it stored the parameters: at a GCC
+    # function's start, or in any prologue on a fault or a signal.
     monkeypatch.setattr("peeky.native.sys.platform", "linux")
     source = tmp_path / "entry.c"
     source.write_text("\n" * 10)
@@ -2074,9 +2073,9 @@ def test_a_frame_whose_address_is_unknown_is_withheld_on_a_gcc_prologues_line(
         }
 
     note = (
-        "Peeky cannot tell whether the stop is past its function's prologue, which stores "
-        "the parameters: the debugger did not report where the program is loaded, and the "
-        "build marks no prologue end (GCC's never do)."
+        "Peeky cannot tell whether the stop is before or after its function's prologue stores "
+        "the parameters: the debugger did not report where the program is loaded, so it "
+        "cannot place the stop's instruction."
     )
     for loaded in (None, "elsewhere"):
         if loaded is None:
@@ -2095,17 +2094,19 @@ def test_a_frame_whose_address_is_unknown_is_withheld_on_a_gcc_prologues_line(
             "'a' cannot be changed here: " + note[:-1] + ". Change the argument at the call, "
             "or put the body on a line of its own and change it there"
         )
-        with pytest.raises(ValueError, match="cannot tell whether the stop is past"):
+        with pytest.raises(ValueError, match="cannot tell whether the stop is before or after"):
             session.validate_mutation_target({"name": "a"}, frame(3))
         # A function on several lines says to stop past its first line.
         assert session.not_yet_declared({"name": "k"}, frame(4)).endswith(
             "Read the arguments at the call, or stop past the function's first line"
         )
-        # What the prologue leaves alone, a line no GCC prologue runs on, and a prologue
-        # whose end is marked (clang's, where no breakpoint stops) are not withheld.
+        # A prologue whose end is marked (clang's) too (review round 2 of #280): a fault or
+        # a signal can stop in it, on its line.
+        marked = session.not_yet_declared({"name": "v"}, frame(5))
+        assert marked == reason and marked.refusal == reason.refusal.replace("'a'", "'v'")
+        # What the prologue leaves alone, and a line no prologue runs on, are not withheld.
         assert session.not_yet_declared({"name": "calls"}, frame(3)) is None
         assert session.not_yet_declared({"name": "a"}, frame(6)) is None
-        assert session.not_yet_declared({"name": "v"}, frame(5)) is None
     # With the load address, the address decides: past the prologue, the value reads.
     module["addressRange"] = str(0x1000)
     session.validate_debugger(adapter, frame(3))

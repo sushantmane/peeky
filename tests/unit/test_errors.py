@@ -36,9 +36,9 @@ from peeky.errors import Refused, classify
             "past the function's prologue",
         ),
         (
-            "'a' cannot be changed here: Peeky cannot tell whether the stop is past its "
-            "function's prologue, which stores the parameters: the debugger did not report "
-            "where the program is loaded",
+            "'a' cannot be changed here: Peeky cannot tell whether the stop is before or after "
+            "its function's prologue stores the parameters: the debugger did not report where "
+            "the program is loaded, so it cannot place the stop's instruction",
             "argument at the call",
         ),
     ],

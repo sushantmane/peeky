@@ -716,8 +716,9 @@ its start too, as when the next function's prologue is empty. Then stop on a lat
 function. A change at either stop is refused for the same reason.
 
 Peeky places a stop by its address, which needs the debugger to report where the program is
-loaded. Where it doesn't, any stop on a line where a GCC prologue runs is withheld the same way.
-The row says `Peeky cannot tell whether the stop is past its function's prologue`, and why.
+loaded. Where it doesn't, any stop on a line where a prologue runs is withheld the same way. That
+includes clang's, where a fault or a signal can stop. The row says `Peeky cannot tell whether the
+stop is before or after its function's prologue stores the parameters`, and why.
 
 #### While its declaration runs
 
