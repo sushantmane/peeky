@@ -182,6 +182,46 @@ def test_each_query_summary_names_the_phases_and_runs_its_sql_reads():
     } == {"hits", "values"}
 
 
+def test_outputs_claims_no_outcome_for_an_older_run_that_recorded_none(store, capsys):
+    # Review 3 of PR #307: `outputs` said it gives "how they went", but a run saved before
+    # schema 16 has no runs.set_outcomes, and with no warning about its changes nothing
+    # says how they went. Its summary says "where recorded", and its rows claim nothing.
+    import sqlite3
+
+    evidence.record(
+        store,
+        {
+            "probe": {
+                "program": "a.c",
+                "line": 8,
+                "set": [["n", "3"]],
+                "set_hit": 2,
+                "set_at": [[9, 4, "x", "7"]],
+            },
+            "status": "completed",
+            "warnings": [],
+        },
+    )
+    connection = sqlite3.connect(store)
+    connection.executescript("ALTER TABLE runs DROP COLUMN set_outcomes; PRAGMA user_version = 15;")
+    connection.close()
+    (row,) = evidence.run_query(store, "outputs", {"a": 1, "b": 1})["rows"]
+    assert json.loads(row["sets"]) == [
+        ["n", "3", "requested at 8@2"],
+        ["x", "7", "requested at 9@4"],
+    ]
+    code, out = run(
+        capsys, "queries", "outputs", "--param", "a=1", "--param", "b=1", "--store", store
+    )
+    assert code == 0, out.err
+    text = out.out
+    assert "requested at 8@2" in text and "requested at 9@4" in text, text
+    for claim in ("made", "refused", "never came", "the cap", "failed"):
+        assert claim not in text, claim
+    assert "with how they went, where recorded" in evidence.QUERY_SUMMARIES["outputs"]
+    assert "with how it went where recorded" in evidence.QUERIES["outputs"][0]
+
+
 def test_schema_names_print_those_tables_views_and_parts_in_full(store, capsys):
     manifest = evidence.schema(store)
     code, out = run(capsys, "sql", "--schema", "captures", "Last_Run", "rules", "--store", store)
@@ -260,7 +300,8 @@ HELP = [
     ),
     (
         "outputs [a] [b]",
-        "arguments, requested interventions (and how they went), outcome and output of two runs",
+        "arguments, requested interventions (with how they went, where recorded), outcome and "
+        "output of two runs",
     ),
     ("set_effect [run]", "values before and after one run's interventions"),
     (

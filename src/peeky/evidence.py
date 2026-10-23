@@ -1012,9 +1012,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     ),
     "outputs": (
         'Inputs, requested interventions (sets: each [name, value, "requested at '
-        'LINE@HIT"], a --set\'s too, with how it went: ", not made: that hit never came", '
-        '", made at 6 stops; refused at hit 7", ", made at 1 stop before --until hits ended '
-        'the probe"), outcome and program output of two runs',
+        'LINE@HIT"], a --set\'s too, with how it went where recorded: ", not made: that hit '
+        'never came", ", made at 6 stops; refused at hit 7", ", made at 1 stop before --until '
+        'hits ended the probe"), outcome and program output of two runs',
         f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
         f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
@@ -1146,8 +1146,8 @@ QUERY_SUMMARIES = {
     "that did not complete, and any requested interventions",
     "diff": "how two runs compare: outcome, then what differs (or may) in output, edit, source, "
     "line, arguments, interventions and captured values",
-    "outputs": "arguments, requested interventions (and how they went), outcome and output of "
-    "two runs",
+    "outputs": "arguments, requested interventions (with how they went, where recorded), "
+    "outcome and output of two runs",
     "set_effect": "values before and after one run's interventions",
     "values": "one selector's distinct observed and returned values per program and line, "
     "across non-candidate runs",
