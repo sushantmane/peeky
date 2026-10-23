@@ -3666,8 +3666,8 @@ def main(argv=None, _job=False, _edits=None):
         "--schema",
         nargs="*",
         metavar="NAME",
-        help="A short index of the tables, views, canned queries, functions, examples and "
-        "rules; with NAMEs (any of those, or all), those in full",
+        help="A short index of the tables, views, joins, canned queries, functions, examples "
+        "and rules; with NAMEs (any of those, or all), those in full",
     )
     queried(sub)
     sub = commands.add_parser(

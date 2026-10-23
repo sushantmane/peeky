@@ -2132,7 +2132,7 @@ bounded. They need no rerun.
 **What it answers:** Which tables, functions and canned queries can I use?
 
 ```sh
-peeky sql --schema                    # a short index: a line per table, view and other part
+peeky sql --schema                    # a short index: a line per table, view and other part (joins, queries, ...)
 peeky sql --schema captures evidence  # those in full; --schema all prints everything
 peeky queries --help                  # each canned query with the --param names it takes
 peeky queries                         # each canned query and parameter described in full
@@ -2146,10 +2146,10 @@ tables:
   captures       One row per captured selector, per hit and phase (17 columns)
   ...
 views:
-  evidence       captures joined with their run, so no join is needed
+  evidence       captures, each with its run's label, program, status, args and more (not output)
   last_run       The evidence rows of the newest run
-...
 other parts:
+  joins          captures, interventions and pauses join runs on run_id; or use the evidence view, which already has the run's columns
   queries        12 canned queries, each described in full; `peeky queries --help` lists their parameters
   functions      SQL functions Peeky adds: no_addresses, first_difference, difference_position, ...
   ...
@@ -2158,8 +2158,8 @@ other parts:
 ```
 
 - `--schema` alone prints this index, under 2 KB. The whole schema is about 20 KB.
-- `--schema NAME` prints each table, view or other part it names in full: its columns, the
-  canned queries, the functions, the examples or the rules. `--schema all` prints everything.
+- `--schema NAME` prints each table, view or other part it names in full: its columns, the joins,
+  the canned queries, the functions, the examples or the rules. `--schema all` prints everything.
 - `--schema --json` gives the whole schema, as before. With names, it gives only those, in the
   same shape.
 - An unknown name is `INVALID_QUERY`. The message lists the names there are.
@@ -2169,8 +2169,9 @@ lists each with the parameters it takes:
 
 ```
   set_effect [run]                               values before and after one run's interventions
-  values selector                                one selector's distinct values across all runs
-  join [a] [b] key [phase] [masked] [unchanged]  two runs paired by a selector's value, not by hit
+  values selector                                one selector's distinct observed values across non-candidate runs
+  wide [run] [phase]                             one run, a row per hit and phase, a column per selector
+  join [a] [b] key [phase] [masked] [unchanged]  two runs' hits paired by a key selector's value, then the unpaired hits
 ```
 
 - Pass each as `--param name=value`. A name in brackets is optional.

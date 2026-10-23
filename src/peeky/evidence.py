@@ -1138,18 +1138,18 @@ EXAMPLES = (
 # Each canned query in a few words, for `peeky queries --help` (eleventh evaluation: an
 # agent passed set_effect a and b, since only the 20 KB schema said which takes which).
 QUERY_SUMMARIES = {
-    "runs": "recent runs, newest first",
-    "run": "every captured value of one run",
-    "hits": "each selector across hits, and where it changed",
-    "compare": "every value of two runs side by side",
-    "diff": "only the values that differ between two runs",
-    "outputs": "inputs, interventions, outcome and output of two runs",
+    "runs": "the latest runs (20 unless count), newest first",
+    "run": "every captured value of one run, in capture order",
+    "hits": "each selector's observed values by hit, with changed (NULL where unknown)",
+    "compare": "every value of two runs side by side, paired by hit",
+    "diff": "what differs between two runs: status, output, inputs, then values",
+    "outputs": "inputs, requested interventions, outcome and output of two runs",
     "set_effect": "values before and after one run's interventions",
-    "values": "one selector's distinct values across all runs",
-    "wide": "one run, a row per hit and a column per selector",
-    "join": "two runs paired by a selector's value, not by hit",
+    "values": "one selector's distinct observed values across non-candidate runs",
+    "wide": "one run, a row per hit and phase, a column per selector",
+    "join": "two runs' hits paired by a key selector's value, then the unpaired hits",
     "unreadable": "selectors of one run that have no value, and why",
-    "failures": "runs that did not complete, newest first",
+    "failures": "the latest runs that did not complete (20 unless count), newest first",
 }
 
 
@@ -3201,8 +3201,13 @@ def query_table(path, result, params=None):
     return table(result, changes=changes)
 
 
-# What `peeky sql --schema NAME` takes besides a table or view.
-SCHEMA_PARTS = ("queries", "functions", "examples", "rules")
+# What `peeky sql --schema NAME` takes besides a table or view, in the whole text's order.
+SCHEMA_PARTS = ("joins", "queries", "functions", "examples", "rules")
+# Each view in a few words, for `peeky sql --schema`'s index.
+_VIEW_SUMMARIES = {
+    "evidence": "captures, each with its run's label, program, status, args and more (not output)",
+    "last_run": "The evidence rows of the newest run",
+}
 
 
 def _schema_lines(manifest, name):
@@ -3215,6 +3220,8 @@ def _schema_lines(manifest, name):
         ]
     if name in manifest.get("views", {}):
         return [f"view {name}: {manifest['views'][name]}"]
+    if name == "joins":
+        return [f"joins: {manifest['joins']}"]
     if name == "queries":
         lines = ["canned queries (peeky queries <name> [--param k=v]):"]
         for query_name, info in manifest["queries"].items():
@@ -3238,9 +3245,8 @@ def schema_text(manifest):
     lines = [f"store: {manifest['store']} ({manifest['engine']})", ""]
     for name in manifest["tables"]:
         lines.extend([*_schema_lines(manifest, name), ""])
-    for name in manifest["views"]:
+    for name in [*manifest["views"], "joins"]:
         lines.extend(_schema_lines(manifest, name))
-    lines.append(f"joins: {manifest['joins']}")
     lines.append("")
     for name in ("queries", "functions"):
         lines.extend([*_schema_lines(manifest, name), ""])
@@ -3255,18 +3261,16 @@ def schema_index(manifest):
     tools cut it off)."""
     tables, views = manifest["tables"], manifest["views"]
     width = max(map(len, [*tables, *views, *SCHEMA_PARTS])) + 2
-
-    def gist(description):
-        return description.split(": ")[0].rstrip(".")
-
     functions = ", ".join(name.split("(")[0] for name in manifest["functions"])
     parts = {
+        "joins": manifest["joins"],
         "queries": f"{len(manifest['queries'])} canned queries, each described in full; "
         "`peeky queries --help` lists their parameters",
         "functions": f"SQL functions Peeky adds: {functions}",
         "examples": f"{len(manifest['examples'])} example commands",
-        "rules": f"One read-only SELECT per call; {DEFAULT_ROWS} rows unless --limit (at most "
-        f"{MAX_ROWS}); {QUERY_SECONDS} s per query; :name takes --param name=value",
+        "rules": f"Read-only, one SELECT (or WITH ... SELECT) per call; at most {DEFAULT_ROWS} "
+        f"rows unless --limit (up to {MAX_ROWS}), {QUERY_SECONDS} s per query, and other bounds; "
+        ":name takes --param name=value",
     }
     return "\n".join(
         [
@@ -3274,12 +3278,12 @@ def schema_index(manifest):
             "",
             "tables:",
             *(
-                f"  {name.ljust(width)}{gist(info['description'])} ({len(info['columns'])} columns)"
+                f"  {name.ljust(width)}{info['description'].rstrip('.')} "
+                f"({len(info['columns'])} columns)"
                 for name, info in tables.items()
             ),
             "views:",
-            *(f"  {name.ljust(width)}{gist(meaning)}" for name, meaning in views.items()),
-            f"joins: {manifest['joins']}",
+            *(f"  {name.ljust(width)}{_VIEW_SUMMARIES[name]}" for name in views),
             "other parts:",
             *(f"  {name.ljust(width)}{text}" for name, text in parts.items()),
             "",
