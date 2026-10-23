@@ -355,4 +355,6 @@ def test_an_unmade_set_beside_a_made_set_at_is_named_and_refusals_group(linked, 
     assert f"cannot be changed at linked.c:{both}, at any stop of this build: in fc and fd, " in (
         message
     ), message
-    assert message.count("is a pointer") == 1 and message.count("change the value where") == 1
+    # `a.pp` is a field of a parameter, not one: no call is named (#276), once for both.
+    assert message.count("is a pointer") == 1 and message.count("otherwise edit the source") == 1
+    assert "before the call that passed it" not in message, message
