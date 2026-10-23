@@ -1545,17 +1545,19 @@ def frame_level(code, pc, adjusted, place, lines=None, names=None, shown=None):
     elif not roots or row is None or row == place:
         roots |= deepest(pc)
     if len(roots) > 1 and not tied:
+        # The line and the name each pick a root only if exactly one matches; where both
+        # pick, they must agree (review 3 of PR #282: a line owned only by an inlined
+        # `helper`, on a frame named `main`, picked `helper`).
         owners = (lines or {}).get(place) or frozenset()
-        chosen = roots & owners
-        if len(chosen) == 1:
-            return frozenset(chosen)
-        chosen = {
+        by_line = roots & owners
+        by_name = {
             root
             for root in roots
             if root is not None and _names_function(shown, (names or {}).get(root))
         }
-        if len(chosen) == 1:
-            return frozenset(chosen)
+        picks = [set(each) for each in (by_line, by_name) if len(each) == 1]
+        if picks and all(each == picks[0] for each in picks):
+            return frozenset(picks[0])
     return frozenset(roots)
 
 

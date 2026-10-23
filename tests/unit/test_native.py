@@ -2349,6 +2349,11 @@ def test_a_frame_two_placed_functions_may_run_is_placed_by_neither(tmp_path):
     assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "helper(long)") == {2}
     assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "main") == {1}
     assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "other(int)") == {1, 2}
+    # Review 3 of PR #282: a line only `helper` owns, on a frame named `main`, contradict
+    # each other: both stay, and the frame is withheld. Where they agree, that one.
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "main") == {1, 2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "helper(long)") == {2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "other(int)") == {2}
     # Copies of a function at one address (folded), placed or not: either.
     folded = (code_die(1, 0x100, 0x200, 1), code_die(3, 0x100, 0x200, 3))
     assert frame_level(folded, 0x120, False, ("a.cpp", 3)) == {1, 3}
