@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 
 import cpp_gcc_survey
 import pytest
@@ -258,32 +259,44 @@ def test_entries_lldb_would_decode_as_another_type_or_place_are_not_listed(cpp, 
     compiler, root = cpp
     source = root / "decoded.cpp"
     source.write_text(DECODED)
-    capture = "ws,ws[#0],ld,ld[#0],assets,assets[1]"
+    capture = "ws,ws[#0],ld,ld[#0],assets,assets[1].v"
     code, result = probe(source, line_of(DECODED, "// HERE"), capture, capsys)
     assert "DECODED:1 1 1" in result["output"], result
     rows = {row["selector"]: row for row in result["rows"]}
-    # Never a double for an int, by any compiler or LLDB.
-    assert rows["ws"]["error"] == f"not listed: {ANOTHER_TYPE}", rows["ws"]
-    assert rows["ws[#0]"]["error"] == f"[#0] not read: ws is not listed: {ANOTHER_TYPE}"
-    # A `long double` is 16-byte aligned, past the 8 bytes LLDB skips: clang's would read
-    # `size=1 {0}`. GCC's is counted empty first.
-    assert rows["ld"]["error"] in (
-        f"not listed: {WRONG_PLACE}",
-        f"not listed: {MISCOUNTED.format(1)}",
-    ), rows["ld"]
-    assert rows["ld"]["error"].endswith(WRONG_PLACE) == (compiler == "clang")
-    assert rows["ld[#0]"].get("value") is None, rows["ld[#0]"]
+
+    def read(selector, value, *reasons):
+        """The value, or withheld for one of ``reasons``: never another value."""
+        row = rows[selector]
+        if row.get("value") is not None:
+            assert row["value"] == value, (selector, row)
+            return True
+        prefix = "not listed: " if "[" not in selector else ""
+        assert any(row["error"].endswith(prefix + reason) for reason in reasons), (selector, row)
+        return False
+
+    # Never a double for an int. libc++'s formatter (macOS) reads it right.
+    if not read("ws", "size=1 {7}", ANOTHER_TYPE):
+        assert rows["ws[#0]"]["error"] == f"[#0] not read: ws is not listed: {ANOTHER_TYPE}"
+    read("ws[#0]", "7", ANOTHER_TYPE)
+    # A `long double` is 16-byte aligned, past the 8 bytes LLDB's libstdc++ provider skips:
+    # clang's read `size=1 {0}`. GCC's is counted empty first.
+    if not read("ld", "size=1 {1.5}", WRONG_PLACE, MISCOUNTED.format(1)):
+        assert rows["ld"]["error"].endswith(WRONG_PLACE) == (compiler == "clang"), rows["ld"]
+    read("ld[#0]", "1.5", WRONG_PLACE, MISCOUNTED.format(1))
     # LLDB 18 takes `std::unordered_map<int, Asset>` for a set (its name holds `set`), and
-    # decodes its pairs as `int`s; LLDB 20 reads clang's. GCC's is counted empty on LLDB 20.
+    # decodes its pairs as `int`s; LLDB 20 reads clang's. GCC's may be counted empty.
+    reasons = [ANOTHER_TYPE] + ([MISCOUNTED.format(1)] if compiler == "gcc" else [])
     if rows["assets"].get("value") is not None:
-        assert compiler == "clang" and rows["assets"]["value"] == "size=1 {1: {v = 5}}"
-        assert rows["assets[1]"]["value"] == "{v = 5}", rows["assets[1]"]
+        assert rows["assets"]["value"].startswith("size=1 {1: {"), rows["assets"]
+        assert rows["assets[1].v"]["value"] == "5", rows["assets[1].v"]
     else:
-        reasons = [ANOTHER_TYPE] + ([MISCOUNTED.format(1)] if compiler == "gcc" else [])
         error = rows["assets"]["error"]
         assert error in [f"not listed: {reason}" for reason in reasons], rows["assets"]
         reason = error.removeprefix("not listed: ")
-        assert rows["assets[1]"]["error"] == f"[1] not read: assets is not listed: {reason}"
+        assert rows["assets[1].v"]["error"] == f"[1] not read: assets is not listed: {reason}"
+    if sys.platform == "linux":
+        # libstdc++ here: LLDB's provider decodes `ws` and `ld` wrongly, so neither reads.
+        assert rows["ws"].get("value") is None and rows["ld"].get("value") is None, rows
 
 
 TEXT = """#include <cstdio>
