@@ -766,6 +766,15 @@ there. So the row says `no value yet: declared at line 18, below this stop`.
 - **On a line a loop returns to,** such as a `do` body's first line, it has a `note`: it may be
   the last pass's value. A structured binding of a pair or tuple is withheld there instead. It is
   read through a reference that its declaration sets, which may point anywhere until then.
+- **Where another line's code lies just before the line,** Peeky reads the stop's disassembly.
+  A header over two lines, `for (` then `i = 10; i < 13; i++)`, runs into the line with the local
+  set. The local reads only where every way into the line comes that way.
+- In C++, clang puts the code that cleans up after an exception there, at `-O0`. That code ends
+  in a jump and never runs into the line, so the local is withheld.
+- Sometimes Peeky can't tell which way control came. Both kinds of way in may reach the line, or
+  a call that may not return, or a computed jump. An exception may enter the line, as the
+  binary's exception tables say. Or Peeky can't read the disassembly. Then the row has a `note`:
+  it may be leftovers. A change there is refused.
 - **Mid-line,** such as a `for` counter on later passes, or after `step --out`, it shows as its
   storage reads, where the rules below allow it.
 

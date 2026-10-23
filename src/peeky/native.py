@@ -1953,11 +1953,14 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
     ``starts``: for each automatic local, (name, source, line) -> the addresses where
     control enters its declaration line's code in the block declaring it: the line's
     first row in that block, and on a function's first line also the row after the
-    prologue, where its breakpoint is. ``ranges``: the function's code. ``scopes``: for
-    each automatic local, (name, source, line) -> the code ranges of the block declaring
-    it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and ``defined``:
-    see _class_role. ``span``: its own lines in its source, or None. ``order``: every row
-    it runs, (address, source, line) by address. ``classes``: _local_classes.
+    prologue, where its breakpoint is. ``preceded``: likewise, the first rows that would
+    be starts but for code of another line (a later one, or another file's) just before
+    them, which may run into them, or end in a jump. ``ranges``: the function's code.
+    ``scopes``: for each automatic local, (name, source, line) -> the code ranges of the
+    block declaring it. ``root``: the function's DIE; ``constructor``, ``enclosing`` and
+    ``defined``: see _class_role. ``span``: its own lines in its source, or None.
+    ``order``: every row it runs, (address, source, line) by address. ``classes``:
+    _local_classes.
     ``types``: fields.local_types, the type and storage of each local (#105);
     ``referred``: fields.referred_locals, those the frame reaches through a pointer.
     ``prologues``, when given, gets _prologue_windows: every function's, placed or not;
@@ -1977,7 +1980,7 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
             continue
         ranges = sorted(span for body in entry["bodies"] for span in _code_ranges(dies[body]))
         entries = {min(span)[0] for body in entry["bodies"] if (span := _code_ranges(dies[body]))}
-        names, jumps, starts, scopes = {}, False, {}, {}
+        names, jumps, starts, scopes, preceded = {}, False, {}, {}, {}
         # Every row this function runs, by address: what runs just before a line's start.
         ordered = sorted(
             (address, source, line)
@@ -2010,9 +2013,13 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 index = bisect.bisect_left(ordered, (found[0],)) - 1
                 before = ordered[index] if index >= 0 else None
                 if before is not None and (before[1] != source or before[2] > line):
-                    # Code of a later line runs straight into this one (a header over
+                    # Code of a later line may run straight into this one (a header over
                     # several lines: `for (` then `i = 10; i < 13; i++)`), so control can
-                    # reach the first row with the local already assigned.
+                    # reach the first row with the local already assigned. Or it ends in a
+                    # jump, and only a jump reaches the row: clang puts exception landing
+                    # pads, on a closing `}`'s line, among the function's code at -O0
+                    # (#288). The stop's disassembly tells which (_check_loop_target).
+                    preceded.setdefault((name, source, line), set()).add(found[0])
                     continue
                 first = {found[0]}
                 if found[0] in entries and (later := [a for a in found if a > found[0]]):
@@ -2043,6 +2050,7 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 "locals": names,
                 "jumps": jumps,
                 "starts": starts,
+                "preceded": preceded,
                 "ranges": tuple(ranges),
                 "scopes": scopes,
                 "root": root,
@@ -2672,11 +2680,24 @@ def declared_skipped(table, name, source, line, address, skipped):
     return None
 
 
-def declared_on_line(table, name, source, line, address):
+def _enters(function, key, address, runs_into):
+    """Whether control enters the declaration line ``key`` (name, source, line) of
+    ``function`` in the block declaring it at ``address`` (True), not (False), or
+    unknown (None): a start of local_declarations, or one ``preceded`` by another line's
+    code that ``runs_into(address)`` says does not run into it (False; True: it does)."""
+    if address in function.get("starts", {}).get(key, ()):
+        return True
+    if address not in function.get("preceded", {}).get(key, ()):
+        return False
+    into = runs_into(address) if runs_into is not None else None
+    return None if into is None else not into
+
+
+def declared_on_line(table, name, source, line, address, runs_into=None):
     """``(line, why)``, when the C/C++ local shown at the stop line is declared on it
     and the stop is where control enters that line in the block declaring it
-    (``address``, unslid; see local_declarations ``starts``): the declaration has not
-    run on this pass, so the local holds leftovers. Else None.
+    (``address``, unslid; see local_declarations ``starts`` and ``preceded``): the
+    declaration has not run on this pass, so the local holds leftovers. Else None.
 
     Only there: a one-line loop, or a return from a call (`step --out`), stops
     mid-line, where the local is live. The declaration judged is the one the debugger
@@ -2684,8 +2705,10 @@ def declared_on_line(table, name, source, line, address):
     is None; "label" in a function with a label: a `goto` may have returned above the
     line with the local live, or this is its first pass, which Peeky cannot tell apart,
     so it is withheld all the same (sixth agent evaluation); "unknown" where the
-    declaration shown cannot be singled out and one of the name starts here. The caller
-    also rules out an address a loop branches back to.
+    declaration shown cannot be singled out and one of the name starts here;
+    "preceded" where another line's code just before the stop may run into it, which
+    ``runs_into(address)`` (True, False, or None: unknown) cannot tell. The caller also
+    rules out an address a loop branches back to.
     """
     if address is None:
         return None
@@ -2694,23 +2717,26 @@ def declared_on_line(table, name, source, line, address):
     found = shown_declaration(table, name, address)
     if found is None:
         return None
+    key = (base, source, line)
     if found is False:
-        starting = any(
-            address in function.get("starts", {}).get((base, source, line), ())
-            and any(
+        entered = {
+            _enters(function, key, address, runs_into)
+            for function in table
+            if any(
                 automatic and declared_in == source and at == line
                 for declared_in, at, automatic in function["locals"].get(base, ())
             )
-            for function in table
-        )
-        return (line, "unknown") if starting else None
+        }
+        if True in entered:
+            return line, "unknown"
+        return (line, "preceded") if None in entered else None
     function, (declared_in, at, automatic) = found
-    if (
-        automatic
-        and declared_in == source
-        and at == line
-        and address in function.get("starts", {}).get((base, source, line), ())
-    ):
+    if not (automatic and declared_in == source and at == line):
+        return None
+    entered = _enters(function, key, address, runs_into)
+    if entered is None:
+        return line, "preceded"
+    if entered:
         return line, "label" if function["jumps"] else None
     return None
 
@@ -2753,6 +2779,407 @@ def backward_targets(instructions, low, high, architecture):
             return None
         targets.update(target for target in named if target <= at)
     return targets
+
+
+# What control never falls through (an unconditional jump, a return, a trap), and what
+# calls, by the mnemonic LLDB prints.
+_ENDS = {
+    "arm64": lambda m: m in _ARM64_ENDS,
+    "x86_64": lambda m: m.startswith(("jmp", "ret")) or m in ("ud2", "hlt"),
+}
+_ARM64_ENDS = {"b", "br", "braa", "brab", "braaz", "brabz", "ret", "retaa", "retab", "brk", "udf"}
+_CALLS = {
+    "arm64": lambda m: m == "bl" or m.startswith("blr"),
+    "x86_64": lambda m: m.startswith("call"),
+}
+
+
+def control_sources(instructions, low, high, architecture):
+    """{address: where control comes to it from} for each instruction in [low, high) of
+    a DAP disassembly of that range (#288): the instruction listed just before, unless
+    control never falls through it (an unconditional jump, a return, a trap), and each
+    jump in the range that names it (clang at -O0 ends a block with a jump to the next
+    instruction). None among them is a place Peeky cannot follow: a call's return, as a
+    call may never return (`_Unwind_Resume`, `abort`), and, wherever the range jumps
+    through a register (a jump table), anywhere. None when unknown: another
+    architecture, or an address that cannot be read."""
+    is_jump, ends, calls = (
+        _JUMPS.get(architecture),
+        _ENDS.get(architecture),
+        _CALLS.get(architecture),
+    )
+    if is_jump is None or ends is None or calls is None:
+        return None
+    found, previous, computed = {}, None, False
+    for instruction in instructions:
+        try:
+            at = int(instruction["address"], 16)
+        except (KeyError, TypeError, ValueError):
+            return None
+        # LLDB's trailing comment (`; <+24> at a.c:6`) names no operand.
+        text = str(instruction.get("instruction", "")).split(";")[0].split()
+        mnemonic = text[0].lower() if text else ""
+        if low <= at < high:
+            sources = found.setdefault(at, set())
+            if previous is not None and not ends(previous[1]):
+                sources.add(None if calls(previous[1]) else previous[0])
+            if is_jump(mnemonic):
+                operands = " ".join(text[1:])
+                named = re.findall(r"0x[0-9a-fA-F]+", operands)
+                # `br x8`, `jmpq *%rax`, `jmpq *0x8(,%rax,8)`: a target the code computes.
+                computed = computed or not named or "*" in operands
+                for token in named:
+                    if low <= (target := int(token, 16)) < high:
+                        found.setdefault(target, set()).add(at)
+        previous = (at, mnemonic)
+    if computed:
+        for sources in found.values():
+            sources.add(None)
+    return found
+
+
+def runs_into(order, address, lines, sources, entries=frozenset()):
+    """Whether control comes to ``address``, the first row of the declaration line
+    ``lines`` ((source, line)), only past that declaration (True): every way in from
+    below is code of another line (another file's, or a later one's) that falls or jumps
+    into it, as a header over two lines does, and no jump comes back to it. False where
+    every way in from below is code at or above that line, or where only jumps back come
+    to it: control enters the line there (a jump back is a loop's, which the stop's
+    ``loop_targets`` judges). None otherwise: both kinds, no way in, one Peeky cannot
+    follow (control_sources' None), an exception's: ``address`` is among ``entries``
+    (landing_pads; None: unknown), or no ``sources`` for it. ``order``: the function's
+    rows, (address, source, line) by address (local_declarations)."""
+    if (
+        sources is None
+        or address not in sources
+        or None in sources[address]
+        or entries is None
+        or address in entries
+    ):
+        return None
+    kinds, back = set(), False
+    for origin in sources[address]:
+        if origin >= address:
+            back = True
+            continue
+        index = bisect.bisect_right(order, origin, key=lambda row: row[0]) - 1
+        if index < 0:
+            return None
+        _, source, line = order[index]
+        kinds.add(not any(source == own and line <= at for own, at in lines))
+    if kinds == {False} or (not kinds and back):
+        return False
+    return True if kinds == {True} and not back else None
+
+
+# The bytes of one exception-table section Peeky reads, at most, and the records.
+MAX_EXCEPTION_TABLE = 16 * 1024 * 1024
+MAX_EXCEPTION_RECORDS = 1 << 20
+# A DW_EH_PE pointer's format (its low four bits): struct format, or LEB128 (None).
+_POINTER_FORMATS = {0x00: "<Q", 0x01: None, 0x02: "<H", 0x03: "<I", 0x04: "<Q"}
+_POINTER_FORMATS.update({0x09: None, 0x0A: "<h", 0x0B: "<i", 0x0C: "<q"})
+
+
+def _leb128(data, at, limit, signed=False):
+    """(value, next offset) of the LEB128 number at ``at`` of ``data``, which must end
+    before ``limit`` and fit in 64 bits (signed: -2**63 to 2**63 - 1)."""
+    value, shift, byte = 0, 0, 0x80
+    while byte & 0x80:
+        if at >= min(limit, len(data)) or shift > 63:
+            raise ValueError("Malformed LEB128 number in an exception table")
+        byte = data[at]
+        at += 1
+        value |= (byte & 0x7F) << shift
+        shift += 7
+    if signed and byte & 0x40:
+        value -= 1 << shift
+    if not (-(1 << 63) <= value < 1 << 63 if signed else value < 1 << 64):
+        raise ValueError("LEB128 number in an exception table exceeds 64 bits")
+    return value, at
+
+
+def _eh_pointer(data, at, encoding, address, limit, resolve=True):
+    """(value, next offset) of the DW_EH_PE-encoded pointer at ``at`` of ``data``, a
+    section loaded at ``address``, which must end before ``limit``: absolute, or
+    relative to its own place (pcrel), as the unwinder reads it: 0 stays 0 (no
+    pointer). With ``resolve`` False its value is not needed (an indirect personality's),
+    only skipped."""
+    form = encoding & 0x0F
+    if form not in _POINTER_FORMATS or encoding & 0x70 == 0x50:
+        raise ValueError("Unsupported pointer format in an exception table")
+    if (packed := _POINTER_FORMATS[form]) is None:
+        value, end = _leb128(data, at, limit, signed=form == 0x09)
+    else:
+        end = at + struct.calcsize(packed)
+        if end > min(limit, len(data)):
+            raise ValueError("Truncated pointer in an exception table")
+        value = struct.unpack_from(packed, data, at)[0]
+    if not resolve:
+        return None, end
+    if encoding & 0x80 or encoding & 0x70 not in (0x00, 0x10):
+        raise ValueError("Unsupported pointer application in an exception table")
+    if encoding & 0x70 == 0x10 and value:
+        value += address + at
+    if not 0 <= value < 1 << 64:
+        raise ValueError("Pointer outside the address space in an exception table")
+    return value, end
+
+
+def _eh_byte(data, at, limit):
+    """(the byte at ``at``, next offset), which must lie before ``limit``."""
+    if at >= min(limit, len(data)):
+        raise ValueError("Truncated exception table record")
+    return data[at], at + 1
+
+
+def _eh_frame_lsdas(data, address):
+    """[(function start, LSDA address)] of each FDE of an `.eh_frame` section (``data``,
+    loaded at ``address``) that names an LSDA: its CIE's augmentation has `L`. Every
+    field is read within its record; a DWARF64 record (extended length) is not read."""
+    found, cies, at, records = [], {}, 0, 0
+    while at < len(data):
+        records += 1
+        if records > MAX_EXCEPTION_RECORDS:
+            raise ValueError("Oversized `.eh_frame`")
+        if at + 4 > len(data):
+            # Padding after the last record is zeros.
+            if any(data[at:]):
+                raise ValueError("Truncated `.eh_frame` record")
+            break
+        start, length = at, struct.unpack_from("<I", data, at)[0]
+        at += 4
+        if length == 0:
+            # A terminator, or padding: any record after it is read too.
+            continue
+        if length == 0xFFFFFFFF:
+            raise ValueError("DWARF64 `.eh_frame` records are not supported")
+        end = at + length
+        if end > len(data) or length < 4:
+            raise ValueError("Truncated `.eh_frame` record")
+        pointer = struct.unpack_from("<I", data, at)[0]
+        if pointer == 0:
+            cies[start] = _eh_cie(data, at + 4, end, address)
+        else:
+            if (at - pointer) not in cies:
+                raise ValueError("An `.eh_frame` FDE names no CIE before it")
+            lsda, encoding, augmented = cies[at - pointer]
+            begin, cursor = _eh_pointer(data, at + 4, encoding, address, end)
+            _, cursor = _eh_pointer(data, cursor, encoding & 0x0F, address, end)
+            if augmented:
+                size, cursor = _leb128(data, cursor, end)
+                if cursor + size > end:
+                    raise ValueError("An `.eh_frame` FDE's augmentation passes its end")
+                if lsda is not None:
+                    where, _ = _eh_pointer(data, cursor, lsda, address, cursor + size)
+                    if where:
+                        found.append((begin, where))
+        at = end
+    return found
+
+
+def _eh_cie(data, at, end, address):
+    """(LSDA pointer encoding or None, FDE pointer encoding, whether FDEs carry
+    augmentation data) of the CIE whose body runs from ``at`` to ``end``."""
+    version, at = _eh_byte(data, at, end)
+    stop = data.find(b"\0", at, end)
+    if version not in (1, 3) or stop < 0:
+        raise ValueError("Unsupported `.eh_frame` CIE")
+    augmentation, at = data[at:stop].decode("ascii", "replace"), stop + 1
+    if augmentation not in ("", "eh") and not augmentation.startswith("z"):
+        raise ValueError("Unknown `.eh_frame` augmentation")
+    if augmentation == "eh":
+        at += 8
+    _, at = _leb128(data, at, end)
+    _, at = _leb128(data, at, end, signed=True)
+    at = _eh_byte(data, at, end)[1] if version == 1 else _leb128(data, at, end)[1]
+    if not augmentation.startswith("z"):
+        return None, 0x00, False
+    size, at = _leb128(data, at, end)
+    if at + size > end:
+        raise ValueError("An `.eh_frame` CIE's augmentation passes its end")
+    limit, lsda, encoding = at + size, None, 0x00
+    for letter in augmentation[1:]:
+        if letter == "L":
+            lsda, at = _eh_byte(data, at, limit)
+        elif letter == "R":
+            encoding, at = _eh_byte(data, at, limit)
+        elif letter == "P":
+            personality, at = _eh_byte(data, at, limit)
+            _, at = _eh_pointer(data, at, personality, address, limit, resolve=False)
+        elif letter not in "SBG":
+            raise ValueError("Unknown `.eh_frame` augmentation")
+    return (None if lsda == 0xFF else lsda), encoding, True
+
+
+def _unwind_info_lsdas(data, base):
+    """[(function start, LSDA address)] from a Mach-O `__unwind_info` section's LSDA
+    array; its offsets count from ``base``, the image's __TEXT address. The header's
+    arrays, the index and the LSDA array must lie in the section, past the header,
+    4-byte aligned, the LSDA array past the index and bounded by its entries."""
+    header = 28
+    if len(data) < header:
+        raise ValueError("Truncated `__unwind_info`")
+    version, common, commons, personal, personals, index, count = struct.unpack_from("<7I", data, 0)
+    arrays = ((common, 4 * commons), (personal, 4 * personals), (index, 12 * count))
+    if version != 1 or not count:
+        raise ValueError("Unsupported `__unwind_info`")
+    if any(at < header or at % 4 or at + size > len(data) for at, size in arrays):
+        raise ValueError("Malformed `__unwind_info` arrays")
+    # The non-empty arrays must not share bytes (a shared offset is fine where one is empty).
+    spans = sorted((at, at + size) for at, size in arrays if size)
+    if any(end > after for (_, end), (after, _) in zip(spans, spans[1:])):
+        raise ValueError("Overlapping `__unwind_info` arrays")
+    if index < max(common + 4 * commons, personal + 4 * personals):
+        raise ValueError("Malformed `__unwind_info` index")
+    offsets = [struct.unpack_from("<I", data, index + 12 * n + 8)[0] for n in range(count)]
+    first, last = offsets[0], offsets[-1]
+    if (
+        first < index + 12 * count
+        or first % 4
+        or last > len(data)
+        or (last - first) % 8
+        or offsets != sorted(offsets)
+    ):
+        raise ValueError("Malformed `__unwind_info` LSDA array")
+    return [
+        (_eh_address(base, start), _eh_address(base, lsda))
+        for start, lsda in struct.iter_unpack("<II", data[first:last])
+    ]
+
+
+def _eh_address(base, offset):
+    """``base`` + ``offset`` as an address, or ValueError where the sum leaves the 64-bit
+    address space: a malformed table, never an address (review 4 of PR #295)."""
+    value = base + offset
+    if not 0 <= value < 1 << 64:
+        raise ValueError("An exception-table address leaves the address space")
+    return value
+
+
+def _lsda_pads(data, address, lsda, start):
+    """The landing pads of the LSDA at ``lsda``, in a section (``data``) loaded at
+    ``address``, of the function starting at ``start``: where each call-site record
+    sends the unwinder (none for a record without one). Every record lies within the
+    call-site table."""
+    at, limit = lsda - address, len(data)
+    if not 0 <= at < limit:
+        raise ValueError("An LSDA lies outside its exception table")
+    encoding, at = _eh_byte(data, at, limit)
+    base = start
+    if encoding != 0xFF:
+        base, at = _eh_pointer(data, at, encoding, address, limit)
+    types, at = _eh_byte(data, at, limit)
+    if types != 0xFF:
+        _, at = _leb128(data, at, limit)
+    encoding, at = _eh_byte(data, at, limit)
+    if encoding & 0xF0:
+        raise ValueError("Unsupported LSDA call-site encoding")
+    length, at = _leb128(data, at, limit)
+    end, pads = at + length, set()
+    if end > limit:
+        raise ValueError("Truncated LSDA call-site table")
+    while at < end:
+        _, at = _eh_pointer(data, at, encoding, address, end)
+        _, at = _eh_pointer(data, at, encoding, address, end)
+        pad, at = _eh_pointer(data, at, encoding, address, end)
+        _, at = _leb128(data, at, end)
+        if pad:
+            pads.add(_eh_address(base, pad))
+    return pads
+
+
+def _exception_sections(binary):
+    """{name: (address, bytes)} of the binary's exception-table sections: ELF
+    `.eh_frame` and `.gcc_except_table`; Mach-O `__eh_frame`, `__unwind_info` and
+    `__gcc_except_tab` (and `__TEXT`: its address, with no bytes)."""
+    wanted = {".eh_frame", ".gcc_except_table", "__eh_frame", "__unwind_info", "__gcc_except_tab"}
+    found = {}
+    with Path(binary).open("rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        header = stream.read(64)
+        places = []
+        if len(header) >= 32 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+            count, length = struct.unpack_from("<II", header, 16)
+            if not 0 < count <= 4096 or not 0 < length <= 1 << 20:
+                raise ValueError("Invalid Mach-O load commands")
+            stream.seek(32)
+            commands = stream.read(length)
+            cursor = 0
+            for _ in range(count):
+                if cursor + 8 > len(commands):
+                    raise ValueError("Truncated Mach-O load command")
+                kind, step = struct.unpack_from("<II", commands, cursor)
+                if step < 8 or cursor + step > len(commands):
+                    raise ValueError("Invalid Mach-O load command size")
+                if kind == 0x19 and step >= 72:  # LC_SEGMENT_64
+                    segment = commands[cursor + 8 : cursor + 24].rstrip(b"\0").decode("latin-1")
+                    address, _, offset = struct.unpack_from("<QQQ", commands, cursor + 24)
+                    if segment == "__TEXT" and offset == 0:
+                        found["__TEXT"] = (address, b"")
+                    sections = struct.unpack_from("<I", commands, cursor + 64)[0]
+                    if 72 + 80 * sections > step:
+                        raise ValueError("Invalid Mach-O segment sections")
+                    for index in range(sections):
+                        at = cursor + 72 + 80 * index
+                        name = commands[at : at + 16].rstrip(b"\0").decode("latin-1")
+                        address, length, offset = struct.unpack_from("<QQI", commands, at + 32)
+                        places.append((name, address, offset, length))
+                cursor += step
+        elif len(header) == 64 and header[:6] == b"\x7fELF\x02\x01":
+            table = struct.unpack_from("<Q", header, 40)[0]
+            entry, count, names = struct.unpack_from("<HHH", header, 58)
+            if entry != 64 or not 0 < count <= 65535 or names >= count:
+                raise ValueError("Invalid ELF section header table")
+            if table + 64 * count > size:
+                raise ValueError("Invalid ELF section header table")
+            stream.seek(table)
+            headers = [struct.unpack_from("<IIQQQQ", stream.read(64)) for _ in range(count)]
+            _, _, _, _, offset, length = headers[names]
+            if offset + length > size or length > MAX_EXCEPTION_TABLE:
+                raise ValueError("Invalid ELF section names")
+            stream.seek(offset)
+            strings = stream.read(length)
+            for label, kind, _, address, offset, length in headers:
+                end = strings.find(b"\0", label)
+                name = strings[label:end].decode("latin-1") if 0 <= label < end else ""
+                if kind != 8:  # SHT_NOBITS has no bytes
+                    places.append((name, address, offset, length))
+        else:
+            raise ValueError("Expected a 64-bit Mach-O or ELF executable")
+        for name, address, offset, length in places:
+            if name not in wanted:
+                continue
+            if name in found or length > MAX_EXCEPTION_TABLE or offset + length > size:
+                raise ValueError(f"Invalid or repeated exception table section {name}")
+            stream.seek(offset)
+            found[name] = (address, stream.read(length))
+    return found
+
+
+def landing_pads(binary):
+    """The addresses (unslid) where the unwinder enters the program's code, as an
+    exception passes (#295 review): the landing pads of every LSDA the binary's
+    exception tables name. ELF: `.eh_frame` FDEs and `.gcc_except_table`. Mach-O: the
+    `__unwind_info` LSDA array, `__eh_frame` FDEs and `__gcc_except_tab`. Empty without
+    an LSDA (a C program). Raises ValueError where Peeky cannot read them."""
+    sections = _exception_sections(binary)
+    lsdas = []
+    for name in (".eh_frame", "__eh_frame"):
+        if name in sections:
+            lsdas += _eh_frame_lsdas(sections[name][1], sections[name][0])
+    if "__unwind_info" in sections:
+        if "__TEXT" not in sections:
+            raise ValueError("Missing Mach-O __TEXT segment")
+        lsdas += _unwind_info_lsdas(sections["__unwind_info"][1], sections["__TEXT"][0])
+    if not lsdas:
+        return frozenset()
+    table = sections.get(".gcc_except_table") or sections.get("__gcc_except_tab")
+    if table is None or len(lsdas) > MAX_EXCEPTION_RECORDS:
+        raise ValueError("LSDAs without a readable exception table")
+    pads = set()
+    for start, lsda in dict.fromkeys(lsdas):
+        pads |= _lsda_pads(table[1], table[0], lsda, start)
+    return frozenset(pads)
 
 
 def architecture(binary):
@@ -5209,7 +5636,32 @@ class NativeSession:
         # A loop that branches back to this address can bring control here with the
         # local live (x86-64 puts `while ((x = next()) > 0)`'s test first): only an
         # address the disassembly shows no loop returns to is withheld.
-        on_line = declared_on_line(self.declarations, name, here, line, address)
+        on_line = declared_on_line(
+            self.declarations, name, here, line, address, getattr(self, "runs_into", {}).get
+        )
+        if on_line is not None and on_line[1] == "preceded":
+            # Code of another line lies just before this stop, and Peeky cannot tell
+            # whether control comes here only past the declaration (#288).
+            if address in getattr(self, "unread_code", ()) or address not in getattr(
+                self, "runs_into", {}
+            ):
+                return ValueNote(
+                    f"declared on line {line}, which may not have run yet at this stop "
+                    "(Peeky could not read whether the code just before it runs into it)",
+                    f"may be leftovers: this stop may be where line {line} starts, before "
+                    "its declaration runs, and Peeky could not read the code just before it "
+                    "to tell; read it on the next line",
+                    refuses=True,
+                )
+            return ValueNote(
+                f"declared on line {line}, which may not have run yet at this stop (control "
+                "reaches it by more than one path, or by one Peeky cannot follow)",
+                f"may be leftovers: this stop may be where line {line} starts, before its "
+                "declaration runs. Control reaches it by more than one path, or by one Peeky "
+                "cannot follow (a call that may not return, a computed jump, an exception); "
+                "read it on the next line",
+                refuses=True,
+            )
         if on_line is not None and getattr(self, "loop_targets", {}).get(address) is not False:
             # A loop returns to this first instruction (a `do` body's first line), or
             # Peeky cannot tell: on a later pass the local holds the last pass's value,
@@ -8159,9 +8611,14 @@ class NativeSession:
 
     def _check_loop_target(self, dap, frame):
         """Record whether the stop's address, when it starts a declaration line, is one a
-        loop jumps back to (True), not (False), or unknown (None). Each function is
-        disassembled at most once per session."""
+        loop jumps back to (``loop_targets``: True, False, or None: unknown). Where it
+        would start one but for another line's code just before it (local_declarations
+        ``preceded``), also whether control comes to it only past its declaration
+        (``runs_into``: True, False, or None), and, in ``unread_code``, where the
+        disassembly could not be read. Each function is disassembled at most once per
+        session; the binary's landing pads (``unwinder_entries``) are read once."""
         cache = self.__dict__.setdefault("loop_targets", {})
+        into = self.__dict__.setdefault("runs_into", {})
         jumps = self.__dict__.setdefault("backward_jumps", {})
         pointer, bias = frame.get("instructionPointerReference"), self.load_bias
         declarations = getattr(self, "declarations", None)
@@ -8175,11 +8632,15 @@ class NativeSession:
         address = int(pointer, 16) - bias
         if address in cache:
             return
+
+        def holds(function, key):
+            return any(address in found for found in function.get(key, {}).values())
+
         function = next(
             (
                 function
                 for function in declarations
-                if any(address in starts for starts in function.get("starts", {}).values())
+                if holds(function, "starts") or holds(function, "preceded")
             ),
             None,
         )
@@ -8190,20 +8651,37 @@ class NativeSession:
         )
         if span is not None and span not in jumps:
             jumps[span] = self._backward_jumps(dap, span, bias)
-        targets = jumps.get(span)
+        targets, sources = jumps.get(span) or (None, None)
         cache[address] = None if targets is None else address in targets
+        lines = {
+            (source, line)
+            for (_, source, line), found in function.get("preceded", {}).items()
+            if address in found
+        }
+        if lines:
+            if "unwinder_entries" not in self.__dict__:
+                try:
+                    self.unwinder_entries = landing_pads(self.binary)
+                except (OSError, ValueError, TypeError, struct.error, IndexError):
+                    self.unwinder_entries = None
+            into[address] = runs_into(
+                function.get("order", ()), address, lines, sources, self.unwinder_entries
+            )
+            if sources is None:
+                self.__dict__.setdefault("unread_code", set()).add(address)
 
     def _backward_jumps(self, dap, span, bias):
-        """The unslid addresses in ``span`` that a jump there goes back to, or None."""
+        """(The unslid addresses in ``span`` that a jump there goes back to, or None;
+        control_sources of ``span``, unslid, or None), from one disassembly of it."""
         low, high = span
         try:
             kind = architecture(self.binary)
         except (OSError, struct.error):
-            return None
+            return None, None
         # Enough instructions to pass the function's end: arm64's are 4 bytes each.
         count = (high - low) // 4 + 8 if kind == "arm64" else high - low + 16
         if kind is None or count > 8192:
-            return None
+            return None, None
         try:
             reply = dap.request(
                 "disassemble",
@@ -8217,11 +8695,20 @@ class NativeSession:
             )
             instructions = reply.get("instructions") or []
             if not any(int(item["address"], 16) >= high + bias for item in instructions):
-                return None
+                return None, None
             targets = backward_targets(instructions, low + bias, high + bias, kind)
+            sources = control_sources(instructions, low + bias, high + bias, kind)
         except (RuntimeError, TimeoutError, ValueError, TypeError, KeyError, AttributeError):
-            return None
-        return None if targets is None else {target - bias for target in targets}
+            return None, None
+        return (
+            None if targets is None else {target - bias for target in targets},
+            None
+            if sources is None
+            else {
+                at - bias: {None if origin is None else origin - bias for origin in found}
+                for at, found in sources.items()
+            },
+        )
 
     def close(self):
         self.prepared.cleanup()
