@@ -2261,11 +2261,19 @@ class Statements:
         after parameters: `f(int a) {`, `operator()(int a) const {`, maybe a macro's
         `FOR_EACH(x) {`; a function-try-block's, `f(P p) try {`, and its handlers'),
         "lambda" (`[&] {`, `[](int v) -> int {`), or "other" (a class, an initializer,
-        `({`, `new T[1]{`, `decltype(W{}){`, a compound literal)."""
+        `({`, `new T[1]{`, `decltype(W{}){`, a compound literal). The block of an `if
+        constexpr (...)`, `if consteval` or `if !consteval` is a statement's (#289)."""
         before = self._unattributed(opening)
         if before is None:
             return "other"
         token, at = before
+        if token == "consteval" and self.raw_strings:
+            # `if consteval {`, `if !consteval {` (also `if not consteval {`).
+            previous = self._before(at)
+            if previous is not None and previous[0] in ("!", "not"):
+                previous = self._before(previous[1])
+            if previous is not None and previous[0] == "if":
+                return "statement"
         if token == "try" and self.raw_strings:
             # `long f(P p) try {`: the function's body, as a brace in the `try`'s place
             # would be; else a `try` statement's block.
@@ -2280,6 +2288,11 @@ class Statements:
         word = self._before(parameters) if parameters is not None else None
         if word is None:
             return "other"
+        if word[0] == "constexpr" and self.raw_strings:
+            # `if constexpr (...) {`: the `if`'s block, not a function's body.
+            previous = self._before(word[1])
+            if previous is not None and previous[0] == "if":
+                return "statement"
         if word[0] == "catch" and self.raw_strings:
             # A handler of a function-try-block is its function's too (after the `}` of
             # its `try {` or of another such handler); else a `try` statement's.

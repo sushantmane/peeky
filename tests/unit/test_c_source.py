@@ -1536,6 +1536,36 @@ def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_
     assert statements.header_before(3, "u", 2) is None
 
 
+IF_CONSTEXPR_SOURCE = """long f(long x) {
+    long t = x;
+    if constexpr (sizeof(long) > 1) { static long t = 5; use(t); }
+    if consteval { static long t = 6; use(t); }
+    if !consteval { static long t = 7; use(t); }
+    if not consteval { static long t = 8; use(t); }
+    if (x) { use(x); } else if constexpr (sizeof(long) > 1) { static long t = 9; use(t); }
+    if constexpr (sizeof(t) > 1) { typedef int t; t k = 4; use(k); }
+    return t;
+}
+"""
+
+
+def test_an_if_constexpr_or_consteval_block_hides_the_outer_local():
+    # #289: the block of `if constexpr (...)` was read as a function's body (its `(...)`
+    # as parameters), and that of `if consteval` as none of a statement's: what such a
+    # block declares on the stop's line hid nothing, and the outer `t` showed its value.
+    statements = Statements(IF_CONSTEXPR_SOURCE, raw_strings=True)
+    found = {line: statements.block_storage(line, "t", 2, True) for line in range(3, 9)}
+    assert found == {
+        **{line: ("static", line) for line in range(3, 8)},
+        8: ("typedef", 8),
+    }, found
+    code = statements._code()[0]
+    braces = [at for at, char in enumerate(code) if char == "{"]
+    assert [statements._brace(at) for at in braces[1:]] == ["statement"] * 7, braces
+    # The header names `t` before the `typedef` (#286).
+    assert statements.header_before(8, "t", 2) == ("if", 8, 8, False)
+
+
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():
     # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
     # test and binding, its range's cleanup), all emitted after its range expression,
