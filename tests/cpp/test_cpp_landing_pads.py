@@ -167,25 +167,40 @@ def test_a_landing_pad_on_an_inner_blocks_closing_line_is_no_later_lines_code(bu
     assert len(result["rows"]) == 3 and all(withheld(row, 17) for row in result["rows"])
 
 
+UNREAD = (
+    "may be leftovers: this stop may be where line 16 starts, before its declaration runs, and "
+    "Peeky could not read the code just before it to tell; read it on the next line"
+)
+PATHS = (
+    "may be leftovers: this stop may be where line 16 starts, before its declaration runs. "
+    "Control reaches it by more than one path, or by one Peeky cannot follow (a call that may "
+    "not return, a computed jump); read it on the next line"
+)
+
+
 @pytest.mark.timeout(180)
-def test_where_the_code_before_the_line_cannot_be_read_the_row_says_so(
-    build, cxx, capsys, monkeypatch
+@pytest.mark.parametrize("unknown", ["unread", "paths"])
+def test_where_peeky_cannot_tell_how_control_came_the_row_says_so(
+    build, cxx, capsys, monkeypatch, unknown
 ):
-    # Without the disassembly, clang's landing pad might be a later line's code running
-    # into line 16: the value is shown with a note, and not settable. GCC's line 16 has
+    # Clang's landing pad lies just before line 16. Where Peeky cannot read the
+    # disassembly ("unread": an architecture it does not know), or where control may come
+    # both from before the declaration and past it ("paths", review of #295), the value is
+    # shown with a note, and a change is refused; never shown plainly. GCC's line 16 has
     # no other line's code just before it.
-    monkeypatch.setattr("peeky.native.control_sources", lambda *_: None)
+    if unknown == "unread":
+        monkeypatch.setattr("peeky.native.architecture", lambda binary: None)
+    else:
+        monkeypatch.setattr("peeky.native.runs_into", lambda *_: None, raising=False)
     program = build("q.cpp", REPRO)
     code, result = probe(capsys, program, "--at", "16", "--capture", "q")
     assert code == 0, result.get("error")
     [row] = result["rows"]
     if cxx == "gcc":
-        assert withheld(row, 16), row
+        # Its line's start: withheld, or with no disassembly, a loop may return there.
+        assert withheld(row, 16) or (row.get("note") and row["settable"] is False), row
         return
-    assert row["note"] == (
-        "may be leftovers: this stop may be where line 16 starts, before its declaration runs, "
-        "and Peeky could not read the code just before it to tell; read it on the next line"
-    )
+    assert row.get("note") == (UNREAD if unknown == "unread" else PATHS), row
     assert "value" in row and row["settable"] is False, row
     code, result = probe(capsys, program, "--at", "16", "--capture", "s.v", "--set", "q=5")
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result

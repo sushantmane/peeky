@@ -1103,7 +1103,7 @@ def test_the_disassembly_says_where_control_comes_from():
         0x620: {0x62C},
         0x624: {0x620},  # after a conditional jump
         0x628: {0x624},  # a jump to the next instruction
-        0x62C: {0x628},  # after a call
+        0x62C: {None},  # after a call, which may not return
         0x6F8: set(),  # after a jump back
         0x6FC: {0x620},
         0x700: {0x6FC},
@@ -1112,29 +1112,52 @@ def test_the_disassembly_says_where_control_comes_from():
     }
     # Only the range's own instructions, and jumps into it.
     assert control_sources(arm, 0x6F8, 0x700, "arm64") == {0x6F8: set(), 0x6FC: set()}
+    # Review of #295: a cleanup ending in a call that never returns (`_Unwind_Resume`,
+    # `__cxa_throw`), laid just before the row, which a branch reaches: that call's
+    # return is no way in Peeky can follow.
+    noreturn = _instructions(
+        (0x620, "b.ge    0x6FC"),
+        (0x624, "b       0x6F0"),
+        (0x6F0, "str     x0, [sp, #0x80]"),
+        (0x6F4, "ldr     x0, [sp, #0x80]"),
+        (0x6F8, "bl      0x100000990"),
+        (0x6FC, "str     wzr, [sp, #0x50]"),
+    )
+    assert control_sources(noreturn, 0x620, 0x700, "arm64")[0x6FC] == {0x620, None}
     x86 = _instructions(
-        (0x1130, "jmp    0x1141"),
-        (0x1135, "callq  0x1120"),
-        (0x113A, "jne    0x1130"),
-        (0x113C, "jmpq   *%rax"),
-        (0x113E, "retq"),
-        (0x113F, "ud2"),
-        (0x1141, "nop"),
+        (0x1130, "jge    0x1146"),
+        (0x1136, "jmp    0x1141"),
+        (0x113B, "movq   -0x10(%rbp), %rdi"),
+        (0x113F, "jne    0x1130"),
+        (0x1141, "callq  0x401020"),
+        (0x1146, "movl   $0x0, -0x8(%rbp)"),
+        (0x114D, "retq"),
+        (0x114E, "ud2"),
+        (0x1150, "nop"),
     )
     assert control_sources(x86, 0x1130, 0x1150, "x86_64") == {
-        0x1130: {0x113A},
-        0x1135: set(),
-        0x113A: {0x1135},
-        0x113C: {0x113A},
-        0x113E: set(),
-        0x113F: set(),
-        0x1141: {0x1130},
+        0x1130: {0x113F},
+        0x1136: {0x1130},
+        0x113B: set(),
+        0x113F: {0x113B},
+        0x1141: {0x1136, 0x113F},
+        0x1146: {0x1130, None},  # the jump, and a `call __cxa_throw` that never returns
+        0x114D: {0x1146},
+        0x114E: set(),
     }
+    # A jump through a register may go anywhere: no instruction's ways in are all known.
+    for listing, kind in (
+        (_instructions((0x10, "br      x8"), (0x14, "nop"), (0x18, "nop")), "arm64"),
+        (_instructions((0x10, "jmpq   *%rax"), (0x12, "nop"), (0x13, "nop")), "x86_64"),
+        (_instructions((0x10, "jmpq   *0x8(,%rax,8)"), (0x17, "nop")), "x86_64"),
+    ):
+        found = control_sources(listing, 0x10, 0x20, kind)
+        assert found and all(None in ways for ways in found.values()), found
     assert control_sources(arm, 0x620, 0x70C, "riscv64") is None
     assert control_sources([{"address": "nope"}], 0x10, 0x18, "arm64") is None
 
 
-def test_another_lines_code_runs_into_a_line_falling_through_or_by_a_jump():
+def test_control_comes_to_a_line_only_past_its_declaration_on_every_way_in():
     from peeky.native import runs_into
 
     # Line 16's first row is 0x6FC; a landing pad on line 20 lies just before it.
@@ -1146,23 +1169,35 @@ def test_another_lines_code_runs_into_a_line_falling_through_or_by_a_jump():
         (0x700, "q.cpp", 17),
     )
     lines = {("q.cpp", 16)}
-    # Reached from line 13's loop exit only: no later line's code runs into it.
+    # Reached from line 13's loop exit only: control enters line 16 there.
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620}}) is False
-    # Line 20's code falls through into it, or jumps to it (`for (` over two lines).
-    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, 0x6F8}}) is True
+    # Only line 20's code falls or jumps into it (`for (` over two lines).
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8}}) is True
     # Another file's code too (a member initializer clang runs in its caller).
     other = (*order[:2], (0x6E4, "q.hpp", 3), *order[3:])
     assert runs_into(other, 0x6FC, lines, {0x6FC: {0x6F8}}) is True
-    # A jump back from below is a loop's, judged apart.
+    # Review of #295: from line 13 and from line 20 alike, the stop cannot tell which
+    # way control came: unknown, never proof that the declaration ran.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, 0x6F8}}) is None
+    assert runs_into(other, 0x6FC, lines, {0x6FC: {0x620, 0x6F8}}) is None
+    # A jump back is a loop's, judged apart where control enters the line; past the
+    # declaration only, it may still come back before the declaration runs again.
     assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, 0x704}}) is False
-    # Unknown: no disassembly, or not an instruction it lists.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8, 0x704}}) is None
+    # A way in Peeky cannot follow (a call that may not return, a computed jump), none
+    # from below (only the unwinder, or a jump back, enters it), or no disassembly.
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x620, None}}) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x6F8, None}}) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: set()}) is None
+    assert runs_into(order, 0x6FC, lines, {0x6FC: {0x704}}) is None
     assert runs_into(order, 0x6FC, lines, None) is None
     assert runs_into(order, 0x6FC, lines, {0x700: {0x6FC}}) is None
 
 
-def test_the_stops_disassembly_says_whether_another_lines_code_runs_into_it(monkeypatch):
+def test_the_stops_disassembly_says_how_control_comes_to_a_preceded_line(monkeypatch):
     # #288: one disassembly of the function says both whether a loop returns to a line's
-    # start and, where another line's code lies just before it, whether that runs into it.
+    # start and, where another line's code lies just before it, whether control comes
+    # there only past the declaration.
     monkeypatch.setattr("peeky.native.architecture", lambda binary: "arm64")
     session = NativeSession.__new__(NativeSession)
     session.load_bias, session.binary = 0x1000, None
@@ -1170,7 +1205,11 @@ def test_the_stops_disassembly_says_whether_another_lines_code_runs_into_it(monk
         {
             "ranges": ((0x600, 0x710),),
             "starts": {("k", "q.cpp", 13): {0x610}},
-            "preceded": {("q", "q.cpp", 16): {0x6FC}, ("i2", "q.cpp", 19): {0x704}},
+            "preceded": {
+                ("q", "q.cpp", 16): {0x6FC},
+                ("i2", "q.cpp", 19): {0x704},
+                ("m", "q.cpp", 18): {0x70C},
+            },
             "order": (
                 (0x600, "q.cpp", 12),
                 (0x610, "q.cpp", 13),
@@ -1178,18 +1217,23 @@ def test_the_stops_disassembly_says_whether_another_lines_code_runs_into_it(monk
                 (0x6FC, "q.cpp", 16),
                 (0x700, "q.cpp", 20),
                 (0x704, "q.cpp", 19),
+                (0x708, "q.cpp", 22),
+                (0x70C, "q.cpp", 18),
             ),
         }
     ]
     listing = _instructions(
         *((0x1000 + at, "nop") for at in range(0x600, 0x620, 4)),
         (0x1620, "b.ge    0x16FC"),
-        *((0x1000 + at, "nop") for at in range(0x624, 0x6F8, 4)),
+        (0x1624, "cbz     w0, 0x170C"),
+        (0x1628, "bl      0x1990"),
+        *((0x1000 + at, "nop") for at in range(0x62C, 0x6F8, 4)),
         (0x16F8, "b       0x1708"),
         (0x16FC, "str     wzr, [sp, #0x50]"),
         (0x1700, "b       0x1704"),
         (0x1704, "b.lt    0x1610"),
-        *((0x1000 + at, "nop") for at in range(0x708, 0x720, 4)),
+        (0x1708, "ldr     w8, [sp, #0x28]"),
+        *((0x1000 + at, "nop") for at in range(0x70C, 0x720, 4)),
     )
     asked = []
 
@@ -1198,17 +1242,20 @@ def test_the_stops_disassembly_says_whether_another_lines_code_runs_into_it(monk
             asked.append((command, arguments["memoryReference"]))
             return {"instructions": listing}
 
-    for pc in (0x6FC, 0x704, 0x610, 0x650):
+    for pc in (0x6FC, 0x704, 0x70C, 0x610, 0x62C):
         session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x1000 + pc)})
-    assert session.runs_into == {0x6FC: False, 0x704: True}
-    assert session.loop_targets == {0x6FC: False, 0x704: False, 0x610: True}
+    # Line 16 from line 13 only; line 19 from line 20 only; line 18 from both.
+    assert session.runs_into == {0x6FC: False, 0x704: True, 0x70C: None}
+    assert session.loop_targets == {0x6FC: False, 0x704: False, 0x70C: False, 0x610: True}
     assert asked == [("disassemble", "0x1600")]
-    # A disassembly that cannot be read leaves both unknown.
+    assert not getattr(session, "unread_code", None)
+    # A disassembly that cannot be read leaves both unknown, and says so.
     session.__dict__.pop("backward_jumps")
     session.loop_targets, session.runs_into = {}, {}
     listing = []
     session._check_loop_target(Adapter(), {"instructionPointerReference": hex(0x16FC)})
     assert session.runs_into == {0x6FC: None} and session.loop_targets == {0x6FC: None}
+    assert session.unread_code == {0x6FC}
 
 
 def _instructions(*pairs):

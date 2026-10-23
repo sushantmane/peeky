@@ -2780,27 +2780,36 @@ def backward_targets(instructions, low, high, architecture):
     return targets
 
 
-# What control never falls through (an unconditional jump, a return, a trap), by the
-# mnemonic LLDB prints.
+# What control never falls through (an unconditional jump, a return, a trap), and what
+# calls, by the mnemonic LLDB prints.
 _ENDS = {
     "arm64": lambda m: m in _ARM64_ENDS,
     "x86_64": lambda m: m.startswith(("jmp", "ret")) or m in ("ud2", "hlt"),
 }
 _ARM64_ENDS = {"b", "br", "braa", "brab", "braaz", "brabz", "ret", "retaa", "retab", "brk", "udf"}
+_CALLS = {
+    "arm64": lambda m: m == "bl" or m.startswith("blr"),
+    "x86_64": lambda m: m.startswith("call"),
+}
 
 
 def control_sources(instructions, low, high, architecture):
-    """{address: the addresses control comes to it from} for each instruction in [low,
-    high) of a DAP disassembly of that range (#288): the instruction listed just before,
-    unless control never falls through it (an unconditional jump, a return, a trap), and
-    each jump in the range that names it (clang at -O0 ends a block with a jump to the
-    next instruction). A call falls through, even one that never returns; a jump through
-    a register names nothing. None when unknown: another architecture, or an address
-    that cannot be read."""
-    is_jump, ends = _JUMPS.get(architecture), _ENDS.get(architecture)
-    if is_jump is None or ends is None:
+    """{address: where control comes to it from} for each instruction in [low, high) of
+    a DAP disassembly of that range (#288): the instruction listed just before, unless
+    control never falls through it (an unconditional jump, a return, a trap), and each
+    jump in the range that names it (clang at -O0 ends a block with a jump to the next
+    instruction). None among them is a place Peeky cannot follow: a call's return, as a
+    call may never return (`_Unwind_Resume`, `abort`), and, wherever the range jumps
+    through a register (a jump table), anywhere. None when unknown: another
+    architecture, or an address that cannot be read."""
+    is_jump, ends, calls = (
+        _JUMPS.get(architecture),
+        _ENDS.get(architecture),
+        _CALLS.get(architecture),
+    )
+    if is_jump is None or ends is None or calls is None:
         return None
-    found, previous = {}, None
+    found, previous, computed = {}, None, False
     for instruction in instructions:
         try:
             at = int(instruction["address"], 16)
@@ -2812,34 +2821,47 @@ def control_sources(instructions, low, high, architecture):
         if low <= at < high:
             sources = found.setdefault(at, set())
             if previous is not None and not ends(previous[1]):
-                sources.add(previous[0])
+                sources.add(None if calls(previous[1]) else previous[0])
             if is_jump(mnemonic):
-                for token in re.findall(r"0x[0-9a-fA-F]+", " ".join(text[1:])):
+                operands = " ".join(text[1:])
+                named = re.findall(r"0x[0-9a-fA-F]+", operands)
+                # `br x8`, `jmpq *%rax`, `jmpq *0x8(,%rax,8)`: a target the code computes.
+                computed = computed or not named or "*" in operands
+                for token in named:
                     if low <= (target := int(token, 16)) < high:
                         found.setdefault(target, set()).add(at)
         previous = (at, mnemonic)
+    if computed:
+        for sources in found.values():
+            sources.add(None)
     return found
 
 
 def runs_into(order, address, lines, sources):
-    """Whether code of another line (another file's, or a line below ``lines``, the
-    (source, line) whose first row ``address`` is) comes to ``address`` from below it:
-    falling through, or by a jump (True); not (False); unknown (None). ``order``: the
-    function's rows, (address, source, line) by address (local_declarations);
-    ``sources``: control_sources of the function. A jump back to it is a loop's, which
-    the stop's ``loop_targets`` judges."""
-    if sources is None or address not in sources:
+    """Whether control comes to ``address``, the first row of the declaration line
+    ``lines`` ((source, line)), only past that declaration (True): every way in from
+    below is code of another line (another file's, or a later one's) that falls or jumps
+    into it, as a header over two lines does, and no jump comes back to it. False where
+    every way in from below is code at or above that line: control enters the line there
+    (a jump back is a loop's, which the stop's ``loop_targets`` judges). None otherwise:
+    both kinds, no way in from below (as where only the unwinder enters), or one Peeky
+    cannot follow (control_sources' None), or no ``sources`` for it. ``order``: the
+    function's rows, (address, source, line) by address (local_declarations)."""
+    if sources is None or address not in sources or None in sources[address]:
         return None
+    kinds, back = set(), False
     for origin in sources[address]:
         if origin >= address:
+            back = True
             continue
         index = bisect.bisect_right(order, origin, key=lambda row: row[0]) - 1
         if index < 0:
             return None
         _, source, line = order[index]
-        if not any(source == own and line <= at for own, at in lines):
-            return True
-    return False
+        kinds.add(not any(source == own and line <= at for own, at in lines))
+    if kinds == {False}:
+        return False
+    return True if kinds == {True} and not back else None
 
 
 def architecture(binary):
@@ -5001,14 +5023,26 @@ class NativeSession:
             self.declarations, name, here, line, address, getattr(self, "runs_into", {}).get
         )
         if on_line is not None and on_line[1] == "preceded":
-            # Code of another line lies just before this stop, and Peeky could not read
-            # whether it runs into it (with the local set) or ends in a jump (#288).
+            # Code of another line lies just before this stop, and Peeky cannot tell
+            # whether control comes here only past the declaration (#288).
+            if address in getattr(self, "unread_code", ()) or address not in getattr(
+                self, "runs_into", {}
+            ):
+                return ValueNote(
+                    f"declared on line {line}, which may not have run yet at this stop "
+                    "(Peeky could not read whether the code just before it runs into it)",
+                    f"may be leftovers: this stop may be where line {line} starts, before "
+                    "its declaration runs, and Peeky could not read the code just before it "
+                    "to tell; read it on the next line",
+                    refuses=True,
+                )
             return ValueNote(
-                f"declared on line {line}, which may not have run yet at this stop (Peeky "
-                "could not read whether the code just before it runs into it)",
+                f"declared on line {line}, which may not have run yet at this stop (control "
+                "reaches it by more than one path, or by one Peeky cannot follow)",
                 f"may be leftovers: this stop may be where line {line} starts, before its "
-                "declaration runs, and Peeky could not read the code just before it to tell; "
-                "read it on the next line",
+                "declaration runs. Control reaches it by more than one path, or by one Peeky "
+                "cannot follow (a call that may not return, a computed jump); read it on the "
+                "next line",
                 refuses=True,
             )
         if on_line is not None and getattr(self, "loop_targets", {}).get(address) is not False:
@@ -7866,8 +7900,10 @@ class NativeSession:
         """Record whether the stop's address, when it starts a declaration line, is one a
         loop jumps back to (``loop_targets``: True, False, or None: unknown). Where it
         would start one but for another line's code just before it (local_declarations
-        ``preceded``), also whether another line's code runs into it (``runs_into``:
-        True, False, or None). Each function is disassembled at most once per session."""
+        ``preceded``), also whether control comes to it only past its declaration
+        (``runs_into``: True, False, or None), and, in ``unread_code``, where the
+        disassembly could not be read. Each function is disassembled at most once per
+        session."""
         cache = self.__dict__.setdefault("loop_targets", {})
         into = self.__dict__.setdefault("runs_into", {})
         jumps = self.__dict__.setdefault("backward_jumps", {})
@@ -7911,6 +7947,8 @@ class NativeSession:
         }
         if lines:
             into[address] = runs_into(function.get("order", ()), address, lines, sources)
+            if sources is None:
+                self.__dict__.setdefault("unread_code", set()).add(address)
 
     def _backward_jumps(self, dap, span, bias):
         """(The unslid addresses in ``span`` that a jump there goes back to, or None;
@@ -7946,7 +7984,10 @@ class NativeSession:
             None if targets is None else {target - bias for target in targets},
             None
             if sources is None
-            else {at - bias: {origin - bias for origin in found} for at, found in sources.items()},
+            else {
+                at - bias: {None if origin is None else origin - bias for origin in found}
+                for at, found in sources.items()
+            },
         )
 
     def close(self):

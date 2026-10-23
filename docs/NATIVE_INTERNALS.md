@@ -131,10 +131,15 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - At `-O0`, clang puts a C++ landing pad there, on a closing `}`'s line. It ends in a jump, so
   only a jump reaches the line.
 - At the stop, `_check_loop_target` disassembles the function once. `control_sources` lists where
-  control comes to each instruction from. `runs_into` says whether any of those, from below, is
-  another line's code.
-- A `preceded` row that no such code reaches is a start. Where Peeky can't read the disassembly,
-  the row is shown with a note.
+  control comes to each instruction from: the instruction before, unless it never falls through,
+  and each jump that names it.
+- A call's return is a way in Peeky can't follow, since the call may never return
+  (`_Unwind_Resume`). So is any instruction, in a function that jumps through a register.
+- `runs_into` is True where every way in from below is another line's code, and no jump comes
+  back. It is False where every way in from below is code at or above the line. Anything else is
+  None.
+- False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
+  shows it with a note, and refuses a change.
 
 ## Preview bounds and types
 
