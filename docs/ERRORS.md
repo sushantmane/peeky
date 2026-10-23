@@ -189,6 +189,7 @@ a Java String. These are refused, and nothing is written:
 | A `const` or `volatile` string | `a const object` |
 | A Java variable not declared String | |
 | A text that this debugger can't write | `cannot write memory` (lldb-dap 21 can write it); `cannot read memory` for a libstdc++ string with lldb-dap 18 |
+| A GCC build's `std::string`, whose own buffer LLDB reads as `char[0]`, with a debugger that can't write memory | `the debugger misreads this build's string buffer as char[0]` |
 
 A Java adapter bundle built before String changes were supported says to rebuild it:
 `predates String changes`.

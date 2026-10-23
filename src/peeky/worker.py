@@ -1998,6 +1998,7 @@ class DebugWorker:
                     env=getattr(runtime, "environment", None),
                     fatal_stderr=getattr(runtime, "fatal_stderr", None),
                     provoked_exit=getattr(runtime, "provoked_exit", None),
+                    diagnostics=getattr(runtime, "debugger_diagnostics", None),
                 )
                 if self.accepted_sources is not None:
                     self.dap.frames_check = self.check_frames
@@ -2606,6 +2607,9 @@ class DebugWorker:
                     f"Changing locals is refused in an optimized build ({level}): the program "
                     "may keep using other copies of the value. Use an unoptimized build"
                 )
+            unlocated = getattr(runtime, "unlocated", None)
+            if unlocated and (why := unlocated(variable, self.reference_frames.get(ref))):
+                raise ValueError(f"{args['name']!r} cannot be changed: {why}")
             if self.placeholders() and is_unavailable(variable.get("value")):
                 raise ValueError(
                     f"{args['name']!r} has no readable value here "
@@ -2819,11 +2823,15 @@ class DebugWorker:
 
     def report(self, runtime):
         output, truncated = self.dap.snapshot_output()
+        diagnostics = getattr(self.dap, "snapshot_diagnostics", None)
+        lines, count = diagnostics() if diagnostics else ([], 0)
         return {
             "session_id": self.session,
             "state": self.state,
             "output": output,
             "output_truncated": truncated,
+            # The debugger's own lines, left out of the output (#167).
+            **({"debugger_diagnostics": lines, "diagnostic_count": count} if count else {}),
             **(
                 {"exit_code": code}
                 if type(code := getattr(self.dap, "exit_code", None)) is int
@@ -2996,6 +3004,36 @@ class DebugWorker:
         finally:
             self.view_waited += time.monotonic() - started
 
+    def raw_value(self, frame, path):
+        """The debugger's text for the variable path ``path`` in ``frame`` (#167: an
+        unordered container's own count, `us._M_h._M_element_count`), asked as a hover:
+        lldb-dap then reads the path's variables and members as they are, past any
+        formatter, and never evaluates it as an expression, so nothing runs in the
+        program. Cached for the stop; counted against the value-view budget."""
+        cache = getattr(self, "raw_values", None)
+        if cache is None or cache[0] != self.stop_id:
+            cache = self.raw_values = (self.stop_id, {})
+        key = (frame.get("id"), path)
+        if key in cache[1]:
+            return cache[1][key]
+        remaining = self.view_deadline - time.monotonic()
+        if self.view_fetches >= 128 or remaining <= 0:
+            raise self.view_exhausted()
+        self.view_fetches += 1
+        arguments = {"expression": path, "frameId": frame.get("id"), "context": "hover"}
+        try:
+            reply = self.view_request("evaluate", arguments, remaining)
+        except ResponseTimeout as exc:
+            self.view_timed_out = True
+            raise self.view_exhausted("the debugger did not answer in the time left") from exc
+        except RequestFailed as exc:
+            raise ValueError(f"The debugger could not read {path}: {exc}") from None
+        result = reply.get("result")
+        if not isinstance(result, str):
+            raise ValueError(f"The debugger gave no value for {path}")
+        cache[1][key] = result[:2000]
+        return cache[1][key]
+
     def view_fetch(self, reference):
         """Bounded raw reads used only by a runtime's trusted value-view hook.
 
@@ -3112,6 +3150,7 @@ class DebugWorker:
         preview = getattr(self.runtime, "preview_value", None)
         member_value = getattr(self.runtime, "member_value", None)
         changing_container = getattr(self.runtime, "changing_container", None)
+        unlisted_container = getattr(self.runtime, "unlisted_container", None)
         identify = getattr(self.runtime, "object_identity", None)
         groups = getattr(self.runtime, "variable_groups", frozenset())
         # Python's module globals are no frame's own locals: none is judged as one.
@@ -3136,6 +3175,19 @@ class DebugWorker:
                 if ancestry and changing_container
                 else None
             )
+            # An unordered container the debugger counts otherwise than its own count says
+            # (GCC's, read as empty, #167): withheld, its entries never listed.
+            unlisted = (
+                unlisted_container(
+                    variable,
+                    frame,
+                    [*ancestry, (name, kind)],
+                    lambda path: self.raw_value(frame, path),
+                )
+                if unlisted_container
+                else None
+            )
+            changing = changing or unlisted
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
                 if not ancestry:
                     raise RuntimeError("Debugger variable identity exceeds limit")
@@ -3204,6 +3256,9 @@ class DebugWorker:
                 note, carried = noted[0], noted
             if changing and not reason:
                 reason, note, carried = changing, None, None
+            elif unlisted and note is not None:
+                # Its count is wrong, so no note makes its listing true.
+                reason, note, carried = unlisted, None, None
             if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set,
                 # nor read through by a qualified view (a Rust container, enum or Box).
@@ -3460,6 +3515,10 @@ class DebugWorker:
                 output["unavailable"] = True
                 output["reason"] = output["value"][1:-1][:300]
                 output["value"] = None
+                unlocated = getattr(self.runtime, "unlocated", None) if not ancestry else None
+                if unlocated and (why := unlocated(variable, frame)):
+                    # Why no stop reads it, where the build says (#167).
+                    output.update(reason=why[:300], withheld=True, withheld_as="not readable")
             elif isinstance(note, str):
                 output["note"] = note[:500]
             if (
@@ -3499,6 +3558,8 @@ class DebugWorker:
                         reads,
                         frame=frame,
                         steps=steps,
+                        kinds=[step for _, step in ancestry] + [kind],
+                        raw=lambda path: self.raw_value(frame, path),
                         **self.preview_stack(),
                     )
                 except ValueError:
@@ -3757,6 +3818,8 @@ class DebugWorker:
                 pointee=args.get("pointee") is True,
                 frame=frame,
                 steps=steps,
+                kinds=[kind for _, kind in ancestry],
+                raw=lambda path: self.raw_value(frame, path),
                 **self.preview_stack(),
             )
         except ValueError:

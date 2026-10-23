@@ -37,6 +37,10 @@ CXX_CONTAINER = re.compile(
     r"std::(?:__\w+::)*(vector|array|deque|list|map|unordered_map|set|multiset|"
     r"unordered_set|unordered_multiset)<"
 )
+# libstdc++'s unordered containers and their hashtable: every template argument is
+# walked, so the allocator LLDB's formatter takes their entries' type from, and the
+# hashtable's value type, can be compared (#167).
+HASHED = re.compile(r"std::(?:__\w+::)*(?:unordered_(?:multi)?(?:map|set)|_Hashtable)<")
 _PARAMETERS = {
     "DW_TAG_template_type_parameter": "type",
     "DW_TAG_template_value_parameter": "value",
@@ -271,9 +275,11 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             encoding = (attrs.get("DW_AT_encoding") or "").strip()
             graph[offset] = ("base", name, encoding, size)
         elif tag in ("DW_TAG_pointer_type", "DW_TAG_ptr_to_member_type"):
-            # What it points at, never walked here: previews read one level (#136).
+            # What it points at, never walked here: previews read one level (#136). Its
+            # byte size where the debug information gives one (GCC's; clang's leave it to
+            # the target's address size): how far LLDB skips past `_M_nxt` (#167).
             aimed = target if tag == "DW_TAG_pointer_type" else None
-            graph[offset] = ("pointer", name, aimed)
+            graph[offset] = ("pointer", name, aimed, size)
             if pointees and aimed is not None:
                 pending.append(aimed)
         elif tag in ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type"):
@@ -365,6 +371,8 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 # A standard container's elements (and a map's keys and values), which
                 # its members reach only through pointers: their previews' types (#181).
                 pending.extend(p[2] for p in parameters[:2] if p[0] == "type" and p[2])
+            if graph[offset][9] and HASHED.match(graph[offset][11]):
+                pending.extend(p[2] for p in parameters if p[0] == "type" and p[2])
         else:
             graph[offset] = ("other", tag)
     return graph
