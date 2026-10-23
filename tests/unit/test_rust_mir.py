@@ -2697,28 +2697,22 @@ fn plan(_1: &mut [Engineer], _2: u32) -> () {
 }
 """
 HASH = "h0123456789abcdef"
-RAW_EQ_FUNCTION = IrFunction(
-    "plan",
-    "rota",
-    "src/main.rs",
-    {
-        "start": {31, 32, 33, 34},
-        "bb1": {38},
-        "bb2": {38, 39},
-        "bb3": {39},
-        "bb4": {43, 44},
-        "bb5": {47},
-    },
-    {},
-    28,
-)
+RAW_EQ_BLOCKS = {
+    "start": {31, 32, 33, 34},
+    "bb1": {38},
+    "bb2": {38, 39},
+    "bb3": {39},
+    "bb4": {43, 44},
+    "bb5": {47},
+}
 
 
-def raw_eq_owned(text=RAW_EQ):
-    """OwnedLocals over ``text``. Its proofs judge every place of a line: LLVM inlines
-    `ptr::eq` at -O0, and a line breakpoint on line 39 stops inside it, which the MIR
-    places past the call."""
-    return OwnedLocals([parse_body(text)], {HASH: RAW_EQ_FUNCTION}, ("src/main.rs",))
+def raw_eq_owned(text=RAW_EQ, **blocks):
+    """OwnedLocals over ``text`` (with ``blocks``, the IR's other blocks). Its proofs judge
+    every place of a line: LLVM inlines `ptr::eq` at -O0, and a line breakpoint on line
+    39 stops inside it, which the MIR places past the call."""
+    function = IrFunction("plan", "rota", "src/main.rs", {**RAW_EQ_BLOCKS, **blocks}, {}, 28)
+    return OwnedLocals([parse_body(text)], {HASH: function}, ("src/main.rs",))
 
 
 def test_a_raw_pointer_given_to_a_call_reads_nothing_in_a_crate_without_unsafe_code():
@@ -2748,6 +2742,38 @@ def test_a_raw_pointer_given_to_a_call_reads_nothing_in_a_crate_without_unsafe_c
         {("src/main.rs", 39)},
         ["e", "l"],
     )
+
+
+def test_a_raw_pointer_a_call_returns_may_hold_a_copy_and_names_what_it_was_given():
+    # Review of #300: `ptr::eq(e.as_ptr(), l.as_ptr())`: what a call given `e` returns
+    # may hold a copy, raw pointer or not, so the comparison may too; the refusal names
+    # `e` and `l`, which the walk back from it reached only through the raw pointers.
+    text = RAW_EQ.replace(
+        """        _10 = &raw const (*_13);         // scope 2 at src/main.rs:39:28: 39:29
+        _11 = &raw const (*_8);          // scope 2 at src/main.rs:39:31: 39:32
+        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:33
+    }
+""",
+        """        _10 = as_ptr(copy _13) -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:39:28: 39:38
+    }
+
+    bb6: {
+        _11 = as_ptr(copy _8) -> [return: bb7, unwind continue]; // scope 2 at src/main.rs:39:40: 39:50
+    }
+
+    bb7: {
+        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:51
+    }
+""",
+    )
+    assert text != RAW_EQ
+    owned = raw_eq_owned(text, bb6={39}, bb7={39})
+    # Past the comparison, `_9` may hold a copy of `week`, though the MIR shows no read.
+    found = dict(owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs"))
+    assert found[3, 0] == {9}
+    traced = owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs", traced=True)
+    assert not any(hazards for _, hazards in traced)
+    assert owned.untraced_reads(HASH, {9}) == ({("src/main.rs", 39)}, ["e", "l"])
 
 
 def test_a_refusal_through_a_pointer_peeky_does_not_follow_says_it_only_may_hold_a_copy():

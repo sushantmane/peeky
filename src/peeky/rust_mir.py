@@ -4423,6 +4423,8 @@ class OwnedLocals:
         made = {}
         for place, part in at.items():
             made.setdefault(parts[part][0], []).append((place, parts[part]))
+        # What some assignment makes other than by borrowing a place: it may hold a copy.
+        holding = {target for target, found in made.items() if any(not p[3] for _, p in found)}
         lines, references, seen, pending = set(), set(), set(), list(temporaries)
         while pending:
             local = pending.pop()
@@ -4432,8 +4434,9 @@ class OwnedLocals:
             for (number, index), part in made.get(local, ()):
                 _, mentioned, through, _, _, _, pointers, raw = part
                 if not self.unsafe_code:
-                    # Never read through (``_copy_verdict``).
-                    mentioned, pointers = mentioned - raw, pointers - raw
+                    # A raw pointer is never read through (``_copy_verdict``): one made by
+                    # borrowing a place gave nothing, one a call or cast made may hold a copy.
+                    mentioned, pointers = mentioned - (raw - holding), pointers - raw
                 if through or pointers:
                     _, file, number_line = body.blocks[number].statements[index]
                     if file is not None and number_line is not None:
