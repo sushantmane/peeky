@@ -213,7 +213,7 @@ and slow or unrepeatable runs.
   `diff`, `compare` and `set_effect` tables show long values from where they differ (`--json`:
   whole).
 - Compare numbers with `num`; `value` is the debugger's text. Mask addresses with
-  `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to 4.6). `--label`
+  `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to 4.8). `--label`
   tags a run with free text, stored as given; it never changes which runs `diff` or `compare:`
   pair.
 - Queries are read-only and bounded; a failing one returns `INVALID_QUERY`. Saved evidence

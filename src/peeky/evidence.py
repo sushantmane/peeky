@@ -110,7 +110,8 @@ TABLES = {
             "value": "Value as the debugger displays it; NULL when there is none",
             "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
             "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
-            "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not)",
+            "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not). A hex "
+            "address is NULL here: address(value) reads it",
             "unavailable": "1 when the debugger has no value here (optimized out, not live)",
             "error": "Why there is no value (unknown name, unreadable, ...), else NULL",
             "view": "Qualified value view (e.g. a Rust Option); 'stale' (whatever its view) "
@@ -764,6 +765,35 @@ def _object_ref(value):
     if not isinstance(value, str) or not (match := _OBJECT_REF.match(value)):
         return None
     return match[0]
+
+
+# A hex token address() reads: 0x and hex digits, a whole word. Unlike _ADDRESS (which
+# masks only what is surely an address), any length counts, for the caller asked for an
+# address: a non-PIE Linux program's brk heap is at 0x4052a0 (review of PR #277).
+_HEX_TOKEN = re.compile(r"\b0x([0-9a-fA-F]+)\b")
+
+
+def _address(value):
+    """The first `0x` token outside quoted text, as an INTEGER, else NULL.
+
+    Registered as the SQL function address(text), to compare addresses across runs by
+    their offset from a base each run has (eval 10: kitty's agent joined runs on
+    `substr(value, -3)`). It is lexical, not typed: in a struct's preview it reads the
+    first hex field, whatever it is, so it is for a pointer's own selector. NULL where
+    that first token is zero (a null pointer) or longer than 16 hex digits, and for a
+    string's text (a value that starts with a quote; a Java String is java-debug's
+    unescaped text) and a Java object (object_ref). SQLite's integers are signed 64-bit,
+    so from 2**63 on it is the two's complement, a negative number: two such addresses
+    still subtract and order correctly, and printf('0x%x', ...) gives the hex back.
+    """
+    if not isinstance(value, str) or value[:1] in ('"', "'") or _OBJECT_REF.match(value):
+        return None
+    for part in _TEXT.split(value):
+        if part[:1] not in ('"', "'") and (match := _HEX_TOKEN.search(part)):
+            if len(match[1]) > 16 or not (number := int(match[1], 16)):
+                return None
+            return number - (1 << 64) if number >= 1 << 63 else number
+    return None
 
 
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
@@ -1420,6 +1450,7 @@ def _reader(path, *, snapshot=False):
     connection.create_function("short_function", 1, bounded(_short_function), deterministic=True)
     connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
     connection.create_function("set_outcome", 1, bounded(_set_outcome), deterministic=True)
+    connection.create_function("address", 1, bounded(_address), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
@@ -2753,6 +2784,16 @@ def schema(path):
             "captures.identity (an integer), not in their text: within one hit equal means "
             "the same object; across hits equal may also be a new object in a freed one's "
             "place, while different always means different objects",
+            "address(text)": "The first `0x` token outside quoted text (1 to 16 hex digits), "
+            "as an INTEGER, else NULL: none, a zero one (a null pointer), a string's text, a "
+            "Java object and a Python identity (`[id 6]`) give NULL. It is lexical, not "
+            "typed: call it on a pointer's own selector (`h.p`), since in a preview (`{x = "
+            "0x1234567890, p = 0x...}`) it reads the first hex field. For a pointer it is the "
+            "address the pointer holds; in LLDB's `T @ 0x...` it is where the value itself is "
+            "stored. Addresses differ between runs: join runs' observed rows on each address "
+            "minus a base, the same element's address in each run (COOKBOOK 4.8). From 2^63 on "
+            "it is the two's complement, a negative INTEGER: printf('0x%x', address(value)) "
+            "gives its hex back (and 0x0 for NULL)",
         },
         "examples": list(EXAMPLES),
         "rules": [

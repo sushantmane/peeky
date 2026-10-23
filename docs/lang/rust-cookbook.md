@@ -15,6 +15,8 @@ are explained in [rust.md](rust.md#words-these-pages-use).
   - [See where nothing can change, and the way around it](#see-where-nothing-can-change-and-the-way-around-it)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a reference or a Box](#read-through-a-reference-or-a-box)
+- [4.8 Compare Addresses Across Runs](#48-compare-addresses-across-runs)
+  - [Find who sits at a pointer's old slot](#find-who-sits-at-a-pointers-old-slot)
 - [6.6 See What a Fix Does Before Making It](#66-see-what-a-fix-does-before-making-it)
   - [Change a local kept in a register](#change-a-local-kept-in-a-register)
 - [7.2 Rust (a Cargo crate)](#72-rust-a-cargo-crate)
@@ -90,6 +92,95 @@ or `Box` this way. So for `w: &mut Window`, `w[0]` doesn't read the `Window`. Se
 directly instead: `w.start`.
 
 A slice is different: an index selects an element, as in `values[0]` for `values: &[i32]`.
+
+## 4.8 Compare Addresses Across Runs
+
+Read [COOKBOOK 4.8](../COOKBOOK.md#48-compare-addresses-across-runs) first.
+
+### Find who sits at a pointer's old slot
+
+The `kitty` crate settles a trip's shared expenses. `parse` keeps each payer as a raw pointer into
+`trip.friends`, which holds the friends in the order they are first named. Then `main` sorts
+`trip.friends` by name. `settle` credits the friend whose address equals the payer's
+(`ptr::eq`).
+
+So which friend does each payer's pointer find after the sort? One probe reads the pointers, in
+`parse`. Another reads each slot's address and name, in `settle`:
+
+```sh
+peeky probe kitty --at src/main.rs:58 --capture 'payer @ main.rs:54,cents @ main.rs:49' \
+  --hits all -- 'Åsa:4500:Åsa,Bo,Zoë' 'Zoë:1000:Zoë,Chloé,Bo' 'Bo:900:Åsa,Chloé'
+peeky probe kitty --at src/main.rs:67 --capture 'f,f.name' --hits 4 \
+  -- 'Åsa:4500:Åsa,Bo,Zoë' 'Zoë:1000:Zoë,Chloé,Bo' 'Bo:900:Åsa,Chloé'
+```
+
+```
+hit  phase     line  function      selector            type             value
+1    observed  58    kitty::parse  payer @ main.rs:54  kitty::Friend *  0x0000000102ec5800  [unproven]
+1    observed  58    kitty::parse  cents @ main.rs:49  i64              4500  [not settable: register]
+2    observed  58    kitty::parse  payer @ main.rs:54  kitty::Friend *  0x0000000102ec5850  [unproven]
+2    observed  58    kitty::parse  cents @ main.rs:49  i64              1000  [not settable: register]
+3    observed  58    kitty::parse  payer @ main.rs:54  kitty::Friend *  0x0000000102ec5828  [unproven]
+3    observed  58    kitty::parse  cents @ main.rs:49  i64              900  [not settable: register]
+...
+evidence: saved as run 7; ...
+hit  phase     line  function       selector  type             value
+1    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad800
+1    observed  67    kitty::settle  f.name    String           "Bo"  [memory]
+2    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad828
+2    observed  67    kitty::settle  f.name    String           "Chloé"  [memory]
+3    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad850
+3    observed  67    kitty::settle  f.name    String           "Zoë"  [memory]
+4    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad878
+4    observed  67    kitty::settle  f.name    String           "Åsa"  [memory]
+...
+evidence: saved as run 8; ...
+```
+
+The two runs' heaps start at different addresses: `0x102ec5800` and `0x102cad800`. So join them on
+each address's offset from its run's lowest:
+
+```sh
+peeky sql "WITH a AS (SELECT run_id, hit, phase, selector, value,
+    address(value) - MIN(address(value)) OVER (PARTITION BY run_id, selector) AS from_base
+  FROM evidence WHERE run_id IN (:payers, :slots) AND phase = 'observed' AND address(value) > 0)
+SELECT p.hit AS expense, c.value AS cents, p.from_base, n.value AS credited FROM a p
+  JOIN evidence c ON c.run_id = p.run_id AND c.hit = p.hit AND c.phase = p.phase
+    AND c.selector = 'cents @ main.rs:49'
+  JOIN a f ON f.run_id = :slots AND f.phase = p.phase AND f.selector = 'f'
+    AND f.from_base = p.from_base
+  JOIN evidence n ON n.run_id = f.run_id AND n.hit = f.hit AND n.phase = f.phase
+    AND n.selector = 'f.name'
+  WHERE p.run_id = :payers AND p.selector = 'payer @ main.rs:54' ORDER BY p.hit" \
+  --param payers=7 --param slots=8
+```
+
+```
+expense  cents  from_base  credited
+1        4500   0          "Bo"
+2        1000   80         "Zoë"
+3        900    40         "Chloé"
+(3 rows)
+```
+
+Åsa's 4500 goes to Bo, and Bo's 900 to Chloé: the sort moved them into the payers' old slots.
+Zoë's slot didn't move, so her balance is right.
+
+- The base is slot 0 in both runs. The first payer is the first friend added, so slot 0 is the
+  lowest of the payers' pointers. At line 67, `f` visits every slot, slot 0 first.
+- A `Friend` is 40 bytes, so offset 80 is slot 2.
+- Pass the run numbers that `evidence: saved as run N` printed. A `--label` may name several runs.
+- Each side keeps `observed` rows. A run with `--set` or `--set-at` also has `after-set` rows.
+  Mixed in, they would move the base and pair the wrong hits
+  ([COOKBOOK 4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
+- `address(value) > 0` skips values that read negative, such as sentinels and pointers tagged in
+  their top bit, so a pointer set to `usize::MAX` never becomes the base.
+- Call `address` on a pointer, such as `f` or `e.payer`. On a struct's preview, it reads the first
+  hex token, whichever field holds it.
+- `[unproven]` on `payer @ main.rs:54` is about what the raw pointer points at. Its address is the
+  pointer's own value.
+- Read the slots after the sort, as here. At line 96, the sort's comparator sees some friends as
+  copies on the stack (`a 0x000000016d67aaf8`), which aren't slots.
 
 ## 6.6 See What a Fix Does Before Making It
 
