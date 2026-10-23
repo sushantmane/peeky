@@ -1676,9 +1676,9 @@ def _capture(
     """
 
     # Asked for by name, a local or global past the listing bound is read too; only
-    # those roots are previewed (#136).
+    # those roots are previewed (#136), and say what their addresses can tell (#302).
     roots = _roots(selectors)
-    named = {**({"names": roots} if roots else {}), "previews": roots}
+    named = {**({"names": roots} if roots else {}), "previews": roots, "extents": roots}
 
     def inspect():
         if not frame:
@@ -1692,9 +1692,10 @@ def _capture(
             )
         return shown
 
-    rows = []
+    rows, extents = [], {}
     for selector in selectors:
         row = {"hit": hit, "phase": phase, "selector": selector}
+        extent = None
         fresh = snapshot is None
         if fresh:
             snapshot = inspect()
@@ -1745,6 +1746,8 @@ def _capture(
                 )
             else:
                 row.update(value=variable["value"], type=variable.get("type"))
+                # What its address can tell (C, C++: #302), for `_pointed` below.
+                extent = variable.get("extent")
                 if preview:
                     # Only this value's own expansions, never its siblings', so the same
                     # value always shows the same way; a preview cut short by the shared
@@ -1856,7 +1859,97 @@ def _capture(
                 # `self.history[-1][2]` listed none, beside `self.items[2]`, the same dict).
                 row["children_error"] = DEPTH_LIMITED_CHILDREN
         rows.append(row)
+        if isinstance(extent, dict):
+            extents[len(rows) - 1] = extent
+    _pointed(rows, extents)
     return rows
+
+
+# A pointer's value: its address first (`0x000000016f29b050`, `0x… "text"`).
+_HELD = re.compile(r"0x([0-9a-fA-F]{1,16})(?![0-9a-zA-Z_])")
+
+
+def pointed_element(value, pointer, base):
+    """Which element of ``base`` the pointer whose row's value is ``value`` holds the
+    address of (#302): its index from 0, or the base's length where it is one past its
+    end (an object, with no length, is one element). ``pointer`` and ``base`` are what
+    their addresses can tell (``NativeSession.value_extent``), read at one stop of one
+    frame. None unless all of it is proven: the pointer points at the type of the base's
+    elements, typedefs and qualifiers aside, of the same size; and its address is a whole
+    number of elements from the base's own, from its first element to one past its end."""
+    held = _HELD.match(value) if isinstance(value, str) else None
+    size, element = pointer.get("element_size"), base.get("element_size")
+    address, length = base.get("address"), base.get("length", 1)
+    if (
+        held is None
+        or pointer.get("pointee") is None
+        or pointer.get("pointee") != base.get("element")
+    ):
+        return None
+    if any(type(number) is not int or number < 1 for number in (size, address, length)):
+        return None
+    if size != element:
+        return None
+    offset = int(held[1], 16) - address
+    if offset < 0 or offset % size or offset // size > length:
+        return None
+    return offset // size
+
+
+def _plain(row):
+    """A value shown with nothing that qualifies it: no note, view or stale bytes."""
+    return "value" in row and not any(
+        row.get(key) for key in ("unavailable", "error", "note", "view", "stale")
+    )
+
+
+def _pointed(rows, extents):
+    """Gives each pointer and array row of one stop and frame the size of its element
+    (`element_size`), and says on each pointer row which element of another captured
+    array or object it holds the address of, where ``pointed_element`` proves it
+    (`points_into`: {selector, index, and the array's length}; #302). An element inside
+    the base comes before one past another's end (two neighbours), then capture order."""
+    bases = [
+        (index, extent)
+        for index, extent in extents.items()
+        if "address" in extent and _plain(rows[index])
+    ]
+    for index, extent in extents.items():
+        row = rows[index]
+        if "pointee" in extent or "length" in extent:
+            row["element_size"] = extent["element_size"]
+        if "pointee" not in extent or not _plain(row):
+            continue
+        found = []
+        for other, base in bases:
+            if rows[other]["selector"] == row["selector"]:
+                continue
+            element = pointed_element(row["value"], extent, base)
+            if element is not None:
+                found.append((element == base.get("length", 1), other, element, base))
+        if found:
+            _, other, element, base = min(found, key=lambda each: each[:2])
+            row["points_into"] = {
+                "selector": rows[other]["selector"],
+                "index": element,
+                **({"length": base["length"]} if "length" in base else {}),
+            }
+
+
+def pointed_text(row):
+    """A row's `points_into` as tables show it: `points at level[6]`, `points at x`, or
+    `level + 96: one past its end` (`&x + 1` for an object), which is never read."""
+    into = row.get("points_into")
+    if not isinstance(into, dict):
+        return ""
+    base, index, length = into.get("selector"), into.get("index"), into.get("length")
+    if not isinstance(base, str) or type(index) is not int:
+        return ""
+    if length is None:
+        return f"points at {base}" if index == 0 else f"&{base} + 1: one past its end"
+    if index == length:
+        return f"{base} + {index}: one past its end"
+    return f"points at {base}[{index}]"
 
 
 DEPTH_LIMITED_CHILDREN = (
@@ -3776,6 +3869,7 @@ def run_probe(
                     **stop,
                     **({"names": roots} if roots else {}),
                     "previews": _roots(selectors) if capturing else False,
+                    "extents": _roots(selectors) if capturing else False,
                     **({"depth": True} if wants_return else {}),
                 },
             )
@@ -4559,6 +4653,7 @@ def _table(result, short_names=True):
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + errors.get(index, row.get("error", "")) + ">")
+            + (f"  [{pointed}]" if (pointed := pointed_text(row)) else "")
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")

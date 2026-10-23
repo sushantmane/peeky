@@ -93,12 +93,22 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - A binding by reference, such as `auto &[t, u]`, is read only where it names a local of the frame,
   or a member of one. Otherwise its row is `not shown`, because what it refers to may be gone
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
+- A pointer captured with an array at the same stop says which element it points at, where Peeky
+  proves it: `[points at level[6]]`, or `[level + 96: one past its end]`. The array must be one,
+  not a pointer such as a parameter
+  ([C and C++ 2.1](c-cpp-cookbook.md#which-element-a-pointer-points-at)).
+- `--json` rows and the store give such a pointer's `points_into` and its element's index. Pointer
+  and array rows give `element_size`, the bytes of one element.
 - `address(value)` reads that address as an integer. To see which element a pointer points at in
   another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
-- `queries diff` never calls a pointer's other address `addresses only`. It says
+- `queries diff` compares the elements a pointer holds where both runs captured the array.
+  ``another element of `level`: index 6 in run a, 4 in run b`` is a real difference. The same
+  element is `addresses only` ([C and C++ 4.8](c-cpp-cookbook.md#which-element-in-each-run)).
+- Otherwise `diff` never calls a pointer's other address `addresses only`. It says
   `addresses differ: it may point at another element too`, right after the real differences
-  ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)).
+  ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)). Where the text after the address reads the
+  same in both runs, as a `const std::string &` that reads `"Maya"`, it is `addresses only`.
 
 ## Change values
 

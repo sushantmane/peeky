@@ -14,11 +14,15 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [How a C++ function's name is shown](#how-a-c-functions-name-is-shown)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a pointer](#read-through-a-pointer)
+  - [Which element a pointer points at](#which-element-a-pointer-points-at)
   - [Read a C++ map or set](#read-a-c-map-or-set)
 - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop)
   - [Loop headers in a GCC build](#loop-headers-in-a-gcc-build)
 - [4.7 C++ References and Pointers in SQL](#47-c-references-and-pointers-in-sql)
   - [Compare a reference's text in SQL](#compare-a-references-text-in-sql)
+- [4.8 Compare Addresses Across Runs](#48-compare-addresses-across-runs)
+  - [Which element in each run](#which-element-in-each-run)
+  - [Elements between two pointers](#elements-between-two-pointers)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
   - [Read a caller's local](#read-a-callers-local)
 - [7.1 C and C++](#71-c-and-c)
@@ -112,6 +116,48 @@ refuses it, naming that selector.
   container.
 - A NULL or unreadable pointer is refused: `p is NULL`.
 
+### Which element a pointer points at
+
+Capture the array with the pointer, at the same stop. Where Peeky can prove which element the
+pointer holds the address of, its row says so. This `main` keeps its readings in
+`int level[6]`. `top` points at the highest, and `end` one past the last:
+
+```c
+const int *end = level + 6;
+const int *top = level + peak(level, n);
+printf("TOP:%d AT:%d\n", *top, (int)(top - level)); /* line 21 */
+```
+
+```sh
+peeky probe levels.c --at levels.c:21 --capture top,end,level -- 1 5 5 2
+```
+
+```
+hit  phase     line  function  selector  type         value
+1    observed  21    main      top       const int *  0x000000016dc6f2c8  [points at level[2]]
+1    observed  21    main      end       const int *  0x000000016dc6f2d8  [level + 6: one past its end]
+1    observed  21    main      level     int[6]       [1, 5, 5, 2, 0, 0]
+```
+
+Peeky says it only where all of this holds:
+
+- Both values are read at one stop, in one frame: one probe hit, or one `session get`.
+- The array's own type gives its length, such as `int level[96]`. A struct or another single
+  object counts as an array of one.
+- The pointer points at the array's element type. A typedef or `const` makes no difference. A
+  `char *` into an `int` array says nothing.
+- Its address is a whole number of elements from the array's first.
+- It is at most one past the end, as `end` is. C lets a pointer hold that address, but reading it
+  is undefined, so Peeky never reads it.
+
+Otherwise the row shows the address alone. A C++ reference never says, nor does a pointer read
+alone. `--json` rows have `points_into`, such as `{"selector": "level", "index": 2, "length": 6}`,
+and `element_size`, the bytes of one element. An object has no `length`.
+
+An array passed to a function is a pointer there. In `peak(const int *level, int n)`, `level` has
+no length, so its pointers say nothing. Probe a line in the function that declares the array, or
+count elements between the pointers ([4.8](#elements-between-two-pointers)).
+
 ### Read a C++ map or set
 
 On a `std::map` or `std::unordered_map`, `m[1]` is the value for key 1, as in C++. It is never the
@@ -170,6 +216,57 @@ the text may have several (`" pear"`). So cut at the first space only.
 - A text that Peeky couldn't check whole carries a note after it, so it never equals a plain
   string either: `"v" (shown up to a NUL at byte 1 of 3)`. This happens with libstdc++ and
   lldb-dap 18 ([7.1](#read-a-c-string-that-holds-a-nul-byte)).
+
+## 4.8 Compare Addresses Across Runs
+
+Read [COOKBOOK 4.8](../COOKBOOK.md#48-compare-addresses-across-runs) first.
+
+### Which element in each run
+
+Where both runs captured the array, `queries diff` compares the element each pointer holds
+([2.1](#which-element-a-pointer-points-at)). `peak` takes the last of equal readings. A
+candidate edit makes it take the first, `--old '*p >= *top' --new '*p > *top'`:
+
+```
+run_a  run_b  hit  phase     selector  value_a             value_b             differs  note
+1      2      1    observed  top       0x000000016dc6f2c8  0x000000016b31b2c4  1        another element of `level`: index 2 in run a, 1 in run b
+1      2      1    observed  end       0x000000016dc6f2d8  0x000000016b31b2d8  1        addresses only: the same element of `level` in both runs
+```
+
+- Another element is a real difference. It ranks with the values that differ, even where the two
+  addresses read the same, as when only the array moved.
+- The same element says ``addresses only: the same element of `level` in both runs``. It ranks
+  with the address-only values.
+- Where either run didn't prove it, the row says `addresses differ: it may point at another
+  element too`. Then compare offsets yourself.
+
+The store keeps each in `points_into` and `element_index`:
+
+```sh
+peeky sql "SELECT run_id, hit, selector, points_into, element_index FROM evidence
+  WHERE points_into IS NOT NULL ORDER BY selector, run_id, hit"
+```
+
+A pointer or reference whose text after the address reads the same, such as a
+`const std::string &` that reads `"Maya"` in both runs, ranks with the address-only values too.
+It may still be another element with the same text.
+
+### Elements between two pointers
+
+Where the array is a pointer, such as a parameter, nothing proves which element. Count the
+elements between two pointers of one type instead. `element_size` is the size of what a pointer
+points at. In `peak`, capture `top,level`, then:
+
+```sh
+peeky sql "SELECT t.run_id, t.hit,
+    (address(t.value) - address(l.value)) / t.element_size AS from_level
+  FROM evidence t JOIN evidence l ON l.run_id = t.run_id AND l.hit = t.hit
+    AND l.phase = t.phase AND l.selector = 'level'
+  WHERE t.selector = 'top' AND t.phase = 'observed' ORDER BY t.run_id, t.hit"
+```
+
+This is arithmetic on two addresses. It says how many elements `top` is past `level`, not that
+both point into one array.
 
 ## 5.1 Stop, Look, Change, Finish
 

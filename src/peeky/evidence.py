@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -150,6 +150,20 @@ TABLES = {
             "other rows where each has one and all agree). NULL for a line with one (and for "
             "runs saved before schema 14, and an earlier run's `(return)` row whose hit's "
             "other rows give no stop or disagree)",
+            "element_size": "C and C++: the size in bytes of what a pointer points at, or of "
+            "one element of an array of a constant length, from the build's debug "
+            "information; NULL for other values, other languages and runs saved before "
+            "schema 17. (address(p.value) - address(q.value)) / p.element_size is how many "
+            "elements apart two pointers of one type are",
+            "points_into": "C and C++: the selector of the array (or other object) captured "
+            "at the same hit, phase and frame that this pointer holds the address of an "
+            "element of, where Peeky proves it: the pointer points at the array's element "
+            "type, and its address is a whole number of elements from the array's first, "
+            "at most one past its end. NULL where any of that is not proven (the array is "
+            "a pointer itself, such as a parameter), and for runs saved before schema 17",
+            "element_index": "With points_into: which element, from 0. The array's length "
+            "(1 for another object) means one past its end, which C lets a pointer hold but "
+            "never read; else NULL",
         },
     ),
     "interventions": (
@@ -187,8 +201,9 @@ TABLES = {
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
     "instance, selector, type, "
-    "value, num, unavailable, error, view, note, identity, scope, args, sets, "
-    "artifact_manifest_id, source_sha256, candidate, language"
+    "value, num, unavailable, error, view, note, identity, scope, element_size, "
+    "points_into, element_index, args, sets, artifact_manifest_id, source_sha256, "
+    "candidate, language"
 )
 VIEWS = {
     "evidence": f"captures joined with their run, so no join is needed: {_EVIDENCE_COLUMNS} "
@@ -201,8 +216,8 @@ VIEWS = {
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
         c.type, c.value, c.num,
-        c.unavailable, c.error, c.view, c.note, c.identity, c.scope, r.args, r.sets,
-        r.artifact_manifest_id,
+        c.unavailable, c.error, c.view, c.note, c.identity, c.scope, c.element_size,
+        c.points_into, c.element_index, r.args, r.sets, r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
 _LAST_RUN_VIEW = (
@@ -214,7 +229,7 @@ _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
         error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
-        stop INTEGER)"""
+        stop INTEGER, element_size INTEGER, points_into TEXT, element_index INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -256,7 +271,9 @@ _DDL = (
 # locations a hit or a change was at; version 15 gives a `(return)` row its hit's stop
 # (#174), from that hit's other rows where they agree (NULL where they give none, as with
 # `--capture return` alone, or disagree); version 16 adds runs.set_outcomes, how each
-# requested change went (NULL for earlier runs).
+# requested change went (NULL for earlier runs); version 17 adds captures.element_size,
+# points_into and element_index (#302), which element of a captured array a C or C++
+# pointer holds the address of (NULL for earlier runs).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -370,9 +387,12 @@ _MIGRATIONS = {
         f"UPDATE captures SET stop = {_hits_stop('captures')} WHERE phase = 'returned' AND "
         "stop IS NULL",
     ),
-    15: (
+    15: (*_DROP_VIEWS, _add_columns(("set_outcomes", "TEXT"), table="runs")),
+    16: (
         *_DROP_VIEWS,
-        _add_columns(("set_outcomes", "TEXT"), table="runs"),
+        _add_columns(
+            ("element_size", "INTEGER"), ("points_into", "TEXT"), ("element_index", "INTEGER")
+        ),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -657,7 +677,25 @@ _HOLDS_ELSEWHERE = (
     "addresses differ: an address in it may be another element's too; compare offsets with "
     "address() (COOKBOOK 4.8)"
 )
+# A C or C++ pointer or reference that shows what it points at after its address, with
+# no other address in it (a string's text, a struct's plain members: `0x… "Maya"`), and
+# reads the same in both runs: it may still be another element that reads the same, but
+# no offset is needed to tell that much (eleventh evaluation: a `const std::string &` was
+# sent to address()). It ranks with the address-only values.
+_READS_ALIKE = (
+    "addresses only: what it points at reads the same in both runs, though it may be "
+    "another element that reads the same"
+)
+_C_LANGUAGES = "('c', 'cpp')"
+_SHOWS_POINTEE = (
+    "(SELECT m LIKE '0x… %' AND instr(substr(m, 5), '0x…') = 0 AND trim(substr(m, 5)) != '' "
+    "FROM (SELECT no_addresses(a.v, {}) AS m))"
+)
 _ADDRESS_KIND = f"""CASE
+          WHEN ({_POINTER_TYPE.format(t="a.t")} OR {_POINTER_TYPE.format(t="b.t")})
+            AND {_LANGUAGE.format(_A)} IN {_C_LANGUAGES} AND {_LANGUAGE.format(_B)} IN
+            {_C_LANGUAGES} AND {_SHOWS_POINTEE.format(_LANGUAGE.format(_A))}
+            THEN '{_READS_ALIKE}'
           WHEN {_POINTER_TYPE.format(t="a.t")} OR {_POINTER_TYPE.format(t="b.t")}
             THEN '{_POINTS_ELSEWHERE.replace("'", "''")}'
           WHEN {_LANGUAGE.format(_A)} IN {_NATIVE_LANGUAGES}
@@ -666,15 +704,22 @@ _ADDRESS_KIND = f"""CASE
           ELSE 'addresses only' END"""
 
 
+# A C or C++ pointer that holds the address of an element of the same captured array in
+# both runs (captures.points_into, #302), each element's by its index: another element is
+# a real difference, even where the addresses read the same; the same one, with
+# addresses that differ, is no more than that.
+_ELSEWHERE = "a.pi IS NOT NULL AND a.pi IS b.pi AND a.ei IS NOT b.ei"
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
-    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
+    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
+    points_into AS pi, element_index AS ei
     FROM captures s WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
-    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st
+    {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
+    points_into AS pi, element_index AS ei
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
-    a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
+    a.v IS NOT b.v OR ({_ELSEWHERE}) AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
       WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
@@ -686,6 +731,11 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       WHEN a.pos IS NULL THEN 'missing in run a' || COALESCE(' (run b: stop ' || k.st || ')', '')
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
+      WHEN {_ELSEWHERE} THEN 'another element of `' || a.pi || '`: index ' || a.ei
+        || ' in run a, ' || b.ei || ' in run b'
+      WHEN a.v IS NOT b.v AND a.pi IS NOT NULL AND a.pi IS b.pi
+        AND no_addresses(a.v, {_LANGUAGE.format(_A)}) IS no_addresses(b.v, {_LANGUAGE.format(_B)})
+        THEN 'addresses only: the same element of `' || a.pi || '` in both runs'
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN {_ADDRESS_KIND}
     END AS kind,
@@ -713,14 +763,17 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # for selectors only one run captured). Then values changed by an intervention only one
 # run made, before what may follow from them (tenth evaluation: they came after 70 rows
 # of its effects); then real divergences, in hit and capture order (a hit only one run
-# reached is one); then pointers whose addresses differ, which may point at another
+# reached is one, and so is a C or C++ pointer to another element of an array both runs
+# captured, #302); then pointers whose addresses differ, which may point at another
 # element (`_ADDRESS_KIND`): not with the real divergences, since the stack and heap move
 # between runs, so most pointers differ whether or not they point at another element,
 # and the first real difference stays the first divergence; then values a view or a note
 # qualifies in either run (a C local's leftovers
 # on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
 # their note says (`missing in run b; qualified (run a: note)`); then other values
-# that differ only in memory addresses; last, one row per selector only one run asked
+# that differ only in memory addresses (a C or C++ pointer to the same element, or one
+# whose text after its address reads the same: `_READS_ALIKE`); last, one row per
+# selector only one run asked
 # for. Nothing is dropped: an address-only or qualified difference may still be real;
 # but an after-set value equal to its run's observed value at that hit, in each run
 # with one, is no difference of its own (the observed row has any: seventh evaluation,
@@ -735,7 +788,8 @@ _REAL_RANK, _ONLY_IN_RANK = 10, 14
 _RANKED = f"""(
   SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
-    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
+    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %'
+      OR kind LIKE 'another element of %')
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -759,9 +813,11 @@ _RANKED = f"""(
   UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses only, at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
-      || 'selector') || ': its first hit)' ELSE note END, MIN(pos) FROM pair
-    WHERE qualified IS NULL AND kind = 'addresses only' AND NOT unchanged
-    GROUP BY selector, phase, st
+      || 'selector') || ': its first hit)' || substr(kind, length('addresses only') + 1)
+      ELSE note END, MIN(pos) FROM pair
+    WHERE qualified IS NULL AND (kind = 'addresses only' OR kind LIKE 'addresses only:%')
+    AND NOT unchanged
+    GROUP BY selector, phase, st, kind
   -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT {_ONLY_IN_RANK}, hit, phase, selector, value_a, value_b, 1,
     kind || ' (one row per selector: its first hit)' || COALESCE('; ' || qualified, ''),
@@ -968,7 +1024,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "value is missing from a run, qualified in either (a view or a note: not evidence "
         "by itself) or differs only in memory addresses (`addresses differ: ...` where an "
         "address may be another element's: a pointer or a reference, or any C, C++ or Rust "
-        "value; else `addresses only`). First a (status) row where either "
+        "value; else `addresses only`); a C or C++ pointer into an array both runs captured "
+        "says which element in each (`another element of ...`, `addresses only: the same "
+        "element of ...`). First a (status) row where either "
         "run did not complete (its error too), and a (sets) row where either requested "
         'interventions: each [name, value, "requested at LINE@HIT"] with how it went, as '
         "`outputs` says it; requests that read alike are said to be made alike only where "
@@ -986,13 +1044,16 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "where either run did not complete; (sets) says how each change went, as `outputs` does); "
         "then values only one run's intervention changed (an after-set value equal to its hit's "
         "observed one is left out; more than 3 alike are one row, its first hit's); then real "
-        "differences in hit and capture order (the first is the first divergence); then values "
+        "differences in hit and capture order (the first is the first divergence; a C or C++ "
+        "pointer to another element of an array both runs captured is one: `another element "
+        "of ...`); then values "
         "whose addresses differ where an address may be another element's (a pointer or a "
         "reference, or any C, C++ or Rust value: note `addresses differ: ...`, which says to "
         "compare offsets with address()), one row per selector (and stop); then values a "
         "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
         "itself: leftovers, a moved Rust local's bytes); then other address-only differences (a "
-        "Python repr, a Java object number), one row "
+        "Python repr, a Java object number, a C or C++ pointer to the same element, or one "
+        "whose text after its address reads the same), one row "
         "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
         "by stop where both runs label them (a line with several breakpoint locations): where the "
         "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
@@ -1258,6 +1319,15 @@ def _ensure(path):
     return connection
 
 
+def _points_into(row):
+    """(points_into, element_index) of a probe row's `points_into` (#302), else NULLs."""
+    into = row.get("points_into")
+    if not isinstance(into, dict) or type(into.get("index")) is not int:
+        return None, None
+    base = into.get("selector")
+    return (base, into["index"]) if isinstance(base, str) and base else (None, None)
+
+
 def record(path, result, *, language=None, target=None, label=None, worker=None):
     """Store one probe result; returns its run_id. Keeps the newest MAX_RUNS runs."""
     if label is not None and (not isinstance(label, str) or len(label) > 200):
@@ -1333,8 +1403,9 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         ).lastrowid
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
-            "num, unavailable, error, view, identity, scope, note, instance, stop) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "num, unavailable, error, view, identity, scope, note, instance, stop, "
+            "element_size, points_into, element_index) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1356,6 +1427,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     _text(row.get("note")),
                     _text(row.get("instance")),
                     row["stop"] if type(row.get("stop")) is int else None,
+                    row["element_size"] if type(row.get("element_size")) is int else None,
+                    *_points_into(row),
                 )
                 for row in result.get("rows") or []
             ],
@@ -2407,8 +2480,9 @@ def _structure_apart(path, run):
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
-        f"c.value, {_caveat('c')} AS caveat, r.language FROM captures c JOIN runs r ON "
-        "r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY c.run_id, c.hit, c.rowid",
+        f"c.value, {_caveat('c')} AS caveat, r.language, c.points_into, c.element_index FROM "
+        "captures c JOIN runs r ON r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY "
+        "c.run_id, c.hit, c.rowid",
         {"a": run["a"], "b": run["b"]},
         limit=MAX_ROWS,
     )["rows"]
@@ -2424,6 +2498,9 @@ def _structure_apart(path, run):
     for row in rows:
         here = row["run_id"]
         masked = None if row["value"] is None else _no_addresses(row["value"], row["language"])
+        if masked is not None and row["points_into"] is not None:
+            # Which element a C or C++ pointer holds (#302): another is another value.
+            masked = f"{masked} [{row['points_into']} + {row['element_index']}]"
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue

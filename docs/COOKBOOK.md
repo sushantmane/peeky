@@ -1567,7 +1567,7 @@ runs.
 | 3 | values that differ | Real differences, in hit order |
 | 4 | `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
 | 5 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
-| 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr |
+| 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr, or a C pointer to the same element |
 | 7 | `only in run a` | Selectors only one run captured |
 
 **1. How the runs differed.** Check these rows before you credit an edit with a difference. Each
@@ -1604,6 +1604,10 @@ only `r.tail` was set. The `observed` row shows any difference.
 divergence.
 
 - A hit that one run never reached says `missing in run b`.
+- A C or C++ pointer that holds another element of an array both runs captured says which, in
+  each run: ``another element of `level`: index 6 in run a, 4 in run b``. It is a real difference
+  even where its address reads the same in both
+  ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
 - A value whose type changed says so, for example after an edit to `long long`:
   `type unsigned int -> long long`.
 
@@ -1625,6 +1629,8 @@ element 6 in one run and at element 4 in the other.
   among them: the first real difference stays the first divergence.
 - To tell, compare each address's offset from a base with `address()`
   ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element.
+- C and C++ do that for you where both runs captured the array a pointer points into. Such a
+  pointer is a real difference (3) or the same element (6), never here.
 - There is one row per selector, as for `addresses only` below. The note says at how many hits:
   `addresses differ at 2 hits (one row per selector: its first hit): …`.
 
@@ -1642,6 +1648,14 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
 
 **6. Address-only differences** say `addresses only`. These are other values that differ only in
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
+
+- A C or C++ pointer that holds the same element of an array both runs captured says
+  ``addresses only: the same element of `level` in both runs``. Only the array moved.
+- A C or C++ pointer or reference whose text after its address reads the same in both runs is
+  here too, such as `0x… "Maya"`. It says `what it points at reads the same in both runs, though
+  it may be another element that reads the same`. Two elements can hold the same text.
+- One whose text holds another address, such as `0x… {next = 0x…}`, stays in tier 4. What that
+  address points at may differ.
 
 - NULL is never treated as an address.
 - Text inside quotes is the program's data, never an address. So `"0x00000001deadbeef"` in a
@@ -2345,7 +2359,8 @@ Choose the base with care:
 - Otherwise take a known element's address, such as the first hit's:
   `FIRST_VALUE(address(value)) OVER (PARTITION BY run_id, selector ORDER BY hit)`.
 - Take it from addresses in one block of memory. A copy on the stack, or a global, is elsewhere.
-- An offset is in bytes. Divide it by the element's size for its index.
+- An offset is in bytes. Divide it by the element's size for its index. C and C++ rows give it as
+  `element_size`.
 - An offset holds only while the block stays put. A `Vec` or `std::vector` that grows may move.
 
 Read an address with its row's view and note, as you read the value:
@@ -2365,6 +2380,11 @@ below 2^63.
 - `printf('0x%x', address(value))` gives the hex back. It prints NULL as `0x0`.
 
 Peeky has no canned query for this: the base, and what pairs the runs, depend on the program.
+
+C and C++ need it less. Capture the array with the pointer, at the same stop. Where Peeky proves
+which element the pointer holds, its row says `[points at level[6]]`. The store keeps it in
+`points_into` and `element_index`, and `diff` compares it
+([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
 
 ---
 

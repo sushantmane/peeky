@@ -44,6 +44,7 @@ from peeky.probe import (
     parse_hits,
     parse_selector,
     parse_set_at,
+    pointed_text,
     probe_exit_code,
     run_probe,
     split_selectors,
@@ -2039,6 +2040,7 @@ def _get_lines(row, session="default"):
         value = row.get("value", "<" + row.get("error", "") + ">")
         lines = [
             f"{row['selector']}: {row.get('type') or ''} = {value}"
+            + (f"  [{pointed}]" if (pointed := pointed_text(row)) else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
             + ("  [stale]" if row.get("stale") else "")
