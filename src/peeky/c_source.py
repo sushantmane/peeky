@@ -1679,11 +1679,10 @@ class Statements:
         qualified name does not count (`p.t`, `n::t`, `p.template t<0>()`), nor one in a
         range-`for`'s structured binding. None if no header does, or Peeky cannot tell.
 
-        ``always``: whether a stop past the line's first instruction may still be in that
-        header, or its declaration is no more the code's there: a part naming ``name``
-        runs on each pass (a `while`'s condition, a `for`'s condition or increment), or
-        the declaration is in the header itself (a block of a lambda there, which another
-        function runs)."""
+        ``always``: whether the hedge holds at every stop on the line, not only until the
+        header has run: a part naming ``name`` runs on each pass (a `while`'s condition, a
+        `for`'s condition or increment), or the declaration is in the header itself (a
+        block of a lambda there, which another function runs, never this one)."""
         if not self.block_storage(line, name, after, True, False, entering, own):
             return None
         code = self._code()[0]
