@@ -475,12 +475,10 @@ def test_a_constexpr_or_generic_lambdas_block_is_its_own(tmp_path, cxx, marker, 
     lambdas = [row for row in found if row not in mains]
     enumerator = f"the block's enumerator `t` (line {line})"
     assert not [row for row in mains if enumerator in row.get("error", "")], mains
+    # The lambda's parameter (13) is never shown: withheld for its block's `t` (or, at
+    # GCC's prologue, as not stored yet).
+    assert not [row for row in lambdas if "value" in row], lambdas
     assert not [row for row in found if row.get("value") == "13"], found
-    assert not [
-        row
-        for row in lambdas
-        if "value" not in row and enumerator not in row.get("error", "") and row["selector"] == "t"
-    ], lambdas
     if optimization == "O0":
         # The caller's `t`, and the lambda's own frame, withheld for its block's `t`.
         assert [row for row in mains if row.get("value") == "3"], mains
