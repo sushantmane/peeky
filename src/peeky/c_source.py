@@ -1484,6 +1484,7 @@ class Statements:
         entering=False,
         own=None,
         until=None,
+        others=False,
     ):
         """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
         line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
@@ -1502,9 +1503,13 @@ class Statements:
 
         ``body``: the stop is in a function wholly on the line (a lambda in a statement
         there, #169): where the line opens one function's or lambda's body, it is that
-        one, and only its statements count, not the statement holding it (a
-        range-`for`'s binding names nothing inside a lambda in its range); where it
-        opens several, the line is read as any other.
+        one, and only its statements count, with those of each block in it (#290), not
+        the statement holding it (a range-`for`'s binding names nothing inside a lambda
+        in its range); where it opens several, the line is read as any other.
+
+        ``others``: the stop is in a known function that goes on past the line: a
+        function's or a lambda's body wholly on the line is another function's code,
+        and no block in it counts, as none of its statements does (#290).
 
         ``entering``: the stop is the first instruction of the statements that start on
         the line, so none of them has run: a range-`for` there whose header ends the
@@ -1566,12 +1571,18 @@ class Statements:
         ]
         cut = finish if until is None else until
         if len(bodies) == 1:
+            # The body's own statements, and those of each block in it (#290).
             opened = bodies[0]
-            start, stop = max(opened + 1, lower), min(pairs[opened], finish, cut)
-            if start >= stop:
-                return False
-            return self._storage_declaration(
-                code, start, stop, name, after, opened >= lower, position, fresh, own
+            closed = min(pairs[opened], finish)
+            blocks = [opened] + sorted(
+                inner
+                for inner in pairs
+                if opened < inner < closed
+                and code.startswith(("{", "<%"), inner)
+                and self._opens_statements(inner)
+            )
+            return self._blocks_storage(
+                code, blocks, closed, cut, name, after, lower, position, fresh, own
             )
         # Every block around the line, and every block of statements opening on it
         # before its end (`{ extern long gcount; total += use(gcount); }`, a statement
@@ -1585,6 +1596,22 @@ class Statements:
             and code.startswith(("{", "<%"), opened)
             and (opened < position or self._opens_statements(opened))
         )
+        if others:
+            # A block in a function's or lambda's body wholly on the line is that
+            # function's: the frame's goes on past the line (#290).
+            wholly = [
+                (opened, closed)
+                for opened, closed in pairs.items()
+                if begin <= opened
+                and closed < finish
+                and code.startswith(("{", "<%"), opened)
+                and self._brace(opened) in ("function", "lambda")
+            ]
+            around = [
+                block
+                for block in around
+                if not any(opened < block < closed for opened, closed in wholly)
+            ]
         if not around:
             return False
         if elsewhere and any(
@@ -1593,10 +1620,17 @@ class Statements:
         ):
             # An `#include` in a block (a fragment) may declare it so.
             return None
-        for index, opened in enumerate(around):
-            # This block's own statements, up to the next block around the line.
+        return self._blocks_storage(
+            code, around, finish, cut, name, after, lower, position, fresh, own
+        )
+
+    def _blocks_storage(self, code, blocks, finish, cut, name, after, lower, position, fresh, own):
+        """``block_storage``'s verdict over ``blocks`` (where each opens, in order): each
+        one's own statements, up to the next one's opening (the last's up to ``finish``),
+        none past ``cut``."""
+        for index, opened in enumerate(blocks):
             start = max(opened + 1, lower)
-            stop = min(around[index + 1] if index + 1 < len(around) else finish, cut)
+            stop = min(blocks[index + 1] if index + 1 < len(blocks) else finish, cut)
             if start >= stop:
                 continue
             # A C++ class declared in the local's own block leaves the local named
@@ -1668,14 +1702,14 @@ class Statements:
                     return first, bisect.bisect_right(self.starts, closing)
         return None
 
-    def header_before(self, line, name, after=None, entering=False, own=None):
+    def header_before(self, line, name, after=None, entering=False, own=None, others=False):
         """(keyword, first line, last line, always) of a statement header (`if`, `switch`,
         `while` or `for`) holding ``line`` that names ``name`` where nothing hides the
         local of that name yet, in its condition, an init-statement (`if (long k = t;
         k)`) or a range's expression: `if (t) { static long t = 5; use(t); }`, where only
         the `static` the line declares later hides it (``block_storage``, read with
-        ``after``, ``entering`` and ``own`` as it is). Running that header may read the
-        outer local, or not (a mention need not be a read, #283). A member's or a
+        ``after``, ``entering``, ``own`` and ``others`` as it is). Running that header may
+        read the outer local, or not (a mention need not be a read, #283). A member's or a
         qualified name does not count (`p.t`, `n::t`, `p.template t<0>()`), nor one in a
         range-`for`'s structured binding. None if no header does, or Peeky cannot tell.
 
@@ -1687,7 +1721,7 @@ class Statements:
         header has run: a part naming ``name`` runs on each pass (a `while`'s condition, a
         `for`'s condition or increment), or the declaration is in the header itself (a
         block of a lambda there, which another function runs, never this one)."""
-        if not self.block_storage(line, name, after, True, False, entering, own):
+        if not self.block_storage(line, name, after, True, False, entering, own, others=others):
             return None
         code = self._code()[0]
         found = []
@@ -1713,14 +1747,14 @@ class Statements:
                 # Read up to the name's end: a declaration it completes (a `static`'s
                 # own) is no mention of the outer local.
                 hidden = self.block_storage(
-                    line, name, after, True, False, entering, own, until=word.end()
+                    line, name, after, True, False, entering, own, word.end(), others
                 )
                 if hidden is False:
                     named.append(word.start() > again)
             if not named:
                 continue
             inner = self.block_storage(
-                line, name, after, True, False, entering, own, until=closing + 1
+                line, name, after, True, False, entering, own, closing + 1, others
             )
             lines = bisect.bisect_right(self.starts, at), bisect.bisect_right(self.starts, closing)
             found.append((keyword, *lines, any(named) or inner is not False))

@@ -1536,6 +1536,52 @@ def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_
     assert statements.header_before(3, "u", 2) is None
 
 
+LAMBDA_BLOCK_SOURCE = """long f(long x) {
+    long t = x;
+    auto g = [&](long t) { { static long t = 5; use(t); } return t; };
+    auto h = [&] { { static long t = 6; use(t); } return t; };
+    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) {
+        use(t * u);
+    }
+    { static long t = 8; use(t); } auto k = [] { return 1; };
+    auto m = [&] { { static long t = 9; use(t); }
+        return t; };
+    auto n = [&](long t) { { static long t = 10; } auto p = [] { return 1; }; return t; };
+    return g(t) + h() + m() + n(t);
+}
+"""
+
+
+def test_a_lambdas_block_is_scoped_to_the_lambda():
+    # #290: a block in a lambda wholly on the line counted for the function holding the
+    # lambda (`others`: that function goes on past the line), and in the lambda's own
+    # frame (``body``) it was skipped, as though its statements were the lambda's only.
+    statements = Statements(LAMBDA_BLOCK_SOURCE, raw_strings=True)
+
+    def storage(line, after, **flags):
+        return statements.block_storage(line, "t", after, True, **flags)
+
+    # The lambda's own frame (its parameter `t`): its block's `static` hides it.
+    assert storage(3, None, body=True) == ("static", 3)
+    # The function holding a lambda: nothing the lambda declares hides its `t`, unless
+    # Peeky cannot tell which function the frame runs.
+    assert storage(4, 2, others=True) is False
+    assert storage(4, 2) == ("static", 4)
+    # A loop's binding is its own row's, never hidden by the lambda's `static`; the outer
+    # `t` is hidden by the binding, and by nothing before it exists.
+    assert storage(5, 5, others=True) is False
+    assert storage(5, 2, others=True) == ("binding", 5)
+    assert storage(5, 2, others=True, entering=True) is False
+    assert statements.header_before(5, "t", 2, entering=True, others=True) is None
+    assert statements.header_before(5, "t", 2, entering=True) == ("for", 5, 5, True)
+    # The function's own block on the line still counts; and a lambda going on past the
+    # line may be the frame's, so its block still counts too.
+    assert storage(8, 2, others=True) == ("static", 8)
+    assert storage(9, 2, others=True) == ("static", 9)
+    # A lambda's frame on a line holding another lambda: read as any line.
+    assert storage(11, None, body=True) == ("static", 11)
+
+
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():
     # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
     # test and binding, its range's cleanup), all emitted after its range expression,

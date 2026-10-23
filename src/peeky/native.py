@@ -5920,7 +5920,17 @@ class NativeSession:
                 and function.get("source") == source
                 and tuple(function.get("span") or ()) == (line, line)
             )
-            storage = statements.block_storage(at, base, after, True, body, own=own)
+            # A function going on past the line: a lambda's body wholly on it (and each
+            # block in it) is another function's code (#290).
+            span = tuple((function or {}).get("span") or ())
+            others = bool(
+                not body
+                and function is not None
+                and function.get("source") == source
+                and len(span) == 2
+                and span[1] > line
+            )
+            storage = statements.block_storage(at, base, after, True, body, own=own, others=others)
             header = None
             if storage:
                 # A range-`for` header holding the line that names the outer local before
@@ -5930,7 +5940,9 @@ class NativeSession:
                     ranged = None if body else statements.range_header(at, base)
                     entered = entering() if entering is not None else None
                     if entered:
-                        storage = statements.block_storage(at, base, after, True, body, True, own)
+                        storage = statements.block_storage(
+                            at, base, after, True, body, True, own, others=others
+                        )
 
                 # A header on the line has run only where the stop is proven past its `)`:
                 # unoptimized, past the line's first instruction, at a column after it
@@ -5951,7 +5963,7 @@ class NativeSession:
                 elif storage and not body:
                     # Any statement's header that names it before the line's declaration
                     # does the same: `if (t) { static long t = 5; use(t); }` (#286).
-                    found = statements.header_before(at, base, after, bool(entered), own)
+                    found = statements.header_before(at, base, after, bool(entered), own, others)
                     if found is not None and not asked:
                         entered = entering() if entering is not None else None
                     if found is not None and not ran(found[1:3], found[3]):
@@ -5960,7 +5972,9 @@ class NativeSession:
                     if entering is not None and entered is None:
                         # An optimized build: whether the stop starts the line, before the
                         # binding exists, cannot be told (#173).
-                        before = statements.block_storage(at, base, after, True, body, True, own)
+                        before = statements.block_storage(
+                            at, base, after, True, body, True, own, others=others
+                        )
                         if before != storage:
                             storage = ("binding-unsure", *storage[1:])
             if storage:

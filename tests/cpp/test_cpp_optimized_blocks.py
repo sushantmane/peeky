@@ -153,8 +153,8 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(
 
 
 # #286: other statements' headers that name the outer `t` before the line declares a `t`:
-# C++17 init-statements, a classic `for` whose body binds `t`, and a range whose lambda's
-# block declares a `static` `t` (that lambda's own, run by another function).
+# C++17 init-statements, and a classic `for` whose body binds `t`. (A lambda's block in a
+# range is that lambda's own, run by another function: see #290's test below.)
 HEADER_SOURCE = """#include <cstdio>
 #include <utility>
 #include <vector>
@@ -162,18 +162,11 @@ __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return 
 __attribute__((noinline)) std::vector<std::pair<long, long>> make(long v) {
     return {{v + 1000, 1}, {v + 1001, 2}};
 }
-template <class F> __attribute__((noinline)) std::vector<std::pair<long, long>> make2(long v, F f) {
-    return {{v + f(), 1}, {v + 2000, 2}};
-}
 int main(int argc, char **argv) {
     long t = argc + 2; // OUTER
     if (long k = t; k) { static long t = 5; use(t + k); } // IF_INIT
     switch (long k = t; k) { case 1: use(k); break; default: { static long t = 6; use(t + k); } } // SWITCH_INIT
     for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); } // FOR_BINDING
-    for (const auto &[a, b] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) { use(a + b); } // LAMBDA
-    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 8; r = t; } return r; })) { // LAMBDA_HEADER
-        use(t * u);
-    }
     use(t);
     return 0;
 }
@@ -183,8 +176,6 @@ STATEMENTS = {
     "IF_INIT": ("if", "the block's `static` `t` (line {}), ", False),
     "SWITCH_INIT": ("switch", "the block's `static` `t` (line {}), ", False),
     "FOR_BINDING": ("for", "the structured binding `t` (line {})", True),
-    "LAMBDA": ("for", "the block's `static` `t` (line {}), ", True),
-    "LAMBDA_HEADER": ("for", "the block's `static` `t` (line {}), ", False),
 }
 
 
@@ -195,24 +186,15 @@ def header_line(marker):
 
 
 @pytest.mark.timeout(180)
-@pytest.mark.parametrize(
-    "marker, optimization",
-    [
-        (marker, level)
-        for marker in sorted(STATEMENTS)
-        for level in ("O0", "O1")
-        # Optimized, #283 hedges this line for its binding (above).
-        if (marker, level) != ("LAMBDA_HEADER", "O1")
-    ],
-)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", sorted(STATEMENTS))
 def test_a_statement_header_naming_the_outer_local_hedges_its_note(
     tmp_path, cxx, marker, optimization
 ):
     # #286: on `if (long k = t; k) { static long t = 5; use(t + k); }` the outer `t` said
     # "not what the code reads: the code here names the block's `static`", though the
     # header runs first and names the outer `t` there. Whether running it reads `t`, Peeky
-    # cannot tell: withheld, hedged. A classic `for`'s condition runs on each pass; a
-    # lambda's block in the range is another function's, never this frame's code.
+    # cannot tell: withheld, hedged. A classic `for`'s condition runs on each pass.
     adapter = target(optimization)
     line, outer = header_line(marker), header_line("OUTER")
     selectors = ("t", f"t @ blocks.cpp:{outer}")
@@ -220,7 +202,7 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(
     result = run_probe(tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=adapter)
     assert result["status"] == "completed", result.get("error")
     found = [row for row in result["rows"] if row["selector"] in selectors]
-    # The outer `t` holds 3 here; each `static` 5 to 8, and each binding 1000 or more.
+    # The outer `t` holds 3 here; each `static` 5 or 6, and each binding 1000 or more.
     assert not [row for row in found if row.get("value") == "3"], found
     # The outer local's rows: selected by its line where LLDB lists several `t`s, else
     # plain `t` (a binding's own row is a reference).
@@ -246,13 +228,6 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(
         if always or optimization != "O0" or row["hit"] == 1:
             # A part that runs on each pass, an optimized build, or the line's first stop.
             assert row["error"] in hedged, row
-        elif marker == "LAMBDA_HEADER":
-            # Past the first instruction, on a later pass (the line table's column is the
-            # binding's or the `:`'s, after the range has run), the binding exists (#283).
-            assert row["error"].startswith(
-                f"not what the code reads: the code here names the structured binding `t` "
-                f"(line {line}): this row is the outer local"
-            ), row
         else:
             # Unoptimized, past the line's first instruction: a header run once has run.
             assert row["error"].startswith(f"not what the code reads: the code here names {what}")
@@ -394,3 +369,80 @@ def test_a_stop_back_from_a_range_types_begin_is_judged_by_its_column(
     ]
     assert outer and all(row["error"] == error for row in outer), rows
     assert not [row for row in outer if "value" in row], rows
+
+
+# #290: a block in a lambda wholly on a line is that lambda's, run by another function.
+LAMBDA_SOURCE = """#include <cstdio>
+#include <utility>
+#include <vector>
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+template <class F> __attribute__((noinline)) std::vector<std::pair<long, long>> make2(long v, F f) {
+    return {{v + f(), 1}, {v + 2000, 2}};
+}
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    auto g = [&](long t) __attribute__((noinline)) { { static long t = 5; use(t++); } return use(t); }; // FRAME
+    use(g(t + 10));
+    for (const auto &[a, b] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) { use(a + b); } // RANGE
+    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 8; r = t; } return r; })) { // BINDING
+        use(t * u);
+    }
+    use(t);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    "marker, optimization",
+    [
+        (marker, level)
+        for marker in ("FRAME", "RANGE", "BINDING")
+        for level in ("O0", "O1")
+        # Optimized, LLDB lists no binding there, and the outer row is hedged for the
+        # loop's binding (#283), as it was.
+        if (marker, level) != ("BINDING", "O1")
+    ],
+)
+def test_a_lambdas_block_is_scoped_to_the_lambda(tmp_path, cxx, marker, optimization):
+    # #290: a block in a lambda wholly on the line counted for the function holding the
+    # lambda: `main`'s outer `t` was withheld for the lambda's `static` (RANGE), and the
+    # loop's own binding was called "the outer local" (BINDING). In the lambda's own
+    # frame, its block was skipped: the parameter `t` showed 13, though the code there
+    # names the block's `static` (FRAME).
+    line = next(
+        i for i, row in enumerate(LAMBDA_SOURCE.splitlines(), 1) if row.endswith(f"// {marker}")
+    )
+    outer = next(i for i, row in enumerate(LAMBDA_SOURCE.splitlines(), 1) if "OUTER" in row)
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    (tmp_path / "blocks.cpp").write_text(LAMBDA_SOURCE)
+    result = run_probe(
+        tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    lambdas = [row for row in found if "operator()" in (row.get("function") or "")]
+    mains = [row for row in found if row not in lambdas]
+    static = f"the block's `static` `t` (line {line})"
+    # `main` never names the lambda's `static`, nor is a binding's own row the outer local.
+    assert not [row for row in mains if static in row.get("error", "")], mains
+    assert not [
+        row
+        for row in mains
+        if "this row is the outer local" in row.get("error", "") and "&" in (row.get("type") or "")
+    ], mains
+    if marker == "FRAME":
+        # The parameter (13) is withheld where its line names the block's `static`.
+        assert not [row for row in found if row.get("value") == "13"], found
+        assert [
+            row
+            for row in lambdas
+            if row["error"].startswith(f"not what the code reads: the code here names {static}")
+        ], lambdas
+    elif marker == "RANGE":
+        # Only the outer `t` (3) is named in `main` there: shown.
+        assert [row for row in mains if row.get("value") == "3"], mains
+    else:
+        # At the line's first instruction, before the binding exists, the outer `t` (3).
+        assert [row for row in mains if row["hit"] == 1 and row.get("value") == "3"], mains
