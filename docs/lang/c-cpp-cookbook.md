@@ -870,7 +870,8 @@ is:
   instruction, where the range runs first, unless the loop's body has code on that line too;
 - a `thread_local`, which the debugger lists apart as `q @ file:line`.
 
-A block that opens on the stop line counts.
+A block that opens on the stop line counts. So does the block of an `if constexpr (…)`, an
+`if consteval` or an `if !consteval`.
 
 A statement's header can also name the outer local, and run before the line's own declaration of
 that name exists. For example, `if (t) { static long t = 5; use(t); }` or

@@ -1985,6 +1985,35 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
         )
 
 
+IF_CONSTEXPR_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    if constexpr (sizeof(long) > 1) { static long q = 5; use(q); }
+    if consteval { static long q = 6; use(q); }
+    if !consteval { static long q = 7; use(q); }
+    return q;
+}
+"""
+
+
+def test_an_if_constexpr_or_consteval_block_withholds_the_outer_local(tmp_path):
+    # #289: `if constexpr (sizeof(long) > 1) { static long q = 5; use(q); }` showed the
+    # outer `q` with no note, though the code there names the block's `static`. Peeky
+    # builds C++17, where `if consteval` (C++23) is refused, but the scanner reads it so.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": IF_CONSTEXPR_UNIT})
+    session.target.language = "cpp"
+    for line in (3, 4, 5):
+        found = session._block_storage("q", frame, "a.c", line)
+        assert found is not None, line
+        assert (found.label, str(found)) == (
+            "not what the code reads",
+            f"the code here names the block's `static` `q` (line {line}), which the debugger "
+            "does not list: this row is the outer local of that name",
+        ), line
+        assert found.refusal.endswith("so a change to it would not reach that code")
+
+
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     # #138 with #146: `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
