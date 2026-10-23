@@ -847,11 +847,20 @@ is:
 
 A block that opens on the stop line counts.
 
-A range-`for`'s header can also name the outer local: `for (auto [t, u] : make(t)) { use(t); }`.
-That code runs before the binding exists, and a mention isn't always a read, as in `sizeof(t)`.
-So the row says `may not be what the code reads` wherever Peeky can't tell that the header has
-run. That is at the line's first instruction, on any line of a header that spans lines, and in a
-caller frame. A member's name, such as `p.t` or `p.template t<0>()`, isn't the local.
+A statement's header can also name the outer local, and run before the line's own declaration of
+that name exists. For example, `if (t) { static long t = 5; use(t); }` or
+`for (auto [t, u] : make(t)) { use(t); }`. A mention isn't always a read, as in `sizeof(t)`. So
+the row says `may not be what the code reads` wherever Peeky can't tell that the header has run:
+
+- at the line's first instruction, and at every stop in an optimized build;
+- on any line of a header that spans lines, and in a caller frame;
+- at every stop on the line when part of the header runs on each pass. That is a `while`'s
+  condition, or a `for`'s condition or increment;
+- at every stop on the line when the declaration is in a lambda in the header, which another
+  function runs.
+
+Any `if`, `switch`, `while` or `for` header counts, also one with an init-statement:
+`if (long k = t; k)`. A member's name, such as `p.t` or `p.template t<0>()`, isn't the local.
 
 Peeky reads the source as the build's compiler preprocesses it (`-E`, with the same flags). So
 whatever a macro expands to counts, and only what a conditional keeps. A prototype's parameter
