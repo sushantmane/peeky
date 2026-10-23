@@ -2122,3 +2122,577 @@ def test_a_frame_whose_address_is_unknown_is_withheld_on_a_prologues_line(tmp_pa
     assert "the debugger gave no instruction address for this frame" in (
         session.not_yet_declared({"name": "a"}, pointless)
     )
+
+
+def code_die(offset, low, high, root, inline=False, depth=1, parent=None, call=None, first=None):
+    from peeky.native import CodeDie
+
+    return CodeDie(offset, ((low, high),), inline, depth, root, parent, call, {low: first})
+
+
+def unplaced_session(tmp_path, language="cpp"):
+    """A NativeSession whose table holds `main` (0x100-0x200, rows on lines 2 and 5 of
+    a.cpp) and nothing else: GCC's lambdas and implicit constructors had no entry (#167).
+    Its code: `main` and a function Peeky cannot place (0x300-0x340, line 8); line 9 runs
+    both (review of #282)."""
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias = 0x1000
+    session.declarations = [
+        {
+            "root": 1,
+            "source": "a.cpp",
+            "ranges": ((0x100, 0x200),),
+            "order": ((0x100, "a.cpp", 2), (0x180, "a.cpp", 5)),
+            "locals": {"x": {("a.cpp", 3, True)}},
+        }
+    ]
+    session.code = {
+        "dies": (code_die(1, 0x100, 0x200, 1), code_die(2, 0x300, 0x340, None)),
+        "lines": {
+            ("a.cpp", 2): frozenset({1}),
+            ("a.cpp", 5): frozenset({1}),
+            ("a.cpp", 8): frozenset({None}),
+            ("a.cpp", 9): frozenset({1, None}),
+        },
+    }
+    session.target = SimpleNamespace(language=language, verification_inputs=("a.cpp",))
+    session.prepared = SimpleNamespace(workspace=tmp_path)
+    (tmp_path / "a.cpp").write_text("\n" * 12)
+    return session
+
+
+def test_a_cpp_frame_peeky_cannot_place_withholds_its_locals(tmp_path):
+    # #167: GCC gives a lambda's `operator()` and an implicit constructor no source, so the
+    # table had no entry for them, no rule ran, and their locals showed leftovers
+    # (`x = 281474976709584` before `long x = a * 2;` ran) with no note.
+    session = unplaced_session(tmp_path)
+
+    def frame(address, path=None, line=8):
+        return {
+            "id": 1,
+            "name": "operator()",
+            "instructionPointerReference": None if address is None else hex(0x1000 + address),
+            "source": {"path": str(path or tmp_path / "a.cpp")},
+            "line": line,
+        }
+
+    reason = session.not_yet_declared({"name": "x"}, frame(0x300))
+    assert reason == (
+        "Peeky cannot place this function's declarations in the program's sources (its debug "
+        "information ties it to none), so it cannot tell whether this is set yet: it may hold "
+        "leftovers. Read what the function returns (`step --out`), or stop in a function "
+        "`peeky describe` lists"
+    )
+    assert reason.label == "not shown" and len(reason) <= 300
+    # Its parameters too, and a change is refused for the same reason.
+    assert session.not_yet_declared({"name": "a"}, frame(0x300)) == reason
+    assert reason.refusal == (
+        "'x' cannot be changed here: Peeky cannot place this function's declarations in the "
+        "program's sources, so it cannot tell whether the function's code overwrites a "
+        "change. Change it in a function `peeky describe` lists"
+    )
+    with pytest.raises(ValueError, match="cannot place this function's declarations"):
+        session.validate_mutation_target({"name": "a"}, frame(0x300))
+    # A step's returned value is the callee's, not this frame's.
+    assert session._unplaced({"name": "(Return Value)"}, frame(0x300)) is None
+    # A function the table holds is judged by its rules, as before.
+    assert session._unplaced({"name": "x"}, frame(0x150)) is None
+    # The standard library's code, a frame with no source, and C are not judged so.
+    header = tmp_path.parent / "usr" / "include" / "stl_algo.h"
+    assert session._unplaced({"name": "x"}, frame(0x300, header)) is None
+    assert session._unplaced({"name": "x"}, {**frame(0x300), "source": {}}) is None
+    assert unplaced_session(tmp_path, "c")._unplaced({"name": "x"}, frame(0x300)) is None
+    # Without the build's code (an older table), a frame no entry holds, as before.
+    session.code = None
+    assert session._unplaced({"name": "x"}, frame(0x300)) == reason
+    assert session._unplaced({"name": "x"}, frame(0x150)) is None
+    # Nothing read of the build: unjudged, as before.
+    session.declarations = None
+    assert session.not_yet_declared({"name": "x"}, frame(0x300)) is None
+
+
+def test_a_frame_whose_address_is_unknown_is_placed_only_by_one_functions_line(tmp_path):
+    # Review of #282: without the load address, a line some placed function runs proved
+    # nothing: an inlined call Peeky cannot place runs on its own lines inside it. Only a
+    # line whose every row is one placed function's own code places the frame.
+    session = unplaced_session(tmp_path)
+    session.load_bias, session.load_bias_unknown = None, True
+
+    def frame(line):
+        return {
+            "id": 1,
+            "instructionPointerReference": "0x1300",
+            "source": {"path": str(tmp_path / "a.cpp")},
+            "line": line,
+        }
+
+    assert session._unplaced({"name": "x"}, frame(5)) is None
+    # All of the line's code is what Peeky cannot place.
+    assert session._unplaced({"name": "x"}, frame(8)).startswith(
+        "Peeky cannot place this function's declarations"
+    )
+    # Both (an inlined call Peeky cannot place, on its caller's line), or no code at all.
+    for line in (9, 11):
+        reason = session._unplaced({"name": "x"}, frame(line))
+        assert reason == (
+            "Peeky cannot tell which function this frame runs (the debugger did not report "
+            "where the program is loaded): no one function it places runs all the code on "
+            "this line, so it cannot tell whether this is set yet: it may hold leftovers. "
+            "Read it on a line only one function `peeky describe` lists runs"
+        )
+        assert reason.label == "not shown" and len(reason) <= 300
+        assert reason.refusal == (
+            "'x' cannot be changed here: Peeky cannot tell which function this frame runs, so "
+            "it cannot tell whether that function's code overwrites a change. Change it in a "
+            "function `peeky describe` lists"
+        )
+    # Without the build's code, no line places it.
+    session.code = None
+    assert "cannot tell which function" in session._unplaced({"name": "x"}, frame(5))
+
+
+def test_an_inlined_call_peeky_cannot_place_is_not_its_callers(tmp_path):
+    # Review of #282: an inlined call shares its caller's code, so `_function_at` found
+    # the caller's entry for its frame, and the net never ran: a forced-inline helper a
+    # `#line` declares elsewhere showed `x` as leftovers inside `main`.
+    from peeky.native import frame_level
+
+    main = code_die(1, 0x100, 0x200, 1, first=("a.cpp", 14))
+    # `helper`, inlined into `main` (called on line 16) at 0x140-0x160: Peeky cannot place
+    # it; `twice`, which it places, inlined into `helper` (called on line 11) at 0x150.
+    helper = code_die(2, 0x140, 0x160, None, True, 2, 1, ("a.cpp", 16), ("a.cpp", 10))
+    twice = code_die(3, 0x150, 0x158, 4, True, 3, 2, ("a.cpp", 11), ("a.cpp", 3))
+    code = (main, helper, twice)
+    lines = {
+        ("a.cpp", 16): frozenset({1}),
+        ("a.cpp", 10): frozenset({None}),
+        ("a.cpp", 11): frozenset({None}),
+    }
+    # The innermost frame in `helper`'s code is `helper`'s; in `twice`'s, `twice`'s.
+    assert frame_level(code, 0x144, False, ("a.cpp", 10), lines) == {None}
+    assert frame_level(code, 0x154, False, ("a.cpp", 3), lines) == {4}
+    # At `helper`'s start, shown on its call's line: LLDB shows the call, in `main`.
+    assert frame_level(code, 0x140, False, ("a.cpp", 16), lines) == {1}
+    assert frame_level(code, 0x140, False, ("a.cpp", 10), lines) == {None}
+    # A caller frame: LLDB gives the caller of an inlined call the address its code starts
+    # at (`main` at 0x140, `helper` at 0x150), and a call's caller its return address.
+    # The code changes there (review round 2): only the frame's line tells which it is.
+    assert frame_level(code, 0x140, True, ("a.cpp", 16), lines) == {1}
+    assert frame_level(code, 0x140, True, ("a.cpp", 16)) == {1, None}
+    assert frame_level(code, 0x150, True, ("a.cpp", 11), lines) == {None}
+    assert frame_level(code, 0x15C, True, ("a.cpp", 12), lines) == {None}
+    assert frame_level(code, 0x184, True, ("a.cpp", 17), lines) == {1}
+    # The call's own first row on its call's line: either may be meant.
+    same = helper._replace(starts={0x140: ("a.cpp", 16)})
+    assert frame_level((main, same, twice), 0x140, False, ("a.cpp", 16), lines) == {1, None}
+    # A function Peeky places inlined into one it cannot (a lambda into `std::sort`).
+    library = code_die(5, 0x400, 0x500, None)
+    lambda_ = code_die(6, 0x420, 0x430, 7, True, 2, 5, None, ("a.cpp", 20))
+    assert frame_level((library, lambda_), 0x424, False, ("a.cpp", 20)) == {7}
+    assert frame_level((library, lambda_), 0x420, True, None) == {None, 7}
+    # The session: frame 0 in `helper` is withheld, and its caller `main` is judged as
+    # before, by its own entry.
+    session = unplaced_session(tmp_path)
+    session.code = {"dies": code, "lines": lines}
+
+    def frame(identity, address, line):
+        return {
+            "id": identity,
+            "instructionPointerReference": hex(0x1000 + address),
+            "source": {"path": str(tmp_path / "a.cpp")},
+            "line": line,
+        }
+
+    stack = [frame(1, 0x144, 10), frame(2, 0x140, 16)]
+    session.frames_listed(stack)
+    assert session._function_at(stack[0]) is None
+    assert session._unplaced({"name": "x"}, stack[0]).startswith("Peeky cannot place")
+    assert session._function_at(stack[1]) is session.declarations[0]
+    assert session._unplaced({"name": "seed"}, stack[1]) is None
+    shared = {**stack[0], "line": 16}
+    session.code = {"dies": (main, same, twice), "lines": lines}
+    session.frames_listed([{**shared, "instructionPointerReference": hex(0x1140)}])
+    reason = session._unplaced({"name": "x"}, {**shared, "instructionPointerReference": "0x1140"})
+    assert reason == (
+        "Peeky cannot tell which function this frame runs: more than one runs the code at its "
+        "address (an inlined call and its caller, or copies of one function), so it cannot "
+        "tell whether this is set yet: it may hold leftovers. Read it at a stop on a line "
+        "only one of them runs"
+    )
+    assert reason.label == "not shown" and "cannot tell which function" in reason.refusal
+
+
+def test_a_frame_two_placed_functions_may_run_is_placed_by_neither(tmp_path):
+    # Review round 2 of #282: of several roots that may run a frame's code, `_function_at`
+    # took the narrowest whenever all were placed: an inlined call's start on its own
+    # call's line, or a caller frame at the end of an inlined call, was taken for the
+    # call's, and judged by its declarations.
+    from peeky.native import frame_level
+
+    parent = code_die(1, 0x100, 0x200, 1, first=("a.cpp", 14))
+    child = code_die(2, 0x140, 0x160, 2, True, 2, 1, ("a.cpp", 15), ("a.cpp", 15))
+    both = {("a.cpp", 15): frozenset({1, 2}), ("a.cpp", 17): frozenset({1})}
+    one = {("a.cpp", 15): frozenset({2})}
+    # At the child's start, on its call's line, where its own first row is too: either,
+    # whatever the line's rows say.
+    assert frame_level((parent, child), 0x140, False, ("a.cpp", 15), both) == {1, 2}
+    assert frame_level((parent, child), 0x140, False, ("a.cpp", 15), one) == {1, 2}
+    # Inside the child, the child's; outside it, the parent's.
+    assert frame_level((parent, child), 0x148, False, ("a.cpp", 15), both) == {2}
+    assert frame_level((parent, child), 0x180, False, ("a.cpp", 17), both) == {1}
+    # A caller frame at the child's end (its last instruction calls): the code before its
+    # address is the child's, at it the parent's. Its line, or its name, may tell which.
+    short = (parent, child._replace(ranges=((0x140, 0x150),)))
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both) == {1, 2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one) == {2}
+    names = {1: "main", 2: "helper"}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "helper(long)") == {2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "main") == {1}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), both, names, "other(int)") == {1, 2}
+    # Review 3 of PR #282: a line only `helper` owns, on a frame named `main`, contradict
+    # each other: both stay, and the frame is withheld. Where they agree, that one.
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "main") == {1, 2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "helper(long)") == {2}
+    assert frame_level(short, 0x150, True, ("a.cpp", 15), one, names, "other(int)") == {2}
+    # Copies of a function at one address (folded), placed or not: either.
+    folded = (code_die(1, 0x100, 0x200, 1), code_die(3, 0x100, 0x200, 3))
+    assert frame_level(folded, 0x120, False, ("a.cpp", 3)) == {1, 3}
+    copied = (code_die(1, 0x100, 0x200, 1), code_die(3, 0x100, 0x200, None))
+    assert frame_level(copied, 0x120, False, ("a.cpp", 3)) == {1, None}
+    # The session takes the one root's entry, never the narrowest holding the address
+    # before a caller's (the child's, here); where there is none, the frame is withheld.
+    session = unplaced_session(tmp_path)
+    main_entry = {**session.declarations[0], "name": "main"}
+    helper_entry = {"root": 2, "name": "helper", "source": "a.cpp", "ranges": ((0x140, 0x150),)}
+    session.declarations = [main_entry, helper_entry]
+    session.code = {"dies": short, "lines": both}
+
+    def frame(identity, address, line, name):
+        return {
+            "id": identity,
+            "name": name,
+            "instructionPointerReference": hex(0x1000 + address),
+            "source": {"path": str(tmp_path / "a.cpp")},
+            "line": line,
+        }
+
+    innermost, caller = frame(1, 0x400, 3, "twice(long)"), frame(2, 0x150, 15, "main")
+    session.frames_listed([innermost, caller])
+    assert session._narrowest(0x14F) is helper_entry
+    assert session._function_at(caller) is main_entry
+    assert session._unplaced({"name": "x"}, caller) is None
+    unnamed = {**caller, "name": "run"}
+    assert session._function_at(unnamed) is None
+    assert session._unplaced({"name": "x"}, unnamed).startswith(
+        "Peeky cannot tell which function this frame runs: more than one"
+    )
+    # At the child's start on the call's line, where its first row is too: withheld.
+    session.code = {"dies": (parent, child), "lines": one}
+    tie = {**frame(1, 0x140, 15, "helper(long)")}
+    session.frames_listed([tie])
+    assert session._function_at(tie) is None
+    assert "more than one runs the code" in session._unplaced({"name": "x"}, tie)
+    # A C target keeps the narrowest, and is not judged so.
+    session.target = SimpleNamespace(language="c", verification_inputs=("a.cpp",))
+    session.frames_listed([innermost, caller])
+    assert session._function_at(unnamed) is helper_entry
+    assert session._unplaced({"name": "x"}, unnamed) is None
+
+
+def gcc_dumps(workspace, class_declared=True):
+    """A C++ unit as GCC 13 builds it (#167): `main` (lines 8-17) defines a lambda (line
+    10, lines 10-14) whose `operator()` and closure are artificial and name no file or
+    line, but the closure does; `nested` (line 15) builds an unnamed struct (line 16)
+    whose `<constructor>` is artificial too, its code a copy inside the struct. Without
+    ``class_declared``, the closure names no file or line either, and the lambda's first
+    row (0x8c0) is the code of `twice` (line 3), inlined into it."""
+    source = workspace / "gcc.cpp"
+    declared = (
+        f'                  DW_AT_decl_file\t("{source}")\n                  DW_AT_decl_line\t(10)\n'
+        if class_declared
+        else ""
+    )
+    inlined = (
+        ""
+        if class_declared
+        else f"""0x0000006c:         DW_TAG_inlined_subroutine
+                      DW_AT_abstract_origin\t(0x000000e8 "twice")
+                      DW_AT_low_pc\t(0x00000000000008c0)
+                      DW_AT_high_pc\t(0x00000000000008cc)
+                      DW_AT_call_file\t("{source}")
+                      DW_AT_call_line\t(10)
+"""
+    )
+    twice = (
+        ""
+        if class_declared
+        else f"""0x000000e8:   DW_TAG_subprogram
+                DW_AT_name\t("twice")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(3)
+                DW_AT_inline\t(DW_INL_inlined)
+"""
+    )
+    info = f"""{workspace}/program: file format elf64-littleaarch64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("gcc.cpp")
+0x00000020:   DW_TAG_subprogram
+                DW_AT_name\t("main")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(8)
+                DW_AT_low_pc\t(0x0000000000000900)
+                DW_AT_high_pc\t(0x0000000000000980)
+                DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x0000002c:     DW_TAG_variable
+                  DW_AT_name\t("base")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_location\t(DW_OP_fbreg -48)
+0x00000038:     DW_TAG_structure_type
+                  DW_AT_byte_size\t(0x08)
+{declared}0x00000040:       DW_TAG_subprogram
+                    DW_AT_name\t("<lambda>")
+                    DW_AT_artificial\t(true)
+                    DW_AT_declaration\t(true)
+0x00000048:         DW_TAG_formal_parameter
+                      DW_AT_artificial\t(true)
+0x0000004c:         NULL
+0x00000050:       DW_TAG_subprogram
+                    DW_AT_name\t("operator()")
+                    DW_AT_artificial\t(true)
+                    DW_AT_object_pointer\t(0x0000005c)
+                    DW_AT_low_pc\t(0x00000000000008c0)
+                    DW_AT_high_pc\t(0x0000000000000900)
+                    DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x0000005c:         DW_TAG_formal_parameter
+                      DW_AT_name\t("__closure")
+                      DW_AT_artificial\t(true)
+                      DW_AT_location\t(DW_OP_fbreg -24)
+0x00000060:         DW_TAG_formal_parameter
+                      DW_AT_name\t("a")
+                      DW_AT_decl_file\t("{source}")
+                      DW_AT_decl_line\t(10)
+                      DW_AT_location\t(DW_OP_fbreg -32)
+0x00000068:         DW_TAG_variable
+                      DW_AT_name\t("base")
+                      DW_AT_artificial\t(true)
+                      DW_AT_location\t(DW_OP_fbreg -24, DW_OP_deref)
+{inlined}0x00000070:         DW_TAG_lexical_block
+                      DW_AT_low_pc\t(0x00000000000008cc)
+                      DW_AT_high_pc\t(0x00000000000008f4)
+0x00000078:           DW_TAG_variable
+                        DW_AT_name\t("x")
+                        DW_AT_decl_file\t("{source}")
+                        DW_AT_decl_line\t(11)
+                        DW_AT_location\t(DW_OP_fbreg -16)
+0x00000080:           DW_TAG_variable
+                        DW_AT_name\t("y")
+                        DW_AT_decl_file\t("{source}")
+                        DW_AT_decl_line\t(12)
+                        DW_AT_location\t(DW_OP_fbreg -8)
+0x00000088:           NULL
+0x00000089:         NULL
+0x0000008a:       NULL
+0x00000090:     DW_TAG_variable
+                  DW_AT_name\t("f")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_location\t(DW_OP_fbreg -40)
+0x00000098:     NULL
+0x000000a0:   DW_TAG_subprogram
+                DW_AT_name\t("nested")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(15)
+                DW_AT_low_pc\t(0x0000000000000a00)
+                DW_AT_high_pc\t(0x0000000000000a40)
+                DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x000000a8:     DW_TAG_structure_type
+                  DW_AT_byte_size\t(0x10)
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(16)
+0x000000b0:       DW_TAG_subprogram
+                    DW_AT_name\t("<constructor>")
+                    DW_AT_artificial\t(true)
+                    DW_AT_object_pointer\t(0x000000b8)
+                    DW_AT_inline\t(DW_INL_declared_not_inlined)
+0x000000b8:         DW_TAG_formal_parameter
+                      DW_AT_name\t("this")
+                      DW_AT_artificial\t(true)
+0x000000bc:         NULL
+0x000000c0:       DW_TAG_subprogram
+                    DW_AT_abstract_origin\t(0x000000b0 "<constructor>")
+                    DW_AT_object_pointer\t(0x000000c8)
+                    DW_AT_low_pc\t(0x00000000000009c0)
+                    DW_AT_high_pc\t(0x0000000000000a00)
+                    DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x000000c8:         DW_TAG_formal_parameter
+                      DW_AT_abstract_origin\t(0x000000b8 "this")
+                      DW_AT_location\t(DW_OP_fbreg -8)
+0x000000cc:         NULL
+0x000000cd:       NULL
+0x000000d0:     DW_TAG_variable
+                  DW_AT_name\t("anon")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(16)
+                  DW_AT_location\t(DW_OP_fbreg -24)
+0x000000d8:     NULL
+{twice}0x000000f0:   NULL
+"""
+    rows = [
+        (0x8C0, 10 if class_declared else 3),
+        (0x8CC, 11),
+        (0x8DC, 12),
+        (0x8EC, 13),
+        (0x8F4, 14),
+    ]
+    rows += [(0x900, 8), (0x90C, 9), (0x918, 10), (0x930, 15), (0x940, 16), (0x970, 17)]
+    rows += [(0x9C0, 16), (0x9D0, 16), (0xA00, 15), (0xA10, 16), (0xA20, 17)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "gcc.cpp"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    line += "".join(f"0x{address:016x} {number} 1 1 0 0 is_stmt\n" for address, number in rows)
+    line += f"0x{0xA40:016x} 17 1 1 0 0 end_sequence\n"
+    return info, line
+
+
+def test_gccs_lambdas_and_implicit_constructors_are_placed_by_their_class(tmp_path):
+    # #167: GCC gives a lambda's `operator()` and an implicit constructor no file or line,
+    # so they had no entry: no rule ran in them, and their locals showed leftovers. They
+    # take their class's, as clang gives them.
+    from peeky.native import frame_level, function_scopes, local_declarations
+
+    (tmp_path / "gcc.cpp").write_text("\n" * 20)
+    info, line = gcc_dumps(tmp_path)
+    table = {
+        entry["name"]: entry for entry in local_declarations(info, line, tmp_path, ("gcc.cpp",))
+    }
+    assert sorted(table) == ["main", "main::operator()", "nested", "nested::<constructor>"]
+    lambda_ = table["main::operator()"]
+    assert (lambda_["source"], lambda_["span"], lambda_["ranges"]) == (
+        "gcc.cpp",
+        (10, 14),
+        ((0x8C0, 0x900),),
+    )
+    # A member of a class `main` defines, at the closure's line; no constructor, and not a
+    # default member initializer's.
+    assert (lambda_["constructor"], lambda_["enclosing"], lambda_["defined"]) == (False, 0x20, 10)
+    assert lambda_["initializer"] is False
+    assert {"a", "x", "y"} <= set(lambda_["locals"])
+    assert lambda_["locals"]["x"] == {("gcc.cpp", 11, True)}
+    built = table["nested::<constructor>"]
+    assert (built["source"], built["span"], built["constructor"]) == ("gcc.cpp", (16, 16), True)
+    assert (built["enclosing"], built["defined"]) == (0xA0, 16)
+    # `main`'s closure is no class whose lines `main` runs.
+    assert table["main"]["classes"] == ((10, True),)
+    # `describe` lists the lambda as clang's: its parameter and locals, never GCC's
+    # `__closure` or its captures (lldb-dap lists neither).
+    scopes = {
+        scope["scope"]: scope for scope in function_scopes(info, line, tmp_path, ("gcc.cpp",))
+    }
+    assert scopes["main::operator()"]["lines"] == [10, 14]
+    assert scopes["main::operator()"]["names"] == ["a", "x", "y"]
+    # A closure that names no file or line either (review of #282): no row places it, as
+    # its first may be another function's code inlined there (`twice`'s, line 3). Its
+    # frames withhold their locals (the code says Peeky cannot place it); in `twice`'s
+    # code, the frame is `twice`'s.
+    info, line = gcc_dumps(tmp_path, class_declared=False)
+    code = {}
+    table = {
+        entry["name"]: entry
+        for entry in local_declarations(info, line, tmp_path, ("gcc.cpp",), code=code)
+    }
+    assert sorted(table) == ["main", "nested", "nested::<constructor>", "twice"]
+    dies = {each.offset: each for each in code["dies"]}
+    assert dies[0x50].root is None and dies[0x6C].root == 0xE8
+    assert (dies[0x6C].parent, dies[0x6C].call, dies[0x6C].starts) == (
+        0x50,
+        ("gcc.cpp", 10),
+        {0x8C0: ("gcc.cpp", 3)},
+    )
+    assert code["lines"][("gcc.cpp", 3)] == {0xE8} and code["lines"][("gcc.cpp", 11)] == {None}
+    lines = code["lines"]
+    assert frame_level(code["dies"], 0x8D0, False, ("gcc.cpp", 11), lines) == {None}
+    assert frame_level(code["dies"], 0x8C4, False, ("gcc.cpp", 3), lines) == {0xE8}
+    # The lambda's frame above `twice`'s, at its start: the lambda's or `twice`'s.
+    assert frame_level(code["dies"], 0x8C0, True, ("gcc.cpp", 10), lines) == {None, 0xE8}
+
+
+def test_gccs_closures_and_constructors_are_told_from_their_names():
+    from peeky.native import _CONSTRUCTOR_NAME, _LIFETIME_NAME, _class_role, _local_classes
+
+    def die(tag, parent, children=(), **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_subprogram", 1, DW_AT_name='"run"'),
+        # GCC's closure, named or not; a lambda returning nothing has no return type.
+        3: die("DW_TAG_structure_type", 2, [4, 6, 7], DW_AT_decl_line="12"),
+        4: die(
+            "DW_TAG_subprogram",
+            3,
+            [5],
+            DW_AT_name='"operator()"',
+            DW_AT_artificial="true",
+            DW_AT_object_pointer="0x00000005",
+        ),
+        5: die("DW_TAG_formal_parameter", 4, DW_AT_name='"__closure"'),
+        6: die("DW_TAG_subprogram", 3, DW_AT_name='"_FUN"', DW_AT_artificial="true"),
+        7: die("DW_TAG_subprogram", 3, DW_AT_name='"<lambda>"', DW_AT_artificial="true"),
+        8: die(
+            "DW_TAG_structure_type", 2, [9], DW_AT_name='"<lambda(long int)>"', DW_AT_decl_line="20"
+        ),
+        9: die("DW_TAG_subprogram", 8, DW_AT_name='"operator()<int>"', DW_AT_artificial="true"),
+        10: die("DW_TAG_structure_type", 2, [11, 12], DW_AT_decl_line="30"),
+        11: die("DW_TAG_subprogram", 10, DW_AT_name='"<constructor>"', DW_AT_artificial="true"),
+        12: die("DW_TAG_subprogram", 10, DW_AT_name='"~<constructor>"', DW_AT_artificial="true"),
+        # A closure known only by its object pointer's name.
+        13: die("DW_TAG_structure_type", 2, [14], DW_AT_decl_line="40"),
+        # GCC's closure of a lambda whose every call it folded: no `operator()` at all.
+        17: die("DW_TAG_structure_type", 2, [18], DW_AT_decl_line="50"),
+        18: die("DW_TAG_subprogram", 17, DW_AT_name='"<lambda>"', DW_AT_artificial="true"),
+        14: die("DW_TAG_subprogram", 13, [15], DW_AT_object_pointer="0x0000000f"),
+        15: die("DW_TAG_formal_parameter", 14, DW_AT_name='"__closure"'),
+    }
+    # A lambda's `operator()` and `_FUN` are no constructors, though artificial with no
+    # return type; the closure's own `<lambda>` and an unnamed struct's `<constructor>` are.
+    assert _class_role(dies, [4]) == (False, 2, 12, False)
+    assert _class_role(dies, [6]) == (False, 2, 12, False)
+    assert _class_role(dies, [7])[0] is True
+    assert _class_role(dies, [9]) == (False, 2, 20, False)
+    assert _class_role(dies, [11]) == (True, 2, 30, False)
+    assert _class_role(dies, [12])[0] is False
+    # A closure inside a class's scope is a default member initializer's: by its name, a
+    # generic lambda's, or its object pointer, `__closure`.
+    for closure, call in ((3, 4), (8, 9), (13, 14)):
+        dies[closure]["parent"] = 16
+        dies[16] = die("DW_TAG_structure_type", 1, DW_AT_name='"Agg"')
+        assert _class_role(dies, [call])[3] is True, call
+        dies[closure]["parent"] = 2
+    # Closures are not the function's classes: a generic lambda's too.
+    assert _local_classes(dies) == {
+        2: ((12, True), (20, True), (30, False), (40, True), (50, True))
+    }
+    for name in ("<constructor>", "nested(long)::<constructor>()", "<lambda>"):
+        assert _CONSTRUCTOR_NAME.search(name), name
+    for name in ("~<constructor>", "operator()", "main::<lambda(int)>::operator()(int) const"):
+        assert not _CONSTRUCTOR_NAME.search(name), name
+    assert _LIFETIME_NAME.search("~<constructor>") and not _LIFETIME_NAME.search("<constructor>")
+
+
+def test_an_inlined_call_with_no_code_left_holds_no_address():
+    # Review of #282: GCC -O1 inlines `std::allocator<int>`'s destructor into `main` with no
+    # code left: low_pc and high_pc 0x878, which dwarfdump writes as addresses. Read as an
+    # offset, it held 0x878-0x10f0, all of `main` after it, and `main`'s frame was taken for
+    # that call's.
+    from peeky.native import _code_ranges
+
+    def die(high):
+        return {"attrs": {"DW_AT_low_pc": "0x0000000000000878", "DW_AT_high_pc": high}}
+
+    assert _code_ranges(die("0x0000000000000878")) == []
+    assert _code_ranges(die("0x00000000000008a0")) == [(0x878, 0x8A0)]
+    # An offset (dwarfdump writes the attribute's data, at most 8 digits).
+    assert _code_ranges(die("0x00000020")) == [(0x878, 0x898)]
+    assert _code_ranges(die("0x00000000")) == []

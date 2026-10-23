@@ -58,6 +58,10 @@ that hosted CI doesn't have:
 
 It prints one PASS or FAIL line per lane, and exits non-zero on a failure.
 
+C++ built by GCC is refused for users. With `PEEKY_TEST_CPP_GCC=1`, the test harness builds it all
+the same (`tests/cpp_gcc_survey.py`); Peeky itself never reads the variable. The g++ cases of
+`tests/cpp/test_cpp_gcc_functions.py` run only with it, and skip otherwise.
+
 ## Test layers
 
 - **Fake-adapter tests** exercise malformed and oversized framing, keeping control events under

@@ -919,15 +919,17 @@ def test_an_unnamed_structs_constructor_withholds_this(directory, capsys):
     path.write_text(UNNAMED)
     twice = line_of(UNNAMED, "return w;")
     rows = shown_at(capsys, path, twice, "this", hit=4, frame=1)
-    assert rows["this"]["function"].endswith("::$_0::$_0()"), rows["this"]
+    # GCC names it `<constructor>` (#167; its C++ builds run only with the test-only hatch).
+    constructor = ("::$_0::$_0()", "<constructor>")
+    assert rows["this"]["function"].endswith(constructor), rows["this"]
     assert withheld(rows["this"], "the object this constructor"), rows["this"]
     # Apple clang runs the complete constructor through the base one (two frames);
-    # Linux clang aliases them (one frame), so frame 2 is `nested` there.
+    # Linux clang and GCC alias them (one frame), so frame 2 is `nested` there.
     rows = shown_at(capsys, path, twice, "this", hit=4, frame=2)
-    if rows["this"]["function"].endswith("::$_0::$_0()"):
+    if rows["this"]["function"].endswith(constructor):
         assert withheld(rows["this"], "the object this constructor"), rows["this"]
     else:
-        assert rows["this"]["function"] == "nested(long)", rows["this"]
+        assert rows["this"]["function"] in ("nested(long)", "::nested(long)"), rows["this"]
         assert "value" not in rows["this"], rows["this"]
 
 

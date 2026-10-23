@@ -26,6 +26,78 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - Debugger display types, and the standard library's member names, differ between platforms.
   Tests check the values, and never assume that libc++ and libstdc++ share a layout.
 
+## How functions are placed
+
+Every rule about a local's declaration reads its function's entry in `local_declarations`. Those
+rules are declared below the stop, still running, and under construction. `_function_at` finds a
+frame's entry: the narrowest function whose code holds the frame's address.
+
+- `_function_entries` makes an entry for each function with code whose declaration's file is one
+  of the program's sources or headers. That file is `DW_AT_decl_file`, also through
+  `DW_AT_abstract_origin` and `DW_AT_specification`.
+- The SDK's and the standard library's functions never get an entry.
+- A function's first line is its `DW_AT_decl_line`. Its own lines run from there to its last row
+  in its file.
+- GCC gives a lambda's `operator()` and a class's implicit members `DW_AT_artificial`, but no file
+  or line. Clang gives them their class's.
+- So `_declared_at` takes such a member's file and line from its class, as clang does. A lambda's
+  closure type has the lambda's line.
+- A member whose class has no file either gets no entry. A line-table row proves nothing: the
+  first row in its code may be an inlined callee's, or a cold fragment's.
+- `_class_role` tells a constructor of an unnamed class by its name: clang's
+  `(unnamed struct at f.cpp:5:3)`, or GCC's `<constructor>`. GCC also names a closure's
+  constructor `<lambda>`.
+- A frame named `<constructor>` runs a constructor too (`_CONSTRUCTOR_NAME`).
+- GCC's `operator()` and `_FUN` are artificial too, and may return nothing, as a constructor does.
+  So they never count as constructors.
+- A lambda's call operator is `operator()`, or a generic lambda's `operator()<int>`
+  (`_calls_closure`). GCC names its object pointer `__closure`, where clang names it `this`.
+- A closure's class has no plain name: clang leaves it unnamed, and GCC may name it
+  `<lambda(long int)>`.
+- `_local_classes` leaves a lambda's closure out of the classes a function defines. Its body is a
+  function of its own, not lines the function runs as a class's member initializers.
+- GCC may fold every call of a lambda away, leaving its closure with no `operator()`. Its members
+  `<lambda>` and `~<lambda>` still mark it as a closure.
+- `describe` leaves out GCC's `__closure`, and the variables GCC adds for a lambda's captures.
+  lldb-dap lists none of them, but the one for a captured `this`, which `describe` keeps.
+- **A safety net:** a C++ frame on a line of the program's sources or headers withholds every
+  local and parameter when its function has no entry (`_unplaced`). The row says `not shown`, and
+  that Peeky can't place the function's declarations.
+- Before GCC's lambdas and implicit constructors were placed, the net took them. A `#line` that
+  names another file for a function's declaration, as bison writes, still takes it there, with
+  clang too.
+- `_function_entries` also gives a `CodeDie` for every `DW_TAG_subprogram` and
+  `DW_TAG_inlined_subroutine` with code, placed or not. Each has its ranges, depth, entry root
+  (None where unplaced), enclosing code, call site, and the row at each range's start.
+- An inlined call shares its caller's code, so the narrowest entry holding the address can be
+  the wrong one. In a C++ target, `frame_level` gives the roots of every entry the frame may run.
+  `_function_at` takes the one root's entry, and none where there are several, or one unplaced.
+- The innermost frame runs the deepest code holding its address. lldb-dap gives an inlined call's
+  caller the address where the call's code starts, and a call's caller its return address.
+- A frame above the innermost one may run the deepest code at its address, or at the one before
+  it. Where those differ, as at the end of an inlined call whose last instruction calls, both
+  count.
+- At the start of an inlined call's code, a frame that shows the call's line is the caller: LLDB
+  shows such a stop at the call. If the call's own first row is on that line too, either may be
+  meant.
+- Of several roots, the frame's line picks one if only that one's code holds rows the debugger
+  shows on it. Else its name picks the one entry named so. An inlined call's start on its own
+  call's line picks none.
+- Rows a later row at their address replaces count for neither: LLDB shows the last one's line.
+  GCC writes the call's line at an inlined call's start, then the callee's.
+- Copies of a function at one address (folded) are several roots, placed or not.
+- A frame left with several roots, or one unplaced, is withheld. The row says Peeky can't tell
+  which function the frame runs, or can't place it.
+- C targets keep the narrowest entry, as before.
+- GCC gives an inlined call with no code left the same `DW_AT_low_pc` and `DW_AT_high_pc`, and
+  dwarfdump writes both as addresses. `_code_ranges` reads that as no code. Read as an offset, it
+  held twice its address, and took the frames of `main` after it.
+- Without the load address, the frame's line must be one placed function's own code: each of its
+  rows must be that function's, as the deepest code there. Else the row is withheld, saying why.
+- Frames outside the program's sources, such as the standard library's, aren't judged so. Nor are
+  C targets.
+- Clang's `cpp` lane, on lldb-dap 18 and 20, and all of `tests/native` never reach the net.
+
 ## Changing a value
 
 - Peeky changes integers only, a narrower set than LLDB's backend can change.

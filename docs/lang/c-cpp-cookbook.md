@@ -829,6 +829,12 @@ though the outer local lives in a register or as a constant, not in the frame:
   If there is none, they run from the last own line whose code comes before it.
 - The frame's class, struct and array locals are withheld too, since one of them is being built
   there. Where Peeky can't place the stop, everything but the parameters is withheld.
+- In a C++ target, a frame can run a line of the program's sources or headers while its
+  function's declaration is outside them, as a `#line` from bison or flex puts it. Peeky then
+  finds no function it can place for the frame, inlined or not.
+- Such a frame shows every local and parameter as `not shown`. Read what the function returns
+  after `step --out`, or stop in a function that `describe` lists. C targets aren't judged this
+  way.
 
 #### `this` in C++
 
