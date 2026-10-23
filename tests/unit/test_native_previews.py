@@ -496,6 +496,11 @@ CONTAINERS = {
     62: ("pointer", "", 50),
     63: ("reference", "", 51),
     64: ("pointer", "", 51),
+    65: container("std::unordered_set<int, std::hash<int> >", ("type", 1)),
+    66: container("std::unordered_multimap<int, int>", ("type", 1), ("type", 1)),
+    67: record("Holder", [("us", 65), ("umm", 66), ("n", 1)]),
+    68: container("std::vector<std::unordered_set<int> >", ("type", 65)),
+    69: container("std::map<int, std::unordered_set<int> >", ("type", 1), ("type", 65)),
 }
 
 
@@ -593,6 +598,87 @@ def test_inside_a_struct_and_through_a_reference():
     assert preview(root, fetch, holding(50), text, containers=False) is None
     reference = node("r", "0x0000000000001000 size=2", "std::vector<int> &", 2)
     assert preview(reference, fetch, holding(57), text) == "0x0000000000001000 size=2 [1, 2]"
+
+
+def test_an_unordered_container_whose_count_is_not_proven_is_not_listed():
+    # #167: GCC's showed `{us = size=0 {}, n = 2}` for `us{7, 8}`; LLDB's formatter counts
+    # it as empty. Each is asked by its way from the previewed value.
+    asked = []
+
+    def unlisted(at, child):
+        asked.append(at)
+        return True
+
+    fetch = Debugger(
+        {
+            1: [
+                node("us", "size=0", "std::unordered_set<int>", 2),
+                node("umm", "size=0", "std::unordered_multimap<int, int>", 3),
+                node("n", "2"),
+            ],
+            2: [],
+            3: [],
+            4: [node("[0]", "size=0", "", 2), node("[1]", "size=0", "", 3)],
+            5: [node("[0]", "pair @ 0x10", "", 6)],
+            6: [node("first", "1"), node("second", "size=0", "", 2)],
+        }
+    )
+    holder = node("h", "Holder @ 0x10", "Holder", 1)
+    shown = preview(holder, fetch, holding(67), text, unlisted=unlisted)
+    assert shown == "{us = <not listed>, umm = <not listed>, n = 2}" and asked == [
+        ("us",),
+        ("umm",),
+    ]
+    sets = node("vs", "size=2", "", 4)
+    assert preview(sets, fetch, holding(68), text, unlisted=unlisted) == (
+        "size=2 [<not listed>, <not listed>]"
+    )
+    asked.clear()
+    assert preview(node("m", "size=1", "", 5), fetch, holding(69), text, unlisted=unlisted) == (
+        "size=1 {1: <not listed>}"
+    )
+    assert asked == [("[0]", "second")]
+    # Withheld itself: no preview. Where the counts agree, the elements as before.
+    assert preview(node("us", "size=0", "", 2), fetch, holding(65), text, unlisted=unlisted) is None
+    fetch.children[2] = elements("7", "8")
+    fetch.children[1][0] = node("us", "size=2", "std::unordered_set<int>", 2)
+    us = node("us", "size=2", "", 2)
+    assert preview(us, fetch, holding(65), text, unlisted=lambda at, child: False) == (
+        "size=2 {7, 8}"
+    )
+    assert preview(holder, fetch, holding(67), text, unlisted=lambda at, child: False) == (
+        "{us = size=2 {7, 8}, umm = size=0, n = 2}"
+    )
+
+
+def test_a_preview_asks_each_unordered_container_by_its_variable_path():
+    # The debugger's own count is read by the path from the root local (#167).
+    native = session(fields=CONTAINERS)
+    native.declarations[0]["types"]["h"] = {(67, "automatic", None)}
+    native.declarations[0]["types"]["vs"] = {(68, "automatic", None)}
+    native.typedefs = {}
+    fetch = Debugger(
+        {
+            1: [node("us", "size=0", "std::unordered_set<int>", 2), node("n", "2")],
+            2: [],
+            4: [node("[0]", "size=0", "std::unordered_set<int>", 2)],
+        }
+    )
+    paths = []
+
+    def raw(path):
+        paths.append(path)
+        return "1"
+
+    frames = stack("main")
+    where = {"frame": frames[0], "stack": frames, "threads": one, "raw": raw}
+    holder = node("h", "Holder @ 0x10", "Holder", 1)
+    shown = native.preview_value(holder, fetch, None, steps=["h"], kinds=["Holder"], **where)
+    assert shown == "{us = <not listed>, n = 2}" and paths == ["h.us._M_h._M_element_count"]
+    paths.clear()
+    sets = node("vs", "size=1", "std::vector<std::unordered_set<int> >", 4)
+    shown = native.preview_value(sets, fetch, None, steps=["vs"], kinds=[sets["type"]], **where)
+    assert shown == "size=1 [<not listed>]" and paths == ["vs[0]._M_h._M_element_count"]
 
 
 def stack(*names):

@@ -72,6 +72,9 @@ _CONTAINERS = {
     "unordered_multiset": "set",
 }
 _CXX_ARRAY = re.compile(r"std::(?:__\w+::)*array<")
+_UNORDERED = re.compile(r"std::(?:__\w+::|pmr::)*unordered_(?:multi)?(?:map|set)<")
+# An unordered container whose count is not proven (#167): never its debugger's summary.
+UNLISTED = "<not listed>"
 # LLDB's summary of a standard container: its element count.
 _SIZE = re.compile(r"size=(0|[1-9][0-9]{0,9})")
 
@@ -260,6 +263,18 @@ class Typed:
             return None
         return (sort, *(Typed(self.graph, offset) for offset in types[:wanted]))
 
+    def unordered(self):
+        """Whether it is a C++ unordered container (`std::unordered_map` and its kin, the
+        multimap too), whose count LLDB's libstdc++ formatter can get wrong (#167)."""
+        node = None if self.dims or self.entry else self.node()
+        return (
+            node is not None
+            and node[0] == "record"
+            and bool(node[9])
+            and len(node) > 11
+            and _UNORDERED.match(node[11] or "") is not None
+        )
+
     def resolved(self):
         """The offset of the type under typedefs and qualifiers (a multi-dimensional
         array's element as it is), or None."""
@@ -371,24 +386,25 @@ def _bits(code, bits, signed):
 class _Room:
     """The characters a preview has left, and whether it may show a standard
     container's elements (#181): ``containers``, a bool or a function asked only when a
-    container is met."""
+    container is met. ``unlisted(at, child)``: whether an unordered container (``at``:
+    the debugger's names from the preview's value to it) is shown as ``UNLISTED`` (#167)."""
 
-    def __init__(self, length, containers=True):
-        self.left, self.allows = length, containers
+    def __init__(self, length, containers=True, unlisted=None):
+        self.left, self.allows, self.unlisted = length, containers, unlisted
 
     @property
     def containers(self):
         return self.allows() if callable(self.allows) else self.allows
 
     def nested(self):
-        return _Room(self.left, self.allows)
+        return _Room(self.left, self.allows, self.unlisted)
 
 
 class _Unsure(Exception):
     """The debugger's children do not match the type: no preview."""
 
 
-def preview(variable, fetch, typed, text, containers=True):
+def preview(variable, fetch, typed, text, containers=True, unlisted=None):
     """The preview of a C or C++ value, or None to keep the debugger's text: a struct,
     class, fixed-size array (a wide character array too) or standard container
     (`size=2 [1, 2]`, #181), or a C++ reference to one (`0x… {x = 1, y = 2}`, its
@@ -399,7 +415,10 @@ def preview(variable, fetch, typed, text, containers=True):
     budget is spent). ``text(child)``: a member's text as the worker shows it (a string
     checked and spelled), or None for no value. Without ``containers`` (a bool, or a
     function asked when a container is met), a standard container keeps the debugger's
-    summary (`size=2`): a library call may be part-way through changing it."""
+    summary (`size=2`): a library call may be part-way through changing it.
+    ``unlisted(at, child)``: whether an unordered container, the value itself (``at``
+    empty) or one inside it, is withheld (#167): the value then has no preview, and one
+    inside shows `<not listed>`, never the debugger's count."""
     reference = variable.get("variablesReference")
     if type(reference) is not int or reference <= 0 or typed is None:
         return None
@@ -420,12 +439,15 @@ def preview(variable, fetch, typed, text, containers=True):
         if typed is None:
             return None
     sort = typed.kind()
+    if sort == "library" and typed.unordered() and unlisted is not None and unlisted((), variable):
+        return None
     if sort == "library" and typed.container() is not None:
         # A standard container (#181): `size=3 [1, 2, 3]`.
         if not (containers() if callable(containers) else containers):
             return None
+        room = _Room(LENGTH - len(prefix), unlisted=unlisted)
         try:
-            shown = _container(variable, typed, fetch, text, 1, _Room(LENGTH - len(prefix)))
+            shown = _container(variable, typed, fetch, text, 1, room, ())
         except (ValueError, _Unsure):
             return None
         return prefix + shown
@@ -440,18 +462,19 @@ def preview(variable, fetch, typed, text, containers=True):
     # Any other array is shown element by element, whatever the debugger's text: LLDB
     # ends a wide character array's (`wchar_t`, `char16_t`, `char32_t`) at its first NUL.
     try:
-        room = _Room(LENGTH - len(prefix), containers)
-        shown = _open(variable, typed, fetch, text, 1, room)
+        room = _Room(LENGTH - len(prefix), containers, unlisted)
+        shown = _open(variable, typed, fetch, text, 1, room, ())
     except (ValueError, _Unsure):
         # The budget is spent, or the debugger's children are not the type's.
         return None
     return None if shown is None else prefix + shown
 
 
-def _open(variable, typed, fetch, text, depth, room):
-    """`{name = value, ...}` for a struct, `[value, ...]` for an array."""
+def _open(variable, typed, fetch, text, depth, room, at):
+    """`{name = value, ...}` for a struct, `[value, ...]` for an array. ``at``: the
+    debugger's names from the preview's value to this one."""
     if typed.kind() == "array":
-        return _elements(variable, typed, fetch, text, depth, room)
+        return _elements(variable, typed, fetch, text, depth, room, at)
     members, bases = typed.members()
     children = fetch(variable["variablesReference"], MEMBERS)
     anonymous = [typed for name, typed in members if not name and not typed.bits]
@@ -475,7 +498,7 @@ def _open(variable, typed, fetch, text, depth, room):
         if len(shown) == ITEMS:
             cut = True
             break
-        rendered = _member(child, member, fetch, text, depth, room)
+        rendered = _member(child, member, fetch, text, depth, room, (*at, name))
         item = rendered if not name else f"{name} = {rendered}"
         if len(item) + 2 > room.left:
             cut = True
@@ -488,7 +511,7 @@ def _open(variable, typed, fetch, text, depth, room):
     return "{" + ", ".join(shown + (["…"] if cut else [])) + "}"
 
 
-def _elements(variable, typed, fetch, text, depth, room):
+def _elements(variable, typed, fetch, text, depth, room, at):
     count = typed.count()
     if count is None:
         raise _Unsure()
@@ -501,7 +524,7 @@ def _elements(variable, typed, fetch, text, depth, room):
     element = typed.element()
     shown, cut = [], count > wanted
     for child in children:
-        item = _member(child, element, fetch, text, depth, room)
+        item = _member(child, element, fetch, text, depth, room, (*at, str(child.get("name"))))
         if len(item) + 2 > room.left:
             cut = True
             break
@@ -510,7 +533,7 @@ def _elements(variable, typed, fetch, text, depth, room):
     return "[" + ", ".join(shown + (["…"] if cut else [])) + "]"
 
 
-def _container(variable, typed, fetch, text, depth, room):
+def _container(variable, typed, fetch, text, depth, room, at):
     """`size=N [e0, e1, …]` of a standard sequence, `size=N {k0: v0, …}` of a map and
     `size=N {e0, …}` of a set (#181), in the order LLDB lists them (a map's or set's
     iteration order), from the debugger's children, which its formatter reads from the
@@ -532,7 +555,7 @@ def _container(variable, typed, fetch, text, depth, room):
             raise _Unsure()
         head = f"size={member[1].count()} "
         room.left -= len(head)
-        return head + _elements(children[0], member[1], fetch, text, depth, room)
+        return head + _elements(children[0], member[1], fetch, text, depth, room, (*at, member[0]))
     count = int(size[1])
     wanted = min(count, ITEMS)
     children = fetch(variable["variablesReference"], wanted) if wanted else []
@@ -543,10 +566,11 @@ def _container(variable, typed, fetch, text, depth, room):
     room.left -= len(head)
     shown, cut = [], count > wanted
     for child in children:
+        place = (*at, str(child.get("name")))
         if found[0] == "map":
-            item = _entry(child, found[1], found[2], fetch, text, depth, room)
+            item = _entry(child, found[1], found[2], fetch, text, depth, room, place)
         else:
-            item = _member(child, found[1], fetch, text, depth, room)
+            item = _member(child, found[1], fetch, text, depth, room, place)
         if len(item) + 2 > room.left:
             cut = True
             break
@@ -556,7 +580,7 @@ def _container(variable, typed, fetch, text, depth, room):
     return head + opening + ", ".join(shown + (["…"] if cut else [])) + closing
 
 
-def _entry(child, key, value, fetch, text, depth, room):
+def _entry(child, key, value, fetch, text, depth, room, at):
     """`key: value` of one entry LLDB lists of a map: a pair of `first` and `second`."""
     reference = child.get("variablesReference")
     if type(reference) is not int or reference <= 0:
@@ -564,18 +588,22 @@ def _entry(child, key, value, fetch, text, depth, room):
     parts = fetch(reference, 3)
     if [str(part.get("name")) for part in parts] != ["first", "second"]:
         raise _Unsure()
-    shown = _member(parts[0], key, fetch, text, depth, room)
-    return f"{shown}: {_member(parts[1], value, fetch, text, depth, room)}"
+    shown = _member(parts[0], key, fetch, text, depth, room, (*at, "first"))
+    return f"{shown}: {_member(parts[1], value, fetch, text, depth, room, (*at, 'second'))}"
 
 
-def _member(child, typed, fetch, text, depth, room):
-    """One member's or element's text."""
+def _member(child, typed, fetch, text, depth, room, at):
+    """One member's or element's text (``at``: the debugger's names from the preview's
+    value to it)."""
     from peeky.worker import is_unavailable
 
     value = str(child.get("value") or "")
     if is_unavailable(value):
         return "<no value>"
     sort = typed.kind()
+    if sort == "library" and typed.unordered() and room.unlisted and room.unlisted(at, child):
+        # Its count is not proven (#167): neither its summary nor its elements.
+        return UNLISTED
     if sort == "union":
         return "<union>"
     if sort in ("pointer", "reference"):
@@ -594,11 +622,11 @@ def _member(child, typed, fetch, text, depth, room):
             return "[…]"
         if depth >= DEPTH:
             return "[…]"
-        return _open(child, typed, fetch, text, depth + 1, room.nested())
+        return _open(child, typed, fetch, text, depth + 1, room.nested(), at)
     if sort == "record":
         if not expandable or not _PLACEHOLDER.fullmatch(value) or depth >= DEPTH:
             return "{…}"
-        return _open(child, typed, fetch, text, depth + 1, room.nested())
+        return _open(child, typed, fetch, text, depth + 1, room.nested(), at)
     if (
         sort == "library"
         and expandable
@@ -608,7 +636,7 @@ def _member(child, typed, fetch, text, depth, room):
     ):
         # A standard container inside (#181): its elements, or else its summary.
         try:
-            return _container(child, typed, fetch, text, depth + 1, room.nested())
+            return _container(child, typed, fetch, text, depth + 1, room.nested(), at)
         except _Unsure:
             pass
     if sort in ("library", "incomplete", "unknown") and _PLACEHOLDER.fullmatch(value):

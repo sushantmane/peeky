@@ -178,6 +178,50 @@ clang's lexical blocks are right, but their code isn't contiguous.
   `items[1].name` would read it too, through the reference parameter of a function that the
   destructor calls. `shared[0].x` would read a moved-from `-1` while a worker thread relocated it.
 
+## What LLDB misreads in GCC's C++
+
+C++ built by GCC is still refused. A test-only hatch, `PEEKY_TEST_CPP_GCC=1`, builds it for the
+tests (`tests/cpp_gcc_survey.py`). These rules hold for any build, and clang's builds pass them.
+
+- **Unordered containers.** LLDB's libstdc++ formatter (`gnu_libstdcpp.py`) takes an unordered
+  container's element type from its allocator's first template argument. GCC gives
+  `std::allocator<T>` none, so the formatter counts the container as empty and lists nothing.
+  LLDB 18's formatter reads a typedef's own type, which has no template arguments, so clang's
+  `using Ids = std::unordered_set<long>` reads empty too.
+  - `NativeSession.unlisted_container` compares the formatter's `size=N` with the container's own
+    `_M_h._M_element_count`. The worker reads that with an `evaluate` in the `hover` context.
+    lldb-dap reads a hover as a variable path, as `frame variable` does, past any formatter. It
+    never runs a hover as an expression in the program.
+  - The path comes from the debugger's names on the row's way from its root local: `h.us`,
+    `vs[1]`, `mus[0].second`, `p->_M_h…`. An element of what a pointer points at is `pv[0][1]`.
+    A name no path holds leaves the count unread: a located name, a base class, an anonymous
+    member.
+  - In an optimized build, a function that declares the root's name twice leaves it unread too.
+    An inner block's local of that name may be in scope there, but not listed.
+  - Where the counts differ, or the count is unread, the row is withheld as `not listed`, with no
+    handle. A preview shows `<not listed>` in its place. The probe refuses its keys and
+    positions: `um[1] not read: um is not listed: …`.
+  - libc++'s formatters are LLDB's own C++ ones, and its members differ. So a libc++ build, known
+    by its `std::__1` namespace, is not checked.
+- **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
+  `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the
+  bounds of …`, though GCC's DWARF is valid.
+  - `native.local_buffer` takes the buffer's length from `fields.type_graph`. It does so only
+    where the string's members are libstdc++'s, at offsets 0, 8 and 16.
+  - With `writeMemory` (lldb-dap 21), the text is written there and read back.
+  - Without it, Peeky would set the buffer's characters one by one, and LLDB lists none of them.
+    So the refusal says that the debugger misreads the build's string buffer.
+- **LLDB's errors in the output.** LLDB 18 prints those errors on its own stderr, which lldb-dap
+  sends as `stderr` output events. The program's own streams come through its terminal, as
+  `stdout`. So `DAP` keeps an event apart where it is `stderr` and every line matches
+  `NativeSession.debugger_diagnostics`: `error: <module> 0x…: DW_TAG_…`. A line the program
+  prints stays output, whatever it says. Rust's sessions inherit the pattern, as they run on
+  lldb-dap too.
+- **A bitfield's structured binding.** GCC describes `auto [lo, hi] = bits` with no location and a
+  1-byte type named `__unknown__`, which LLDB shows as `char`. `NativeSession.unlocated` says so
+  on the row and on a refused change. It replaces the advice to stop after the declaration, which
+  no stop can follow.
+
 ## Which tests check what
 
 C's real HTTP regressions cover:
@@ -204,6 +248,7 @@ required test calls a model.
 | `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output and a bitfield's binding, built by clang and by g++ (under the test-only hatch) | Linux (libstdc++, lldb-dap 18 and 20) |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
 
 ## References

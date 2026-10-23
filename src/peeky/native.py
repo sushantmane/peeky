@@ -3282,6 +3282,119 @@ class Withholding(str):
         return made
 
 
+# A C++ unordered container, its template arguments left out (#167): LLDB's libstdc++
+# formatter can count one as empty (see NativeSession.unlisted_container).
+UNORDERED = re.compile(r"(?:::)?std::(?:__\w+::|pmr::)*unordered_(?:multi)?(?:map|set)")
+# The label of an unordered container whose listing is withheld: its row's error starts so.
+UNLISTED = "not listed"
+_PATH_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+_PATH_INDEX = re.compile(r"\[(?:0|[1-9][0-9]{0,9})\]")
+_FORMATTER_COUNT = re.compile(r"(?:0x[0-9a-fA-F]+\s+)?size=(0|[1-9][0-9]{0,18})")
+_RAW_COUNT = re.compile(r"(?:.*\s=\s)?(0|[1-9][0-9]{0,18})", re.S)
+
+
+def local_buffer(graph, node):
+    """The length in bytes of a libstdc++ string's own buffer (`_M_local_buf`), from the
+    build's debug information (``graph``, fields.type_graph; ``node``, the string's
+    record), where its members are laid out as libstdc++'s are: the data pointer, the
+    length, then a union of the buffer (a `char` array) and the heap capacity, at
+    offsets 0, 8 and 16. Else None."""
+    from peeky.fields import Unsettable, _strip
+
+    members = {member[0]: member for member in node[5]}
+    unions = [member for member in node[5] if member[0] is None]
+    if (
+        (members.get("_M_dataplus") or (None, None, None))[2] != 0
+        or (members.get("_M_string_length") or (None, None, None))[2] != 8
+        or len(unions) != 1
+        or unions[0][2] != 16
+    ):
+        return None
+    try:
+        _, union, _ = _strip(graph, unions[0][1], "_M_local_buf")
+        if union[0] != "record" or union[2] != "union":
+            return None
+        inner = {member[0]: member for member in union[5]}
+        buffer = inner.get("_M_local_buf")
+        if buffer is None or buffer[2] not in (0, None) or "_M_allocated_capacity" not in inner:
+            return None
+        _, array, _ = _strip(graph, buffer[1], "_M_local_buf")
+        if array[0] != "array" or not array[3] or len(array[3]) != 1:
+            return None
+        _, element, _ = _strip(graph, array[2], "_M_local_buf")
+    except Unsettable:
+        return None
+    if element[0] != "base" or element[1] != "char" or element[3] != 1:
+        return None
+    return array[3][0] if 1 < array[3][0] <= 64 else None
+
+
+def _pointer_type(kind):
+    """Whether lldb-dap's type name is a pointer's (`T *`, `T *const`)."""
+    return bool(re.fullmatch(r".+\*\s*(?:const\s*)?(?:volatile\s*)?", str(kind or "").strip()))
+
+
+def count_path(steps, pointer=_pointer_type):
+    """The variable path by which LLDB's `frame variable` reads an unordered container's
+    own count (`h.us._M_h._M_element_count`, `p->_M_h._M_element_count`), from the
+    debugger's names on its way from its root local (``steps``: [(name, type)]; the
+    last is the container, or a pointer or reference to one). ``pointer(type)``: whether
+    a step is a pointer, whose children the debugger lists from what it points at. None
+    where a name is none a path can hold (`t @ a.cpp:3`, `*p`, an anonymous member) or
+    names a base class, whose members a path cannot tell from the class's own."""
+    path = ""
+    for index, (name, kind) in enumerate(steps):
+        name = str(name)
+        through = index > 0 and pointer(steps[index - 1][1])
+        if index == 0 and _PATH_NAME.fullmatch(name):
+            path = name
+        elif index and _PATH_INDEX.fullmatch(name):
+            # What a pointer points at is its `[0]` (`pv[0][1]`): `pv[1]` is the next one.
+            path += ("[0]" if through else "") + name
+        elif index and _PATH_NAME.fullmatch(name) and name != str(kind or "").strip():
+            path += ("->" if through else ".") + name
+        else:
+            return None
+    if not steps:
+        return None
+    return path + ("->" if pointer(steps[-1][1]) else ".") + "_M_h._M_element_count"
+
+
+def _unread(path):
+    raise ValueError(f"{path} is not read here")
+
+
+def formatter_count(value):
+    """The entry count LLDB's summary of a container states (`size=3`, `0x… size=3` for
+    a pointer or reference to one), or None."""
+    found = _FORMATTER_COUNT.fullmatch(str(value or "").strip())
+    return int(found[1]) if found else None
+
+
+def raw_count(result):
+    """The number LLDB's `evaluate` reply gives for a variable path (lldb-dap 20's `1`,
+    18's `(size_type) _M_element_count = 1`), or None."""
+    found = _RAW_COUNT.fullmatch(str(result or "").strip())
+    return int(found[1]) if found else None
+
+
+def unlisted_reason(shown, raw, pointer=False):
+    """Why an unordered container's listing is withheld (#167): the debugger's count
+    ``shown`` disagrees with the container's own ``raw`` (None: unread)."""
+    what = "it points at an unordered container, and " if pointer else ""
+    if raw is None:
+        return (
+            f"{what}the debugger cannot list some builds' unordered containers (it reads "
+            "GCC's as empty), and Peeky could not read this one's own count "
+            "(`_M_element_count`) to check its listing; print it from the program"
+        )
+    return (
+        f"{what}the debugger cannot list this build's unordered containers: it counts "
+        f"{shown if shown is not None else 'no'} entries, but the container's own count "
+        f"(`_M_element_count`) is {raw}; print its entries from the program"
+    )
+
+
 class Advised(str):
     """A ``mid_statement`` reason with its own ``advice``: where to change the value
     instead, as no other stop on the statement helps (a stop in a prologue, #279)."""
@@ -3358,6 +3471,11 @@ class NativeSession:
     # lldb-dap names an array's elements `[N]` and lists any range of them on request,
     # so one element of a long array can be fetched alone (#105).
     elements_by_index = True
+    # LLDB's errors about the build's debug information, which lldb-dap 18 sends as
+    # `stderr` output (`error: prog 0x000000fc: DW_TAG_member '_M_local_buf' refers to
+    # type ...`, GCC's std::string): the program's own output comes as `stdout`, through
+    # the terminal lldb-dap runs it on, so these are the debugger's (#167).
+    debugger_diagnostics = r"error: \S(?:.*\S)? 0x[0-9a-fA-F]{8}: DW_TAG_\w+ \S.*"
 
     @property
     def implicit_receiver(self):
@@ -3652,6 +3770,8 @@ class NativeSession:
         stack=None,
         deeper=None,
         threads=None,
+        kinds=None,
+        raw=None,
     ):
         """A C or C++ struct's, class's, fixed-size array's or standard container's
         preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
@@ -3666,7 +3786,10 @@ class NativeSession:
         frames as listed (innermost first), ``deeper(levels)`` more of them,
         ``threads()`` how many threads the program has: a container shows its elements
         only where no standard-library call may be part-way through changing it
-        (``containers_settled``)."""
+        (``containers_settled``). ``kinds``: the debugger's type of each of ``steps``;
+        ``raw(path)`` reads a variable path as the debugger does (``unlisted_container``):
+        an unordered container inside shows `<not listed>` where its count is not
+        proven (#167)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
@@ -3720,7 +3843,17 @@ class NativeSession:
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")
 
-        return preview(variable, fetch, typed, text, containers=settled)
+        known_kinds = list(kinds or [])[: len(steps)]
+        known_kinds += [None] * (len(steps) - len(known_kinds))
+
+        def unlisted(at, child):
+            # Inside the preview, no pointer is followed: each step below the root reads
+            # as a member or an element.
+            path = [*zip(steps, known_kinds), *((name, None) for name in at)]
+            path[-1] = (path[-1][0], child.get("type"))
+            return self.unlisted_container(child, frame, path, raw or _unread) is not None
+
+        return preview(variable, fetch, typed, text, containers=settled, unlisted=unlisted)
 
     def containers_settled(self, frame, indirect, stack, deeper=None, threads=None):
         """Whether a standard container a value of ``frame`` holds is whole (#181): the
@@ -3977,6 +4110,106 @@ class NativeSession:
             found = re.fullmatch(r"(.+?)\s*\*\s*(?:const\s*)?", kind.strip())
             pointee = found[1] if found else None
         return self.aliased_type(pointee) if pointee else None
+
+    def _unordered(self, kind):
+        """ "value" where a type is a C++ unordered container or a reference to one,
+        "pointer" for a pointer to one (by its name, or a typedef's the build resolves),
+        else None. None in a libc++ build, which LLDB lists with formatters of its own."""
+        if getattr(getattr(self, "target", None), "language", None) != "cpp":
+            return None
+        if not isinstance(kind, str) or "namespace::__1" in getattr(self, "typedefs", {}):
+            return None
+        bare = kind.strip()
+        pointer = re.fullmatch(r"(.+?)\s*\*\s*(?:const\s*)?(?:volatile\s*)?", bare)
+        held = pointer[1] if pointer else bare
+        names = [held, self.aliased_type(held)]
+        if not pointer:
+            plain = re.sub(r"^(?:(?:const|volatile)\s+)+|(?:\s+(?:const|volatile))+$", "", bare)
+            found = self.typedef_kind(plain)
+            if found is not None and found[0] == "pointer" and found[1]:
+                # A typedef of a pointer to one (`using P = std::unordered_set<int> *`).
+                pointer, names = True, [found[1], self.aliased_type(found[1])]
+        for name in names:
+            plain = re.sub(
+                r"^(?:(?:const|volatile)\s+)+|(?:\s*(?:\bconst\b|\bvolatile\b|&))+$",
+                "",
+                str(name or "").strip(),
+            )
+            if name and UNORDERED.fullmatch(_without_templates(plain).strip()):
+                return "pointer" if pointer else "value"
+        return None
+
+    def unlisted_container(self, variable, frame, steps, evaluate):
+        """Why a C++ unordered container's row is withheld, as a ``Withholding``, or None
+        (#167). LLDB's libstdc++ formatter for `std::unordered_map` and its kin takes the
+        element type from the allocator's template argument, which GCC's debug
+        information leaves out (and a typedef's name hides from it): it then counts the
+        container as empty (`size=0`) and lists nothing, so a preview, a key or position
+        read, or a listing would claim it empty. Its count must equal the container's own
+        `_M_h._M_element_count`, read raw by ``evaluate(path)`` (lldb-dap's `hover`: a
+        variable path, never code run in the program), or nothing of it is shown.
+        ``variable``: the debugger's, a container or a pointer or reference to one;
+        ``steps``: its way from its root local, [(name, type)], itself last."""
+        shape = self._unordered(variable.get("type"))
+        value = str(variable.get("value") or "")
+        if shape is None or (value.startswith("<") and value.endswith(">")):
+            return None
+        shown = formatter_count(value)
+        reference = variable.get("variablesReference")
+        if shown is None and not (type(reference) is int and reference > 0):
+            # A null pointer, or no summary and nothing listed: nothing is claimed.
+            return None
+
+        def pointer(kind):
+            if _pointer_type(kind):
+                return True
+            found = self.typedef_kind(kind) if isinstance(kind, str) else None
+            return found is not None and found[0] == "pointer"
+
+        path = count_path(steps, pointer)
+        if path is not None and getattr(self.target, "optimization", "O0") != "O0":
+            # An optimized build may keep a same-named local of an inner block in scope
+            # but unlisted: the path could read that one's count.
+            function = self._function_at(frame)
+            declared = ((function or {}).get("types") or {}).get(str(steps[0][0])) or ()
+            if len(declared) > 1:
+                path = None
+        raw = None
+        if path is not None:
+            try:
+                raw = raw_count(evaluate(path))
+            except (ValueError, RuntimeError, OSError, TimeoutError):
+                raw = None
+        if raw is not None and raw == shown:
+            return None
+        reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
+        return Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
+
+    def unlocated(self, variable, frame):
+        """Why a root local the debugger has no value for can neither be read nor
+        changed, where the build says so, or None: GCC describes a structured binding of
+        a bitfield (`auto [lo, hi] = bits`) with no location and a 1-byte type named
+        `__unknown__` (#167), so no later stop reads it either."""
+        value = str(variable.get("value") or "")
+        if not (value.startswith("<") and value.endswith(">")) or self.fields is None:
+            return None
+        if getattr(getattr(self, "target", None), "language", None) != "cpp":
+            return None
+        function = self._function_at(frame)
+        name = split_located(str(variable.get("name") or ""))
+        name = name[0] if name else str(variable.get("name") or "")
+        declared = ((function or {}).get("types") or {}).get(name) or ()
+        if not declared or any(storage != "other" for _, storage, _ in declared):
+            return None
+        for offset, _, _ in declared:
+            node = self.fields.get(offset)
+            if node is None or node[0] != "base" or node[1] != "__unknown__":
+                return None
+        return (
+            "the build gives it no location and no type of its own (`__unknown__`), as GCC "
+            "does for a structured binding of a bitfield, so the debugger can neither read "
+            "nor change it; print it from the program"
+        )
 
     def not_yet_declared(
         self, variable, frame, innermost=True, stack=None, deeper=None, siblings=None, stop=None
@@ -5343,7 +5576,10 @@ class NativeSession:
             elif (
                 node[0] == "record" and node[9] and re.fullmatch(r"basic_string<char\b.*", node[1])
             ):
-                declared = ("std", None)
+                # libstdc++'s own buffer, as the build's debug information sizes it: LLDB
+                # reads GCC's as `char[0]` (#167).
+                buffer = local_buffer(graph, node)
+                declared = ("std", {"local_buf": buffer} if buffer else None)
         except Unsettable as exc:
             found = re.search(r"is (const|volatile|atomic)\b", str(exc))
             if found:

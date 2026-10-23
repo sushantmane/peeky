@@ -162,8 +162,10 @@ def test_without_write_memory_only_printable_ascii_goes_by_element():
         change(listed(), "pear", fake.interface(), listed, "array")
 
 
-def libstdcxx(fake, text, heap=None, capacity=None, address=0x2000):
-    """A libstdc++ string at ``address``: in its own buffer, or ``heap``'s."""
+def libstdcxx(fake, text, heap=None, capacity=None, address=0x2000, buffer="char[16]"):
+    """A libstdc++ string at ``address``: in its own buffer, or ``heap``'s. ``buffer``:
+    the debugger's type for that buffer (LLDB reads GCC's as `char[0]`, listing none of
+    its characters)."""
     pointer = heap or address + 16
     fake.put(address, pointer.to_bytes(8, "little") + len(text).to_bytes(8, "little"))
     if heap:
@@ -196,7 +198,7 @@ def libstdcxx(fake, text, heap=None, capacity=None, address=0x2000):
     fake.trees[11] = lambda: [
         {
             "name": "_M_local_buf",
-            "type": "char[16]",
+            "type": buffer,
             "memoryReference": f"0x{address + 16:X}",
             "variablesReference": 12,
         },
@@ -212,7 +214,7 @@ def libstdcxx(fake, text, heap=None, capacity=None, address=0x2000):
             "type": "char",
             "value": char_shown(fake.memory.get(address + 16 + i, 0)),
         }
-        for i in range(16)
+        for i in range(16 if buffer == "char[16]" else 0)
     ]
 
     def listed():
@@ -255,6 +257,40 @@ def test_a_libstdcxx_heap_string_needs_write_memory_and_its_capacity():
     listed = libstdcxx(fake, b"apple")
     with pytest.raises(ValueError, match="cannot read memory"):
         change(listed(), "pear", fake.interface(), listed, "std")
+
+
+def test_a_buffer_the_debugger_misreads_is_sized_by_the_debug_information():
+    # #167: LLDB reads GCC's `_M_local_buf` as `char[0]`; the set was refused as "its
+    # members are not laid out as libstdc++'s string's are".
+    layout = {"local_buf": 16}
+    fake = Fake()
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    changed = change(listed(), "renamed", fake.interface(), listed, "std", layout)
+    assert changed == {"before": '"named"', "after": '"renamed"'}
+    assert fake.get(0x2010, 8) == b"renamed\0" and fake.get(0x2008, 8)[0] == 7
+    with pytest.raises(ValueError, match="with room for 15 bytes"):
+        change(listed(), "x" * 16, fake.interface(), listed, "std", layout)
+    # A debugger that cannot write memory sets the characters one by one, which a
+    # buffer it reads as `char[0]` lists none of: refused before anything is written.
+    fake = Fake(writes=False)
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    with pytest.raises(ValueError) as refused:
+        change(listed(), "renamed", fake.interface(), listed, "std", layout)
+    assert str(refused.value) == (
+        "`s` cannot be changed: the debugger misreads this build's string buffer as char[0] "
+        "(its debug information says char[16]), so it cannot set the text's characters one "
+        "by one, and this debugger cannot write memory (lldb-dap 21 can)"
+    )
+    assert not fake.sets and fake.get(0x2010, 6) == b"named\0"
+    # Without the debug information's size, the refusal says what the debugger misreads.
+    with pytest.raises(ValueError, match="misreads this build's string buffer as char\\[0\\]"):
+        change(listed(), "renamed", fake.interface(), listed, "std")
+    # A size the debugger reads otherwise than the debug information: refused.
+    fake = Fake()
+    listed = libstdcxx(fake, b"named")
+    with pytest.raises(ValueError, match="reads its buffer as char\\[16\\], and the build"):
+        change(listed(), "renamed", fake.interface(), listed, "std", {"local_buf": 8})
+    assert not fake.writes
 
 
 def test_a_libstdcxx_string_not_constructed_is_refused():

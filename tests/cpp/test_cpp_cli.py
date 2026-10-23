@@ -238,7 +238,9 @@ def test_writes_that_cannot_reach_the_program_are_never_reported_as_done(ring, c
             # A computed value: refused (or unchanged), never "set hi: 2 -> 2".
             assert main(["session", "set", "hi=17"]) != 0
             error = capsys.readouterr().err
-            assert "MUTATION_REJECTED" in error and ("refused" in error or "did not" in error)
+            # GCC gives it no location (#167): neither read nor changed, and said so.
+            said = ("refused", "did not", "neither read nor change it")
+            assert "MUTATION_REJECTED" in error and any(text in error for text in said), error
         # The session is still usable, and a stored local takes a canonical literal.
         assert main(["session", "set", "plain=+5"]) == 0
         assert "set plain: 7 -> 5" in capsys.readouterr().out

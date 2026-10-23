@@ -1040,6 +1040,13 @@ evidence store keeps `output` as JSON does. The text table shows the lines witho
 Peeky doesn't turn `\r\n` back into `\n`: it can't tell a `\r` the terminal added from one the
 program wrote.
 
+LLDB 18 also prints its own errors about some builds' debug information. An example is GCC's
+`std::string`: `error: program 0x000000fc: DW_TAG_member '_M_local_buf' refers to type …`.
+lldb-dap sends those on its own stderr, apart from the program's terminal. So they are never in
+`output`: the result has a warning, and `debugger_diagnostics` lists their first 20 lines.
+`session report --json` also gives `diagnostic_count`, how many there were. A line the program
+prints, even one like those, stays in `output`.
+
 Branch on the exit status:
 
 | Status | Meaning |

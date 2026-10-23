@@ -156,7 +156,7 @@ def change(variable, text, memory, relist, kind, layout=None):
         return _rust(variable, text, writer, relist, layout)
     members = _members(writer, variable)
     if "_M_dataplus" in members or "_M_string_length" in members:
-        return _libstdcxx(variable, data, writer, relist)
+        return _libstdcxx(variable, data, writer, relist, layout)
     return _libcxx(variable, data, writer, relist)
 
 
@@ -317,17 +317,19 @@ def _text(data, length):
     return render(data, 1, "", length > len(data))
 
 
-def _libstdcxx(variable, data, writer, relist):
+def _libstdcxx(variable, data, writer, relist, layout=None):
     """libstdc++'s string: its data pointer (`_M_dataplus._M_p`), its length and a
     union of its own 16-byte buffer and the heap buffer's capacity, in that order. The
-    text is in the string's own buffer exactly when the pointer points there."""
+    text is in the string's own buffer exactly when the pointer points there. ``layout``:
+    {"local_buf": its buffer's length} from the build's debug information, which LLDB
+    can misread (GCC's as `char[0]`, #167)."""
     name = writer.name
     if not writer.can_read:
         writer.failed(
             "Peeky cannot tell whether its text is in the string itself or on the heap: "
             "this debugger cannot read memory (lldb-dap 20 can)"
         )
-    shape = _libstdcxx_shape(variable, writer)
+    shape = _libstdcxx_shape(variable, writer, layout)
     capacity, pointer, length = shape["capacity"], shape["pointer"], shape["length"]
     where = "its own buffer" if shape["local"] else "its heap buffer"
     if len(data) > capacity:
@@ -338,6 +340,11 @@ def _libstdcxx(variable, data, writer, relist):
         )
     if not shape["local"] and not writer.can_write:
         writer.failed(f"its text is on the heap, and {_NO_WRITE}")
+    if shape["misread"] and not writer.can_write:
+        # Its characters cannot be listed, so none can be set one at a time.
+        writer.failed(
+            f"{_misread(shape)}, so it cannot set the text's characters one by one, and {_NO_WRITE}"
+        )
     old = writer.read(pointer, min(length, 1024))
     payload = data + b"\0"
     # The buffer must read before it is written: a pointer to nothing is refused.
@@ -351,7 +358,7 @@ def _libstdcxx(variable, data, writer, relist):
     writer.set(fresh.get("variablesReference"), "_M_string_length", str(len(data)))
     fresh = relist()
     try:
-        again = _libstdcxx_shape(fresh, writer)
+        again = _libstdcxx_shape(fresh, writer, layout)
     except ValueError as exc:
         again = {"error": str(exc)}
     writer.check(again.get("pointer") == pointer, "its data pointer")
@@ -360,7 +367,17 @@ def _libstdcxx(variable, data, writer, relist):
     return {"before": _text(old, length), "after": _text(data[:1024], len(data))}
 
 
-def _libstdcxx_shape(variable, writer):
+def _misread(shape):
+    return (
+        f"the debugger misreads this build's string buffer as {shape['misread']} (its debug "
+        f"information says char[{shape['buffer_size']}])"
+    )
+
+
+def _libstdcxx_shape(variable, writer, layout=None):
+    """Where a libstdc++ string's text is, from its members and memory. The buffer's
+    length is the debugger's, or ``layout``'s (the build's debug information) where the
+    debugger misreads it: then ``misread`` is the debugger's type for it."""
     members = _members(writer, variable)
     address = _address(variable.get("memoryReference"))
     unions = [
@@ -379,8 +396,27 @@ def _libstdcxx_shape(variable, writer):
             "the debugger gives no address for the string's members (lldb-dap 20 does), so "
             "Peeky cannot tell whether its text is in the string itself or on the heap"
         )
-    if found is None or length is None or plus != address or local != address + 16:
+    declared = (layout or {}).get("local_buf")
+    typed = str(buffer.get("type") or "").strip()
+    misread = None
+    if declared and (found is None or int(found[1]) != declared):
+        if found is not None:
+            writer.failed(
+                f"the debugger reads its buffer as {typed}, and the build's debug "
+                f"information as char[{declared}]"
+            )
+        # LLDB reads GCC's `char[16]` as `char[0]`: the member's offset still checks out.
+        misread = typed or "no array"
+    elif found is None and re.fullmatch(r"char\s*\[0\]", typed):
+        writer.failed(
+            "the debugger misreads this build's string buffer as char[0], so Peeky cannot "
+            "tell how much text it holds"
+        )
+    if (found is None and not misread) or length is None or plus != address:
         writer.failed("its members are not laid out as libstdc++'s string's are")
+    if local != address + 16:
+        writer.failed("its members are not laid out as libstdc++'s string's are")
+    buffer_size = int(found[1]) if found is not None and not misread else declared
     raw = writer.read(address, 24)
     pointer, size = _word(raw, 0), _word(raw, 8)
     shown = (members.get("_M_dataplus") or {}).get("variablesReference")
@@ -393,7 +429,7 @@ def _libstdcxx_shape(variable, writer):
     if size != length:
         writer.failed("its length reads differently from the debugger and memory")
     if pointer == local:
-        capacity = int(found[1]) - 1
+        capacity = buffer_size - 1
     else:
         capacity = _word(raw, 16)
         if capacity != _decimal(held.get("value")) or not 15 < capacity < 2**40 or not pointer:
@@ -409,6 +445,8 @@ def _libstdcxx_shape(variable, writer):
         "capacity": capacity,
         "local": pointer == local,
         "buffer": buffer.get("variablesReference"),
+        "misread": misread,
+        "buffer_size": buffer_size,
     }
 
 
