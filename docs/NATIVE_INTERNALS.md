@@ -36,6 +36,11 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
   instruction's address must be the lowest of every line-table row the function has on them.
 - `Statements.opening_statements` gives the statements after a body's `{` on a function's first
   line.
+- `_prologue_windows` gives where each function's prologue runs: from its entry to its first row
+  marked `prologue_end`. A GCC build marks none, so its window ends at the function's second row,
+  as GDB reads it. A stop in a window withholds the frame's parameters and locals, and refuses
+  changes. These are kept: a `static`, one that a location list places, and a parameter at or
+  above GCC's frame base (`DW_OP_call_frame_cfa`), which the caller passed on the stack.
 - An inlined call shows in the debug information as a `DW_TAG_inlined_subroutine` with its
   `DW_AT_call_line` on the statement's lines, or from another file.
 

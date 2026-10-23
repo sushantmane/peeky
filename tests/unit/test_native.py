@@ -1815,3 +1815,204 @@ def test_a_caller_is_judged_before_its_return_address_unless_a_signal_interrupte
     fresh = NativeSession.__new__(NativeSession)
     fresh.load_bias = 0
     assert fresh._block_pc(frames[2]) == 0x300
+
+
+def prologue_dumps(workspace, marked=False):
+    """A C unit as GCC builds it (``marked``: as clang does): `one` (line 3), whose code is
+    all on its first line, with a parameter, one the caller passed on the stack, a local,
+    a static, one a location list places, one in a register and a thread-local; `none`
+    (line 4), whose prologue is empty; and a lambda's body (lines 5-6), which names no
+    file and no frame base."""
+    source = workspace / "entry.c"
+    info = f"""{workspace}/program: file format elf64-littleaarch64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("entry.c")
+0x00000020:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000000000400)
+                DW_AT_high_pc\t(0x0000000000000420)
+                DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+                DW_AT_name\t("one")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(3)
+0x0000002c:     DW_TAG_formal_parameter
+                  DW_AT_location\t(DW_OP_fbreg +0)
+                  DW_AT_name\t("ninth")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x00000030:     DW_TAG_formal_parameter
+                  DW_AT_location\t(DW_OP_fbreg -20)
+                  DW_AT_name\t("a")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x00000038:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_fbreg -4)
+                  DW_AT_name\t("b")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x00000040:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_addr 0x11000)
+                  DW_AT_name\t("calls")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x00000048:     DW_TAG_formal_parameter
+                  DW_AT_location\t(0x00000000:
+                     [0x0000000000000400, 0x0000000000000410): DW_OP_reg1 W1)
+                  DW_AT_name\t("listed")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x0000004c:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_reg19 W19)
+                  DW_AT_name\t("held")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x0000004e:     DW_TAG_variable
+                  DW_AT_location\t(DW_OP_const8u 0x10, DW_OP_GNU_push_tls_address)
+                  DW_AT_name\t("each")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(3)
+0x00000050:     NULL
+0x00000058:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000000000420)
+                DW_AT_high_pc\t(0x0000000000000430)
+                DW_AT_name\t("none")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(4)
+0x00000068:   DW_TAG_subprogram
+                DW_AT_low_pc\t(0x0000000000000430)
+                DW_AT_high_pc\t(0x0000000000000450)
+                DW_AT_name\t("operator()")
+                DW_AT_artificial\t(true)
+0x00000078:     DW_TAG_formal_parameter
+                  DW_AT_location\t(DW_OP_fbreg -24)
+                  DW_AT_name\t("v")
+0x0000007c:     DW_TAG_formal_parameter
+                  DW_AT_location\t(DW_OP_fbreg +8)
+                  DW_AT_name\t("w")
+0x00000080:     NULL
+0x00000088:   NULL
+"""
+    rows = [(0x400, 3), (0x408, 3), (0x410, 3), (0x420, 4), (0x420, 4), (0x428, 4)]
+    rows += [(0x430, 5), (0x43C, 6), (0x444, 6)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "entry.c"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    for address, number in rows:
+        flags = " prologue_end" if marked and address in (0x40C, 0x43C) else ""
+        line += f"0x{address:016x} {number} 1 1 0 0 is_stmt{flags}\n"
+    if marked:
+        # Clang's mark, past the parameters' stores, on a row of its own.
+        line += f"0x{0x40C:016x} 3 30 1 0 0 is_stmt prologue_end\n"
+    line += f"0x{0x450:016x} 5 1 1 0 0 end_sequence\n"
+    return info, "\n".join(sorted(line.splitlines(), key=_row_order)) + "\n"
+
+
+def _row_order(text):
+    """Header lines first, then the rows by address, the end of the sequence last."""
+    if not text.startswith("0x"):
+        return (0, 0, 0)
+    return (1, int(text.split()[0], 16), "end_sequence" in text)
+
+
+def test_a_functions_prologue_runs_to_its_mark_or_else_to_its_second_row(tmp_path):
+    # #279: GCC marks no prologue end, so its second row (the body's first) ends the
+    # prologue, where the parameters are stored; clang marks it. An empty prologue (two
+    # rows at the entry) has no window; a lambda that names no file has one all the same.
+    from peeky.native import local_declarations
+
+    (tmp_path / "entry.c").write_text("\n" * 10)
+    # A static, a thread-local, one a location list places and one on the caller's stack
+    # (at or above the call's frame address); not one in a register. The lambda's frame
+    # base is unknown, so its `w` is not kept.
+    keep = frozenset({"calls", "each", "listed", "ninth"})
+    for marked, windows in (
+        (False, [(0x400, 0x408, False, keep, True), (0x430, 0x43C, False, frozenset(), False)]),
+        (True, [(0x400, 0x40C, True, keep, True), (0x430, 0x43C, True, frozenset(), False)]),
+    ):
+        info, line = prologue_dumps(tmp_path, marked)
+        found = []
+        local_declarations(info, line, tmp_path, ("entry.c",), prologues=found)
+        assert found == windows, (marked, found)
+
+
+def prologue_session(windows):
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias = 0x1000
+    session.prologues = tuple(windows)
+    # Nothing else of the build is known: only the prologue rule judges.
+    session.declarations, session.fields = None, None
+    return session
+
+
+def test_a_stop_in_a_prologue_withholds_what_it_has_not_stored(tmp_path):
+    from peeky.native import _prologue_windows
+
+    window = (0x400, 0x408, False, frozenset({"calls"}), True)
+    session = prologue_session(
+        [window, (0x430, 0x43C, True, frozenset(), True), (0x460, 0x468, False, frozenset(), False)]
+    )
+
+    def frame(address):
+        return {"id": 1, "instructionPointerReference": hex(0x1000 + address)}
+
+    reason = session.not_yet_declared({"name": "a"}, frame(0x400))
+    assert reason == (
+        "the stop is at its function's start, before the prologue stores the parameters: "
+        "its storage holds leftovers (the build marks no prologue end, as GCC's never do, so "
+        "LLDB stops a one-line function here). Read the arguments at the call, or put the "
+        "body on a line of its own"
+    )
+    # A row keeps `no value yet`, and a change says why it is refused.
+    assert reason.label is None and len(reason) <= 300
+    assert reason.refusal == (
+        "'a' cannot be changed here: the stop is at its function's start, before the "
+        "prologue stores the parameters, and the function's code may overwrite a change. "
+        "Change the argument at the call, or put the body on a line of its own and stop there"
+    )
+    with pytest.raises(ValueError, match="before the prologue stores the parameters"):
+        session.validate_mutation_target({"name": "a"}, frame(0x404))
+    # A located name (`b @ entry.c:3`) too; a static is not the prologue's to store.
+    assert session.not_yet_declared({"name": "b @ entry.c:3"}, frame(0x404)) == reason
+    assert session.not_yet_declared({"name": "calls"}, frame(0x400)) is None
+    # From the body's first row on, and outside the function, the rule says nothing.
+    assert session.not_yet_declared({"name": "a"}, frame(0x408)) is None
+    assert session.not_yet_declared({"name": "a"}, frame(0x3FC)) is None
+    # A build that marks the prologue's end: only a stop no breakpoint makes is there.
+    marked = session.not_yet_declared({"name": "v"}, frame(0x434))
+    assert marked == (
+        "the stop is in its function's prologue, before it has stored the parameters: its "
+        "storage holds leftovers. Read it at a later stop in the function"
+    )
+    # A function on several lines whose start LLDB stops at all the same (review of #279:
+    # the next function's merged rows taken for the prologue's end): no one-line advice.
+    later = session.not_yet_declared({"name": "k"}, frame(0x460))
+    assert later == (
+        "the stop is at its function's start, before the prologue stores the parameters: its "
+        "storage holds leftovers (the build marks no prologue end, as GCC's never do, and LLDB "
+        "did not find it). Read the arguments at the call, or stop on a later line of the "
+        "function"
+    )
+    assert len(later) <= 300 and later.refusal.endswith(
+        "Change the argument at the call, or change it on a later line of the function"
+    )
+    # A change: refused as before, but for what the stop is, not "part-way through".
+    for address, text, advice in (
+        (
+            0x400,
+            "the stop is at its function's start, before the prologue stores the parameters, "
+            "and the function's code may overwrite a change",
+            "Change the argument at the call, or put the body on a line of its own and stop there",
+        ),
+        (
+            0x430,
+            "the stop is in its function's prologue, before it has stored the parameters, "
+            "and the function's code may overwrite a change",
+            "Change it at a later stop in the function",
+        ),
+    ):
+        why = session.mid_statement({"name": "calls"}, frame(address))
+        assert (why, why.advice) == (text, advice)
+    # A caller frame is judged one before its return address.
+    session.frames_listed([frame(0x500), {**frame(0x408), "id": 2}])
+    assert session.not_yet_declared({"name": "a"}, {**frame(0x408), "id": 2}, innermost=False)
+    assert _prologue_windows({}, [], set()) == []
