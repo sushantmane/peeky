@@ -1,6 +1,7 @@
 """#173: in an optimized build, a range-for's structured binding withholds the outer
 local of its name where LLDB lists only that local, as it does at -O0 (the C cases are
-in tests/native/test_native_optimized_blocks.py)."""
+in tests/native/test_native_optimized_blocks.py). #283: on a one-line range-for whose
+range reads the outer local, that local's note says so, at -O0 too."""
 
 import os
 
@@ -75,3 +76,74 @@ def test_a_range_for_binding_withholds_the_outer_local_where_lldb_lists_only_it(
         assert found and not [row for row in found if "value" in row], found
     withheld = [row for row in found if "structured binding `t`" in row.get("error", "")]
     assert withheld, found
+
+
+# #283: range-`for` headers that name the outer `t` before their binding exists.
+RANGE_SOURCE = """#include <cstdio>
+#include <utility>
+#include <vector>
+struct P { template <int N> static long t() { return N + 5; } };
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) std::vector<std::pair<long, long>> make(long v) {
+    return {{v + 1000, 1}, {v + 1001, 2}};
+}
+int main(int argc, char **argv) {
+    long t = argc; // OUTER
+    P p, *q = &p;
+    for (const auto &[t, u] : make(t)) { use(t * u); } // ONE_LINE
+    for (const auto &[t, u] : // FOR_LINE
+         make(t)) { use(t - u); } // RANGE_LINE
+    for (const auto &[t, u] : make(sizeof(t))) { use(t + u); } // SIZEOF
+    for (const auto &[t, u] : make(p.template t<0>() + q->template t<1>() + P::template t<2>())) { use(t | u); } // MEMBER
+    use(t);
+    return 0;
+}
+"""
+HEDGED = (
+    "may not be what the code reads: the code here may name the structured binding `t` "
+    "(line {}), but the loop's header names `t` before that binding exists, and Peeky "
+    "cannot tell whether running the header reads this local"
+)
+PLAIN = "not what the code reads: the code here names the structured binding `t` (line {})"
+
+
+def line_of(marker):
+    return next(i for i, row in enumerate(RANGE_SOURCE.splitlines(), 1) if marker in row)
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", ["ONE_LINE", "FOR_LINE", "RANGE_LINE", "SIZEOF", "MEMBER"])
+def test_a_range_for_header_naming_the_outer_local_hedges_its_note(
+    tmp_path, cxx, optimization, marker
+):
+    # #283: on `for (const auto &[t, u] : make(t)) { use(t * u); }`, the outer `t` said
+    # "not what the code reads: the code here names the structured binding `t`", though
+    # the header runs before the binding exists, where `t` is the outer local. Whether
+    # running it reads `t` (`make(t)`, or `sizeof(t)`) Peeky cannot tell: withheld, hedged.
+    # GCC's `t`s are both listed here (see above): its outer one is selected by its line.
+    selector = f"t @ blocks.cpp:{line_of('OUTER')}" if cxx == "gcc" else "t"
+    found = rows(tmp_path, target(optimization), RANGE_SOURCE, marker, selector)
+    # The binding's own rows (a reference) are never said to be the outer local: on the
+    # MEMBER line, `P::template t<2>()` read as a declaration of `t` made them so.
+    bound = [row for row in found if "&" in (row.get("type") or "")]
+    assert not [row for row in bound if "outer local" in row.get("error", "")], bound
+    outer = [row for row in found if "structured binding `t`" in row.get("error", "")]
+    assert outer and not [row for row in found if "value" in row and row not in bound], found
+    split = marker in ("FOR_LINE", "RANGE_LINE")
+    binding = line_of("FOR_LINE") if split else line_of(marker)
+    hedged, plain = HEDGED.format(binding), PLAIN.format(binding)
+    for row in outer:
+        error = row["error"]
+        assert "reads this local first" not in error, row
+        if marker == "MEMBER":
+            # `p.template t<0>()` names a member: the line names `t` only as the binding.
+            assert error.startswith(plain), row
+        elif split or optimization != "O0" or row["hit"] == 1:
+            # A header over two lines, an optimized build, or the line's first stop.
+            assert error.startswith(hedged), row
+        else:
+            # Unoptimized, past the line's first instruction: the header has run.
+            assert error.startswith(plain), row
+    if optimization == "O0" and not split and marker != "MEMBER":
+        assert any(row["hit"] == 1 and row["error"].startswith(hedged) for row in outer), found

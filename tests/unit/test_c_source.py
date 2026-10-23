@@ -1390,6 +1390,55 @@ def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
     assert statements.block_storage(4, "t", 2, True, entering=True) == ("binding", 3)
 
 
+RANGE_HEADER_SOURCE = """int f(P p, P *q) {
+    long t = 1;
+    for (const auto &[t, u] : make(t)) { use(t * u); }
+    for (auto [t, u] : v) { use(t); }
+    for (auto [t, u] : make(t)) {
+    for (auto [t, u] : make(p.t, q->t, n::t)) { use(t); }
+    for (auto [t, u] : make(p.template t<0>(), q->template t<1>(), P::template t<2>())) {
+    for (auto [t, u] : make(sizeof(t), sizeof t)) { use(t); }
+    for (auto [t, u] : make(decltype(t){2}, noexcept(id(t)))) { use(t); }
+    for (auto [t, u] : make([&](long t) { return id(t); })) { use(t); }
+    for (auto [t, u] : make([&] { return id(t); })) { use(t); }
+    for (auto w = make(t); auto [t, u] : w) { use(t); }
+    for (auto [a, b] : make(t)) { use(a); }
+    for (auto [t, u] = make(t); u < 3; u++) { use(t); }
+    for (auto [t, u] : c ? make(t) : v) { use(t); }
+    for (const auto &[t, u] :
+         make(t)) { use(t * u); }
+    for (const auto &[t, u]
+         : w) { use(t); }
+    }
+    }
+    return t;
+}
+"""
+
+
+def test_a_range_for_header_says_where_it_names_the_outer_local():
+    # #283: a range-`for` header naming the outer `t` outside its binding runs that code
+    # before the binding exists. A mention is not a read (`sizeof`, `decltype`, a lambda's
+    # body, a lambda's own `t`), so each one counts, but no member's or qualified name.
+    statements = Statements(RANGE_HEADER_SOURCE, raw_strings=True)
+    found = {line: statements.range_header(line, "t") for line in range(3, 21)}
+    named = {line: lines for line, lines in found.items() if lines is not None}
+    # Lines 3 and 5 (the range), 8 and 9 (operands never evaluated), 10 and 11 (lambdas),
+    # 12 (an init-statement) and 15 (a `?` in the range); 16 and 17 hold one header.
+    assert named == {
+        **{line: (line, line) for line in (3, 5, 8, 9, 10, 11, 12, 15)},
+        16: (16, 17),
+        17: (16, 17),
+    }, named
+    # Members, `p.template t<0>()` among them (6, 7); another binding (13); a classic
+    # `for` (14); a header over two lines that does not name it (18, 19).
+    assert statements.range_header(3, "u") is None
+    # Nor is `P::template t<2>()` a declaration of `t`: the binding is line 7's own.
+    assert statements.block_storage(7, "t", 7, True) is False
+    # C has no structured bindings.
+    assert Statements(RANGE_HEADER_SOURCE, raw_strings=False).range_header(3, "t") is None
+
+
 OWN_STATIC = """long work(long a) {
     long t = a * 3;
     {

@@ -997,6 +997,9 @@ class Statements:
             if blanked[at] in "*&>":
                 return True
             previous = self._word_before(word.start())
+            if previous == "template" and self._member(word.start()):
+                # A member template's name (`P::template t<0>()`, #283), not a declaration.
+                continue
             if previous is not None and previous not in _USES:
                 return True
         return False
@@ -1624,6 +1627,69 @@ class Statements:
                     found.add(keyword[1])
                     break
         return frozenset(found)
+
+    def range_header(self, line, name):
+        """The lines (first, last) of a C++ range-`for`'s header that holds ``line``, whose
+        structured binding declares ``name`` and whose header also names ``name`` outside
+        the binding, in its range's expression or an init-statement: `for (const auto &[t,
+        u] : make(t))`. That code runs before the binding exists (#283), where ``name`` is
+        an outer one; but a mention need not be a read (`sizeof(t)`, a lambda's body), so
+        a caller can only say the header names it. A member's or a qualified name does not
+        count (`p.t`, `p->t`, `n::t`, `p.template t<0>()`). Else None."""
+        if not self.raw_strings or self.unreadable or type(line) is not int:
+            return None
+        if not 1 <= line <= len(self.starts):
+            return None
+        code, pairs = self._code()
+        if pairs is None:
+            return None
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        for start, closing in pairs.items():
+            if not (start < finish and closing >= begin and code.startswith("(", start)):
+                continue
+            keyword = self._before(start)
+            if keyword is None or keyword[0] != "for":
+                continue
+            # The binding's brackets at the header's own depth (after its last `;`, an
+            # init-statement's end), then the range's `:`.
+            binding, ranged, depth = None, False, 0
+            for mark in _TOKENS.finditer(code, start + 1, closing):
+                token = mark[0]
+                if token in _OPEN:
+                    if (
+                        depth == 0
+                        and token in ("[", "<:")
+                        and re.search(r"\bauto\s*&{0,2}\s*$", code[start + 1 : mark.start()])
+                    ):
+                        binding = (mark.start(), pairs[mark.start()])
+                    depth += 1
+                elif token in _CLOSE:
+                    depth -= 1
+                elif depth == 0 and token == ";":
+                    binding, ranged = None, False
+                elif depth == 0 and token == ":" and binding is not None:
+                    ranged = True
+                    break
+            if not ranged or not any(
+                word[0] == name for word in _IDENTIFIER.finditer(code, *binding)
+            ):
+                continue
+            for word in _IDENTIFIER.finditer(code, start + 1, closing):
+                if word[0] != name or binding[0] < word.start() < binding[1]:
+                    continue
+                if not self._member(word.start()):
+                    first = bisect.bisect_right(self.starts, keyword[1])
+                    return first, bisect.bisect_right(self.starts, closing)
+        return None
+
+    def _member(self, position):
+        """Whether the name at ``position`` is a member's or a qualified one: after `.`,
+        `->` or `::`, also with `template` between (`p->template t<0>()`)."""
+        before = self._before(position)
+        if before is not None and before[0] == "template":
+            before = self._before(before[1])
+        return before is not None and before[0] in (".", "->", "::")
 
     def _opens_statements(self, opening):
         """Whether the brace at ``opening`` opens statements this function runs: a block,

@@ -1752,6 +1752,83 @@ def test_a_static_kept_as_a_constant_is_shown_where_the_code_names_it(tmp_path):
     assert "which the debugger does not list" in found
 
 
+RANGE_FOR_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    for (const auto &[q, u] : make(q)) { use(q * u); }
+    for (auto [q, u] : v) { use(q); }
+    for (const auto &[q, u] :
+         make(q)) { use(q - u); }
+    for (auto [q, u] : make(p.template q<0>())) { use(q); }
+    for (auto [q, u] : make(sizeof(q))) { use(q); }
+    for (auto [q, u] : v) {
+        use(q);
+    }
+    return q;
+}
+"""
+
+
+@pytest.mark.parametrize("entered", ["caller", None, True, False])
+def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, entered):
+    # #283: `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
+    # unhedged "not what the code reads", though the header runs before the binding
+    # exists. entered: "caller" (a caller frame: no stop is told), None (an optimized
+    # build), True or False (unoptimized: at the line's first instruction, or past it).
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
+    session.target.language = "cpp"
+
+    def note(line):
+        entering = None if entered == "caller" else (lambda: entered)
+        return session._block_storage("q", frame, "a.c", line, entering=entering)
+
+    hedged = (
+        "may not be what the code reads",
+        "the code here may name the structured binding `q` (line {}), but the loop's header "
+        "names `q` before that binding exists, and Peeky cannot tell whether running the "
+        "header reads this local: this row is the outer local of that name",
+    )
+    plain = (
+        "not what the code reads",
+        "the code here names the structured binding `q` (line {}): this row is the outer "
+        "local of that name",
+    )
+    unsure = (
+        "may not be what the code reads",
+        "the code here may name the structured binding `q` (line 9), unless the stop starts "
+        "the line, before that binding exists (in an optimized build Peeky cannot tell "
+        "which): this row is the outer local of that name",
+    )
+    expected = {
+        # On the line, a header that has run past the first instruction: the binding.
+        3: plain if entered is False else hedged,
+        4: plain,
+        # A header over two lines: no stop on it can be told from its range's.
+        5: hedged,
+        6: hedged,
+        # A member template's name is no mention of the local.
+        7: plain,
+        # `sizeof(q)` reads nothing, but a hedge says only that the header names it.
+        8: plain if entered is False else hedged,
+        9: {"caller": plain, None: unsure, True: None, False: plain}[entered],
+    }
+    for line, want in expected.items():
+        found = note(line)
+        if want is None:
+            assert found is None, (line, found)
+            continue
+        binding = 5 if line in (5, 6) else line
+        assert (found.label, str(found)) == (want[0], want[1].format(binding)), (line, found)
+        assert "reads this local first" not in found and "reads this local first" not in (
+            found.refusal
+        )
+        would = "may not" if want[0].startswith("may") else "would not"
+        assert found.refusal.endswith(f"so a change to it {would} reach that code"), found.refusal
+        if want is hedged:
+            assert "Peeky cannot tell whether running the header reads" in found.refusal
+
+
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     # #138 with #146: `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
