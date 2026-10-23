@@ -387,6 +387,7 @@ The table's last column names the conditions a value needs. Each condition is de
 | --- | --- | --- |
 | Integer, float, `bool` or `char` local or parameter | its value, with its Rust type: `usize` | no condition, but it can be withheld |
 | `Option<i32>` | `Some(3)` or `None`, marked `[active-variant]` | a listed enum; unoptimized |
+| `Option` of a tuple or struct, such as `Option<Engineer>` | `Some(Engineer { name: "Björn", shifts: 1, .. })` or `None`, marked `[active-variant]` | a listed enum; plain `T`; memory; safe crate, if `T` holds a `String`; innermost; initialized |
 | Struct or tuple local, or a by-value parameter | as derived `Debug` prints it, marked `[memory]` | plain fields; memory; innermost; initialized |
 | Reference parameter to a struct or tuple | as derived `Debug` prints it, marked `[memory]` | plain fields; memory; safe crate; live; not rebound; `&mut` innermost |
 | Owned `Vec<T>` or `String` local | its contents, marked `[memory]` | plain `T`; memory; safe crate; innermost; initialized |
@@ -401,7 +402,7 @@ The conditions:
 - **can be withheld:** a local that may be unassigned shows `no value yet:`. In an optimized
   build, a value may be unavailable or stale ([7.5](../COOKBOOK.md#75-optimized-builds)).
 - **a listed enum:** `describe` lists its type on the `qualified enum views:` line. Other enums
-  stay opaque.
+  stay opaque, with a note ([Options of tuples and structs](#options-of-tuples-and-structs)).
 - **unoptimized:** an unoptimized build. In an optimized build, an enum shows
   `<unverified Rust enum value>`.
 - **plain fields:** all its fields are integers, `bool`, floats or `char`
@@ -567,6 +568,70 @@ These stay raw, with a note that says why:
 - a container of elements with no field Peeky reads, such as `Vec<(Vec<i64>, &str)>`;
 - a container with no proof, such as a caller's `&mut` parameter, or an owned `Vec` the line
   moves. A raw slice's `friends.data_ptr` is not read through: select `friends[0]` instead.
+
+#### Options of tuples and structs
+
+An `Option` of a tuple or struct your crate defines reads from memory, as derived `Debug` prints
+it. In the eleventh evaluation's `rota` crate, `last: Option<Engineer>` holds a clone of last
+week's engineer:
+
+```sh
+peeky session start rota --at src/main.rs:39 --hit 13 -- 10 Ana:5,6 Björn:1,2,3,4 Chloé Dev:9
+peeky session get last last.__0
+```
+
+```
+last: Option<rota::Engineer> = Some(Engineer { name: "Björn", shifts: 1, .. })
+  last.__0: rota::Engineer = Engineer { name: "Björn", shifts: 1, .. } (children: peeky session get last.__0)
+last.__0: rota::Engineer = Engineer { name: "Björn", shifts: 1, .. }
+  last.__0.name: String = "Björn" (children: peeky session get last.__0.name)
+  last.__0.shifts: u32 = 1
+  last.__0.leave: Vec<u32> = <no readable value: Peeky reads the integer, bool, float, char and String fields of what an `Option` holds, and `leave` has type `Vec<u32>`: read it through `x` of `if let Some(x) = &last`>
+```
+
+- The row is marked `[active-variant]`. `None` shows as `None`, with no children.
+- `last.__0` is what `Some` holds: `__0` is LLDB's name for its field. Select its fields through it:
+  `last.__0.name`.
+- Its fields read as a container element's do: integers, `bool`, floats, `char` and `String`. Any
+  other field shows `not read:`, and the value leaves it out (`..`).
+- Peeky never changes it: `--set last.__0.shifts=3` is refused.
+- `describe` lists these types on its `qualified enum views:` line.
+
+How Peeky tells `None` from `Some`:
+
+- The build's debug information gives the layout. `None` has either a tag of its own, or a niche: a
+  value that a field inside the payload can never hold.
+- `Engineer`'s niche is the capacity of `name`, which never exceeds `isize::MAX`. `None` stores
+  2^63 there.
+- A niche must be in a field whose type fixes its valid values: a `Vec`'s or `String`'s capacity, a
+  `Box`, a reference, a `NonNull`, a `bool` or a `char`.
+- A tag that holds neither variant's value is no `Option`. It shows `<unverified Rust enum value>`,
+  never a guess.
+
+It needs the same proofs as an owned `Vec` local: the innermost frame of an unoptimized build, a
+debugger with `readMemory`, and the MIR's proof that it is initialized at the stop. Its MIR type
+picks the layout. If `T` holds a `String`, the crate must have no unsafe code too.
+
+These stay opaque:
+
+- an `Option` inside another value, such as a field `h.p`;
+- an `Option` of anything else, such as `Option<u32>`, `Option<String>`, `Option<Box<T>>` or
+  `Option<&T>`;
+- an `Option` of a tuple with a `String` in it, such as `Option<(String, i64)>`. The MIR names its
+  type `std::string::String`, and the debug information `alloc::string::String`;
+- any other enum with data, such as `Result` or your own.
+
+An opaque enum shows `<unqualified Rust enum layout>` or `<unverified Rust enum value>`. Its note
+says why, where the value is stored and what to read instead:
+
+```
+warning: count: Peeky decodes `Option<i32>`, and an `Option` of a tuple or struct your crate defines whose layout the debug information proves; it does not decode this `Option<u32>`. It is stored at 0x000000016fb8ece8; read what `if let Some(x) = &count` binds instead.
+```
+
+The address is printed as a pointer is, so you can compare a pointer with it. With lldb-dap 18,
+which can't read memory, rota's `last` is withheld. Its note says `It is stored at
+0x0000fffffffff1c0`. `l` of `if let Some(l) = &last` holds that address too. So `l` points into
+`last`, not into `team`. In SQL, `address(note)` reads it.
 
 #### Owned `Vec` and `String` locals
 
@@ -813,7 +878,7 @@ marks them `[stale]`.
 | `[stale]` | Bytes that aren't a trustworthy value: a moved or dropped local's leftovers, or a caller's container that may be mid-change. The note says which. |
 | `[unproven]` | Only a pointer: Peeky can't prove that what it points at is still there. |
 | `<unverified ...>` | A value Peeky can't decode with certainty. |
-| an opaque enum | An enum Peeky can't decode with certainty. `describe` counts them as "other enum types". |
+| an opaque enum | An enum Peeky can't decode with certainty. Its note says why, where it is stored and what to read instead. `describe` counts them as "other enum types". |
 
 For example, in this `moved` crate, `ordered` moves into `total` on line 8. `label` is assigned
 only on line 9:
@@ -903,7 +968,9 @@ The details:
 - A field or element reassigned in place (`h.b = Box::new(..)`, `w.s = String::from(..)`,
   `arr[i] = ..`) leaves the local whole, if it was whole before. A field moved out and then stored
   again (`let d = h.b; h.b = ..`) still leaves it `[stale]`.
-- A data-carrying enum other than `Option<i32>` stays opaque.
+- A data-carrying enum stays opaque, apart from an `Option` that Peeky reads
+  ([Options of tuples and structs](#options-of-tuples-and-structs)). One the MIR doesn't prove
+  initialized shows `<unverified Rust enum value>`, with a note.
 - In an optimized build, parameters keep their raw fields, or show as optimized out.
 
 #### What a `Box` shows
@@ -1039,6 +1106,7 @@ warning: values: This Rust Vec shows LLDB's summary (its type and address), not 
 | a struct preview through a reference | a struct's scalar fields, in the frame or behind a reference parameter: `w.k`, `self.k` |
 | an owned `Vec` or `String` local | a by-value struct's preview |
 | a `&str` or slice local | an enum's variant |
+| an `Option` of a struct or tuple with a `String` field | an `Option` of a struct or tuple without one |
 | a container field | |
 | a `Box`, which shows only its pointer, marked `[unproven]` | |
 

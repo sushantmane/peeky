@@ -491,7 +491,7 @@ data. Reading it is bounded:
 - truncated and unknown rows are refused;
 - every entry must be inside the unit's offset range.
 
-**Only `core::option::Option<i32>` is qualified,** with exactly this layout:
+**`core::option::Option<i32>` is qualified through LLDB's view,** with exactly this layout:
 
 - one artificial discriminant, with distinct 32-bit `DW_AT_discr_value`s for `None` and `Some`;
 - a `None` with no fields;
@@ -499,8 +499,8 @@ data. Reading it is bounded:
 
 The discriminant's and the payload's types are resolved through the DIEs they reference: a
 four-byte `DW_ATE_unsigned` `u32` and a `DW_ATE_signed` `i32`. dwarfdump's labels are never used.
-Niche layouts, other payloads, `Result`, user enums, types outside a plain namespace, and
-conflicting definitions are unqualified.
+Other payloads, apart from the tuples and structs below, are unqualified. So are `Result`, user
+enums, types outside a plain namespace, and conflicting definitions.
 
 **Reading one.** `active_variant` accepts only LLDB's exact raw shape:
 
@@ -515,6 +515,46 @@ conflicting definitions are unqualified.
   `<unverified Rust enum value>`, never a guess.
 - The session refuses to expand the raw `$variants$` and `$discr$` storage of an enum missing from
   the application's layouts.
+
+**An `Option` of a tuple or crate struct is read from memory** (`_composite_option_layout`,
+`option_view`). LLDB's view isn't used. Apple's LLDB names the `None` of `Option<Engineer>`
+`$variant$0`, though its value is 0x8000000000000000. The layout must have:
+
+- one artificial discriminant member, a `u8` to `u64` base type, and two variants, `None` and
+  `Some`, each a struct of the `Option`'s own size;
+- a `None` with no fields, and a `Some` with one `__0` of the payload type its name gives;
+- a payload of the crate's own, or a tuple, that `_composite` reads, as a container's element.
+
+Either both variants have a `DW_AT_discr_value`, and the tag lies beside the payload. Or only
+`None` has one: a niche. Then `_niche_range` walks the payload's members, through nested structs,
+to the one field that the discriminant spans exactly. Its type must fix its valid values:
+
+- `core::num::niche_types::UsizeNoHighBit`'s `__0`, a `Vec`'s or `String`'s capacity: 0 to
+  `isize::MAX`;
+- a `core::ptr::non_null::NonNull<T>`'s `pointer`, a reference (`&T`) or a `Box`: never 0;
+- a `bool`: 0 or 1;
+- a `char`: 0 to 0x10FFFF.
+
+`None`'s value must lie outside them. Anything else, such as a raw pointer, an integer or an
+enum inside, leaves the `Option` unqualified.
+
+**Reading one.** The session reads it as an owned `Vec`: a local or parameter of the innermost
+frame of an unoptimized build, which the MIR proves initialized at the stop. The MIR's type picks
+the layout (`option_name`), as for a struct preview. One whose payload holds a `String` needs a
+crate with no unsafe code.
+
+- The tag equal to `None`'s value is `None`. One in the niche's valid range, or equal to `Some`'s
+  value, is `Some`.
+- Any other tag is `<unverified Rust enum value>`. So is a payload that doesn't read, such as a
+  `String` longer than its capacity.
+- `Some`'s payload is its one child, `__0`, read as a container's element. Its children are the
+  payload's fields. Nothing is settable through them.
+- One without these proofs is withheld as `<unverified Rust enum value>`, with why.
+
+**Every opaque enum says why** (`enum_withheld`): the worker passes `opaque_reason` on its row,
+which becomes the row's note. It gives the address LLDB stores it at, from `memoryReference` and
+the `T @ 0x…` value, which must agree. It is printed as a pointer is, so a pointer into it can
+be compared. And it says what to read instead: what an `if let` or a `match` on it binds.
 
 ## View reads
 
@@ -557,7 +597,8 @@ The config's `opt_level` is `"0"` by default, or `"1"` or `"2"`.
   with its example crate switched to 2024.
 - Test processes share OS permissions with the checker, and are trusted code.
 - No live-model Rust evaluation has been recorded.
-- Not delivered yet: any `Option` payload other than `i32`.
+- Not delivered yet: any `Option` payload other than `i32`, a tuple or a crate struct, and any
+  other data-carrying enum.
 - A crate can be debugged on a separate host, through a worker started with `--rust-config`
   ([REMOTE.md](REMOTE.md#c-c-and-rust-on-the-worker-host)).
 - `tests/rust/test_rust_worker.py` runs the worker on a real Cargo build and LLDB. It covers:

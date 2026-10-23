@@ -1765,6 +1765,11 @@ def _capture(
                 owned_type = "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES
                 if variable.get("view") == "unproven":
                     row["note"] = _unproven_note(variable)
+                elif variable.get("view") == "opaque" and isinstance(
+                    reason := variable.get("opaque_reason"), str
+                ):
+                    # Why a Rust enum is not decoded, and what to read instead (#303).
+                    row["note"] = reason[:1].upper() + reason[1:] + "."
                 elif isinstance(variable.get("raw_reason"), str):
                     # Why a Rust Vec or String stays raw here (#156).
                     row["note"] = _raw_rust(variable, selector)
