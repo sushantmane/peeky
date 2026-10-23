@@ -2171,7 +2171,7 @@ run's lowest. Then it pairs equal offsets:
 ```sh
 peeky sql "WITH a AS (SELECT run_id, hit, phase, selector, value,
     address(value) - MIN(address(value)) OVER (PARTITION BY run_id, selector) AS from_base
-  FROM evidence WHERE run_id IN (:a, :b) AND phase = 'observed')
+  FROM evidence WHERE run_id IN (:a, :b) AND phase = 'observed' AND address(value) > 0)
 SELECT x.hit AS hit_a, y.hit AS hit_b, x.from_base FROM a x
   JOIN a y ON y.run_id = :b AND y.phase = x.phase AND y.selector = 'q'
     AND y.from_base = x.from_base
@@ -2184,6 +2184,8 @@ Keep only the rows of one moment and one place in each run, or the base and the 
   moments. A join to another selector's rows also needs `phase`.
 - A line with several breakpoint locations gives each row a `stop` number. Keep one location per
   run: `AND (run_id != :a OR stop = 2)` in the CTE's `WHERE` keeps run a's location 2.
+- `address(value) > 0` skips values that read negative, such as sentinels and pointers tagged in their
+  top bit, so `MAP_FAILED` (-1) never becomes the base.
 
 [Rust 4.8](lang/rust-cookbook.md#48-compare-addresses-across-runs) runs it on a real bug: pointers
 that a sort left at their old slots.
@@ -2210,6 +2212,8 @@ below 2^63.
 
 - Two such addresses still subtract and order correctly.
 - Against an address below 2^63, SQLite's subtraction overflows into an inexact REAL.
+- The recipe's `address(value) > 0` leaves them out. To compare such addresses, drop it, and take a
+  known element's address as the base.
 - `printf('0x%x', address(value))` gives the hex back. It prints NULL as `0x0`.
 
 Peeky has no canned query for this: the base, and what pairs the runs, depend on the program.

@@ -1186,10 +1186,82 @@ def test_the_address_recipe_keeps_one_stop_location_as_documented(store):
     sql = _documented_sql("COOKBOOK.md", "### 4.8 Compare Addresses Across Runs")
     text = (DOCS / "COOKBOOK.md").read_text()
     pin = re.search(r"`(AND \(run_id != :a OR stop = 2\))` in the CTE's `WHERE`", text)[1]
-    pinned = sql.replace("AND phase = 'observed')", f"AND phase = 'observed' {pin})")
+    pinned = sql.replace("AND phase = 'observed'", f"AND phase = 'observed' {pin}")
     assert pinned != sql
     assert _pairs(store, pinned, a, b) == [(2, 1, 0), (4, 2, 40)]
     assert _pairs(store, sql, a, b) == [(1, 1, 0), (3, 1, 0)]
+
+
+def test_the_address_recipe_never_takes_a_sentinel_as_its_base(store):
+    # Review round 2 of PR #277: `0xffffffffffffffff` (MAP_FAILED, usize::MAX) reads -1, so
+    # MIN(address(value)) took it as each run's base and paired the two sentinel hits at
+    # offset 0, while no real pointer paired. Both recipes keep address(value) > 0.
+    sentinel = "0xffffffffffffffff"
+    a = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "p", sentinel),
+                (2, "observed", "p", "0x0000000100000000"),
+                (3, "observed", "p", "0x0000000100000028"),
+            ]
+        ),
+        language="c",
+    )
+    b = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "q", "0x0000000200000000"),
+                (2, "observed", "q", sentinel),
+                (3, "observed", "q", "0x0000000200000028"),
+            ]
+        ),
+        language="c",
+    )
+    sql = _documented_sql("COOKBOOK.md", "### 4.8 Compare Addresses Across Runs")
+    assert _pairs(store, sql, a, b) == [(2, 1, 0), (3, 3, 40)]
+    unfiltered = sql.replace(" AND address(value) > 0", "")
+    assert unfiltered != sql and _pairs(store, unfiltered, a, b) == [(1, 2, 0)]
+    # Kitty's recipe, with a payer and a slot each read as usize::MAX.
+    payers = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "payer @ main.rs:54", sentinel),
+                (1, "observed", "cents @ main.rs:49", "100"),
+                (2, "observed", "payer @ main.rs:54", "0x0000000100e4d800"),
+                (2, "observed", "cents @ main.rs:49", "4500"),
+                (3, "observed", "payer @ main.rs:54", "0x0000000100e4d828"),
+                (3, "observed", "cents @ main.rs:49", "900"),
+            ]
+        ),
+        language="rust",
+    )
+    slots = evidence.record(
+        store,
+        captured(
+            [
+                (1, "observed", "f", sentinel),
+                (1, "observed", "f.name", '"?"'),
+                (2, "observed", "f", "0x0000000100b51c40"),
+                (2, "observed", "f.name", '"Bo"'),
+                (3, "observed", "f", "0x0000000100b51c68"),
+                (3, "observed", "f.name", '"Chloé"'),
+            ]
+        ),
+        language="rust",
+    )
+    sql = _documented_sql("lang/rust-cookbook.md", "### Find who sits at a pointer's old slot")
+    params = {"payers": payers, "slots": slots}
+    rows = evidence.query(store, sql, params)["rows"]
+    assert [(row["cents"], row["from_base"], row["credited"]) for row in rows] == [
+        ("4500", 0, '"Bo"'),
+        ("900", 40, '"Chloé"'),
+    ]
+    unfiltered = sql.replace(" AND address(value) > 0", "")
+    rows = evidence.query(store, unfiltered, params)["rows"]
+    assert [(row["cents"], row["credited"]) for row in rows] == [("100", '"?"')]
 
 
 def test_the_evidence_view_has_language_and_output_stays_one_join_away(store):

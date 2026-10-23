@@ -143,7 +143,7 @@ each address's offset from its run's lowest:
 ```sh
 peeky sql "WITH a AS (SELECT run_id, hit, phase, selector, value,
     address(value) - MIN(address(value)) OVER (PARTITION BY run_id, selector) AS from_base
-  FROM evidence WHERE run_id IN (:payers, :slots) AND phase = 'observed')
+  FROM evidence WHERE run_id IN (:payers, :slots) AND phase = 'observed' AND address(value) > 0)
 SELECT p.hit AS expense, c.value AS cents, p.from_base, n.value AS credited FROM a p
   JOIN evidence c ON c.run_id = p.run_id AND c.hit = p.hit AND c.phase = p.phase
     AND c.selector = 'cents @ main.rs:49'
@@ -173,6 +173,8 @@ Zoë's slot didn't move, so her balance is right.
 - Each side keeps `observed` rows. A run with `--set` or `--set-at` also has `after-set` rows.
   Mixed in, they would move the base and pair the wrong hits
   ([COOKBOOK 4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
+- `address(value) > 0` skips values that read negative, such as sentinels and pointers tagged in
+  their top bit, so a pointer set to `usize::MAX` never becomes the base.
 - Call `address` on a pointer, such as `f` or `e.payer`. On a struct's preview, it reads the first
   hex token, whichever field holds it.
 - `[unproven]` on `payer @ main.rs:54` is about what the raw pointer points at. Its address is the
