@@ -245,10 +245,12 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(
             # A part that runs on each pass, an optimized build, or the line's first stop.
             assert row["error"] in hedged, row
         elif marker == "LAMBDA_HEADER":
-            # Past the first instruction, the loop's binding exists (#283).
+            # Past the first instruction, the loop's binding exists (#283); but a stop on
+            # this line is in its header (the next pass), not proven past its range.
             assert row["error"].startswith(
-                f"not what the code reads: the code here names the structured binding `t` "
-                f"(line {line}): this row is the outer local"
+                f"may not be what the code reads: the code here may name the structured "
+                f"binding `t` (line {line}), but the loop's header names `t` before that "
+                "binding exists"
             ), row
         else:
             # Unoptimized, past the line's first instruction: a header run once has run.

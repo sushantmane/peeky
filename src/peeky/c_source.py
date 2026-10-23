@@ -1679,6 +1679,10 @@ class Statements:
         qualified name does not count (`p.t`, `n::t`, `p.template t<0>()`), nor one in a
         range-`for`'s structured binding. None if no header does, or Peeky cannot tell.
 
+        The scan is lexical: any other `t` the header spells is a mention, also one it
+        declares itself (`for (long t = 0; ...)`) or a lambda's parameter there, which may
+        weaken a true note into a hedge.
+
         ``always``: whether the hedge holds at every stop on the line, not only until the
         header has run: a part naming ``name`` runs on each pass (a `while`'s condition, a
         `for`'s condition or increment), or the declaration is in the header itself (a

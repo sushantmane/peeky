@@ -1769,18 +1769,33 @@ long f(void) {
 """
 
 
-@pytest.mark.parametrize("entered", ["caller", None, True, False])
+def stopped(unit, line, where):
+    """A stop's frame on ``line`` of ``unit`` (its text as written, past the marker): at
+    the line table's column ``where``, "past" the line's last `)` (its last character),
+    "inside" a header (after its first `(`), or None (no column)."""
+    text = unit.decode().split("\n", 1)[1].splitlines()[line - 1]
+    frame = {"instructionPointerReference": "0x150", "line": line}
+    if where is not None:
+        frame["column"] = len(text) if where == "past" else text.index("(") + 2
+    return frame
+
+
+@pytest.mark.parametrize("entered", ["caller", None, True, False, "inside"])
 def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, entered):
     # #283: `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
     # unhedged "not what the code reads", though the header runs before the binding
     # exists. entered: "caller" (a caller frame: no stop is told), None (an optimized
-    # build), True or False (unoptimized: at the line's first instruction, or past it).
-    frame = {"instructionPointerReference": "0x150"}
+    # build), True or False (unoptimized: at the line's first instruction, or past it,
+    # where the line table's column is after the header's `)`). "inside": past the first
+    # instruction, but at a column inside the header (back from a call there, #287 review).
     session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
     session.target.language = "cpp"
+    (tmp_path / "a.c").write_bytes(RANGE_FOR_UNIT.split(b"\n", 1)[1])
+    where = {False: "past", "inside": "inside"}.get(entered)
 
     def note(line):
-        entering = None if entered == "caller" else (lambda: entered)
+        frame = stopped(RANGE_FOR_UNIT, line, where)
+        entering = {"caller": None, "inside": lambda: False}.get(entered, lambda: entered)
         return session._block_storage("q", frame, "a.c", line, entering=entering)
 
     hedged = (
@@ -1811,7 +1826,7 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, ent
         7: plain,
         # `sizeof(q)` reads nothing, but a hedge says only that the header names it.
         8: plain if entered is False else hedged,
-        9: {"caller": plain, None: unsure, True: None, False: plain}[entered],
+        9: {"caller": plain, None: unsure, True: None, False: plain, "inside": plain}[entered],
     }
     for line, want in expected.items():
         found = note(line)
@@ -1843,6 +1858,7 @@ long f(void) {
     if (p.q) { static long q = 11; use(q); }
     if (u) { static long q = 12; use(q); }
     { static long q = 13; if (q) { use(q); } }
+    if (q) { static long q = 14; use(q); }
     return q;
 }
 """
@@ -1862,7 +1878,7 @@ long f(void) {
 """
 
 
-@pytest.mark.parametrize("entered", ["caller", None, True, False])
+@pytest.mark.parametrize("entered", ["caller", None, True, False, "inside"])
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, language, entered):
     # #286: `if (q) { static long q = 5; use(q); }` gave the outer `q` the unhedged "not
@@ -1870,13 +1886,16 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
     # header runs first and names the outer `q`. entered: as in the range-`for` test
     # above. A `while`'s condition, a `for`'s condition or increment, and a lambda's
     # `static` in the header (another function's) are hedged at every stop.
-    frame = {"instructionPointerReference": "0x150"}
     unit = STATEMENT_HEADER_UNIT if language == "c" else STATEMENT_HEADER_CPP_UNIT
     session = preprocessing_session(tmp_path, {"a.c": unit})
     session.target.language = language
+    # As written, line 14 names a macro the compiler expanded: its columns prove nothing.
+    (tmp_path / "a.c").write_bytes(unit.split(b"\n", 1)[1].replace(b"q = 14;", b"q = FOURTEEN;"))
+    where = {False: "past", "inside": "inside"}.get(entered)
 
     def note(line):
-        entering = None if entered == "caller" else (lambda: entered)
+        frame = stopped(unit, line, where)
+        entering = {"caller": None, "inside": lambda: False}.get(entered, lambda: entered)
         return session._block_storage("q", frame, "a.c", line, entering=entering)
 
     def static(line):
@@ -1897,7 +1916,8 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
         )
 
     def once(keyword, what):
-        # Past the first instruction (unoptimized), a header that runs once has run.
+        # Past the first instruction (unoptimized), at a column after the header's `)`, a
+        # header that runs once has run; not back inside it ("inside").
         return plain(what) if entered is False else hedged(keyword, what)
 
     if language == "c":
@@ -1916,6 +1936,8 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
             11: plain(static(11)),
             12: plain(static(12)),
             13: plain(static(13)),
+            # A stop past the `)` is not proven on a line a macro changes.
+            14: hedged("if", static(14)),
         }
     else:
         binding = "the structured binding `q` (line {})".format

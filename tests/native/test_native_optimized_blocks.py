@@ -4,14 +4,17 @@ local there lives in a register or as a constant, not in the frame's memory, and
 scan (#144) skipped it: plain `n` showed the outer local's value where the code names
 the block's. The structured binding case is in tests/cpp/test_cpp_optimized_blocks.py.
 #286: a one-line statement whose header names the outer local before its block declares
-the name again hedges that local's note, at -O0 too, with clang and GCC."""
+the name again hedges that local's note, at -O0 too, with clang and GCC; also at a stop
+back inside that header, past the line's first instruction."""
 
+import json
 import os
 import shutil
 
 import pytest
 from native_compilers import is_gcc
 
+from peeky.cli import main
 from peeky.native import NativeTarget
 from peeky.probe import Probe, run_probe
 
@@ -207,3 +210,62 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(
         else:
             # Unoptimized, past the line's first instruction: a header run once has run.
             assert row["error"] in plain, row
+
+
+# Review of PR #287: a stop back from a call in a one-line header's condition is past the
+# line's first instruction, but the rest of the header (`t > 2`) has not run yet.
+STEP_SOURCE = """#include <stdio.h>
+__attribute__((noinline)) long check(long v) { return v + 1; } /* CHECK */
+__attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; } /* USE */
+int main(int argc, char **argv) {
+    long t = argc + 2; /* OUTER */
+    if (check(t) && t > 2) { static long t = 5; use(t); use(t); } /* IF */
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_stop_back_inside_a_header_hedges_its_note(tmp_path, cc, monkeypatch, capsys):
+    # Back from `check(t)` (`step --out`), the stop is part-way through the `if`'s
+    # header, before `t > 2` reads the outer `t`: it said "not what the code reads",
+    # since only the line's first instruction was hedged. Back from the body's first
+    # `use(t)`, the line table's column is past the header's `)`: the plain note stays.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "step.c"
+    path.write_text(STEP_SOURCE)
+    lines = {
+        marker: next(
+            i for i, row in enumerate(STEP_SOURCE.splitlines(), 1) if f"/* {marker} */" in row
+        )
+        for marker in ("CHECK", "USE", "OUTER", "IF")
+    }
+    selectors = ("t", f"t @ step.c:{lines['OUTER']}")
+    static = f"the block's `static` `t` (line {lines['IF']}), which the debugger does not list"
+    expected = {
+        "CHECK": (
+            f"may not be what the code reads: the code here may name {static}, but the `if` "
+            "statement's header names `t` before that declaration, and Peeky cannot tell "
+            "whether running the header reads this local: this row is the outer local of that "
+            "name"
+        ),
+        "USE": (
+            f"not what the code reads: the code here names {static}: this row is the outer "
+            "local of that name"
+        ),
+    }
+    for marker, error in expected.items():
+        assert main(["session", "start", str(path), "--at", str(lines[marker])]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "step", "--out"]) == 0
+            capsys.readouterr()
+            main(["session", "get", *selectors, "--json"])
+            rows = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        assert {row.get("line") for row in rows} == {lines["IF"]}, rows
+        assert not [row for row in rows if "value" in row], rows
+        outer = [row for row in rows if "this row is the outer local" in row.get("error", "")]
+        assert outer and all(row["error"] == error for row in outer), (marker, rows)

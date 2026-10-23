@@ -5931,11 +5931,22 @@ class NativeSession:
                     entered = entering() if entering is not None else None
                     if entered:
                         storage = statements.block_storage(at, base, after, True, body, True, own)
-                # Past the first instruction (unoptimized), a header on the line has run,
-                # unless a part of it naming the local runs on each pass; on a header over
-                # several lines, no stop can be told apart.
+
+                # A header on the line has run only where the stop is proven past its `)`:
+                # unoptimized, past the line's first instruction, at a column after it
+                # (not back from a call in it: `if (check(t) && t > 2)`, #287 review), and
+                # where no part naming the local runs on each pass. On a header over
+                # several lines, no stop is told apart.
+                def ran(lines, always=False):
+                    return (
+                        entered is False
+                        and lines[0] == lines[1]
+                        and not always
+                        and self._header_ran(frame, source, line, statements, at)
+                    )
+
                 if storage and storage[0] == "binding" and ranged is not None:
-                    if entered is not False or ranged[0] != ranged[1]:
+                    if not ran(ranged):
                         storage = ("binding-header", *storage[1:])
                 elif storage and not body:
                     # Any statement's header that names it before the line's declaration
@@ -5943,9 +5954,7 @@ class NativeSession:
                     found = statements.header_before(at, base, after, bool(entered), own)
                     if found is not None and not asked:
                         entered = entering() if entering is not None else None
-                    if found is not None and (
-                        entered is not False or found[1] != found[2] or found[3]
-                    ):
+                    if found is not None and not ran(found[1:3], found[3]):
                         header = found[0]
                 if storage and storage[0] == "binding" and header is None:
                     if entering is not None and entered is None:
@@ -6021,6 +6030,40 @@ class NativeSession:
             f"local this row shows is the outer one, so a change to it {would} not reach "
             "that code",
         )
+
+    def _header_ran(self, frame, source, line, compiled, at):
+        """Whether the stopped ``frame``'s code on ``source:line`` is proven past the `)`
+        of every statement header on the line: the line table's column for its address
+        (lldb-dap gives it with the frame) is after the last such `)`. Only on a line of
+        plain ASCII without tabs, whose columns clang and GCC count alike, and that no
+        macro changes: as written, it holds the tokens of the compiler's preprocessed
+        text (``compiled``, its Statements, line ``at``). A stop back from a call in a
+        condition (`if (check(t) && t > 2)`) is not past it."""
+        column = (frame or {}).get("column")
+        if type(column) is not int or column <= 0 or (frame or {}).get("line") != line:
+            return False
+        written, text = self._statements(source), self._source_text(source)
+        if written is None or text is None or written.unreadable:
+            return False
+        if not 1 <= line <= len(written.starts) or not 1 <= at <= len(compiled.starts):
+            return False
+        begin = written.starts[line - 1]
+        end = written.starts[line] if line < len(written.starts) else len(written.text)
+        raw = text.split("\n")[line - 1] if text.count("\n") >= line - 1 else None
+        if raw != written.text[begin:end].rstrip("\n") or not raw.isascii() or "\t" in raw:
+            return False
+        start = compiled.starts[at - 1]
+        stop = compiled.starts[at] if at < len(compiled.starts) else None
+        if "".join(written.blanked[begin:end].split()) != "".join(
+            compiled.blanked[start:stop].split()
+        ):
+            return False
+        headers = written._headers(line)
+        if not headers or any(
+            opening < begin or closing >= end for _, _, opening, closing in headers
+        ):
+            return False
+        return column > max(closing for *_, closing in headers) - begin + 1
 
     def _units(self, source):
         """The program's translation units that may hold ``source``'s lines: itself, and
