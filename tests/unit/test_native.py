@@ -1770,32 +1770,40 @@ long f(void) {
 
 
 def stopped(unit, line, where):
-    """A stop's frame on ``line`` of ``unit`` (its text as written, past the marker): at
-    the line table's column ``where``, "past" the line's last `)` (its last character),
-    "inside" a header (after its first `(`), or None (no column)."""
+    """A stop's frame on ``line`` of ``unit`` (its text as written, past the marker), at
+    the line table's column ``where``: "past" the line's last `)` (its last character),
+    "inside" a header (just before its `)`, where a body's `{` follows), at a range-`for`'s
+    `:` ("pass": its iterator's test, on a later pass), or None (no column)."""
     text = unit.decode().split("\n", 1)[1].splitlines()[line - 1]
     frame = {"instructionPointerReference": "0x150", "line": line}
-    if where is not None:
-        frame["column"] = len(text) if where == "past" else text.index("(") + 2
+    if where == "past":
+        frame["column"] = len(text)
+    elif where == "inside" and ") {" in text:
+        frame["column"] = text.index(") {")
+    elif where == "pass" and " : " in text:
+        frame["column"] = text.index(" : ") + 2
     return frame
 
 
-@pytest.mark.parametrize("entered", ["caller", None, True, False, "inside"])
+@pytest.mark.parametrize("entered", ["caller", None, True, False, "inside", "pass"])
 def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, entered):
     # #283: `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
     # unhedged "not what the code reads", though the header runs before the binding
     # exists. entered: "caller" (a caller frame: no stop is told), None (an optimized
     # build), True or False (unoptimized: at the line's first instruction, or past it,
     # where the line table's column is after the header's `)`). "inside": past the first
-    # instruction, but at a column inside the header (back from a call there, #287 review).
+    # instruction, but at a column inside the header (back from a call there, #287 review);
+    # "pass": at the loop's `:`, whose code (its iterator's test) runs after the range.
     session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
     session.target.language = "cpp"
     (tmp_path / "a.c").write_bytes(RANGE_FOR_UNIT.split(b"\n", 1)[1])
-    where = {False: "past", "inside": "inside"}.get(entered)
+    where = {False: "past"}.get(entered, entered if entered in ("inside", "pass") else None)
+    ran = entered in (False, "pass")
 
     def note(line):
         frame = stopped(RANGE_FOR_UNIT, line, where)
-        entering = {"caller": None, "inside": lambda: False}.get(entered, lambda: entered)
+        later = entered in ("inside", "pass")
+        entering = None if entered == "caller" else (lambda: False if later else entered)
         return session._block_storage("q", frame, "a.c", line, entering=entering)
 
     hedged = (
@@ -1817,7 +1825,7 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, ent
     )
     expected = {
         # On the line, a header that has run past the first instruction: the binding.
-        3: plain if entered is False else hedged,
+        3: plain if ran else hedged,
         4: plain,
         # A header over two lines: no stop on it can be told from its range's.
         5: hedged,
@@ -1825,8 +1833,8 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, ent
         # A member template's name is no mention of the local.
         7: plain,
         # `sizeof(q)` reads nothing, but a hedge says only that the header names it.
-        8: plain if entered is False else hedged,
-        9: {"caller": plain, None: unsure, True: None, False: plain, "inside": plain}[entered],
+        8: plain if ran else hedged,
+        9: {"caller": plain, None: unsure, True: None}.get(entered, plain),
     }
     for line, want in expected.items():
         found = note(line)
@@ -1895,7 +1903,8 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
 
     def note(line):
         frame = stopped(unit, line, where)
-        entering = {"caller": None, "inside": lambda: False}.get(entered, lambda: entered)
+        later = entered == "inside"
+        entering = None if entered == "caller" else (lambda: False if later else entered)
         return session._block_storage("q", frame, "a.c", line, entering=entering)
 
     def static(line):

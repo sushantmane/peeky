@@ -1536,6 +1536,31 @@ def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_
     assert statements.header_before(3, "u", 2) is None
 
 
+def test_a_range_for_header_says_where_its_declaration_and_colon_are():
+    # Review of PR #287: the code of a range-`for`'s later passes carries its declaration's
+    # and its `:`'s columns, after its range has run; a classic `for`'s `?:` is no `:`.
+    text = """void f(void) {
+    for (const auto &[t, u] : make(t)) {}
+    for (auto w = make(t); long a : w) {}
+    for (i = 0; i < 3 ? 1 : 2; i++) {}
+    for (auto a : c ? x : y) {}
+}
+"""
+    found = {}
+    for raw_strings in (True, False):
+        statements = Statements(text, raw_strings=raw_strings)
+        for line in range(2, 6):
+            [(_, _, opening, closing)] = statements._headers(line)
+            colon = statements._range_colon(opening, closing)
+            found[raw_strings, line] = colon and tuple(text[at] for at in colon)
+    # C has no range-`for`.
+    assert found == {
+        **{(True, line): (first, ":") for line, first in ((2, "c"), (3, "l"), (5, "a"))},
+        (True, 4): None,
+        **{(False, line): None for line in range(2, 6)},
+    }, found
+
+
 OWN_STATIC = """long work(long a) {
     long t = a * 3;
     {

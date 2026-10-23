@@ -856,7 +856,8 @@ the row says `may not be what the code reads` wherever Peeky can't tell that the
 - on any line of a header that spans lines;
 - in an unoptimized build, at any stop the line table doesn't place after the header's `)`. That
   includes the line's first instruction. It also includes a stop back from a call in the header,
-  as in `if (check(t) && t > 2)` after `step --out` from `check`;
+  as in `if (check(t) && t > 2)` after `step --out` from `check`. A range-`for`'s later passes
+  run code placed at its declaration or its `:`, after its range, so a stop there counts as past;
 - at every stop on the line when part of the header runs on each pass. That is a `while`'s
   condition, or a `for`'s condition or increment;
 - at every stop on the line when the declaration is in a lambda in the header, which another

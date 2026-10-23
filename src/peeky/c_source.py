@@ -1784,6 +1784,30 @@ class Statements:
                 return binding
         return None
 
+    def _range_colon(self, start, closing):
+        """(where its declaration starts, where its `:` is) of a C++ range-`for` header
+        whose parentheses run from ``start`` to ``closing`` (`for (const auto &[t, u] :
+        v)`, also after an init-statement's `;`); else None. Not a classic `for`, whose
+        condition may hold a `?` and a `:`."""
+        if not self.raw_strings:
+            return None
+        code = self._code()[0]
+        depth, begin, semicolons = 0, start + 1, 0
+        for mark in _TOKENS.finditer(code, start + 1, closing):
+            token = mark[0]
+            if token in _OPEN:
+                depth += 1
+            elif token in _CLOSE:
+                depth -= 1
+            elif depth == 0 and token == ";":
+                begin, semicolons = mark.end(), semicolons + 1
+            elif depth == 0 and token == ":":
+                if semicolons > 1 or "?" in code[begin : mark.start()]:
+                    return None
+                first = _NONBLANK.search(code, begin, mark.start())
+                return (first.start() if first else mark.start()), mark.start()
+        return None
+
     def _member(self, position):
         """Whether the name at ``position`` is a member's or a qualified one: after `.`,
         `->` or `::`, also with `template` between (`p->template t<0>()`)."""

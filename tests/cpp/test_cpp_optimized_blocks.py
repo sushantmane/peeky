@@ -4,10 +4,12 @@ in tests/native/test_native_optimized_blocks.py). #283: on a one-line range-for 
 range reads the outer local, that local's note says so, at -O0 too. #286: so does any
 one-line statement whose header names it before the line declares the name again."""
 
+import json
 import os
 
 import pytest
 
+from peeky.cli import main
 from peeky.native import NativeTarget
 from peeky.probe import Probe, run_probe
 
@@ -245,14 +247,82 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(
             # A part that runs on each pass, an optimized build, or the line's first stop.
             assert row["error"] in hedged, row
         elif marker == "LAMBDA_HEADER":
-            # Past the first instruction, the loop's binding exists (#283); but a stop on
-            # this line is in its header (the next pass), not proven past its range.
+            # Past the first instruction, on a later pass (the line table's column is the
+            # binding's or the `:`'s, after the range has run), the binding exists (#283).
             assert row["error"].startswith(
-                f"may not be what the code reads: the code here may name the structured "
-                f"binding `t` (line {line}), but the loop's header names `t` before that "
-                "binding exists"
+                f"not what the code reads: the code here names the structured binding `t` "
+                f"(line {line}): this row is the outer local"
             ), row
         else:
             # Unoptimized, past the line's first instruction: a header run once has run.
             assert row["error"].startswith(f"not what the code reads: the code here names {what}")
             assert "header names" not in row["error"], row
+
+
+# Review of PR #287: back from a call in a one-line range-`for`'s range, the stop is past
+# the line's first instruction, but the range (`t` after `check(t)`) has not run yet.
+STEP_SOURCE = """#include <cstdio>
+#include <utility>
+#include <vector>
+__attribute__((noinline)) long check(long v) { return v + 1; } // CHECK
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; } // USE
+__attribute__((noinline)) std::vector<std::pair<long, long>> make(long a, long b) {
+    return {{a + 1000, b}};
+}
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    for (const auto &[t, u] : make(check(t), t)) { use(t * u); use(t); } // FOR
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_stop_back_inside_a_range_for_header_hedges_its_note(tmp_path, cxx, monkeypatch, capsys):
+    # Back from `check(t)` (`step --out`), the range has yet to read the outer `t`: it
+    # said "not what the code reads: the code here names the structured binding", since
+    # only the line's first instruction was hedged. Back from the body's first `use`,
+    # the line table's column is past the header's `)`: the plain note stays.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "step.cpp"
+    path.write_text(STEP_SOURCE)
+    lines = {
+        marker: next(
+            i for i, row in enumerate(STEP_SOURCE.splitlines(), 1) if f"// {marker}" in row
+        )
+        for marker in ("CHECK", "USE", "OUTER", "FOR")
+    }
+    selectors = ("t", f"t @ step.cpp:{lines['OUTER']}")
+    binding = f"the structured binding `t` (line {lines['FOR']})"
+    expected = {
+        "CHECK": (
+            f"may not be what the code reads: the code here may name {binding}, but the loop's "
+            "header names `t` before that binding exists, and Peeky cannot tell whether "
+            "running the header reads this local: this row is the outer local of that name"
+        ),
+        "USE": (
+            f"not what the code reads: the code here names {binding}: this row is the outer "
+            "local of that name"
+        ),
+    }
+    for marker, error in expected.items():
+        assert main(["session", "start", str(path), "--at", str(lines[marker])]) == 0
+        capsys.readouterr()
+        try:
+            assert main(["session", "step", "--out"]) == 0
+            capsys.readouterr()
+            main(["session", "get", *selectors, "--json"])
+            rows = json.loads(capsys.readouterr().out)
+        finally:
+            main(["session", "close"])
+            capsys.readouterr()
+        assert {row.get("line") for row in rows} == {lines["FOR"]}, rows
+        # The outer local's rows (a binding's own row is a reference).
+        outer = [
+            row
+            for row in rows
+            if "this row is the outer local" in row.get("error", "")
+            and "&" not in (row.get("type") or "")
+        ]
+        assert outer and all(row["error"] == error for row in outer), (marker, rows)
+        assert not [row for row in outer if "value" in row], rows
