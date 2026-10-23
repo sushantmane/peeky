@@ -166,7 +166,7 @@ template <class F> __attribute__((noinline)) std::vector<std::pair<long, long>> 
 int main(int argc, char **argv) {
     long t = argc + 2; // OUTER
     if (long k = t; k) { static long t = 5; use(t + k); } // IF_INIT
-    switch (long k = t; k) { default: { static long t = 6; use(t + k); } } // SWITCH_INIT
+    switch (long k = t; k) { case 1: use(k); break; default: { static long t = 6; use(t + k); } } // SWITCH_INIT
     for (long i = 0; i < t; i++) { auto [t, u] = make(i)[0]; use(t + u); } // FOR_BINDING
     for (const auto &[a, b] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) { use(a + b); } // LAMBDA
     for (const auto &[t, u] : make2(t, [] { long r; { static long t = 8; r = t; } return r; })) { // LAMBDA_HEADER
