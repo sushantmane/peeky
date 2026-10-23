@@ -326,3 +326,71 @@ def test_a_stop_back_inside_a_range_for_header_hedges_its_note(tmp_path, cxx, mo
         ]
         assert outer and all(row["error"] == error for row in outer), (marker, rows)
         assert not [row for row in outer if "value" in row], rows
+
+
+# Review round 2 of PR #287: a range type's own `begin` and `end` (not inlined) run at the
+# loop's `:` in clang's line table, once its range has run.
+RANGE_TYPE_SOURCE = """#include <cstdio>
+struct P { long first, second; };
+struct Range {
+    P items[2];
+    __attribute__((noinline)) const P *begin() const { return items; } // BEGIN
+    __attribute__((noinline)) const P *end() const { return items + 2; } // END
+};
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) Range make(long a) { return {{{a + 1000, 1}, {a + 1001, 2}}}; }
+int main(int argc, char **argv) {
+    long t = argc + 2; // OUTER
+    for (const auto &[t, u] : make(t)) { use(t * u); use(t); } // FOR
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("marker", ["BEGIN", "END"])
+def test_a_stop_back_from_a_range_types_begin_is_judged_by_its_column(
+    tmp_path, cxx, monkeypatch, capsys, marker
+):
+    # Back from `begin()` or `end()` (`step --out`), the stop is past the line's first
+    # instruction, after the range (`make(t)`) has run. clang places that call at the
+    # loop's `:`, which counts as past the range: the plain note. GCC places it at the
+    # range's last column, inside the range: hedged, as Peeky cannot tell it apart.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    path = tmp_path / "range.cpp"
+    path.write_text(RANGE_TYPE_SOURCE)
+    lines = {
+        name: next(
+            i for i, row in enumerate(RANGE_TYPE_SOURCE.splitlines(), 1) if f"// {name}" in row
+        )
+        for name in (marker, "OUTER", "FOR")
+    }
+    selectors = ("t", f"t @ range.cpp:{lines['OUTER']}")
+    binding = f"the structured binding `t` (line {lines['FOR']})"
+    error = (
+        f"not what the code reads: the code here names {binding}: this row is the outer local "
+        "of that name"
+        if cxx == "clang"
+        else f"may not be what the code reads: the code here may name {binding}, but the "
+        "loop's header names `t` before that binding exists, and Peeky cannot tell whether "
+        "running the header reads this local: this row is the outer local of that name"
+    )
+    assert main(["session", "start", str(path), "--at", str(lines[marker])]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step", "--out"]) == 0
+        capsys.readouterr()
+        main(["session", "get", *selectors, "--json"])
+        rows = json.loads(capsys.readouterr().out)
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert {row.get("line") for row in rows} == {lines["FOR"]}, rows
+    outer = [
+        row
+        for row in rows
+        if "this row is the outer local" in row.get("error", "")
+        and "&" not in (row.get("type") or "")
+    ]
+    assert outer and all(row["error"] == error for row in outer), rows
+    assert not [row for row in outer if "value" in row], rows

@@ -6034,8 +6034,10 @@ class NativeSession:
     def _header_ran(self, frame, source, line, compiled, at):
         """Whether the stopped ``frame``'s code on ``source:line`` is proven past the `)`
         of every statement header on the line: the line table's column for its address
-        (lldb-dap gives it with the frame) is after each such `)`, or in a range-`for`'s
-        declaration or `:`, whose code runs on each pass after the range. Only on a line of
+        (lldb-dap gives it with the frame) is after each such `)`, or at a range-`for`'s
+        declaration or `:`, which carry the loop's implicit code, all emitted after its
+        range expression: the one-time `begin` and `end` setup, each pass's test and
+        binding, and the range temporary's final cleanup. Only on a line of
         plain ASCII without tabs, whose columns clang and GCC count alike, and that no
         macro changes: as written, it holds the tokens of the compiler's preprocessed
         text (``compiled``, its Statements, line ``at``). A stop back from a call in a
@@ -6067,8 +6069,9 @@ class NativeSession:
                 return False
             if column > closing - begin + 1:
                 continue
-            # A range-`for`'s declaration and `:` carry the code of each pass (its
-            # binding, its iterator's test), which runs once its range has run.
+            # A range-`for`'s declaration and `:` carry its implicit code, emitted after
+            # its range expression: `begin`/`end` setup, each pass's test and binding,
+            # and the final cleanup of the range's temporary.
             ranged = written._range_colon(opening, closing) if keyword == "for" else None
             if ranged is None or not ranged[0] - begin < column <= ranged[1] - begin + 1:
                 return False

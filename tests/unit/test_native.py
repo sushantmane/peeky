@@ -1773,7 +1773,7 @@ def stopped(unit, line, where):
     """A stop's frame on ``line`` of ``unit`` (its text as written, past the marker), at
     the line table's column ``where``: "past" the line's last `)` (its last character),
     "inside" a header (just before its `)`, where a body's `{` follows), at a range-`for`'s
-    `:` ("pass": its iterator's test, on a later pass), or None (no column)."""
+    `:` ("pass": its implicit code, after the range), or None (no column)."""
     text = unit.decode().split("\n", 1)[1].splitlines()[line - 1]
     frame = {"instructionPointerReference": "0x150", "line": line}
     if where == "past":
@@ -1793,7 +1793,8 @@ def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, ent
     # build), True or False (unoptimized: at the line's first instruction, or past it,
     # where the line table's column is after the header's `)`). "inside": past the first
     # instruction, but at a column inside the header (back from a call there, #287 review);
-    # "pass": at the loop's `:`, whose code (its iterator's test) runs after the range.
+    # "pass": at the loop's `:`, whose implicit code (`begin`/`end` setup, each pass's test
+    # and binding, the range's cleanup) is all emitted after the range expression.
     session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
     session.target.language = "cpp"
     (tmp_path / "a.c").write_bytes(RANGE_FOR_UNIT.split(b"\n", 1)[1])

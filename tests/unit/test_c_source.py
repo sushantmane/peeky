@@ -1537,8 +1537,9 @@ def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_
 
 
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():
-    # Review of PR #287: the code of a range-`for`'s later passes carries its declaration's
-    # and its `:`'s columns, after its range has run; a classic `for`'s `?:` is no `:`.
+    # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
+    # test and binding, its range's cleanup), all emitted after its range expression,
+    # carries its declaration's and its `:`'s columns; a classic `for`'s `?:` is no `:`.
     text = """void f(void) {
     for (const auto &[t, u] : make(t)) {}
     for (auto w = make(t); long a : w) {}
