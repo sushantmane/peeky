@@ -842,7 +842,9 @@ is:
 - a C++ `using` declaration, class or structured binding: `auto [t, u]`. A range-`for`'s or an
   `if`'s binding counts too, though clang 18 on Linux doesn't describe it. A range-`for`'s binding
   counts in its loop. It doesn't count in a lambda in its range, nor at the line's first
-  instruction, where the range runs first;
+  instruction, where the range runs first. When the loop's body has code on that line too, the
+  binding still counts there. If the range also names the outer local, as in
+  `for (auto [t, u] : make(t)) { use(t); }`, the row says `may not be what the code reads`;
 - a `thread_local`, which the debugger lists apart as `q @ file:line`.
 
 A block that opens on the stop line counts.
@@ -858,7 +860,9 @@ though the outer local lives in a register or as a constant, not in the frame:
 
 - On a range-`for`'s line, the stop can't be told from the line's first instruction, where the
   range runs with the outer local. The row says `may not be what the code reads` and names the
-  binding.
+  binding. When the loop's body has code on that line too, this holds only where the range names
+  the outer local. Otherwise the line's code names it only as the binding, and the row says
+  `not what the code reads`.
 - A block's `static` that never changes is kept as a constant, and lldb-dap lists it among the
   frame's locals as `t @ file:line`. That row is the static the code names, so it is shown. The
   outer local's row says the static is `listed separately as` it.

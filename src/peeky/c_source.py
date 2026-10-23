@@ -1625,6 +1625,81 @@ class Statements:
                     break
         return frozenset(found)
 
+    def range_reads(self, line, name):
+        """Whether a C++ range-`for` on ``line``, whose structured binding declares
+        ``name``, also names ``name`` in the rest of its header: its range's expression
+        or an init-statement (`for (const auto &[t, u] : make(t)) { use(t * u); }`).
+        That code runs at the line's first instruction, before the binding is declared,
+        so there it reads an outer ``name`` (#283). The header must open and close on
+        the line. A member's or a qualified name (`p.t`, `p->t`, `n::t`) does not count,
+        nor one in a lambda's parameters or body where that lambda declares its own."""
+        if not self.raw_strings or self.unreadable or type(line) is not int:
+            return False
+        if not 1 <= line <= len(self.starts):
+            return False
+        code, pairs = self._code()
+        if pairs is None:
+            return False
+        begin = self.starts[line - 1]
+        finish = self.starts[line] if line < len(self.starts) else len(code)
+        for keyword in _IDENTIFIER.finditer(code, begin, finish):
+            if keyword[0] != "for":
+                continue
+            opened = _NONBLANK.search(code, keyword.end(), finish)
+            if opened is None or code[opened.start()] != "(":
+                continue
+            start = opened.start()
+            closing = pairs.get(start)
+            if closing is None or closing >= finish:
+                continue
+            # The binding's brackets at the header's own depth (after its last `;`, an
+            # init-statement's end), then the range's `:`.
+            binding, ranged, depth = None, False, 0
+            for mark in _TOKENS.finditer(code, start + 1, closing):
+                token = mark[0]
+                if token in _OPEN:
+                    if (
+                        depth == 0
+                        and token in ("[", "<:")
+                        and re.search(r"\bauto\s*&{0,2}\s*$", code[start + 1 : mark.start()])
+                    ):
+                        binding = (mark.start(), pairs[mark.start()])
+                    depth += 1
+                elif token in _CLOSE:
+                    depth -= 1
+                elif depth == 0 and token == ";":
+                    binding, ranged = None, False
+                elif depth == 0 and token == ":" and binding is not None:
+                    ranged = True
+                    break
+            if not ranged or not any(
+                word[0] == name for word in _IDENTIFIER.finditer(code, *binding)
+            ):
+                continue
+            # A lambda there that declares its own ``name``: its parameters and body.
+            own = []
+            for brace, shut in pairs.items():
+                if not (start < brace < closing and code.startswith(("{", "<%"), brace)):
+                    continue
+                if self._brace(brace) != "lambda":
+                    continue
+                parameters = self._parameters(brace)
+                declared = parameters is not None and any(
+                    word[0] == name
+                    for word in _IDENTIFIER.finditer(code, parameters, pairs[parameters])
+                )
+                if declared or self._declares(brace + 1, shut, name):
+                    own.append((brace if parameters is None else parameters, shut))
+            for word in _IDENTIFIER.finditer(code, start + 1, closing):
+                if word[0] != name or binding[0] < word.start() < binding[1]:
+                    continue
+                if any(low <= word.start() < high for low, high in own):
+                    continue
+                previous = self._before(word.start())
+                if previous is None or previous[0] not in (".", "->", "::"):
+                    return True
+        return False
+
     def _opens_statements(self, opening):
         """Whether the brace at ``opening`` opens statements this function runs: a block,
         or a statement expression (`({`)."""

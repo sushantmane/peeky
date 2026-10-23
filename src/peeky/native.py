@@ -5920,14 +5920,19 @@ class NativeSession:
             )
             storage = statements.block_storage(at, base, after, True, body, own=own)
             if storage and storage[0] == "binding" and entering is not None:
+                # A range-`for` whose body has code on the line names the binding there,
+                # but its range, which starts the line, may read the outer local (#283).
+                reads = not body and statements.range_reads(at, base)
                 if (entered := entering()) is None:
                     # An optimized build: whether the stop starts the line, where its
                     # range is read with the outer local, cannot be told (#173).
                     before = statements.block_storage(at, base, after, True, body, True, own)
-                    if before != storage:
+                    if before != storage or reads:
                         storage = ("binding-unsure", *storage[1:])
                 elif entered:
                     storage = statements.block_storage(at, base, after, True, body, True, own)
+                    if storage and storage[0] == "binding" and reads:
+                        storage = ("binding-first", *storage[1:])
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
                 storage = None if origin is None else (storage[0], *origin)
@@ -5972,6 +5977,9 @@ class NativeSession:
             "binding-unsure": f"the structured binding `{base}` ({place}), unless the stop "
             "starts the line, where the loop's range is read with this local (in an "
             "optimized build Peeky cannot tell which)",
+            "binding-first": f"the structured binding `{base}` ({place}) in the loop's "
+            "body, but this stop starts the line, where the loop's range reads this local "
+            "first",
             "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "
@@ -5979,14 +5987,21 @@ class NativeSession:
             "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
         }.get(kind, f"the block's `{kind}` `{base}` ({place}), {unlisted}")
         names = "may name" if kind == "binding-unsure" else "names"
+        refusal = (
+            f"{name!r} cannot be changed here: at line {line} the loop's range reads this "
+            f"local first, but its body names the structured binding `{base}` ({place}), "
+            "which a change to this local would not reach"
+            if kind == "binding-first"
+            else f"{name!r} cannot be changed here: at line {line} the code {names} {what}; "
+            "the local this row shows is the outer one, so a change to it would not reach "
+            "that code"
+        )
         return Withholding(
             f"the code here {names} {what}: this row is the outer local of that name",
             "may not be what the code reads"
-            if kind == "binding-unsure"
+            if kind in ("binding-unsure", "binding-first")
             else "not what the code reads",
-            f"{name!r} cannot be changed here: at line {line} the code {names} {what}; the "
-            "local this row shows is the outer one, so a change to it would not reach that "
-            "code",
+            refusal,
         )
 
     def _units(self, source):

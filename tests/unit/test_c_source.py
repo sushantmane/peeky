@@ -1390,6 +1390,40 @@ def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
     assert statements.block_storage(4, "t", 2, True, entering=True) == ("binding", 3)
 
 
+RANGE_READS_SOURCE = """int f(P p, P *q) {
+    long t = 1;
+    for (const auto &[t, u] : make(t)) { use(t * u); }
+    for (auto [t, u] : v) { use(t); }
+    for (auto [t, u] : make(t)) {
+    for (auto [t, u] : make(p.t, q->t, n::t)) { use(t); }
+    for (auto [t, u] : make([&](long t) { return id(t); })) { use(t); }
+    for (auto [t, u] : make([&] { long t = 2; return t; })) { use(t); }
+    for (auto [t, u] : make([&] { return id(t); })) { use(t); }
+    for (auto w = make(t); auto [t, u] : w) { use(t); }
+    for (auto [a, b] : make(t)) { use(a); }
+    for (auto [t, u] = make(t); u < 3; u++) { use(t); }
+    for (auto [t, u] : c ? make(t) : v) { use(t); }
+    for (auto [t, u] :
+         make(t)) { use(t); }
+    }
+    return t;
+}
+"""
+
+
+def test_a_range_for_header_says_where_its_range_reads_the_outer_local():
+    # #283: a one-line range-`for` whose range names the outer `t`: at the line's first
+    # instruction, that code reads it, before the binding is declared.
+    statements = Statements(RANGE_READS_SOURCE, raw_strings=True)
+    reads = [line for line in range(3, 16) if statements.range_reads(line, "t")]
+    # The range (lines 3 and 5), a lambda without its own `t` (9), an init-statement (10)
+    # and a `?` in the range (13) read it; not line 14, whose header runs onto line 15.
+    assert reads == [3, 5, 9, 10, 13], reads
+    assert statements.range_reads(3, "u") is False
+    # C has no structured bindings.
+    assert Statements(RANGE_READS_SOURCE, raw_strings=False).range_reads(3, "t") is False
+
+
 OWN_STATIC = """long work(long a) {
     long t = a * 3;
     {

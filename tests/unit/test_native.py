@@ -1752,6 +1752,45 @@ def test_a_static_kept_as_a_constant_is_shown_where_the_code_names_it(tmp_path):
     assert "which the debugger does not list" in found
 
 
+RANGE_FOR_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    for (const auto &[q, u] : make(q)) { use(q * u); }
+    for (auto [q, u] : v) { use(q); }
+    return q;
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "entered, label, says",
+    [
+        # An optimized build: the stop may start the line, where the range reads `q`.
+        (None, "may not be", "may name the structured binding `q` (line 3), unless the stop"),
+        # At the line's first instruction (unoptimized): the range reads it first.
+        (True, "may not be", "`q` (line 3) in the loop's body, but this stop starts the line"),
+        # Past it: the code names the binding.
+        (False, "not", "the code here names the structured binding `q` (line 3): this row"),
+    ],
+)
+def test_a_one_line_range_fors_note_says_its_range_reads_the_outer_local(
+    tmp_path, entered, label, says
+):
+    # #283: `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
+    # unhedged "not what the code reads", though its range reads it at the line's start.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
+    session.target.language = "cpp"
+    found = session._block_storage("q", frame, "a.c", 3, entering=lambda: entered)
+    assert found.label == f"{label} what the code reads" and says in found, found
+    if entered:
+        assert "the loop's range reads this local first, but its body names" in found.refusal
+    # A range that does not name it: the line names `q` only as the binding.
+    plain = session._block_storage("q", frame, "a.c", 4, entering=lambda: entered)
+    assert plain.label == "not what the code reads", plain
+    assert "names the structured binding `q` (line 4): this row" in plain, plain
+
+
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():
     # #138 with #146: `set` refuses a field or element of a root the debug information
     # keeps in a register (or a location list) or as a static, at every stop; its rows
