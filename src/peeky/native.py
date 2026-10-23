@@ -5881,8 +5881,9 @@ class NativeSession:
         that brings it in (the preprocessed text has its lines there instead).
         ``entering()``: whether the stop is the first instruction of the statements that
         start on the line (None: it is not), where a range-`for`'s binding there is not
-        declared yet. ``siblings``: the frame's rows, when known, to say whether the
-        debugger lists what the code names."""
+        declared yet; where the loop's header names the local too, a stop Peeky cannot
+        tell to be past it is hedged (#283). ``siblings``: the frame's rows, when known,
+        to say whether the debugger lists what the code names."""
         # An optimized build's local in registers is listed all the same (#173).
         found = shown_declaration(self.declarations, name, self._block_pc(frame), unstored=True)
         if found is None:
@@ -5919,20 +5920,24 @@ class NativeSession:
                 and tuple(function.get("span") or ()) == (line, line)
             )
             storage = statements.block_storage(at, base, after, True, body, own=own)
-            if storage and storage[0] == "binding" and entering is not None:
-                # A range-`for` whose body has code on the line names the binding there,
-                # but its range, which starts the line, may read the outer local (#283).
-                reads = not body and statements.range_reads(at, base)
-                if (entered := entering()) is None:
-                    # An optimized build: whether the stop starts the line, where its
-                    # range is read with the outer local, cannot be told (#173).
-                    before = statements.block_storage(at, base, after, True, body, True, own)
-                    if before != storage or reads:
-                        storage = ("binding-unsure", *storage[1:])
-                elif entered:
+            if storage and storage[0] == "binding":
+                # A range-`for` header holding the line that names the outer local before
+                # its binding exists: running it may read that local, or not (#283).
+                header = None if body else statements.range_header(at, base)
+                entered = entering() if entering is not None else None
+                if entered:
                     storage = statements.block_storage(at, base, after, True, body, True, own)
-                    if storage and storage[0] == "binding" and reads:
-                        storage = ("binding-first", *storage[1:])
+                if storage and storage[0] == "binding":
+                    # Past the first instruction (unoptimized), a header on the line has
+                    # run; on a header over several lines, no stop can be told apart.
+                    if header is not None and (entered is not False or header[0] != header[1]):
+                        storage = ("binding-header", *storage[1:])
+                    elif entering is not None and entered is None:
+                        # An optimized build: whether the stop starts the line, before the
+                        # binding exists, cannot be told (#173).
+                        before = statements.block_storage(at, base, after, True, body, True, own)
+                        if before != storage:
+                            storage = ("binding-unsure", *storage[1:])
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
                 storage = None if origin is None else (storage[0], *origin)
@@ -5975,33 +5980,25 @@ class NativeSession:
             "class": f"the type `{base}` the block declares ({place})",
             "binding": f"the structured binding `{base}` ({place})",
             "binding-unsure": f"the structured binding `{base}` ({place}), unless the stop "
-            "starts the line, where the loop's range is read with this local (in an "
-            "optimized build Peeky cannot tell which)",
-            "binding-first": f"the structured binding `{base}` ({place}) in the loop's "
-            "body, but this stop starts the line, where the loop's range reads this local "
-            "first",
+            "starts the line, before that binding exists (in an optimized build Peeky "
+            "cannot tell which)",
+            "binding-header": f"the structured binding `{base}` ({place}), but the loop's "
+            f"header names `{base}` before that binding exists, and Peeky cannot tell whether "
+            "running the header reads this local",
             "thread_local": f"the block's `thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "_Thread_local": f"the block's `_Thread_local` `{base}` ({place}), listed "
             f"separately as {listed}",
             "__thread": f"the block's `__thread` `{base}` ({place}), listed separately as {listed}",
         }.get(kind, f"the block's `{kind}` `{base}` ({place}), {unlisted}")
-        names = "may name" if kind == "binding-unsure" else "names"
-        refusal = (
-            f"{name!r} cannot be changed here: at line {line} the loop's range reads this "
-            f"local first, but its body names the structured binding `{base}` ({place}), "
-            "which a change to this local would not reach"
-            if kind == "binding-first"
-            else f"{name!r} cannot be changed here: at line {line} the code {names} {what}; "
-            "the local this row shows is the outer one, so a change to it would not reach "
-            "that code"
-        )
+        unsure = kind in ("binding-unsure", "binding-header")
+        names, would = ("may name", "may") if unsure else ("names", "would")
         return Withholding(
             f"the code here {names} {what}: this row is the outer local of that name",
-            "may not be what the code reads"
-            if kind in ("binding-unsure", "binding-first")
-            else "not what the code reads",
-            refusal,
+            "may not be what the code reads" if unsure else "not what the code reads",
+            f"{name!r} cannot be changed here: at line {line} the code {names} {what}; the "
+            f"local this row shows is the outer one, so a change to it {would} not reach "
+            "that code",
         )
 
     def _units(self, source):

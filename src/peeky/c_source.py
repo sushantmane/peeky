@@ -997,6 +997,9 @@ class Statements:
             if blanked[at] in "*&>":
                 return True
             previous = self._word_before(word.start())
+            if previous == "template" and self._member(word.start()):
+                # A member template's name (`P::template t<0>()`, #283), not a declaration.
+                continue
             if previous is not None and previous not in _USES:
                 return True
         return False
@@ -1625,32 +1628,28 @@ class Statements:
                     break
         return frozenset(found)
 
-    def range_reads(self, line, name):
-        """Whether a C++ range-`for` on ``line``, whose structured binding declares
-        ``name``, also names ``name`` in the rest of its header: its range's expression
-        or an init-statement (`for (const auto &[t, u] : make(t)) { use(t * u); }`).
-        That code runs at the line's first instruction, before the binding is declared,
-        so there it reads an outer ``name`` (#283). The header must open and close on
-        the line. A member's or a qualified name (`p.t`, `p->t`, `n::t`) does not count,
-        nor one in a lambda's parameters or body where that lambda declares its own."""
+    def range_header(self, line, name):
+        """The lines (first, last) of a C++ range-`for`'s header that holds ``line``, whose
+        structured binding declares ``name`` and whose header also names ``name`` outside
+        the binding, in its range's expression or an init-statement: `for (const auto &[t,
+        u] : make(t))`. That code runs before the binding exists (#283), where ``name`` is
+        an outer one; but a mention need not be a read (`sizeof(t)`, a lambda's body), so
+        a caller can only say the header names it. A member's or a qualified name does not
+        count (`p.t`, `p->t`, `n::t`, `p.template t<0>()`). Else None."""
         if not self.raw_strings or self.unreadable or type(line) is not int:
-            return False
+            return None
         if not 1 <= line <= len(self.starts):
-            return False
+            return None
         code, pairs = self._code()
         if pairs is None:
-            return False
+            return None
         begin = self.starts[line - 1]
         finish = self.starts[line] if line < len(self.starts) else len(code)
-        for keyword in _IDENTIFIER.finditer(code, begin, finish):
-            if keyword[0] != "for":
+        for start, closing in pairs.items():
+            if not (start < finish and closing >= begin and code.startswith("(", start)):
                 continue
-            opened = _NONBLANK.search(code, keyword.end(), finish)
-            if opened is None or code[opened.start()] != "(":
-                continue
-            start = opened.start()
-            closing = pairs.get(start)
-            if closing is None or closing >= finish:
+            keyword = self._before(start)
+            if keyword is None or keyword[0] != "for":
                 continue
             # The binding's brackets at the header's own depth (after its last `;`, an
             # init-statement's end), then the range's `:`.
@@ -1676,29 +1675,21 @@ class Statements:
                 word[0] == name for word in _IDENTIFIER.finditer(code, *binding)
             ):
                 continue
-            # A lambda there that declares its own ``name``: its parameters and body.
-            own = []
-            for brace, shut in pairs.items():
-                if not (start < brace < closing and code.startswith(("{", "<%"), brace)):
-                    continue
-                if self._brace(brace) != "lambda":
-                    continue
-                parameters = self._parameters(brace)
-                declared = parameters is not None and any(
-                    word[0] == name
-                    for word in _IDENTIFIER.finditer(code, parameters, pairs[parameters])
-                )
-                if declared or self._declares(brace + 1, shut, name):
-                    own.append((brace if parameters is None else parameters, shut))
             for word in _IDENTIFIER.finditer(code, start + 1, closing):
                 if word[0] != name or binding[0] < word.start() < binding[1]:
                     continue
-                if any(low <= word.start() < high for low, high in own):
-                    continue
-                previous = self._before(word.start())
-                if previous is None or previous[0] not in (".", "->", "::"):
-                    return True
-        return False
+                if not self._member(word.start()):
+                    first = bisect.bisect_right(self.starts, keyword[1])
+                    return first, bisect.bisect_right(self.starts, closing)
+        return None
+
+    def _member(self, position):
+        """Whether the name at ``position`` is a member's or a qualified one: after `.`,
+        `->` or `::`, also with `template` between (`p->template t<0>()`)."""
+        before = self._before(position)
+        if before is not None and before[0] == "template":
+            before = self._before(before[1])
+        return before is not None and before[0] in (".", "->", "::")
 
     def _opens_statements(self, opening):
         """Whether the brace at ``opening`` opens statements this function runs: a block,

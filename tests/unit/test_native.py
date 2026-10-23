@@ -1757,38 +1757,76 @@ long f(void) {
     long q = 1;
     for (const auto &[q, u] : make(q)) { use(q * u); }
     for (auto [q, u] : v) { use(q); }
+    for (const auto &[q, u] :
+         make(q)) { use(q - u); }
+    for (auto [q, u] : make(p.template q<0>())) { use(q); }
+    for (auto [q, u] : make(sizeof(q))) { use(q); }
+    for (auto [q, u] : v) {
+        use(q);
+    }
     return q;
 }
 """
 
 
-@pytest.mark.parametrize(
-    "entered, label, says",
-    [
-        # An optimized build: the stop may start the line, where the range reads `q`.
-        (None, "may not be", "may name the structured binding `q` (line 3), unless the stop"),
-        # At the line's first instruction (unoptimized): the range reads it first.
-        (True, "may not be", "`q` (line 3) in the loop's body, but this stop starts the line"),
-        # Past it: the code names the binding.
-        (False, "not", "the code here names the structured binding `q` (line 3): this row"),
-    ],
-)
-def test_a_one_line_range_fors_note_says_its_range_reads_the_outer_local(
-    tmp_path, entered, label, says
-):
+@pytest.mark.parametrize("entered", ["caller", None, True, False])
+def test_a_range_for_header_naming_the_outer_local_hedges_its_note(tmp_path, entered):
     # #283: `for (const auto &[q, u] : make(q)) { use(q * u); }` gave the outer `q` the
-    # unhedged "not what the code reads", though its range reads it at the line's start.
+    # unhedged "not what the code reads", though the header runs before the binding
+    # exists. entered: "caller" (a caller frame: no stop is told), None (an optimized
+    # build), True or False (unoptimized: at the line's first instruction, or past it).
     frame = {"instructionPointerReference": "0x150"}
     session = preprocessing_session(tmp_path, {"a.c": RANGE_FOR_UNIT})
     session.target.language = "cpp"
-    found = session._block_storage("q", frame, "a.c", 3, entering=lambda: entered)
-    assert found.label == f"{label} what the code reads" and says in found, found
-    if entered:
-        assert "the loop's range reads this local first, but its body names" in found.refusal
-    # A range that does not name it: the line names `q` only as the binding.
-    plain = session._block_storage("q", frame, "a.c", 4, entering=lambda: entered)
-    assert plain.label == "not what the code reads", plain
-    assert "names the structured binding `q` (line 4): this row" in plain, plain
+
+    def note(line):
+        entering = None if entered == "caller" else (lambda: entered)
+        return session._block_storage("q", frame, "a.c", line, entering=entering)
+
+    hedged = (
+        "may not be what the code reads",
+        "the code here may name the structured binding `q` (line {}), but the loop's header "
+        "names `q` before that binding exists, and Peeky cannot tell whether running the "
+        "header reads this local: this row is the outer local of that name",
+    )
+    plain = (
+        "not what the code reads",
+        "the code here names the structured binding `q` (line {}): this row is the outer "
+        "local of that name",
+    )
+    unsure = (
+        "may not be what the code reads",
+        "the code here may name the structured binding `q` (line 9), unless the stop starts "
+        "the line, before that binding exists (in an optimized build Peeky cannot tell "
+        "which): this row is the outer local of that name",
+    )
+    expected = {
+        # On the line, a header that has run past the first instruction: the binding.
+        3: plain if entered is False else hedged,
+        4: plain,
+        # A header over two lines: no stop on it can be told from its range's.
+        5: hedged,
+        6: hedged,
+        # A member template's name is no mention of the local.
+        7: plain,
+        # `sizeof(q)` reads nothing, but a hedge says only that the header names it.
+        8: plain if entered is False else hedged,
+        9: {"caller": plain, None: unsure, True: None, False: plain}[entered],
+    }
+    for line, want in expected.items():
+        found = note(line)
+        if want is None:
+            assert found is None, (line, found)
+            continue
+        binding = 5 if line in (5, 6) else line
+        assert (found.label, str(found)) == (want[0], want[1].format(binding)), (line, found)
+        assert "reads this local first" not in found and "reads this local first" not in (
+            found.refusal
+        )
+        would = "may not" if want[0].startswith("may") else "would not"
+        assert found.refusal.endswith(f"so a change to it {would} reach that code"), found.refusal
+        if want is hedged:
+            assert "Peeky cannot tell whether running the header reads" in found.refusal
 
 
 def test_members_of_a_root_outside_the_frames_memory_are_never_settable():

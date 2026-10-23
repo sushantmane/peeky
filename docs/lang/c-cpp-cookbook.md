@@ -842,12 +842,16 @@ is:
 - a C++ `using` declaration, class or structured binding: `auto [t, u]`. A range-`for`'s or an
   `if`'s binding counts too, though clang 18 on Linux doesn't describe it. A range-`for`'s binding
   counts in its loop. It doesn't count in a lambda in its range, nor at the line's first
-  instruction, where the range runs first. When the loop's body has code on that line too, the
-  binding still counts there. If the range also names the outer local, as in
-  `for (auto [t, u] : make(t)) { use(t); }`, the row says `may not be what the code reads`;
+  instruction, where the range runs first, unless the loop's body has code on that line too;
 - a `thread_local`, which the debugger lists apart as `q @ file:line`.
 
 A block that opens on the stop line counts.
+
+A range-`for`'s header can also name the outer local: `for (auto [t, u] : make(t)) { use(t); }`.
+That code runs before the binding exists, and a mention isn't always a read, as in `sizeof(t)`.
+So the row says `may not be what the code reads` wherever Peeky can't tell that the header has
+run. That is at the line's first instruction, on any line of a header that spans lines, and in a
+caller frame. A member's name, such as `p.t` or `p.template t<0>()`, isn't the local.
 
 Peeky reads the source as the build's compiler preprocesses it (`-E`, with the same flags). So
 whatever a macro expands to counts, and only what a conditional keeps. A prototype's parameter
@@ -858,11 +862,10 @@ the block.
 In optimized builds (`-O1`, `-O2`), a block's declaration hides the outer local too. This holds
 though the outer local lives in a register or as a constant, not in the frame:
 
-- On a range-`for`'s line, the stop can't be told from the line's first instruction, where the
-  range runs with the outer local. The row says `may not be what the code reads` and names the
-  binding. When the loop's body has code on that line too, this holds only where the range names
-  the outer local. Otherwise the line's code names it only as the binding, and the row says
-  `not what the code reads`.
+- On a range-`for`'s line, the stop can't be told from the line's first instruction, before the
+  binding exists. The row says `may not be what the code reads` and names the binding. When the
+  loop's body has code on that line too, this holds only where the header names the outer local.
+  Otherwise the row says `not what the code reads`.
 - A block's `static` that never changes is kept as a constant, and lldb-dap lists it among the
   frame's locals as `t @ file:line`. That row is the static the code names, so it is shown. The
   outer local's row says the static is `listed separately as` it.
