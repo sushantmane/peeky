@@ -3267,6 +3267,26 @@ class DebugWorker:
             elif unlisted and note is not None:
                 # Its count is wrong, so no note makes its listing true.
                 reason, note, carried = unlisted, None, None
+            # A structured binding the build holds as a reference to its element (GCC's,
+            # of a pair or tuple, #291), which the debugger shows as the element's
+            # address: the element is shown instead, or the row withheld.
+            bound = (
+                getattr(self.runtime, "bound_element", None)
+                if not ancestry and not module and (not reason or note is not None)
+                else None
+            )
+            element = (
+                bound(variable, frame, self.preview_fetch, note=note)
+                if bound and not (self.placeholders() and is_unavailable(variable.get("value")))
+                else None
+            )
+            reference_kind = None
+            if isinstance(element, str):
+                reason, note, carried = element, None, None
+            elif element is not None and isinstance(element.get("variable"), dict):
+                # The element itself, as the debugger lists it under the reference.
+                reference_kind, variable = kind, element["variable"]
+                kind = variable.get("type") if isinstance(variable.get("type"), str) else kind
             if reason and note is None:
                 # Indeterminate here: never shown as a value, expanded or offered for set,
                 # nor read through by a qualified view (a Rust container, enum or Box).
@@ -3397,6 +3417,8 @@ class DebugWorker:
                     self.capabilities.get("supports_set_variable", False) is True
                     and innermost
                     and not self.optimized()
+                    # An element read through a reference (#291) is never changed.
+                    and reference_kind is None
                     and self.has_memory_location(variable)
                     and (bool(check(variable, frame)) or self.text_settable(variable, frame))
                     # Marked only where a selector reaches it (#195): `t` for LLDB's
@@ -3575,6 +3597,25 @@ class DebugWorker:
                     shown = None
                 if shown is not None:
                     output["value"] = str(shown)[:2000]
+            if (
+                element is not None
+                and element.get("strip")
+                and not output.get("unavailable")
+                and (text := getattr(self.runtime, "element_text", None))
+            ):
+                # The element's own text, never the reference's address (#291).
+                shown = text(variable, frame, output["value"])
+                if hasattr(shown, "label"):
+                    # Withheld (a Withholding): never the address alone.
+                    output.update(value=None, unavailable=True, reason=str(shown)[:300])
+                    output.update(withheld=True, withheld_as=str(shown.label)[:100])
+                    output["variablesReference"] = 0
+                    self.children.pop(handle, None)
+                    self.taints.pop(handle, None)
+                    self.notes.pop(handle, None)
+                    handle, raw, settable = 0, 0, False
+                else:
+                    output["value"] = shown[:2000]
             if kind is not None:
                 output["type"] = kind
             resolve = getattr(self.runtime, "typedef_kind", None)
@@ -3596,6 +3637,9 @@ class DebugWorker:
             if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                 # The language's own name; the debugger's stays alongside.
                 output.update(type=rust, debugger_type=kind)
+            if reference_kind is not None and output.get("type") != reference_kind:
+                # The element's type; the debugger's, of the reference, alongside (#291).
+                output["debugger_type"] = reference_kind
             if isinstance(variable.get("evaluateName"), str) and variable["evaluateName"]:
                 # Only whether the debugger could name it as an expression; the expression
                 # itself never leaves the worker. debugpy names a dict entry only when its

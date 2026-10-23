@@ -1353,6 +1353,82 @@ def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
     assert statements.block_storage(5, "t", 2) == ("binding", 5)
 
 
+BINDS_SOURCE = """int main() {
+    auto [t, u] = make(i)[0];
+    auto &[r, s] = held[1]; const auto&& [a, b] = three; // auto [c, d] = no;
+    for (const auto &[k, v] : pairs) { use(k); }
+    long &&w = std::move(x); auto [w2, z] = y;
+    auto lam = [&] { auto [m, n] = g(); return m; }; long &m = x;
+    auto [e, f] = make([] { long e = 4; return e; });
+    long q = 1, &[[maybe_unused]] p = q;
+    use("auto [g, h] = x;");
+    auto [first,
+          second] = p; long &&third = q();
+}
+"""
+
+
+def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
+    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &&`:
+    # only the line tells that it names the element, not a reference the code declares.
+    statements = Statements(BINDS_SOURCE, raw_strings=True)
+    names = ("t", "u", "r", "s", "a", "b", "c", "d", "k", "v", "w", "w2", "z", "m", "n")
+    found = {
+        (line, name)
+        for line in range(1, 14)
+        for name in (*names, "e", "f", "q", "p", "g", "h", "first", "second", "third")
+        if statements.binds(line, name)
+    }
+    assert found == {
+        (2, "t"),
+        (2, "u"),
+        (3, "r"),
+        (3, "s"),
+        (3, "a"),
+        (3, "b"),
+        (4, "k"),
+        (4, "v"),
+        (5, "z"),
+        (5, "w2"),
+        (7, "e"),
+        (7, "f"),
+        (10, "first"),
+        (11, "second"),
+    }
+    # A comment's or a string's brackets bind nothing (`c`, `g`), nor does a lambda's
+    # body hold the line's own (`m` is the reference `long &m` there); a plain reference
+    # (`w`, `p`, `third` after a binding's brackets that closed) is no binding; nor is any
+    # of C. Brackets over two lines bind each line's name.
+    assert not Statements(BINDS_SOURCE, raw_strings=False).binds(2, "t")
+    assert not statements.binds(0, "t") and not statements.binds(99, "t")
+
+
+def test_a_binding_says_how_it_binds_and_what():
+    # Review of #296: a binding by reference may refer into a temporary its line destroys.
+    source = """int main() {
+    auto &[t, u] = make(0)[0];
+    auto [x, y] = p;
+    for (const auto &[k, v] : m) { use(k); }
+    auto &&[g, h](one(1)); auto const &[a, b] = q . inner;
+    if (auto &[c, d] = p; c) {}
+    auto [first,
+          second]{pp};
+    long &w = x;
+}
+"""
+    statements = Statements(source, raw_strings=True)
+    assert [statements.binding(line, name) for line, name in [(2, "t"), (2, "u")]] == [
+        (True, "make(0)[0]", False)
+    ] * 2
+    assert statements.binding(3, "x") == (False, "p", False)
+    assert statements.binding(4, "v") == (True, "m", True)
+    assert statements.binding(5, "g") == (True, "one(1)", False)
+    assert statements.binding(5, "b") == (True, "q . inner", False)
+    assert statements.binding(6, "c") == (True, "p", False)
+    assert statements.binding(7, "first") == statements.binding(8, "second") == (False, "pp", False)
+    assert statements.binding(9, "w") is None and statements.binding(2, "x") is None
+
+
 RANGE_LAMBDA_SOURCE = """int f() {
     long t = 1;
     for (auto [t, u] : make([&] { long t = 40; return id(t); })) {
