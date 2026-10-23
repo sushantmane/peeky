@@ -835,13 +835,15 @@ def _locals(dies, offset, hidden=None, label=None):
             if hidden and hidden(child):
                 continue
             chain = _chain(dies, child)
-            # A compiler's own variable (a range `for`'s `__range1`, `__begin1`); `this`,
-            # an artificial parameter, stays.
-            if die["tag"] == "DW_TAG_variable" and any(
-                "DW_AT_artificial" in dies[at]["attrs"] for at in chain
+            name = _text(_first(dies, chain, "DW_AT_name"))
+            # A compiler's own variable (a range `for`'s `__range1`, `__begin1`, a GCC
+            # lambda's captures) goes, and GCC's `__closure` (a lambda's object pointer):
+            # lldb-dap lists none of them. `this` stays: clang's artificial parameter, and
+            # the variable GCC gives a lambda that captures it, which lldb-dap lists.
+            if any("DW_AT_artificial" in dies[at]["attrs"] for at in chain) and (
+                (die["tag"] == "DW_TAG_variable" and name != "this") or name == "__closure"
             ):
                 continue
-            name = _text(_first(dies, chain, "DW_AT_name"))
             # `$`-prefixed names are debugger-synthesized storage, not program locals.
             if name and not name.startswith("$"):
                 name = label(child, name) if label else name
@@ -1294,12 +1296,20 @@ def _function_entries(
         if not spans:
             continue
         chain = _chain(dies, offset)
-        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, sources)
+        attribute, line, made = _declared_at(dies, chain)
+        source = _source_of(attribute, inputs, workspace, sources)
+        if source is None and attribute is None and made:
+            # A compiler-made member whose class names no source either: its first row's.
+            at = bisect.bisect_left(addresses, spans[0][0])
+            if at < len(rows) and rows[at][0] < spans[0][1]:
+                _, source, line = rows[at]
         if source is None:
             # SDK and std code: never listed, and never claims the caller's rows.
             continue
         root = chain[-1]
-        entry = functions.setdefault(root, {"bodies": [], "chain": chain, "source": source})
+        entry = functions.setdefault(
+            root, {"bodies": [], "chain": chain, "source": source, "line": line}
+        )
         entry["bodies"].append(offset)
         for low, high in spans:
             first = bisect.bisect_left(addresses, low)
@@ -1333,14 +1343,34 @@ def _source_of(attribute, inputs, workspace, cache):
     return cache[attribute]
 
 
+def _declared_at(dies, chain):
+    """(DW_AT_decl_file, its line or None, whether the compiler made it as a member of a
+    class) for a function's DIE chain. GCC gives a lambda's `operator()` and a class's
+    implicit members (an unnamed class's `<constructor>`) `DW_AT_artificial` and no file
+    or line (#167): theirs are their class's, the closure's for a lambda, as clang gives
+    them. A made member whose class has none is placed by its rows (_function_entries)."""
+    attribute, line = _first(dies, chain, "DW_AT_decl_file"), None
+    made = False
+    if attribute is None and any("DW_AT_artificial" in dies[at]["attrs"] for at in chain):
+        for at in chain:
+            parent = dies.get(dies[at]["parent"])
+            if parent is not None and parent["tag"] in _CLASSES:
+                made = True
+                attribute = parent["attrs"].get("DW_AT_decl_file")
+                line = parent["attrs"].get("DW_AT_decl_line") if attribute else None
+                break
+    else:
+        line = _first(dies, chain, "DW_AT_decl_line")
+    return attribute, int(line) if line and line.isdigit() else None, made
+
+
 def _own_lines(dies, entry, numbers, macro_lines=frozenset()):
     """A function's line numbers from its declaration on, or None if it has none. Lines
     of a local `macro_rules!` definition (``macro_lines``), where its expansions run,
     are not its own unless it is declared there."""
     if not numbers:
         return None
-    first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
-    first = int(first_line) if first_line and first_line.isdigit() else None
+    first = entry.get("line")
     if first is not None:
         numbers = {number for number in numbers if number >= first} or numbers
     if first not in macro_lines:
@@ -1534,12 +1564,10 @@ def function_scopes(
             key: [address for address in found if (address, *key) not in replaced]
             for key, found in addresses.get(root, {}).items()
         }
-        declared_at = _first(dies, entry["chain"], "DW_AT_decl_line")
+        declared_at = entry.get("line")
         # A function a macro declares runs its arguments' code on the invoking line,
         # past other functions: its blocks' lines are not one span.
-        in_macro = (
-            declared_at and declared_at.isdigit() and int(declared_at) in (macros[source] or ())
-        )
+        in_macro = declared_at in (macros[source] or ())
         blocks = (
             _block_spans(dies, entry, root, ran, numbers, source_of, skip, label)
             if macros[source] is not None and not in_macro
@@ -1794,8 +1822,7 @@ def local_declarations(info, line_text, workspace, declared, prologues=None):
             returned = ordered[later][0] if later < len(ordered) else None
         constructor, enclosing, defined, initializer = _class_role(dies, entry["chain"])
         inlined = _inlined_calls(dies, (*entry["bodies"], root), files, workspace)
-        first_line = _first(dies, entry["chain"], "DW_AT_decl_line")
-        first = int(first_line) if first_line and first_line.isdigit() else None
+        first = entry.get("line")
         own = [
             n for (where, n), _ in rows.items() if where == entry["source"] and n >= (first or 0)
         ]
@@ -1861,13 +1888,28 @@ def _inlined_calls(dies, bodies, files, workspace):
 
 
 _CLASSES = ("DW_TAG_class_type", "DW_TAG_structure_type", "DW_TAG_union_type")
+# A lambda's call operator: `operator()`, a generic lambda's `operator()<int>` (clang and
+# GCC name an instance of a member template with its arguments).
+_CALL_OPERATOR = re.compile(r"operator\(\)(?:<.*>)?")
+
+
+def _calls_closure(dies, chain):
+    """Whether a function's DIE chain is a lambda's call operator: by its name, or by its
+    object pointer, which GCC names `__closure` (clang names it `this`)."""
+    if _CALL_OPERATOR.fullmatch(_text(_first(dies, chain, "DW_AT_name")) or ""):
+        return True
+    reference = _REFERENCE.fullmatch(_first(dies, chain, "DW_AT_object_pointer") or "")
+    pointer = dies.get(int(reference[1], 16)) if reference else None
+    return pointer is not None and _text(pointer["attrs"].get("DW_AT_name")) == "__closure"
 
 
 def _local_classes(dies):
     """{function root: ((line, closure), ...)}: the classes, structs and unions defined
     inside each function (not just declared), by the line the debug information gives,
-    and whether it is a lambda's closure (no plain name, an `operator()`): its body is
-    a function of its own, not text the function runs."""
+    and whether it is a lambda's closure (no plain name; a call operator, _calls_closure,
+    or GCC's constructor or destructor of a closure, `<lambda>`, `~<lambda>`, where it
+    folded every call away): its body is a function of its own, not text the function
+    runs."""
     found = {}
     for offset, die in dies.items():
         if die["tag"] not in _CLASSES or "DW_AT_declaration" in die["attrs"]:
@@ -1884,10 +1926,14 @@ def _local_classes(dies):
         if owner is None:
             continue
         line = die["attrs"].get("DW_AT_decl_line")
-        # Clang leaves a closure unnamed; GCC names it `<lambda(...)>`.
+        # Clang leaves a closure unnamed; GCC may name it `<lambda(...)>`.
         named = _text(die["attrs"].get("DW_AT_name")) or ""
         closure = not re.fullmatch(r"[A-Za-z_]\w*", named) and any(
-            _text(dies[child]["attrs"].get("DW_AT_name")) == "operator()"
+            dies[child]["tag"] == "DW_TAG_subprogram"
+            and (
+                _calls_closure(dies, [child])
+                or _text(dies[child]["attrs"].get("DW_AT_name")) in ("<lambda>", "~<lambda>")
+            )
             for child in die["children"]
         )
         found.setdefault(owner, []).append(
@@ -1899,10 +1945,11 @@ def _local_classes(dies):
 def _class_role(dies, chain):
     """(constructor, enclosing, defined, initializer) for a function's DIE chain:
     whether it is a constructor of its class (`C::C`, its name the class's without
-    template arguments; of an unnamed class, an artificial member, or one named as the
-    class, with no return type: `$_0::$_0()`); for a member of a class defined inside
-    a function (a lambda's `operator()`, a local class's method), that function's root
-    DIE and the class's line, else None; and whether it is a lambda's `operator()`
+    template arguments; of an unnamed class, one named as the class, or an artificial
+    member named so no other member can be, with no return type: clang's `$_0::$_0()`,
+    GCC's `<constructor>`); for a member of a class defined inside a function (a
+    lambda's `operator()`, a local class's method), that function's root DIE and the
+    class's line, else None; and whether it is a lambda's `operator()` (_calls_closure)
     whose closure a class's scope holds (a default member initializer's)."""
     for offset in chain:
         parent = dies.get(dies[offset]["parent"])
@@ -1913,10 +1960,15 @@ def _class_role(dies, chain):
         constructor = bool(name and owner and name == re.sub(r"<.*>$", "", owner))
         unnamed = not owner or not re.fullmatch(r"[A-Za-z_]\w*(?:<.*>)?", owner)
         if unnamed and not constructor and _first(dies, chain, "DW_AT_type") is None:
-            # Clang names an unnamed struct's constructor `(unnamed struct at f.cpp:55:5)`.
+            # Clang names an unnamed struct's constructor `(unnamed struct at f.cpp:55:5)`,
+            # GCC `<constructor>` (a closure's `<lambda>`). GCC makes a closure's
+            # `operator()` and `_FUN` artificial too, and they may return nothing.
             artificial = any("DW_AT_artificial" in dies[at]["attrs"] for at in chain)
-            constructor = (artificial or name == owner) and not (name or "").startswith("~")
-        closure = unnamed and name == "operator()"
+            special = not name or name.startswith(("(", "<"))
+            constructor = ((artificial and special) or name == owner) and not (
+                name or ""
+            ).startswith("~")
+        closure = unnamed and _calls_closure(dies, chain)
         initializer = closure and dies.get(parent["parent"], {}).get("tag") in _CLASSES
         enclosing, outer = None, parent
         for _ in range(16):
@@ -2071,16 +2123,20 @@ def _is_object(variable):
 
 # A C++ constructor's frame name: `Widget::Widget(long)`, `ns::Box<int>::Box(int)`.
 # An unnamed class is `$_0` (Clang), `(anonymous struct)`, `(unnamed struct at f:5:3)`
-# (LLDB) or `{unnamed type#1}` (GCC).
+# (LLDB) or `{unnamed type#1}` (GCC). GCC names an unnamed class's constructor
+# `<constructor>` and a closure's `<lambda>`, which LLDB shows as they are.
 _CONSTRUCTOR_NAME = re.compile(
     r"(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
     r"|\{unnamed type#\d+\})(?:<[^()]*>)?::\1(?:<[^()]*>)?\("
+    r"|(?:^|::|\s)<(?:constructor|lambda)>(?:\(|$)"
 )
 # A C++ destructor's or assignment operator's frame name (`Noisy::~Noisy()`,
-# `ns::Box<int>::~Box()`, `E::operator=(E const&)`), as _CONSTRUCTOR_NAME's.
+# `ns::Box<int>::~Box()`, `E::operator=(E const&)`, GCC's `~<constructor>`), as
+# _CONSTRUCTOR_NAME's.
 _LIFETIME_NAME = re.compile(
     r"(?:(?:^|::|\s)([A-Za-z_]\w*|\$_\d+|\((?:anonymous|unnamed) (?:struct|class|union)[^()]*\)"
     r"|\{unnamed type#\d+\})(?:<[^()]*>)?::~\1(?:<[^()]*>)?|::operator=)\("
+    r"|(?:^|::|\s)~<(?:constructor|lambda)>(?:\(|$)"
 )
 # A source whose statements are scanned (c_source) to place a caller's declaration.
 MAX_STATEMENT_SOURCE = 8_000_000

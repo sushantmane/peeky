@@ -803,6 +803,10 @@ though the outer local lives in a register or as a constant, not in the frame:
   If there is none, they run from the last own line whose code comes before it.
 - The frame's class, struct and array locals are withheld too, since one of them is being built
   there. Where Peeky can't place the stop, everything but the parameters is withheld.
+- A C++ function whose declaration names a file outside the program's sources shows every local
+  and parameter as `not shown`. Peeky can't place its declarations. A `#line` that names another
+  file, as bison and flex write, does that. Read what the function returns after `step --out`, or
+  stop in a function that `describe` lists.
 
 #### `this` in C++
 

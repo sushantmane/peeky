@@ -26,6 +26,50 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - Debugger display types, and the standard library's member names, differ between platforms.
   Tests check the values, and never assume that libc++ and libstdc++ share a layout.
 
+## How functions are placed
+
+Every rule about a local's declaration reads its function's entry in `local_declarations`. Those
+rules are declared below the stop, still running, and under construction. `_function_at` finds a
+frame's entry: the narrowest function whose code holds the frame's address.
+
+- `_function_entries` makes an entry for each function with code whose declaration's file is one
+  of the program's sources or headers. That file is `DW_AT_decl_file`, also through
+  `DW_AT_abstract_origin` and `DW_AT_specification`.
+- The SDK's and the standard library's functions never get an entry.
+- A function's first line is its `DW_AT_decl_line`. Its own lines run from there to its last row
+  in its file.
+- GCC gives a lambda's `operator()` and a class's implicit members `DW_AT_artificial`, but no file
+  or line. Clang gives them their class's.
+- So `_declared_at` takes such a member's file and line from its class, as clang does. A lambda's
+  closure type has the lambda's line. A member whose class has none takes them from its first
+  line-table row.
+- `_class_role` tells a constructor of an unnamed class by its name: clang's
+  `(unnamed struct at f.cpp:5:3)`, or GCC's `<constructor>`. GCC also names a closure's
+  constructor `<lambda>`.
+- A frame named `<constructor>` runs a constructor too (`_CONSTRUCTOR_NAME`).
+- GCC's `operator()` and `_FUN` are artificial too, and may return nothing, as a constructor does.
+  So they never count as constructors.
+- A lambda's call operator is `operator()`, or a generic lambda's `operator()<int>`
+  (`_calls_closure`). GCC names its object pointer `__closure`, where clang names it `this`.
+- A closure's class has no plain name: clang leaves it unnamed, and GCC may name it
+  `<lambda(long int)>`.
+- `_local_classes` leaves a lambda's closure out of the classes a function defines. Its body is a
+  function of its own, not lines the function runs as a class's member initializers.
+- GCC may fold every call of a lambda away, leaving its closure with no `operator()`. Its members
+  `<lambda>` and `~<lambda>` still mark it as a closure.
+- `describe` leaves out GCC's `__closure`, and the variables GCC adds for a lambda's captures.
+  lldb-dap lists none of them, but the one for a captured `this`, which `describe` keeps.
+- **A safety net:** a C++ frame on a line of the program's sources whose function has no entry
+  withholds every local and parameter (`_unplaced`). The row says `not shown`, and that Peeky
+  can't place the function's declarations.
+- Before GCC's lambdas and implicit constructors were placed, the net took them. A `#line` that
+  names another file for a function's declaration, as bison writes, still takes it there, with
+  clang too.
+- Without the load address, the net takes a frame on a line that no entry runs.
+- Frames outside the program's sources, such as the standard library's, aren't judged so. Nor are
+  C frames.
+- Clang's `cpp` lane and all of `tests/native` never reach the net.
+
 ## Changing a value
 
 - Peeky changes integers only, a narrower set than LLDB's backend can change.

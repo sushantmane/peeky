@@ -113,3 +113,164 @@ def test_a_function_peeky_cannot_place_withholds_its_locals(compiler, tmp_path, 
     code, result = probed(capsys, path, line_of(LINED, "// CALL"), "seed")
     [row] = result["rows"]
     assert code == 0 and row["error"].startswith("no value yet: declared on line 15"), row
+
+
+def run(capsys, *argv):
+    code = main([*argv, "--json"])
+    return code, json.loads(capsys.readouterr().out)
+
+
+SCRIBBLE = """__attribute__((noinline)) static void scribble() {
+    volatile long junk[128];
+    for (int i = 0; i < 128; i++) junk[i] = 0x5150 + i;
+}
+"""
+
+LAMBDA_LOCALS = (
+    "#include <cstdio>\n"
+    + SCRIBBLE
+    + """int main() {
+    long base = 5;
+    auto f = [&](long a) {
+        long x = a * 2;  // X
+        long y = x + base;
+        return y;
+    };
+    scribble();
+    long r = f(3);
+    std::printf("%ld\\n", r);
+    return 0;
+}
+"""
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_lambdas_locals_are_judged_by_its_own_declarations(compiler, tmp_path, capsys):
+    # GCC gives a lambda's `operator()` no source, so Peeky's rules skipped it: `x` and `y`
+    # showed leftovers (`281474976709584`, `187649984432472`) with no note before
+    # `long x = a * 2;` ran, where clang withholds them.
+    path = tmp_path / "lambda.cpp"
+    path.write_text(LAMBDA_LOCALS)
+    line = line_of(LAMBDA_LOCALS, "// X")
+    code, result = probed(capsys, path, line, "a,x,y")
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["a"]["value"] == "3", rows["a"]
+    assert rows["x"]["error"] == (
+        f"no value yet: declared on line {line}, which has not run yet at this stop (its first "
+        "instruction), so not initialized: its storage holds leftovers; step once, or stop "
+        f"after line {line}, to read it"
+    ), rows["x"]
+    assert rows["y"]["error"] == (
+        f"no value yet: declared at line {line + 1}, below this stop, so not initialized yet: "
+        f"its storage holds leftovers; stop after line {line + 1} to read it"
+    ), rows["y"]
+    # `describe` lists the lambda, with its parameter and locals.
+    code, described = run(capsys, "describe", str(path))
+    scopes = {scope["scope"]: scope for scope in described["scopes"]}
+    assert code == 0 and {"a", "x", "y"} <= set(scopes["main::operator()"]["names"]), scopes
+
+
+UNNAMED_CONSTRUCTOR = (
+    """#include <cstdio>
+__attribute__((noinline)) long twice(long v) {
+    long w = v * 2;
+    return w;  // TWICE
+}
+"""
+    + SCRIBBLE
+    + """__attribute__((noinline)) static long nested(long seed) {
+    struct {
+        long s = twice(13);
+        long t = twice(14);
+    } anon;
+    return anon.t + seed;
+}
+int main() {
+    scribble();
+    std::printf("%ld\\n", nested(1));
+    return 0;
+}
+"""
+)
+
+
+@pytest.mark.timeout(300)
+def test_an_unnamed_structs_implicit_constructor_withholds_this(compiler, tmp_path, capsys):
+    # GCC names it `<constructor>`, with no source: frame 1's `this.t` showed `20943`, a
+    # leftover of `scribble()`, while `t = twice(14)` was still running.
+    path = tmp_path / "unnamed.cpp"
+    path.write_text(UNNAMED_CONSTRUCTOR)
+    line = line_of(UNNAMED_CONSTRUCTOR, "// TWICE")
+    code = main(["session", "start", str(path), "--at", str(line), "--hit", "2", "--json"])
+    started = json.loads(capsys.readouterr().out)
+    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
+        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
+    assert code == 0, started
+    try:
+        code, rows = run(capsys, "session", "get", "this", "this.t", "--frame", "1")
+        shown = {row["selector"]: row for row in rows}
+        name = shown["this"]["function"]
+        assert name == ("<constructor>" if compiler == "gcc" else "nested(long)::$_0::$_0()")
+        assert "value" not in shown["this"] and "value" not in shown["this.t"], rows
+        assert f"the object this constructor ({name}) is building" in shown["this"]["error"], rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+GENERIC = """#include <cstdio>
+int main() {
+    auto twice = [](auto x) { return x * 2; };
+    int s = twice(3) + (int)twice(4L);
+    std::printf("%d\\n", s);  // S
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_generic_lambda_is_no_class_its_function_runs(compiler, tmp_path, capsys):
+    # Clang and GCC name a generic lambda's call operator `operator()<int>`, which was not
+    # taken for a lambda's: its closure counted as a class `main` defines, and `s` was
+    # withheld as "outside its function's own lines".
+    path = tmp_path / "generic.cpp"
+    path.write_text(GENERIC)
+    code, result = probed(capsys, path, line_of(GENERIC, "// S"), "s")
+    assert code == 0 and [row.get("value") for row in result["rows"]] == ["14"], result
+
+
+RANGE_LAMBDA = """#include <cstdio>
+#include <utility>
+#include <vector>
+template <class F> std::vector<std::pair<long, long>> make(F f) { return {{f(40), 2}, {f(41) + 1, 3}}; }
+__attribute__((noinline)) long id(long v) { return v; }  // ID
+int main() {
+    long t = 1;
+    for (auto [t, u] : make([&](long t) { return id(t); })) {
+        std::printf("FA=%ld\\n", t + 0 * u);
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_lambdas_own_parameter_is_judged_as_its_own(compiler, tmp_path, capsys):
+    # GCC's lambda had no entry, so its frame was judged by `main`'s declarations: its own
+    # parameter `t` (40) was withheld as "the code here names the structured binding `t`".
+    path = tmp_path / "range_lambda.cpp"
+    path.write_text(RANGE_LAMBDA)
+    line = line_of(RANGE_LAMBDA, "// ID")
+    code = main(["session", "start", str(path), "--at", str(line), "--json"])
+    started = json.loads(capsys.readouterr().out)
+    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
+        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
+    assert code == 0, started
+    try:
+        code, rows = run(capsys, "session", "get", "t", "--frame", "1")
+        assert code == 0 and [row.get("value") for row in rows] == ["40"], rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

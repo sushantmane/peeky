@@ -2192,3 +2192,243 @@ def test_a_cpp_frame_peeky_cannot_place_withholds_its_locals(tmp_path):
     session.load_bias = None
     assert session.not_yet_declared({"name": "x"}, frame(0x300)) == reason
     assert session._unplaced({"name": "x"}, frame(None, line=5)) is None
+
+
+def gcc_dumps(workspace, class_declared=True):
+    """A C++ unit as GCC 13 builds it (#167): `main` (lines 8-17) defines a lambda (line
+    10, lines 10-14) whose `operator()` and closure are artificial and name no file or
+    line, but the closure does; `nested` (line 15) builds an unnamed struct (line 16)
+    whose `<constructor>` is artificial too, its code a copy inside the struct. Without
+    ``class_declared``, the closure names no file or line either."""
+    source = workspace / "gcc.cpp"
+    declared = (
+        f'                  DW_AT_decl_file\t("{source}")\n                  DW_AT_decl_line\t(10)\n'
+        if class_declared
+        else ""
+    )
+    info = f"""{workspace}/program: file format elf64-littleaarch64
+
+.debug_info contents:
+0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("gcc.cpp")
+0x00000020:   DW_TAG_subprogram
+                DW_AT_name\t("main")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(8)
+                DW_AT_low_pc\t(0x0000000000000900)
+                DW_AT_high_pc\t(0x0000000000000980)
+                DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x0000002c:     DW_TAG_variable
+                  DW_AT_name\t("base")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_location\t(DW_OP_fbreg -48)
+0x00000038:     DW_TAG_structure_type
+                  DW_AT_byte_size\t(0x08)
+{declared}0x00000040:       DW_TAG_subprogram
+                    DW_AT_name\t("<lambda>")
+                    DW_AT_artificial\t(true)
+                    DW_AT_declaration\t(true)
+0x00000048:         DW_TAG_formal_parameter
+                      DW_AT_artificial\t(true)
+0x0000004c:         NULL
+0x00000050:       DW_TAG_subprogram
+                    DW_AT_name\t("operator()")
+                    DW_AT_artificial\t(true)
+                    DW_AT_object_pointer\t(0x0000005c)
+                    DW_AT_low_pc\t(0x00000000000008c0)
+                    DW_AT_high_pc\t(0x0000000000000900)
+                    DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x0000005c:         DW_TAG_formal_parameter
+                      DW_AT_name\t("__closure")
+                      DW_AT_artificial\t(true)
+                      DW_AT_location\t(DW_OP_fbreg -24)
+0x00000060:         DW_TAG_formal_parameter
+                      DW_AT_name\t("a")
+                      DW_AT_decl_file\t("{source}")
+                      DW_AT_decl_line\t(10)
+                      DW_AT_location\t(DW_OP_fbreg -32)
+0x00000068:         DW_TAG_variable
+                      DW_AT_name\t("base")
+                      DW_AT_artificial\t(true)
+                      DW_AT_location\t(DW_OP_fbreg -24, DW_OP_deref)
+0x00000070:         DW_TAG_lexical_block
+                      DW_AT_low_pc\t(0x00000000000008cc)
+                      DW_AT_high_pc\t(0x00000000000008f4)
+0x00000078:           DW_TAG_variable
+                        DW_AT_name\t("x")
+                        DW_AT_decl_file\t("{source}")
+                        DW_AT_decl_line\t(11)
+                        DW_AT_location\t(DW_OP_fbreg -16)
+0x00000080:           DW_TAG_variable
+                        DW_AT_name\t("y")
+                        DW_AT_decl_file\t("{source}")
+                        DW_AT_decl_line\t(12)
+                        DW_AT_location\t(DW_OP_fbreg -8)
+0x00000088:           NULL
+0x00000089:         NULL
+0x0000008a:       NULL
+0x00000090:     DW_TAG_variable
+                  DW_AT_name\t("f")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_location\t(DW_OP_fbreg -40)
+0x00000098:     NULL
+0x000000a0:   DW_TAG_subprogram
+                DW_AT_name\t("nested")
+                DW_AT_decl_file\t("{source}")
+                DW_AT_decl_line\t(15)
+                DW_AT_low_pc\t(0x0000000000000a00)
+                DW_AT_high_pc\t(0x0000000000000a40)
+                DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x000000a8:     DW_TAG_structure_type
+                  DW_AT_byte_size\t(0x10)
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(16)
+0x000000b0:       DW_TAG_subprogram
+                    DW_AT_name\t("<constructor>")
+                    DW_AT_artificial\t(true)
+                    DW_AT_object_pointer\t(0x000000b8)
+                    DW_AT_inline\t(DW_INL_declared_not_inlined)
+0x000000b8:         DW_TAG_formal_parameter
+                      DW_AT_name\t("this")
+                      DW_AT_artificial\t(true)
+0x000000bc:         NULL
+0x000000c0:       DW_TAG_subprogram
+                    DW_AT_abstract_origin\t(0x000000b0 "<constructor>")
+                    DW_AT_object_pointer\t(0x000000c8)
+                    DW_AT_low_pc\t(0x00000000000009c0)
+                    DW_AT_high_pc\t(0x0000000000000a00)
+                    DW_AT_frame_base\t(DW_OP_call_frame_cfa)
+0x000000c8:         DW_TAG_formal_parameter
+                      DW_AT_abstract_origin\t(0x000000b8 "this")
+                      DW_AT_location\t(DW_OP_fbreg -8)
+0x000000cc:         NULL
+0x000000cd:       NULL
+0x000000d0:     DW_TAG_variable
+                  DW_AT_name\t("anon")
+                  DW_AT_decl_file\t("{source}")
+                  DW_AT_decl_line\t(16)
+                  DW_AT_location\t(DW_OP_fbreg -24)
+0x000000d8:     NULL
+0x000000e0:   NULL
+"""
+    rows = [(0x8C0, 10), (0x8CC, 11), (0x8DC, 12), (0x8EC, 13), (0x8F4, 14)]
+    rows += [(0x900, 8), (0x90C, 9), (0x918, 10), (0x930, 15), (0x940, 16), (0x970, 17)]
+    rows += [(0x9C0, 16), (0x9D0, 16), (0xA00, 15), (0xA10, 16), (0xA20, 17)]
+    line = 'debug_line[0x00000000]\nversion: 4\nfile_names[ 1]:\nname: "gcc.cpp"\ndir_index: 0\n'
+    line += "Address Line Column File\n"
+    line += "".join(f"0x{address:016x} {number} 1 1 0 0 is_stmt\n" for address, number in rows)
+    line += f"0x{0xA40:016x} 17 1 1 0 0 end_sequence\n"
+    return info, line
+
+
+def test_gccs_lambdas_and_implicit_constructors_are_placed_by_their_class(tmp_path):
+    # #167: GCC gives a lambda's `operator()` and an implicit constructor no file or line,
+    # so they had no entry: no rule ran in them, and their locals showed leftovers. They
+    # take their class's, as clang gives them.
+    from peeky.native import function_scopes, local_declarations
+
+    (tmp_path / "gcc.cpp").write_text("\n" * 20)
+    info, line = gcc_dumps(tmp_path)
+    table = {
+        entry["name"]: entry for entry in local_declarations(info, line, tmp_path, ("gcc.cpp",))
+    }
+    assert sorted(table) == ["main", "main::operator()", "nested", "nested::<constructor>"]
+    lambda_ = table["main::operator()"]
+    assert (lambda_["source"], lambda_["span"], lambda_["ranges"]) == (
+        "gcc.cpp",
+        (10, 14),
+        ((0x8C0, 0x900),),
+    )
+    # A member of a class `main` defines, at the closure's line; no constructor, and not a
+    # default member initializer's.
+    assert (lambda_["constructor"], lambda_["enclosing"], lambda_["defined"]) == (False, 0x20, 10)
+    assert lambda_["initializer"] is False
+    assert {"a", "x", "y"} <= set(lambda_["locals"])
+    assert lambda_["locals"]["x"] == {("gcc.cpp", 11, True)}
+    built = table["nested::<constructor>"]
+    assert (built["source"], built["span"], built["constructor"]) == ("gcc.cpp", (16, 16), True)
+    assert (built["enclosing"], built["defined"]) == (0xA0, 16)
+    # `main`'s closure is no class whose lines `main` runs.
+    assert table["main"]["classes"] == ((10, True),)
+    # `describe` lists the lambda as clang's: its parameter and locals, never GCC's
+    # `__closure` or its captures (lldb-dap lists neither).
+    scopes = {
+        scope["scope"]: scope for scope in function_scopes(info, line, tmp_path, ("gcc.cpp",))
+    }
+    assert scopes["main::operator()"]["lines"] == [10, 14]
+    assert scopes["main::operator()"]["names"] == ["a", "x", "y"]
+    # A closure that names no file or line either: its first row places it.
+    info, line = gcc_dumps(tmp_path, class_declared=False)
+    table = {
+        entry["name"]: entry for entry in local_declarations(info, line, tmp_path, ("gcc.cpp",))
+    }
+    assert (table["main::operator()"]["source"], table["main::operator()"]["span"]) == (
+        "gcc.cpp",
+        (10, 14),
+    )
+    assert table["main::operator()"]["defined"] is None
+
+
+def test_gccs_closures_and_constructors_are_told_from_their_names():
+    from peeky.native import _CONSTRUCTOR_NAME, _LIFETIME_NAME, _class_role, _local_classes
+
+    def die(tag, parent, children=(), **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+    dies = {
+        1: die("DW_TAG_compile_unit", None),
+        2: die("DW_TAG_subprogram", 1, DW_AT_name='"run"'),
+        # GCC's closure, named or not; a lambda returning nothing has no return type.
+        3: die("DW_TAG_structure_type", 2, [4, 6, 7], DW_AT_decl_line="12"),
+        4: die(
+            "DW_TAG_subprogram",
+            3,
+            [5],
+            DW_AT_name='"operator()"',
+            DW_AT_artificial="true",
+            DW_AT_object_pointer="0x00000005",
+        ),
+        5: die("DW_TAG_formal_parameter", 4, DW_AT_name='"__closure"'),
+        6: die("DW_TAG_subprogram", 3, DW_AT_name='"_FUN"', DW_AT_artificial="true"),
+        7: die("DW_TAG_subprogram", 3, DW_AT_name='"<lambda>"', DW_AT_artificial="true"),
+        8: die(
+            "DW_TAG_structure_type", 2, [9], DW_AT_name='"<lambda(long int)>"', DW_AT_decl_line="20"
+        ),
+        9: die("DW_TAG_subprogram", 8, DW_AT_name='"operator()<int>"', DW_AT_artificial="true"),
+        10: die("DW_TAG_structure_type", 2, [11, 12], DW_AT_decl_line="30"),
+        11: die("DW_TAG_subprogram", 10, DW_AT_name='"<constructor>"', DW_AT_artificial="true"),
+        12: die("DW_TAG_subprogram", 10, DW_AT_name='"~<constructor>"', DW_AT_artificial="true"),
+        # A closure known only by its object pointer's name.
+        13: die("DW_TAG_structure_type", 2, [14], DW_AT_decl_line="40"),
+        # GCC's closure of a lambda whose every call it folded: no `operator()` at all.
+        17: die("DW_TAG_structure_type", 2, [18], DW_AT_decl_line="50"),
+        18: die("DW_TAG_subprogram", 17, DW_AT_name='"<lambda>"', DW_AT_artificial="true"),
+        14: die("DW_TAG_subprogram", 13, [15], DW_AT_object_pointer="0x0000000f"),
+        15: die("DW_TAG_formal_parameter", 14, DW_AT_name='"__closure"'),
+    }
+    # A lambda's `operator()` and `_FUN` are no constructors, though artificial with no
+    # return type; the closure's own `<lambda>` and an unnamed struct's `<constructor>` are.
+    assert _class_role(dies, [4]) == (False, 2, 12, False)
+    assert _class_role(dies, [6]) == (False, 2, 12, False)
+    assert _class_role(dies, [7])[0] is True
+    assert _class_role(dies, [9]) == (False, 2, 20, False)
+    assert _class_role(dies, [11]) == (True, 2, 30, False)
+    assert _class_role(dies, [12])[0] is False
+    # A closure inside a class's scope is a default member initializer's: by its name, a
+    # generic lambda's, or its object pointer, `__closure`.
+    for closure, call in ((3, 4), (8, 9), (13, 14)):
+        dies[closure]["parent"] = 16
+        dies[16] = die("DW_TAG_structure_type", 1, DW_AT_name='"Agg"')
+        assert _class_role(dies, [call])[3] is True, call
+        dies[closure]["parent"] = 2
+    # Closures are not the function's classes: a generic lambda's too.
+    assert _local_classes(dies) == {
+        2: ((12, True), (20, True), (30, False), (40, True), (50, True))
+    }
+    for name in ("<constructor>", "nested(long)::<constructor>()", "<lambda>"):
+        assert _CONSTRUCTOR_NAME.search(name), name
+    for name in ("~<constructor>", "operator()", "main::<lambda(int)>::operator()(int) const"):
+        assert not _CONSTRUCTOR_NAME.search(name), name
+    assert _LIFETIME_NAME.search("~<constructor>") and not _LIFETIME_NAME.search("<constructor>")
