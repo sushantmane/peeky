@@ -12,7 +12,10 @@ from urllib.error import HTTPError
 
 from peeky.textlines import split_lines
 
-PROTOCOL_VERSION = 3
+# 4 (#305): a probe's `--set-at` value `@before` restores the value from before a change;
+# the worker's `launch` takes `entry_lines` and its `set_variable` `restorable` and
+# `target`, and returns `restore`. A protocol 3 worker would take `@before` for a value.
+PROTOCOL_VERSION = 4
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -312,6 +315,12 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 # The one action each MUTATION_REJECTED rule leaves (sixth evaluation, finding 6): the
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
+    (
+        # A `@before` restore Peeky cannot vouch for (#305).
+        r"@before",
+        "Give the value itself at each hit (--set-at LINE@HIT name=VALUE), or try the change "
+        "as a candidate edit (--old/--new) and verify it.",
+    ),
     (
         # Python's field or element `--set` (tenth evaluation): Python shows no [settable].
         r"which only Java, Rust, C and C\+\+ targets allow"

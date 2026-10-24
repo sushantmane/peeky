@@ -50,7 +50,7 @@ the commands.
    whose change its build rules out is refused before it runs, with exit 2 (2.3, 7.1 to 7.3).
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another; other hits only observe.
    `--set-at LINE@HIT` changes at any line's hit, `--at`'s too; `@all`: each stop while the probe
-   runs, at most 100 (2.8).
+   runs, at most 100; `x=@before` undoes an earlier change (2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can
    stop several times per pass. Read `warnings`, and each row's `stop` and `function`. A loop
    header may stop only before its loop: probe the body's first line (2.2).
@@ -121,11 +121,11 @@ the commands.
   its first line. Not in Python. Deep recursion is slow: limit `--hits`.
 - **`--json`** works on every command. stdout is then one JSON value; progress goes to stderr, and
   `--quiet` silences it.
-- **Sessions:** pass `--name` to every session command (default `default`). Starting a name in use
-  fails with "exists". Each command waits up to `--timeout S` (default 30) for a stop, leaving the
-  program running (`session wait`). A session's worker ends on `close`, when its start fails or is
-  interrupted, or after 5 idle minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`):
-  set it per task to keep sessions apart.
+- **Sessions:** pass `--name` to every session command (default `default`). Each command waits up
+  to `--timeout S` (default 30) for a stop, leaving the program running (`session wait`). A
+  session's worker ends on `close`, when its start fails or is interrupted, or after 5 idle
+  minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`): set it per task to keep
+  sessions apart.
 - **In a session:** `get` also lists a value's children, each with the selector that reads it. It
   exits 1 if any selector failed. `--frame N` reads caller frame N.
 - **Stepping:** `step` runs to the next line; `--into` enters a call; `--out` leaves the function
