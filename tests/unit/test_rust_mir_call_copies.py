@@ -2837,3 +2837,20 @@ def test_a_slice_element_needs_the_std_root_its_iterator_is_named_under():
     assert _slice_element(Proofs(frozenset({"std"})), Assigned(), item)
     assert not _slice_element(Proofs(frozenset({"core"})), Assigned(), item)
     assert not _slice_element(Proofs(frozenset()), Assigned(), item)
+
+
+def test_the_call_helpers_keep_their_own_names():
+    # Merging #325 brought a second module-level `_callee` (a call's last path segment),
+    # which replaced #320's (path, arguments) one, so no call was proven a measure.
+    import ast
+    import inspect
+
+    import peeky.rust_mir as rust_mir
+    from peeky.rust_mir import _call_parts, _callee
+
+    call = "_4 = <u32 as PartialEq>::eq(move _5, move _6) -> [return: bb1, unwind continue];"
+    assert _call_parts(call.partition(" = ")[2]) == ("<u32 as PartialEq>::eq", "move _5, move _6")
+    assert _callee(call) == "eq"
+    tree = ast.parse(inspect.getsource(rust_mir))
+    named = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
+    assert sorted({name for name in named if named.count(name) > 1}) == []
