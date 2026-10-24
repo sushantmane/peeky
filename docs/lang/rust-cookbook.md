@@ -12,6 +12,7 @@ are explained in [rust.md](rust.md#words-these-pages-use).
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See where a local is visible](#see-where-a-local-is-visible)
   - [Read types as the program spells them](#read-types-as-the-program-spells-them)
+  - [Lines with no breakpoint](#lines-with-no-breakpoint)
   - [See where nothing can change, and the way around it](#see-where-nothing-can-change-and-the-way-around-it)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a reference or a Box](#read-through-a-reference-or-a-box)
@@ -63,11 +64,37 @@ build's MIR, each one's span ends right after the `?`: `residual` spans only the
 the expression it tries, through the `?`. A binding you write spans its name. So a local that you name
 `val` or `residual` is still listed. Where Peeky can't tell, the binding is listed.
 
+It leaves out a `for` loop's `iter` too, such as `iter @ main.rs:32`: the binding that holds the
+loop's iterator. In the MIR, its span is the loop's iterator expression, such as `1..=weeks`, so
+the loop's `{` comes right after it. A local you name `iter` is still listed.
+
+`session inspect` and probes leave out these bindings of the compiler's too, the `?`'s and the
+loop's. So a `visible:` list doesn't name them, and a selector can't read them.
+
+A local you name `iter` beside such a loop is still `iter`, as `describe` lists it. lldb-dap lists
+it as `iter @ main.rs:2` where the loop's `iter` is in scope too. The plain name selects it all
+the same, since the other binding is the compiler's.
+
 ### Read types as the program spells them
 
 Types are spelled as the program spells them: `Vec<u32>`, `String`, `Option<i32>`. This holds in
 `describe` and in probe rows. A row's `debugger_type` keeps LLDB's spelling, such as
 `alloc::vec::Vec<unsigned int, alloc::alloc::Global>`.
+
+References and raw pointers are spelled so too: `&rota::Engineer`, `&mut Vec<u32>`, `&&str`,
+`*const kitty::Friend`. LLDB writes them as C would: `rota::Engineer *`
+([Types in rows](#types-in-rows)).
+
+### Lines with no breakpoint
+
+A line with no code of its own may have no breakpoint, such as `continue;`, `break;` or a lone
+`}`. The compiler gives its jump to a line nearby, such as the `if` above it. So `describe`'s
+breakpoint lines may skip it: `38-39, 43-44` for an `if` on lines 38 to 42 with `continue;` on 40.
+
+- An `--at` on such a line moves to another line with code, which the debugger picks, and Peeky
+  says so: `values are from line 43`.
+- To see whether the `continue` runs, stop on the line before it, the `if`. Then `session step`:
+  the next stop shows where the program went.
 
 ### See where nothing can change, and the way around it
 
@@ -115,24 +142,24 @@ peeky probe kitty --at src/main.rs:67 --capture 'f,f.name' --hits 4 \
 ```
 
 ```
-hit  phase     line  function      selector            type             value
-1    observed  58    kitty::parse  payer @ main.rs:54  kitty::Friend *  0x0000000102ec5800  [unproven]
-1    observed  58    kitty::parse  cents @ main.rs:49  i64              4500  [not settable: register]
-2    observed  58    kitty::parse  payer @ main.rs:54  kitty::Friend *  0x0000000102ec5850  [unproven]
-2    observed  58    kitty::parse  cents @ main.rs:49  i64              1000  [not settable: register]
-3    observed  58    kitty::parse  payer @ main.rs:54  kitty::Friend *  0x0000000102ec5828  [unproven]
-3    observed  58    kitty::parse  cents @ main.rs:49  i64              900  [not settable: register]
+hit  phase     line  function      selector            type                  value
+1    observed  58    kitty::parse  payer @ main.rs:54  *const kitty::Friend  0x0000000102ec5800  [unproven]
+1    observed  58    kitty::parse  cents @ main.rs:49  i64                   4500  [not settable: register]
+2    observed  58    kitty::parse  payer @ main.rs:54  *const kitty::Friend  0x0000000102ec5850  [unproven]
+2    observed  58    kitty::parse  cents @ main.rs:49  i64                   1000  [not settable: register]
+3    observed  58    kitty::parse  payer @ main.rs:54  *const kitty::Friend  0x0000000102ec5828  [unproven]
+3    observed  58    kitty::parse  cents @ main.rs:49  i64                   900  [not settable: register]
 ...
 evidence: saved as run 7; ...
-hit  phase     line  function       selector  type             value
-1    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad800
-1    observed  67    kitty::settle  f.name    String           "Bo"  [memory]
-2    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad828
-2    observed  67    kitty::settle  f.name    String           "Chloé"  [memory]
-3    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad850
-3    observed  67    kitty::settle  f.name    String           "Zoë"  [memory]
-4    observed  67    kitty::settle  f         kitty::Friend *  0x0000000102cad878
-4    observed  67    kitty::settle  f.name    String           "Åsa"  [memory]
+hit  phase     line  function       selector  type            value
+1    observed  67    kitty::settle  f         &kitty::Friend  0x0000000102cad800
+1    observed  67    kitty::settle  f.name    String          "Bo"  [memory]
+2    observed  67    kitty::settle  f         &kitty::Friend  0x0000000102cad828
+2    observed  67    kitty::settle  f.name    String          "Chloé"  [memory]
+3    observed  67    kitty::settle  f         &kitty::Friend  0x0000000102cad850
+3    observed  67    kitty::settle  f.name    String          "Zoë"  [memory]
+4    observed  67    kitty::settle  f         &kitty::Friend  0x0000000102cad878
+4    observed  67    kitty::settle  f.name    String          "Åsa"  [memory]
 ...
 evidence: saved as run 8; ...
 ```
@@ -428,11 +455,14 @@ Fields stay selectable: `w.start`, `runs[0].__0`.
 
 - A reference parameter shows its Rust type, such as `&mut limiter::Window`. LLDB's type,
   `limiter::Window *`, is kept in `debugger_type`.
-- A reference or raw pointer local or field shows LLDB's type: `f  kitty::Friend *` for a
-  `&Friend` loop item, and for a `*const Friend` field alike. `describe` spells them the same way.
-  So `f` in `settle` reads `kitty::Friend *`, and a closure's `f` parameter reads
-  `&kitty::Friend`. A raw pointer is told apart by its `[unproven]` mark and its note, and in JSON
-  by `unproven_pointer: "raw"`.
+- A reference or raw pointer local or field shows its Rust type too: `f  &kitty::Friend` for a
+  `&Friend` loop item, `*const kitty::Friend` for a raw pointer, `&&str` for a `&str` loop item.
+  `&[u32; 3]` and `*const [u32; 3]` differ too, though LLDB writes both `unsigned int (*)[3]`.
+  `describe` spells them the same way. The name is the build's debug information's. It is taken
+  only where LLDB's type has as many pointer levels, and spells what the last one points at, or
+  an array there. `debugger_type` keeps LLDB's.
+- A raw pointer also has its `[unproven]` mark and its note, and in JSON
+  `unproven_pointer: "raw"`. A `Box` keeps LLDB's type, such as `int *`.
 - A field's or element's type comes from the build's debug information: `self.k  usize`, where
   LLDB says `unsigned long`. `debugger_type` keeps LLDB's. This holds for a field that a preview
   reads from memory too.
@@ -556,6 +586,10 @@ hit  phase     line  function       selector         type                  value
   fields. A later one shows `not read:`, with its length.
 - Any other field shows `not read:` and why: a raw pointer, a `Vec`, a `&str`, an enum or a nested
   struct. Read it through a reference to the element, such as `e.payer` of `for e in expenses`.
+- Where a `for` loop's item that refers to such an element is in scope, the note names it.
+  Nothing proves the loop goes over this container, nor which element the item is at a stop. So
+  `team[1].leave` says ``if the `for` loop's item `e` is `team[1]` at a stop, read `e.leave`; Peeky
+  can't prove it is``.
 - The element's value leaves such a field out: `Expense { cents: 4500, .. }` in a struct, and `_`
   in a tuple, as in `(_, 3)`.
 - A container of wide elements shows those that fit one 4096-byte read, then `(first 102 of 300)`.
@@ -712,10 +746,10 @@ peeky probe cells --at src/main.rs:4 --capture cell,cell.length,cells --hits 2
 
 ```
 hit  phase     line  function        selector     type     value
-1    observed  4     cells::longest  cell         &str *   "Ana"  [memory]
+1    observed  4     cells::longest  cell         &&str    "Ana"  [memory]
 1    observed  4     cells::longest  cell.length  usize    3  [memory]
 1    observed  4     cells::longest  cells        &[&str]  &[&str] @ 0x16b0faf20
-2    observed  4     cells::longest  cell         &str *   "Renée"  [memory]
+2    observed  4     cells::longest  cell         &&str    "Renée"  [memory]
 2    observed  4     cells::longest  cell.length  usize    6  [memory]
 2    observed  4     cells::longest  cells        &[&str]  &[&str] @ 0x16b0faf20
 ...
@@ -1231,7 +1265,7 @@ hit  phase     line  function     selector       type  value
 ```
 
 - Each entry gives the binding's type and lines: `points @ main.rs:73 (Vec<String>, lines 74-85)`
-  and `points @ main.rs:81 (&str *, line 82)`.
+  and `points @ main.rs:81 (&&str, line 82)`.
 - The selector reads the binding at any stop where it is in scope, unless it names two bindings.
   That includes stops where lldb-dap lists it by its plain name, such as `points @ main.rs:73` on
   line 76.

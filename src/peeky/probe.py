@@ -598,6 +598,18 @@ def _static_hint(snapshot, name):
     )
 
 
+def _capture_hint(snapshot, name):
+    """Why a GCC lambda's capture is not found (eleventh evaluation, prep 8): GCC passes
+    it through the lambda's `__closure`, which lldb-dap does not list."""
+    if name not in (snapshot.get("closure_captures") or ()):
+        return ""
+    return (
+        f": {name!r} is a capture of this lambda, which GCC passes through `__closure`, and "
+        "lldb-dap doesn't list it, so Peeky cannot read it here; read it where the lambda "
+        "is created, or print it from the program"
+    )
+
+
 def _member_hint(worker, stop, snapshot, name):
     """`; select it as this.name` when the stopped method's object (C++, Java) has a
     member of that name. Never read implicitly: the debugger's list of locals can be
@@ -817,9 +829,8 @@ def _root(worker, stop, snapshot, name):
     # Python reads a module global by its NFKC-normalized name, never by another.
     if not snapshot.get("globals_available") or (twin and not is_normalized("NFKC", name)):
         raise ValueError(
-            f"not found{_static_hint(snapshot, name)}; visible: {_visible(snapshot)}"
-            + _member_hint(worker, stop, snapshot, name)
-            + twin
+            f"not found{_static_hint(snapshot, name) or _capture_hint(snapshot, name)}; "
+            f"visible: {_visible(snapshot)}" + _member_hint(worker, stop, snapshot, name) + twin
         )
     proof = snapshot.get("globals_proof") or {}
     if "unproven" not in proof and name not in (proof.get("names") or {}):

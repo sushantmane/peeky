@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -110,7 +110,9 @@ TABLES = {
             "signature; Rust: with its symbol hash, and every closure of a function as "
             "`{{closure}}`). short_function(function) drops parameters and hashes",
             "selector": "Selector as requested, e.g. request.page or items[0]",
-            "type": "Type as the debugger reports it",
+            "type": "Type as Peeky shows it: the debugger's, or as the language spells it "
+            "(Rust: `usize`, `Vec<u32>`, `&rota::Engineer` and `*const T`, where LLDB says "
+            "`unsigned long` and `rota::Engineer *`)",
             "value": "Value as the debugger displays it; NULL when there is none",
             "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
             "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
@@ -179,6 +181,12 @@ TABLES = {
             "element_offset": "With offset_from: how many elements (element_size bytes each) "
             "past that pointer's address this one's is; negative where it is before. The "
             "addresses differ by element_offset * element_size bytes. Else NULL",
+            "debugger_type": "The debugger's own name for the type (LLDB's `rota::Engineer "
+            "*` where type is `&rota::Engineer`; the same as type where Peeky shows the "
+            "debugger's). NULL for runs saved before schema 18, whose type is the debugger's "
+            "for a Rust reference or raw pointer alike: where such a Rust row's type is a "
+            "newer Rust row's debugger_type, `diff` says it can't tell whether the type "
+            "changed",
         },
     ),
     "interventions": (
@@ -215,7 +223,7 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
-    "instance, selector, type, "
+    "instance, selector, type, debugger_type, "
     "value, num, unavailable, error, view, note, identity, scope, element_size, "
     "at_element_of, element_index, offset_from, element_offset, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
@@ -230,7 +238,7 @@ VIEWS = {
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
         c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
-        c.type, c.value, c.num,
+        c.type, c.debugger_type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, c.element_size,
         c.at_element_of, c.element_index, c.offset_from, c.element_offset, r.args, r.sets,
         r.artifact_manifest_id,
@@ -246,7 +254,7 @@ _CAPTURES = """CREATE TABLE {} (
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
         error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
         stop INTEGER, element_size INTEGER, at_element_of TEXT, element_index INTEGER,
-        offset_from TEXT, element_offset INTEGER)"""
+        offset_from TEXT, element_offset INTEGER, debugger_type TEXT)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -291,7 +299,9 @@ _DDL = (
 # requested change went (NULL for earlier runs); version 17 adds captures.element_size,
 # at_element_of and element_index (#302), at which element's address of a captured array
 # a C or C++ pointer is, and offset_from and element_offset, how far it is from another
-# pointer by address alone (NULL for earlier runs).
+# pointer by address alone (NULL for earlier runs); version 18 adds captures.debugger_type,
+# the debugger's own name for the type (NULL for earlier runs, whose type spelled a Rust
+# reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -415,9 +425,8 @@ _MIGRATIONS = {
             ("offset_from", "TEXT"),
             ("element_offset", "INTEGER"),
         ),
-        _EVIDENCE_VIEW,
-        _LAST_RUN_VIEW,
     ),
+    17: (*_DROP_VIEWS, _add_columns(("debugger_type", "TEXT")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -441,11 +450,17 @@ def _caveat(alias=""):
     """What qualifies a row's value, so it is not evidence by itself: its view where that
     is not just how it was read (`memory`, `active-variant`): stale, unproven, opaque,
     budget-exhausted or one added later; else `note` where the row has a note (a C/C++
-    local a loop returns to, a Rust summary). NULL for a plain value, or none."""
+    local a loop returns to, a Rust summary). NULL for a plain value, or none; and for a
+    Rust raw pointer's address alone (`*const T`, `[unproven]`), whose view and note are
+    about what it points at: the address is the pointer's own value (COOKBOOK 4.8,
+    eleventh evaluation, prep 16)."""
     prefix = f"{alias}." if alias else ""
     return (
-        f"CASE WHEN {prefix}value IS NULL THEN NULL WHEN {prefix}view NOT IN ('memory', "
-        f"'active-variant') THEN {prefix}view WHEN {prefix}note IS NOT NULL THEN 'note' END"
+        f"CASE WHEN {prefix}value IS NULL THEN NULL WHEN {prefix}view = 'unproven' AND "
+        f"({prefix}type GLOB '[*]const *' OR {prefix}type GLOB '[*]mut *') AND "
+        f"{prefix}value GLOB '0x?*' AND substr({prefix}value, 3) NOT GLOB '*[^0-9a-fA-F]*' "
+        f"THEN NULL WHEN {prefix}view NOT IN ('memory', 'active-variant') THEN {prefix}view "
+        f"WHEN {prefix}note IS NOT NULL THEN 'note' END"
     )
 
 
@@ -756,17 +771,48 @@ _OFFSETS = f"""'addresses differ: by address, ' || CASE WHEN a.eo IS b.eo
       || 'be another element'"""
 
 
+# Whether the two runs' types differ (a.t, b.t).
+_RETYPED = "(a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t)"
+# Where Peeky can't tell whether a type changed (reviews of PR #315): a Rust run saved
+# before schema 18 (its rows have no debugger type, dt) spelled a reference and a raw
+# pointer alike, as LLDB does (`rota::Engineer *`), where a newer Rust run respells that
+# debugger type (`&rota::Engineer`, `*const rota::Engineer`). Only there: any other type
+# that differs, in any language, is a change (a C++ binding's `long &&` against a newer
+# row's `long`, whose debugger type is `long &&`, is one). Said, never hidden.
+_UNTOLD = (
+    "(a.t IS NOT b.t AND {la} = 'rust' AND {lb} = 'rust' AND ("
+    "(a.dt IS NULL AND a.t IS NOT NULL AND b.t IS NOT b.dt AND a.t IS b.dt) OR "
+    "(b.dt IS NULL AND b.t IS NOT NULL AND a.t IS NOT a.dt AND b.t IS a.dt)))"
+).format(la=_LANGUAGE.format(_A), lb=_LANGUAGE.format(_B))
+_UNTOLD_SAYS = "the older run predates Rust type spellings"
+_UNTOLD_KIND = (
+    f"'{_UNTOLD_SAYS}, so Peeky can''t tell whether the type changed (`' || CASE WHEN "
+    "a.dt IS NULL THEN a.t ELSE b.t END || '` then, `' || CASE WHEN a.dt IS NULL THEN b.t "
+    "ELSE a.t END || '` now)'"
+)
+# What a pointer whose type changed adds, where its values differ only in addresses.
+_MOVED_TOO = (
+    "its addresses differ too: it may point at another element; compare offsets with "
+    "address() (COOKBOOK 4.8)"
+)
+
+
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
-    at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
+    at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo,
+    debugger_type AS dt
     FROM captures s WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
-    at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
+    at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo,
+    debugger_type AS dt
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
+    CASE WHEN a.v IS NOT b.v AND {_POINTER_TYPE.format(t="a.t")}
+      AND {_POINTER_TYPE.format(t="b.t")} AND no_addresses(a.v, {_LANGUAGE.format(_A)})
+      IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 1 ELSE 0 END AS moved,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
       WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
@@ -776,8 +822,8 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
         || COALESCE(' (run b: stop ' || k.st || ')', '')
       WHEN b.pos IS NULL THEN 'missing in run b' || COALESCE(' (run a: stop ' || k.st || ')', '')
       WHEN a.pos IS NULL THEN 'missing in run a' || COALESCE(' (run b: stop ' || k.st || ')', '')
-      WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
-        THEN 'type ' || a.t || ' -> ' || b.t
+      WHEN a.v IS NOT b.v AND {_UNTOLD} THEN {_UNTOLD_KIND}
+      WHEN a.v IS NOT b.v AND {_RETYPED} THEN 'type ' || a.t || ' -> ' || b.t
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN CASE
           WHEN {_ELSEWHERE} THEN {_AT_ELEMENTS}
@@ -835,13 +881,33 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # them; so are its rows whose addresses differ.
 # The tiers' ranks that code reads too: the real divergences (`_after_first` finds the
 # first among them, never an address or a qualified value: review of PR #294), and the
-# selectors only one run captured, which are at no hit of their own.
-_REAL_RANK, _ONLY_IN_RANK = 10, 15
+# selectors only one run captured, which are at no hit of their own. Right after the
+# real divergences, a pointer whose type Peeky can't compare across store generations
+# (`_UNTOLD`), whose values differ only in addresses: maybe a change, never the first.
+_REAL_RANK, _UNTOLD_RANK, _ONLY_IN_RANK = 10, 10.5, 15
+# One row per selector (and stop) of a pointer's type rows whose values differ only in
+# addresses, its first hit's: the type's note, how many hits, then `_MOVED_TOO`.
+_TYPE_FOLDED = f"""kind || CASE WHEN COUNT(*) > 1 THEN ' at ' || COUNT(*) || ' hits'
+      || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
+      || 'selector') || ': its first hit)' ELSE '' END || '; {_MOVED_TOO}'"""
 # Every row of `diff` with its rank (the tier it is in) and pos (its capture order).
 _RANKED = f"""(
   SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
-    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
+    AND (kind IS NULL OR kind LIKE 'missing%'
+      OR ((kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%') AND NOT moved))
+  -- A pointer whose type changed, but whose values differ only in addresses (a reference
+  -- an edit made a raw pointer: eleventh evaluation, prep 16), is a real difference too,
+  -- but one row per selector (and stop), its first hit's, as for its addresses below.
+  UNION ALL SELECT {_REAL_RANK}, hit, phase, selector, value_a, value_b, differs,
+    {_TYPE_FOLDED}, MIN(pos)
+    FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged AND kind LIKE 'type %'
+    AND moved GROUP BY selector, phase, st, kind
+  -- Such a pointer whose type Peeky can't compare across store generations, likewise.
+  UNION ALL SELECT {_UNTOLD_RANK}, hit, phase, selector, value_a, value_b, differs,
+    {_TYPE_FOLDED}, MIN(pos)
+    FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
+    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved GROUP BY selector, phase, st, kind
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -1525,8 +1591,9 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
             "num, unavailable, error, view, identity, scope, note, instance, stop, "
-            "element_size, at_element_of, element_index, offset_from, element_offset) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "element_size, at_element_of, element_index, offset_from, element_offset, "
+            "debugger_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1551,6 +1618,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     row["element_size"] if type(row.get("element_size")) is int else None,
                     *_points_into(row),
                     *_points_into(row, "offset_from", "offset"),
+                    # Every row of a run from schema 18 has one where it has a type.
+                    row.get("debugger_type") or row.get("type"),
                 )
                 for row in result.get("rows") or []
             ],

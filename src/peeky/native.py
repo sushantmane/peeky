@@ -759,6 +759,8 @@ _RECORDS = {
     "DW_TAG_class_type",
     "DW_TAG_enumeration_type",
 }
+# A Rust reference's or raw pointer's name in its pointer type's DW_AT_name.
+_RUST_POINTER = re.compile(r"(?:&(?:mut )?|\*(?:const|mut) ).+")
 
 
 def _type_name(dies, value, depth=0):
@@ -788,6 +790,11 @@ def _type_name(dies, value, depth=0):
         # A pointer to an array or function (`double (*restrict m)[n]`): its restrict
         # goes inside the parentheses, which this name cannot say.
         return None
+    own = _text(dies[offset]["attrs"].get("DW_AT_name"))
+    if dies[offset]["tag"] == "DW_TAG_pointer_type" and _RUST_POINTER.fullmatch(own or ""):
+        # Rust names its references and raw pointers (`&rota::Engineer`, `&&str`, `*const
+        # u8`), which dwarfdump writes as C's (`rota::Engineer *`); C's have no name.
+        return own
     for _ in range(16):
         die = dies.get(offset)
         if die is None or die["tag"] not in _TYPE_WRAPPERS:
@@ -2087,9 +2094,36 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                     _first(dies, _chain(dies, body), "DW_AT_type") is not None
                     for body in (*entry["bodies"], root)
                 ),
+                # The names a GCC lambda reads through `__closure` (_gcc_captures).
+                "captures": _gcc_captures(dies, entry),
             }
         )
     return table
+
+
+def _gcc_captures(dies, entry):
+    """The names of the captures a GCC lambda's call operator (``entry``) reads through
+    its object pointer, `__closure`: GCC declares each as an artificial variable of the
+    body, which lldb-dap does not list (eleventh evaluation, prep 8), so a selector
+    rooted at one is not found. `this` is left out: lldb-dap lists GCC's. Empty for any
+    other function, and for clang's lambdas, which declare no such variables."""
+    reference = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
+    pointer = dies.get(int(reference[1], 16)) if reference else None
+    if pointer is None or _text(pointer["attrs"].get("DW_AT_name")) != "__closure":
+        return ()
+    return tuple(
+        sorted(
+            {
+                name
+                for body in entry["bodies"]
+                for child in dies[body]["children"]
+                if dies[child]["tag"] == "DW_TAG_variable"
+                and "DW_AT_artificial" in dies[child]["attrs"]
+                and (name := _text(dies[child]["attrs"].get("DW_AT_name")))
+                and name != "this"
+            }
+        )
+    )
 
 
 def _inlined_calls(dies, bodies, files, workspace):
@@ -4399,6 +4433,13 @@ class NativeSession:
         """C++ selectors name members of `this` without it, as C++ code does; in C a
         local may itself be called `this`."""
         return "this" if getattr(self.target, "language", None) == "cpp" else None
+
+    def closure_captures(self, frame):
+        """The captures a GCC lambda a frame runs reads through `__closure`, which
+        lldb-dap does not list (_gcc_captures). Empty for any other frame, or where Peeky
+        cannot place it."""
+        function = self._function_at(frame)
+        return list((function or {}).get("captures") or ())[:50]
 
     def static_locals(self, frame):
         """The names the function a frame runs declares in static storage (a fixed

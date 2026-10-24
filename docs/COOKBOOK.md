@@ -248,6 +248,8 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
   exception leaves the block. So `name (std::string, lines 22-25, 35)` is an `if` block's local.
   It is visible on the block's lines, and at the closing `}` while an exception unwinds. It is not
   visible on the lines between. C blocks have no such cleanup code.
+- On the normal path, where no exception is under way, a probe at that closing `}` stops where
+  the function returns. There such a local is `not found`. Read it on the block's own lines.
 - A span is never narrower than where the debugger can show the local. So it keeps the lines
   inside it without code, such as comments or a lone `}`.
 - A block that also runs another file's code, such as an `#include` inside it, gives no lines. A
@@ -1639,6 +1641,16 @@ divergence.
 - A hit that one run never reached says `missing in run b`.
 - A value whose type changed says so, for example after an edit to `long long`:
   `type unsigned int -> long long`.
+- A pointer whose type changed, but whose values differ only in addresses, has one row per
+  selector, its first hit's. An edit from a reference to a raw pointer gives such a row:
+  `type &rota::Engineer -> *const rota::Engineer at 6 hits (one row per selector: its first hit);
+  its addresses differ too: …`.
+- A Rust run saved before schema 18 spells a reference and a raw pointer alike, as LLDB does:
+  `rota::Engineer *`. Against a newer Rust run's `&rota::Engineer` or `*const rota::Engineer`,
+  `diff` can't tell whether the type changed, and says so. Such a pointer's row comes right
+  after the real differences: ``the older run predates Rust type spellings, so Peeky can't tell
+  whether the type changed (`rota::Engineer *` then, `&rota::Engineer` now)``.
+- Any other type that differs is a change, in any language, whatever its `debugger_type`.
 
 **Long values.** The table cuts a value at 120 characters. Where the two runs' values first differ
 near or past that cut, both show from 40 characters before the difference instead. Both start at
@@ -1682,6 +1694,10 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
   `missing in run b; qualified (run a: note)`,
   `intervention only in run a; qualified (run a: note)`.
 - `queries run` shows each note.
+- A Rust raw pointer that shows only its address isn't qualified here. Its `[unproven]` and its
+  note are about what it points at, and its address is its own value
+  ([4.8](#48-compare-addresses-across-runs)). It ranks as a pointer: in tier 4, or in tier 3
+  where its type changed.
 
 **6. Address-only differences** say `addresses only`. These are other values that differ only in
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
@@ -2515,6 +2531,7 @@ Choose the base with care:
 Read an address with its row's view and note, as you read the value:
 
 - `[unproven]` on a raw pointer is about what it points at. Its address is the pointer's own value.
+  So `diff` and the other queries don't count a Rust raw pointer's address as qualified.
 - `[stale]` bytes are leftovers, not what the variable holds now.
 
 SQLite's integers are signed. So an address at or above 2^63 comes back negative, as its 64-bit

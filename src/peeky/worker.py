@@ -2403,6 +2403,14 @@ class DebugWorker:
                     variables, found = taken
                     if index == 0 and given is None:
                         given = found
+                if not module and (made := getattr(runtime, "compiler_binding", None)):
+                    # A binding the compiler makes (a Rust `for` loop's `iter`), which
+                    # `describe` leaves out too: no name of the program's.
+                    variables = [
+                        v
+                        for v in variables
+                        if not (isinstance(v, dict) and made(v, selected_frame))
+                    ]
                 if not module:
                     own += [
                         v["name"]
@@ -2492,6 +2500,14 @@ class DebugWorker:
                     {"statics": statics}
                     if (lister := getattr(runtime, "static_locals", None))
                     and (statics := lister(selected_frame))
+                    else {}
+                ),
+                # The captures a GCC lambda reads through `__closure`, which lldb-dap
+                # does not list either.
+                **(
+                    {"closure_captures": captures}
+                    if (captured := getattr(runtime, "closure_captures", None))
+                    and (captures := captured(selected_frame))
                     else {}
                 ),
                 **self.pause_status(),

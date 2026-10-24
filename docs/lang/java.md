@@ -31,7 +31,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   Rebuild it, and point the config's `bundle` at the new one ([ERRORS](../ERRORS.md)).
 - Starting the JVM takes most of a run's time. On a laptop, for a small program, `describe` takes
   about 0.6 s, a probe 0.8 to 1.7 s, and `session start` 0.7 to 0.9 s. A `verify` takes about 0.5 s
-  unedited, and 2 to 2.5 s with an edit to compile. Session commands take about 0.15 s.
+  unedited, and about 3 s with an edit to compile, for a checker that runs the program 44 times.
+  Session commands take about 0.15 s.
 - If a probe or `verify` may outlast your tool's timeout, add `--background`. Then run
   `peeky job wait <id>` ([8](../COOKBOOK.md#8-slow-programs-and-tool-timeouts)).
 - Add `--until hits` to skip waiting for the program to exit
