@@ -375,8 +375,9 @@ _ATOMIC_VALUES = {
     "AtomicUsize": "usize",
 }
 # The cells that keep nothing but their value (#321 review round 2): of a value with a
-# single state (`()`, `PhantomData<T>`), none. A lock may be poisoned, a `OnceCell` set.
-_PLAIN_CELLS = frozenset("Cell UnsafeCell SyncUnsafeCell RefCell".split())
+# single state (`()`, `PhantomData<T>`), none. A `RefCell` keeps its borrow flag (a
+# `RefMut` leaked by `mem::forget`, round 3), a lock may be poisoned, a `OnceCell` set.
+_PLAIN_CELLS = frozenset("Cell UnsafeCell SyncUnsafeCell".split())
 # The module of each standard short name of ``_STD_BARE`` (`Cell` is `cell::Cell`), for
 # ``_Judge.canon``.
 _STD_BARE_MODULES = {
@@ -917,7 +918,8 @@ class _Judge:
 
     def single(self, node):
         """Whether a value of ``node`` has a single state, so nothing to keep (#321 review
-        round 2): `()`, `PhantomData<T>`, an empty array, a crate's struct of such only."""
+        rounds 2 and 3): `()`, `PhantomData<T>`, an empty array, a plain cell of such
+        (`Cell<Cell<()>>`), a crate's struct of such only, or its enum of one such variant."""
         kind = node[0]
         if kind == "tuple":
             return all(self.single(each) for each in node[1])
@@ -926,7 +928,10 @@ class _Judge:
         if kind != "path" or node[1] in _NUMERIC_PRIMITIVES:
             return False
         if self.kind(node[1]) is not None:
-            return node[1].rsplit("::", 1)[-1] in ("PhantomData", "PhantomPinned")
+            last = node[1].rsplit("::", 1)[-1]
+            if last in _PLAIN_CELLS and self.kind(node[1]) == "cell":
+                return self.keeps_nothing(node[2])
+            return last in ("PhantomData", "PhantomPinned")
         exact = self.exact(node[1], node[2])
         if exact is not None:
             return exact[3]
@@ -1093,7 +1098,8 @@ class _Judge:
     def components(self, tree, seen=None):
         """``tree`` and the canonical trees of every value it holds by value, however deep:
         a tuple's items, an array's elements, the arguments of a standard type that owns
-        them (``_STD_OWNING``), a crate type's fields (``CrateType.parts``)."""
+        them (``_STD_OWNING``), a crate type's fields, its variants' too (``CrateType.parts``).
+        Only for what may be stored (``_copy_level``): a value of any of them may be."""
         seen = set() if seen is None else seen
         if tree in seen:
             return set()
@@ -1204,12 +1210,12 @@ def _may_share(kind, generics, trusted=_STD_CRATES, layouts=None):
 
 def _copy_level(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
     """What a callee given a `&` to a value of the MIR type ``kind`` may store in it of a
-    value of ``local_kind`` (#321 review rounds 1 and 2), proven by whole types: "copy",
-    where what may be stored there (``_Judge.payloads``), or a value it holds by value
-    (``_Judge.components``), is of the very type ``local_kind`` is; "part", where one is of
-    the type of a part of it (`Cell<u32>` for a struct with a `u32` field); else "derived",
-    which is all that is ever said for sure: what is stored may be computed from it.
-    `Cell<Vec<u32>>` takes no copy of a `Vec<bool>`, nor `Cell<a::Id>` of a `b::Id`."""
+    value of ``local_kind`` (#321 review rounds 1 to 3): "copy" only where what may be
+    stored there (``_Judge.payloads``), or a value that holds by value (``_Judge.components``:
+    `u32` of a `Cell<Vec<u32>>`), is of the very type ``local_kind`` is, whole; else
+    "derived", which is always true: what is stored may be computed from it.
+    `Cell<Vec<u32>>` takes no copy of a `Vec<bool>`, `Cell<a::Id>` none of a `b::Id`, and
+    `Cell<u32>` none of a `Box<u32>` or of a struct with a `u32` field."""
     judged = _judged(kind, generics, trusted, layouts)
     local = _judged(local_kind, generics, trusted, layouts)
     if judged is None or local is None:
@@ -1218,12 +1224,8 @@ def _copy_level(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
     slots = set()
     for payload in judge.payloads(judged[0]):
         slots |= judge.components(payload)
-    slots.discard(_UNKNOWN)
     whole = judge.canon(local[0])
-    if _key(whole) is not None and whole in slots:
-        return "copy"
-    parts = {each for each in judge.components(whole) if each != whole and _key(each) is not None}
-    return "part" if parts & slots else "derived"
+    return "copy" if _key(whole) is not None and whole in slots else "derived"
 
 
 def _quiet_drop(kind, generics):
@@ -2732,7 +2734,7 @@ class Body:
 
     def copy_level(self, local, kind):
         """What a callee given a `&` to ``local`` may store in it of a value of the MIR type
-        ``kind``: "copy", "part" or "derived" (#321 review rounds 1 and 2, ``_copy_level``)."""
+        ``kind``: "copy" or "derived" (#321 review rounds 1 to 3, ``_copy_level``)."""
         return _copy_level(
             self.types.get(local), kind, self.generics, self.std_paths, self._layouts()
         )
@@ -6877,7 +6879,7 @@ class OwnedLocals:
 
     def holder_kinds(self, hashed, locals_, kind):
         """Of ``locals_``: ({each: what a callee given a `&` to it may store in it of a value
-        of the MIR type ``kind``, ``_copy_level``'s "copy", "part" or "derived"}, those whose
+        of the MIR type ``kind``, ``_copy_level``'s "copy" or "derived"}, those whose
         type is a crate's of which instance it is can't be told) (#321 review rounds 1 and
         2): a `Cell<bool>` takes no copy of a `u32`, only what was computed from one."""
         body = self.body(hashed)

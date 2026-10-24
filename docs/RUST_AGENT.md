@@ -468,10 +468,14 @@ used again. Such a temporary is:
   "lazy" (`LazyCell`, `LazyLock`), "inert" and "plain".
 - "inert" types hold no value of the program's, and their type arguments aren't held: `Condvar`,
   `Barrier`, `Once`, `PhantomData`.
-- A plain cell (`_PLAIN_CELLS`: `Cell`, `RefCell`, `UnsafeCell`, `SyncUnsafeCell`) of values with
-  a single state (`_Judge.single`) keeps nothing: `Cell<()>`, `Cell<PhantomData<u32>>`, a cell of
-  a struct with no fields (review round 2). A lock, a once-cell and a channel keep state of
-  their own: a poisoned `Mutex<()>`, a set `OnceCell<()>`, a `Sender<()>`'s message count.
+- A plain cell (`_PLAIN_CELLS`: `Cell`, `UnsafeCell`, `SyncUnsafeCell`) of values with a single
+  state (`_Judge.single`, `Walk.single`) keeps nothing: `Cell<()>`, `Cell<PhantomData<u32>>`, a
+  cell of a struct with no fields (review round 2).
+- Such a cell has a single state itself (`Cell<Cell<()>>`), and so does an enum of one variant
+  whose fields have one, without a discriminant (review round 3).
+- A `RefCell` keeps its borrow flag, which a leaked `RefMut` leaves set (review round 3). A lock,
+  a once-cell and a channel keep state of their own too: a poisoned `Mutex<()>`, a set
+  `OnceCell<()>`, a `Sender<()>`'s message count.
 - The parser tells a slice (`("slice", T)`) from an array (`("array", T, length)`). An array of
   length 0 holds nothing; a length that isn't a number counts as its element (review round 2).
   The debug information gives the length as a subrange's count.
@@ -508,14 +512,15 @@ used again. Such a temporary is:
   anything ("unsure"). The refusal says which instance it is can't be told.
 - `payloads` gives the trees of what a callee given a `&` may store, and `parts` the types of
   the fields (`("arg", n)` for argument `n`, `("payloads", n)` for what may be stored in it).
-- `_copy_level` compares whole trees (review round 2). It says "copy" where a payload, or a
-  value it holds by value (`_Judge.components`), is the local's very type. A field of the local's
-  type gives "part"; anything else gives "derived".
+- `_copy_level` compares whole trees (review round 2). It says "copy" only where a payload, or a
+  value it holds by value (`_Judge.components`), is the local's very type, whole. Anything else
+  gives "derived", which is always true (review round 3: no "a copy of part of").
 - `components` follows tuples, arrays, crate fields, and the standard types that own their
-  arguments (`_STD_OWNING`). It doesn't follow references or iterators.
-- `OwnedLocals.holder_kinds` gives each holder's level, and the refusal says the weakest of them.
-  "part" says "may hold a copy of part of"; "derived" says "may hold state derived from", and
-  advises a change before it's used. A type not known gives "derived".
+  arguments (`_STD_OWNING`). It doesn't follow references or iterators. It is used only on what
+  may be stored, never on the local's own type.
+- `OwnedLocals.holder_kinds` gives each holder's level. The refusal says "a copy" only where each
+  holder's is "copy"; else "may hold state derived from", advising a change before it's used. A
+  type not known gives "derived".
 - A closure counts by what it captures, from the aggregate that builds it
   (`Body.closure_captures`). Where the debug information wasn't read, every type of the crate's may
   hold anything. These make `TypeLayouts`, set as `Body.layouts` when the body is matched.

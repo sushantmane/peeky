@@ -487,9 +487,10 @@ fn main() {
 }
 """
 
-# Review round 2 of PR #328: plain cells of a value with one state, a channel of `()`, empty
-# arrays, defaults naming an earlier parameter, and a cell that takes a part of `x`.
-ROUND = """use std::cell::Cell;
+# Review rounds 2 and 3 of PR #328: plain cells of a value with one state (a cell of one, an
+# enum of one fieldless variant), a channel of `()`, a `RefCell<()>`'s borrow flag, empty
+# arrays, defaults naming an earlier parameter, and a cell that takes a field of `x`.
+ROUND = """use std::cell::{Cell, RefCell};
 use std::env;
 use std::marker::PhantomData;
 use std::sync::mpsc;
@@ -507,6 +508,16 @@ struct Pair<T, U = T> {
 struct Lst<T, U = Vec<T>> {
     a: T,
     b: U,
+}
+
+#[derive(Clone, Copy)]
+enum One {
+    A,
+}
+
+#[derive(Clone, Copy)]
+enum Wrapped {
+    W(()),
 }
 
 #[derive(Clone, Copy)]
@@ -540,6 +551,31 @@ fn ghost(c: &Cell<PhantomData<u32>>, x: u32) {
 }
 
 #[inline(never)]
+fn nest(n: &Cell<Cell<()>>, o: &Cell<One>, w: &Cell<Wrapped>, x: u32) {
+    if x > 5 {
+        n.set(Cell::new(()));
+        o.set(One::A);
+        w.set(Wrapped::W(()));
+    }
+}
+
+#[inline(never)]
+fn lend(c: &RefCell<()>, x: u32) {
+    if x > 5 {
+        std::mem::forget(c.borrow_mut());
+    }
+}
+
+fn leaked(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = RefCell::new(());
+    lend(&c, x); // LEND
+    let k = other(); // LEAKED
+    std::hint::black_box(&x);
+    c.try_borrow().is_ok() as u32 + k
+}
+
+#[inline(never)]
 fn ping(tx: &mpsc::Sender<()>, x: u32) {
     if x > 5 {
         tx.send(()).unwrap();
@@ -566,9 +602,16 @@ fn units(arg: u32) -> u32 {
     let g: Cell<PhantomData<u32>> = Cell::new(PhantomData);
     unit(&c, x); // UNIT
     ghost(&g, x); // GHOST
+    let n = Cell::new(Cell::new(()));
+    let o = Cell::new(One::A);
+    let w = Cell::new(Wrapped::W(()));
+    nest(&n, &o, &w, x); // NEST
     let k = other(); // UNITS
     c.get();
     g.get();
+    n.take();
+    o.get();
+    w.get();
     *std::hint::black_box(&x) + k
 }
 
@@ -609,6 +652,7 @@ fn main() {
     println!("ARRAYS {}", arrays(x));
     println!("PAIRS {}", pairs(x));
     println!("PARTED {}", parted(x));
+    println!("LEAKED {}", leaked(x));
 }
 """
 
@@ -799,11 +843,11 @@ def test_an_instance_judged_by_its_default_cells_that_cant_take_it_and_types_tha
 
 
 @pytest.mark.timeout(900)
-def test_what_holds_no_state_leaves_the_local_settable_and_a_part_is_said_so(rounds, capsys):
-    # `Cell<()>` and `Cell<PhantomData<u32>>` (whatever is stored, the same value), an empty
-    # array of cells, and `Pair<u32>`/`Lst<u32>` of `struct Pair<T, U = T>` and `struct
-    # Lst<T, U = Vec<T>>`: none can keep `x`. On round 1's head each was refused ("may hold
-    # state derived from `x`", "may hold a copy of `x`"); the set reaches the program.
+def test_what_holds_no_state_leaves_the_local_settable_and_what_does_is_derived(rounds, capsys):
+    # `Cell<()>`, `Cell<PhantomData<u32>>`, `Cell<Cell<()>>` and cells of enums of one
+    # fieldless variant (whatever is stored, the same value), an empty array of cells, and
+    # `Pair<u32>`/`Lst<u32>` of `struct Pair<T, U = T>` and `struct Lst<T, U = Vec<T>>`: none
+    # can keep `x`. On round 1's head each was refused; the set reaches the program.
     for marker, printed in (
         ("UNITS", "UNITS 101"),
         ("ARRAYS", "ARRAYS 103"),
@@ -812,21 +856,24 @@ def test_what_holds_no_state_leaves_the_local_settable_and_a_part_is_said_so(rou
         code, result = probe(capsys, rounds, marker, "--set", "x=100", text=ROUND)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
-    # A `Sender<()>` keeps a message count: `rx` may hold state derived from `x`.
-    code, result = probe(capsys, rounds, "PINGED", "--set", "x=100", text=ROUND)
-    message, hint = refused(code, result, "PINGED")
-    assert "the program's own `rx` (at lines " in message, message
-    assert "may hold state derived from `x` that it goes on with" in message, message
-    assert "uses it" in hint, hint
-    # `keep(&c, x)` with `c: Cell<u32>` and `x: Pt { a: u32, b: bool }`: a copy of a part.
-    code, result = probe(capsys, rounds, "PARTED", "--set", "x.a=100", text=ROUND)
-    message, hint = refused(code, result, "PARTED")
-    assert "the program's own `c` (at lines " in message, message
-    assert "may hold a copy of part of `x` that it goes on with, which may be out" in message
-    assert "change the copy" not in message + hint, hint
+    # A `Sender<()>` keeps a message count, and a `RefCell<()>` its borrow flag (`lend(&c,
+    # x)` leaks a `RefMut` where `x > 5`; round 2's head took the set there and printed the
+    # old `LEAKED 2`). And `keep(&c, x)` with `c: Cell<u32>` and `x: Pt { a: u32, b: bool }`
+    # stores a field: no copy of `x` (round 2's head said "a copy of part of `x`").
+    for marker, holder, change in (
+        ("PINGED", "rx", "x=100"),
+        ("LEAKED", "c", "x=100"),
+        ("PARTED", "c", "x.a=100"),
+    ):
+        code, result = probe(capsys, rounds, marker, "--set", change, text=ROUND)
+        message, hint = refused(code, result, marker)
+        assert f"the program's own `{holder}` (at lines " in message, (marker, message)
+        assert "may hold state derived from `x` that it goes on with" in message, message
+        assert "copies it" not in message + hint and "uses it" in hint, (marker, hint)
     # A change before each call still reaches the program.
     for marker, change, printed in (
         ("PING", "x=100", "PINGED 2"),
+        ("LEND", "x=100", "LEAKED 1"),
         ("KEEP", "x.a=100", "PARTED 102"),
     ):
         code, result = probe(capsys, rounds, marker, "--set", change, text=ROUND)

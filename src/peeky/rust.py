@@ -1026,7 +1026,6 @@ _ONLY_POINTS = " only point"
 # what such a binding's type can't hold a copy in, only what was computed from it.
 _HIDDEN_COPY = ", which may be out of Peeky's reach ("
 _DERIVED = " state derived from "
-_PART_COPY = " a copy of part of "
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1144,13 +1143,10 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
             if hasattr(proofs, "holder_kinds")
             else (dict.fromkeys(bound, "copy"), ())
         )
-        # #321 review rounds 1 and 2: a `Cell<bool>` takes no copy of a `u32`, only what was
-        # computed from one; a `Cell<u32>` only a copy of a part of a struct with a `u32`
-        # field. What is said holds for each of them.
+        # #321 review rounds 1 to 3: a copy only where each may hold one of its very type, a
+        # `Cell<bool>` none of a `u32`: only what was computed from it.
         if kind is None or "derived" in levels.values():
             own = own.replace(f" may hold a copy of {target} ", f" may hold{_DERIVED}{target} ")
-        elif "part" in levels.values():
-            own = own.replace(f" a copy of {target} ", f"{_PART_COPY}{target} ")
         types = "its type" if len(bound) == 1 else "their types"
         own += f"{_HIDDEN_COPY}behind a cell, a lock, a channel or a pointer {types} " + (
             f"may hold: which instance of {types} {'it is' if len(bound) == 1 else 'they are'} "
@@ -3197,8 +3193,6 @@ class RustSession(NativeSession):
                     (
                         "the program may hold state derived from it"
                         if _DERIVED in detail
-                        else "the program may hold a copy of part of it"
-                        if _PART_COPY in detail
                         else "the program may hold a copy"
                     )
                     + (f" ({made})" if made else ""),

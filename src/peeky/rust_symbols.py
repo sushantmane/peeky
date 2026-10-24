@@ -1368,11 +1368,16 @@ def interior_types(root, crate):
         def given(self, die):
             return [each for each in parameters(die) if each is not None]
 
-        def plain_cell(self, die, path):
+        def plain_cell(self, die, path, seen=frozenset()):
             """Whether it is a plain cell of values with a single state (`Cell<()>`), which
             keeps nothing (#321 review round 2)."""
             given = self.given(die)
-            return last(path) in _PLAIN_CELLS and given and all(map(self.single, given))
+            return (
+                _std_class(path) == "cell"
+                and last(path) in _PLAIN_CELLS
+                and bool(given)
+                and all(self.single(each, seen) for each in given)
+            )
 
         def standard(self, die, path, shared, handle, seen, out):
             kind = _std_class(path)
@@ -1407,8 +1412,9 @@ def interior_types(root, crate):
 
         def single(self, offset, seen=frozenset()):
             """Whether a value of the type at ``offset`` has a single state: `()`,
-            `PhantomData`, an empty array, a struct or tuple of such only (#321 review round
-            2). An argument of the type's own counts as not."""
+            `PhantomData`, an empty array, a plain cell of such (`Cell<Cell<()>>`), a struct or
+            tuple of such only, an enum of one such variant (#321 review rounds 2 and 3). An
+            argument of the type's own counts as not."""
             die = by_offset.get(offset)
             if offset in self.covered or offset in seen or die is None:
                 return False
@@ -1417,6 +1423,8 @@ def interior_types(root, crate):
             tag, name, seen = die.tag, name_of(die), seen | {offset}
             if tag == "DW_TAG_base_type":
                 return name == "()"
+            if tag == "DW_TAG_enumeration_type":
+                return sum(child.tag == "DW_TAG_enumerator" for child in die.children) == 1
             if tag in _WRAPPING or tag == "DW_TAG_array_type":
                 lengths = _array_lengths(die) if tag == "DW_TAG_array_type" else [1]
                 if 0 in lengths:
@@ -1426,13 +1434,28 @@ def interior_types(root, crate):
             if tag != "DW_TAG_structure_type" or "dyn " in name or name.startswith(("&", "*")):
                 return False
             if name.startswith(_STD_ROOTS):
-                return last(name) in ("PhantomData", "PhantomPinned")
-            if any(child.tag == "DW_TAG_variant_part" for child in die.children):
-                return False
-            return all(
-                target(member) is not None and self.single(target(member), seen)
-                for member in members(die)
-            )
+                path = name.split("<", 1)[0]
+                if last(path) in ("PhantomData", "PhantomPinned"):
+                    return True
+                return self.plain_cell(die, path, seen)
+
+            def stated(member):
+                return target(member) is not None and self.single(target(member), seen)
+
+            for child in die.children:
+                if child.tag == "DW_TAG_member" and not stated(child):
+                    return False
+                if child.tag != "DW_TAG_variant_part":
+                    continue
+                # An enum: of one variant (no discriminant), whose fields have one state.
+                variants = [each for each in child.children if each.tag == "DW_TAG_variant"]
+                if len(variants) != 1 or any(
+                    each.tag == "DW_TAG_member" for each in child.children
+                ):
+                    return False
+                if not all(stated(member) for member in members(variants[0])):
+                    return False
+            return True
 
         def tree(self, offset, seen=frozenset()):
             """The canonical tree (rust_mir._Judge.canon) of the type at ``offset``, ("arg",
@@ -1558,9 +1581,12 @@ def interior_types(root, crate):
     for offset, name in plain.items():
         if not name.startswith(_STD_ROOTS):
             path = name.removeprefix(prefix)
+            single = Walk({}).single(offset)
             for key in (path, "::" + path.rsplit("::", 1)[-1]):
                 merge_layout(
-                    found, key, CrateType(uses=(), payloads=frozenset(), parts=frozenset())
+                    found,
+                    key,
+                    CrateType(uses=(), payloads=frozenset(), parts=frozenset(), single=single),
                 )
     for offset, name in names.items():
         die = by_offset[offset]

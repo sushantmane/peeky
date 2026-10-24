@@ -2831,20 +2831,31 @@ def test_phantom_data_and_function_types_hold_nothing():
 # Review round 2 of PR #328: what may be stored is compared by whole types, a plain cell of
 # a value with one state keeps nothing, an array counts by its length, and a default may
 # name an earlier parameter.
-def test_a_copy_is_said_only_for_the_very_type_and_a_copy_of_part_for_a_field():
+def test_a_copy_is_said_only_for_the_very_type():
     # On the round-1 head, types were compared by their paths' last words: `Cell<Vec<u32>>`
-    # "took a copy" of a `Vec<bool>` (both name `Vec`), `Cell<a::Id>` of a `b::Id`.
+    # "took a copy" of a `Vec<bool>` (both name `Vec`), `Cell<a::Id>` of a `b::Id`. Round 3:
+    # what holds a value of a type one of its parts has is "derived" too, never "a copy of
+    # part of it": `Cell<u32>` for `E::B(true)` of `enum E { A(u32), B(bool) }`, or for a
+    # `Box<u32>`, whose `u32` is behind a pointer.
     a_id = CrateType(payloads=frozenset(), parts=frozenset({("prim", "u64")}))
     b_id = CrateType(payloads=frozenset(), parts=frozenset({U32}))
     point = CrateType(payloads=frozenset(), parts=frozenset({U32, BOOL}))
-    layouts = TypeLayouts({"a::Id": a_id, "b::Id": b_id, "c::Id": b_id, "Pt": point})
+    layouts = TypeLayouts({"a::Id": a_id, "b::Id": b_id, "c::Id": b_id, "Pt": point, "E": point})
     for kind, local, level in (
-        # The four of the review.
+        # The four of round 2's review.
         ("std::cell::Cell<std::vec::Vec<u32>>", "std::vec::Vec<bool>", "derived"),
         ("std::cell::Cell<std::option::Option<u32>>", "std::option::Option<bool>", "derived"),
         ("std::cell::Cell<a::Id>", "b::Id", "derived"),
-        ("std::cell::Cell<u32>", "Pt", "part"),
-        # The very type, or one it holds by value: a copy.
+        ("std::cell::Cell<u32>", "Pt", "derived"),
+        # Round 3's: an enum's variants, and what a pointer or a container holds.
+        ("std::cell::Cell<u32>", "E", "derived"),
+        ("std::cell::Cell<u32>", "std::boxed::Box<u32>", "derived"),
+        ("std::cell::Cell<u32>", "std::rc::Rc<u32>", "derived"),
+        ("std::cell::Cell<u32>", "std::sync::Arc<u32>", "derived"),
+        ("std::cell::Cell<u32>", "std::vec::Vec<u32>", "derived"),
+        ("std::cell::Cell<u32>", "&u32", "derived"),
+        # The very type, or one it holds by value: a copy. A cell of an enum or a struct
+        # may take one built of the value (`c.set(E::A(x))`).
         ("std::cell::Cell<std::vec::Vec<u32>>", "std::vec::Vec<u32>", "copy"),
         ("std::cell::Cell<std::vec::Vec<u32>>", "u32", "copy"),
         ("std::cell::Cell<Vec<u32>>", "std::vec::Vec<u32>", "copy"),
@@ -2852,10 +2863,12 @@ def test_a_copy_is_said_only_for_the_very_type_and_a_copy_of_part_for_a_field():
         ("std::cell::Cell<a::Id>", "a::Id", "copy"),
         ("std::cell::Cell<Pt>", "Pt", "copy"),
         ("std::cell::Cell<(u32, bool)>", "(u32, bool)", "copy"),
-        # A field of the same type: a copy of part of it.
-        ("std::cell::Cell<b::Id>", "c::Id", "part"),
-        ("std::cell::Cell<std::vec::Vec<bool>>", "(u32, bool)", "part"),
-        ("std::cell::Cell<[u32; 2]>", "[u32; 3]", "part"),
+        ("std::cell::Cell<E>", "u32", "copy"),
+        ("std::cell::Cell<std::boxed::Box<u32>>", "u32", "copy"),
+        # A field of the same type: no copy of the whole.
+        ("std::cell::Cell<b::Id>", "c::Id", "derived"),
+        ("std::cell::Cell<std::vec::Vec<bool>>", "(u32, bool)", "derived"),
+        ("std::cell::Cell<[u32; 2]>", "[u32; 3]", "derived"),
         # A name two types share can't tell which: `Id` is `a::Id`, `b::Id` or `c::Id`.
         ("std::cell::Cell<Id>", "a::Id", "derived"),
         # A reference holds no copy, only where it points.
@@ -2874,43 +2887,50 @@ def test_a_copy_is_said_only_for_the_very_type_and_a_copy_of_part_for_a_field():
         assert _copy_level(kind, local, (), layouts=layouts) == level, (kind, local)
 
 
-def test_a_copy_of_part_of_it_is_said_so():
+def test_a_copy_is_said_only_where_every_holder_may_take_one():
     from peeky.rust import _copy_reason
 
-    proofs = SimpleNamespace(
-        copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", 20)},
-        copy_names=lambda hashed, held: ["c"] if 20 in held else [],
-        copy_sources=lambda hashed, held, among: frozenset(),
-        pointer_bindings=lambda hashed, held: frozenset(),
-        hidden_holders=lambda hashed, held: held,
-        holder_kinds=lambda hashed, held, kind: ({20: "part"}, frozenset()),
+    def reason(levels, kind="u32"):
+        proofs = SimpleNamespace(
+            copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", 20)},
+            copy_names=lambda hashed, held: sorted({20: "c", 21: "d"}[n] for n in held),
+            copy_sources=lambda hashed, held, among: frozenset(),
+            pointer_bindings=lambda hashed, held: frozenset(),
+            hidden_holders=lambda hashed, held: held,
+            holder_kinds=lambda hashed, held, kind: (levels, frozenset()),
+        )
+        found = dict.fromkeys(("explicit", "taken", "sources", "bindings", "value", "whole"), [])
+        held = set(levels)
+        found |= {"any": [((1, 0), held)], "copied": [((1, 0), held)], "traced": []}
+        return _copy_reason(proofs, "h", found, "/w/src/main.rs", "`x`", kind)[1]
+
+    hidden = (
+        "that it goes on with, which may be out of Peeky's reach (behind a cell, a lock, a "
+        "channel or a pointer their types hold)"
     )
-    found = dict.fromkeys(("explicit", "taken", "sources", "bindings", "value", "whole"), [])
-    found |= {"any": [((1, 0), {20})], "copied": [((1, 0), {20})], "traced": []}
-    kind, detail, _, _ = _copy_reason(proofs, "h", found, "/w/src/main.rs", "`x`", "Pt")
-    assert kind == "kept"
-    assert detail == (
-        "the program's own `c` (at line 20) may hold a copy of part of `x` that it goes on with, "
-        "which may be out of Peeky's reach (behind a cell, a lock, a channel or a pointer its "
-        "type holds)"
-    )
+    copied = f"the program's own `c` and `d` (at line 20) may hold a copy of `x` {hidden}"
+    derived = f"the program's own `c` and `d` (at line 20) may hold state derived from `x` {hidden}"
+    assert reason({20: "copy", 21: "copy"}) == copied
+    # What is said holds for each: one that can take no copy makes it derived state.
+    assert reason({20: "copy", 21: "derived"}) == derived
+    # A type not known proves no copy.
+    assert reason({20: "copy", 21: "copy"}, None) == derived
     message = (
         "`x` cannot be changed at src/main.rs:21, at any stop of this build: in a::f, at every "
-        f"place line 21 can stop at, {detail}, so a change there may never be seen"
+        f"place line 21 can stop at, {copied}, so a change there may never be seen"
     )
     assert mutation_hint(message) == (
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` there)."
     )
-    # A type not known proves no copy: what it holds is said as derived from it.
-    _, detail, _, _ = _copy_reason(proofs, "h", found, "/w/src/main.rs", "`x`")
-    assert "`c` (at line 20) may hold state derived from `x` that it goes on with" in detail
 
 
 def test_a_plain_cell_of_a_value_with_one_state_keeps_nothing():
     # `unit(&c, x)` with `c: Cell<()>`, `ghost(&g, x)` with `g: Cell<PhantomData<u32>>`:
     # whatever is stored, the same value. The round-1 head said they "may hold state
-    # derived from `x`". A lock (poisoned), a once-cell (set) and a channel's end (a
-    # message count) keep state of their own.
+    # derived from `x`". A lock (poisoned), a once-cell (set), a channel's end (a message
+    # count) and a `RefCell` (its borrow flag, which a leaked `RefMut` keeps set: round 3)
+    # keep state of their own. A plain cell of such a cell, or of an enum of one fieldless
+    # variant, has one state too (round 3).
     unit = CrateType(payloads=frozenset(), parts=frozenset(), single=True)
     layouts = TypeLayouts({"Unit": unit, "Count": CrateType(parts=frozenset({U32}))})
     for kind, writes in (
@@ -2918,10 +2938,19 @@ def test_a_plain_cell_of_a_value_with_one_state_keeps_nothing():
         ("&Cell<()>", False),
         ("&std::cell::Cell<std::marker::PhantomData<u32>>", False),
         ("&std::cell::Cell<std::marker::PhantomData<std::cell::Cell<u32>>>", False),
-        ("&std::cell::RefCell<((), [u32; 0])>", False),
+        ("&std::cell::UnsafeCell<((), [u32; 0])>", False),
         ("&std::cell::UnsafeCell<[(); 3]>", False),
         ("&std::cell::Cell<Unit>", False),
         ("&(std::cell::Cell<()>, u32)", False),
+        ("&std::cell::Cell<std::cell::Cell<()>>", False),
+        ("&std::cell::Cell<std::cell::UnsafeCell<(Unit, ())>>", False),
+        ("&Cell<Cell<Unit>>", False),
+        ("&std::cell::RefCell<()>", True),
+        ("&RefCell<()>", True),
+        ("&std::cell::RefCell<((), [u32; 0])>", True),
+        ("&std::cell::Cell<std::cell::RefCell<()>>", True),
+        ("&std::cell::Cell<std::sync::Mutex<()>>", True),
+        ("&std::cell::Cell<std::option::Option<()>>", True),
         ("&std::cell::Cell<Count>", True),
         ("&std::cell::Cell<[(); N]>", True),
         ("&std::cell::Cell<u32>", True),
@@ -2947,19 +2976,51 @@ def test_a_plain_cell_of_a_value_with_one_state_keeps_nothing():
     u32, nothing = (dies.add(root, "DW_TAG_base_type", name) for name in ("u32", "()"))
     ghost = dies.struct(marker, "PhantomData<u32>", arguments=(u32,))
     own_unit = dies.struct(crate, "Unit")
+    cell_unit = dies.struct(cell, "Cell<()>", arguments=(nothing,))
+    # `enum One { A }`: one variant, no discriminant; `enum Two { A, B(u32) }`: two.
+    one = dies.struct(crate, "One")
+    variant = dies.add(dies.add(one, "DW_TAG_variant_part"), "DW_TAG_variant")
+    dies.add(variant, "DW_TAG_member", "A", dies.struct(one, "A"))
+    two = dies.struct(crate, "Two")
+    part = dies.add(two, "DW_TAG_variant_part")
+    dies.add(part, "DW_TAG_member", None, dies.add(root, "DW_TAG_base_type", "u8"))
+    for name, fields in (("A", ()), ("B", (("__0", u32),))):
+        variant = dies.add(part, "DW_TAG_variant")
+        dies.add(variant, "DW_TAG_member", name, dies.struct(two, name, *fields))
+    # A C-like enum of one enumerator, and of two.
+    lone, pair = (dies.add(crate, "DW_TAG_enumeration_type", name) for name in ("Lone", "Pair"))
+    for enumeration, count in ((lone, 1), (pair, 2)):
+        for at in range(count):
+            dies.add(enumeration, "DW_TAG_enumerator", f"E{at}")
     dies.struct(
         crate,
         "Quiet",
-        ("a", dies.struct(cell, "Cell<()>", arguments=(nothing,))),
+        ("a", cell_unit),
         ("b", dies.struct(cell, "Cell<core::marker::PhantomData<u32>>", arguments=(ghost,))),
-        ("c", dies.struct(cell, "RefCell<r::Unit>", arguments=(own_unit,))),
+        ("c", dies.struct(cell, "Cell<r::Unit>", arguments=(own_unit,))),
+        ("d", dies.struct(cell, "Cell<core::cell::Cell<()>>", arguments=(cell_unit,))),
+        ("e", dies.struct(cell, "Cell<r::One>", arguments=(one,))),
+        ("f", dies.struct(cell, "Cell<r::Lone>", arguments=(lone,))),
     )
     dies.struct(crate, "Ping", ("tx", dies.struct(mpsc, "Sender<()>", arguments=(nothing,))))
+    borrowed = dies.struct(cell, "RefCell<()>", arguments=(nothing,))
+    dies.struct(crate, "Borrowed", ("c", borrowed))
+    dies.struct(crate, "Counted", ("c", dies.struct(cell, "Cell<r::Two>", arguments=(two,))))
+    dies.struct(crate, "Paired", ("c", dies.struct(cell, "Cell<r::Pair>", arguments=(pair,))))
     found = interior_types(root, "r")
     assert found["Quiet"].own == frozenset() and found["Quiet"].payloads == frozenset()
-    assert found["Unit"].single and not found["Quiet"].single
-    assert found["Ping"].own == {"interior", "owned", "shares"}
+    # Of cells with one state only, it has one state itself.
+    assert found["Unit"].single and found["Quiet"].single
+    assert found["One"].single and found["Lone"].single
+    assert not found["Two"].single and not found["Pair"].single
+    for name in ("Ping", "Borrowed", "Counted", "Paired"):
+        assert found[name].own >= {"interior", "owned"}, name
     assert found["Ping"].payloads == {("tuple", ())}
+    assert found["Borrowed"].payloads == {("tuple", ())}
+    layouts = TypeLayouts(found)
+    assert not _may_write("&std::cell::Cell<One>", (), True, layouts=layouts)
+    assert not _may_write("&std::cell::Cell<Lone>", (), True, layouts=layouts)
+    assert _may_write("&std::cell::Cell<Two>", (), True, layouts=layouts)
 
 
 def test_an_array_counts_by_its_length():
