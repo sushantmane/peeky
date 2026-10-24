@@ -1208,6 +1208,9 @@ class CodeBlock:
     ranges: tuple  # ((low, high), ...), addresses as the symbols number them
     names: tuple  # sorted
     inlined: bool = False
+    # An inlined call's site: (DW_AT_call_file as written, line, column in bytes or 0
+    # where not given); () where its file or line cannot be read, or for other blocks.
+    call: tuple = ()
 
 
 def code_blocks(root, unit):
@@ -1261,7 +1264,7 @@ def _code_block(die, parent, blocks):
                 if name is not None:
                     names.append(_string(name))
     index = len(blocks)
-    blocks.append(CodeBlock(parent, ranges, tuple(sorted(names)), inlined))
+    blocks.append(CodeBlock(parent, ranges, tuple(sorted(names)), inlined, _call_site(die)))
     if inlined:
         return True
     return all(
@@ -1269,6 +1272,23 @@ def _code_block(die, parent, blocks):
         for child in die.children
         if child.tag in ("DW_TAG_lexical_block", "DW_TAG_inlined_subroutine")
     )
+
+
+def _call_site(die):
+    """An inlined call's (DW_AT_call_file, DW_AT_call_line, DW_AT_call_column or 0), as
+    ``CodeBlock.call`` keeps it; () for another block, or one not read."""
+    if die.tag != "DW_TAG_inlined_subroutine":
+        return ()
+    attributes = die.attributes
+    line = re.fullmatch(r"([0-9]{1,9})\)", attributes.get("DW_AT_call_line", ""))
+    column = re.fullmatch(r"([0-9]{1,9})\)", attributes.get("DW_AT_call_column", "0)"))
+    try:
+        file = _string(attributes.get("DW_AT_call_file"))
+    except ValueError:
+        return ()
+    if line is None or column is None or not file:
+        return ()
+    return file, int(line[1]), int(column[1])
 
 
 def _code_ranges(die):

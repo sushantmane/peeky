@@ -3852,6 +3852,56 @@ def _target(block):
     return int(found[1]) if found and _DROP.match(block.terminator) else None
 
 
+def _covers(block, index, column, line, file, facts):
+    """True if code LLVM inlined from a call at DWARF ``column`` (bytes; 0 where not
+    given) of ``line`` may be call statement ``index``'s of ``block`` (#324): its span
+    holds the column, or it spans another file or none, where a macro's path on the line
+    (``facts.macros``, rustc collapsing the macro's code there) is at the column or the
+    line's text is not known."""
+    if column == 0:
+        return True
+    _, spanned, spanned_line = block.statements[index]
+    if spanned != file:
+        return spanned is None or column in facts.macros or not facts.known
+    span = _span(block, index)
+    if span is None:
+        return True
+    start = facts.to_bytes(span[0]) if spanned_line == line else 1
+    return start <= column and (span[1] > line or column <= facts.to_bytes(span[2]))
+
+
+def _call_operands(text):
+    """The locals a call statement's operands mention (`_11` of `_10 = <u32 as
+    Clone>::clone(move _11) -> [return: bb9, unwind continue];`), not its destination."""
+    plain = _STRING.sub('""', text)
+    head = plain.rpartition(" -> ")[0] or plain
+    _, assigned, value = head.partition(" = ")
+    return frozenset(int(n) for n in _MENTIONED.findall(value if assigned else head))
+
+
+def _callee(text):
+    """A call statement's function as the program calls it: the last segment of its
+    path, without generic arguments (`clone` of `<u32 as Clone>::clone(move _11)`,
+    `parse` of `core::str::<impl str>::parse::<u32>(…)`); "" where not told."""
+    head = _STRING.sub('""', text).rpartition(" -> ")[0]
+    value = head.partition(" = ")[2] or head
+    depth = 0
+    for at in range(len(value) - 1, -1, -1):
+        if value[at] == ")":
+            depth += 1
+        elif value[at] == "(":
+            depth -= 1
+            if depth == 0:
+                value = value[:at]
+                break
+    else:
+        return ""
+    if value.endswith(">") and "::<" in value:
+        value = value.rpartition("::<")[0]
+    name = value.rpartition("::")[2]
+    return name if re.fullmatch(r"(?:r#)?\w+", name) else ""
+
+
 def _scope(block, index):
     try:
         return block.scopes[index]
@@ -5393,6 +5443,69 @@ class OwnedLocals:
             or body.live_ahead(position, drops=True) & body.maybe_initialized(position) & dropped
             for position in positions
         )
+
+    def inlined_reads(
+        self, hashed, variable_name, line, path, columns, block=None, free_types=frozenset()
+    ):
+        """For the frame's local ``variable_name``, at a stop where its line starts but
+        code LLVM inlined from calls on ``line`` runs below the stop's address (#324:
+        `let y = x.clone();`, whose inlined `clone` reads `x` before the line's first row
+        of its own, where LLDB stops): ([the calls' paths, as the MIR names them], True)
+        if one of those calls may read it, being given it or what may point into it
+        (``Body.lent_from``; in unsafe code, any raw pointer); ([], False) if none can;
+        None if not understood (a call no statement of the line explains). ``columns``:
+        the calls' DWARF columns on the line (bytes; 0 where not given), or None where
+        the stop's address is not known: then every call the IR shows inlined on the
+        line counts. ``block`` and ``free_types`` as for ``borrow_live``."""
+        if columns is not None and not columns:
+            return [], False
+        site = self._site(hashed, line, path)
+        if site is None:
+            return None
+        body, function = site[0], site[1]
+        if not body.supported:
+            return None
+        local = self._local(body, variable_name, line, path, block, site)
+        if local is None:
+            return None
+        if columns is None:
+            columns = tuple(sorted(function.inlined.get(line, ())))
+        if not columns:
+            return [], False
+        facts = self._facts(function, line, None)
+        foreign = may_invoke_macro(self.texts.get(function.file), line)
+        calls = [
+            (number, len(each.statements) - 1)
+            for number, each in sorted(body.blocks.items())
+            if each.statements
+            and _call(each, len(each.statements) - 1)
+            and body.line_code(number, len(each.statements) - 1, line, function.file, foreign)
+        ]
+        matched = set()
+        for column in columns:
+            found = [
+                (number, index)
+                for number, index in calls
+                if _covers(body.blocks[number], index, column, line, function.file, facts)
+            ]
+            if not found:
+                return None
+            matched.update(found)
+        lent = body.lent_from(local, self.type_parameters(hashed), free_types)
+        names = []
+        for number, index in sorted(matched):
+            text = body.blocks[number].statements[index][0]
+            given = _call_operands(text)
+            if (
+                local in given
+                or given & lent
+                or (
+                    self.unsafe_code
+                    and any(_RAW_POINTER.search(body.types.get(n) or "*const ") for n in given)
+                )
+            ):
+                names.append(_callee(text))
+        return names, bool(names)
 
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns

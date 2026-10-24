@@ -1385,6 +1385,16 @@ holds for integer locals too.
   refused.
 - A breakpoint on `+ f();` under `let t = s.a` is refused: the MIR shows it past the read. So is
   any stop that the MIR doesn't explain.
+- Some calls are inlined even in an unoptimized build: an integer's `clone`, and your own
+  `#[inline(always)]` functions. Their code may come before the line's first instruction of its
+  own, where the line's breakpoint stops.
+- So at a breakpoint on `let y = x.clone();`, `x` is refused: the inlined `clone` may already have
+  read it. Peeky reads where each inlined call is made from, and its addresses, from the build's
+  debug information.
+- Only what such a call is given, or what may point into it, is refused. In
+  `let y = z.clone() + x;`, `z` is refused, but `x` can change: the line reads it after the stop.
+- A `session step` from the line before stops at the inlined call's first instruction, before it
+  runs. There, `x` can change.
 - A line in another file, a macro's code, is named with its file:
   `(at alloc/src/macros.rs:113)` for `format!`.
 - The refusal says where a change works instead: before that statement starts. That is a stop
@@ -1455,7 +1465,9 @@ Rows withheld at such a stop say why, as `session inspect` does:
 - `[not settable: a statement under way read it (line 17)]`;
 - ``[not settable: copied into `n` (line 35)]``;
 - `[not settable: the program may hold a copy (line 34)]`, for your binding's copy;
-- `[not settable: part-way through line 12]`, after a step back from a call.
+- `[not settable: part-way through line 12]`, after a step back from a call;
+- ``[not settable: line 20's inlined `clone` may have read it]``, at a breakpoint past an inlined
+  call.
 
 To get a stop where values can change, use `session continue --to LINE`, or a `session step` that
 lands on a statement's first line.
