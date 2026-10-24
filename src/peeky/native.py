@@ -6765,7 +6765,9 @@ class NativeSession:
         start on the line (None: it is not), where a range-`for`'s binding there is not
         declared yet; where the loop's header names the local too, or any statement's header
         names it before the line's declaration (#286), a stop Peeky cannot tell to be past
-        that header is hedged (#283). ``siblings``: the frame's rows, when known,
+        that header is hedged (#283). Where the line also names it outside the scope of the
+        declaration that hides it, before it or after its block ends, the note is hedged at
+        every stop (#293). ``siblings``: the frame's rows, when known,
         to say whether the debugger lists what the code names."""
         # An optimized build's local in registers is listed all the same (#173).
         found = shown_declaration(self.declarations, name, self._block_pc(frame), unstored=True)
@@ -6813,7 +6815,7 @@ class NativeSession:
                 and span[1] > line
             )
             storage = statements.block_storage(at, base, after, True, body, own=own, others=others)
-            header = None
+            header, outside = None, None
             if storage:
                 # A range-`for` header holding the line that names the outer local before
                 # its binding exists: running it may read that local, or not (#283).
@@ -6859,9 +6861,20 @@ class NativeSession:
                         )
                         if before != storage:
                             storage = ("binding-unsure", *storage[1:])
+                if (
+                    storage
+                    and header is None
+                    and storage[0] not in ("binding-unsure", "binding-header", "bodies")
+                ):
+                    # Code on the line naming it outside that declaration's scope: before
+                    # it (`use(t); { static long t = 5; }`), or after its block ends (`do {
+                    # static long t = 5; } while (t--);`) may read the outer local.
+                    outside = statements.named_outside(
+                        at, base, after, bool(entered), own, others, body
+                    )
             if storage:
                 origin = preprocessed.origins[storage[1] - 1]
-                storage = None if origin is None else (storage[0], *origin, header)
+                storage = None if origin is None else (storage[0], *origin, header, outside)
             verdicts.add(storage)
         if failure is None and verdicts == {False}:
             return None
@@ -6886,7 +6899,7 @@ class NativeSession:
                 f"`{base}` a block around it declares, not this local ({why}), so a change "
                 "to it may not reach that code",
             )
-        kind, declared_in, at, header = next(iter(verdicts))
+        kind, declared_in, at, header, outside = next(iter(verdicts))
         place = f"line {at}" if declared_in == source else f"{Path(declared_in).name}:{at}"
         listed = f"`{base} @ {Path(declared_in).name}:{at}`"
         if siblings is not None:
@@ -6923,7 +6936,21 @@ class NativeSession:
                 f", but the `{header}` statement's header names `{base}` before that "
                 "declaration, and Peeky cannot tell whether running the header reads this local"
             )
-        unsure = kind in ("binding-unsure", "binding-header") or header is not None
+        elif outside is not None:
+            where = {
+                "before": "before that declaration",
+                "after": "after that declaration's scope ends",
+                "both": "before that declaration and after its scope ends",
+            }[outside]
+            what += (
+                f", but the line also names `{base}` {where}, and Peeky cannot tell whether "
+                "that code reads this local"
+            )
+        unsure = (
+            kind in ("binding-unsure", "binding-header")
+            or header is not None
+            or outside is not None
+        )
         names, would = ("may name", "may") if unsure else ("names", "would")
         return Withholding(
             f"the code here {names} {what}: this row is the outer local of that name",

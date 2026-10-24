@@ -1082,6 +1082,15 @@ isn't the local. Otherwise Peeky counts every `t` the header spells. That includ
 declares itself, as in `for (long t = 0; …)`, or a lambda's parameter `t`. There the row may say
 `may not be what the code reads` though the plain note would be true.
 
+The line can also name the outer local outside the scope of the declaration that hides it. For
+example, `use(t); { static long t = 5; use(t); }` reads the outer `t` before the block. And
+`do { static long t = 5; use(t); } while (t--);` reads it in the condition, after the block ends.
+There the row says `may not be what the code reads` at every stop on the line. The note says
+whether the line names `t` before that declaration, after its scope ends, or both. Peeky can't
+tell whether that code reads this local, or another variable of that name. As with headers, it
+counts every `t` the line spells, except a member's name and a name a declaration there declares.
+In a lambda's own frame, only the lambda's body counts.
+
 Peeky reads the source as the build's compiler preprocesses it (`-E`, with the same flags). So
 whatever a macro expands to counts, and only what a conditional keeps. A prototype's parameter
 names don't count. Where Peeky can't read the source that way, the row says

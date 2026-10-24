@@ -1755,6 +1755,113 @@ def test_an_if_constexpr_or_consteval_block_hides_the_outer_local():
     assert statements.header_before(8, "t", 2) == ("if", 8, 8, False)
 
 
+SAME_LINE_SCOPES = """long f(long x, P p) {
+    long t = x;
+    do { static long t = 5; use(t); } while (t-- > 0);
+    use(t); { static long t = 6; use(t); }
+    { static long t = 7; use(t); } use(t);
+    { use(t); static long t = 8; use(t); }
+    use(t); { static long t = 9; use(t); } use(t);
+    { static long t = 10;
+      use(t); } use(t);
+    { typedef int t; } if (t) { static long t = 11; use(t); }
+    { long u = t; { extern long t; use(t + u); } }
+    { long t = 12; use(t); } { static long t = 13; use(t); }
+    { static long t = 14; use(t); } { static long t = 15; use(t); }
+    { static long t = 16; if (t) { use(t); } }
+    if (t) { static long t = 17; use(t); }
+    use(p.t); { static long t = 18; use(t); }
+    { long t(long); use(t(2)); }
+    { enum { t = 19 }; use(t); }
+    { static long a = t, t = 20; use(a + t); }
+    return t;
+}
+"""
+SAME_LINE_SCOPES_CPP = """long f(long x) {
+    long t = x;
+    use(t); { auto [t, u] = make(1)[0]; use(t + u); }
+    { auto [t, u] = make(1)[0]; use(t + u); } use(t);
+    for (auto [t, u] : make(1)) { use(t); } use(t);
+    { enum { t = 6 }; use(t); }
+    auto g = [&] { { static long t = 7; use(t); } return t; };
+    long v = [](long t) { long r = t; { enum { t = 8 }; r += t; } return r + t; }(t);
+    return t + g() + v;
+}
+"""
+
+
+@pytest.mark.parametrize("raw_strings", [False, True])
+def test_a_line_naming_the_local_outside_a_declarations_scope_says_where(raw_strings):
+    # #293: `do { static long t = 5; use(t); } while (t-- > 0);` and `use(t); { static long
+    # t = 6; use(t); }` said the code names the block's `static`, though the `while`
+    # condition runs after that `t` leaves scope, and the first call before the block:
+    # both name the outer `t`. Where the line names the local outside the scope of the
+    # declaration hiding it, Peeky says where: before it, after its scope ends, or both.
+    statements = Statements(SAME_LINE_SCOPES, raw_strings=raw_strings)
+    found = {line: statements.named_outside(line, "t", 2) for line in range(3, 21)}
+    assert found == {
+        3: "after",
+        4: "before",
+        5: "after",
+        # Before the declaration in its own block.
+        6: "before",
+        7: "both",
+        # A block over two lines: on its last, the code after it.
+        8: None,
+        9: "after",
+        # A header after a block that closed (not ``header_before``'s: it is past one).
+        10: "after",
+        # Read in an initializer before the block that hides it.
+        11: "before",
+        # Another block's own `t`: hedged, though it is another variable (lexical).
+        12: "before",
+        # Each block's own `static`; one in scope throughout; a header before the
+        # declaration (``header_before``'s); a member; a function's and an enumerator's
+        # own declarators.
+        **{line: None for line in (13, 14, 15, 16, 17, 18)},
+        # An initializer before the declarator `t` in its own statement.
+        19: "before",
+        20: None,
+    }, found
+    assert statements.header_before(15, "t", 2) == ("if", 15, 15, False)
+    # The scope at a name: a block closed before it hides nothing there, though what
+    # the line declares up to it is the `static`.
+    line = SAME_LINE_SCOPES.splitlines()[2]
+    begin = statements.starts[2]
+    name = begin + line.index("t-- > 0")
+    assert statements.block_storage(3, "t", 2, True, until=name + 1) == ("static", 3)
+    assert statements.block_storage(3, "t", 2, True, until=name + 1, scope=name) is False
+    inside = begin + line.index("use(t)") + 4
+    found = statements.block_storage(3, "t", 2, True, until=inside + 1, scope=inside)
+    assert found == ("static", 3)
+    # A name nothing declares again: nowhere outside.
+    assert statements.named_outside(3, "u", 2) is None
+
+
+def test_a_cpp_line_naming_the_local_outside_a_declarations_scope_says_where():
+    # #293 in C++: a structured binding's scope is its block, or its loop; a lambda's
+    # block is its own, and in its frame (``body``) only its body counts.
+    statements = Statements(SAME_LINE_SCOPES_CPP, raw_strings=True)
+    found = {line: statements.named_outside(line, "t", 2) for line in range(3, 9)}
+    assert found == {
+        3: "before",
+        4: "after",
+        5: "after",
+        6: None,
+        # The lambda's `return t` (by reference, the outer `t`), after its block.
+        7: "after",
+        # Unplaced, the lambda's parameter and the call's argument count too.
+        8: "both",
+    }, found
+    assert statements.block_storage(5, "t", 2, True) == ("binding", 5)
+    # The function holding a lambda: nothing its block declares hides `t` (#290).
+    assert statements.named_outside(7, "t", 2, others=True) is None
+    # The lambda's own frame (its parameter `t`): `long r = t` before its block, and
+    # `return r + t` after it; not the call's argument, outside the body.
+    assert statements.named_outside(8, "t", None, body=True) == "both"
+    assert statements.named_outside(8, "t", 2, others=True) is None
+
+
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():
     # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
     # test and binding, its range's cleanup), all emitted after its range expression,

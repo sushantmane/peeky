@@ -2602,6 +2602,77 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
         )
 
 
+SAME_LINE_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    do { static long q = 5; use(q); } while (q-- > 0);
+    use(q); { static long q = 6; use(q); }
+    use(q); { static long q = 7; use(q); } use(q);
+    if (q) { static long q = 8; use(q); } use(q);
+    { static long q = 9; use(q); } { static long q = 10; use(q); }
+    return q;
+}
+"""
+
+
+@pytest.mark.parametrize("entered", ["caller", None, True, False])
+def test_a_line_naming_the_local_outside_a_declarations_scope_hedges_its_note(tmp_path, entered):
+    # #293: `do { static long q = 5; use(q); } while (q-- > 0);` gave the outer `q` the
+    # unhedged "not what the code reads: the code here names the block's `static`", though
+    # the `while` condition runs after that `q` leaves scope; and so did `use(q); { static
+    # long q = 6; use(q); }`, whose first call runs before the block. entered: as in the
+    # header tests above; a stop past the line's first instruction has not run the code
+    # after the block, and Peeky does not tell whether it has run the code before it.
+    session = preprocessing_session(tmp_path, {"a.c": SAME_LINE_UNIT})
+    (tmp_path / "a.c").write_bytes(SAME_LINE_UNIT.split(b"\n", 1)[1])
+    where = "past" if entered is False else None
+
+    def note(line):
+        frame = stopped(SAME_LINE_UNIT, line, where)
+        entering = None if entered == "caller" else (lambda: entered)
+        return session._block_storage("q", frame, "a.c", line, entering=entering)
+
+    def static(line):
+        return f"the block's `static` `q` (line {line}), which the debugger does not list"
+
+    def outside(line, where):
+        return (
+            "may not be what the code reads",
+            f"the code here may name {static(line)}, but the line also names `q` {where}, and "
+            "Peeky cannot tell whether that code reads this local: this row is the outer local "
+            "of that name",
+        )
+
+    expected = {
+        3: outside(3, "after that declaration's scope ends"),
+        4: outside(4, "before that declaration"),
+        5: outside(5, "before that declaration and after its scope ends"),
+        # The header's own hedge (#286) where it may not have run; past it, the call after
+        # the block still names `q`.
+        6: outside(6, "after that declaration's scope ends")
+        if entered is False
+        else (
+            "may not be what the code reads",
+            f"the code here may name {static(6)}, but the `if` statement's header names `q` "
+            "before that declaration, and Peeky cannot tell whether running the header reads "
+            "this local: this row is the outer local of that name",
+        ),
+        # Each block's own `static`: the plain note stays.
+        7: (
+            "not what the code reads",
+            f"the code here names {static(7)}: this row is the outer local of that name",
+        ),
+    }
+    for line, want in expected.items():
+        found = note(line)
+        assert (found.label, str(found)) == want, (line, found)
+        would = "may not" if want[0].startswith("may") else "would not"
+        assert found.refusal.endswith(f"so a change to it {would} reach that code"), found.refusal
+        assert want[1].split(": this row")[0][len("the code here ") :] in found.refusal, (
+            found.refusal
+        )
+
+
 LAMBDAS_UNIT = b"""# 1 "a.c"
 long f(void) {
     long q = 1;
@@ -2639,11 +2710,14 @@ def test_a_lambdas_block_counts_only_in_its_own_frame(tmp_path, span):
         )
         assert "may not reach that code" in found.refusal
     else:
-        # The lambda's own frame, or one Peeky cannot place: its enumerator hides `q`.
+        # The lambda's own frame, or one Peeky cannot place: its enumerator hides `q`, but
+        # `long r = q` before its block and `return r + q` after it name `q` too (#293).
         assert (found.label, str(found)) == (
-            "not what the code reads",
-            "the code here names the block's enumerator `q` (line 3), a constant: this row is "
-            "the outer local of that name",
+            "may not be what the code reads",
+            "the code here may name the block's enumerator `q` (line 3), a constant, but the "
+            "line also names `q` before that declaration and after its scope ends, and Peeky "
+            "cannot tell whether that code reads this local: this row is the outer local of "
+            "that name",
         )
 
 
