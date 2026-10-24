@@ -3601,13 +3601,13 @@ class _Restores:
     The value is the worker's ``restore`` for the change, read at that write: only a
     value whose text is all of it."""
 
-    def __init__(self, probe, points):
-        self.probe = probe
+    def __init__(self, points):
         self.points = [point for point in points if point["value"] == BEFORE]
         self.keys = {restore_key(point["name"]) for point in self.points}
         # {selector: the latest change the probe made to it, where and when}.
         self.ledger = {}
-        # Each stop at a watched line: (sequence, thread, function, depth).
+        # Each stop at a watched line: (sequence, thread, function, source, depth, the
+        # watched lines it is at).
         self.entered = []
         # {watched line: the restore lines it watches for}.
         self.watched = {}
@@ -3662,8 +3662,18 @@ class _Restores:
         """Count a stop; where it is at a watched line, it may be a call's beginning."""
         self.sequence += 1
         here["sequence"] = self.sequence
-        if self.ended is None and any(number in self.watched for number in matched):
-            self.entered.append((self.sequence, here["thread"], here["function"], here["depth"]))
+        at = frozenset(number for number in matched if number in self.watched)
+        if self.ended is None and at:
+            self.entered.append(
+                (
+                    self.sequence,
+                    here["thread"],
+                    here["function"],
+                    here["source"],
+                    here["depth"],
+                    at,
+                )
+            )
             if len(self.entered) >= MAX_SET_AT_HIT:
                 self.ended = (
                     self.sequence,
@@ -3683,9 +3693,10 @@ class _Restores:
                 "restore": restore if isinstance(restore, dict) else {},
             }
 
-    def value(self, name, hit, here):
-        """(the literal to write back for `name=@before` at hit ``hit`` of its line, at
-        stop ``here``, the change it undoes), or Refused saying why not."""
+    def value(self, name, line, hit, here):
+        """(the literal to write back for `name=@before` at hit ``hit`` of ``line`` (the
+        build's numbering), at stop ``here``, the change it undoes), or Refused saying why
+        not."""
         record = self.ledger.get(restore_key(name))
         if record is None:
             raise Refused(
@@ -3716,7 +3727,7 @@ class _Restores:
         call = f"the call of {record['shown']} that changed `{name}` at {where}"
         if record["thread"] != here["thread"]:
             other = "on another thread"
-        elif record["function"] != here["function"]:
+        elif (record["function"], record["source"]) != (here["function"], here["source"]):
             other = f"in {here['shown']}"
         elif None in (record["depth"], here["depth"]):
             other = "where Peeky could not count the stack's frames"
@@ -3741,17 +3752,19 @@ class _Restores:
                 f"Peeky stopped watching for new calls ({self.ended[1]}), so it cannot tell "
                 f"that this stop is in {call}",
             )
+        # Its first line's stops on this thread at this depth or above: one at a depth
+        # Peeky could not count may be one too.
         same = [
             event
             for event in self.entered
-            if event[1] == here["thread"]
-            and event[2] == here["function"]
-            and type(event[3]) is int
-            and event[3] <= here["depth"]
+            if event[1:4] == (here["thread"], here["function"], here["source"])
+            and (event[4] is None or event[4] <= here["depth"])
         ]
+        # The call began at the first line of a function on this line.
+        firsts = {first for first, lines in self.watched.items() if line in lines}
         began = [event for event in same if event[0] <= record["sequence"]]
-        if not began or began[-1][3] != record["depth"]:
-            firsts = ", ".join(map(str, sorted(self.watched))) or "none"
+        if not began or began[-1][4] != record["depth"] or not began[-1][5] & firsts:
+            firsts = ", ".join(map(str, sorted(firsts))) or "none"
             raise Refused(
                 "MUTATION_REJECTED",
                 f"Peeky did not see {call} begin, so it cannot tell that call from another. "
@@ -3945,7 +3958,7 @@ def run_probe(
         for at, hit, name, value in probe.set_at
     ]
     # `@before` restores (#305), and the changes and calls they are judged by.
-    restores = _Restores(probe, points)
+    restores = _Restores(points)
     # Stops seen per breakpoint line (the build's numbering): a --set-at's hit counts its
     # own line's stops, in any function.
     seen = {}
@@ -4245,6 +4258,7 @@ def run_probe(
             here = {
                 "thread": body.get("threadId"),
                 "function": frame.get("name"),
+                "source": frame.get("source", {}).get("path"),
                 "shown": snapshot.get("instance") or display_function(frame.get("name")) or "?",
                 "depth": snapshot.get("depth") if type(snapshot.get("depth")) is int else None,
                 "callers": [_frame_id(caller) for caller in snapshot["frames"][1:]],
@@ -4327,7 +4341,7 @@ def run_probe(
                 try:
                     written = value
                     if value == BEFORE:
-                        written, undone = restores.value(name, hit, here)
+                        written, undone = restores.value(name, point["build_line"], hit, here)
                     applied = apply_set(
                         worker, stop, name, written, restorable=restores.wanted(name)
                     )

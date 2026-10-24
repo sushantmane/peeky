@@ -318,6 +318,9 @@ def test_a_new_call_since_the_change_is_refused(monkeypatch):
     message = refusal(run(monkeypatch, worker, flip()))
     assert "and the first line of f ran again since, at the same stack depth or above" in message
     assert worker.writes == [(GUARD, "0")]
+    # A first-line stop whose depth Peeky could not count may be a new call too.
+    stops = [{"line": FIRST}, {"line": GUARD}, {"line": FIRST, "depth": None}, {"line": FLAT}]
+    assert "ran again since" in refusal(run(monkeypatch, Calls(stops), flip()))
     # A deeper call (recursion) between the change and the restore is no new call of this one.
     stops = [
         {"line": FIRST},
@@ -335,6 +338,15 @@ def test_a_call_not_seen_to_begin_is_refused(monkeypatch):
     message = refusal(run(monkeypatch, Calls(stops), flip()))
     assert "Peeky did not see the call of f that changed `x` at line 5@1 begin" in message
     assert "(line 2)" in message
+    # A stop at the first line of a function on another restore's line is not this call's
+    # beginning.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE), (9, 1, "x", BEFORE)),
+    )  # fmt: skip
+    worker = Calls([{"line": 3}, {"line": GUARD}, {"line": FLAT}], firsts={FLAT: [FIRST], 9: [3]})
+    message = refusal(run(monkeypatch, worker, request))
+    assert "Peeky did not see the call of f that changed `x` at line 5@1 begin" in message
     # A first line the worker did not find watches nothing.
     message = refusal(run(monkeypatch, Calls(passes("1"), firsts={}), flip()))
     assert "(line none)" in message
