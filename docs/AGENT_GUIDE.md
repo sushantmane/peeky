@@ -50,7 +50,7 @@ the commands.
    whose change its build rules out is refused before it runs, with exit 2 (2.3, 7.1 to 7.3).
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another; other hits only observe.
    `--set-at LINE@HIT` changes at any line's hit, `--at`'s too; `@all`: each stop while the probe
-   runs, at most 100 (2.8).
+   runs, at most 100; `x=@before` undoes an earlier change (2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can
    stop several times per pass. Read `warnings`, and each row's `stop` and `function`. A loop
    header may stop only before its loop: probe the body's first line (2.2).
@@ -178,9 +178,8 @@ the commands.
 - Each row's `function` tells a function from a generator or lambda on the same line. Session
   states and `inspect` name the stopped function. A line shared by a function and a closure or
   lambda can stop in each (Java: in one; 7.3).
-- `output_complete: false`: `output` isn't proven whole (2.6). `program_ended: true`: the program
-  ended. `--until hits` (for slow exits) adds `output_after_last_hit: true`: the program ran on
-  past its last hit.
+- `output_complete: false`: `output` isn't proven whole (2.6). `--until hits` (for slow exits)
+  adds `output_after_last_hit: true`: the program ran on past its last hit.
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A
   failed selector shows `{"error": ...}`. `rows` holds the same, one entry per hit, phase and
   selector. `phase` is `observed`, `after-set` (after your intervention) or `returned`. `line` is

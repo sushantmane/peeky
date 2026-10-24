@@ -1329,6 +1329,12 @@ payer=0` credits the first and third expenses to other friends in one run.
 The value must be the stopped frame's own: a field through a `&mut` parameter is refused before
 the run, `@all` or not.
 
+`--set-at LINE@HIT NAME=@before` writes back an integer as it was before the probe's change at
+the same hit ([COOKBOOK 2.8](../COOKBOOK.md#skip-a-statement-restore-with-before)). To find where
+each function on the restore line begins, Peeky reads the crate's debug information once more
+before the run. A restore line in an async fn or async block is refused before the run: each poll
+runs on part-way through it, so its calls can't be told apart.
+
 Peeky never changes these:
 
 - anything through a reference, a raw pointer or a `Box`

@@ -52,7 +52,9 @@ TABLES = {
             "sets": "JSON list of requested interventions: [name, value] for --set (at "
             "set_hit of line), [name, value, 'LINE@HIT'] for --set-at (at hit HIT of LINE, "
             "counting that line's own stops, in the original's numbering), or "
-            "[name, value, 'LINE@all'] for one made at every stop of LINE",
+            "[name, value, 'LINE@all'] for one made at every stop of LINE; a value of "
+            "'@before' writes back the value from just before the probe's change to name at "
+            "the same hit, in the same call",
             "set_hit": "Hit at which the --set interventions were applied; NULL without --set",
             "hits_requested": "The probe's --hits: a number, or 'all'",
             "args": "JSON list of the arguments the program received (--arg, else the "

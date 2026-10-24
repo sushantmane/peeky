@@ -4312,7 +4312,9 @@ def run_probe(
             for name, value, hit, point in due:
                 if point is not None and not (point["hit"] == ALL and point["changes"]):
                     say(
-                        f"--set-at {probe.program}:{point['line']}@{point['hit']}: setting {name}"
+                        f"--set-at {probe.program}:{point['line']}@{point['hit']}: "
+                        + ("restoring" if value == BEFORE else "setting")
+                        + f" {name}"
                         + (" at every stop of the line" if point["hit"] == ALL else "")
                         + (
                             f" (line {point['build_line']} of the candidate)"

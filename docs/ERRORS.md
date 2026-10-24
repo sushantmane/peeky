@@ -241,6 +241,29 @@ status 2. The build rules a change out for:
 For a register, the hint names a candidate edit with `std::hint::black_box`
 ([Rust 6.6](lang/rust-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 
+### A restore with `@before`
+
+`--set-at LINE@HIT name=@before` writes back the value `name` held just before the probe's latest
+change to it ([COOKBOOK 2.8](COOKBOOK.md#skip-a-statement-restore-with-before)). Peeky makes it
+only where it knows that value exactly. Otherwise the restore is refused, and the probe ends, as
+for any `--set-at` refusal. The hint says to give the value itself, or to try a candidate edit.
+
+| Refused at the stop | The message says |
+| --- | --- |
+| No change to that name before this stop | `` `trend` has no earlier change to undo `` |
+| The latest change was at another hit of its line | `` `trend` was last changed at hit 2 of line 15, not at hit 3 `` |
+| A text, an object, or a Java `float` or `double` | `cannot be written back exactly: …` |
+| Another thread, function, depth or callers | `` `trend` was changed at line 15@2 in find_turns, and this stop is 1 call deeper (a recursive call) `` |
+| The call that made the change wasn't seen to begin | `Peeky did not see the call of … begin` |
+| The function's first line ran again since the change | `and the first line of find_turns ran again since, at the same stack depth or above` |
+| The watch on first lines ended: the debugger moved one, or 1000 stops | `Peeky stopped watching for new calls (…)` |
+
+Before the program runs, with exit status 2, the request itself is refused (`INVALID_REQUEST`)
+where no other `--set` or `--set-at` changes that name, or `@before` is given to `--set`. So is
+the restore (`MUTATION_REJECTED`, `` `@before` cannot be used here ``) where Peeky can't watch a
+function on its line for new calls. That is a Rust async body, a Python generator or coroutine, a
+Python lambda, comprehension or class body, or a function whose first line Peeky can't place.
+
 ### A field through a C pointer parameter
 
 When the program's sources call the function only once, the message names that call:
