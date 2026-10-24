@@ -55,11 +55,12 @@ fn find_turns(height: &[i64]) -> String {
 }
 
 async fn total(height: &[i64]) -> i64 {
-    let mut sum: i64 = 0;
-    for h in height {
-        sum += h; // ADD
+    let mut count: i64 = 0;
+    for _ in height {
+        count += 1; // ADD
     }
-    sum // SUM
+    let doubled = count * 2; // SUM
+    doubled
 }
 
 fn main() {
@@ -124,8 +125,8 @@ def test_the_guard_flip_skips_the_move_with_two_set_ats(crate, capsys):
 def test_a_restore_in_an_async_body_is_refused_before_the_run(crate, capsys):
     add, total = line_of("ADD"), line_of("SUM")
     code, result = probe(
-        capsys, crate, "--at", f"src/main.rs:{add}", "--set-at", f"{add}@1", "sum=5",
-        "--set-at", f"{total}@1", "sum=@before",
+        capsys, crate, "--at", f"src/main.rs:{add}", "--set-at", f"{add}@1", "count=5",
+        "--set-at", f"{total}@1", "count=@before",
     )  # fmt: skip
     assert code == 2 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "a coroutine or async body" in result["error"]["message"], result["error"]
