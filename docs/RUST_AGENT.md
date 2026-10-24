@@ -383,10 +383,14 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   That is `Body.read_copies_at`, a must-analysis met by intersection over every way into a block.
   It counts a `copy` or `move` of an overlapping place (`_reads_part`), and a read through a pointer
   surely made from a borrow of the whole local. A temporary computed from either counts too.
+- A write that may overlap the changed part ends what it knows: `_written_place` and `_apart`, or a
+  write through a pointer surely into the local. Only a write surely apart keeps it.
 - A temporary computed from a binding's copy doesn't count as read: the statement read the copy.
   It counts only as the binding's (#192), through `copy_undoes` (`reads="taken"`, or `"copied"`
   where it may). A refusal names the bindings it was surely computed from (`reads="sources"`),
   which stays true after the binding is assigned again. Where it may be, `copy_sources` walks back.
+- It names them only where every place has such a copy, from bindings common to all. Where each
+  place holds a sure copy, some another way, it says "the program already holds a copy of it".
 - It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
   a coroutine's body. `rust._copy_reason` decides the wording.
 - Otherwise it hedges, by what each other reading finds:

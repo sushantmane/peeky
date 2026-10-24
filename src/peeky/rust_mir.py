@@ -1489,6 +1489,13 @@ class Body:
             gone = int(ended[1])
             kept = frozenset(pair for pair in origins if pair[0] != gone)
             return read - {gone}, taken - {gone}, own - {gone}, kept
+        # A write to a part of it that may overlap the part a change makes (or through a
+        # pointer surely into it): what was read before holds an earlier value (#300).
+        steps = _written_place(text, local)
+        if steps is not None and not _apart(steps, projection):
+            return empty, empty, empty, empty
+        if (through := _WRITE_THROUGH.match(text)) and int(through[1]) in own:
+            return empty, empty, empty, empty
         parts, _, _, at, named = self._copy_parts()
         found = at.get((number, index))
         if found is None:
@@ -2765,6 +2772,35 @@ def _reads_part(value, local, projection, formatted=False):
         if read and _overlaps(steps, projection):
             return True
     return False
+
+
+# A write through a local's pointer: `(*_6) = …`, `((*_6).0: u32) = …`.
+_WRITE_THROUGH = re.compile(r"^\(+\*_([0-9]+)\)[^=]* = ")
+
+
+def _written_place(text, local):
+    """The steps of the place of ``local`` the statement ``text`` assigns (`(_1.0: u32)
+    = …`: [("field", 0)]; `_1[_5] = …`: [("index", None)]), or None where it assigns
+    none of it (#300)."""
+    written = re.match(rf"\(*_{local}\b", text)
+    if written is None:
+        return None
+    place = _place_steps(text, written.end() - len(f"_{local}"))
+    if place is None or not text.startswith(" = ", place[2]):
+        return None
+    return place[0]
+
+
+def _apart(steps, projection):
+    """Whether the place ``steps`` is surely apart from the part ``projection`` (another
+    field, another constant element), so a write to it leaves that part as it was; never
+    for the whole local (()) or a part not known (None)."""
+    if not projection:
+        return False
+    return any(
+        mine != theirs and mine[0] == theirs[0] and None not in (mine[1], theirs[1])
+        for mine, theirs in zip(steps, projection)
+    )
 
 
 def _root_access(text, local, projection=(), formats=None):

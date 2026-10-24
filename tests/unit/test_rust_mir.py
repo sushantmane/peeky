@@ -2789,7 +2789,12 @@ def raw_eq_session(owned, projection=()):
     session._settable_names = lambda source, line: []
     frame = {"name": f"rota::plan::{HASH}", "line": 39, "column": 20}
     frame["source"] = {"path": "/w/src/main.rs"}
-    return lambda name: session.mid_statement({"name": name}, frame, "breakpoint")
+
+    def why(name):
+        return session.mid_statement({"name": name}, frame, "breakpoint")
+
+    why.session = session
+    return why
 
 
 def withheld(owned, names=ALL_NAMES):
@@ -2924,9 +2929,13 @@ def test_a_refusal_names_each_variable_it_cannot_trace_by_what_it_is():
     )
 
 
-def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be_did():
-    # Review of #300: the places a stop can be were joined, so one with a read the MIR
-    # shows made the claim for all, though another held only what may have been read.
+A, B = (1, 0), (2, 0)  # two places a stop on the line can be
+NONE = [(A, set()), (B, set())]
+
+
+def copy_reason(any_, explicit=(), value=None, traced=None, **others):
+    """``rust._copy_reason`` over these readings, of a fake crate where `_20` is the
+    binding `n` (on line 20), `_5` is computed from it, and `e` a reference on line 9."""
     from types import SimpleNamespace
 
     from peeky.rust import _copy_reason
@@ -2934,17 +2943,19 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     proofs = SimpleNamespace(
         copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", min(held))},
         copy_names=lambda hashed, held: ["n"],
-        # `_5` is computed from the binding `_20`.
         copy_sources=lambda hashed, held, among: frozenset({20}) & among if held else held,
         untraced_reads=lambda hashed, held: ({("src/main.rs", 9)}, [("e", "reference")]),
     )
-    a, b = (1, 0), (2, 0)
+    found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
+    found |= {"taken": [], "sources": [], "copied": [], "bindings": [], "whole": value}
+    found |= others
+    return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
 
-    def reason(any_, explicit=(), value=None, traced=None, **others):
-        found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
-        found |= {"taken": [], "sources": [], "copied": [], "bindings": [], "whole": value}
-        found |= others
-        return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
+
+def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be_did():
+    # Review of #300: the places a stop can be were joined, so one with a read the MIR
+    # shows made the claim for all, though another held only what may have been read.
+    reason, a, b, none = copy_reason, A, B, NONE
 
     assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})]) == ("read", None)
     # Where a reading is not known, no more than that it may have read it.
@@ -2976,9 +2987,9 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     for taken in ([(a, {20}), (b, {20})], [(a, {20}), (b, {5})], [(a, {5}), (b, {5})]):
         sure = {"taken": taken, "sources": bindings, "copied": taken, "bindings": bindings}
         assert reason(taken, none, none, none, **sure) == ("named", ["n"]), taken
-        # Where Peeky cannot tell which binding gave it, it says that it may have.
+        # Where Peeky cannot tell which binding gave it, only that the program holds one.
         sure["sources"] = []
-        assert reason(taken, none, none, none, **sure)[0] == "may", taken
+        assert reason(taken, none, none, none, **sure)[0] == "holds", taken
     # Nor read: a temporary computed from the binding's copy.
     copied = [(a, {5}), (b, set())]
     assert reason(copied, none, copied, copied, copied=copied, bindings=bindings) == (
@@ -2996,6 +3007,83 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
         "uses `n` (at line 20), which may hold the program's own copy of it or uses `e` (at "
         "line 9), a reference Peeky can't trace that may point at it",
     )
+
+
+def test_a_binding_is_named_only_where_it_gave_the_copy_at_every_place():
+    # Review round 2 of #300: the bindings each place's copy came from were joined, so a
+    # read at one place and a binding's copy at the other named the binding, though a
+    # stop at the first never used it; so did a different binding at each place.
+    read_then_n = [(A, {5}), (B, {20})]
+    explicit, taken = [(A, {5}), (B, set())], [(A, set()), (B, {20})]
+    sure = {"taken": taken, "sources": taken, "copied": taken, "bindings": taken}
+    assert copy_reason(read_then_n, explicit, explicit, explicit, **sure) == ("holds", None)
+    each = [(A, {20}), (B, {21})]
+    sure = {"taken": each, "sources": each, "copied": each, "bindings": each}
+    assert copy_reason(each, NONE, NONE, NONE, **sure) == ("holds", None)
+    # One binding gave both: named.
+    both = [(A, {20}), (B, {5})]
+    sure = {"taken": both, "sources": [(A, {20}), (B, {20})], "copied": both, "bindings": both}
+    assert copy_reason(both, NONE, NONE, NONE, **sure) == ("named", ["n"])
+
+
+def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monkeypatch):
+    # Review round 2 of #300: where one place holds the statement's read and another a
+    # binding's copy, what is true at each: the program already holds a copy.
+    import peeky.rust
+
+    holds = ("holds", None, {("src/main.rs", 12), ("src/main.rs", 32)})
+    monkeypatch.setattr(peeky.rust, "_copy_reason", lambda *args, **kwargs: holds)
+    owned = raw_eq_owned(source=SHADOWED_SOURCE)
+    judge = raw_eq_session(owned)
+    why = judge("week")
+    assert why == (
+        "the program already holds a copy of it (at lines 12 and 32), which it uses after the stop"
+    )
+    assert why.row == "the program holds a copy (lines 12 and 32)"
+    assert why.advice.startswith("That statement may already hold a copy of the old value")
+    # Before the program runs, where every place of the line is past such a copy.
+    owned.copied_everywhere = lambda *args, **kwargs: frozenset({9})
+    kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert kind == "statement" and text == (
+        "at every place line 39 can stop at, the program already holds a copy of `week` (at "
+        "lines 12 and 32), which it uses after the stop, so a change there would not reach it"
+    )
+    failures = [("f", (kind, text))]
+    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
+
+
+def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
+    # Review round 2 of #300: `_2 = copy (_1.0: u32); (_1.0: u32) = const 3_u32;` left
+    # `_2` surely read from the local's current value, though it holds the old field.
+    s = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+
+    def read(first, write, projection):
+        body = mir({0: [first, write, "return;"]}, bindings=s)
+        return body.read_copies_at(1, (0, 2), projection)[0]
+
+    field = "_2 = copy (_1.0: u32);"
+    first = (("field", 0),)
+    assert read(field, "StorageLive(_4);", first) == {2}
+    assert read(field, "_1 = (const 1_u32, const 2_u32);", first) == set()
+    assert read(field, "(_1.0: u32) = const 3_u32;", first) == set()
+    assert read(field, "(_1.1: u32) = const 3_u32;", first) == {2}
+    # A write to any part changes the whole local; one not known may be the part.
+    assert read(field, "(_1.1: u32) = const 3_u32;", ()) == set()
+    assert read("_2 = copy _1;", "StorageLive(_4);", None) == {2}
+    assert read("_2 = copy _1;", "(_1.1: u32) = const 3_u32;", None) == set()
+    element = "_2 = copy _1[1 of 3];"
+    second = (("index", 1),)
+    assert read(element, "StorageLive(_4);", second) == {2}
+    assert read(element, "_1[0 of 3] = const 9_u32;", second) == {2}
+    assert read(element, "_1[1 of 3] = const 9_u32;", second) == set()
+    assert read(element, "_1[_5] = const 9_u32;", second) == set()
+    # Through a pointer surely made from it.
+    through = mir(
+        {0: ["_6 = &mut _1;", field, "((*_6).0: u32) = const 3_u32;", "return;"]}, bindings=s
+    )
+    assert through.read_copies_at(1, (0, 2), ())[0] == {2}
+    assert through.read_copies_at(1, (0, 3), ())[0] == set()
 
 
 def line_39(*statements):

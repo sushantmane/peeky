@@ -1379,17 +1379,22 @@ bring unsafe code that reads through one.
 
 A refusal says that the statement has read the local only where the MIR shows that read on every
 path to every place the stop can be. A read through an aggregate that also holds other pointers
-doesn't count, nor a read of another field than the one a change makes. Otherwise the refusal says
-what the statement does, and that it may hold a copy:
+doesn't count, nor a read of another field than the one a change makes. Nor does a read the
+program has overwritten since, as `s.a = 3;` does for `s.a`.
 
-- ``reads it into a temporary (at line 12)``: the read may be on another path, or past the stop;
-- ``reads another part of it into a temporary (at line 12)``, for a change to one field;
-- ``uses `week` (at line 32), which may hold the program's own copy of it``, after
-  `let week = weeks;` on some path;
-- ``uses a pointer that may point into it (at line 13)``: a read through it, or a call given it,
-  which may read through it or not;
-- ``uses `p` and `q` (at line 23), raw pointers Peeky can't trace that may point at it``. Each name
-  is called what it is: a reference, a raw pointer, a closure, or a value holding a pointer.
+- It names your binding, as in ``has already copied its value into `n` ``, only where `n` gave
+  the copy at every such place.
+- Where each place holds a copy another way, it says only `the program already holds a copy of it`.
+- Otherwise it says what the statement does, and that it may hold a copy:
+  - ``reads it into a temporary (at line 12)``: the read may be on another path, or past the stop;
+  - ``reads another part of it into a temporary (at line 12)``, for a change to one field;
+  - ``uses `week` (at line 32), which may hold the program's own copy of it``, after
+    `let week = weeks;` on some path;
+  - ``uses a pointer that may point into it (at line 13)``: a read through it, or a call given
+    it, which may read through it or not;
+  - ``uses `p` and `q` (at line 23), raw pointers Peeky can't trace that may point at it``. Each
+    name is called what it is: a reference, a raw pointer, a closure, or a value holding a
+    pointer.
 
 Peeky doesn't rule out a local by its type. A `&Engineer` can't point into a `u32` local in safe
 code. But proving that needs every field of the crate's own types, since a struct may hold a

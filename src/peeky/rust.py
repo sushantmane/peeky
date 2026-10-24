@@ -1033,10 +1033,13 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
     [(place, hazards)], or None where not understood}):
 
-    - where at every place the statement surely read it ("explicit"), or a binding's copy
-      of it surely gave what it holds ("taken"): ("named", those bindings ("sources"),
-      their places) where any place has the latter (#192), else ("read", None, the places
-      of those temporaries);
+    - where at every place a binding's copy of it surely gave what the statement holds
+      ("taken"), and some bindings ("sources") gave it at every one: ("named", those
+      bindings, their places) (#192);
+    - where at every place the statement surely read it ("explicit"): ("read", None, the
+      places of those temporaries);
+    - where at every place one of those holds: ("holds", None, their places), what is
+      true at each, whichever it is;
     - else ("may", what the statement does that may leave a copy of ``target``, places):
       it reads it ("value", on some path, maybe past the stop), uses a binding's copy of
       it ("copied"), reads another part of it ("whole"), uses a pointer that may point
@@ -1044,12 +1047,19 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     every = dict(found["any"])
     held = {reads: frozenset().union(*(dict(found[reads] or ()).values())) for reads in _READINGS}
     sure, kept = dict(found["explicit"] or ()), dict(found["taken"] or ())
-    if all(sure.get(place) or kept.get(place) for place in every) and (
-        held["sources"] or not held["taken"]
-    ):
-        if named := held["sources"]:
-            return "named", proofs.copy_names(hashed, named), proofs.copy_lines(hashed, named, True)
+    gave = dict(found["sources"] or ())
+    if all(kept.get(place) for place in every):
+        common = frozenset.intersection(*(frozenset(gave.get(place, ())) for place in every))
+        if common:
+            return (
+                "named",
+                proofs.copy_names(hashed, common),
+                proofs.copy_lines(hashed, common, True),
+            )
+    if all(sure.get(place) for place in every):
         return "read", None, proofs.copy_lines(hashed, held["explicit"])
+    if all(sure.get(place) or kept.get(place) for place in every):
+        return "holds", None, proofs.copy_lines(hashed, held["explicit"] | held["taken"])
     clauses, places = [], set()
 
     def clause(text, locals_, named_only=False, then=""):
@@ -2523,6 +2533,13 @@ class RustSession(NativeSession):
                 "it may hold a copy, which it uses after the stop, and a change there may not "
                 "reach it",
             )
+        if kind == "holds":
+            return (
+                "statement",
+                f"at every place line {line} can stop at, the program already holds a copy of "
+                f"`{plain}`" + (f" (at {made})" if made else "") + ", which it uses after the "
+                "stop, so a change there would not reach it",
+            )
         return (
             "statement",
             f"every place line {line} can stop at is inside a statement that has already "
@@ -2564,6 +2581,8 @@ class RustSession(NativeSession):
                     if "has already copied" in detail
                     else "untraced"
                     if "may hold a copy" in detail
+                    else "holds"
+                    if "already holds a copy" in detail
                     else True
                 )
                 parts.append((function, f"in {FUNCTION}, {detail}"))
@@ -2598,6 +2617,8 @@ class RustSession(NativeSession):
                 ". Change it before the program copies it (`--set-at` an earlier line), or "
                 "change the copy instead"
             )
+        elif statements == "holds":
+            text += ". Change it before the program copies it (`--set-at` an earlier line)"
         elif statements:
             text += (
                 ". Change it at the first line of that statement (`--set-at` it), before it "
@@ -2793,6 +2814,15 @@ class RustSession(NativeSession):
                     "which it uses after the stop",
                     advice,
                     "a statement under way may hold a copy" + (f" ({made})" if made else ""),
+                )
+            if kind == "holds":
+                # #300: a read at one place, a binding's copy at another.
+                return _Copied(
+                    "the program already holds a copy of it"
+                    + (f" (at {made})" if made else "")
+                    + ", which it uses after the stop",
+                    advice,
+                    "the program holds a copy" + (f" ({made})" if made else ""),
                 )
             # The stop is where its line's code starts (a line breakpoint's, or a step's
             # landing there): the statement under way began before it, on an earlier
