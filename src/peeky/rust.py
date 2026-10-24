@@ -1014,45 +1014,60 @@ def _either(clauses):
     return clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" or {clauses[-1]}"
 
 
-def _copy_reason(proofs, hashed, found, explicit, traced, home, target="it"):
-    """How sure a refusal may be of what a statement under way holds (#300), from
-    ``copy_hazards`` at the same places reading pointers each way (``found``: "any";
-    ``explicit``, ``traced``; each [(place, hazards)], or None where not understood):
+# The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
+_READINGS = ("any", "explicit", "value", "traced")
 
-    - where at every place something the MIR shows reading it is used again (a copy, a
-      read through a pointer made from it, or what holds either): ("named", the
-      program's own bindings, their places) where any of them holds a copy the program
-      goes on with (#192: one taken from it is used at the other places), else ("read",
-      None, the places of those temporaries);
+
+def _copy_reason(proofs, hashed, found, home, target="it"):
+    """How sure a refusal may be of what a statement under way holds (#300), from
+    ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
+    [(place, hazards)], or None where not understood}):
+
+    - where at every place something that surely read it ("explicit") is used again:
+      ("named", the program's own bindings among them, their places) where there are
+      some (#192), else ("read", None, the places of those temporaries);
     - else ("may", what the statement does that may leave a copy of ``target``, places):
-      it reads it at some place but maybe not the stop's, gives a call a pointer into it,
-      or uses one Peeky does not follow."""
+      it reads it (at some place, maybe not the stop's), copies it into a binding, uses
+      a pointer that may point into it ("traced"), or one Peeky does not follow."""
     bindings = proofs.body(hashed).named_locals()
-    every, sure, calls = dict(found), dict(explicit or ()), dict(traced or ())
-    named = [hazards & bindings for hazards in every.values()]
-    reads = [sure.get(place, frozenset()) - bindings for place in every]
+    every = dict(found["any"])
+    sure, value, traced = (dict(found[reads] or ()) for reads in _READINGS[1:])
+    held = {
+        reads: frozenset().union(*kept.values())
+        for reads, kept in (
+            ("any", every),
+            ("explicit", sure),
+            ("value", value),
+            ("traced", traced),
+        )
+    }
     if all(sure.get(place) for place in every):
-        if held := frozenset().union(*named):
-            return "named", proofs.copy_names(hashed, held), proofs.copy_lines(hashed, held, True)
-        return "read", None, proofs.copy_lines(hashed, frozenset().union(*reads))
-    shown = frozenset().union(*sure.values()) | bindings
-    given = frozenset().union(*calls.values()) - shown
-    rest = frozenset().union(*every.values()) - shown - given
+        if copied := held["explicit"] & bindings:
+            return (
+                "named",
+                proofs.copy_names(hashed, copied),
+                proofs.copy_lines(hashed, copied, True),
+            )
+        return "read", None, proofs.copy_lines(hashed, held["explicit"])
     clauses, places = [], set()
-    if read := frozenset().union(*reads):
-        places |= (lines := proofs.copy_lines(hashed, read))
-        clauses.append(f"reads {target} into a temporary (at {_line_list(lines, home)})")
-    if copied := frozenset().union(*named):
-        places |= (lines := proofs.copy_lines(hashed, copied, True))
-        names = _names(proofs.copy_names(hashed, copied))
-        clauses.append(f"copies {target} into {names} (at {_line_list(lines, home)})")
-    if given:
-        places |= (lines := proofs.copy_lines(hashed, given))
-        clauses.append(f"gives a call a pointer into {target} (at {_line_list(lines, home)})")
+
+    def clause(text, locals_, named_only=False):
+        lines = proofs.copy_lines(hashed, locals_, named_only)
+        places.update(lines)
+        clauses.append(f"{text} (at {_line_list(lines, home)})")
+
+    read = held["explicit"] | held["value"]
+    if read - bindings:
+        clause(f"reads {target} into a temporary", read - bindings)
+    if copied := (read | held["any"]) & bindings:
+        clause(f"copies {target} into {_names(proofs.copy_names(hashed, copied))}", copied, True)
+    if given := held["traced"] - read - bindings:
+        clause(f"uses a pointer that may point into {target}", given)
+    rest = held["any"] - held["traced"] - read - bindings
     if rest or not clauses:
-        clause, lines = _untraced(proofs, hashed, rest or given or read, home, target)
+        text, lines = _untraced(proofs, hashed, rest, home, target)
         places |= lines
-        clauses.append(clause)
+        clauses.append(text)
     return "may", _either(clauses), places
 
 
@@ -2470,13 +2485,11 @@ class RustSession(NativeSession):
         path = str(Path(self.prepared.source_root) / source)
         if not check(hashed, plain, line, path, projection=projection):
             return None
-        found, explicit, traced = (
-            proofs.coded_hazards(hashed, plain, line, path, projection, reads)
-            for reads in ("any", "explicit", "traced")
-        )
-        kind, detail, places = _copy_reason(
-            proofs, hashed, found, explicit, traced, source, f"`{plain}`"
-        )
+        found = {
+            reads: proofs.coded_hazards(hashed, plain, line, path, projection, reads)
+            for reads in _READINGS
+        }
+        kind, detail, places = _copy_reason(proofs, hashed, found, source, f"`{plain}`")
         made = _line_list(places, source)
         if kind == "named":
             # #192: a binding of the program's own holds the old value it goes on with.
@@ -2735,14 +2748,10 @@ class RustSession(NativeSession):
             # #183: where the copy was made, not an example of where one may be; #300: as a
             # fact only what the MIR shows at every place the stop can be.
             home = (place.get("source") or {}).get("path")
-            kind, detail, places = _copy_reason(
-                proofs,
-                hashed[1],
-                found,
-                proofs.copy_hazards(**asked, reads="explicit"),
-                proofs.copy_hazards(**asked, reads="traced"),
-                home,
-            )
+            found = {"any": found} | {
+                reads: proofs.copy_hazards(**asked, reads=reads) for reads in _READINGS[1:]
+            }
+            kind, detail, places = _copy_reason(proofs, hashed[1], found, home)
             made = _line_list(places, home)
             if kind == "named":
                 # #192: the program's own binding goes on with the old value.

@@ -379,12 +379,15 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   only the two addresses. Where `OwnedLocals._std_compares` proves it the standard library's, as
   for a reference's last use above, its result holds only what its operands hold
   (`_copy_verdict`).
-- A refusal states a read only where `copy_hazards(reads="explicit")` finds one at every place:
-  the local by value, through a pointer made from a borrow of it (`own`), or a temporary holding
-  either. `rust._copy_reason` decides the wording.
-- Otherwise it hedges. `reads="traced"` adds a call given a pointer the flow shows may point into
-  the local: "gives a call a pointer into it". What only `reads="any"` finds is a pointer Peeky
-  doesn't follow. `untraced_reads` names those variables, each by its kind.
+- A refusal states a read only where `copy_hazards(reads="explicit")` finds one at every place.
+  That is `Body.read_copies_at`, a must-analysis met by intersection over every way into a block.
+  It counts a `copy` or `move` of an overlapping place (`_reads_part`), and a read through a pointer
+  surely made from a borrow of the whole local. A temporary computed from either counts too.
+- It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
+  a coroutine's body. `rust._copy_reason` decides the wording.
+- Otherwise it hedges, by what `reads="value"` (reads by value, on some path) and `reads="traced"`
+  (also pointers the flow shows may point into the local) find. What only `reads="any"` finds is a
+  pointer Peeky doesn't follow. `untraced_reads` names those variables, each by its kind.
 
 A rule by type isn't used, though a `*const Engineer` can't point into a `u32` in safe code. It
 holds only for a pointee of the crate's own type that holds no pointer, which only the debug

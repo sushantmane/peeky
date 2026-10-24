@@ -514,7 +514,7 @@ def test_rust_a_crates_own_core_fmt_is_no_format_args(crate, capsys):
     assert main(["session", "start", str(crate), "--at", f"src/main.rs:{line}"]) == 0
     capsys.readouterr()
     # #300: the call may read through the pointer it is given, or not.
-    refused(capsys, "s.a=50", "cannot be changed here", "gives a call a pointer into it")
+    refused(capsys, "s.a=50", "cannot be changed here", "uses a pointer that may point into it")
     assert main(["session", "continue", "--to-exit"]) == 0
     capsys.readouterr()
     assert main(["session", "report", "--json"]) == 0

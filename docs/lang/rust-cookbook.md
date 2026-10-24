@@ -1377,11 +1377,14 @@ bring unsafe code that reads through one.
 - A breakpoint on `if ptr::eq(e, l) {` stops inside the inlined `ptr::eq`. There, `week` and
   `pick` are `[settable]`.
 
-A refusal says that the statement has read the local only where the MIR shows that read, at every
-place the stop can be. Otherwise it says what the statement does, and that it may hold a copy:
+A refusal says that the statement has read the local only where the MIR shows that read on every
+path to every place the stop can be. A read through an aggregate that also holds other pointers
+doesn't count, nor a read of another field than the one a change makes. Otherwise the refusal says
+what the statement does, and that it may hold a copy:
 
-- ``reads it into a temporary (at line 12)``, where the stop may be before that read;
-- ``gives a call a pointer into it (at line 13)``: the call may read through it, or not;
+- ``reads it into a temporary (at line 12)``: the read may be on another path, or past the stop;
+- ``uses a pointer that may point into it (at line 13)``: a read through it, or a call given it,
+  which may read through it or not;
 - ``uses `p` and `q` (at line 23), raw pointers Peeky can't trace that may point at it``. Each name
   is called what it is: a reference, a raw pointer, a closure, or a value holding a pointer.
 

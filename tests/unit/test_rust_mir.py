@@ -2769,9 +2769,10 @@ def raw_eq_variant(call, *changes):
     return text
 
 
-def raw_eq_session(owned):
+def raw_eq_session(owned, projection=()):
     """A RustSession stopped on line 39 of RAW_EQ's `plan` (the frame's own hash), over
-    ``owned``: the reasons `inspect` and a probe's refusal give."""
+    ``owned``: the reasons `inspect` and a probe's refusal give (for a change to the part
+    ``projection`` of a local)."""
     from types import SimpleNamespace
 
     from peeky.rust import RustSession
@@ -2783,7 +2784,7 @@ def raw_eq_session(owned):
     session.prepared = SimpleNamespace(source_root="/w")
     session._optimized = lambda: False
     session._stop_block = lambda hashed, frame: None
-    session._projection = lambda *args: ()
+    session._projection = lambda *args: projection
     session._frame_scope = lambda frame, variable: None
     session._settable_names = lambda source, line: []
     frame = {"name": f"rota::plan::{HASH}", "line": 39, "column": 20}
@@ -2838,7 +2839,7 @@ def test_a_call_given_a_raw_pointer_may_read_through_it_whatever_the_source_show
     assert withheld(owned, ["week", "pick"]) == [True, False]
     why = raw_eq_session(owned)("week")
     assert why == (
-        "a statement under way at the stop gives a call a pointer into it (at "
+        "a statement under way at the stop uses a pointer that may point into it (at "
         "core/src/macros/mod.rs:60), so it may hold a copy of it, which it uses after the stop"
     )
     assert why.row == "a statement under way may hold a copy (core/src/macros/mod.rs:60)"
@@ -2857,7 +2858,7 @@ def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it()
     why = raw_eq_session(owned)
     # `last`: `l` points into it, and the call is given a pointer made from `l`.
     assert why("last") == (
-        "a statement under way at the stop gives a call a pointer into it (at line 39), so it "
+        "a statement under way at the stop uses a pointer that may point into it (at line 39), so it "
         "may hold a copy of it, which it uses after the stop"
     )
     assert why("last").row == "a statement under way may hold a copy (line 39)"
@@ -2936,32 +2937,104 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
         copy_names=lambda hashed, held: ["n"],
         untraced_reads=lambda hashed, held: ({("src/main.rs", 9)}, [("e", "reference")]),
     )
-
-    def reason(found, explicit, traced):
-        return _copy_reason(proofs, "h", found, explicit, traced, "/w/src/main.rs")[:2]
-
     a, b = (1, 0), (2, 0)
-    assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})], None) == ("read", None)
-    assert reason([(a, {5}), (b, {7})], [(a, {5}), (b, set())], [(a, {5}), (b, set())]) == (
+
+    def reason(any_, explicit=None, value=None, traced=None):
+        found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
+        return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
+
+    assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})]) == ("read", None)
+    sure_at_a = [(a, {5}), (b, set())]
+    assert reason([(a, {5}), (b, {7})], sure_at_a, sure_at_a, sure_at_a) == (
         "may",
         "reads it into a temporary (at line 5) or uses `e` (at line 9), a reference Peeky "
         "can't trace that may point at it",
     )
-    assert reason([(a, {5}), (b, set())], [(a, {5}), (b, set())], None)[1] == (
-        "reads it into a temporary (at line 5)"
+    assert reason([(a, {5}), (b, set())], sure_at_a)[1] == "reads it into a temporary (at line 5)"
+    # A read only on some path to the place: what may hold a copy, by value.
+    assert reason([(a, {6})], [(a, set())], [(a, {6})], [(a, {6})])[1] == (
+        "reads it into a temporary (at line 6)"
     )
-    assert reason([(a, {7}), (b, {7})], [(a, set()), (b, set())], [(a, {7}), (b, {7})]) == (
+    assert reason([(a, {7}), (b, {7})], None, [(a, set()), (b, set())], [(a, {7}), (b, {7})]) == (
         "may",
-        "gives a call a pointer into it (at line 7)",
+        "uses a pointer that may point into it (at line 7)",
     )
-    # The program's own binding: named where every place holds a copy the MIR shows (at
-    # one, what it took from the binding, `let z = y + 1;`).
-    assert reason([(a, {20}), (b, {20})], [(a, {20}), (b, {20})], None) == ("named", ["n"])
-    assert reason([(a, {20}), (b, {5})], [(a, {20}), (b, {5})], None) == ("named", ["n"])
-    assert reason([(a, {20}), (b, {7})], [(a, {20}), (b, set())], [(a, {20}), (b, set())]) == (
+    # The program's own binding: named where every place holds something that surely
+    # read it (at one, what it took from the binding, `let z = y + 1;`).
+    assert reason([(a, {20}), (b, {20})], [(a, {20}), (b, {20})]) == ("named", ["n"])
+    assert reason([(a, {20}), (b, {5})], [(a, {20}), (b, {5})]) == ("named", ["n"])
+    named_at_a = [(a, {20}), (b, set())]
+    assert reason([(a, {20}), (b, {7})], named_at_a, named_at_a, named_at_a) == (
         "may",
         "copies it into `n` (at line 20) or uses `e` (at line 9), a reference Peeky can't "
         "trace that may point at it",
+    )
+
+
+def line_39(*statements):
+    """A change to RAW_EQ (``raw_eq_variant``): ``statements`` on line 39 for its first
+    (a block's end and the next's start, `}` first, as they are)."""
+    comment = "// scope 2 at src/main.rs:39:28: 39:29"
+    shown = "".join(
+        f"    {each}\n" if each.startswith("}") else f"        {each}  {comment}\n"
+        for each in statements[:-1]
+    )
+    return ("        _10 = &raw const (*_13);  ", f"{shown}        {statements[-1]}  ")
+
+
+def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
+    # Review round 2 of #300: what surely read the local was taken from what may have
+    # (joined over the paths, through an aggregate holding pointers to other locals too,
+    # whatever part a change makes), so "has already read it" could be false.
+    def why(call, *changes, name="week", projection=(), **blocks):
+        owned = raw_eq_owned(raw_eq_variant(call, *changes), **blocks)
+        owned._positions = lambda site, line, facts, block=None: [(3, 0)]
+        return raw_eq_session(owned, projection)(name)
+
+    sure = "a statement under way at the stop has already read it into a temporary (at line 39)"
+    maybe = ", so it may hold a copy of it, which it uses after the stop"
+    # `same(week)`: read by value on every path.
+    assert why("same(copy _4)").startswith(sure)
+    # `let r = &week; same(*r)`: through a pointer made from it.
+    assert why("same(move _17)", line_39("_16 = &_4;", "_17 = copy (*_16);")).startswith(sure)
+    # `let pair = (&week, &pick); same(*pair.1)` reads only `pick`.
+    pair = line_39(
+        "_16 = &_4;",
+        "_17 = &_12;",
+        "_18 = (move _16, move _17);",
+        "_19 = copy (*(_18.1: &usize));",
+    )
+    assert why("same(copy _19)", pair) == (
+        "a statement under way at the stop uses a pointer that may point into it (at line 39)"
+        + maybe
+    )
+    # `same(if c { week } else { pick })`: read on one path only.
+    branch = line_39(
+        "switchInt(copy _2) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_17 = copy _4;",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "_17 = copy _12;",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_10 = &raw const (*_13);",
+    )
+    assert why("same(copy _17)", branch, bb6={39}, bb7={39}, bb8={39}) == (
+        "a statement under way at the stop reads it into a temporary (at line 39)" + maybe
+    )
+    # `tt: (u32, u32)`, `same(tt.1)`: a change to `tt.0` is not what it read.
+    pair_local = (
+        "        debug pick => _12;  ",
+        "        debug tt => _16;                 // in scope 1 at src/main.rs:33:9: 33:11\n"
+        "        debug pick => _12;  ",
+    )
+    field = line_39("_17 = copy (_16.1: u32);", "_10 = &raw const (*_13);")
+    whole = why("same(copy _17)", pair_local, field, name="tt")
+    assert whole.startswith(sure), whole
+    part = why("same(copy _17)", pair_local, field, name="tt", projection=(("field", 0),))
+    assert (
+        part == "a statement under way at the stop reads it into a temporary (at line 39)" + maybe
     )
 
 
