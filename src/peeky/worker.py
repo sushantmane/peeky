@@ -3378,6 +3378,10 @@ class DebugWorker:
                 if view["rust_view"] == "unproven" and isinstance(view.get("why"), str):
                     # Why only the pointer shows, where the runtime says (#205).
                     output["unproven_reason"] = view["why"][:500]
+                if view["rust_view"] == "opaque" and isinstance(view.get("why"), str):
+                    # Why a Rust enum is not decoded, where it is stored and what to read
+                    # instead (#303).
+                    output["opaque_reason"] = view["why"][:500]
                 if view["rust_view"] == "unproven" and view.get("pointer") in ("raw", "unknown"):
                     # A Rust raw pointer, or one the build does not tell from one (#255).
                     output["unproven_pointer"] = view["pointer"]

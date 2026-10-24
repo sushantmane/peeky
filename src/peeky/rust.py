@@ -60,7 +60,9 @@ from peeky.rust_mir import (
     stop_block,
 )
 from peeky.rust_symbols import (
+    CALLER_ADVICE,
     CALLER_CHANGING,
+    OPTIMIZED_ADVICE,
     OWNED_CONTAINERS,
     REFERENCE_PARAMETERS,
     RUST_METADATA,
@@ -74,11 +76,16 @@ from peeky.rust_symbols import (
     application_symbols,
     composite_container,
     container_view,
+    enum_withheld,
     lldb_byte,
     lldb_char,
     lldb_float_debug,
+    option_layouts,
+    option_name,
+    option_view,
     struct_name,
     struct_view,
+    uninitialized_advice,
     unread_elements,
     without_numbered_structs,
 )
@@ -3102,6 +3109,9 @@ class RustSession(NativeSession):
             and not getattr(self, "unsafe_code", None)
         )
         layouts = self.layouts
+        if option_layouts(kind, layouts):
+            # #303: an `Option` of a tuple or struct, read from memory under its proofs.
+            return self._option_view(variable, read, frame, layouts, top=top, innermost=innermost)
         container = container_view(
             variable,
             read,
@@ -3264,12 +3274,13 @@ class RustSession(NativeSession):
                         "here, because " + _gap_reason(variable.get("name"), reasons, line)
                     )
                 return _unproven(variable, why)
-        view = active_variant(variable, fetch, layouts)
+        view = active_variant(variable, fetch, layouts, top=top)
         if view and view["rust_view"] == "active-variant" and self.target.opt_level != "0":
             # Optimized code may track an enum's tag and payload separately and LLDB
             # zero-fills a missing piece without reporting it, so a decoded variant is
             # not trustworthy there.
-            return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
+            why = "Peeky decodes an enum's variant only in an unoptimized build"
+            return enum_withheld(variable, UNVERIFIED, why, top=top, instead=OPTIMIZED_ADVICE)
         if view is None and lent and (REFERENCE_PARAMETERS.get(lent) or _composite_parameter(lent)):
             # A reference parameter's contents, left raw in a crate with unsafe code.
             return {"raw_reason": getattr(self, "unsafe_code", None)}
@@ -3319,6 +3330,62 @@ class RustSession(NativeSession):
             )
             for binding in bindings
         )
+
+    def _option_view(self, variable, read, frame, layouts, *, top, innermost):
+        """An `Option` of a tuple or struct the crate defines (#303), read from memory as
+        an owned `Vec` or `String` local is: a local or parameter of the innermost frame
+        of an unoptimized build, which the MIR proves initialized at the stop, and whose
+        MIR type picks its layout (LLDB's names collide); one holding a `String`, only
+        in a crate with no unsafe code, which may have freed its text. Anything else is
+        withheld, saying why, where it is stored and what to read instead."""
+        kind, name = variable.get("type"), variable.get("name")
+        hashed, proofs = _frame_hash(frame) if top else None, getattr(self, "owned", None)
+        place = frame or {}
+        line, path = place.get("line"), (place.get("source") or {}).get("path")
+        # What to do instead, where reading what an `if let` binds is not the way.
+        instead = None
+        if self.target.opt_level != "0":
+            why = "Peeky decodes an enum's variant only in an unoptimized build"
+            instead = OPTIMIZED_ADVICE
+        elif not top:
+            why = (
+                "Peeky reads an `Option` of a tuple or struct only as a local or parameter, "
+                "not inside another value"
+            )
+        elif not innermost:
+            why = (
+                f"`{name}` is a local of a caller frame: Peeky doesn't check whether it was "
+                f"lent to {CALLER_CHANGING}, which may be changing it, so Peeky reads it only "
+                "in the innermost frame"
+            )
+            instead = CALLER_ADVICE
+        elif hashed is None or proofs is None:
+            why = "Peeky cannot match this frame to the build's MIR"
+        elif not proofs.proven(hashed[1], name, line, path):
+            why = (
+                f"the build's MIR does not prove `{name}` initialized at this line: it may "
+                "be moved, dropped or not yet assigned around it"
+            )
+            # It may hold nothing to borrow here: an `if let` on it reads nothing.
+            instead = uninitialized_advice(str(name).partition(" @ ")[0])
+        else:
+            declared = proofs.declared_type(hashed[1], name, line, path)
+            chosen = option_name(declared, kind, layouts)
+            if chosen is None and declared is None:
+                why = (
+                    "Peeky picks an `Option`'s layout by its type in the build's MIR, which "
+                    "gives none here (in a generic function, it may name a type parameter)"
+                )
+            elif chosen is None:
+                why = (
+                    "Peeky picks an `Option`'s layout by its type in the build's MIR, "
+                    f"`{str(declared)[:120]}`, and that matches no one layout it reads"
+                )
+            elif "string" in layouts[chosen] and getattr(self, "unsafe_code", None):
+                why = self.unsafe_code
+            else:
+                return option_view(variable, read, layouts[chosen])
+        return enum_withheld(variable, UNVERIFIED, why, top=top, instead=instead)
 
     def _owned_raw(self, variable, frame, innermost, owned):
         """Why an owned `Vec` or `String` local stays raw (see view_variable)."""

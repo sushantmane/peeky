@@ -573,6 +573,11 @@ def test_non_enum_and_unqualified_enum_values_do_not_fetch_raw_storage():
         "variablesReference": 0,
         "value": UNQUALIFIED,
         "rust_view": "opaque",
+        # #303: why, and what to read instead; the debugger gave no address.
+        "why": "Peeky decodes `Option<i32>`, and an `Option` of a tuple or struct your crate "
+        "defines whose layout the debug information proves; it does not decode this "
+        "`Option<&i32>`. Its address is not known; read what an `if let Some(x)` on it binds "
+        "instead",
     }
     assert seen == []
 
@@ -742,13 +747,41 @@ def container_dump(*, len_offset="0x10", element="i32", data_ptr="i32_ptr", extr
             _namespace(
                 "core",
                 "core",
-                _struct(
-                    "unique", "Unique<u8>", "0x08", _member("u_ptr", "pointer", "nonnull", "0x00")
+                _namespace(
+                    "ptr",
+                    "ptr",
+                    _namespace(
+                        "unique_ns",
+                        "unique",
+                        _struct(
+                            "unique",
+                            "Unique<u8>",
+                            "0x08",
+                            _member("u_ptr", "pointer", "nonnull", "0x00"),
+                        ),
+                    ),
+                    _namespace(
+                        "non_null",
+                        "non_null",
+                        _struct(
+                            "nonnull",
+                            "NonNull<u8>",
+                            "0x08",
+                            _member("n_ptr", "pointer", "u8_ptr", "0x00"),
+                        ),
+                    ),
                 ),
-                _struct(
-                    "nonnull", "NonNull<u8>", "0x08", _member("n_ptr", "pointer", "u8_ptr", "0x00")
+                _namespace(
+                    "num",
+                    "num",
+                    _namespace(
+                        "niche",
+                        "niche_types",
+                        _struct(
+                            "cap", "UsizeNoHighBit", "0x08", _member("cap0", "__0", "usize", "0x00")
+                        ),
+                    ),
                 ),
-                _struct("cap", "UsizeNoHighBit", "0x08", _member("cap0", "__0", "usize", "0x00")),
             ),
             _struct(
                 "slice",
@@ -1053,6 +1086,34 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
     assert "reference parameters, owned" in line and "MIR proves" in line
     # And such fields of either (#156).
     assert "such fields of either (self.values)" in line
+    [line] = [line for line in text.splitlines() if line.startswith("qualified enum views")]
+    assert line == "qualified enum views: Option<i32>", line
+
+
+def test_describe_lists_the_options_of_structs_it_reads_from_memory():
+    # #303: `describe` said "qualified enum views: none" for rota.
+    from peeky.cli import _describe_text
+
+    manifest = {
+        "language": "rust",
+        "root": "/crate",
+        "breakpoint_lines": {},
+        "value_views": {
+            "core::option::Option<i32>": "option",
+            "core::option::Option<rota::Engineer>": "option-composite",
+            "core::option::Option<u32>": "unqualified",
+        },
+        "mutable_types": "i32",
+        "commands": {},
+        "timing": {"advice": "fast"},
+    }
+    lines = _describe_text(manifest).splitlines()
+    [line] = [line for line in lines if line.startswith("qualified enum views")]
+    assert line == (
+        "qualified enum views: Option<i32>, Option<rota::Engineer> (an Option of a tuple or "
+        "struct reads from memory, as a local the build's MIR proves initialized)"
+    ), line
+    assert "other enum types (shown opaque, not decoded): 1" in lines
 
 
 @pytest.mark.parametrize(
@@ -2164,3 +2225,616 @@ def test_describe_lists_the_locals_no_stop_can_change_per_function():
     # #183: where nothing can change, the edit that can (rust-cookbook 6.6).
     assert "nor is anything in limiter::allow, app::aw::{{closure}}," in line, line
     assert line.endswith("keeps a local in memory: rust-cookbook 6.6)"), line
+
+
+# #303 (eleventh evaluation, rota): `last: Option<Engineer>` read `<unqualified Rust enum
+# layout>`. rustc stores its `None` in a niche: the capacity of `name`, a String nested
+# four structs deep, holds 0x8000000000000000, which no capacity can be.
+ENGINEER = _struct(
+    "engineer",
+    "Engineer",
+    "0x38",
+    _member("en_name", "name", "string", "0x00"),
+    _member("en_leave", "leave", "vec_u8", "0x18"),
+    _member("en_shifts", "shifts", "u32", "0x30"),
+)
+POINT = _struct(
+    "point",
+    "Point",
+    "0x08",
+    _member("pt_x", "x", "i32", "0x00"),
+    _member("pt_y", "y", "i32", "0x04"),
+)
+FLAG = _struct(
+    "flag",
+    "Flag",
+    "0x08",
+    _member("fl_n", "n", "i32", "0x00"),
+    _member("fl_ok", "ok", "bool", "0x04"),
+)
+LETTER = _struct(
+    "letter",
+    "Letter",
+    "0x08",
+    _member("le_n", "n", "u32", "0x04"),
+    _member("le_c", "c", "char", "0x00"),
+)
+BOXED = _struct(
+    "boxed",
+    "Boxed",
+    "0x10",
+    _member("bx_b", "b", "box", "0x00"),
+    _member("bx_n", "n", "i32", "0x08"),
+)
+BORROW = _struct(
+    "borrow",
+    "Borrow",
+    "0x10",
+    _member("br_r", "r", "ref", "0x00"),
+    _member("br_n", "n", "i32", "0x08"),
+)
+HELD = _struct(
+    "held",
+    "Held",
+    "0x10",
+    _member("hd_p", "p", "nonnull", "0x00"),
+    _member("hd_n", "n", "i32", "0x08"),
+)
+RAW = _struct(
+    "raw",
+    "Raw",
+    "0x10",
+    _member("rw_p", "p", "u8_ptr", "0x00"),
+    _member("rw_n", "n", "i32", "0x08"),
+)
+# A field of a type Peeky doesn't read, beside the niche: `codes: [u8; 4]`.
+TAGGED = _struct(
+    "tagged",
+    "Tagged",
+    "0x20",
+    _member("tg_codes", "codes", "codes", "0x18"),
+    _member("tg_name", "name", "string", "0x00"),
+)
+CRATE = "peeky_pagination"
+NICHE = "0x8000000000000000"
+
+
+def _option(label, element, size, tag, *, none, some=None, payload="0x00", **changes):
+    """`core::option::Option<crate::element>` as rustc's DWARF lays it out: a variant part
+    whose artificial member at ``tag`` (offset, base type) is the discriminant; `None`
+    has ``none`` as its `DW_AT_discr_value`, `Some` ``some`` (None: it is the niche
+    layout's default variant) and its payload `__0` at ``payload``."""
+    path = changes.get("path", f"{CRATE}::")
+    at, kind = tag
+    member = [("DW_AT_type", ("ref", kind)), ("DW_AT_data_member_location", at)]
+    if changes.get("artificial", True):
+        member.append(("DW_AT_artificial", "true"))
+    variants = []
+    names = changes.get("names", ("None", "Some"))
+    for name, value in zip(names, (none, some)):
+        attributes = [("DW_AT_discr_value", value)] if value is not None else []
+        variants.append(
+            (
+                f"{label}_{name}_v",
+                "DW_TAG_variant",
+                attributes,
+                [
+                    (
+                        f"{label}_{name}_m",
+                        "DW_TAG_member",
+                        [
+                            ("DW_AT_name", f'"{name}"'),
+                            ("DW_AT_type", ("ref", f"{label}_{name}")),
+                            ("DW_AT_data_member_location", "0x00"),
+                        ],
+                        [],
+                    )
+                ],
+            )
+        )
+    part = (
+        f"{label}_part",
+        "DW_TAG_variant_part",
+        [("DW_AT_discr", ("ref", f"{label}_tag"))],
+        [(f"{label}_tag", "DW_TAG_member", member, []), *variants],
+    )
+    return _struct(
+        label,
+        f"Option<{path}{changes.get('shown', element[0].upper() + element[1:])}>",
+        size,
+        part,
+        _struct(
+            f"{label}_{names[0]}",
+            names[0],
+            size,
+            _param(f"{label}_nt", element),
+            *changes.get("none_members", ()),
+        ),
+        _struct(
+            f"{label}_{names[1]}",
+            names[1],
+            size,
+            _param(f"{label}_st", element),
+            _member(f"{label}_0", "__0", changes.get("payload_type", element), payload),
+        ),
+    )
+
+
+def struct_option_dump(
+    *options,
+    structs=(ENGINEER, POINT, FLAG, LETTER, BOXED, BORROW, HELD, RAW, TAGGED),
+    scope=("core", "option"),
+):
+    """A unit with the crate's structs, Options of them (in ``scope``), and the types
+    they need."""
+    pointers = (
+        ("box", "alloc::boxed::Box<i32, alloc::alloc::Global>"),
+        ("ref", "&i32"),
+    )
+    return container_dump(
+        extra=(
+            _namespace("crate", CRATE, *structs),
+            _namespace("core_opt", scope[0], _namespace("option", scope[1], *options)),
+            _base("u64", "u64", "0x08", "DW_ATE_unsigned"),
+            _base("u32", "u32", "0x04", "DW_ATE_unsigned"),
+            _base("i64", "i64", "0x08", "DW_ATE_signed"),
+            _base("bool", "bool", "0x01", "DW_ATE_boolean"),
+            _base("char", "char", "0x04", "DW_ATE_UTF"),
+            (
+                "codes",
+                "DW_TAG_array_type",
+                [("DW_AT_type", ("ref", "u8"))],
+                [
+                    (
+                        "codes_range",
+                        "DW_TAG_subrange_type",
+                        [("DW_AT_type", ("ref", "usize")), ("DW_AT_count", "0x04")],
+                        [],
+                    )
+                ],
+            ),
+            *(
+                (
+                    label,
+                    "DW_TAG_pointer_type",
+                    [("DW_AT_type", ("ref", "i32")), ("DW_AT_name", f'"{name}"')],
+                    [],
+                )
+                for label, name in pointers
+            ),
+        )
+    )
+
+
+def _engineer(**changes):
+    changes.setdefault("none", NICHE)
+    return _option("opt", "engineer", "0x38", ("0x00", "u64"), **changes)
+
+
+def test_an_option_of_a_crate_struct_reads_its_niche_from_the_dwarf():
+    layouts = enum_layouts(*struct_option_dump(_engineer()))
+    assert layouts[f"core::option::Option<{CRATE}::Engineer>"] == {
+        "kind": "option-composite",
+        "size": 0x38,
+        # `name`'s capacity: its valid values are 0 to isize::MAX, and None's is past them.
+        "tag": [0, 8],
+        "none": 2**63,
+        "some": None,
+        "valid": [0, 2**63 - 1],
+        "payload": 0,
+        "element": f"{CRATE}::Engineer",
+        "element_size": 0x38,
+        "alignment": 8,
+        "fields": [
+            ["name", 0, "alloc::string::String"],
+            ["leave", 0x18, None, "alloc::vec::Vec<u8, alloc::alloc::Global>"],
+            ["shifts", 0x30, "u32"],
+        ],
+        "shape": "struct",
+        "shown": "Engineer",
+        "string": TEXT,
+    }
+
+
+@pytest.mark.parametrize(
+    "option, tag, none, some, valid, payload",
+    [
+        # A tag of its own beside the payload: both variants carry a value.
+        (
+            _option(
+                "o", "point", "0x0c", ("0x00", "u32"), none="0x00", some="0x01", payload="0x04"
+            ),
+            [0, 4],
+            0,
+            1,
+            None,
+            4,
+        ),
+        # A bool's niche: 2 is no bool.
+        (_option("o", "flag", "0x08", ("0x04", "u8"), none="0x02"), [4, 1], 2, None, [0, 1], 0),
+        # A char's: 0x110000 is past the last Unicode scalar value.
+        (
+            _option("o", "letter", "0x08", ("0x00", "u32"), none="0x00110000"),
+            [0, 4],
+            0x110000,
+            None,
+            [0, 0x10FFFF],
+            0,
+        ),
+        # A Box's, a reference's and a NonNull's pointer, which is never null.
+        (
+            _option("o", "boxed", "0x10", ("0x00", "u64"), none="0x00"),
+            [0, 8],
+            0,
+            None,
+            [1, 2**64 - 1],
+            0,
+        ),
+        (
+            _option("o", "borrow", "0x10", ("0x00", "u64"), none="0x00"),
+            [0, 8],
+            0,
+            None,
+            [1, 2**64 - 1],
+            0,
+        ),
+        (
+            _option("o", "held", "0x10", ("0x00", "u64"), none="0x00"),
+            [0, 8],
+            0,
+            None,
+            [1, 2**64 - 1],
+            0,
+        ),
+        # A field whose size only its array type gives does not stop the walk.
+        (
+            _option("o", "tagged", "0x20", ("0x00", "u64"), none=NICHE),
+            [0, 8],
+            2**63,
+            None,
+            [0, 2**63 - 1],
+            0,
+        ),
+    ],
+)
+def test_an_options_tag_or_niche_is_proven_by_the_field_that_holds_it(
+    option, tag, none, some, valid, payload
+):
+    (layout,) = enum_layouts(*struct_option_dump(option)).values()
+    assert layout["kind"] == "option-composite", layout
+    found = (layout["tag"], layout["none"], layout["some"], layout["valid"], layout["payload"])
+    assert found == (tag, none, some, valid, payload)
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        # A niche in a field whose valid values no type fixes: an i32, a raw pointer.
+        _option("o", "point", "0x08", ("0x00", "u32"), none="0x80000000"),
+        _option("o", "raw", "0x10", ("0x00", "u64"), none="0x00"),
+        # One spanning two fields, or part of one.
+        _option("o", "point", "0x08", ("0x00", "u64"), none="0x00"),
+        _option("o", "point", "0x08", ("0x01", "u8"), none="0x02"),
+        # None's value is one the field may hold, or does not fit the tag.
+        _engineer(none="0x05"),
+        _option("o", "flag", "0x08", ("0x04", "u8"), none="0x100"),
+        # A tag of its own that both variants share, or that overlaps the payload.
+        _option("o", "point", "0x0c", ("0x00", "u32"), none="0x01", some="0x01", payload="0x04"),
+        _option("o", "point", "0x0c", ("0x04", "u32"), none="0x00", some="0x01", payload="0x04"),
+        # A payload past the Option's end.
+        _option("o", "point", "0x0c", ("0x00", "u32"), none="0x00", some="0x01", payload="0x08"),
+        # Not an Option's variants, tag or None.
+        _engineer(names=("None", "Other")),
+        _engineer(none="0x00", some="0x01"),
+        _engineer(artificial=False),
+        _option("o", "engineer", "0x38", ("0x00", "i64"), none=NICHE),
+        _option("o", "engineer", "0x38", ("0x00", "u32"), none=NICHE),
+        _engineer(none_members=(_member("o_none_x", "x", "i32", "0x00"),)),
+        # A payload that is not the crate's struct the name says.
+        _engineer(path="other::"),
+        _engineer(shown="Point"),
+        _engineer(payload_type="point"),
+    ],
+)
+def test_an_option_layout_not_proven_is_never_read(option):
+    (layout,) = enum_layouts(*struct_option_dump(option)).values()
+    assert layout == {"kind": "unqualified"}
+
+
+def test_only_cores_option_is_read_as_one():
+    # The crate's own enum of the same shape may name its variants alike.
+    for scope in (("core", "result"), (CRATE, "option")):
+        (layout,) = enum_layouts(*struct_option_dump(_engineer(), scope=scope)).values()
+        assert layout == {"kind": "unqualified"}, scope
+
+
+def _option_variable(name="last", address=0x10, **changes):
+    return {
+        "name": name,
+        "type": f"core::option::Option<{CRATE}::Engineer>",
+        "value": f"core::option::Option<{CRATE}::Engineer> @ 0x{address:x}",
+        "memoryReference": f"0x{address:X}",
+        "variablesReference": 7,
+        **changes,
+    }
+
+
+def _engineer_bytes(capacity, data, length, shifts):
+    # A String is (capacity, pointer, length) here (TEXT); `leave` is never read.
+    return words(capacity, data, length) + words(4, 0xBEEF00, 2) + shifts.to_bytes(8, "little")
+
+
+def test_an_option_of_a_struct_reads_its_active_variant_from_memory():
+    from peeky.rust_symbols import option_view
+
+    layout = enum_layouts(*struct_option_dump(_engineer()))[
+        f"core::option::Option<{CRATE}::Engineer>"
+    ]
+    blocks = {"0x0000000000000010": _engineer_bytes(6, 0x2000, 6, 1), "0x2000": "Björn".encode()}
+    shown = option_view(_option_variable(), memory(blocks), layout)
+    assert shown["value"] == 'Some(Engineer { name: "Björn", shifts: 1, .. })', shown
+    assert shown["rust_view"] == "active-variant" and shown["variablesReference"] == 0
+    (payload,) = shown["children"]
+    assert (payload["name"], payload["type"]) == ("__0", f"{CRATE}::Engineer")
+    assert payload["value"] == 'Engineer { name: "Björn", shifts: 1, .. }'
+    name, leave, shifts = payload["children"]
+    assert name["value"] == '"Björn"' and name["children"][0] == {
+        "name": "len",
+        "type": "usize",
+        "value": "6",
+    }
+    assert shifts == {"name": "shifts", "type": "u32", "value": "1"}
+    assert leave["unavailable"] and leave["withheld_as"] == "not read", leave
+    assert "read it through `x` of `if let Some(x) = &last`" in leave["reason"], leave
+    # None's value in the niche: no payload is read, the String's bytes least of all.
+    blocks = {"0x0000000000000010": _engineer_bytes(2**63, 0, 0, 0)}
+    assert option_view(_option_variable(), memory(blocks), layout) == {
+        "name": "last",
+        "type": f"core::option::Option<{CRATE}::Engineer>",
+        "variablesReference": 0,
+        "value": "None",
+        "rust_view": "active-variant",
+    }
+
+
+@pytest.mark.parametrize(
+    "option, raw, shown",
+    [
+        (
+            _option(
+                "o", "point", "0x0c", ("0x00", "u32"), none="0x00", some="0x01", payload="0x04"
+            ),
+            ints(1, 3, 2),
+            "Some(Point { x: 3, y: 2 })",
+        ),
+        (
+            _option(
+                "o", "point", "0x0c", ("0x00", "u32"), none="0x00", some="0x01", payload="0x04"
+            ),
+            ints(0, 3, 2),
+            "None",
+        ),
+        (
+            _option("o", "flag", "0x08", ("0x04", "u8"), none="0x02"),
+            ints(7, 1),
+            "Some(Flag { n: 7, ok: true })",
+        ),
+        (_option("o", "flag", "0x08", ("0x04", "u8"), none="0x02"), ints(7, 2), "None"),
+        (
+            _option("o", "letter", "0x08", ("0x00", "u32"), none="0x00110000"),
+            ints(0xE9, 1),
+            "Some(Letter { n: 1, c: 'é' })",
+        ),
+        (
+            _option("o", "letter", "0x08", ("0x00", "u32"), none="0x00110000"),
+            ints(0x110000, 1),
+            "None",
+        ),
+        (
+            _option("o", "boxed", "0x10", ("0x00", "u64"), none="0x00"),
+            words(0x3000, 4),
+            "Some(Boxed { n: 4, .. })",
+        ),
+        (_option("o", "boxed", "0x10", ("0x00", "u64"), none="0x00"), words(0, 4), "None"),
+    ],
+)
+def test_each_proven_layout_decodes_by_its_own_tag(option, raw, shown):
+    from peeky.rust_symbols import option_view
+
+    ((name, layout),) = enum_layouts(*struct_option_dump(option)).items()
+    variable = {"name": "o", "type": name, "memoryReference": "0x10", "value": ""}
+    assert option_view(variable, memory({"0x0000000000000010": raw}), layout)["value"] == shown
+
+
+@pytest.mark.parametrize(
+    "option, raw, detail",
+    [
+        # A tag holding neither variant's value is no Option: never decoded as one.
+        (
+            _engineer(),
+            _engineer_bytes(2**63 + 1, 0, 0, 0),
+            "the value of neither `None` nor `Some`",
+        ),
+        (
+            _option(
+                "o", "point", "0x0c", ("0x00", "u32"), none="0x00", some="0x01", payload="0x04"
+            ),
+            ints(2, 3, 2),
+            "the value of neither",
+        ),
+        (
+            _option("o", "flag", "0x08", ("0x04", "u8"), none="0x02"),
+            ints(7, 3),
+            "the value of neither",
+        ),
+        (
+            _option("o", "letter", "0x08", ("0x00", "u32"), none="0x00110000"),
+            ints(0x110001, 1),
+            "the value of neither",
+        ),
+        # A payload that does not read.
+        (_engineer(), _engineer_bytes(2, 0x2000, 6, 0), "rust String length exceeds its capacity"),
+    ],
+)
+def test_bytes_that_are_not_the_option_are_withheld_never_guessed(option, raw, detail):
+    from peeky.rust_symbols import option_view
+
+    ((name, layout),) = enum_layouts(*struct_option_dump(option)).items()
+    variable = {"name": "o", "type": name, "memoryReference": "0x10", "value": ""}
+    shown = option_view(variable, memory({"0x0000000000000010": raw, "0x2000": b"Bo"}), layout)
+    assert shown["value"] == UNVERIFIED and shown["rust_view"] == "opaque", shown
+    assert "children" not in shown and shown["variablesReference"] == 0
+    assert shown["why"].startswith("its bytes here do not hold a valid `Option<"), shown
+    assert detail in shown["why"], shown
+    assert shown["why"].endswith(
+        "It is stored at 0x0000000000000010; read what `if let Some(x) = &o` binds instead"
+    ), shown
+
+
+def test_an_option_the_debugger_cannot_read_says_why_and_where_it_is():
+    from peeky.rust_symbols import option_view
+
+    layout = enum_layouts(*struct_option_dump(_engineer()))[
+        f"core::option::Option<{CRATE}::Engineer>"
+    ]
+    shown = option_view(_option_variable(address=0x16FBFAB10), None, layout)
+    assert shown["value"] == UNVERIFIED and "this debugger cannot read memory" in shown["why"]
+    # Its address, as `l` of `if let Some(l) = &last` prints: a pointer into it compares.
+    assert (
+        "It is stored at 0x000000016fbfab10; read what `if let Some(x) = &last` binds"
+        in (shown["why"])
+    )
+    variable = _option_variable(memoryReference=None)
+    assert "gives no memory reference for it" in option_view(variable, memory({}), layout)["why"]
+    # The debugger's two addresses disagree: neither is shown.
+    variable = _option_variable(value=f"core::option::Option<{CRATE}::Engineer> @ 0x20")
+    shown = option_view(variable, memory({}), layout)
+    assert (
+        "address for it is unclear" in shown["why"] and "Its address is not known" in shown["why"]
+    )
+
+    def refused(address, count):
+        raise ValueError("The debugger refused the memory read: no")
+
+    assert (
+        "the debugger did not read it (the debugger refused"
+        in (option_view(_option_variable(), refused, layout)["why"])
+    )
+
+
+def test_an_options_layout_is_picked_by_its_mir_type_and_confirmed_by_lldbs_name():
+    from peeky.rust_symbols import container_layouts, option_name
+
+    dump = struct_option_dump(_engineer())
+    layouts = {**enum_layouts(*dump), **container_layouts(*dump)}
+    shown = f"core::option::Option<{CRATE}::Engineer>"
+    assert option_name("std::option::Option<Engineer>", shown, layouts) == shown
+    assert option_name(f"std::option::Option<{CRATE}::Engineer>", shown, layouts) == shown
+    for declared in ("std::option::Option<Point>", "Engineer", None, "std::option::Option<T>"):
+        assert option_name(declared, shown, layouts) is None
+    assert (
+        option_name("std::option::Option<Engineer>", "core::option::Option<x::Engineer>", layouts)
+        is None
+    )
+    # The MIR names a struct's lifetimes (`Borrow<'_>`); the debug information never does.
+    dump = struct_option_dump(_option("o", "borrow", "0x10", ("0x00", "u64"), none="0x00"))
+    layouts = {**enum_layouts(*dump), **container_layouts(*dump)}
+    shown = f"core::option::Option<{CRATE}::Borrow>"
+    for declared in ("Borrow<'_>", "Borrow<'a>", f"{CRATE}::Borrow<'static>"):
+        assert option_name(f"std::option::Option<{declared}>", shown, layouts) == shown
+
+
+def test_rust_sessions_read_an_option_only_under_an_owned_locals_proofs():
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+    from peeky.rust_symbols import container_layouts
+
+    dump = struct_option_dump(_engineer())
+    proven = {"proven": True, "declared": "std::option::Option<Engineer>"}
+    session = SimpleNamespace(
+        layouts={**enum_layouts(*dump), **container_layouts(*dump)},
+        target=SimpleNamespace(opt_level="0"),
+        owned=SimpleNamespace(
+            proven=lambda *args: proven["proven"],
+            declared_type=lambda *args: proven["declared"],
+        ),
+        unsafe_code=None,
+        parameters={},
+        _binding_types=lambda *args: ["std::option::Option<Engineer>"],
+    )
+    session._option_view = lambda *args, **kwargs: RustSession._option_view(
+        session, *args, **kwargs
+    )
+    frame = {"name": "rota::plan::h0123456789abcdef", "line": 39, "source": {"path": "src/main.rs"}}
+    blocks = {"0x0000000000000010": _engineer_bytes(3, 0x2000, 3, 1), "0x2000": b"Ana"}
+
+    def shown(top=True, innermost=True, **changes):
+        variable = _option_variable(**changes)
+        found = RustSession.view_variable(
+            session, variable, None, memory(blocks), frame=frame, top=top, innermost=innermost
+        )
+        return found["value"], found.get("why", "")
+
+    where = "It is stored at 0x0000000000000010; "
+    binding = where + "read what `if let Some(x) = &last` binds instead"
+    assert shown() == ('Some(Engineer { name: "Ana", shifts: 1, .. })', "")
+    # Each reason says what to do instead, true for that reason.
+    value, why = shown(innermost=False)
+    assert value == UNVERIFIED and why.startswith("`last` is a local of a caller frame"), why
+    assert why.endswith(where + "stop at a line of the function it belongs to, to read it there")
+    value, why = shown(top=False)
+    assert "only as a local or parameter, not inside another value" in why, why
+    assert why.endswith(where + "read what an `if let Some(x)` on it binds instead"), why
+    # Moved, dropped or not yet assigned: there may be nothing to borrow, so no `if let`.
+    proven["proven"] = False
+    why = shown()[1]
+    assert why == (
+        "the build's MIR does not prove `last` initialized at this line: it may be moved, "
+        f"dropped or not yet assigned around it. {where}read it on a line where `last` is "
+        "assigned and not yet moved or dropped, such as the one after its assignment"
+    ), why
+    proven.update(proven=True, declared="std::option::Option<(std::string::String, i64)>")
+    assert shown()[1].startswith(
+        "Peeky picks an `Option`'s layout by its type in the build's MIR, "
+        "`std::option::Option<(std::string::String, i64)>`, and that matches no one layout"
+    ), shown()
+    assert shown()[1].endswith(binding)
+    proven["declared"] = None
+    assert "which gives none here (in a generic function" in shown()[1]
+    proven["declared"] = "std::option::Option<Engineer>"
+    session.unsafe_code = "the crate has unsafe code (src/main.rs)"
+    assert shown()[1] == f"the crate has unsafe code (src/main.rs). {binding}"
+    session.unsafe_code = None
+    session.target.opt_level = "2"
+    assert shown()[1] == (
+        f"Peeky decodes an enum's variant only in an unoptimized build. {where}read it in an "
+        'unoptimized build (`opt_level` "0", the default)'
+    )
+
+
+@pytest.mark.parametrize(
+    "kind, top, advice",
+    [
+        ("core::option::Option<u32>", True, "read what `if let Some(x) = &v` binds instead"),
+        ("core::option::Option<u32>", False, "read what an `if let Some(x)` on it binds instead"),
+        (
+            "core::result::Result<u32, alloc::string::String>",
+            True,
+            "read what `if let Ok(x) = &v` or `Err(e)` binds instead",
+        ),
+        (
+            "core::result::Result<u32, alloc::string::String>",
+            False,
+            "read what an `if let Ok(x)` or `Err(e)` on it binds instead",
+        ),
+        (f"{CRATE}::Turn", True, "read what a `match` arm on it binds instead"),
+    ],
+)
+def test_an_opaque_enum_names_the_binding_its_own_kind_has(kind, top, advice):
+    # Review of #303: a `Result` or a user enum was told to read an `if let`'s binding
+    # only for `Option`s, and was given a `match` without its arm.
+    variable = {"name": "v", "type": kind, "memoryReference": "0x10", "value": ""}
+    view = active_variant(variable, None, {kind: {"kind": "unqualified"}}, top=top)
+    assert view["value"] == UNQUALIFIED, view
+    assert view["why"].endswith(f"It is stored at 0x0000000000000010; {advice}"), view

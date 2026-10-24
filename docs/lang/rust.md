@@ -126,8 +126,12 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - A local whose slot may hold leftovers is withheld: the row says `no value yet:` and why. That is
   a local not assigned on some path (`let x;`), or not kept across an `.await`
   ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).
-- An enum that Peeky can't decode with certainty stays opaque
-  ([Rust 7.2](rust-cookbook.md#values-peeky-withholds-or-leaves-raw)).
+- An `Option` local of a tuple or crate struct reads from memory, marked `[active-variant]`:
+  `Some(Engineer { name: "Björn", shifts: 1, .. })`. `last.__0` is what `Some` holds, and
+  `last.__0.name` its field ([Rust 7.2](rust-cookbook.md#options-of-tuples-and-structs)).
+- An enum that Peeky can't decode with certainty stays opaque. Its note says why, gives its
+  address and says what to read instead
+  ([Rust 7.2](rust-cookbook.md#options-of-tuples-and-structs)).
 - A tuple's fields are `.__0`, `.__1` and so on: `runs[0].__0`
   ([Rust 7.2](rust-cookbook.md#tuples-and-structs)).
 - `describe` normally lists a name bound more than once as `x @ main.rs:6`, one entry per
