@@ -1089,7 +1089,7 @@ Branch on the exit status:
   were, and says to compare with a run without them:
   `The run made 6 changes by --set-at (at lines 32 and 35): compare with a run without them`.
   Nothing proves that a change came before the line's chance to run, so it claims no cause. A
-  write that kept the same text, but isn't proven to change nothing, is named too. Only where
+  write with the same text, not proven unchanged, is named too. Only where
   every write is proven to change nothing is the line blamed, as without changes.
 
 #### Example: change a value for one line
@@ -1232,8 +1232,13 @@ How `@all` works:
   - **Java:** a primitive other than `float` and `double`. java-debug shows a `char` bare: `+`.
   - **Python:** only `True`, `False` and `None`, since another value may be a new object.
 - Any `set` line in a probe's text is marked so. In JSON, such a change (in a probe's
-  `interventions`, or `session set --json`) has `"unchanged": true`. Each change also has `type`,
-  the value's type after the write, as the debugger names it (LLDB's C name for a Rust value).
+  `interventions`, or `session set --json`) has `"unchanged": true`.
+- A write with the same text, but not proven to change nothing, says `1000 -> 1000, same text,
+  not proven unchanged`. The line for the rest counts the three kinds apart:
+  `5 more writes …: 2 changes, 2 with no change and 1 with the same text, not proven unchanged`.
+- A write of anything but a text also has `type` in JSON, where the debugger's reply or a read
+  after the write gives one. That is the value's type after the write, as the debugger names it
+  (LLDB's C name for a Rust value). A text write, or a reply without a type, has none.
 
 #### Where and when a change is made
 

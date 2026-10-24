@@ -147,5 +147,5 @@ def test_a_write_is_proven_a_no_op_by_its_debug_type_never_its_name(program, cxx
     assert changes["plain"]["unchanged"] is True and changes["box.count"]["unchanged"] is True
     assert main(command) == 0
     text = capsys.readouterr().out
-    assert "\nset lossy: 1 -> 1\n" in text, text
+    assert "\nset lossy: 1 -> 1, same text, not proven unchanged\n" in text, text
     assert "set plain: 7 -> 7, no change" in text and "set box.count: 3 -> 3, no change" in text

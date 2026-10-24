@@ -114,11 +114,28 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
             "change (`--json` lists each)"
         ) in text, text
     # Round 2: the text alone is never proof (a Java String, a Python `1000`, a float, or
-    # an older worker's result): such writes are counted as changes, never as no-ops.
-    alike = _all("x", [("1000", "1000")] * 5)
+    # an older worker's result). Round 3: nor are such writes changes; each kind is
+    # counted apart, as NO_STOP counts them.
+    alike = _all("x", [("1000", "1000")] * 5, line=9)
     text = _table(_result(interventions=alike, language="python"))
-    assert "set x: 1000 -> 1000  (--set-at line 26@all, hit 1, in main)" in text, text
-    assert "set x: 2 more changes by --set-at line 26@all, at hits 4 to 5 (" in text, text
+    assert (
+        "set x: 1000 -> 1000, same text, not proven unchanged  (--set-at line 9@all, hit 1, in "
+        "main)"
+    ) in text, text
+    assert (
+        "set x: 2 more writes by --set-at line 9@all, at hits 4 to 5, each with the same text, "
+        "not proven unchanged (`--json` lists each)"
+    ) in text, text
+    assert "more change" not in text, text
+    pairs = [("1", "1")] * 3 + [("1", "2"), ("1", "1"), ("2", "2"), ("3", "4"), ("5", "5")]
+    mixed = _all("x", pairs)
+    for index in (4, 5):
+        mixed[index]["unchanged"] = True
+    text = _table(_result(interventions=mixed))
+    assert (
+        "set x: 5 more writes by --set-at line 26@all, at hits 4 to 8: 2 changes, 2 with no "
+        "change and 1 with the same text, not proven unchanged (`--json` lists each)"
+    ) in text, text
     assert not probe_module.unchanged({"before": "1", "after": "1"})
     assert not probe_module.unchanged({"before": "1", "after": "2", "unchanged": True})
     assert probe_module.unchanged({"before": "1", "after": "1", "unchanged": True})
@@ -656,7 +673,7 @@ def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monk
     )
     assert result["error"]["message"] == (
         "The program finished without stopping at tides.c:8. The run made 2 writes by "
-        "--set-at that kept the same text, not proven to change nothing (at line 9): "
+        "--set-at with the same text, not proven unchanged (at line 9): "
         "compare with a run without them"
     )
     # A change, a write not proven a no-op, and one proven: the first two are named.
@@ -680,8 +697,8 @@ def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monk
     assert [c.get("unchanged") for c in result["interventions"]] == [None, None, True]
     assert result["error"]["message"] == (
         "The program finished without stopping at tides.c:8. The run made 1 change by "
-        "--set-at (at line 9), and 1 write by --set-at that kept the same text, not proven to "
-        "change nothing (at line 20): compare with a run without them"
+        "--set-at (at line 9), and 1 write by --set-at with the same text, not proven "
+        "unchanged (at line 20): compare with a run without them"
     )
 
 

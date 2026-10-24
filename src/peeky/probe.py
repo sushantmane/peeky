@@ -4292,12 +4292,8 @@ def run_probe(
             # `1000`). Nothing proves that one came before the line's chance to run: the
             # message names them, and claims no cause. Only where every write is a proven
             # no-op is the line blamed, as with none.
-            made = [change for change in changes if change.get("before") != change.get("after")]
-            alike = [
-                change
-                for change in changes
-                if change.get("before") == change.get("after") and not unchanged(change)
-            ]
+            made = [change for change in changes if _write_kind(change) == "change"]
+            alike = [change for change in changes if _write_kind(change) == "alike"]
 
             def lines_of(found):
                 lines = sorted(
@@ -4312,8 +4308,8 @@ def run_probe(
                 f"{len(made)} change{'s' if len(made) > 1 else ''} by --set-at{lines_of(made)}"
                 if made
                 else "",
-                f"{len(alike)} write{'s' if len(alike) > 1 else ''} by --set-at that kept the "
-                f"same text, not proven to change nothing{lines_of(alike)}"
+                f"{len(alike)} write{'s' if len(alike) > 1 else ''} by --set-at with the same "
+                f"text, not proven unchanged{lines_of(alike)}"
                 if alike
                 else "",
             ]
@@ -4707,6 +4703,16 @@ _WHOLE_SCALAR = re.compile(
 _JAVA_PRIMITIVES = frozenset(("byte", "short", "int", "long", "float", "double", "boolean", "char"))
 
 
+def _write_kind(change):
+    """How a write left its value, as a probe's text and NO_STOP count it: "change" where
+    the text differs, "unchanged" where the worker proved it changed nothing, "alike"
+    where the text is the same but nothing proves the value is (a new String alike, a
+    Python `1000`, a float's rounded text, or an older worker's result)."""
+    if change.get("before") != change.get("after"):
+        return "change"
+    return "unchanged" if unchanged(change) else "alike"
+
+
 def unchanged(change):
     """Whether an intervention wrote the value its target already held, as the worker
     proved it (``unchanged`` in its result: the same text before and after, and a type
@@ -4864,7 +4870,9 @@ def _table(result, short_names=True):
         hit = f", hit {change.get('hit')}" if change.get("all") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
-            + (", no change" if unchanged(change) else "")
+            + {"unchanged": ", no change", "alike": ", same text, not proven unchanged"}.get(
+                _write_kind(change), ""
+            )
             + (
                 f"  (--set-at line {at}{hit}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
@@ -4883,18 +4891,36 @@ def _table(result, short_names=True):
             if min(known) == max(known)
             else f", at hits {min(known)} to {max(known)}"
         )
-        # A write of the value already there is counted apart (eleventh evaluation: 35 of
-        # 42 `set free: 0 -> 0` writes were counted as changes).
-        same = sum(unchanged(change) for change in changes)
-        made = len(changes) - same
-        counted = f"{len(changes)} more " + (
-            f"change{'s' if made > 1 else ''} by --set-at line {at}{span}"
-            if not same
-            else f"writes by --set-at line {at}{span}, each with no change"
-            if not made
-            else f"writes by --set-at line {at}{span}: {made} change{'s' if made > 1 else ''} "
-            f"and {same} with no change"
-        )
+        # Changes, writes proven to change nothing, and writes of the same text not proven
+        # unchanged, counted apart, as NO_STOP counts them (eleventh evaluation: 35 of 42
+        # `set free: 0 -> 0` writes were counted as changes).
+        kinds = [_write_kind(change) for change in changes]
+        parts = [
+            (kinds.count(kind), word)
+            for kind, word in (
+                ("change", "change"),
+                ("unchanged", "with no change"),
+                ("alike", "with the same text, not proven unchanged"),
+            )
+            if kind in kinds
+        ]
+        if parts == [(len(changes), "change")]:
+            counted = f"{len(changes)} more change{'s' if len(changes) > 1 else ''} by "
+            counted += f"--set-at line {at}{span}"
+        elif len(parts) == 1:
+            counted = f"{len(changes)} more writes by --set-at line {at}{span}, each {parts[0][1]}"
+        else:
+            listed = [
+                f"{count} {word}{'s' if count > 1 else ''}"
+                if word == "change"
+                else f"{count} {word}"
+                for count, word in parts
+            ]
+            counted = (
+                f"{len(changes)} more writes by --set-at line {at}{span}: "
+                + ", ".join(listed[:-1])
+                + f" and {listed[-1]}"
+            )
         lines.append(f"set {name}: {counted} (`--json` lists each)")
     unmade = [entry for entry in result.get("unapplied") or () if "made" not in entry]
     capped = len(result.get("unapplied") or ()) - len(unmade)

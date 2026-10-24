@@ -97,8 +97,16 @@ def test_an_all_resets_a_python_count_wherever_the_input_agrees(state, capsys):
     assert {change["function"] for change in changes} == {"debounce"}
     assert any(change["before"] != "0" for change in changes), changes
     text = _table(result)
-    assert f"set count: 0 -> 0  (--set-at line {agrees}@all, hit 1, in debounce)" in text
-    assert f"more changes by --set-at line {agrees}@all, at hits 4 to {result['hits']}" in text
+    # A Python int written alike may be another object: the same text, not proven
+    # unchanged, counted apart from the changes (review of PR #314).
+    assert (
+        f"set count: 0 -> 0, same text, not proven unchanged  (--set-at line {agrees}@all, hit "
+        "1, in debounce)"
+    ) in text, text
+    assert (
+        f"more writes by --set-at line {agrees}@all, at hits 4 to {result['hits']}: 5 changes "
+        "and 8 with the same text, not proven unchanged"
+    ) in text, text
     # A field is refused before the run, @all or not: Python changes only a frame's own
     # variables.
     field = line_of(DEBOUNCE, "FIELD")
