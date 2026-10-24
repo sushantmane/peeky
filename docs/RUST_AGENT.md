@@ -703,7 +703,14 @@ the local without reading the changed part, and uses the binding before or after
 - A use after the local is assigned or ends counts too (#330): `u.push(y);`, then `y = t;`, then
   `u` printed. So does a Vec a struct was pushed into, used after the struct ends. The copy is all
   that is left of the old value.
-- An argument has no `StorageDead`: it ends at the function's `return`.
+- The frame's exit ends every local and argument (`Body._frame_exit`): a `return`, a call that
+  never returns (`panic!`'s, `process::exit`), or `resume`, `abort` or `terminate` after one. An
+  argument has no `StorageDead`, nor has a local on a panic's path.
+- A path a call, a drop or a check takes only when it panics (`Block.unwinds`, its cleanup edge
+  beside another) ends nothing. Every call may panic, so such an exit is no sign the program
+  goes on with the copy.
+- A drop of the local that may run code reads it (`Body._drop_reads`): its type's own `Drop` may
+  print the changed field. A `_quiet_drop` type's, and a drop of a field surely apart, don't.
 
 - Only a read that surely covers part of that part counts: `_root_access`, with the selector's MIR
   projection. `fields.member_indexes` maps fields, because rustc's DWARF lists them in declaration
@@ -732,8 +739,11 @@ never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
 [When the program never reads it again](lang/rust-cookbook.md#when-the-program-never-reads-it-again).
 
 - `Body.unread_ends` walks every path from each place, as `copy_undoes` does. It returns where the
-  part ends: "write", "scope" (`StorageDead`) or "return". It returns None where a statement may
-  read it first.
+  part ends: "write", "scope" (`StorageDead`), "return", or "stop", where the frame exits otherwise
+  (a panic, an exit). It returns None where a statement may read it first.
+- Each path the program takes must reach one of them. Where a loop has no way out to one, it adds
+  "loop". A path a call or a check takes only when it panics is read through for reads, but
+  reaches no end of its own.
 - `Body._unread_access` judges each statement strictly, unlike `_root_access`. A borrow, a
   dereference, a `discriminant`, a call given the local, and a drop that may run code are reads. A
   `copy` or `move` of a place `_apart` from the part isn't, nor is a drop `_quiet_drop` allows.
@@ -744,7 +754,9 @@ never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
   its advice, comes first. Before the run, `RustSession._unread_everywhere` refuses it where every
   place of the line that emits code is so (`coded`).
 - The wording, from `rust._unread_where`: "it is overwritten at line 7 first", "it goes out of
-  scope at line 14 first", "the function returns at line 9 first", joined with "or".
+  scope at line 14 first", "the function returns at line 9 first", joined with "or". A line is
+  never said to come first where another path panics, exits or loops forever: "…, unless the
+  program panics or exits before that", or "the program panics or exits first".
 
 ### How the change is written
 

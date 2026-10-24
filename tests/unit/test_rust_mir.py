@@ -2814,10 +2814,18 @@ def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local(
     # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
     # point anywhere. The standard library's `ptr::eq` compares the two addresses only.
     owned = raw_eq_owned()
-    # But `team`, an argument, ends unread where the function returns, after the branch
-    # uses what the call made of the address `first(team)` gave (#330).
-    past_team = [False] * (len(ALL_NAMES) - 1) + [True]
+    # But past the call, the branch uses `_9`, which the flow lets hold what `e` may (a
+    # reference Peeky does not follow), and the frame's return then ends `last`, `e`, `l`
+    # and `team` unread (#330 and its review; this MIR leaves out the `StorageDead`s a
+    # build has, which end the first three there too). That is said only as a hedge, never
+    # as a read the call made; `week` and `pick` are not withheld.
+    past_team = [False, False, True, True, True, True]
     assert withheld(owned) == past_team
+    owned._positions = lambda site, line, facts, block=None: [(3, 0)]
+    assert raw_eq_session(owned)("last") == (
+        "a statement under way at the stop uses `e` (at lines 34 and 39), which may hold the "
+        "program's own copy of it, so it may hold a copy of it, which it uses after the stop"
+    )
     # Whatever else the crate holds: the call is still the standard library's.
     owned = raw_eq_owned()
     owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"

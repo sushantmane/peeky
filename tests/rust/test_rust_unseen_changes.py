@@ -132,9 +132,135 @@ fn main() {
 }
 """
 
+# Review of PR #334: a type's own `Drop` reads what it drops; a panic, `process::exit` or a
+# coroutine's exit ends the frame's locals; a refusal names where a value ends only where
+# every path ends there. Each run takes what to do first.
+FRAMES = """use std::env;
+use std::hint::black_box;
+use std::pin::pin;
+use std::task::{Context, Waker};
 
-def line_of(marker):
-    lines = enumerate(UNSEEN.splitlines(), 1)
+struct D(u32, u32);
+
+impl Drop for D {
+    fn drop(&mut self) {
+        println!("DROP {}", self.0);
+    }
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+fn scoped(n: u32) -> u32 {
+    let d = D(n + 1, n);
+    let z = d.0;
+    let k = other(); // DROP_SCOPED
+    z + k
+}
+
+fn taken(d: D) -> u32 {
+    let z = d.0;
+    let k = other(); // DROP_TAKEN
+    z + k
+}
+
+async fn exited(n: u32) {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // ASYNC_COPY
+    let k = other(); // ASYNC
+    println!("ASYNC {}", z + k);
+    std::process::exit(0);
+}
+
+fn pointed(n: u32) -> ! {
+    let x = n + 1;
+    let r = &x;
+    let z = x; // POINTER_COPY
+    let k = other(); // POINTER
+    println!("POINTER {}", z + k);
+    black_box(r);
+    std::process::exit(0);
+}
+
+fn branch(n: u32) -> u32 {
+    let mut total = n + 1;
+    let k = other(); // BRANCH
+    if n > 100 {
+        panic!("too many");
+    }
+    total = k + n; // BRANCH_WRITE
+    total
+}
+
+fn spin(n: u32) -> u32 {
+    let mut total = n + 1;
+    let k = other(); // SPIN
+    if n > 100 {
+        loop {
+            black_box(k);
+        }
+    }
+    total = k + n; // SPIN_WRITE
+    total
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let n: u32 = args[2].parse().unwrap();
+    match args[1].as_str() {
+        "drop" => println!("SCOPED {} TAKEN {}", scoped(n), taken(D(n + 5, n))),
+        "async" => {
+            let mut fut = pin!(exited(n));
+            let _ = fut.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        }
+        "pointer" => pointed(n),
+        _ => println!("BRANCH {} SPIN {}", branch(n), spin(n)),
+    }
+}
+"""
+# The same exits in a crate with unsafe code of its own, where the never-read rule is off.
+EXITS = """use std::env;
+use std::hint::black_box;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+fn argument(mut x: u32) -> ! {
+    black_box(&mut x);
+    let z = x; // ARG_COPY
+    let k = other(); // ARG
+    println!("ARG {}", z + k);
+    std::process::exit(0);
+}
+
+fn local(n: u32) -> ! {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // LOCAL_COPY
+    let k = other(); // LOCAL
+    println!("LOCAL {}", z + k);
+    std::process::exit(0);
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let n: u32 = args[2].parse().unwrap();
+    let read = [n];
+    // Unsafe code of its own, unrelated to `x`.
+    let first = unsafe { *read.as_ptr() };
+    if args[1] == "arg" { argument(first) } else { local(first) }
+}
+"""
+TEXTS = {"unseen": UNSEEN, "frames": FRAMES, "exits": EXITS}
+
+
+def line_of(marker, text=UNSEEN):
+    lines = enumerate(text.splitlines(), 1)
     return next(i for i, line in lines if line.endswith(f"// {marker}"))
 
 
@@ -147,31 +273,33 @@ def crate(tmp_path, monkeypatch):
     if not all(os.environ.get("PEEKY_RUST_" + name) for name in names):
         pytest.skip("set PEEKY_RUST_* tool paths to enable Rust conformance")
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    root = tmp_path / "unseen"
-    (root / "src").mkdir(parents=True)
-    (root / "Cargo.toml").write_text(MANIFEST.format(name="unseen"))
-    (root / "Cargo.lock").write_text(LOCK.format(name="unseen"))
-    (root / "src/main.rs").write_text(UNSEEN)
-    return root
+    for name, text in TEXTS.items():
+        root = tmp_path / name
+        (root / "src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text(MANIFEST.format(name=name))
+        (root / "Cargo.lock").write_text(LOCK.format(name=name))
+        (root / "src/main.rs").write_text(text)
+    return tmp_path / "unseen"
 
 
-def probe(capsys, root, marker, *argv):
-    at = ["probe", str(root), "--at", f"src/main.rs:{line_of(marker)}", "--json", "--quiet"]
-    code = main([*at, *argv, *RUN])
+def probe(capsys, root, marker, *argv, run=RUN):
+    line = line_of(marker, TEXTS[root.name])
+    at = ["probe", str(root), "--at", f"src/main.rs:{line}", "--json", "--quiet"]
+    code = main([*at, *argv, *run])
     return code, json.loads(capsys.readouterr().out)
 
 
-def changed(capsys, root, marker, *argv):
+def changed(capsys, root, marker, *argv, run=RUN):
     """The output's lines of a probe whose `--set` is made."""
-    code, result = probe(capsys, root, marker, *argv)
+    code, result = probe(capsys, root, marker, *argv, run=run)
     assert code == 0, result.get("error")
     assert result.get("set_outcomes") or result["output"], result
     return result["output"].splitlines()
 
 
-def refused(capsys, root, marker, *argv):
+def refused(capsys, root, marker, *argv, run=RUN):
     """The message of a refusal made before the program runs."""
-    code, result = probe(capsys, root, marker, *argv)
+    code, result = probe(capsys, root, marker, *argv, run=run)
     error = result.get("error") or {}
     assert code == 2 and error.get("code") == "MUTATION_REJECTED", result
     assert result.get("refused_before_launch") is True and not result["rows"], result
@@ -260,3 +388,65 @@ def test_a_local_read_again_before_it_is_replaced_stays_settable(crate, capsys):
     # refused (#316).
     message = refused(capsys, crate, "SUMMED", "--set", "x=100")
     assert "the program's own `w` (at lines " in message, message
+
+
+@pytest.mark.timeout(400)
+def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
+    # `D`'s own `Drop` prints `self.0`. After `let z = d.0;`, a change to `d.0` was refused
+    # with "Peeky proves no read of the changed part first", though the drop reads it.
+    frames, run = crate.parent / "frames", ("--", "drop", "1")
+    lines = changed(capsys, frames, "DROP_SCOPED", "--set", "d.__0=100", run=run)
+    assert lines == ["DROP 100", "DROP 6", "SCOPED 3 TAKEN 7"], lines
+    # A by-value argument too: it is dropped where the function returns.
+    lines = changed(capsys, frames, "DROP_TAKEN", "--set", "d.__0=100", run=run)
+    assert lines == ["DROP 2", "DROP 100", "SCOPED 3 TAKEN 7"], lines
+
+
+@pytest.mark.timeout(400)
+def test_a_panic_an_exit_or_a_coroutines_end_ends_the_local(crate, capsys):
+    # `let z = x;`, the stop, `println!` of `z`, then `process::exit(0)`: `x` is never read
+    # again. In a crate with unsafe code, the never-read rule is off: the copy's is the one.
+    exits = crate.parent / "exits"
+    for marker, run, copy in (("ARG", "arg", "ARG_COPY"), ("LOCAL", "local", "LOCAL_COPY")):
+        message = refused(capsys, exits, marker, "--set", "x=100", run=("--", run, "1"))
+        assert (
+            f"the program has already copied `x` into `z` (at line {line_of(copy, EXITS)}) and "
+            "goes on with that copy"
+        ) in message, message
+        lines = changed(capsys, exits, copy, "--set", "x=100", run=("--", run, "1"))
+        assert lines == [f"{run.upper()} 101"], lines
+    # An async fn's body, and a local a pointer still to be used points into: the
+    # never-read rule says nothing there either.
+    frames = crate.parent / "frames"
+    for marker, run, copy, said in (
+        ("ASYNC", "async", "ASYNC_COPY", "the program's own `z` (at line {}) may hold a copy"),
+        (
+            "POINTER",
+            "pointer",
+            "POINTER_COPY",
+            "the program has already copied `x` into `z` (at line {})",
+        ),
+    ):
+        message = refused(capsys, frames, marker, "--set", "x=100", run=("--", run, "1"))
+        assert said.format(line_of(copy, FRAMES)) in message, message
+        lines = changed(capsys, frames, copy, "--set", "x=100", run=("--", run, "1"))
+        assert lines == [f"{marker} 101"], lines
+
+
+@pytest.mark.timeout(400)
+def test_where_a_value_ends_is_named_only_where_every_path_ends_there(crate, capsys):
+    frames, run = crate.parent / "frames", ("--", "branch", "1")
+    for marker, write, other in (
+        ("BRANCH", "BRANCH_WRITE", "panics or exits"),
+        ("SPIN", "SPIN_WRITE", "loops forever"),
+    ):
+        message = refused(capsys, frames, marker, "--set", "total=100", run=run)
+        assert (
+            f"so a change there would never be seen: it is overwritten at line "
+            f"{line_of(write, FRAMES)} first, unless the program {other} before that. Refused"
+        ) in message, message
+    # From the overwrite's own line, every path reaches it.
+    message = refused(capsys, frames, "BRANCH_WRITE", "--set", "total=100", run=run)
+    assert (
+        f"it is overwritten at line {line_of('BRANCH_WRITE', FRAMES)} first. Refused"
+    ) in message, message

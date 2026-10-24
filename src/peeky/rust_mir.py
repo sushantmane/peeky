@@ -1482,6 +1482,7 @@ _FORMATTED_PRIMITIVE = re.compile(r"[iu](?:8|16|32|64|128|size)|f32|f64|bool|cha
 _NOT_SHARED = re.compile(r"&(?:mut |raw |fake )")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
+_UNWIND_EDGE = re.compile(r"\bunwind: bb([0-9]+)\b")
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
 # The function's normal return, where every local of its frame ends (#330).
 _RETURN = re.compile(r"^return;$")
@@ -1499,6 +1500,10 @@ class Block:
     terminator: str = ""
     successors: tuple = ()
     returns: int | None = None  # a call's return edge, the only edge that sets its result
+    # The cleanup block a terminator unwinds to where it also has an edge on: taken only
+    # when a call, a drop or a check panics (#330 review). A call that never returns
+    # (`panic!`, `process::exit`) has no other edge, so its unwind edge is its own path.
+    unwinds: frozenset = frozenset()
 
 
 @dataclass
@@ -2195,15 +2200,20 @@ class Body:
 
         A use of the copy after the assignment or end counts as one before it (#330: `u.
         push(y); let t = n; y = t;` then `println!("{:?}", u)`; a struct pushed into a Vec
-        and then ended, before the Vec is used): the old value is all that is left. An
-        argument has no end of its own: it ends where the function returns."""
+        and then ended, before the Vec is used): the old value is all that is left. The
+        frame's exit ends every local and argument of it: a return, and a call that never
+        returns, as `panic!` or `process::exit` (``_frame_exit``; #330 review: an argument
+        has no `StorageDead`, nor a local where the program panics). A path a call or a
+        check takes only when it panics ends nothing. A drop of ``root`` that may run code
+        (its type's own `Drop`, ``_drop_reads``) reads it (#330 review)."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
         # (block, index, whether the copy was used on the way here, whether ``root`` was
-        # assigned or ended unread on the way here: then any use of the copy is enough).
-        pending, seen = [(start[0], start[1], False, False)], set()
+        # assigned or ended unread on the way here: then any use of the copy is enough,
+        # whether the path is a panic's unwinding from a call that may also return).
+        pending, seen = [(start[0], start[1], False, False, False)], set()
         while pending:
             state = pending.pop()
-            number, index, used, gone = state
+            number, index, used, gone, unwinding = state
             if state in seen or number not in self.blocks:
                 continue
             seen.add(state)
@@ -2218,11 +2228,15 @@ class Body:
                         stopped = True
                         break
                     continue
-                access = _root_access(text, root, projection, formats)
+                access = (
+                    "read"
+                    if self._drop_reads(text, root, projection)
+                    else _root_access(text, root, projection, formats)
+                )
                 if access == "read":
                     stopped = True
                     break
-                if access == "end" or (root in self.arguments and _RETURN.match(text)):
+                if access == "end":
                     if used:
                         return True
                     # Its old value is gone: the copy, if used later, is all that is left.
@@ -2234,41 +2248,117 @@ class Body:
                 if _event(text, copy) == "end" and not used:
                     stopped = True
                     break
-            if not stopped:
-                resumed = (self.resumes[number],) if number in self.resumes else ()
-                pending.extend(
-                    (successor, 0, used, gone) for successor in (*block.successors, *resumed)
-                )
+            if stopped:
+                continue
+            if not unwinding and self._frame_exit(number):
+                # The frame ends, ``root`` with it, unread.
+                if used:
+                    return True
+                continue
+            resumed = (self.resumes[number],) if number in self.resumes else ()
+            pending.extend(
+                (successor, 0, used, gone, unwinding or successor in block.unwinds)
+                for successor in (*block.successors, *resumed)
+            )
         return False
+
+    def _frame_exit(self, number):
+        """Whether the block ``number`` ends the frame (#330 review): a `return`, a call
+        that never returns (`panic!`'s, `process::exit`), `resume` after one, `abort` or
+        `terminate`; not `unreachable`, which never runs."""
+        block = self.blocks[number]
+        return (
+            not block.successors
+            and number not in self.resumes
+            and not block.terminator.startswith("unreachable")
+        )
+
+    def _drop_reads(self, text, local, projection=()):
+        """Whether ``text`` drops ``local``, or a place of it not surely apart from the
+        part ``projection``, with a drop that may run code: the type's own `Drop`, which
+        may read it (#330 review: `impl Drop for D` printing `self.0`). Not where the
+        type's drop provably runs none (``_quiet_drop``: a number, a String)."""
+        dropped = _DROP_PLACE.match(_STRING.sub('""', text))
+        head = re.match(rf"\(*_{local}\b", dropped[1]) if dropped else None
+        if head is None:
+            return False
+        place = _place_steps(dropped[1], head.end() - len(f"_{local}"))
+        if place is not None and _apart(place[0], projection):
+            return False
+        return not _quiet_drop(self.types.get(local), self.generics)
 
     def unread_ends(self, local, start, projection=()):
         """Where the part ``projection`` of ``local`` (``_root_access``'s) ends, unread,
         on every path from ``start`` ((block, index): before that statement), so a change
         made there is never seen (#330): {(kind, (block, index))}, kind "write" (an
-        assignment covering it, `y = t;`), "scope" (the end of its storage) or "return"
-        (the function returns). A path that ends otherwise (a panic, `process::exit`)
-        adds none. None where some path may read it first (``_unread_access``). Pointers
-        made from it before ``start`` are the caller's to judge
-        (``OwnedLocals.unread_after``)."""
-        ends, pending, seen = set(), [start], set()
+        assignment covering it, `y = t;`), "scope" (the end of its storage), "return"
+        (the function returns), "stop" (the frame ends otherwise: a call that never
+        returns, as `panic!` or `process::exit`, ``_frame_exit``), or "loop" (at
+        ``start``: some path can never leave a loop that has none of these). So each path
+        the program takes ends at one of them (#330 review). A path a call or a check
+        takes only when it panics (``Block.unwinds``) is read through, but ends nothing.
+        None where some path may read it first (``_unread_access``). Pointers made from
+        it before ``start`` are the caller's to judge (``OwnedLocals.unread_after``)."""
+        # {place a path enters a block at: the places it goes on to, or None where it
+        # ends there}, and the cleanup paths a panic takes.
+        nodes, ends, unwinding, pending = {}, set(), [], [start]
         while pending:
-            number, index = pending.pop()
-            if (number, index) in seen or number not in self.blocks:
+            node = pending.pop()
+            if node in nodes or node[0] not in self.blocks:
                 continue
-            seen.add((number, index))
+            number, index = node
             block = self.blocks[number]
-            stopped = False
+            nodes[node] = None
             for offset, (text, _, _) in enumerate(block.statements[index:], index):
                 access = self._unread_access(text, local, projection)
                 if access == "read":
                     return None
-                if access is not None or _RETURN.match(text):
-                    ends.add((access or "return", (number, offset)))
-                    stopped = True
+                if access is not None:
+                    ends.add((access, (number, offset)))
                     break
-            if not stopped:
-                resumed = (self.resumes[number],) if number in self.resumes else ()
-                pending.extend((successor, 0) for successor in (*block.successors, *resumed))
+            else:
+                last = (number, len(block.statements) - 1)
+                if _RETURN.match(block.terminator):
+                    ends.add(("return", last))
+                elif self._frame_exit(number):
+                    ends.add(("stop", last))
+                elif block.successors or number in self.resumes:
+                    resumed = (self.resumes[number],) if number in self.resumes else ()
+                    unwinding.extend((each, 0) for each in block.unwinds)
+                    following = [
+                        (each, 0)
+                        for each in (*block.successors, *resumed)
+                        if each not in block.unwinds
+                    ]
+                    nodes[node] = following
+                    pending.extend(following)
+        seen = set()
+        while unwinding:
+            number, index = node = unwinding.pop()
+            if node in seen or number not in self.blocks:
+                continue
+            seen.add(node)
+            block = self.blocks[number]
+            for text, _, _ in block.statements[index:]:
+                access = self._unread_access(text, local, projection)
+                if access == "read":
+                    return None
+                if access is not None:
+                    break
+            else:
+                unwinding.extend((each, 0) for each in block.successors)
+        # The places from which some path reaches an end: a loop with a way out reaches
+        # what follows it, one with none never does.
+        out = {node for node, following in nodes.items() if following is None}
+        grown = True
+        while grown:
+            grown = False
+            for node, following in nodes.items():
+                if node not in out and any(each in out for each in following):
+                    out.add(node)
+                    grown = True
+        if len(out) < len(nodes):
+            ends.add(("loop", start))
         return frozenset(ends)
 
     def _unread_access(self, text, local, projection=()):
@@ -5824,6 +5914,9 @@ def _finish(block):
         return False
     edges = text.rpartition("->")[2]
     block.successors = tuple(int(n) for n in _SUCCESSOR.findall(edges))
+    unwind = _UNWIND_EDGE.search(edges)
+    if unwind and any(n != int(unwind[1]) for n in block.successors):
+        block.unwinds = frozenset({int(unwind[1])})
     if _ASSIGN.match(text):
         returned = _RETURN_EDGE.search(edges)
         block.returns = int(returned[1]) if returned else None
@@ -6900,8 +6993,8 @@ class OwnedLocals:
         """Where the frame's local ``variable_name`` (the part ``projection`` of it, as for
         ``copy_hazards``) ends unread on every path from every place the stop can be on
         ``line`` of ``path`` (#330: `y = t;` before any read of `y`; the end of its scope):
-        [(kind, file, line)], sorted, kind as for ``Body.unread_ends``; empty where every
-        path ends otherwise (a panic). A change there is never seen. None where the
+        [(kind, file, line)], sorted, kind as for ``Body.unread_ends`` ("stop" and "loop"
+        with no file or line: ("stop", "", 0)). A change there is never seen. None where the
         program may read it, or that is not understood: a pointer into it may still be
         used (``Body.lent_from``, or a borrow ``_pointers_to`` follows), a coroutine's body
         (its state outlives a suspension), or a crate with unsafe code (a pointer may be
@@ -6941,7 +7034,10 @@ class OwnedLocals:
         where = set()
         for kind, (number, index) in ends:
             _, file, at = body.blocks[number].statements[index]
-            if file is None or at is None:
+            if kind in ("stop", "loop"):
+                # Said without a line: where the program stops, or which loop.
+                file, at = "", 0
+            elif file is None or at is None:
                 return None
             where.add((kind, file, at))
         return sorted(where)

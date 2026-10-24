@@ -1025,7 +1025,10 @@ def _unread_where(ends, home, owner="it"):
     ``OwnedLocals.unread_after``'s [(kind, file, line)]): "it is overwritten at line 7
     first", "it is overwritten at line 7, or goes out of scope at line 14, first", "the
     function returns at line 9 first"; ``owner`` is what goes out of scope (`` `lap` ``
-    for a change to `lap.start`). None where every path ends otherwise (a panic)."""
+    for a change to `lap.start`). Paths that end otherwise are named too, so the line
+    is never said to come first where it may not (#330 review): "…, unless the program
+    panics, exits or loops forever before that", or alone "the program panics or exits
+    first". None where nothing is known."""
     lines = {}
     for kind, file, line in ends:
         lines.setdefault(kind, set()).add((file, line))
@@ -1036,9 +1039,17 @@ def _unread_where(ends, home, owner="it"):
         parts.append(f"{owner} goes out of scope at {_line_list(lines['scope'], home)}")
     if "return" in lines:
         parts.append(f"the function returns at {_line_list(lines['return'], home)}")
+    others = _either(
+        [
+            *(["panics or exits"] if "stop" in lines else []),
+            *(["loops forever"] if "loop" in lines else []),
+        ]
+        or [""]
+    )
     if not parts:
-        return None
-    return f"{parts[0]} first" if len(parts) == 1 else ", or ".join(parts) + ", first"
+        return f"the program {others} first" if others else None
+    where = f"{parts[0]} first" if len(parts) == 1 else ", or ".join(parts) + ", first"
+    return where + (f", unless the program {others} before that" if others else "")
 
 
 def _overwritten(ends):
@@ -3341,6 +3352,13 @@ class RustSession(NativeSession):
             for kind in ("write", "scope", "return")
             if kind in lines
         )
+        stops = [
+            *(["panics or exits"] if "stop" in lines else []),
+            *(["loops forever"] if "loop" in lines else []),
+        ]
+        if stops:
+            # #330 review: other paths end otherwise, and the row says so.
+            row += (", or " if row else "") + f"the program {_either(stops)}"
         where = _unread_where(ends, home, owner)
         written = "written" if _overwritten(ends) else "ended"
         return _Copied(

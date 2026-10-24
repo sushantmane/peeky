@@ -1586,7 +1586,12 @@ These bindings copy a value:
   reads none of it;
 - a Vec a struct is pushed into: after `laps.push(lap);`, `lap.start = finish;` overwrites a field
   that `laps` holds a copy of;
-- a copy of an argument, `let z = x;`: the argument goes out of scope when the function returns.
+- a copy of an argument, `let z = x;`: the argument goes out of scope when the function returns;
+- any copy, where the program then calls `panic!` or `process::exit` before it reads the local
+  again. That ends the local too. A panic inside a call, which any call may make, doesn't count.
+
+A drop that runs the type's own code reads the value. So where `impl Drop for D` prints `self.0`,
+a change to `d.0` after `let z = d.0;` is seen, and allowed.
 
 If the program reads the local again, before or after it uses the copy, it sees the change. The
 copy keeps the old value as the program's own: `let a = s.x;`.
@@ -1762,6 +1767,9 @@ error [MUTATION_REJECTED]: `total` cannot be changed at src/main.rs:67, at any s
   doesn't refuse a change to `a` while `b += *r;` is still to run.
 - Peeky doesn't refuse a change this way in an async body, or in a crate with unsafe code, where a
   pointer may be kept out of its sight.
+- Where another path panics, exits or never leaves a loop, the line isn't said to come first
+  alone: ``it is overwritten at line 57 first, unless the program panics or exits before that``.
+  Where every path does, it says ``the program panics or exits first``.
 - Where the program also goes on with a copy, the refusal names the copy instead
   ([When the program has its own copy](#when-the-program-has-its-own-copy)).
 
