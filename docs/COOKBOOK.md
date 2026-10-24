@@ -1629,9 +1629,9 @@ element 6 in one run and at element 4 in the other.
   not they point at another element. That is why these rows come after the real differences, not
   among them: the first real difference stays the first divergence.
 - To tell, compare each address's offset from a base with `address()`
-  ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element.
-- C and C++ do that for you where both runs captured the array a pointer points into: another
-  element's address (first in this tier), or the same element's (6).
+  ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element's address.
+- C and C++ do that for you where both runs captured an array whose element address matches the
+  pointer: another element's address (first in this tier), or the same element's (6).
 - Where that array is a pointer, such as a parameter, the note shows each run's offset from it,
   by address: ``by address, `level + 6` in run a and `level + 4` in run b``. It stays here, as two
   pointers can point into separate blocks whose distance the allocator chose.

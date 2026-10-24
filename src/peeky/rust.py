@@ -1604,7 +1604,7 @@ def _gap_reason(name, reasons, line):
 class RustSession(NativeSession):
     # mid_statement judges a field or element by the part it changes (#192 review).
     projected_copies = True
-    # Which element a pointer points at is told in C and C++ only (#302).
+    # Which element's address a pointer holds is told in C and C++ only (#302).
     value_extent = None
 
     def __init__(

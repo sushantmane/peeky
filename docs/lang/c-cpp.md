@@ -106,8 +106,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - `--json` rows and the store give `at_element_of` and its element's index, or `offset_from` and
   its offset, in columns of their own. Pointer and array rows give `element_size`, the bytes of
   one element.
-- `address(value)` reads that address as an integer. To see which element a pointer points at in
-  another run, join the runs on it minus a base each run has
+- `address(value)` reads that address as an integer. To see which element's address a pointer holds
+  in another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
 - `queries diff` compares which element's address a pointer holds where both runs captured the
   array. ``the address of `level[6]` in run a, of `level[4]` in run b`` ranks first among the
