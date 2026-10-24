@@ -509,6 +509,53 @@ def _cyclic(nodes, start):
     return False
 
 
+def _closed_loop(graph, members):
+    """Whether some cycle of ``graph`` ({node: its successors}) lies among ``members``, with
+    no edge out of it: a loop the program, once in it, never leaves but by a panic (#330
+    review 4). Tarjan's strongly connected components, without recursion."""
+    order, low, on, stack = {}, {}, set(), []
+    for root in members:
+        if root in order:
+            continue
+        order[root] = low[root] = len(order)
+        stack.append(root)
+        on.add(root)
+        work = [(root, iter(graph.get(root, ())))]
+        while work:
+            node, following = work[-1]
+            child = next(following, None)
+            if child is not None:
+                if child not in members:
+                    continue
+                if child not in order:
+                    order[child] = low[child] = len(order)
+                    stack.append(child)
+                    on.add(child)
+                    work.append((child, iter(graph.get(child, ()))))
+                elif child in on:
+                    low[node] = min(low[node], order[child])
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+            if low[node] != order[node]:
+                continue
+            component = set()
+            while True:
+                each = stack.pop()
+                on.discard(each)
+                component.add(each)
+                if each == node:
+                    break
+            edges = [child for each in component for child in graph.get(each, ())]
+            if (len(component) > 1 or node in graph.get(node, ())) and all(
+                child in component for child in edges
+            ):
+                return True
+    return False
+
+
 def _key(tree):
     """A canonical type tree's name (`std:vec::Vec<u32>`, `a::Id`, `[u32;0]`), or None where
     it has a part that can't be told apart (a closure, a trait object, a type not known)."""
@@ -1503,12 +1550,16 @@ _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _UNWIND_EDGE = re.compile(r"\bunwind: bb([0-9]+)\b")
 _UNWIND_LEAVES = re.compile(r"\bunwind (?:continue|terminate)\b")
-# A call into the standard library's panic machinery, under a root ``Body.std_paths``
-# proves std's (#330 review 3): `panic!`'s `std::rt::panic_fmt`, `assert!`'s
-# `core::panicking::panic`, `unwrap`'s `unwrap_failed`, `panic_any`, `resume_unwind`.
+# A call to one of the standard library's panic entry points the macros call, under a
+# root ``Body.std_paths`` proves std's (#330 review 3): `panic!`'s `std::rt::panic_fmt`,
+# `assert!`'s `core::panicking::panic`, `assert_eq!`'s `assert_failed`. Each is a name
+# std has twice, or in `core::panicking`, which the MIR always prints with its path.
+# Review 4: not `panic_any` or `resume_unwind`, printed bare unless the crate has an
+# item so named: each is a call that never returns, in either spelling.
 _PANIC_CALL = re.compile(
-    r"^_[0-9]+ = (std|core|alloc)::(?:\w+::)*(?:panic\w*|begin_panic\w*|resume_unwind|"
-    r"unwrap_failed|expect_failed|assert_failed\w*|unreachable_display)(?:::<.*>)?\("
+    r"^_[0-9]+ = (std|core)::(?:rt::(?:panic_fmt|panic_display|begin_panic)|panicking::(?:"
+    r"panic|panic_fmt|panic_display|panic_str_2015|panic_explicit|assert_failed|"
+    r"unreachable_display)|(?:option|result)::unwrap_failed)(?:::<[^()]*>)?\("
 )
 # Standard types whose drop drops nothing they hold (#330 review 2), by ``_std_key``.
 _UNDROPPED = frozenset({"mem::ManuallyDrop", "mem::MaybeUninit", "marker::PhantomData"})
@@ -2246,26 +2297,39 @@ class Body:
 
         A mark of settable covers the paths that don't panic (#330 review 3): an edge
         taken only where a call, a drop or a check panics (``Block.unwinds``), and std's
-        panic (``_panics``), are neither a read nor an end. Where every path panics or
-        exits before reading ``root`` (``exits_unread``), a use of the copy on the way is
-        enough: `let z = x;` … `black_box(z); panic!()`."""
+        panic (``_panics``), are neither a read nor an end, and the cleanup a panic runs
+        is not followed (review 4: a `Drop` that reads it there doesn't count). A path
+        that never leaves a loop, once the copy is used and ``root`` not read, counts too
+        (review 4: `if c { record(z); loop {} } else { use_value(x); }`). So does every
+        path panicking or exiting before reading ``root`` (``exits_unread``), with a use of
+        the copy on the way: `let z = x;` … `black_box(z); panic!()`. ``copy_kind`` says
+        which: "end", "loop" or "exits"."""
+        return self.copy_kind(copy, root, start, projection, sinks) is not None
+
+    def copy_kind(self, copy, root, start, projection=(), sinks=(frozenset(), frozenset())):
+        """Why ``copy_undoes`` holds, or None (#330 review 4): "end" (a path assigns or ends
+        ``root`` unread, the copy used before or after), "loop" (a path never leaves a
+        loop once the copy is used, reading ``root`` nowhere in it), or "exits" (every path
+        panics, exits or loops before reading ``root``, and the copy is used on one)."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
         # (block, index, whether the copy was used on the way here, whether ``root`` was
-        # assigned or ended unread on the way here: then any use of the copy is enough).
-        pending, seen, used_any = [(start[0], start[1], False, False)], set(), False
+        # assigned or ended unread on the way here: then any use of the copy is enough);
+        # ``graph``: {such a state: the states it goes on to}.
+        pending, seen, used_any, graph = [(start[0], start[1], False, False)], set(), False, {}
         while pending:
             state = pending.pop()
             number, index, used, gone = state
             if state in seen or number not in self.blocks:
                 continue
             seen.add(state)
+            graph[state] = ()
             block = self.blocks[number]
             stopped = False
             for text, _, _ in block.statements[index:]:
                 used = used or any(_event(text, each) == "use" for each in copies)
                 if gone:
                     if used:
-                        return True
+                        return "end"
                     if _event(text, copy) == "end":
                         stopped = True
                         break
@@ -2280,7 +2344,7 @@ class Body:
                     break
                 if access == "end":
                     if used:
-                        return True
+                        return "end"
                     # Its old value is gone: the copy, if used later, is all that is left.
                     gone = True
                     if _event(text, copy) == "end":
@@ -2298,31 +2362,37 @@ class Body:
             if self._frame_exit(number) or self._diverges(number):
                 # The frame ends, ``root`` with it, unread.
                 if used:
-                    return True
+                    return "end"
                 continue
             resumed = (self.resumes[number],) if number in self.resumes else ()
-            pending.extend(
+            graph[state] = tuple(
                 (successor, 0, used, gone)
                 for successor in (*block.successors, *resumed)
                 if successor not in block.unwinds
             )
-        return used_any and self.exits_unread(root, start, projection, formats) is not None
+            pending.extend(graph[state])
+        # A loop entered with the copy used, which reads ``root`` nowhere and has no way out.
+        if _closed_loop(graph, {state for state in graph if state[2] and not state[3]}):
+            return "loop"
+        if used_any and self.exits_unread(root, start, projection, formats) is not None:
+            return "exits"
+        return None
 
     def exits_unread(self, root, start, projection=(), formats=None):
         """Where every path from ``start`` panics, exits or never leaves a loop before it
         reads the part ``projection`` of ``root``, assigns or ends it (#330 review 3: `let z
         = x;` … `black_box(z); panic!()`): {"stop"} with "loop" where a loop is on the way;
         else None. No path that doesn't panic reaches a read: a change there is never seen.
-        An edge only a panic takes is left out (``copy_undoes``); the cleanup of std's
-        panic is followed, where a drop that surely reads the part is a read. ``formats``:
-        ``_format_reads``'s."""
+        An edge only a panic takes is left out, and a call that never returns is a "stop",
+        whose cleanup isn't followed (review 4: a `Drop` that reads it while the program
+        panics doesn't count). ``formats``: ``_format_reads``'s."""
         formats = formats or {}
-        # {(place a path enters a block at, whether std's panic began it): the places it
-        # goes on to, or None where it ends there}.
-        nodes, kinds, pending = {}, set(), [(start, False)]
+        # {place a path enters a block at: the places it goes on to, or None where it
+        # ends there}.
+        nodes, kinds, pending = {}, set(), [start]
         while pending:
             node = pending.pop()
-            (number, index), panicking = node
+            number, index = node
             if node in nodes or number not in self.blocks:
                 continue
             block = self.blocks[number]
@@ -2330,27 +2400,19 @@ class Body:
             for text, _, _ in block.statements[index:]:
                 if self._drop_effect(text, root, projection) == "read":
                     return None
-                access = _root_access(text, root, projection, formats)
-                if access == "read" or (access is not None and not panicking):
+                if _root_access(text, root, projection, formats) is not None:
                     return None
-            if _RETURN.match(block.terminator) and not panicking:
+            if _RETURN.match(block.terminator):
                 return None
-            if self._frame_exit(number) or (self._diverges(number) and not self._panics(number)):
+            if self._frame_exit(number) or self._diverges(number):
                 kinds.add("stop")
                 continue
-            if self._panics(number):
-                kinds.add("stop")
-            following = [
-                ((each, 0), panicking or self._panics(number))
-                for each in (
-                    *block.successors,
-                    *((self.resumes[number],) if number in self.resumes else ()),
-                )
-                if each not in block.unwinds
+            resumed = (self.resumes[number],) if number in self.resumes else ()
+            nodes[node] = [
+                (each, 0) for each in (*block.successors, *resumed) if each not in block.unwinds
             ]
-            nodes[node] = following
-            pending.extend(following)
-        if _cyclic(nodes, (start, False)):
+            pending.extend(nodes[node])
+        if _cyclic(nodes, start):
             kinds.add("loop")
         return frozenset(kinds) or None
 
@@ -2376,7 +2438,7 @@ class Body:
         read, assigned or ended, whose `Drop` impl of the crate's may read the part
         ``projection``, which Peeky can't tell (``_drop_effect``'s "maybe"; #330 review 2):
         a refusal that the copy rule makes past one says so. On the paths ``copy_undoes``
-        follows, and the cleanup of std's panic (``exits_unread``)."""
+        follows: not an edge only a panic takes, nor the cleanup a panic runs."""
         found, pending, seen = set(), [start], set()
         while pending:
             number, index = node = pending.pop()
@@ -2391,7 +2453,7 @@ class Body:
                 if effect == "read" or _root_access(text, root, projection) is not None:
                     break
             else:
-                if self._diverges(number) and not self._panics(number):
+                if self._diverges(number):
                     continue
                 resumed = (self.resumes[number],) if number in self.resumes else ()
                 pending.extend(
@@ -2619,8 +2681,8 @@ class Body:
         one of them, and a refusal names each kind (#330 review 2). None where some path
         may read it first (``_unread_access``). An edge only a panic takes is not followed,
         as for ``copy_undoes`` (review 3: a mark of settable covers the paths that don't
-        panic); the cleanup of std's panic is. Pointers made from it before ``start`` are
-        the caller's to judge (``OwnedLocals.unread_after``)."""
+        panic), nor the cleanup of a call that never returns (review 4). Pointers made from
+        it before ``start`` are the caller's to judge (``OwnedLocals.unread_after``)."""
         # {place a path enters a block at: the places it goes on to, or None where it
         # ends there}.
         nodes, ends, pending = {}, set(), [start]
@@ -2642,9 +2704,7 @@ class Body:
                 last = (number, len(block.statements) - 1)
                 if _RETURN.match(block.terminator):
                     ends.add(("return", last))
-                elif self._frame_exit(number) or (
-                    self._diverges(number) and not self._panics(number)
-                ):
+                elif self._frame_exit(number) or self._diverges(number):
                     ends.add(("stop", last))
                 elif block.successors or number in self.resumes:
                     if block.leaves or block.unwinds:
@@ -7392,6 +7452,46 @@ class OwnedLocals:
                 if file is not None and at is not None:
                     found.add((file, at))
         return frozenset(found)
+
+    def copy_kinds(
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        projection=(),
+        coded=False,
+    ):
+        """{``Body.copy_kind``} of the program's own bindings that hold a direct copy of the
+        part ``projection`` of the frame's local ``variable_name`` at a place the stop can
+        be on ``line`` of ``path``, and refuse it (#330 review 4): where each is "loop", a
+        refusal says the program may loop forever instead of proving no read first.
+        Arguments as for ``unread_after``."""
+        placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
+        if placed is None:
+            return frozenset()
+        body, local, positions = placed
+        if coded:
+            positions = [
+                position
+                for position in positions
+                if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
+            ] or positions
+        formatting, compares = self._formatting(), self._std_compares()
+        sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
+        kinds = set()
+        for position in positions:
+            direct = body.direct_copies_at(local, position, formatting, projection, compares)
+            if direct is None:
+                return frozenset()
+            for copy in direct & body.named_locals():
+                found = body.copy_kind(copy, local, position, projection, sinks)
+                if found is not None:
+                    kinds.add(found)
+        return frozenset(kinds)
 
     def exits_first(
         self,

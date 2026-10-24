@@ -195,7 +195,8 @@ message says `cannot be changed here`.
   ``the program has already copied `x` into `n` ``. Where a call given `&mut x` since may have
   changed `x`: ``the program's own `n` (at line 34) may hold a copy of `x` that it goes on with``.
   Where every path then panics or exits first: ``every path from here panics or exits before
-  reading `x` ``.
+  reading `x` ``. Where a path never leaves a loop: ``on a path from here the program loops
+  forever without reading `x` ``.
 - Rust: not where no path reads the value again before it is overwritten or goes out of scope. The
   stop's own line counts, as `total = k + 3;` does for `total`:
   `the program does not read it after this stop, so a change would never be seen: it is overwritten

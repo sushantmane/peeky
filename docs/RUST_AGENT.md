@@ -707,12 +707,20 @@ the local without reading the changed part, and uses the binding before or after
   or a call that never returns other than std's panic (`process::exit`, `abort`, a function of the
   crate's that returns `!`). An argument has no `StorageDead`.
 - A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
-  (`Block.unwinds`) is not followed. Std's panic (`Body._panics`: `_PANIC_CALL` under a root
-  `std_paths` proves) is neither a read nor an end. Where std isn't proven, it is any exit.
-- Where every path panics, exits or never leaves a loop before a read, assignment or end
-  (`Body.exits_unread`, which follows the cleanup of std's panic), a use of the copy on the way is
-  enough: `let z = x; black_box(z); panic!()`. The refusal says so (`OwnedLocals.exits_first`):
-  "every path from here panics or exits before reading `x`".
+  (`Block.unwinds`) is not followed. Std's panic (`Body._panics`) is neither a read nor an end, and
+  its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count (review 4).
+- `_PANIC_CALL` lists std's panic entry points, under a root `std_paths` proves. Each name is one
+  the MIR always prints with its path: `std::rt::panic_fmt`, `core::panicking::panic`,
+  `assert_failed`. `panic_any` and `resume_unwind` print bare unless the crate has an item so
+  named, so they are left out: each is any call that never returns (review 4).
+- `Body.copy_kind` says why: "end", "loop" or "exits". "loop": a loop entered with the copy used,
+  which reads the local nowhere and has no way out (`_closed_loop`, on the walk's states), even
+  where another path reads it (review 4). A loop with a way out doesn't count.
+- "exits": every path panics, exits or never leaves a loop before a read, assignment or end
+  (`Body.exits_unread`), and a use of the copy is on the way: `let z = x; black_box(z); panic!()`.
+- The refusal says so (`OwnedLocals.exits_first`, `copy_kinds`): "every path from here panics or
+  exits before reading `x`", or "on a path from here the program loops forever without reading
+  `x`".
 - A drop reads the part only where Peeky proves it (`Body._drop_effect`, "read"). It finds the
   types from the dropped place down to the part (`_path_types`: from places the body names, and
   aggregates assigned to the local), outermost first. The first with a `Drop` impl of the crate's
@@ -757,7 +765,7 @@ never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
   part ends: "write", "scope" (`StorageDead`), "return", "drop" (a drop that may read it), or
   "stop", where the frame may exit otherwise or panic (an exit, `Block.leaves`, `Block.unwinds`).
   It returns None where a statement may read it first. It doesn't follow an edge only a panic
-  takes (#330 review 3).
+  takes (#330 review 3), nor the cleanup of a call that never returns (review 4).
 - Each path the program may take must reach one of them. Where a loop lies on the way (`_cyclic`),
   it adds "loop": Peeky doesn't prove that a loop ends (#330 review 2).
 - `Body._unread_access` judges each statement strictly, unlike `_root_access`. A borrow, a

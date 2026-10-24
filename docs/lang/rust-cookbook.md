@@ -1433,8 +1433,8 @@ There, the MIR must show that no statement under way has read the value into a t
 holds for integer locals too.
 
 On a path where the program panics, a change may not be seen; Peeky's marks are about the paths
-that don't panic. A value is `[settable]` where each such path reads it before overwriting or
-ending it, and some such path exists.
+that don't panic. The rules below judge only those paths: a read only on a panic's path, as by a
+`Drop` that runs while it unwinds, doesn't count.
 
 - So a change is never allowed back from a call, after `step --out`. For example, it is refused
   back from `f` in `let t = s.a + f();`.
@@ -1594,14 +1594,22 @@ These bindings copy a value:
 - any copy, where every path then panics or exits before it reads the local again:
   `let z = x; black_box(z); panic!()`. The refusal says
   ``every path from here panics or exits before reading `x` ``.
+- any copy used on a path that then loops forever without reading the local:
+  `if k > 100 { record(z); loop {} }`. Another path that reads it doesn't help. The refusal says
+  ``on a path from here the program loops forever without reading `x` ``. A loop with a way out,
+  as a `for` loop has, doesn't count.
 
 A panic on some paths only doesn't count. After `let z = x;`, `if z == 0 { panic!() }` and then
 `x + k` leave `x` settable, because the path that doesn't panic reads it. So does
 `record(z); may_panic(k); x`, though a caller's `catch_unwind` may go on with `z`.
 
+Only std's own panics count as panics: `panic!`, `assert!`, `assert_eq!`, `unreachable!` and the
+like. `std::panic::panic_any` and `resume_unwind` count as a call that never returns, as
+`process::exit` does, so `if z == 0 { panic_any(1); }` leaves `x` refused.
+
 A drop reads the value only where Peeky proves that the `Drop` impl it runs reads that part on
-every path that doesn't panic. So where `impl Drop for D` prints `self.0`, a change to `d.0` after `let z = d.0;` is
-seen, and allowed. So is `h.d.0` of `h: Holder { d: D, n: u32 }`.
+every path that doesn't panic. So where `impl Drop for D` prints `self.0`, a change to `d.0` after
+`let z = d.0;` is seen, and allowed. So is `h.d.0` of `h: Holder { d: D, n: u32 }`.
 
 Where the drop may read it or not, the refusal stays, and says so instead of proving no read:
 ``the program has already copied its value into `z` (at line 30) and goes on with that copy, so a

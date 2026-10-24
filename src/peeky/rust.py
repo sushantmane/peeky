@@ -1086,6 +1086,15 @@ def _exits_first(kinds, name, projection=()):
     return f"every path from here {_either(_stopped({'stop', *kinds}))} before reading {what}"
 
 
+def _loops_first(name, projection=()):
+    """The clause a refusal by a copy ends with where its only reason is a path that never
+    leaves a loop, once the copy is used, and reads the local ``name`` nowhere in it (#330
+    review 4: ``Body.copy_kind``'s "loop"): "on a path from here the program loops forever
+    without reading `x`"."""
+    what = name if projection == () else "the changed part"
+    return f"on a path from here the program loops forever without reading {what}"
+
+
 def _stopped(kinds):
     """What a program may do instead of reaching where a local ends (#330 review), for
     ``_either``: "panics" and "exits" where a path stops the frame, "loops forever" where
@@ -2957,6 +2966,9 @@ class RustSession(NativeSession):
         exits = getattr(proofs, "exits_first", lambda *args, **asked: ())(
             hashed, plain, line, path, projection=projection, coded=True
         )
+        copied = getattr(proofs, "copy_kinds", lambda *args, **asked: ())(
+            hashed, plain, line, path, projection=projection, coded=True
+        )
         if doubts:
             # #330 review 2: a drop may read it, which Peeky can't tell.
             unseen = "so a change there may never be seen: " + _drop_doubt(
@@ -2966,6 +2978,11 @@ class RustSession(NativeSession):
             # #330 review 3: no path that doesn't panic goes on to read it.
             unseen = "so a change there may never be seen: " + _exits_first(
                 exits, f"`{plain}`", projection
+            )
+        elif copied == {"loop"}:
+            # #330 review 4: a path that never leaves a loop, nor reads it there.
+            unseen = "so a change there may never be seen: " + _loops_first(
+                f"`{plain}`", projection
             )
         if kind == "named":
             # #192: a binding of the program's own holds the old value it goes on with.
@@ -3312,6 +3329,7 @@ class RustSession(NativeSession):
             where = {key: value for key, value in asked.items() if key != "named"}
             doubts = getattr(proofs, "drop_doubts", lambda **asked: ())(**where)
             exits = getattr(proofs, "exits_first", lambda **asked: ())(**where)
+            copied = getattr(proofs, "copy_kinds", lambda **asked: ())(**where)
             name = f"`{variable.get('name')}`"
             if doubts:
                 # #330 review 2: a drop may read it, which Peeky can't tell.
@@ -3322,6 +3340,11 @@ class RustSession(NativeSession):
                 # #330 review 3: no path that doesn't panic goes on to read it.
                 unseen = f"so a change to {name} may never be seen: " + _exits_first(
                     exits, name, asked["projection"]
+                )
+            elif copied == {"loop"}:
+                # #330 review 4: a path that never leaves a loop, nor reads it there.
+                unseen = f"so a change to {name} may never be seen: " + _loops_first(
+                    name, asked["projection"]
                 )
             if kind == "named":
                 # #192: the program's own binding goes on with the old value.

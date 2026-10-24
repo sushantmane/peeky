@@ -1203,6 +1203,49 @@ impl Drop for P {
     }
 }
 
+fn spun(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other();
+    if k > 100 {
+        record(z);
+        loop {}
+    }
+    x + k
+}
+
+fn counted(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other();
+    let mut total = 0;
+    for _ in 0..k {
+        total += z;
+    }
+    total + x
+}
+
+fn unwinding(n: u32) -> u32 {
+    let d = D(n, n);
+    let z = d.0;
+    let k = other();
+    black_box(z + k);
+    panic!("stop");
+}
+
+fn anyed(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other();
+    if z == 0 {
+        std::panic::panic_any(1);
+    }
+    x + k
+}
+
 fn main() {
     let n = std::env::args().count() as u32;
     let fut = exited(n);
@@ -1212,6 +1255,10 @@ fn main() {
         diverged(n);
     }
     black_box((guarded(n), bailed(n), P(n, n)));
+    black_box((spun(n), counted(n), anyed(n)));
+    if n > 100 {
+        unwinding(n);
+    }
     println!(
         "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         scoped(n),
@@ -3145,6 +3192,425 @@ fn looped(_1: u32) -> u32 {
 }
 """
 
+SPUN = """// MIR for `spun` after PreCodegen
+
+fn spun(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:256:9: 256:10
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:256:20: 256:23
+    let mut _2: u32;                     // in scope 0 at src/main.rs:257:9: 257:14
+    let mut _3: u32;                     // in scope 0 at src/main.rs:257:17: 257:18
+    let mut _4: (u32, bool);             // in scope 0 at src/main.rs:257:17: 257:22
+    let _5: &mut u32;                    // in scope 0 at src/main.rs:258:5: 258:22
+    let mut _6: &mut u32;                // in scope 0 at src/main.rs:258:15: 258:21
+    let _9: ();                          // in scope 0 at src/main.rs:261:5: 264:6
+    let mut _10: bool;                   // in scope 0 at src/main.rs:261:8: 261:15
+    let mut _11: u32;                    // in scope 0 at src/main.rs:261:8: 261:9
+    let _12: ();                         // in scope 0 at src/main.rs:262:9: 262:18
+    let mut _13: u32;                    // in scope 0 at src/main.rs:262:16: 262:17
+    let mut _14: !;                      // in scope 0 at src/main.rs:263:9: 263:16
+    let mut _15: ();                     // in scope 0 at src/main.rs:256:1: 266:2
+    let mut _16: u32;                    // in scope 0 at src/main.rs:265:5: 265:6
+    let mut _17: u32;                    // in scope 0 at src/main.rs:265:9: 265:10
+    let mut _18: (u32, bool);            // in scope 0 at src/main.rs:265:5: 265:10
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:257:9: 257:14
+        let _7: u32;                     // in scope 1 at src/main.rs:259:9: 259:10
+        scope 2 {
+            debug z => _7;               // in scope 2 at src/main.rs:259:9: 259:10
+            let _8: u32;                 // in scope 2 at src/main.rs:260:9: 260:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:260:9: 260:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:257:9: 257:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:257:17: 257:18
+        _3 = copy _1;                    // scope 0 at src/main.rs:257:17: 257:18
+        _4 = AddWithOverflow(copy _3, const 1_u32); // scope 0 at src/main.rs:257:17: 257:22
+        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", move _3, const 1_u32) -> [success: bb1, unwind continue]; // scope 0 at src/main.rs:257:17: 257:22
+    }
+    bb1: {
+        _2 = move (_4.0: u32);           // scope 0 at src/main.rs:257:17: 257:22
+        StorageDead(_3);                 // scope 0 at src/main.rs:257:21: 257:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:258:5: 258:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:258:15: 258:21
+        _6 = &mut _2;                    // scope 1 at src/main.rs:258:15: 258:21
+        _5 = std::hint::black_box::<&mut u32>(move _6) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:258:5: 258:22
+    }
+    bb2: {
+        StorageDead(_6);                 // scope 1 at src/main.rs:258:21: 258:22
+        StorageDead(_5);                 // scope 1 at src/main.rs:258:22: 258:23
+        StorageLive(_7);                 // scope 1 at src/main.rs:259:9: 259:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:259:13: 259:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:260:9: 260:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:260:13: 260:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:261:5: 264:6
+        StorageLive(_10);                // scope 3 at src/main.rs:261:8: 261:15
+        StorageLive(_11);                // scope 3 at src/main.rs:261:8: 261:9
+        _11 = copy _8;                   // scope 3 at src/main.rs:261:8: 261:9
+        _10 = Gt(move _11, const 100_u32); // scope 3 at src/main.rs:261:8: 261:15
+        switchInt(move _10) -> [0: bb7, otherwise: bb4]; // scope 3 at src/main.rs:261:8: 261:15
+    }
+    bb4: {
+        StorageDead(_11);                // scope 3 at src/main.rs:261:14: 261:15
+        StorageLive(_12);                // scope 3 at src/main.rs:262:9: 262:18
+        StorageLive(_13);                // scope 3 at src/main.rs:262:16: 262:17
+        _13 = copy _7;                   // scope 3 at src/main.rs:262:16: 262:17
+        _12 = record(move _13) -> [return: bb5, unwind continue]; // scope 3 at src/main.rs:262:9: 262:18
+    }
+    bb5: {
+        StorageDead(_13);                // scope 3 at src/main.rs:262:17: 262:18
+        StorageDead(_12);                // scope 3 at src/main.rs:262:18: 262:19
+        StorageLive(_14);                // scope 3 at src/main.rs:263:9: 263:16
+        goto -> bb6;                     // scope 3 at src/main.rs:263:9: 263:16
+    }
+    bb6: {
+        _15 = const ();                  // scope 3 at src/main.rs:263:14: 263:16
+        goto -> bb6;                     // scope 3 at src/main.rs:263:9: 263:16
+    }
+    bb7: {
+        StorageDead(_11);                // scope 3 at src/main.rs:261:14: 261:15
+        _9 = const ();                   // scope 3 at src/main.rs:264:6: 264:6
+        StorageDead(_10);                // scope 3 at src/main.rs:264:5: 264:6
+        StorageDead(_9);                 // scope 3 at src/main.rs:264:5: 264:6
+        StorageLive(_16);                // scope 3 at src/main.rs:265:5: 265:6
+        _16 = copy _2;                   // scope 3 at src/main.rs:265:5: 265:6
+        StorageLive(_17);                // scope 3 at src/main.rs:265:9: 265:10
+        _17 = copy _8;                   // scope 3 at src/main.rs:265:9: 265:10
+        _18 = AddWithOverflow(copy _16, copy _17); // scope 3 at src/main.rs:265:5: 265:10
+        assert(!move (_18.1: bool), "attempt to compute `{} + {}`, which would overflow", move _16, move _17) -> [success: bb8, unwind continue]; // scope 3 at src/main.rs:265:5: 265:10
+    }
+    bb8: {
+        _0 = move (_18.0: u32);          // scope 3 at src/main.rs:265:5: 265:10
+        StorageDead(_17);                // scope 3 at src/main.rs:265:9: 265:10
+        StorageDead(_16);                // scope 3 at src/main.rs:265:9: 265:10
+        StorageDead(_8);                 // scope 2 at src/main.rs:266:1: 266:2
+        StorageDead(_7);                 // scope 1 at src/main.rs:266:1: 266:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:266:1: 266:2
+        return;                          // scope 0 at src/main.rs:266:2: 266:2
+    }
+}
+"""
+
+COUNTED = """// MIR for `counted` after PreCodegen
+
+fn counted(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:268:12: 268:13
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:268:23: 268:26
+    let mut _2: u32;                     // in scope 0 at src/main.rs:269:9: 269:14
+    let mut _3: u32;                     // in scope 0 at src/main.rs:269:17: 269:18
+    let mut _4: (u32, bool);             // in scope 0 at src/main.rs:269:17: 269:22
+    let _5: &mut u32;                    // in scope 0 at src/main.rs:270:5: 270:22
+    let mut _6: &mut u32;                // in scope 0 at src/main.rs:270:15: 270:21
+    let _10: ();                         // in scope 0 at src/main.rs:274:5: 276:6
+    let mut _11: std::ops::Range<u32>;   // in scope 0 at src/main.rs:274:14: 274:18
+    let mut _12: std::ops::Range<u32>;   // in scope 0 at src/main.rs:274:14: 274:18
+    let mut _13: u32;                    // in scope 0 at src/main.rs:274:17: 274:18
+    let mut _15: ();                     // in scope 0 at src/main.rs:268:1: 278:2
+    let _16: ();                         // in scope 0 at src/main.rs:274:14: 274:18
+    let mut _17: std::option::Option<u32>; // in scope 0 at src/main.rs:274:14: 274:18
+    let mut _18: &mut std::ops::Range<u32>; // in scope 0 at src/main.rs:274:14: 274:18
+    let mut _19: &mut std::ops::Range<u32>; // in scope 0 at src/main.rs:274:14: 274:18
+    let mut _20: isize;                  // in scope 0 at src/main.rs:274:5: 276:6
+    let mut _21: !;                      // in scope 0 at src/main.rs:274:5: 276:6
+    let mut _22: u32;                    // in scope 0 at src/main.rs:275:18: 275:19
+    let mut _23: (u32, bool);            // in scope 0 at src/main.rs:275:9: 275:19
+    let mut _24: u32;                    // in scope 0 at src/main.rs:277:5: 277:10
+    let mut _25: u32;                    // in scope 0 at src/main.rs:277:13: 277:14
+    let mut _26: (u32, bool);            // in scope 0 at src/main.rs:277:5: 277:14
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:269:9: 269:14
+        let _7: u32;                     // in scope 1 at src/main.rs:271:9: 271:10
+        scope 2 {
+            debug z => _7;               // in scope 2 at src/main.rs:271:9: 271:10
+            let _8: u32;                 // in scope 2 at src/main.rs:272:9: 272:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:272:9: 272:10
+                let mut _9: u32;         // in scope 3 at src/main.rs:273:9: 273:18
+                scope 4 {
+                    debug total => _9;   // in scope 4 at src/main.rs:273:9: 273:18
+                    let mut _14: std::ops::Range<u32>; // in scope 4 at src/main.rs:274:14: 274:18
+                    scope 5 {
+                        debug iter => _14; // in scope 5 at src/main.rs:274:14: 274:18
+                    }
+                }
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:269:9: 269:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:269:17: 269:18
+        _3 = copy _1;                    // scope 0 at src/main.rs:269:17: 269:18
+        _4 = AddWithOverflow(copy _3, const 1_u32); // scope 0 at src/main.rs:269:17: 269:22
+        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", move _3, const 1_u32) -> [success: bb1, unwind continue]; // scope 0 at src/main.rs:269:17: 269:22
+    }
+    bb1: {
+        _2 = move (_4.0: u32);           // scope 0 at src/main.rs:269:17: 269:22
+        StorageDead(_3);                 // scope 0 at src/main.rs:269:21: 269:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:270:5: 270:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:270:15: 270:21
+        _6 = &mut _2;                    // scope 1 at src/main.rs:270:15: 270:21
+        _5 = std::hint::black_box::<&mut u32>(move _6) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:270:5: 270:22
+    }
+    bb2: {
+        StorageDead(_6);                 // scope 1 at src/main.rs:270:21: 270:22
+        StorageDead(_5);                 // scope 1 at src/main.rs:270:22: 270:23
+        StorageLive(_7);                 // scope 1 at src/main.rs:271:9: 271:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:271:13: 271:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:272:9: 272:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:272:13: 272:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:273:9: 273:18
+        _9 = const 0_u32;                // scope 3 at src/main.rs:273:21: 273:22
+        StorageLive(_10);                // scope 4 at src/main.rs:274:5: 276:6
+        StorageLive(_11);                // scope 4 at src/main.rs:274:14: 274:18
+        StorageLive(_12);                // scope 4 at src/main.rs:274:14: 274:18
+        StorageLive(_13);                // scope 4 at src/main.rs:274:17: 274:18
+        _13 = copy _8;                   // scope 4 at src/main.rs:274:17: 274:18
+        _12 = std::ops::Range::<u32> { start: const 0_u32, end: move _13 }; // scope 4 at src/main.rs:274:14: 274:18
+        StorageDead(_13);                // scope 4 at src/main.rs:274:17: 274:18
+        _11 = <std::ops::Range<u32> as IntoIterator>::into_iter(move _12) -> [return: bb4, unwind continue]; // scope 4 at src/main.rs:274:14: 274:18
+    }
+    bb4: {
+        StorageDead(_12);                // scope 4 at src/main.rs:274:17: 274:18
+        StorageLive(_14);                // scope 4 at src/main.rs:274:14: 274:18
+        _14 = move _11;                  // scope 4 at src/main.rs:274:14: 274:18
+        goto -> bb5;                     // scope 5 at src/main.rs:274:5: 276:6
+    }
+    bb5: {
+        StorageLive(_16);                // scope 5 at src/main.rs:274:14: 274:18
+        StorageLive(_17);                // scope 5 at src/main.rs:274:14: 274:18
+        StorageLive(_18);                // scope 5 at src/main.rs:274:14: 274:18
+        StorageLive(_19);                // scope 5 at src/main.rs:274:14: 274:18
+        _19 = &mut _14;                  // scope 5 at src/main.rs:274:14: 274:18
+        _18 = &mut (*_19);               // scope 5 at src/main.rs:274:14: 274:18
+        _17 = <std::ops::Range<u32> as Iterator>::next(move _18) -> [return: bb6, unwind continue]; // scope 5 at src/main.rs:274:14: 274:18
+    }
+    bb6: {
+        StorageDead(_18);                // scope 5 at src/main.rs:274:17: 274:18
+        _20 = discriminant(_17);         // scope 5 at src/main.rs:274:14: 274:18
+        switchInt(move _20) -> [0: bb9, 1: bb8, otherwise: bb7]; // scope 5 at src/main.rs:274:14: 274:18
+    }
+    bb7: {
+        unreachable;                     // scope 5 at src/main.rs:274:14: 274:18
+    }
+    bb8: {
+        StorageLive(_22);                // scope 5 at src/main.rs:275:18: 275:19
+        _22 = copy _7;                   // scope 5 at src/main.rs:275:18: 275:19
+        _23 = AddWithOverflow(copy _9, copy _22); // scope 5 at src/main.rs:275:9: 275:19
+        assert(!move (_23.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _9, move _22) -> [success: bb10, unwind continue]; // scope 5 at src/main.rs:275:9: 275:19
+    }
+    bb9: {
+        _10 = const ();                  // scope 5 at src/main.rs:274:5: 276:6
+        StorageDead(_19);                // scope 5 at src/main.rs:276:5: 276:6
+        StorageDead(_17);                // scope 5 at src/main.rs:276:5: 276:6
+        StorageDead(_16);                // scope 5 at src/main.rs:276:5: 276:6
+        StorageDead(_14);                // scope 4 at src/main.rs:276:5: 276:6
+        StorageDead(_11);                // scope 4 at src/main.rs:276:5: 276:6
+        StorageDead(_10);                // scope 4 at src/main.rs:276:5: 276:6
+        StorageLive(_24);                // scope 4 at src/main.rs:277:5: 277:10
+        _24 = copy _9;                   // scope 4 at src/main.rs:277:5: 277:10
+        StorageLive(_25);                // scope 4 at src/main.rs:277:13: 277:14
+        _25 = copy _2;                   // scope 4 at src/main.rs:277:13: 277:14
+        _26 = AddWithOverflow(copy _24, copy _25); // scope 4 at src/main.rs:277:5: 277:14
+        assert(!move (_26.1: bool), "attempt to compute `{} + {}`, which would overflow", move _24, move _25) -> [success: bb11, unwind continue]; // scope 4 at src/main.rs:277:5: 277:14
+    }
+    bb10: {
+        _9 = move (_23.0: u32);          // scope 5 at src/main.rs:275:9: 275:19
+        StorageDead(_22);                // scope 5 at src/main.rs:275:18: 275:19
+        _16 = const ();                  // scope 5 at src/main.rs:274:19: 276:6
+        StorageDead(_19);                // scope 5 at src/main.rs:276:5: 276:6
+        StorageDead(_17);                // scope 5 at src/main.rs:276:5: 276:6
+        StorageDead(_16);                // scope 5 at src/main.rs:276:5: 276:6
+        _15 = const ();                  // scope 5 at src/main.rs:274:5: 276:6
+        goto -> bb5;                     // scope 5 at src/main.rs:274:5: 276:6
+    }
+    bb11: {
+        _0 = move (_26.0: u32);          // scope 4 at src/main.rs:277:5: 277:14
+        StorageDead(_25);                // scope 4 at src/main.rs:277:13: 277:14
+        StorageDead(_24);                // scope 4 at src/main.rs:277:13: 277:14
+        StorageDead(_9);                 // scope 3 at src/main.rs:278:1: 278:2
+        StorageDead(_8);                 // scope 2 at src/main.rs:278:1: 278:2
+        StorageDead(_7);                 // scope 1 at src/main.rs:278:1: 278:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:278:1: 278:2
+        return;                          // scope 0 at src/main.rs:278:2: 278:2
+    }
+}
+"""
+
+UNWINDING = """// MIR for `unwinding` after PreCodegen
+
+fn unwinding(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:280:14: 280:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:280:25: 280:28
+    let mut _2: !;                       // in scope 0 at src/main.rs:280:29: 286:2
+    let _3: D;                           // in scope 0 at src/main.rs:281:9: 281:10
+    let mut _4: u32;                     // in scope 0 at src/main.rs:281:15: 281:16
+    let mut _5: u32;                     // in scope 0 at src/main.rs:281:18: 281:19
+    let _8: u32;                         // in scope 0 at src/main.rs:284:5: 284:21
+    let mut _9: u32;                     // in scope 0 at src/main.rs:284:15: 284:20
+    let mut _10: u32;                    // in scope 0 at src/main.rs:284:15: 284:16
+    let mut _11: u32;                    // in scope 0 at src/main.rs:284:19: 284:20
+    let mut _12: (u32, bool);            // in scope 0 at src/main.rs:284:15: 284:20
+    let _13: !;                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:59:21: 63:6
+    let _14: !;                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    let mut _15: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    scope 1 {
+        debug d => _3;                   // in scope 1 at src/main.rs:281:9: 281:10
+        let _6: u32;                     // in scope 1 at src/main.rs:282:9: 282:10
+        scope 2 {
+            debug z => _6;               // in scope 2 at src/main.rs:282:9: 282:10
+            let _7: u32;                 // in scope 2 at src/main.rs:283:9: 283:10
+            scope 3 {
+                debug k => _7;           // in scope 3 at src/main.rs:283:9: 283:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_3);                 // scope 0 at src/main.rs:281:9: 281:10
+        StorageLive(_4);                 // scope 0 at src/main.rs:281:15: 281:16
+        _4 = copy _1;                    // scope 0 at src/main.rs:281:15: 281:16
+        StorageLive(_5);                 // scope 0 at src/main.rs:281:18: 281:19
+        _5 = copy _1;                    // scope 0 at src/main.rs:281:18: 281:19
+        _3 = D(move _4, move _5);        // scope 0 at src/main.rs:281:13: 281:20
+        StorageDead(_5);                 // scope 0 at src/main.rs:281:19: 281:20
+        StorageDead(_4);                 // scope 0 at src/main.rs:281:19: 281:20
+        StorageLive(_6);                 // scope 1 at src/main.rs:282:9: 282:10
+        _6 = copy (_3.0: u32);           // scope 1 at src/main.rs:282:13: 282:16
+        StorageLive(_7);                 // scope 2 at src/main.rs:283:9: 283:10
+        _7 = other() -> [return: bb1, unwind: bb5]; // scope 2 at src/main.rs:283:13: 283:20
+    }
+    bb1: {
+        StorageLive(_8);                 // scope 3 at src/main.rs:284:5: 284:21
+        StorageLive(_9);                 // scope 3 at src/main.rs:284:15: 284:20
+        StorageLive(_10);                // scope 3 at src/main.rs:284:15: 284:16
+        _10 = copy _6;                   // scope 3 at src/main.rs:284:15: 284:16
+        StorageLive(_11);                // scope 3 at src/main.rs:284:19: 284:20
+        _11 = copy _7;                   // scope 3 at src/main.rs:284:19: 284:20
+        _12 = AddWithOverflow(copy _10, copy _11); // scope 3 at src/main.rs:284:15: 284:20
+        assert(!move (_12.1: bool), "attempt to compute `{} + {}`, which would overflow", move _10, move _11) -> [success: bb2, unwind: bb5]; // scope 3 at src/main.rs:284:15: 284:20
+    }
+    bb2: {
+        _9 = move (_12.0: u32);          // scope 3 at src/main.rs:284:15: 284:20
+        StorageDead(_11);                // scope 3 at src/main.rs:284:19: 284:20
+        StorageDead(_10);                // scope 3 at src/main.rs:284:19: 284:20
+        _8 = std::hint::black_box::<u32>(move _9) -> [return: bb3, unwind: bb5]; // scope 3 at src/main.rs:284:5: 284:21
+    }
+    bb3: {
+        StorageDead(_9);                 // scope 3 at src/main.rs:284:20: 284:21
+        StorageDead(_8);                 // scope 3 at src/main.rs:284:21: 284:22
+        StorageLive(_14);                // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+        StorageLive(_15);                // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+        _15 = Arguments::<'_>::from_str(const "stop") -> [return: bb4, unwind: bb5]; // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    }
+    bb4: {
+        _14 = std::rt::panic_fmt(move _15) -> bb5; // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    }
+    bb5 (cleanup): {
+        drop(_3) -> [return: bb6, unwind terminate(cleanup)]; // scope 0 at src/main.rs:286:1: 286:2
+    }
+    bb6 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:280:1: 286:2
+    }
+}
+alloc5 (size: 4, align: 1) {
+    73 74 6f 70                                     │ stop
+}
+"""
+
+ANYED = """// MIR for `anyed` after PreCodegen
+
+fn anyed(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:288:10: 288:11
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:288:21: 288:24
+    let mut _2: u32;                     // in scope 0 at src/main.rs:289:9: 289:14
+    let mut _3: u32;                     // in scope 0 at src/main.rs:289:17: 289:18
+    let mut _4: (u32, bool);             // in scope 0 at src/main.rs:289:17: 289:22
+    let _5: &mut u32;                    // in scope 0 at src/main.rs:290:5: 290:22
+    let mut _6: &mut u32;                // in scope 0 at src/main.rs:290:15: 290:21
+    let _9: ();                          // in scope 0 at src/main.rs:293:5: 295:6
+    let mut _10: bool;                   // in scope 0 at src/main.rs:293:8: 293:14
+    let mut _11: u32;                    // in scope 0 at src/main.rs:293:8: 293:9
+    let mut _12: !;                      // in scope 0 at src/main.rs:293:15: 295:6
+    let _13: !;                          // in scope 0 at src/main.rs:294:9: 294:33
+    let mut _14: u32;                    // in scope 0 at src/main.rs:296:5: 296:6
+    let mut _15: u32;                    // in scope 0 at src/main.rs:296:9: 296:10
+    let mut _16: (u32, bool);            // in scope 0 at src/main.rs:296:5: 296:10
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:289:9: 289:14
+        let _7: u32;                     // in scope 1 at src/main.rs:291:9: 291:10
+        scope 2 {
+            debug z => _7;               // in scope 2 at src/main.rs:291:9: 291:10
+            let _8: u32;                 // in scope 2 at src/main.rs:292:9: 292:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:292:9: 292:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:289:9: 289:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:289:17: 289:18
+        _3 = copy _1;                    // scope 0 at src/main.rs:289:17: 289:18
+        _4 = AddWithOverflow(copy _3, const 1_u32); // scope 0 at src/main.rs:289:17: 289:22
+        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", move _3, const 1_u32) -> [success: bb1, unwind continue]; // scope 0 at src/main.rs:289:17: 289:22
+    }
+    bb1: {
+        _2 = move (_4.0: u32);           // scope 0 at src/main.rs:289:17: 289:22
+        StorageDead(_3);                 // scope 0 at src/main.rs:289:21: 289:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:290:5: 290:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:290:15: 290:21
+        _6 = &mut _2;                    // scope 1 at src/main.rs:290:15: 290:21
+        _5 = std::hint::black_box::<&mut u32>(move _6) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:290:5: 290:22
+    }
+    bb2: {
+        StorageDead(_6);                 // scope 1 at src/main.rs:290:21: 290:22
+        StorageDead(_5);                 // scope 1 at src/main.rs:290:22: 290:23
+        StorageLive(_7);                 // scope 1 at src/main.rs:291:9: 291:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:291:13: 291:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:292:9: 292:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:292:13: 292:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:293:5: 295:6
+        StorageLive(_10);                // scope 3 at src/main.rs:293:8: 293:14
+        StorageLive(_11);                // scope 3 at src/main.rs:293:8: 293:9
+        _11 = copy _7;                   // scope 3 at src/main.rs:293:8: 293:9
+        _10 = Eq(move _11, const 0_u32); // scope 3 at src/main.rs:293:8: 293:14
+        switchInt(move _10) -> [0: bb5, otherwise: bb4]; // scope 3 at src/main.rs:293:8: 293:14
+    }
+    bb4: {
+        StorageDead(_11);                // scope 3 at src/main.rs:293:13: 293:14
+        StorageLive(_13);                // scope 3 at src/main.rs:294:9: 294:33
+        _13 = panic_any::<i32>(const 1_i32) -> unwind continue; // scope 3 at src/main.rs:294:9: 294:33
+    }
+    bb5: {
+        StorageDead(_11);                // scope 3 at src/main.rs:293:13: 293:14
+        _9 = const ();                   // scope 3 at src/main.rs:295:6: 295:6
+        StorageDead(_10);                // scope 3 at src/main.rs:295:5: 295:6
+        StorageDead(_9);                 // scope 3 at src/main.rs:295:5: 295:6
+        StorageLive(_14);                // scope 3 at src/main.rs:296:5: 296:6
+        _14 = copy _2;                   // scope 3 at src/main.rs:296:5: 296:6
+        StorageLive(_15);                // scope 3 at src/main.rs:296:9: 296:10
+        _15 = copy _8;                   // scope 3 at src/main.rs:296:9: 296:10
+        _16 = AddWithOverflow(copy _14, copy _15); // scope 3 at src/main.rs:296:5: 296:10
+        assert(!move (_16.1: bool), "attempt to compute `{} + {}`, which would overflow", move _14, move _15) -> [success: bb6, unwind continue]; // scope 3 at src/main.rs:296:5: 296:10
+    }
+    bb6: {
+        _0 = move (_16.0: u32);          // scope 3 at src/main.rs:296:5: 296:10
+        StorageDead(_15);                // scope 3 at src/main.rs:296:9: 296:10
+        StorageDead(_14);                // scope 3 at src/main.rs:296:9: 296:10
+        StorageDead(_8);                 // scope 2 at src/main.rs:297:1: 297:2
+        StorageDead(_7);                 // scope 1 at src/main.rs:297:1: 297:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:297:1: 297:2
+        return;                          // scope 0 at src/main.rs:297:2: 297:2
+    }
+}
+"""
+
 PANICKY = """// MIR for `<impl at src/main.rs:247:1: 247:16>::drop` after PreCodegen
 
 fn <impl at src/main.rs:247:1: 247:16>::drop(_1: &mut P) -> () {
@@ -3574,7 +4040,7 @@ def test_a_panic_is_neither_an_end_nor_a_read():
     for text, name, kinds in (
         (BAILED, "bailed", None),
         (DIVERGED, "diverged", {"stop"}),
-        # Through the cleanup block, where `label` is dropped.
+        # `panic!` with a cleanup block to drop `label`, which isn't followed.
         (UNWOUND, "unwound", {"stop"}),
         (POINTED, "pointed", {"stop"}),
         (LOOPED, "looped", {"loop"}),
@@ -3671,3 +4137,119 @@ def test_a_mark_of_settable_covers_the_paths_that_dont_panic():
         for unsafe in (None, "the crate has unsafe code"):
             reason = review_why(text, name, line, stop_text(text, line), "x", unsafe=unsafe)
             assert reason == exits_first(stops, line), (name, unsafe)
+
+
+def why_x(text, name, unsafe=None):
+    line = review_line(name, "let k")
+    return review_why(text, name, line, stop_text(text, line), "x", unsafe=unsafe)
+
+
+def test_a_loop_the_program_never_leaves_refuses_on_its_own_path():
+    # Review 4: `if k > 100 { record(z); loop {} }`, then `x + k`. The path into the loop
+    # uses `z` and never reads `x`, and doesn't panic; another path reading `x` doesn't
+    # make up for it. It was settable: the loop was handed to `exits_unread`, which gave
+    # up where any path read `x`.
+    line = review_line("spun", "let k")
+    for unsafe in (None, "the crate has unsafe code"):
+        assert why_x(SPUN, "spun", unsafe) == (
+            f"the program has already copied its value into `z` (at line {line - 1}) and goes "
+            "on with that copy, so a change to `x` may never be seen: on a path from here the "
+            "program loops forever without reading `x`",
+            f"copied into `z` (line {line - 1})",
+        ), unsafe
+    body = review_body(SPUN)
+    at = place(body, stop_text(SPUN, line))
+    (copy,) = body.direct_copies_at(2, at)
+    assert body.copy_kind(copy, 2, at) == "loop"
+    # A loop with a way out to a read of `x` is no such loop: `for _ in 0..k { total += z; }`.
+    for unsafe in (None, "the crate has unsafe code"):
+        assert why_x(COUNTED, "counted", unsafe) == (None, None), unsafe
+    # Only a cycle no edge leaves, among the states given.
+    from peeky.rust_mir import _closed_loop
+
+    graph = {"a": ("b",), "b": ("c",), "c": ("b",), "d": ("d", "e"), "e": ()}
+    assert _closed_loop(graph, set(graph))
+    assert not _closed_loop(graph, {"a", "d", "e"})
+    assert not _closed_loop({"a": ("a", "b"), "b": ()}, {"a", "b"})
+    assert _closed_loop({"a": ("a",)}, {"a"})
+
+
+def test_a_read_while_the_program_panics_doesnt_count():
+    # Review 4: `let z = d.0;`, the stop, `black_box(z + k); panic!("stop")`. Every path
+    # panics, and its cleanup drops `d`, whose `Drop` prints `self.0`: that read was taken
+    # as the program's, and `d.0` was settable, though no path that doesn't panic exists.
+    line = review_line("unwinding", "let k")
+    first = (("field", 0),)
+    for unsafe in (None, "the crate has unsafe code"):
+        reason = review_why(
+            UNWINDING, "unwinding", line, stop_text(UNWINDING, line), "d", first, unsafe
+        )
+        assert reason == (
+            f"the program has already copied its value into `z` (at line {line - 1}) and goes "
+            "on with that copy, so a change to `d` may never be seen: every path from here "
+            "panics or exits before reading the changed part",
+            f"copied into `z` (line {line - 1})",
+        ), unsafe
+    body = review_body(UNWINDING)
+    at = place(body, stop_text(UNWINDING, line))
+    local = body.bindings["d"][0][0]
+    formats = body._format_reads(*body.sinks)
+    assert body.exits_unread(local, at, first, formats) == {"stop"}
+    assert {kind for kind, _ in body.unread_ends(local, at, first)} == {"stop"}
+    assert not body.doubtful_drops(local, at, first)
+
+
+# What the MIR prints for std's panic entry points (rustc 1.96.0, editions 2018 and 2024).
+STD_PANICS = (
+    '_5 = core::panicking::panic(const "assertion failed: x > 0") -> unwind continue;',
+    "_36 = core::panicking::assert_failed::<u32, u32>(move _37, move _38, move _40, move _42)"
+    " -> unwind continue;",
+    "_53 = std::rt::panic_fmt(move _54) -> unwind continue;",
+    "_8 = std::rt::begin_panic::<&str>(move _9) -> unwind continue;",
+    "_60 = std::rt::begin_panic::<String>(move _61) -> bb19;",
+    "_29 = std::rt::panic_display::<u32>(move _30) -> unwind continue;",
+    "_21 = core::panicking::unreachable_display::<&str>(move _22) -> unwind continue;",
+)
+# And for calls that never return but aren't one of them: `panic_any` and `resume_unwind`
+# bare, and with their path, as where the crate has an item so named.
+NOT_PANICS = (
+    "_13 = panic_any::<i32>(const 1_i32) -> unwind continue;",
+    "_37 = std::panic::panic_any::<i32>(const 1_i32) -> unwind continue;",
+    "_52 = resume_unwind(move _53) -> bb19;",
+    "_30 = std::panic::resume_unwind(move _31) -> bb16;",
+    "_59 = std::process::abort() -> unwind continue;",
+)
+
+
+def test_panic_any_is_a_call_that_never_returns_in_either_spelling():
+    # Review 4: `panic\w*` took `std::panic::panic_any` for std's panic, while its bare
+    # spelling, which rustc prints unless the crate has a `panic_any` of its own, was an
+    # exit. Std's panic is now a list of entry points, without it.
+    # `if z == 0 { std::panic::panic_any(1); }`, then `x + k`: the path that calls it
+    # never reads `x`, and the call ends the frame, in either spelling.
+    line = review_line("anyed", "let k")
+    spellings = (ANYED, ANYED.replace(" = panic_any::<", " = std::panic::panic_any::<"))
+    for text in spellings:
+        for unsafe in (None, "the crate has unsafe code"):
+            assert why_x(text, "anyed", unsafe) == (
+                f"the program has already copied its value into `z` (at line {line - 1}) and "
+                "goes on with that copy, " + SEEN.format("x"),
+                f"copied into `z` (line {line - 1})",
+            ), unsafe
+    for text in spellings:
+        body = review_body(text)
+        (call,) = [
+            number for number in body.blocks if "panic_any" in body.blocks[number].terminator
+        ]
+        assert body._diverges(call) and not body._panics(call)
+        at = place(body, stop_text(text, line))
+        (copy,) = body.direct_copies_at(2, at)
+        assert body.copy_kind(copy, 2, at) == "end"
+    # Where `panic!("zero")` stands in its place, the path that doesn't panic reads `x`.
+    assert why_x(BAILED, "bailed") == (None, None)
+    from peeky.rust_mir import _PANIC_CALL
+
+    for text in STD_PANICS:
+        assert _PANIC_CALL.match(text), text
+    for text in NOT_PANICS:
+        assert not _PANIC_CALL.match(text), text

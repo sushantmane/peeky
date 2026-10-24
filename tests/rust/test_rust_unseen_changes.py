@@ -301,6 +301,49 @@ fn guarded(n: u32) -> u32 {
     x + k
 }
 
+fn spun(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // SPUN_COPY
+    let k = other(); // SPUN
+    if k > 100 {
+        record(z);
+        loop {}
+    }
+    x + k
+}
+
+fn counted(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other(); // COUNTED
+    let mut total = 0;
+    for _ in 0..k {
+        total += z;
+    }
+    total + x
+}
+
+fn unwinding(n: u32) -> u32 {
+    let d = D(n, n + 1);
+    let z = d.0; // UNWINDING_COPY
+    let k = other(); // UNWINDING
+    println!("UNWINDING {}", z + k);
+    panic!("stop");
+}
+
+fn anyed(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // ANYED_COPY
+    let k = other(); // ANYED
+    if z == 0 {
+        std::panic::panic_any(1);
+    }
+    x + k
+}
+
 fn reset(n: u32) -> u32 {
     let mut last = n + 1;
     last = 7; // RESET
@@ -334,6 +377,11 @@ fn main() {
                 guarded(n)
             );
         }
+        "spun" => println!("SPUN {} COUNTED {} ANYED {}", spun(n), counted(n), anyed(n)),
+        "unwinding" => {
+            std::panic::set_hook(Box::new(|_| {}));
+            let _ = std::panic::catch_unwind(|| unwinding(n));
+        }
         _ => println!("BRANCH {} SPIN {} RESET {}", branch(n), spin(n), reset(n)),
     }
 }
@@ -364,6 +412,23 @@ fn local(n: u32) -> ! {
     std::process::exit(0);
 }
 
+// Its own `panic_any`: the MIR then prints std's with its path, `std::panic::panic_any`.
+mod own {
+    pub fn panic_any(_x: u32) {}
+}
+
+fn anyed(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // ANYED_COPY
+    let k = other(); // ANYED
+    own::panic_any(k);
+    if z == 0 {
+        std::panic::panic_any(1);
+    }
+    x + k
+}
+
 fn diverged(mut x: u32) -> ! {
     black_box(&mut x);
     let z = x; // DIVERGED_COPY
@@ -380,6 +445,7 @@ fn main() {
     let first = unsafe { *read.as_ptr() };
     match args[1].as_str() {
         "arg" => argument(first),
+        "anyed" => println!("ANYED {}", anyed(first)),
         "diverged" => {
             std::panic::set_hook(Box::new(|_| {}));
             let _ = std::panic::catch_unwind(|| -> u32 { diverged(first) });
@@ -641,3 +707,53 @@ def test_a_mark_of_settable_covers_the_paths_that_dont_panic(crate, capsys):
     ):
         lines = changed(capsys, frames, marker, "--set", "x=100", run=run)
         assert lines == ["RECORDED 2", f"CAUGHT 2 {seen}"], (marker, lines)
+
+
+@pytest.mark.timeout(400)
+def test_a_loop_the_program_never_leaves_refuses_on_its_own_path(crate, capsys):
+    # Review 4: `if k > 100 { record(z); loop {} }`, then `x + k`: the path into the loop
+    # uses `z` and never reads `x`. A loop with a way out to the read stays settable.
+    frames, run = crate.parent / "frames", ("--", "spun", "1")
+    message = refused(capsys, frames, "SPUN", "--set", "x=100", run=run)
+    assert (
+        f"the program has already copied `x` into `z` (at line {line_of('SPUN_COPY', FRAMES)}) "
+        "and goes on with that copy, so a change there may never be seen: on a path from here "
+        "the program loops forever without reading `x`"
+    ) in message, message
+    lines = changed(capsys, frames, "SPUN_COPY", "--set", "x=100", run=run)
+    assert lines == ["SPUN 101 COUNTED 4 ANYED 3"], lines
+    lines = changed(capsys, frames, "COUNTED", "--set", "x=100", run=run)
+    assert lines == ["SPUN 3 COUNTED 102 ANYED 3"], lines
+
+
+@pytest.mark.timeout(400)
+def test_panic_any_is_a_call_that_never_returns_in_either_spelling(crate, capsys):
+    # Review 4: `if z == 0 { std::panic::panic_any(1); }`: not std's panic but a call that
+    # never returns, as rustc prints it bare here and with its path in a crate with its own.
+    frames = crate.parent / "frames"
+    for root, text, run in (
+        (frames, FRAMES, ("--", "spun", "1")),
+        (crate.parent / "exits", EXITS, ("--", "anyed", "1")),
+    ):
+        message = refused(capsys, root, "ANYED", "--set", "x=100", run=run)
+        assert (
+            f"the program has already copied `x` into `z` (at line {line_of('ANYED_COPY', text)}) "
+            "and goes on with that copy, so a change there may never be seen: Peeky proves no "
+            "read"
+        ) in message, message
+        lines = changed(capsys, root, "ANYED_COPY", "--set", "x=100", run=run)
+        assert lines[-1].endswith("ANYED 101"), lines
+
+
+@pytest.mark.timeout(400)
+def test_a_read_while_the_program_panics_doesnt_count(crate, capsys):
+    # Review 4: every path panics, and only the cleanup's drop of `d` reads `d.0`: refused,
+    # though that drop would print the change. A change before the copy is seen by both.
+    frames, run = crate.parent / "frames", ("--", "unwinding", "1")
+    message = refused(capsys, frames, "UNWINDING", "--set", "d.__0=100", run=run)
+    assert (
+        "and goes on with that copy, so a change there may never be seen: every path from here "
+        "panics or exits before reading the changed part"
+    ) in message, message
+    lines = changed(capsys, frames, "UNWINDING_COPY", "--set", "d.__0=100", run=run)
+    assert lines == ["UNWINDING 101", "DROP 100"], lines
