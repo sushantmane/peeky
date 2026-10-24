@@ -130,6 +130,8 @@ file lists what it reads.
   16 MiB, a file that isn't a readable regular file, or a symlinked directory. Probe another
   directory, or start the worker with another `--root`.
 - A remote session started by an older Peeky, without source provenance. Start it again.
+- `session inspect` of a Rust frame that the debugger shows inside a macro's definition. Peeky
+  reads no value there, and the session goes on. `session step` reaches your code's next line.
 
 ### PROVENANCE_CHANGED
 

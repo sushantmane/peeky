@@ -34,6 +34,9 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   `--arg` ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 - A line with no code of its own, such as `continue;` or a lone `}`, may have no breakpoint. Stop
   on the line before it, then `session step` ([Rust 1.1](rust-cookbook.md#lines-with-no-breakpoint)).
+- A step can stop inside a macro's definition, at a call the macro makes that the build inlined.
+  Peeky reads no value of that frame there, and says why. `session step` goes on. A breakpoint on
+  such a line is refused ([Rust 1.1](rust-cookbook.md#stops-inside-a-macros-definition)).
 - `describe`, probes and `session inspect` leave out the bindings the compiler makes: a `for`
   loop's `iter`, and a `?`'s `residual` and `val`
   ([Rust 1.1](rust-cookbook.md#see-where-a-local-is-visible)).

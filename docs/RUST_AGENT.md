@@ -555,7 +555,41 @@ the breakpoint stops (#324).
   understood.
 - A step that ends at the line's lowest address, the inlined code included, stops before that
   code (`_line_start`). LLDB stops there after a step from the line before, except before a
-  macro's code, which it shows on the macro's definition.
+  macro's code, which it shows on the macro's definition (below).
+
+### Stops LLDB shows at an inlined call's site
+
+At a call the build inlined, LLDB shows the caller's frame on the line the call is made from, the
+DWARF's `DW_AT_call_line`. That line may have no row of its own in the line table, which
+`RustSession.lines` is read from (#326).
+
+- `validate_stop` accepts such a line only where the frame's pc is in the code of a call inlined
+  into its function from that line (`_inlined_site`, `CodeBlock.call` and `ranges`). A caller
+  frame's pc - 1 counts too, since its return address may end that code. A macro's definition
+  (`macro_definitions`) counts by the source alone only where the function's blocks aren't known.
+  Any other line with no row still fails closed.
+- The pc needs the load bias, which `validate_debugger` reads with the module. Until then
+  `validate_stop` lets such a line pass, and `validate_debugger` checks it before anything of the
+  frame is read.
+- In a macro's definition (`$v.clone()` of `macro_rules! mclone`), the debug information names
+  no invocation. So rules keyed by the line would judge the definition as a line of the function.
+  `macro_stop` finds such a stop: no row of the line in the frame's function (`_own_rows`).
+- The worker then reads no value of that frame: `inspect` raises `macro_stop_note` as
+  `UnplacedStop`, a request error, and the state carries it as `macro_stop`. A step or continue
+  goes on.
+- The state is built before anything validates the stop. So `macro_stop_state` gives the note
+  only where the pc is proven in the inlined call's code, the load bias read first
+  (`validate_debugger`). Without the function's blocks, the source alone tells, as `inspect` does.
+- Where the source isn't read as rustc reads it, `macro_stop` gives `()`: the line may be a
+  macro's, and the note says Peeky can't tell.
+- A probe that stops there (its breakpoint told by the frame's place) withholds each selector's
+  row with that reason and goes on. A change due there is refused (`_unplaced_rows`).
+- A macro statement's own rows on the definition's lines are judged by their line, as before.
+- A line of the function's own with no row, as `bump(&mut x);` of an `#[inline(always)] fn bump`,
+  starts at the lowest inlined call made from it (`_line_start`, `_site_lows`).
+- `unplaceable_line` refuses a breakpoint on a line with no row where an inlined call is made.
+  LLDB would place it on the call's code, and report the callee's line (`clone.rs:615`). The
+  worker asks before it places a breakpoint (`refuse_unplaceable`).
 
 ### The order the code runs
 

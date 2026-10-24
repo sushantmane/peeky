@@ -6886,15 +6886,14 @@ _PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|::|[A-Za-z0-9_#])*")
 
 
 # A macro's definition: `macro_rules! name`, or a `macro name` (`decl_macro`).
-_MACRO_DEFINITION = re.compile(r"\b(?:macro_rules\s*!\s*|macro\s+)(?:r#)?\w+\s*")
+_MACRO_DEFINITION = re.compile(r"\b(?:macro_rules\s*!\s*|macro\s+)(?:r#)?(\w+)\s*")
 
 
 @functools.lru_cache(maxsize=16)
-def macro_lines(text):
-    """The lines of ``text`` (from 1) a macro's definition spans, from its name to its
-    body's end: code there may be any invocation's, which LLVM's inlined calls name as
-    their site (#324 review: `$v.clone()` in `macro_rules! mclone`). None where the text
-    is not known, or not read as rustc reads it (rust_lexer.code_only)."""
+def macro_definitions(text):
+    """((name, first line, last line), ...) of the macros ``text`` defines, lines from 1,
+    from its name to its body's end, in the text's order. None where the text is not
+    known, or not read as rustc reads it (rust_lexer.code_only)."""
     if not isinstance(text, str):
         return None
     from peeky.rust_lexer import code_only
@@ -6902,7 +6901,7 @@ def macro_lines(text):
     code = code_only(text)
     if code is None:
         return None
-    closing, found = _closings(code), set()
+    closing, found = _closings(code), []
     for match in _MACRO_DEFINITION.finditer(code):
         at = end = match.end()
         # The body; a `macro`'s arguments, then its body.
@@ -6914,8 +6913,20 @@ def macro_lines(text):
             while at < len(code) and code[at].isspace():
                 at += 1
         first = code.count("\n", 0, match.start()) + 1
-        found.update(range(first, code.count("\n", 0, end) + 2))
-    return frozenset(found)
+        found.append((match[1], first, code.count("\n", 0, end) + 1))
+    return tuple(found)
+
+
+@functools.lru_cache(maxsize=16)
+def macro_lines(text):
+    """The lines of ``text`` (from 1) a macro's definition spans, from its name to its
+    body's end: code there may be any invocation's, which LLVM's inlined calls name as
+    their site (#324 review: `$v.clone()` in `macro_rules! mclone`). None where the text
+    is not known, or not read as rustc reads it (rust_lexer.code_only)."""
+    spans = macro_definitions(text)
+    if spans is None:
+        return None
+    return frozenset(line for _, first, last in spans for line in range(first, last + 1))
 
 
 @functools.lru_cache(maxsize=16)

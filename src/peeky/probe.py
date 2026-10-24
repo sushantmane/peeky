@@ -22,7 +22,7 @@ from pathlib import Path
 from unicodedata import is_normalized
 
 from peeky.adapters import PythonAdapter
-from peeky.errors import Refused, classify
+from peeky.errors import Refused, UnplacedStop, classify
 from peeky.identifiers import invisible, is_name, name_end, twin_hint
 from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import display_function, function_labels, shortened_note
@@ -2209,6 +2209,24 @@ def _each_hit(call, row):
     return [{"hit": hit["hit"], **shared, **hit} for hit in call["hits"]]
 
 
+def _unplaced_rows(selectors, hit, frame, why):
+    """A stop's rows where its frame is not read (#326: the debugger shows it inside a
+    macro's definition): each selector withheld, saying why."""
+    return [
+        {
+            "hit": hit,
+            "phase": "observed",
+            "selector": selector,
+            "line": frame.get("line"),
+            **({"function": frame["name"]} if frame.get("name") else {}),
+            "unavailable": True,
+            "settable": False,
+            "error": f"withheld: {why}"[:2000],
+        }
+        for selector in selectors
+    ]
+
+
 def _never_returned(call, why):
     return _each_hit(
         call,
@@ -4258,16 +4276,23 @@ def run_probe(
             # stop the wait places at another line (a --set-at's) reads none.
             where = str(state.get("location") or "").rpartition(":")[2]
             capturing = hits < probe.limit and (not where.isdigit() or int(where) == expected[line])
-            snapshot = worker.dispatch(
-                "inspect",
-                {
-                    **stop,
-                    **({"names": roots} if roots else {}),
-                    "previews": _roots(selectors) if capturing else False,
-                    "extents": _roots(selectors) if capturing else False,
-                    **({"depth": True} if wants_return or restores else {}),
-                },
-            )
+            unplaced = None
+            try:
+                snapshot = worker.dispatch(
+                    "inspect",
+                    {
+                        **stop,
+                        **({"names": roots} if roots else {}),
+                        "previews": _roots(selectors) if capturing else False,
+                        "extents": _roots(selectors) if capturing else False,
+                        **({"depth": True} if wants_return or restores else {}),
+                    },
+                )
+            except UnplacedStop as exc:
+                # The debugger shows the stop inside a macro's definition (#326): its frame
+                # is validated, but nothing in it is read. Its place alone tells whether it
+                # is a stop of the probe's breakpoint.
+                unplaced, snapshot = str(exc), {"frames": [exc.frame] if exc.frame else []}
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
             path = str(frame.get("source", {}).get("path", "")).replace("\\", "/")
             matched = [number for number in lines if expected[number] == frame.get("line")]
@@ -4327,7 +4352,9 @@ def run_probe(
                 first = len(rows)
                 # The stop-validation inspection is reused for the first selectors.
                 rows.extend(
-                    _capture(
+                    _unplaced_rows(selectors, hits, frame, unplaced)
+                    if unplaced
+                    else _capture(
                         worker,
                         stop,
                         selectors,
@@ -4373,6 +4400,12 @@ def run_probe(
                 attempt = {"point": point, "hit": hit}
                 undone = None
                 try:
+                    if unplaced:
+                        # Nothing of the frame is read there, so nothing is changed.
+                        raise Refused(
+                            "MUTATION_REJECTED",
+                            f"{name!r} cannot be changed at this stop: {unplaced}",
+                        )
                     written = value
                     if value == BEFORE:
                         written, undone = restores.value(name, point["build_line"], hit, here)
@@ -4555,7 +4588,10 @@ def run_probe(
                     # The stop its step out begins at.
                     "live": stop["stop_id"],
                 }
-                if level := snapshot.get("optimized"):
+                if unplaced:
+                    # Where the stop is in its function is not known: no step out of it.
+                    rows.extend(_never_returned(call, unplaced))
+                elif level := snapshot.get("optimized"):
                     # Inlined calls have no return of their own to step out to.
                     rows.extend(_never_returned(call, _OPTIMIZED_RETURN.format(level)))
                 else:
