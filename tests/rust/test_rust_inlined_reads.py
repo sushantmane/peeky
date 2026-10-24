@@ -189,12 +189,12 @@ def test_a_line_breakpoint_past_an_inlined_read_withholds_what_the_call_was_give
 @pytest.mark.timeout(600)
 def test_the_inlined_call_withholds_only_what_it_is_given(crate, capsys):
     # `let y = z.clone() + x;`: the inlined `clone` read `z`; the line reads `x` after the
-    # stop, so the change reaches `y`: 10 + 100.
+    # stop, so `x` stays settable and the change reaches `y`: 10 + 100.
     code, result = probe(capsys, crate, "MIXED", "--capture", "x,z", "--set", "x=100")
     assert code == 0, result.get("error")
+    # `z` is withheld: the statement's temporary may hold its copy.
     (z,) = rows(result, "z")
-    assert z.get("settable") is False, z
-    assert z.get("not_settable") == f"line {line_of('MIXED')}'s inlined `clone` may have read it"
+    assert z.get("settable") is False and z.get("not_settable"), z
     assert printed(result, "MIXED") == ["MIXED 110"], result["output"]
     # `vec!`'s inlined allocation is given nothing of the program's: `x` is stored after it.
     code, result = probe(capsys, crate, "VEC", "--set", "x=100")

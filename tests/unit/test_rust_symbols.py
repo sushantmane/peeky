@@ -2199,10 +2199,15 @@ def test_an_inlined_call_keeps_its_site():
     line = ("DW_AT_call_line", "5")
     assert sites(file, line, ("DW_AT_call_column", "15")) == [
         *[()] * 4,
-        ("/w/src/main.rs", 5, 15),
+        ("/w/src/main.rs", 5, 15, ""),
     ]
     # DWARF leaves out a column of 0.
-    assert sites(file, line)[4] == ("/w/src/main.rs", 5, 0)
+    assert sites(file, line)[4] == ("/w/src/main.rs", 5, 0, "")
+    # The function called is named by its abstract origin, or that one's declaration.
+    for origin in ("0x00000098", "0x000000a8"):
+        named = ("DW_AT_abstract_origin", f'{origin} "_ZN5chars2Pt3get17h0123456789abcdefE"')
+        assert sites(file, line, named)[4] == ("/w/src/main.rs", 5, 0, "get")
+    assert sites(file, line, ("DW_AT_abstract_origin", "0x00000099"))[4][3] == ""
     # Without its file or line, or with one not read, its site is not known.
     assert sites(line)[4] == sites(file)[4] == ()
     assert sites(("DW_AT_call_file", "0x5"), line)[4] == ()

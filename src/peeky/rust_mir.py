@@ -5445,7 +5445,7 @@ class OwnedLocals:
         )
 
     def inlined_reads(
-        self, hashed, variable_name, line, path, columns, block=None, free_types=frozenset()
+        self, hashed, variable_name, line, path, inlined, block=None, free_types=frozenset()
     ):
         """For the frame's local ``variable_name``, at a stop where its line starts but
         code LLVM inlined from calls on ``line`` runs below the stop's address (#324:
@@ -5455,11 +5455,14 @@ class OwnedLocals:
         (``Body.lent_from``, which the borrow rules keep sound: a pointer into a local is made
         in its own frame; in unsafe code, any raw pointer; the standard library's `ptr::eq`
         reads none, #300); ([], False) if none can;
-        None if not understood (a call no statement of the line explains). ``columns``:
-        the calls' DWARF columns on the line (bytes; 0 where not given), or None where
-        the stop's address is not known: then every call the IR shows inlined on the
-        line counts. ``block`` and ``free_types`` as for ``borrow_live``."""
-        if columns is not None and not columns:
+        None if not understood (a call no statement of the line explains). ``inlined``:
+        (DWARF column on the line in bytes, 0 where not given; the function's name, "" where
+        not read) of each call, or None where the stop's address is not known: then every
+        call the IR shows inlined on the line counts. A call is the line's call statement
+        whose span holds its column (``_covers``), of its name where one is (an enclosing
+        call, `total` of `total(vec![x, 1])`, is not `vec!`'s inlined `new_uninit`).
+        ``block`` and ``free_types`` as for ``borrow_live``."""
+        if inlined is not None and not inlined:
             return [], False
         site = self._site(hashed, line, path)
         if site is None:
@@ -5470,9 +5473,9 @@ class OwnedLocals:
         local = self._local(body, variable_name, line, path, block, site)
         if local is None:
             return None
-        if columns is None:
-            columns = tuple(sorted(function.inlined.get(line, ())))
-        if not columns:
+        if inlined is None:
+            inlined = tuple((column, "") for column in sorted(function.inlined.get(line, ())))
+        if not inlined:
             return [], False
         facts = self._facts(function, line, None)
         foreign = may_invoke_macro(self.texts.get(function.file), line)
@@ -5484,7 +5487,7 @@ class OwnedLocals:
             and body.line_code(number, len(each.statements) - 1, line, function.file, foreign)
         ]
         matched = set()
-        for column in columns:
+        for column, name in inlined:
             found = [
                 (number, index)
                 for number, index in calls
@@ -5492,7 +5495,13 @@ class OwnedLocals:
             ]
             if not found:
                 return None
-            matched.update(found)
+            # Where none is so named (a closure's call), any of them may be it.
+            named = [
+                at
+                for at in found
+                if name and _callee(body.blocks[at[0]].statements[at[1]][0]) == name
+            ]
+            matched.update(named or found)
         lent = body.lent_from(local, self.type_parameters(hashed), free_types)
         names = []
         for number, index in sorted(matched):

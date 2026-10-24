@@ -3124,7 +3124,7 @@ class RustSession(NativeSession):
         (source, line); None where its site is not known."""
         if not block.call:
             return None
-        file, number, _ = block.call
+        file, number = block.call[:2]
         if number != place[1]:
             return False
         sources = self.__dict__.setdefault("_call_sources", {})
@@ -3138,11 +3138,12 @@ class RustSession(NativeSession):
         return sources[file] == place[0]
 
     def _inlined_below(self, frame):
-        """#324: the DWARF columns (bytes; 0 where not given) of the calls on the frame's
-        line whose code LLVM inlined into its function below the frame's pc (`clone` of
-        `let y = x.clone();`, inlined even at opt-level 0, before the line's first row of
-        its own, where a line breakpoint stops): () if none; None where that is not known
-        (no pc or DWARF blocks, or an inlined call there whose site is not)."""
+        """#324: (DWARF column in bytes, 0 where not given; the function's name, "" where
+        not read) of each call on the frame's line whose code LLVM inlined into its function
+        below the frame's pc (`clone` of `let y = x.clone();`, inlined even at opt-level 0,
+        before the line's first row of its own, where a line breakpoint stops): () if none;
+        None where that is not known (no pc or DWARF blocks, or an inlined call there whose
+        site is not)."""
         hashed = _frame_hash(frame)
         blocks = self.code_blocks.get(hashed[1]) if hashed else None
         pc = self._unslid(frame) if blocks else None
@@ -3157,15 +3158,15 @@ class RustSession(NativeSession):
             if called is None:
                 return None
             if called:
-                columns.add(block.call[2])
+                columns.add(block.call[2:4])
         return tuple(sorted(columns))
 
     def _inlined_read(self, variable, frame, hashed, proofs):
         """``mid_statement``'s reason where code LLVM inlined from a call on the stop's
         line ran before the stop and may have read the root local ``variable``
         (``OwnedLocals.inlined_reads``), else None."""
-        columns = self._inlined_below(frame)
-        if columns == ():
+        inlined = self._inlined_below(frame)
+        if inlined == ():
             return None
         place = frame or {}
         name, line = variable.get("name"), place.get("line")
@@ -3174,7 +3175,7 @@ class RustSession(NativeSession):
             name,
             line,
             (place.get("source") or {}).get("path"),
-            columns,
+            inlined,
             block=self._stop_block(hashed, frame),
         )
         if found is not None and not found[1]:

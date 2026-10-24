@@ -1209,7 +1209,8 @@ class CodeBlock:
     names: tuple  # sorted
     inlined: bool = False
     # An inlined call's site: (DW_AT_call_file as written, line, column in bytes or 0
-    # where not given); () where its file or line cannot be read, or for other blocks.
+    # where not given, the called function's name without generic arguments or ""); ()
+    # where its file or line cannot be read, or for other blocks (#324).
     call: tuple = ()
 
 
@@ -1240,7 +1241,7 @@ def code_blocks(root, unit):
                 hashed = _LEGACY_HASH.search(_string(linkage)) if linkage else None
                 if hashed and "DW_AT_low_pc" in child.attributes:
                     blocks = []
-                    if not _code_block(child, None, blocks):
+                    if not _code_block(child, None, blocks, by_offset):
                         blocks = []
                     found[hashed[1]] = None if hashed[1] in found else tuple(blocks)
             elif child.tag in ("DW_TAG_namespace", "DW_TAG_structure_type"):
@@ -1250,7 +1251,7 @@ def code_blocks(root, unit):
     return found
 
 
-def _code_block(die, parent, blocks):
+def _code_block(die, parent, blocks, by_offset):
     """Add ``die`` and the blocks in it to ``blocks``; False if its code is not read."""
     ranges = _code_ranges(die)
     if not ranges:
@@ -1264,19 +1265,22 @@ def _code_block(die, parent, blocks):
                 if name is not None:
                     names.append(_string(name))
     index = len(blocks)
-    blocks.append(CodeBlock(parent, ranges, tuple(sorted(names)), inlined, _call_site(die)))
+    call = _call_site(die, by_offset)
+    blocks.append(CodeBlock(parent, ranges, tuple(sorted(names)), inlined, call))
     if inlined:
         return True
     return all(
-        _code_block(child, index, blocks)
+        _code_block(child, index, blocks, by_offset)
         for child in die.children
         if child.tag in ("DW_TAG_lexical_block", "DW_TAG_inlined_subroutine")
     )
 
 
-def _call_site(die):
-    """An inlined call's (DW_AT_call_file, DW_AT_call_line, DW_AT_call_column or 0), as
-    ``CodeBlock.call`` keeps it; () for another block, or one not read."""
+def _call_site(die, by_offset):
+    """An inlined call's (DW_AT_call_file, DW_AT_call_line, DW_AT_call_column or 0, the
+    name of the function called), as ``CodeBlock.call`` keeps it; () for another block, or
+    one not read. The name is its abstract origin's, or its declaration's (`clone`,
+    `unwrap` of `unwrap<alloc::string::String>`); "" where not read."""
     if die.tag != "DW_TAG_inlined_subroutine":
         return ()
     attributes = die.attributes
@@ -1288,7 +1292,18 @@ def _call_site(die):
         return ()
     if line is None or column is None or not file:
         return ()
-    return file, int(line[1]), int(column[1])
+    name, origin = "", attributes.get("DW_AT_abstract_origin")
+    for _ in range(4):
+        try:
+            found = by_offset.get(_reference(origin)[0]) if origin else None
+            raw = found.attributes.get("DW_AT_name") if found else None
+            if raw is not None:
+                name = re.sub(r"<.*>$", "", _string(raw))
+                break
+        except ValueError:
+            break
+        origin = found and found.attributes.get("DW_AT_specification")
+    return file, int(line[1]), int(column[1]), name
 
 
 def _code_ranges(die):
