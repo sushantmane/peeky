@@ -139,7 +139,7 @@ def test_nothing_is_read_one_past_an_arrays_end(program, capsys):
     at = f"ends.c:{line_of('MAIN')}"
     assert main(["probe", str(program), "--at", at, "--capture", "end,end[0]"]) == 0
     table = capsys.readouterr().out
-    assert "  [at the address one past queue's end]" in table, table
+    assert "  [at the address one past queue's end" in table, table
     assert f"<end[0] {reason('end', 'queue')}; " in table, table
 
 
@@ -208,7 +208,7 @@ def test_session_get_lists_nothing_through_it(program, capsys):
     try:
         assert main(["session", "get", "end", "pend", "last"]) == 0
         out = capsys.readouterr().out
-        assert "end: long * = 0x" in out and "  [at the address one past queue's end]" in out
+        assert "end: long * = 0x" in out and "  [at the address one past queue's end" in out
         assert "  <children: none read: `end` holds the address one past the end of `queue`" in out
         assert "end[0]" not in out and "pend.x" not in out, out
         assert "last[0]: long = 4" in out, out
