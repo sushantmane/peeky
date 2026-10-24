@@ -313,6 +313,12 @@ _FIX_ARGUMENTS = "Fix the request arguments; see `peeky <command> --help`."
 # message names the rule, so the hint need not repeat every rule. First match wins.
 _MUTATION_HINTS = (
     (
+        # A `@before` restore Peeky cannot vouch for (#305).
+        r"@before",
+        "Give the value itself at each hit (--set-at LINE@HIT name=VALUE), or try the change "
+        "as a candidate edit (--old/--new) and verify it.",
+    ),
+    (
         # Python's field or element `--set` (tenth evaluation): Python shows no [settable].
         r"which only Java, Rust, C and C\+\+ targets allow"
         r"|can be changed for this language \(fields and elements cannot\)",

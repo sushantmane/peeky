@@ -3687,7 +3687,9 @@ def main(argv=None, _job=False, _edits=None):
         f"{MAX_HITS}: on a line reached only in the case to test, that is the condition. HIT "
         "counts every stop of LINE, in any function (a lambda or closure on the line, a "
         "recursive call); each change says which function's variable it changed. One the "
-        "program never reaches is reported, and the probe exits with 4",
+        "program never reaches is reported, and the probe exits with 4. NAME=@before writes "
+        "back NAME's value from just before this probe's change to it at the same hit, in "
+        "the same call (32@all trend=0, then 35@all trend=@before)",
     )
     sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"

@@ -1858,6 +1858,97 @@ class RustSession(NativeSession):
             rust=True,
         )
 
+    def entry_lines(self, program, lines):
+        """{line: the first line of each function with code on it} (#305), as
+        NativeSession.entry_lines, from the application units' debug information, which
+        `prepare` reads only for types: read again here, once per probe that restores a
+        value."""
+        from peeky.native import (
+            _chain,
+            _code_ranges,
+            _first,
+            _function_entries,
+            _function_starts,
+            _qualified,
+            _text,
+        )
+
+        source = self._relative(program)
+        if source is None:
+            raise ValueError("Peeky cannot place the program among the crate's sources")
+        if self._optimized():
+            raise ValueError("this is an optimized build")
+        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
+        env = dict(self.prepared.manifest.effective_environment)
+        workspace, symbols = self.prepared.workspace, str(self.symbols)
+        infos, tables = [], []
+        for unit in self.units:
+            tables.append(
+                _metadata(
+                    dwarfdump, [f"--debug-line=0x{unit.stmt_list:08x}", symbols], workspace, env
+                )
+            )
+            infos.append(
+                _metadata(
+                    dwarfdump,
+                    [f"--debug-info=0x{unit.die:08x}", "--show-children", symbols],
+                    workspace,
+                    env,
+                    max_bytes=RUST_METADATA,
+                )
+            )
+        if not infos:
+            raise ValueError("no application units were recorded for this build")
+        windows = []
+        dies, functions, _, _, _, rows = _function_entries(
+            "\n".join(infos),
+            "\n".join(tables),
+            workspace,
+            tuple(self.lines),
+            rust=True,
+            prologues=windows,
+        )
+        entries = []
+        for root, entry in functions.items():
+            order = tuple(
+                sorted(
+                    (address, where, number)
+                    for (where, number), found in rows.get(root, {}).items()
+                    for address in found
+                )
+            )
+            name = _qualified(dies, entry["bodies"][0]) or ""
+            # Its own name (`{async_fn#0}`), which a legacy symbol gives as `{{closure}}`.
+            own = _text(_first(dies, _chain(dies, entry["bodies"][0]), "DW_AT_name")) or ""
+            if own.startswith("{") and name.endswith("::{{closure}}"):
+                name = name[: -len("{{closure}}")] + own
+            entries.append(
+                {
+                    "name": name,
+                    "ranges": tuple(
+                        sorted(
+                            span for body in entry["bodies"] for span in _code_ranges(dies[body])
+                        )
+                    ),
+                    "order": order,
+                }
+            )
+        return {
+            line: _function_starts(
+                [
+                    entry
+                    for entry in entries
+                    if any(
+                        where == source and number == line for _, where, number in entry["order"]
+                    )
+                ],
+                windows,
+                source,
+                line,
+            )
+            for line in lines
+        }
+
     def _kept_in_memory(self, linkages, name):
         """For `describe`: whether the build's IR keeps the local ``name`` in memory in
         every copy of the function (``linkages``), as a field change needs (#105); never
