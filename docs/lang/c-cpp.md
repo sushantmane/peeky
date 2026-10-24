@@ -97,12 +97,32 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - A binding by reference, such as `auto &[t, u]`, is read only where it names a local of the frame,
   or a member of one. Otherwise its row is `not shown`, because what it refers to may be gone
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
-- `address(value)` reads that address as an integer. To see which element a pointer points at in
-  another run, join the runs on it minus a base each run has
+- A pointer captured with an array at the same stop says which element's address it holds, where
+  Peeky proves it: `[at level[6]'s address]`, or `[at the address one past level's end]`. The
+  array must be one, not a pointer such as a parameter. Where several captured arrays share the
+  address (a union's), it says none
+  ([C and C++ 2.1](c-cpp-cookbook.md#which-elements-address-a-pointer-holds)).
+- That is an address fact. Another object can have the same address, so it never says which
+  object the pointer designates.
+- Where the array is a pointer, such as a parameter, a pointer says how far it is from it by
+  address alone: `[level + 6 by address; same array not proven]`. It names no element
+  ([C and C++ 2.1](c-cpp-cookbook.md#how-far-a-pointer-is-from-a-pointer-parameter)).
+- `--json` rows and the store give `at_element_of` and its element's index, or `offset_from` and
+  its offset, in columns of their own. Pointer and array rows give `element_size`, the bytes of
+  one element.
+- `address(value)` reads that address as an integer. To see which element's address a pointer holds
+  in another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
-- `queries diff` never calls a pointer's other address `addresses only`. It says
+- `queries diff` compares which element's address a pointer holds where both runs captured the
+  array. ``the address of `level[6]` in run a, of `level[4]` in run b`` ranks first among the
+  addresses that differ: the pointer, or only the array, may have moved. The same element's is
+  `addresses only` ([C and C++ 4.8](c-cpp-cookbook.md#which-element-in-each-run)).
+- Offsets from a base pointer are shown too, but rank with the addresses that differ: two
+  pointers can point into separate blocks.
+- Otherwise `diff` never calls a pointer's other address `addresses only`. It says
   `addresses differ: it may point at another element too`, right after the real differences
-  ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)).
+  ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)). Where the text after the address reads the
+  same in both runs, as a `const std::string &` that reads `"Maya"`, it is `addresses only`.
 
 ## Change values
 

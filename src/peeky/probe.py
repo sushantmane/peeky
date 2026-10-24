@@ -1687,9 +1687,9 @@ def _capture(
     """
 
     # Asked for by name, a local or global past the listing bound is read too; only
-    # those roots are previewed (#136).
+    # those roots are previewed (#136), and say what their addresses can tell (#302).
     roots = _roots(selectors)
-    named = {**({"names": roots} if roots else {}), "previews": roots}
+    named = {**({"names": roots} if roots else {}), "previews": roots, "extents": roots}
 
     def inspect():
         if not frame:
@@ -1703,9 +1703,10 @@ def _capture(
             )
         return shown
 
-    rows = []
+    rows, extents = [], {}
     for selector in selectors:
         row = {"hit": hit, "phase": phase, "selector": selector}
+        extent = None
         fresh = snapshot is None
         if fresh:
             snapshot = inspect()
@@ -1756,6 +1757,8 @@ def _capture(
                 )
             else:
                 row.update(value=variable["value"], type=variable.get("type"))
+                # What its address can tell (C, C++: #302), for `_pointed` below.
+                extent = variable.get("extent")
                 if preview:
                     # Only this value's own expansions, never its siblings', so the same
                     # value always shows the same way; a preview cut short by the shared
@@ -1872,7 +1875,163 @@ def _capture(
                 # `self.history[-1][2]` listed none, beside `self.items[2]`, the same dict).
                 row["children_error"] = DEPTH_LIMITED_CHILDREN
         rows.append(row)
+        if isinstance(extent, dict):
+            extents[len(rows) - 1] = extent
+    _pointed(rows, extents)
     return rows
+
+
+# A pointer's value: its address first (`0x000000016f29b050`, `0x… "text"`).
+_HELD = re.compile(r"0x([0-9a-fA-F]{1,16})(?![0-9a-zA-Z_])")
+
+
+def pointed_element(value, pointer, base):
+    """Which element of ``base``'s address the pointer whose row's value is ``value``
+    holds (#302): its index from 0, or the base's length where it is the address one past
+    its end (an object, with no length, is one element). An address alone: another
+    object can share it (a union's other member, the array after this one, storage
+    reused), so it never says which object the pointer designates. ``pointer`` and ``base`` are what
+    their addresses can tell (``NativeSession.value_extent``), read at one stop of one
+    frame. None unless all of it is proven: the pointer points at the type of the base's
+    elements, typedefs and qualifiers aside, of the same size; and its address is a whole
+    number of elements from the base's own, from its first element to one past its end."""
+    held = _HELD.match(value) if isinstance(value, str) else None
+    size, element = pointer.get("element_size"), base.get("element_size")
+    address, length = base.get("address"), base.get("length", 1)
+    if (
+        held is None
+        or pointer.get("pointee") is None
+        or pointer.get("pointee") != base.get("element")
+    ):
+        return None
+    if any(type(number) is not int or number < 1 for number in (size, address, length)):
+        return None
+    if size != element:
+        return None
+    offset = int(held[1], 16) - address
+    if offset < 0 or offset % size or offset // size > length:
+        return None
+    return offset // size
+
+
+# How many elements apart two pointers may be for their offset to be said (#302): past
+# that, they are unrelated (the stack against the heap), and the row says nothing.
+OFFSET_CAP = 1 << 20
+
+
+def pointer_offset(value, pointer, base_value, base):
+    """How many elements past the pointer ``base`` (its row's value ``base_value``) the
+    pointer whose row's value is ``value`` holds the address of, by address arithmetic
+    alone (#302): negative where it is before. Unlike ``pointed_element``, nothing proves
+    that both point into one array, so it never names an element. ``pointer`` and ``base``
+    are what their addresses can tell (``NativeSession.value_extent``), read at one stop of
+    one frame. None unless both point at the same type of the same size, neither is null,
+    the difference is a whole number of elements, and at most ``OFFSET_CAP`` of them."""
+    held = _HELD.match(value) if isinstance(value, str) else None
+    other = _HELD.match(base_value) if isinstance(base_value, str) else None
+    size = pointer.get("element_size")
+    if held is None or other is None or pointer.get("pointee") is None:
+        return None
+    if pointer.get("pointee") != base.get("pointee") or size != base.get("element_size"):
+        return None
+    if type(size) is not int or size < 1:
+        return None
+    address, start = int(held[1], 16), int(other[1], 16)
+    if not address or not start or (address - start) % size:
+        return None
+    offset = (address - start) // size
+    return offset if abs(offset) <= OFFSET_CAP else None
+
+
+def _plain(row):
+    """A value shown with nothing that qualifies it: no note, view or stale bytes."""
+    return "value" in row and not any(
+        row.get(key) for key in ("unavailable", "error", "note", "view", "stale")
+    )
+
+
+def _pointed(rows, extents):
+    """Gives each pointer and array row of one stop and frame the size of its element
+    (`element_size`), and says on each pointer row which element's address of another
+    captured array or object it holds, where ``pointed_element`` proves it and exactly one
+    captured base matches (`at_element_of`: {selector, index, and the array's length};
+    #302). Where several match (a union's two arrays, one array's end and the next one's
+    start), it says none: the address alone cannot tell them apart.
+
+    A pointer with none says how far it is from another captured pointer of its type, by
+    address alone (`offset_from`: {selector, offset}; ``pointer_offset``): from one base
+    for all of them, the first that is a parameter of the function (the array a caller
+    passed, as `level` in `find_waters(const int *level, ...)`), else the first captured.
+    The base itself says nothing."""
+    bases = [
+        (index, extent)
+        for index, extent in extents.items()
+        if "address" in extent and _plain(rows[index])
+    ]
+    for index, extent in extents.items():
+        row = rows[index]
+        if "pointee" in extent or "length" in extent:
+            row["element_size"] = extent["element_size"]
+        if "pointee" not in extent or not _plain(row):
+            continue
+        found = []
+        for other, base in bases:
+            if rows[other]["selector"] == row["selector"]:
+                continue
+            element = pointed_element(row["value"], extent, base)
+            if element is not None:
+                found.append((other, element, base))
+        if len(found) == 1:
+            ((other, element, base),) = found
+            row["at_element_of"] = {
+                "selector": rows[other]["selector"],
+                "index": element,
+                **({"length": base["length"]} if "length" in base else {}),
+            }
+    pointers = [
+        (index, extent)
+        for index, extent in extents.items()
+        if "pointee" in extent and _plain(rows[index])
+    ]
+    for index, extent in pointers:
+        row = rows[index]
+        if "at_element_of" in row:
+            continue
+        alike = [
+            each
+            for each in pointers
+            if each[1]["pointee"] == extent["pointee"]
+            and each[1].get("element_size") == extent.get("element_size")
+        ]
+        other, base = min(alike, key=lambda each: (not each[1].get("parameter"), each[0]))
+        if other == index or rows[other]["selector"] == row["selector"]:
+            continue
+        offset = pointer_offset(row["value"], extent, rows[other]["value"], base)
+        if offset is not None:
+            row["offset_from"] = {"selector": rows[other]["selector"], "offset": offset}
+
+
+def pointed_text(row):
+    """A row's `at_element_of` as tables show it, an address fact: `at level[6]'s
+    address`, `at x's address`, or `at the address one past level's end`, which is never
+    read. Or its `offset_from`, which names no element: `level + 6 by address; same array
+    not proven` (`level - 2` before it)."""
+    into = row.get("at_element_of")
+    apart = row.get("offset_from")
+    if not isinstance(into, dict) and isinstance(apart, dict):
+        base, offset = apart.get("selector"), apart.get("offset")
+        if not isinstance(base, str) or type(offset) is not int:
+            return ""
+        sign = "-" if offset < 0 else "+"
+        return f"{base} {sign} {abs(offset)} by address; same array not proven"
+    if not isinstance(into, dict):
+        return ""
+    base, index, length = into.get("selector"), into.get("index"), into.get("length")
+    if not isinstance(base, str) or type(index) is not int:
+        return ""
+    if index == (1 if length is None else length):
+        return f"at the address one past {base}'s end"
+    return f"at {base}'s address" if length is None else f"at {base}[{index}]'s address"
 
 
 DEPTH_LIMITED_CHILDREN = (
@@ -3792,6 +3951,7 @@ def run_probe(
                     **stop,
                     **({"names": roots} if roots else {}),
                     "previews": _roots(selectors) if capturing else False,
+                    "extents": _roots(selectors) if capturing else False,
                     **({"depth": True} if wants_return else {}),
                 },
             )
@@ -4575,6 +4735,7 @@ def _table(result, short_names=True):
             row["selector"],
             row.get("type") or "",
             row.get("value", "<" + errors.get(index, row.get("error", "")) + ">")
+            + (f"  [{pointed}]" if (pointed := pointed_text(row)) else "")
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")

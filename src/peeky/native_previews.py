@@ -192,6 +192,33 @@ class Typed:
             bases.append((inner[1] if inner is not None else None, Typed(self.graph, base)))
         return members, bases
 
+    def byte_size(self):
+        """How many bytes one value of the type takes, from the debug information, or
+        None where it does not say (#302): a base type's, an enum's, a complete
+        record's, a pointer's (8 where it leaves that to the target, as clang's does,
+        for one that names what it points at: a pointer to a member may be 16), or an
+        array's of a constant length. Never a bitfield's, a reference's or a map
+        entry's."""
+        if self.entry or self.bits is not None:
+            return None
+        found = self._array()
+        if found is not None:
+            count, element = found[1][0], self.element().byte_size()
+            return count * element if type(count) is int and count > 0 and element else None
+        node = self.node()
+        size = None
+        if node is None:
+            return None
+        if node[0] == "base":
+            size = node[3]
+        elif node[0] == "enum":
+            size = node[2]
+        elif node[0] == "record" and not node[8]:
+            size = node[3]
+        elif node[0] == "pointer":
+            size = 8 if node[3] is None and node[2] is not None else node[3]
+        return size if type(size) is int and size > 0 else None
+
     def scalar(self):
         """(base type name, DWARF encoding, size) of a base type, or None."""
         if self.dims:

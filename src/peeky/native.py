@@ -4090,6 +4090,27 @@ def _pointer_type(kind):
     return bool(re.fullmatch(r".+\*\s*(?:const\s*)?(?:volatile\s*)?", str(kind or "").strip()))
 
 
+# What an element of an array, or what a pointer points at, can be for an offset into an
+# array to be proven (#302): never an incomplete type, a reference or a map entry.
+_ELEMENTS = frozenset({"record", "union", "scalar", "pointer", "library"})
+# lldb-dap's text for a value with neither a value nor a summary: its type and address.
+_PLACED = re.compile(r"(.+) @ 0x([0-9a-fA-F]{1,16})")
+
+
+def own_address(variable):
+    """Where a value is, as the debugger says (#302): its `memoryReference` (lldb-dap 20
+    on) or the `T @ 0x…` it shows for a value with no text of its own (an array, a
+    struct), which must agree where it gives both. None where it gives neither, or zero."""
+    found = set()
+    reference = variable.get("memoryReference")
+    if isinstance(reference, str) and re.fullmatch(r"0x[0-9a-fA-F]{1,16}", reference):
+        found.add(int(reference, 16))
+    value, kind = variable.get("value"), variable.get("type")
+    if isinstance(value, str) and (placed := _PLACED.fullmatch(value)) and placed[1] == kind:
+        found.add(int(placed[2], 16))
+    return found.pop() if len(found) == 1 and 0 not in found else None
+
+
 def count_path(steps, pointer=_pointer_type):
     """The variable path by which LLDB's `frame variable` reads an unordered container's
     own count (`h.us._M_h._M_element_count`, `p->_M_h._M_element_count`), from the
@@ -5001,6 +5022,50 @@ class NativeSession:
             reached = indirect or typed.kind() in ("pointer", "reference")
             return typed, reached, contained, held
         return typed
+
+    def value_extent(self, variable, frame, steps):
+        """What a C or C++ value's address can tell (#302), from the build's debug
+        information (``_typed`` of ``steps`` in ``frame``) and the debugger's own address
+        of the value (``own_address``). A pointer: {"pointee": the type it points at,
+        "element_size": that type's size}, and "parameter": true for a root that is only
+        ever a parameter of the frame's function (the array a caller passed, which a
+        pointer's offset is counted from first). An array of a constant length: {"address",
+        "length", "element": its elements' type, "element_size"}; another object (a
+        struct, a scalar): the same without "length". A type is its offset in the debug
+        information under typedefs and qualifiers, so two are the same type only within
+        one build. None where any of it is not known: a variable-length or
+        multi-dimensional array, a bitfield, a reference, an incomplete type, a value
+        with no address of its own."""
+        typed = self._typed(frame, list(steps))
+        if typed is None or typed.bits is not None or typed.entry:
+            return None
+        sort = typed.kind()
+        if sort == "pointer":
+            target = typed.target()
+            if target is None or target.kind() not in _ELEMENTS:
+                return None
+            pointee, size = target.resolved(), target.byte_size()
+            if pointee is None or size is None:
+                return None
+            found = {"pointee": pointee, "element_size": size}
+            if len(steps) == 1 and self._storages(frame, {"name": steps[0]}) == {"parameter"}:
+                found["parameter"] = True
+            return found
+        if sort == "array":
+            length, element = typed.count(), typed.element()
+            if type(length) is not int or length < 1 or element.dims:
+                return None
+            found = {"length": length}
+        elif sort in ("record", "union", "scalar", "library"):
+            element, found = typed, {}
+        else:
+            return None
+        if element.kind() not in _ELEMENTS:
+            return None
+        kind, size, address = element.resolved(), element.byte_size(), own_address(variable)
+        if kind is None or size is None or address is None:
+            return None
+        return {**found, "address": address, "element": kind, "element_size": size}
 
     def _string_class(self, kind):
         """``cxx_strings.string_class`` of a type, also through a typedef the build's
