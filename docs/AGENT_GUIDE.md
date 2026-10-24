@@ -205,13 +205,13 @@ probe, read its JSON. Saved runs help with large captures, comparisons and slow 
 
 - `peeky sql --schema` lists the tables and views, a line each. `--schema captures` (any names, or
   `all`) prints them in full (4.1). Read it before writing SQL.
-- `peeky queries` needs no SQL: `run`, `wide` (a row per hit), `hits`, `compare`, `join` (hits
-  paired by values: `key=v` or `key=a,b`; its table drops selectors that agree at every paired
-  hit), `diff` (what differs, first divergence first: §3), `outputs`, `set_effect`, `values`,
-  `unreadable`, `failures`. `compare`, `diff`, `outputs` and `join` take `--param a=1 --param b=5`
-  (default: the last two runs); one-run queries take `run=3`. `peeky queries --help` lists each
-  one's parameters. `diff`, `compare` and `set_effect` tables show long values from where they
-  differ (`--json`: whole).
+- `peeky queries` needs no SQL: `run`, `wide`, `hits`, `compare`, `join` (hits paired by values:
+  `key=v` or `key=a,b`; its table drops selectors that agree at every paired hit), `diff` (what
+  differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
+  `failures`. `compare`, `diff`, `outputs` and `join` take `--param a=1 --param b=5` (default: the
+  last two); `run`, `wide`, `hits`, `set_effect` and `unreadable` take `run=3`. `queries --help`
+  lists each one's parameters. `diff`, `compare` and `set_effect` tables show long values from
+  where they differ (`--json`: whole).
 - Compare numbers with `num`; `value` is the debugger's text. Mask addresses with
   `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to 4.8). `--label`
   tags a run with free text, stored as given; it never changes which runs `diff` or `compare:`

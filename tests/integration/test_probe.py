@@ -38,6 +38,7 @@ def test_probe_captures_intervenes_and_reports_in_one_call(program):
             "name": "start",
             "before": "3",
             "after": "0",
+            "type": "int",
             "line": 8,
             "hit": 1,
             "capture_hit": 1,

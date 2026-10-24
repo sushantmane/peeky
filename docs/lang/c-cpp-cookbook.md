@@ -456,7 +456,7 @@ hit  phase      line  function  selector  type  value
 1    observed   25    main      page      int   1  [settable]
 1    observed   25    main      items[1]  int   20  [settable]
 1    after-set  25    main      start     int   0  [settable]
-after-set: 2 rows equal to the hit's observed value left out (`--json` has every row)
+after-set: 2 scalar rows equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.745
 output:
@@ -548,6 +548,10 @@ container, shows no preview.
   its address.
 - An array's length is the debug information's constant bound. A typedef'd array, such as
   `typedef int Row[3]`, is an array: `[1, 2, 3]`.
+- So a partly filled array previews what its memory holds past what the program wrote. In
+  `struct water found[96]` with `count` 2, `found[2]` on are leftovers, such as
+  `{kind = '\x90', at = 0x…}`. Peeky can't tell which elements the program filled. Capture the
+  count with the array, and read only the elements below it.
 - A value shown with a `note` keeps the note with its preview. So does what is read through it:
   `late.lo = {x = …, y = …}`, with ``read through `late`: …``. This holds in captures,
   `session get` children and the evidence's `note`.
@@ -748,9 +752,11 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
   so it counts each one as empty. Peeky withholds the container's entries, keys and positions,
   unless LLDB's count is the container's own ([details](#standard-containers)).
 - **A lambda's captures** can't be read. GCC passes them through `__closure`, which lldb-dap
-  doesn't list. So a captured name is `not found` in the lambda. To see a by-value capture, stop
-  in the declaring function on the line that creates the lambda, or print it inside the lambda.
-  Later, the outer variable may no longer match the copy the lambda holds.
+  doesn't list. So a captured name is `not found` in the lambda, and the row says so:
+  ``not found: 'grade' is a capture of this lambda, which GCC passes through `__closure` …``. To
+  see a by-value capture, stop in the declaring function on the line that creates the lambda, or
+  print it inside the lambda. Later, the outer variable may no longer match the copy the lambda
+  holds.
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).

@@ -72,6 +72,8 @@ ABANDONED = (
 INLINED = (
     "it was inlined into its caller: it has no return of its own, so there is no value to read"
 )
+# A C or C++ function its debug information gives no return type (`void`).
+RETURNS_NOTHING = "the function returns nothing"
 # Lost `stopped` events on attached JVMs (#27): see find_lost_stop. java-debug reports a
 # breakpoint stop within milliseconds. Polls start LOST_STOP_POLL_S after a resume and
 # run at most that often. Each is one `threads` request and one-frame `stackTrace`
@@ -266,6 +268,8 @@ class DebugWorker:
         # Stops at the session's own breakpoints so far (None once a stop could not be
         # classified: numbers are never guessed); the current stop's number.
         self.hits, self.stop_hit, self.stop_line = 0, None, None
+        # The steps the session's debugger was asked for so far (`session report`).
+        self.steps = 0
         # Lines the session's own breakpoints were requested at or placed on, their
         # adapter ids, and every one-shot `--to` line the session has used.
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
@@ -841,6 +845,11 @@ class DebugWorker:
         if entry is None and (by_command := getattr(runtime, "returned_by_command", None)):
             # lldb-dap before LLVM 21 lists none; LLDB itself still has it.
             entry = by_command(self.dap, self.thread_id)
+        void, began = getattr(runtime, "returns_nothing", None), self.step_origin.get("frame")
+        if entry is None and void and began and void(began):
+            # Its debug information gives it no return type: nothing was withheld (eleventh
+            # evaluation: `(return):  = <withheld: the debugger reported no value …>`).
+            return {**returned, "type": "void", "unavailable": True, "reason": RETURNS_NOTHING}
         if entry is None:
             reason = (
                 getattr(
@@ -1950,7 +1959,7 @@ class DebugWorker:
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
             self.temporary_line = None
-            self.hits, self.stop_hit, self.stop_line = 0, None, None
+            self.hits, self.stop_hit, self.stop_line, self.steps = 0, None, None, 0
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             self.forget_places()
             self.loop_lines = {}
@@ -2394,6 +2403,14 @@ class DebugWorker:
                     variables, found = taken
                     if index == 0 and given is None:
                         given = found
+                if not module and (made := getattr(runtime, "compiler_binding", None)):
+                    # A binding the compiler makes (a Rust `for` loop's `iter`), which
+                    # `describe` leaves out too: no name of the program's.
+                    variables = [
+                        v
+                        for v in variables
+                        if not (isinstance(v, dict) and made(v, selected_frame))
+                    ]
                 if not module:
                     own += [
                         v["name"]
@@ -2483,6 +2500,14 @@ class DebugWorker:
                     {"statics": statics}
                     if (lister := getattr(runtime, "static_locals", None))
                     and (statics := lister(selected_frame))
+                    else {}
+                ),
+                # The captures a GCC lambda reads through `__closure`, which lldb-dap
+                # does not list either.
+                **(
+                    {"closure_captures": captures}
+                    if (captured := getattr(runtime, "closure_captures", None))
+                    and (captures := captured(selected_frame))
                     else {}
                 ),
                 **self.pause_status(),
@@ -2697,6 +2722,15 @@ class DebugWorker:
                 "name": args["name"],
                 "before": before,
                 "after": after,
+                **_written(
+                    runtime,
+                    variable,
+                    changed,
+                    before,
+                    after,
+                    frame=self.reference_frames.get(ref),
+                    root=variable,
+                ),
                 **({"note": unread_note} if unread_note else {}),
             }
         if operation == "breakpoints":
@@ -2796,6 +2830,9 @@ class DebugWorker:
                 origin["kind"] = kind
                 # Where it began: a stop that interrupts it may be proven in the same call.
                 origin["stop_id"] = self.stop_id
+                if kind == "out" and listed:
+                    # Its function, to tell one that returns nothing (`returned_value`).
+                    origin["frame"] = listed[0]
             if before_step := getattr(runtime, "before_step", None):
                 # LLDB: a step out leaves one frame, not the library frames above (#155).
                 before_step(self.dap)
@@ -2828,6 +2865,7 @@ class DebugWorker:
                 # before this step describe nothing current. Otherwise (java-debug) each
                 # earlier stop is a thread still suspended there, so none is skipped.
                 self.cursor = max(self.cursor, consumed)
+            self.steps += 1
             # Until this thread reports a stop, it may sit suspended anywhere the step
             # ends, a breakpoint line included: never a lost-stop candidate (#27).
             self.stepping.add(self.thread_id)
@@ -2849,6 +2887,12 @@ class DebugWorker:
         return {
             "session_id": self.session,
             "state": self.state,
+            # Where it is stopped, and how far the session has come: its breakpoint stops
+            # (`hits`, while they are numbered) and steps (eleventh evaluation: a report
+            # gave only its state and output).
+            **self.location(),
+            **({"hits": self.hits} if type(self.hits) is int else {}),
+            "steps": self.steps,
             "output": output,
             "output_truncated": truncated,
             # The debugger's own lines, left out of the output (#167).
@@ -4295,7 +4339,12 @@ class DebugWorker:
             )
         if confirm := getattr(runtime, "confirm_mutation", None):
             confirm(selector, value, before, after, variable=variable)
-        return {"name": name, "before": before, "after": after}
+        return {
+            "name": name,
+            "before": before,
+            "after": after,
+            **_written(runtime, variable, reread[0], before, after),
+        }
 
     def _set_scalar_member(
         self, record, runtime, frame, ancestry, trail, reference, variable, args, previewed=False
@@ -4371,7 +4420,12 @@ class DebugWorker:
         runtime.confirm_mutation(name, value, before, after, variable=variable)
         if previewed:
             self._confirm_preview(record, runtime, name, after)
-        return {"name": name, "before": before, "after": after}
+        return {
+            "name": name,
+            "before": before,
+            "after": after,
+            **_written(runtime, variable, found[0], before, after, frame, root, steps),
+        }
 
     def text_stop(self):
         """The stop's reason as a text change judges where in its line the stop is
@@ -4711,6 +4765,30 @@ class DebugWorker:
                 if pycache is not None:
                     shutil.rmtree(pycache, ignore_errors=True)
         return self.last_cleanup if adapter else None
+
+
+def _written(runtime, variable, reply, before, after, frame=None, root=None, steps=()):
+    """What a change's result says of the value it wrote, besides its text: ``type``, the
+    value's type after the write, as the debugger's reply to it or a read after it names
+    it (a Python write can change it: `callback` from a function to `None`); and
+    ``unchanged``, True where the write left the value as it was: the text read before
+    and after is the same, and the runtime proves that text exact for the value's type
+    (``exact_text``: a C, C++ or Rust built-in integer, bool or char by the type the
+    debug information gives, through typedefs; a Java primitive but a float or double;
+    Python's True, False or None). ``variable`` is the value as read before the write,
+    and ``frame``, ``root`` and ``steps`` where it is (a root local, or a field or
+    element ``steps`` reach from it)."""
+    kind = reply.get("type") if isinstance(reply, dict) else None
+    written = {"type": kind[:300]} if isinstance(kind, str) and kind else {}
+    exact = getattr(runtime, "exact_text", None)
+    if isinstance(before, str) and before == after and exact is not None:
+        try:
+            proven = exact(variable, frame=frame, root=root, steps=steps) is True
+        except Exception:
+            proven = False
+        if proven:
+            written["unchanged"] = True
+    return written
 
 
 def _frame_identity(frame):

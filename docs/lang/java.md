@@ -24,12 +24,15 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([Java 7.3](java-cookbook.md#73-java-launched)).
 - The commands that `describe` prints repeat the `--config`
   ([Java 7.3](java-cookbook.md#73-java-launched)).
+- `verify` edits the config's one source without `--at`. With several, pass `--at` with the source
+  that holds the `--old` text ([6.1](../COOKBOOK.md#61-check-one-edit-on-a-fresh-build)).
 - Build the adapter bundle with `scripts/setup_java_adapter.py`. A bundle built before Peeky's
   java-debug patches is refused before anything runs: `UNSUPPORTED`, exit status 2, no table.
   Rebuild it, and point the config's `bundle` at the new one ([ERRORS](../ERRORS.md)).
 - Starting the JVM takes most of a run's time. On a laptop, for a small program, `describe` takes
   about 0.6 s, a probe 0.8 to 1.7 s, and `session start` 0.7 to 0.9 s. A `verify` takes about 0.5 s
-  unedited, and 2 to 2.5 s with an edit to compile. Session commands take about 0.15 s.
+  unedited, and about 3 s with an edit to compile, for a checker that runs the program 44 times.
+  Session commands take about 0.15 s.
 - If a probe or `verify` may outlast your tool's timeout, add `--background`. Then run
   `peeky job wait <id>` ([8](../COOKBOOK.md#8-slow-programs-and-tool-timeouts)).
 - Add `--until hits` to skip waiting for the program to exit
@@ -78,6 +81,10 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).
 - `step --into` and `step --out` skip the JDK's packages, such as `java.*` and `javax.*`
   ([Java 5.2](java-cookbook.md#52-stepping-and-running-to-a-line)).
+- A `step` onto the breakpoint's line is not a hit. java-debug reports it as the step's, and the
+  next `continue` runs on to the line's next pass. So that pass gets no number, and the session's
+  later hits number lower than a probe's
+  ([5.2](../COOKBOOK.md#when-a-step-lands-on-the-breakpoints-line)).
 
 ## Change values
 
@@ -171,6 +178,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   `--at` line's method returned, of any type, as JDI reports it
   ([2.9](../COOKBOOK.md#29-what-a-function-returned),
   [Java 2.9](java-cookbook.md#29-what-a-function-returned)).
+- The row's line is where the method returned to, in its caller. So the table shows it as
+  `to 49`, beside the method that returned: `returned  to 49  Seats.block(boolean[],int)`.
 - Two cases get no value, and the row says why:
   - A method that threw.
   - A hit whose line stops again at the same depth before its call returns, such as a loop's next

@@ -26,9 +26,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - The directory's other `.c` files that define no `main` are built with the target
   ([C and C++ 7.1](c-cpp-cookbook.md#build-a-program-from-several-files)).
 - `describe` lists each function's lines, and its names with their types. C writes a struct with
-  no typedef as `struct ring`. C++ writes types as code does: `std::vector<std::string>`. The
-  compiler's own locals, such as a range `for`'s `__range1`, are left out
-  ([C and C++ 1.1](c-cpp-cookbook.md#11-what-can-i-ask)).
+  no typedef as `struct ring`. Rows write LLDB's name without the tag: `found` is
+  `struct water[96]` in `describe` and `water[96]` in rows. C++ writes types as code does:
+  `std::vector<std::string>`. The compiler's own locals, such as a range `for`'s `__range1`, are
+  left out ([C and C++ 1.1](c-cpp-cookbook.md#11-what-can-i-ask)).
 - Pass program arguments after `--`, or with repeated `--arg`
   ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 - To pin the compiler and debugger, name them in a `--config`
@@ -54,6 +55,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - Structs, arrays and standard containers show their first members: `{lo = 0, hi = 2}`,
   `size=3 ["users", "42", ""]`. Unions and what a pointer points to are not read
   ([C and C++ 7.1](c-cpp-cookbook.md#read-structs-arrays-and-standard-containers)).
+- An array shows its declared length, whatever the program wrote. Past what it filled, elements
+  are leftovers: capture the count, and read only below it
+  ([C and C++ 7.1](c-cpp-cookbook.md#what-a-preview-shows)).
 - A container that something may be changing right now shows only its size. Its elements are
   `not shown`, with the reason. That something can be a library call, a constructor or destructor,
   or another thread
@@ -159,6 +163,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   an exception or `longjmp` ended ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 - It shows nothing when another stop interrupted the step first, or when the program ended.
   `session get return` reads the value again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- A `void` function returns no value: `(return): void (no value: the function returns nothing)`.
+  A probe's row has the type `void` ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
 ## Builds
 
