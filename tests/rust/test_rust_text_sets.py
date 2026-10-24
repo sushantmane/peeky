@@ -186,13 +186,9 @@ def test_a_string_a_live_borrow_reads_is_never_changed(crate, capsys):
     code, result = change("// MANY", "a")
     refusal(code, result, "the program's own `first` (at line 25) may hold a copy of `a`")
     (crate / "src/main.rs").write_text(BORROWS_READ)
-    # Moved at the end, `a` is read again; but `// MANY` prints `first`, and where that print
-    # panics, a caller's `catch_unwind` goes on with it, and `a` is never read (#330 review 2).
-    code, result = change("// MANY", "a")
-    refusal(code, result, "the program's own `first` (at line 25) may hold a copy of `a`")
-    # `head` and `tail`; a `&str` pushed into a Vec, or into a RefCell's; a closure that
-    # borrows it.
-    for marker, name in (("// HEAD", "s"), *(("// MANY", each) for each in "bcd")):
+    # `head` and `tail`; an iterator; a `&str` pushed into a Vec, or into a RefCell's;
+    # a closure that borrows it.
+    for marker, name in (("// HEAD", "s"), *(("// MANY", each) for each in "abcd")):
         code, result = change(marker, name)
         refusal(code, result, f"`{name}` cannot be changed to a text at this stop: {refused}")
         assert "utf8=false" not in (result.get("output") or ""), result
