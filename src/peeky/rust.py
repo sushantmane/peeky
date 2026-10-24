@@ -1026,6 +1026,7 @@ _ONLY_POINTS = " only point"
 # what such a binding's type can't hold a copy in, only what was computed from it.
 _HIDDEN_COPY = ", which may be out of Peeky's reach ("
 _DERIVED = " state derived from "
+_PART_COPY = " a copy of part of "
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1138,16 +1139,18 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
     ):
         # #321: a cell, a channel's state (`rx`), a struct's cell field, where a callee
         # given a `&` may have stored the copy: no field change Peeky makes reaches it.
-        takes, unsure = (
+        levels, unsure = (
             proofs.holder_kinds(hashed, bound, kind)
-            if kind is not None and hasattr(proofs, "holder_kinds")
-            else (bound, ())
+            if hasattr(proofs, "holder_kinds")
+            else (dict.fromkeys(bound, "copy"), ())
         )
-        if takes != bound:
-            # #321 review: a `Cell<bool>` takes no copy of a `u32`, only what was computed
-            # from one.
-            what = "state derived from" if not takes else "a copy of, or state derived from,"
-            own = own.replace(f" may hold a copy of {target} ", f" may hold {what} {target} ")
+        # #321 review rounds 1 and 2: a `Cell<bool>` takes no copy of a `u32`, only what was
+        # computed from one; a `Cell<u32>` only a copy of a part of a struct with a `u32`
+        # field. What is said holds for each of them.
+        if kind is None or "derived" in levels.values():
+            own = own.replace(f" may hold a copy of {target} ", f" may hold{_DERIVED}{target} ")
+        elif "part" in levels.values():
+            own = own.replace(f" a copy of {target} ", f"{_PART_COPY}{target} ")
         types = "its type" if len(bound) == 1 else "their types"
         own += f"{_HIDDEN_COPY}behind a cell, a lock, a channel or a pointer {types} " + (
             f"may hold: which instance of {types} {'it is' if len(bound) == 1 else 'they are'} "
@@ -3194,6 +3197,8 @@ class RustSession(NativeSession):
                     (
                         "the program may hold state derived from it"
                         if _DERIVED in detail
+                        else "the program may hold a copy of part of it"
+                        if _PART_COPY in detail
                         else "the program may hold a copy"
                     )
                     + (f" ({made})" if made else ""),

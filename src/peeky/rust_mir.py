@@ -374,6 +374,62 @@ _ATOMIC_VALUES = {
     "AtomicIsize": "isize",
     "AtomicUsize": "usize",
 }
+# The cells that keep nothing but their value (#321 review round 2): of a value with a
+# single state (`()`, `PhantomData<T>`), none. A lock may be poisoned, a `OnceCell` set.
+_PLAIN_CELLS = frozenset("Cell UnsafeCell SyncUnsafeCell RefCell".split())
+# The module of each standard short name of ``_STD_BARE`` (`Cell` is `cell::Cell`), for
+# ``_Judge.canon``.
+_STD_BARE_MODULES = {
+    **dict.fromkeys("Cell RefCell UnsafeCell SyncUnsafeCell OnceCell LazyCell".split(), "cell"),
+    **dict.fromkeys("OnceLock LazyLock Atomic SyncSender Arc Barrier".split(), "sync"),
+    **dict.fromkeys("LocalKey ThreadId JoinHandle".split(), "thread"),
+    **dict.fromkeys(
+        "VecDeque HashMap HashSet BTreeMap BTreeSet BinaryHeap LinkedList".split(), "collections"
+    ),
+    **dict.fromkeys("PathBuf Path".split(), "path"),
+    **dict.fromkeys("OsString OsStr CString CStr".split(), "ffi"),
+    **dict.fromkeys("Instant Duration SystemTime".split(), "time"),
+    **dict.fromkeys("ManuallyDrop MaybeUninit".split(), "mem"),
+    **dict.fromkeys("Wrapping Saturating NonZero".split(), "num"),
+    **dict.fromkeys("Formatter Arguments".split(), "fmt"),
+    **dict.fromkeys("Chars CharIndices SplitWhitespace".split(), "str"),
+    **dict.fromkeys(
+        "Peekable Enumerate Rev Zip Chain Cloned Copied Fuse Skip Take StepBy Cycle".split(), "iter"
+    ),
+    **dict.fromkeys("RandomState DefaultHasher".split(), "hash"),
+    "NonNull": "ptr",
+    "Rc": "rc",
+    "PhantomData": "marker",
+    "Vec": "vec",
+    "String": "string",
+    "Box": "boxed",
+    "Option": "option",
+    "Result": "result",
+    "Cow": "borrow",
+    "Pin": "pin",
+    "Reverse": "cmp",
+    "RangeInclusive": "ops",
+    "Global": "alloc",
+}
+# The standard types whose module and last segment (``_std_key``) name them alone, which a
+# canonical tree (``_key``) names so: those classed (``_STD_NAMED``), the short names rustc
+# prints for a unique last segment (``_STD_BARE``), and the atomics. Another (`Iter` of
+# `collections`, which `hash_map` and `btree_map` each give) is named by no key.
+# The standard types that hold their type arguments' values by value (`Vec<u32>` a `u32`,
+# not `slice::Iter<'_, u32>`), for ``_Judge.components``.
+_STD_OWNING = frozenset(
+    "vec::Vec collections::VecDeque collections::HashMap collections::HashSet "
+    "collections::BTreeMap collections::BTreeSet collections::BinaryHeap collections::LinkedList "
+    "boxed::Box option::Option result::Result rc::Rc sync::Arc cell::Cell cell::RefCell "
+    "cell::UnsafeCell cell::SyncUnsafeCell cell::OnceCell sync::OnceLock sync::Mutex sync::RwLock "
+    "sync::ReentrantLock sync::Atomic mem::ManuallyDrop cmp::Reverse num::Wrapping "
+    "num::Saturating pin::Pin".split()
+)
+_STD_KEYS = frozenset(
+    {f"{module}::{last}" for module, named in _STD_NAMED.items() for last in named}
+    | {f"{_STD_BARE_MODULES[name]}::{name}" for name in _STD_BARE if name in _STD_BARE_MODULES}
+    | {"sync::Atomic"}
+)
 # A function pointer's or item's type begins (`for<'a> fn(`, `unsafe extern "C" fn(`).
 _FN_START = re.compile(r"(?:for<[^<>]*> )?(?:unsafe )?(?:extern \"[^\"]*\" )?fn\(")
 _PATH_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
@@ -391,6 +447,10 @@ _PART_MOVE = re.compile(r"^_([0-9]+) = (?:move|copy) [(*]*_([0-9]+)\b(?:\)*[.:][
 # A field of a local's own moved or copied out whole (`move (_6.1: T)`, `copy ((_6.0:
 # A).1: B)`), no pointer followed: the place, and the local.
 _FIELD_MOVE = re.compile(r"(?:move|copy) (\(+_([0-9]+)\.[^*]*\))")
+# The standard library's default allocator and hasher arguments, which the dump leaves out
+# of a type's name and the debug information doesn't.
+_DROPPED_DEFAULTS = frozenset({"alloc::Global", "hash::RandomState"})
+_UNKNOWN = ("unknown",)
 
 
 def _std_class(path):
@@ -405,6 +465,56 @@ def _std_class(path):
     if module in _STD_NAMED:
         return _STD_NAMED[module].get(last, "unknown")
     return "plain" if module in _PLAIN_MODULES else "unknown"
+
+
+def _std_key(path):
+    """A standard type's name as both the dump and the debug information give it: the
+    module its path names second and its last segment (`collections::HashMap` of
+    `std::collections::hash::map::HashMap`)."""
+    parts = path.split("::")
+    return f"{parts[1]}::{parts[-1]}" if len(parts) >= 3 else path
+
+
+def _std_tree(key, arguments):
+    """A standard type's canonical tree: an atomic as `sync::Atomic` of what it holds, and
+    without a trailing default allocator or hasher argument."""
+    last = key.rsplit("::", 1)[-1]
+    if last in _ATOMIC_VALUES:
+        return ("std", "sync::Atomic", (("prim", _ATOMIC_VALUES[last]),))
+    if _STD_ATOMIC.fullmatch(last):
+        key = "sync::Atomic"
+    arguments = list(arguments)
+    while arguments and arguments[-1][0] == "std" and arguments[-1][1] in _DROPPED_DEFAULTS:
+        arguments.pop()
+    return ("std", key, tuple(arguments))
+
+
+def _key(tree):
+    """A canonical type tree's name (`std:vec::Vec<u32>`, `a::Id`, `[u32;0]`), or None where
+    it has a part that can't be told apart (a closure, a trait object, a type not known)."""
+    kind = tree[0]
+    if kind == "prim":
+        return tree[1]
+    if kind in ("std", "type"):
+        inner = [_key(each) for each in tree[2]]
+        if None in inner or (kind == "std" and tree[1] not in _STD_KEYS):
+            return None
+        name = f"std:{tree[1]}" if kind == "std" else tree[1]
+        return f"{name}<{','.join(inner)}>" if inner else name
+    if kind == "ref":
+        inner = _key(tree[2])
+        return None if inner is None else ("&mut " if tree[1] else "&") + inner
+    if kind == "tuple":
+        inner = [_key(each) for each in tree[1]]
+        return None if None in inner else f"({','.join(inner)})"
+    if kind in ("array", "slice"):
+        inner = _key(tree[1])
+        if inner is None:
+            return None
+        if kind == "slice":
+            return f"[{inner}]"
+        return f"[{inner};{'?' if tree[2] is None else tree[2]}]"
+    return {"fn": "fn", "never": "!", "raw": "*"}.get(kind)
 
 
 def _bracket_end(text, at, close):
@@ -466,9 +576,9 @@ def _type_list(text, at, close):
 def _type_at(text, at):
     """The type written at ``at`` in ``text`` (a type as the dump or the debug information
     names it), as a tree: ("path", name, [arguments]), ("ref", mutable, type), ("raw",),
-    ("tuple", [types]), ("array", type), ("closure", text), ("fn",), ("opaque",) (a trait
-    object, an `impl` type, a coroutine, a projection), ("lifetime",), ("const",) or
-    ("never",); and where it ends."""
+    ("tuple", [types]), ("array", type, its length or None where not a number), ("slice",
+    type), ("closure", text), ("fn",), ("opaque",) (a trait object, an `impl` type, a
+    coroutine, a projection), ("lifetime",), ("const",) or ("never",); and where it ends."""
     while text.startswith(" ", at):
         at += 1
     if text.startswith("&", at):
@@ -500,10 +610,15 @@ def _type_at(text, at):
     if char == "[":
         inner, at = _type_at(text, at + 1)
         if text.startswith(";", at):
-            at = _run_end(text, at + 1)
+            # An array, and its length where it is a number (`[u32; 3]`, `[u8; 4_usize]`).
+            end = _run_end(text, at + 1)
+            length = re.fullmatch(r"\s*([0-9]+)(?:_?usize)?\s*", text[at + 1 : end])
+            if not text.startswith("]", end):
+                raise ValueError(text)
+            return ("array", inner, int(length[1]) if length else None), end + 1
         if not text.startswith("]", at):
             raise ValueError(text)
-        return ("array", inner), at + 1
+        return ("slice", inner), at + 1
     if char == "!":
         return ("never",), at + 1
     if char == "{":
@@ -555,46 +670,37 @@ def _type_names(node):
             yield from _type_names(each)
     elif node[0] == "ref":
         yield from _type_names(node[2])
-    elif node[0] == "array":
+    elif node[0] in ("array", "slice"):
         yield from _type_names(node[1])
     elif node[0] == "tuple":
         for each in node[1]:
             yield from _type_names(each)
 
 
-_DROPPED_DEFAULTS = frozenset({"Global", "RandomState"})
-
-
-def _canonical(node):
-    """A type tree's name with each path's last segment only, without the standard
-    library's default allocator and hasher arguments: the same for the dump's
-    `Gen<std::vec::Vec<u32>>` and the debug information's `hidden::Gen<alloc::vec::Vec<u32,
-    alloc::alloc::Global>>`; None for a type it can't spell so (a closure, a trait
-    object)."""
+def _substituted(node, formals, given):
+    """``node`` (a type tree of a declared default) with each of ``formals`` (a type's
+    parameters, in order) it names replaced by the argument of ``given`` at its position
+    (`T` of `U = Vec<T>`); None where it names one ``given`` has no tree for, or a type it
+    can't name (`T::Item`, `<T as Tr>::Out`) (#321 review round 2)."""
     kind = node[0]
     if kind == "path":
-        arguments = list(node[2])
-        while arguments and arguments[-1][0] == "path" and not arguments[-1][2]:
-            if arguments[-1][1].rsplit("::", 1)[-1] not in _DROPPED_DEFAULTS:
-                break
-            arguments.pop()
-        inner = [_canonical(each) for each in arguments]
-        if None in inner:
+        if node[1] in formals:
+            at = formals.index(node[1])
+            return given[at] if at < len(given) and not node[2] else None
+        if node[1].split("::", 1)[0] in formals:
             return None
-        name = node[1].rsplit("::", 1)[-1]
-        return f"{name}<{','.join(inner)}>" if inner else name
+        inner = [_substituted(each, formals, given) for each in node[2]]
+        return None if None in inner else ("path", node[1], inner)
     if kind == "ref":
-        inner = _canonical(node[2])
-        return None if inner is None else ("&mut " if node[1] else "&") + inner
+        inner = _substituted(node[2], formals, given)
+        return None if inner is None else ("ref", node[1], inner)
     if kind == "tuple":
-        inner = [_canonical(each) for each in node[1]]
-        return None if None in inner else f"({','.join(inner)})"
-    if kind == "array":
-        inner = _canonical(node[1])
-        return None if inner is None else f"[{inner}]"
-    if kind in ("fn", "never"):
-        return kind
-    return None
+        inner = [_substituted(each, formals, given) for each in node[1]]
+        return None if None in inner else ("tuple", inner)
+    if kind in ("array", "slice"):
+        inner = _substituted(node[1], formals, given)
+        return None if inner is None else (kind, inner, *node[2:])
+    return None if kind in ("opaque", "closure") else node
 
 
 class CrateType(NamedTuple):
@@ -607,19 +713,22 @@ class CrateType(NamedTuple):
     - ``uses``: for each type argument, how the type holds it: the states (reached through
       a shared `&`, behind a pointer others may hold) its fields reach it in. None where not
       known: then each as a value of its own;
-    - ``payloads``: the words (``_value_words``) of what a callee given a `&` to it may
-      store, `#n` standing for the words of argument `n`, `%n` for what may be stored in
-      it, `*` for anything;
-    - ``contents``: the words of what it holds by value, `#n` as above;
-    - ``instances``: {each instance's name (``_canonical``): the flags of what it holds,
-      its arguments too}."""
+    - ``payloads``: the canonical trees (``_Judge.canon``) of what a callee given a `&` to it
+      may store in a cell, a lock, an atomic or a channel it holds; ("arg", n) for argument
+      `n`, ("payloads", n) for what may be stored in it, ("unknown",) for anything;
+    - ``parts``: the trees of the types of its fields, its variants' too, ("arg", n) as above;
+    - ``instances``: {each instance's name (``_key``): (the flags of what it holds, its
+      arguments too; its ``payloads``, its ``parts`` and its ``single``, of its own types)};
+    - ``single``: whether a value of it has a single state (no fields, or only such): of
+      every instance."""
 
     own: frozenset = frozenset()
     arguments: tuple = ()
     uses: tuple | None = None
-    payloads: frozenset = frozenset({"*"})
-    contents: frozenset = frozenset({"*"})
+    payloads: frozenset = frozenset({_UNKNOWN})
+    parts: frozenset = frozenset({_UNKNOWN})
     instances: dict | None = None
+    single: bool = False
 
 
 def merge_layout(found, name, entry):
@@ -639,15 +748,19 @@ def merge_layout(found, name, entry):
         )
 
     instances = dict(before.instances or {})
-    for key, flags in (entry.instances or {}).items():
-        instances[key] = instances.get(key, frozenset()) | flags
+    for key, value in (entry.instances or {}).items():
+        if key in instances:
+            old = instances[key]
+            value = (old[0] | value[0], old[1] | value[1], old[2] | value[2], old[3] and value[3])
+        instances[key] = value
     found[name] = CrateType(
         before.own | entry.own,
         positions(before.arguments, entry.arguments),
         None if before.uses is None or entry.uses is None else positions(before.uses, entry.uses),
         before.payloads | entry.payloads,
-        before.contents | entry.contents,
+        before.parts | entry.parts,
         instances,
+        before.single and entry.single,
     )
 
 
@@ -663,10 +776,11 @@ class TypeLayouts:
     - ``closures``: {a closure's type (`{closure@src/main.rs:5:5: 5:13}`): the types of
       what it captures, or None where not known}, from the aggregates that build them.
     - ``bare``: the short names of ``_STD_BARE`` the crate gives no item of its own.
-    - ``defaults``: {a type's name: the default its declaration gives each type argument,
-      in order (None for none, or where its declarations disagree)}, from the crate's
-      sources (``OwnedLocals._declared_defaults``): rustc leaves an argument that is its
-      default out of the type's name (`&Gen` for `Gen<u32>` of `struct Gen<T = u32>`).
+    - ``defaults``: {a type's name: (each parameter's name and declared default, None for
+      none), in order, a lifetime left out}, from the crate's sources
+      (``OwnedLocals._declared_defaults``): rustc leaves an argument that is its default out
+      of the type's name (`&Gen` for `Gen<u32>` of `struct Gen<T = u32>`, `&Pair<u32>` for
+      `Pair<u32, u32>` of `struct Pair<T, U = T>`).
 
     The flags: "interior", a callee given a `&` to it may store a value in what it holds;
     "owned", given it by value or through a `&mut`, it may; "shares", what it holds may be
@@ -688,30 +802,35 @@ class TypeLayouts:
             found = self.crate.get(f"::{name}")
         return None if found is None else CrateType(*found)
 
-    def default(self, name, position):
-        """The tree of the default the crate's type ``name`` declares for its argument at
-        ``position``, or None."""
-        declared = self.defaults.get(name.rsplit("::", 1)[-1])
-        text = declared[position] if declared and position < len(declared) else None
-        return None if text is None else _parse_type(text)
+    def path(self, name):
+        """The path the crate's type ``name`` has in the debug information's entries (a
+        signature's `Inner` is `m::Inner` where only that type is so named), or None."""
+        if self.crate is None:
+            return None
+        if "::" in name or name in self.crate:
+            return name
+        found = [
+            key
+            for key in self.crate
+            if not key.startswith("::") and key.rsplit("::", 1)[-1] == name
+        ]
+        return found[0] if len(found) == 1 else None
 
     def closure(self, kind, trusted):
-        """(flags, payload words, content words) of the closure type ``kind``, by what it
-        captures."""
+        """(flags, payloads) of the closure type ``kind``, by what it captures."""
         key = (kind, trusted)
         if key not in self._closure_cache:
-            self._closure_cache[key] = (_FLAGS, frozenset({"*"}), frozenset({"*"}))
+            self._closure_cache[key] = (_FLAGS, frozenset({_UNKNOWN}))
             captured = self.closures.get(kind)
             nodes = None if captured is None else [_parse_type(each) for each in captured]
             if nodes is None or None in nodes:
                 return self._closure_cache[key]
             judge = _Judge(trusted, self)
-            flags, payloads, contents = set(), set(), set()
+            flags, payloads = set(), set()
             for node in nodes:
                 judge.flags(node, False, False, flags)
                 payloads |= judge.payloads(node)
-                contents |= judge.contents(node)
-            self._closure_cache[key] = (frozenset(flags), frozenset(payloads), frozenset(contents))
+            self._closure_cache[key] = (frozenset(flags), frozenset(payloads))
         return self._closure_cache[key]
 
 
@@ -747,14 +866,85 @@ class _Judge:
         return None
 
     def arguments(self, name, given):
-        """The crate's type ``name``'s arguments: those ``given``, then the defaults it
-        declares (None where one isn't known)."""
+        """The crate's type ``name``'s arguments: those ``given``, then the default it
+        declares for each other, each earlier parameter it names replaced by its argument
+        (None where one can't be told)."""
         entry = self.layouts.entry(name)
-        count = 0 if entry is None else max(len(entry.arguments), len(entry.uses or ()))
-        return [
-            given[at] if at < len(given) else self.layouts.default(name, at)
-            for at in range(max(count, len(given)))
-        ]
+        declared = self.layouts.defaults.get(name.rsplit("::", 1)[-1]) or ()
+        count = max(
+            len(given),
+            len(declared),
+            0 if entry is None else max(len(entry.arguments), len(entry.uses or ())),
+        )
+        formals = [formal for formal, _ in declared]
+        found = list(given)
+        for at in range(len(given), count):
+            default = declared[at][1] if at < len(declared) else None
+            node = None if default is None else _parse_type(default)
+            found.append(None if node is None else _substituted(node, formals, found))
+        return found
+
+    def canon(self, node):
+        """A canonical tree of the type ``node``, the same for the dump's spelling and the
+        debug information's (rust_symbols.interior_types): ("prim", name), ("std", module
+        and last segment, arguments), ("type", the crate's path, arguments), ("ref",
+        mutable, type), ("tuple", types), ("array", type, length), ("slice", type), ("raw",),
+        ("fn",), ("never",), ("closure", text), or ("unknown",)."""
+        kind = node[0]
+        if kind == "path":
+            name = node[1]
+            if name in _NUMERIC_PRIMITIVES:
+                return ("prim", name)
+            if self.kind(name) is not None:
+                key = _std_key(name) if "::" in name else f"{_STD_BARE_MODULES.get(name)}::{name}"
+                return _std_tree(key, (self.canon(each) for each in node[2]))
+            path = self.layouts.path(name)
+            arguments = self.arguments(name, node[2])
+            if path is None or None in arguments:
+                return _UNKNOWN
+            return ("type", path, tuple(self.canon(each) for each in arguments))
+        if kind == "ref":
+            return ("ref", node[1], self.canon(node[2]))
+        if kind == "tuple":
+            return ("tuple", tuple(self.canon(each) for each in node[1]))
+        if kind == "array":
+            return ("array", self.canon(node[1]), node[2])
+        if kind == "slice":
+            return ("slice", self.canon(node[1]))
+        if kind in ("raw", "fn", "never", "closure"):
+            return node if kind == "closure" else (kind,)
+        return _UNKNOWN
+
+    def single(self, node):
+        """Whether a value of ``node`` has a single state, so nothing to keep (#321 review
+        round 2): `()`, `PhantomData<T>`, an empty array, a crate's struct of such only."""
+        kind = node[0]
+        if kind == "tuple":
+            return all(self.single(each) for each in node[1])
+        if kind == "array":
+            return node[2] == 0 or (node[2] is not None and self.single(node[1]))
+        if kind != "path" or node[1] in _NUMERIC_PRIMITIVES:
+            return False
+        if self.kind(node[1]) is not None:
+            return node[1].rsplit("::", 1)[-1] in ("PhantomData", "PhantomPinned")
+        exact = self.exact(node[1], node[2])
+        if exact is not None:
+            return exact[3]
+        entry = self.layouts.entry(node[1])
+        return entry is not None and entry.single
+
+    def keeps_nothing(self, given):
+        """Whether a plain cell (``_PLAIN_CELLS``) of the arguments ``given`` keeps nothing:
+        each has a single state (`Cell<()>`)."""
+        return bool(given) and all(self.single(each) for each in given)
+
+    def exact(self, name, given):
+        """What the instance of the crate's type ``name`` with arguments ``given`` holds, by
+        the debug information (``CrateType.instances``), or None where not known."""
+        entry = self.layouts.entry(name)
+        if entry is None or not entry.instances:
+            return None
+        return entry.instances.get(self.instance(name, given))
 
     def flags(self, node, shared, handle, out):
         """Add the flags of a value of ``node`` to ``out``, reached through a shared `&`
@@ -769,7 +959,8 @@ class _Judge:
         elif kind == "tuple":
             for each in node[1]:
                 self.flags(each, shared, handle, out)
-        elif kind == "array":
+        elif kind == "slice" or (kind == "array" and node[2] != 0):
+            # An empty array holds nothing; one of a length not known may hold some.
             self.flags(node[1], shared, handle, out)
         elif kind == "closure":
             out |= _in_state(self.layouts.closure(node[1], self.trusted)[0], shared, handle)
@@ -781,9 +972,13 @@ class _Judge:
         if name in _NUMERIC_PRIMITIVES:
             return
         kind = self.kind(name)
+        last = name.rsplit("::", 1)[-1]
         if kind is None:
             self.crate_flags(name, given, shared, handle, out)
         elif kind == "cell":
+            if last in _PLAIN_CELLS and self.keeps_nothing(given):
+                # `Cell<()>`: whatever is stored, the same value.
+                return
             out |= {"interior", "owned"} | ({"shares"} if handle else set())
             for each in given:
                 self.flags(each, False, handle, out)
@@ -801,29 +996,34 @@ class _Judge:
             for each in given:
                 self.flags(each, True, handle or kind == "shared", out)
         elif kind == "plain":
-            if not shared and name.rsplit("::", 1)[-1] in _MUTABLE_VIEWS:
+            if not shared and last in _MUTABLE_VIEWS:
                 out.add("owned")
             for each in given:
                 self.flags(each, shared, handle, out)
+
+    def instance(self, name, given):
+        """The ``_key`` of the instance of the crate's type ``name`` with arguments ``given``
+        and the defaults it declares, or None where it can't be told."""
+        arguments = self.arguments(name, given)
+        if None in arguments:
+            return None
+        return _key(self.canon(("path", name, arguments)))
 
     def crate_flags(self, name, given, shared, handle, out):
         entry = self.layouts.entry(name)
         if entry is None:
             out |= _FLAGS
             return
-        arguments = self.arguments(name, given)
-        names = [None if each is None else _canonical(each) for each in arguments]
-        key = None if None in names else _canonical(("path", name, []))
-        key = key if not names else f"{key}<{','.join(names)}>" if key else None
-        if entry.instances and key in entry.instances:
+        exact = self.exact(name, given)
+        if exact is not None:
             # The instance itself: what each of its fields holds.
-            out |= _in_state(entry.instances[key], shared, handle)
+            out |= _in_state(exact[0], shared, handle)
             return
         out |= _in_state(entry.own, shared, handle)
-        for at, argument in enumerate(arguments):
+        for at, argument in enumerate(self.arguments(name, given)):
             if argument is None:
-                # An argument the dump leaves out, whose default isn't known: which instance
-                # this is can't be told.
+                # An argument the dump leaves out, whose default can't be told: which
+                # instance this is can't be told.
                 if at < len(entry.arguments) and entry.arguments[at]:
                     out |= _FLAGS | {"unsure"}
                 continue
@@ -835,67 +1035,36 @@ class _Judge:
             for inner_shared, inner_handle in states:
                 self.flags(argument, shared or inner_shared, handle or inner_handle, out)
 
-    def substitute(self, words, name, given):
-        """``words`` of the crate's type ``name``, each `#n` or `%n` its argument's."""
-        arguments, found = None, set()
-        for word in words:
-            if word[:1] in "#%" and word[1:].isdigit():
-                arguments = self.arguments(name, given) if arguments is None else arguments
-                at = int(word[1:])
-                argument = arguments[at] if at < len(arguments) else None
-                if argument is None:
-                    found.add("*")
-                else:
-                    found |= (self.contents if word[0] == "#" else self.payloads)(argument)
+    def substitute(self, trees, name, given):
+        """``trees`` of the crate's type ``name`` (``CrateType.payloads``), each ("arg", n) in
+        them its argument's canonical tree, ("payloads", n) what may be stored in it."""
+        arguments = self.arguments(name, given)
+        canonical = tuple(_UNKNOWN if each is None else self.canon(each) for each in arguments)
+        found = set()
+        for tree in trees:
+            if tree[0] == "payloads":
+                argument = arguments[tree[1]] if tree[1] < len(arguments) else None
+                found |= {_UNKNOWN} if argument is None else self.payloads(argument)
             else:
-                found.add(word)
-        return found
-
-    def contents(self, node):
-        """The words (last segments of the types' paths, `*` for anything) of what a value of
-        ``node`` holds by value."""
-        kind = node[0]
-        if kind in ("fn", "never", "const", "lifetime"):
-            return set()
-        if kind == "tuple":
-            return set().union(*(self.contents(each) for each in node[1]))
-        if kind == "array":
-            return self.contents(node[1])
-        if kind == "closure":
-            return set(self.layouts.closure(node[1], self.trusted)[2])
-        if kind != "path":
-            return {"*"}
-        _, name, given = node
-        last = name.rsplit("::", 1)[-1]
-        if name in _NUMERIC_PRIMITIVES:
-            return {name}
-        kind = self.kind(name)
-        if kind is None:
-            entry = self.layouts.entry(name)
-            if entry is None:
-                return {"*"}
-            return {last} | self.substitute(entry.contents, name, given)
-        if kind in ("pointer", "unknown"):
-            return {"*"}
-        found = {last, *(_ATOMIC_VALUES.get(last, "").split() or ())}
-        if kind != "inert":
-            for each in given:
-                found |= self.contents(each)
+                found.add(self._placed(tree, canonical))
         return found
 
     def payloads(self, node):
-        """The words (``contents``) of what a callee given a `&` to a value of ``node`` may
-        store in what it holds: in a cell, a lock, an atomic or a channel."""
+        """The canonical trees (``canon``) of what a callee given a `&` to a value of ``node``
+        may store in what it holds: in a cell, a lock, an atomic or a channel; ("unknown",)
+        for anything."""
         kind = node[0]
         if kind in ("fn", "never", "const", "lifetime"):
             return set()
         if kind in ("raw", "opaque"):
-            return {"*"}
+            return {_UNKNOWN}
         if kind == "ref":
             return self.payloads(node[2])
         if kind == "tuple":
             return set().union(*(self.payloads(each) for each in node[1]))
-        if kind == "array":
+        if kind == "array" and node[2] == 0:
+            return set()
+        if kind in ("array", "slice"):
             return self.payloads(node[1])
         if kind == "closure":
             return set(self.layouts.closure(node[1], self.trusted)[1])
@@ -905,17 +1074,67 @@ class _Judge:
             return set()
         kind = self.kind(name)
         if kind is None:
-            entry = self.layouts.entry(name)
-            return {"*"} if entry is None else self.substitute(entry.payloads, name, given)
+            entry, exact = self.layouts.entry(name), self.exact(name, given)
+            if exact is not None:
+                return set(exact[1])
+            return {_UNKNOWN} if entry is None else self.substitute(entry.payloads, name, given)
         if kind in ("pointer", "unknown") or last == "AtomicPtr":
-            return {"*"}
+            return {_UNKNOWN}
         if kind in ("cell", "channel", "receiving"):
             if last in _ATOMIC_VALUES:
-                return {_ATOMIC_VALUES[last]}
-            return set().union(*(self.contents(each) for each in given))
+                return {("prim", _ATOMIC_VALUES[last])}
+            if kind == "cell" and last in _PLAIN_CELLS and self.keeps_nothing(given):
+                return set()
+            return {self.canon(each) for each in given}
         if kind == "inert":
             return set()
         return set().union(*(self.payloads(each) for each in given))
+
+    def components(self, tree, seen=None):
+        """``tree`` and the canonical trees of every value it holds by value, however deep:
+        a tuple's items, an array's elements, the arguments of a standard type that owns
+        them (``_STD_OWNING``), a crate type's fields (``CrateType.parts``)."""
+        seen = set() if seen is None else seen
+        if tree in seen:
+            return set()
+        seen.add(tree)
+        found, kind = {tree}, tree[0]
+        if kind == "tuple":
+            inner = list(tree[1])
+        elif kind == "array":
+            inner = [] if tree[2] == 0 else [tree[1]]
+        elif kind == "std":
+            inner = list(tree[2]) if tree[1] in _STD_OWNING else []
+        elif kind == "type":
+            entry = self.layouts.entry(tree[1])
+            exact = None if entry is None else (entry.instances or {}).get(_key(tree))
+            if exact is not None:
+                inner = list(exact[2])
+            else:
+                parts = (_UNKNOWN,) if entry is None else entry.parts
+                inner = [self._placed(part, tree[2]) for part in parts]
+        else:
+            # A reference or a pointer holds no copy, but where it points.
+            inner = []
+        for each in inner:
+            found |= self.components(each, seen)
+        return found
+
+    def _placed(self, tree, arguments):
+        """A ``CrateType.parts`` tree, each ("arg", n) the canonical tree ``arguments`` has at
+        `n`."""
+        kind = tree[0]
+        if kind == "arg":
+            return arguments[tree[1]] if tree[1] < len(arguments) else _UNKNOWN
+        if kind in ("std", "type"):
+            return (kind, tree[1], tuple(self._placed(each, arguments) for each in tree[2]))
+        if kind == "ref":
+            return ("ref", tree[1], self._placed(tree[2], arguments))
+        if kind == "tuple":
+            return ("tuple", tuple(self._placed(each, arguments) for each in tree[1]))
+        if kind in ("array", "slice"):
+            return (kind, self._placed(tree[1], arguments), *tree[2:])
+        return tree
 
 
 def _judged(kind, generics, trusted, layouts):
@@ -936,7 +1155,8 @@ def _type_flags(kind, trusted, layouts, generics=()):
     ``layouts.bare``; a type of the crate's by ``layouts`` (each type argument as the type
     holds it, one the dump leaves out by its declared default); anything else (a raw
     pointer, a trait object, a dependency's type, a standard path under a root the crate
-    names itself) may hold anything."""
+    names itself) may hold anything. A plain cell of a value with one state keeps
+    nothing."""
     judged = _judged(kind, generics, trusted, layouts)
     if judged is None:
         return _FLAGS
@@ -963,7 +1183,8 @@ def _may_write(kind, generics, shared=False, trusted=_STD_CRATES, layouts=None):
 
     Not any other type: `slice::ChunksExact<'_, u32>` only reads (round 3), neither a
     crate's `NotCell<'_>` nor its `Atomicity<'_>` is a cell or an atomic (round 5), and a
-    function type, `PhantomData<Cell<u32>>` or a struct holding only one stores nothing."""
+    function type, `PhantomData<Cell<u32>>`, `[Cell<u32>; 0]`, `Cell<()>` or a struct holding
+    only such stores nothing."""
     judged = _judged(kind, generics, trusted, layouts)
     if judged is None:
         return True
@@ -981,17 +1202,28 @@ def _may_share(kind, generics, trusted=_STD_CRATES, layouts=None):
     return "shares" in _type_flags(kind, trusted, layouts, generics)
 
 
-def _may_take(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
-    """Whether what a callee given a `&` to a value of the MIR type ``kind`` may store in it
-    may be a copy of a value of ``local_kind`` (#321 review): what may be stored there
-    (``_Judge.payloads``) names a type ``local_kind`` names, or anything. A `Cell<bool>`
-    can hold no copy of a `u32`, only what was computed from one."""
+def _copy_level(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
+    """What a callee given a `&` to a value of the MIR type ``kind`` may store in it of a
+    value of ``local_kind`` (#321 review rounds 1 and 2), proven by whole types: "copy",
+    where what may be stored there (``_Judge.payloads``), or a value it holds by value
+    (``_Judge.components``), is of the very type ``local_kind`` is; "part", where one is of
+    the type of a part of it (`Cell<u32>` for a struct with a `u32` field); else "derived",
+    which is all that is ever said for sure: what is stored may be computed from it.
+    `Cell<Vec<u32>>` takes no copy of a `Vec<bool>`, nor `Cell<a::Id>` of a `b::Id`."""
     judged = _judged(kind, generics, trusted, layouts)
     local = _judged(local_kind, generics, trusted, layouts)
     if judged is None or local is None:
-        return True
-    payloads = judged[1].payloads(judged[0])
-    return "*" in payloads or bool(payloads & local[1].contents(local[0]))
+        return "derived"
+    judge = judged[1]
+    slots = set()
+    for payload in judge.payloads(judged[0]):
+        slots |= judge.components(payload)
+    slots.discard(_UNKNOWN)
+    whole = judge.canon(local[0])
+    if _key(whole) is not None and whole in slots:
+        return "copy"
+    parts = {each for each in judge.components(whole) if each != whole and _key(each) is not None}
+    return "part" if parts & slots else "derived"
 
 
 def _quiet_drop(kind, generics):
@@ -2498,10 +2730,10 @@ class Body:
         """``_type_flags`` of ``local``'s type (#321)."""
         return _type_flags(self.types.get(local), self.std_paths, self._layouts(), self.generics)
 
-    def may_take(self, local, kind):
-        """Whether what a callee given a `&` to ``local`` may store in it may be a copy of a
-        value of the MIR type ``kind`` (#321 review, ``_may_take``)."""
-        return _may_take(
+    def copy_level(self, local, kind):
+        """What a callee given a `&` to ``local`` may store in it of a value of the MIR type
+        ``kind``: "copy", "part" or "derived" (#321 review rounds 1 and 2, ``_copy_level``)."""
+        return _copy_level(
             self.types.get(local), kind, self.generics, self.std_paths, self._layouts()
         )
 
@@ -6644,15 +6876,15 @@ class OwnedLocals:
         )
 
     def holder_kinds(self, hashed, locals_, kind):
-        """Of ``locals_``: (those whose type may keep a copy of a value of the MIR type
-        ``kind`` where a callee given a `&` to them may store one, those whose type is a
-        crate's of which instance it is can't be told) (#321 review): a `Cell<bool>` takes no
-        copy of a `u32`, only what was computed from one."""
+        """Of ``locals_``: ({each: what a callee given a `&` to it may store in it of a value
+        of the MIR type ``kind``, ``_copy_level``'s "copy", "part" or "derived"}, those whose
+        type is a crate's of which instance it is can't be told) (#321 review rounds 1 and
+        2): a `Cell<bool>` takes no copy of a `u32`, only what was computed from one."""
         body = self.body(hashed)
         if body is None:
-            return frozenset(locals_), frozenset()
+            return dict.fromkeys(locals_, "derived"), frozenset()
         return (
-            frozenset(local for local in locals_ if body.may_take(local, kind)),
+            {local: body.copy_level(local, kind) for local in locals_},
             frozenset(local for local in locals_ if "unsure" in body.type_flags(local)),
         )
 
@@ -7563,9 +7795,10 @@ class OwnedLocals:
 
     def _declared_defaults(self):
         """{the name of each struct, enum or union the crate declares with type arguments:
-        the default each declares, in order, a lifetime left out (`u32` of `struct Gen<T =
-        u32>`, None for none)}, from its sources (#321 review). A name declared twice with
-        different defaults gives None for those; a source that doesn't lex, nothing."""
+        each parameter's name and the default it declares, in order, a lifetime left out
+        (`("T", "u32")` of `struct Gen<T = u32>`, `("U", "T")` of `struct Pair<T, U = T>`, None
+        for none)}, from its sources (#321 review rounds 1 and 2). A name declared twice
+        with different ones gives None for those; a source that doesn't lex, nothing."""
         if "_defaults_known" not in self.__dict__:
             found = {}
             for code in self._crate_codes():
@@ -7589,11 +7822,16 @@ class OwnedLocals:
                                 split = at
                                 break
                         default = None if split is None else " ".join(item[split + 1 :].split())
-                        defaults.append(None if item.startswith("const ") else default or None)
+                        constant = item.startswith("const ")
+                        formal = re.match(r"(?:const\s+)?([A-Za-z_][A-Za-z0-9_]*)", item)
+                        defaults.append(
+                            (formal and formal[1], None if constant else default or None)
+                        )
                     before = found.setdefault(declared[1], tuple(defaults))
                     if before != tuple(defaults):
                         found[declared[1]] = tuple(
-                            a if a == b else None for a, b in zip(before, defaults)
+                            a if a == b else (a[0] if a[0] == b[0] else None, None)
+                            for a, b in zip(before, defaults)
                         )
             self._defaults_known = found
         return self._defaults_known

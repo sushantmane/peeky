@@ -343,12 +343,14 @@ _MUTATION_HINTS = (
     ),
     (
         # #321 review: what a binding keeps behind a cell may be computed from it, no copy.
-        r"may hold (?:a copy of, or )?state derived from (?:it|`[^`]+`) that it goes on with",
+        r"may hold state derived from (?:it|`[^`]+`) that it goes on with",
         "Change it before the program uses it (a stop on an earlier line, or `--set-at` there).",
     ),
     (
-        # #321: a binding that may keep the copy behind a cell or a channel, out of reach.
-        r"may hold a copy of (?:it|`[^`]+`) that it goes on with, which may be out of Peeky's reach",
+        # #321: a binding that may keep the copy (of a part, review round 2) behind a cell or
+        # a channel, out of reach.
+        r"may hold a copy of (?:part of )?(?:it|`[^`]+`) that it goes on with, which may be out "
+        r"of Peeky's reach",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
     ),
     (

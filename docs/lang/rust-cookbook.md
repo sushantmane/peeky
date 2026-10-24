@@ -1610,6 +1610,13 @@ Peeky decides whether it can from everything the type holds, however deep:
     containers and views count by what they hold;
   - `Condvar` and `Barrier` change, but hold no value of yours;
   - `PhantomData<T>` holds nothing, whatever `T` is.
+- A `Cell`, `RefCell` or `UnsafeCell` of a value with only one state keeps nothing: `Cell<()>`,
+  `Cell<PhantomData<u32>>`, or a cell of a struct with no fields. Whatever a call stores there,
+  the program sees the same value.
+- A lock, a once-cell and a channel keep state of their own, even of `()`. A `Mutex<()>` may be
+  poisoned, and a `Sender<()>` adds a message that `rx` counts.
+- An array counts by its length: `[Cell<u32>; 0]` holds nothing. A slice, or an array whose
+  length isn't a plain number, counts by its element.
 - A function pointer or item holds nothing, whatever its signature names:
   `fn(&Cell<u32>) -> u32` stores no value.
 - A standard type on none of these lists, a trait object, or a dependency's type may take a
@@ -1619,14 +1626,21 @@ Peeky decides whether it can from everything the type holds, however deep:
 - A generic type counts by each instance: `Gen<u32>` holds no cell, even where the program also
   has a `Gen<Cell<u32>>`. A type argument left at its declared default (`struct Gen<T = u32>`)
   doesn't show in the type's name, so Peeky reads the default from your source.
+- A default may name an earlier parameter: `Pair<u32>` of `struct Pair<T, U = T>` is
+  `Pair<u32, u32>`, and `Lst<u32>` of `struct Lst<T, U = Vec<T>>` is `Lst<u32, Vec<u32>>`.
 - Where it can't find that default, it can't tell which instance the value is. The refusal says
   so: ``(… its type may hold: which instance of its type it is can't be told)``.
 - What shares the value the call reaches counts too: `rx` beside `tx` of `mpsc::channel()`, or
   `b` of `let b = Rc::clone(&a);` for `put(&a, x)`. So does a struct or closure built of one,
   as `h` of `let h = Hold { c: a.clone() };`.
-- A cell that can't hold the value, as a `Cell<bool>` given `x > 5`, holds what was computed
-  from it, never a copy. The refusal says ``may hold state derived from `x` ``, and advises a
-  change before the program uses it.
+- What a cell may hold is compared with the value's whole type, its path and type arguments
+  included. Only the very type is "a copy": a `Cell<Vec<u32>>` holds no copy of a
+  `Vec<bool>`, nor a `Cell<a::Id>` of a `b::Id`.
+- A cell of a type one of the value's fields has holds a copy of a part of it. A `Cell<u32>`
+  given `p.a` of `p: Pt { a: u32, b: bool }` says ``may hold a copy of part of `p` ``.
+- Otherwise the cell holds what was computed from the value, never a copy: a `Cell<bool>` given
+  `x > 5`. The refusal says ``may hold state derived from `x` ``, and advises a change before
+  the program uses it. It says so too where a type isn't known.
 
 Such a copy sits in a standard type's fields, which Peeky doesn't change. So the refusal says it
 may be out of Peeky's reach, and advises only a change before the call:

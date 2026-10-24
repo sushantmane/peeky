@@ -16,15 +16,25 @@ from peeky.rust_mir import (
     IrFunction,
     OwnedLocals,
     TypeLayouts,
+    _copy_level,
+    _Judge,
+    _key,
     _may_share,
-    _may_take,
     _may_write,
+    _parse_type,
     _type_flags,
     parse_body,
 )
 from peeky.rust_symbols import _Die, interior_types
 
 _STD_CRATES = frozenset({"std", "core", "alloc"})
+U32, BOOL = ("prim", "u32"), ("prim", "bool")
+
+
+def standard(key, *arguments):
+    """A standard type's canonical tree (rust_mir._Judge.canon)."""
+    return ("std", key, tuple(arguments))
+
 
 # The crate the fixtures below are rustc 1.96.0's MIR of (`-Zmir-opt-level=0
 # -Zdump-mir=PreCodegen -Zmir-include-spans=yes`, as Peeky builds it; the comment lines of
@@ -831,11 +841,15 @@ fn peeked(_1: u32) -> u32 {
 
 HASH = "h0123456789abcdef"
 # What the build's debug information shows the crate's own types hold
-# (rust_symbols.interior_types of its application units): `Counter` a `Cell`, `Point` a
-# `u32` and a `Vec<u32>`.
+# (rust_symbols.interior_types of its application units): `Counter` a `Cell<u32>`, `Point`
+# a `u32` and a `Vec<u32>`.
 INTERIOR = {
-    "Counter": (frozenset({"interior", "owned"}), ()),
-    "Point": (frozenset(), ()),
+    "Counter": CrateType(
+        frozenset({"interior", "owned"}),
+        payloads=frozenset({U32}),
+        parts=frozenset({standard("cell::Cell", U32)}),
+    ),
+    "Point": CrateType(payloads=frozenset(), parts=frozenset({U32, standard("vec::Vec", U32)})),
 }
 
 
@@ -950,9 +964,11 @@ def test_a_struct_without_cells_or_a_receiving_end_lent_by_a_shared_reference_st
     body = body_of(PEEKED)
     assert not any(body._may_write_through(n) for n in (10, 11))
     assert why(PEEKED, "peeked", 93, "_14 = other()") == (None, None)
-    # Without the debug information, `Point` may hold a cell: refused, as a possibility.
+    # Without the debug information, `Point` may hold a cell: refused, as a possibility, and
+    # what it may hold is said as no more than derived from `x` (#321 review round 2).
     reason = why(POINTED, "pointed", 74, "_9 = other()", None)[0]
-    assert "the program's own `p` (at " in reason and "may hold a copy of it" in reason
+    assert "the program's own `p` (at " in reason
+    assert "may hold state derived from it" in reason
 
 
 def test_each_type_counts_by_what_it_holds():
@@ -1157,14 +1173,25 @@ def test_the_debug_information_tells_what_each_crate_type_holds():
     assert {key: (entry.own, entry.arguments) for key, entry in found.items()} == expected
     # How each holds its arguments, what may be stored through a `&`, and each instance.
     assert found["Gen"].uses == (frozenset({(False, False)}),)
+    cell = standard("cell::Cell", U32)
     assert found["Gen"].instances == {
-        "Gen<u32>": frozenset(),
-        "Gen<Cell<u32>>": frozenset({"interior", "owned"}),
+        "Gen<u32>": (frozenset(), frozenset(), frozenset({U32}), False),
+        "Gen<std:cell::Cell<u32>>": (
+            frozenset({"interior", "owned"}),
+            frozenset({U32}),
+            frozenset({cell}),
+            False,
+        ),
     }
-    assert found["Gen"].payloads == {"%0"}
-    assert found["Counter"].payloads == {"u32"}
-    assert found["Ends"].payloads == {"u32"}
-    assert found["Boxed"].payloads == {"*"}
+    assert found["Gen"].payloads == {("payloads", 0)}
+    assert found["Gen"].parts == {("arg", 0)}
+    assert found["Counter"].payloads == {U32}
+    assert found["Counter"].parts == {cell}
+    assert found["Point"].parts == {U32, standard("vec::Vec", U32)}
+    # An enum's by its variants' fields, not its discriminant.
+    assert found["Shape"].parts == {standard("rc::Rc", standard("cell::RefCell", U32))}
+    assert found["Ends"].payloads == {U32}
+    assert found["Boxed"].payloads == {("unknown",)}
     assert found["Mode"].payloads == frozenset()
     # The dump's `m::Calm` and a signature's `Calm` are the same type.
     layouts = TypeLayouts(found)
@@ -2618,32 +2645,66 @@ fn sent_bool(_1: u32) -> u32 {
 """
 
 # What the build's debug information gives for its types (rust_symbols.interior_types).
+SHARING = frozenset({"interior", "owned", "shares"})
 REVIEW_TYPES = {
-    "HoldRx": CrateType(frozenset({"shares"}), (), (), frozenset({"u32"})),
-    "HoldRc": CrateType(frozenset({"interior", "owned", "shares"}), (), (), frozenset({"u32"})),
-    "HoldArc": CrateType(frozenset({"interior", "owned", "shares"}), (), (), frozenset({"u32"})),
+    "HoldRx": CrateType(
+        frozenset({"shares"}),
+        (),
+        (),
+        frozenset({U32}),
+        frozenset({standard("sync::Receiver", U32)}),
+    ),
+    "HoldRc": CrateType(
+        SHARING,
+        (),
+        (),
+        frozenset({U32}),
+        frozenset({standard("rc::Rc", standard("cell::Cell", U32))}),
+    ),
+    "HoldArc": CrateType(
+        SHARING,
+        (),
+        (),
+        frozenset({U32}),
+        frozenset({standard("sync::Arc", standard("sync::Mutex", U32))}),
+    ),
     "Dflt": CrateType(
         frozenset(),
         (frozenset({"interior", "owned"}),),
         (frozenset({(False, False)}),),
-        frozenset({"%0"}),
-        frozenset({"Dflt", "#0"}),
-        {"Dflt<u32>": frozenset(), "Dflt<Cell<u32>>": frozenset({"interior", "owned"})},
+        frozenset({("payloads", 0)}),
+        frozenset({("arg", 0)}),
+        {
+            "Dflt<u32>": (frozenset(), frozenset(), frozenset({U32}), False),
+            "Dflt<std:cell::Cell<u32>>": (
+                frozenset({"interior", "owned"}),
+                frozenset({U32}),
+                frozenset({standard("cell::Cell", U32)}),
+                False,
+            ),
+        },
     ),
     "Flag": CrateType(
         frozenset({"interior", "owned"}),
         (),
         (),
-        frozenset({"bool"}),
-        frozenset({"Flag", "Cell", "bool", "u32"}),
+        frozenset({BOOL}),
+        frozenset({standard("cell::Cell", BOOL), U32}),
     ),
     "Tag": CrateType(
         frozenset(),
         (frozenset({"interior", "owned"}),),
         (frozenset(),),
         frozenset(),
-        frozenset({"Tag", "PhantomData", "u32"}),
-        {"Tag<Cell<u32>>": frozenset()},
+        frozenset({standard("marker::PhantomData", ("arg", 0)), U32}),
+        {
+            "Tag<std:cell::Cell<u32>>": (
+                frozenset(),
+                frozenset(),
+                frozenset({standard("marker::PhantomData", standard("cell::Cell", U32)), U32}),
+                False,
+            )
+        },
     ),
 }
 
@@ -2676,19 +2737,19 @@ def test_an_argument_the_dump_leaves_out_is_its_declared_default():
     # the dump names `g`'s type `&Dflt`. Its argument is the default `u32`, so `look(&g, x)`
     # stores nothing. On the PR's first head the instances' flags were joined: "may hold".
     body = body_of(DEFAULTED, REVIEW_TYPES)
-    body.layouts.defaults = {"Dflt": ("u32",)}
+    body.layouts.defaults = {"Dflt": (("T", "u32"),)}
     lent = [n for n, kind in body.types.items() if kind == "&Dflt"]
     assert lent and not any(body._may_write_through(n) for n in lent)
     assert review(DEFAULTED, "defaulted", "DEFAULTED", "_11 = other()") == (None, None)
-    layouts = TypeLayouts(REVIEW_TYPES, defaults={"Dflt": ("u32",)})
+    layouts = TypeLayouts(REVIEW_TYPES, defaults={"Dflt": (("T", "u32"),)})
     assert not _may_write("&Dflt", (), True, layouts=layouts)
     assert _may_write("&Dflt<std::cell::Cell<u32>>", (), True, layouts=layouts)
     # The default as the sources declare it, the crate's own types' too.
     owned = OwnedLocals([body], {}, ("src/main.rs",), texts={"src/main.rs": REVIEW})
-    assert owned._declared_defaults()["Dflt"] == ("u32",)
+    assert owned._declared_defaults()["Dflt"] == (("T", "u32"),)
     declared = REVIEW.replace("struct Dflt<T = u32>", "struct Dflt<'a, T: Into<u8> = Cell<u32>>")
     owned = OwnedLocals([body], {}, ("src/main.rs",), texts={"src/main.rs": declared})
-    assert owned._declared_defaults()["Dflt"] == ("Cell<u32>",)
+    assert owned._declared_defaults()["Dflt"] == (("T", "Cell<u32>"),)
     # Where the declared default can't be found, which instance it is can't be told.
     assert "unsure" in _type_flags("&Dflt", _STD_CRATES, TypeLayouts(REVIEW_TYPES))
     source = REVIEW.replace("struct Dflt<T = u32>", "struct Dflt<T>")
@@ -2701,20 +2762,21 @@ def test_a_copy_is_said_only_where_what_a_callee_may_store_can_be_one():
     # whose `n` no callee changes through `&f`; `sendb(&tx, s.clone())` with a
     # `Sender<bool>`: none can take a copy, only what was computed from one.
     layouts = TypeLayouts(REVIEW_TYPES)
-    for kind, local, takes in (
-        ("std::cell::Cell<bool>", "u32", False),
-        ("std::cell::Cell<u32>", "u32", True),
-        ("Flag", "u32", False),
-        ("std::sync::mpsc::Receiver<bool>", "std::string::String", False),
-        ("std::sync::mpsc::Receiver<std::string::String>", "std::string::String", True),
-        ("std::cell::RefCell<std::vec::Vec<u32>>", "u32", True),
-        ("std::sync::atomic::Atomic<bool>", "u32", False),
-        ("std::sync::atomic::AtomicU32", "u32", True),
-        ("std::cell::Cell<*const u8>", "u32", True),
-        ("Dflt<std::cell::Cell<bool>>", "u32", False),
-        ("Other", "u32", True),
+    for kind, local, level in (
+        ("std::cell::Cell<bool>", "u32", "derived"),
+        ("std::cell::Cell<u32>", "u32", "copy"),
+        ("Flag", "u32", "derived"),
+        ("std::sync::mpsc::Receiver<bool>", "std::string::String", "derived"),
+        ("std::sync::mpsc::Receiver<std::string::String>", "std::string::String", "copy"),
+        ("std::cell::RefCell<std::vec::Vec<u32>>", "u32", "copy"),
+        ("std::sync::atomic::Atomic<bool>", "u32", "derived"),
+        ("std::sync::atomic::AtomicU32", "u32", "copy"),
+        # A pointer holds no copy, but where it points; a type not known proves none.
+        ("std::cell::Cell<*const u8>", "u32", "derived"),
+        ("Dflt<std::cell::Cell<bool>>", "u32", "derived"),
+        ("Other", "u32", "derived"),
     ):
-        assert _may_take(kind, local, (), layouts=layouts) is takes, kind
+        assert _copy_level(kind, local, (), layouts=layouts) == level, kind
     for text, name, marker, statement, holder, variable in (
         (FLAGGED, "flagged", "FLAGGED", "_9 = other()", "c", "x"),
         (RAISED, "raised", "RAISED", "_10 = other()", "f", "x"),
@@ -2764,3 +2826,268 @@ def test_phantom_data_and_function_types_hold_nothing():
         (POINTERS, "pointers", "POINTERS", "_19 = other()"),
     ):
         assert review(text, name, marker, statement) == (None, None), name
+
+
+# Review round 2 of PR #328: what may be stored is compared by whole types, a plain cell of
+# a value with one state keeps nothing, an array counts by its length, and a default may
+# name an earlier parameter.
+def test_a_copy_is_said_only_for_the_very_type_and_a_copy_of_part_for_a_field():
+    # On the round-1 head, types were compared by their paths' last words: `Cell<Vec<u32>>`
+    # "took a copy" of a `Vec<bool>` (both name `Vec`), `Cell<a::Id>` of a `b::Id`.
+    a_id = CrateType(payloads=frozenset(), parts=frozenset({("prim", "u64")}))
+    b_id = CrateType(payloads=frozenset(), parts=frozenset({U32}))
+    point = CrateType(payloads=frozenset(), parts=frozenset({U32, BOOL}))
+    layouts = TypeLayouts({"a::Id": a_id, "b::Id": b_id, "c::Id": b_id, "Pt": point})
+    for kind, local, level in (
+        # The four of the review.
+        ("std::cell::Cell<std::vec::Vec<u32>>", "std::vec::Vec<bool>", "derived"),
+        ("std::cell::Cell<std::option::Option<u32>>", "std::option::Option<bool>", "derived"),
+        ("std::cell::Cell<a::Id>", "b::Id", "derived"),
+        ("std::cell::Cell<u32>", "Pt", "part"),
+        # The very type, or one it holds by value: a copy.
+        ("std::cell::Cell<std::vec::Vec<u32>>", "std::vec::Vec<u32>", "copy"),
+        ("std::cell::Cell<std::vec::Vec<u32>>", "u32", "copy"),
+        ("std::cell::Cell<Vec<u32>>", "std::vec::Vec<u32>", "copy"),
+        ("std::cell::Cell<std::option::Option<u32>>", "std::option::Option<u32>", "copy"),
+        ("std::cell::Cell<a::Id>", "a::Id", "copy"),
+        ("std::cell::Cell<Pt>", "Pt", "copy"),
+        ("std::cell::Cell<(u32, bool)>", "(u32, bool)", "copy"),
+        # A field of the same type: a copy of part of it.
+        ("std::cell::Cell<b::Id>", "c::Id", "part"),
+        ("std::cell::Cell<std::vec::Vec<bool>>", "(u32, bool)", "part"),
+        ("std::cell::Cell<[u32; 2]>", "[u32; 3]", "part"),
+        # A name two types share can't tell which: `Id` is `a::Id`, `b::Id` or `c::Id`.
+        ("std::cell::Cell<Id>", "a::Id", "derived"),
+        # A reference holds no copy, only where it points.
+        ("std::cell::Cell<&u32>", "u32", "derived"),
+        # A standard type whose name more than one module gives (`Iter`): none is proven;
+        # nor that an iterator holds by value what it yields.
+        (
+            "std::cell::Cell<std::collections::hash_map::Iter<'_, u32, u32>>",
+            "std::collections::btree_map::Iter<'_, u32, u32>",
+            "derived",
+        ),
+        ("std::cell::Cell<std::slice::Iter<'_, u32>>", "u32", "derived"),
+        ("std::cell::Cell<std::vec::IntoIter<u32>>", "u32", "derived"),
+        ("std::cell::Cell<std::boxed::Box<[u32; 2]>>", "u32", "copy"),
+    ):
+        assert _copy_level(kind, local, (), layouts=layouts) == level, (kind, local)
+
+
+def test_a_copy_of_part_of_it_is_said_so():
+    from peeky.rust import _copy_reason
+
+    proofs = SimpleNamespace(
+        copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", 20)},
+        copy_names=lambda hashed, held: ["c"] if 20 in held else [],
+        copy_sources=lambda hashed, held, among: frozenset(),
+        pointer_bindings=lambda hashed, held: frozenset(),
+        hidden_holders=lambda hashed, held: held,
+        holder_kinds=lambda hashed, held, kind: ({20: "part"}, frozenset()),
+    )
+    found = dict.fromkeys(("explicit", "taken", "sources", "bindings", "value", "whole"), [])
+    found |= {"any": [((1, 0), {20})], "copied": [((1, 0), {20})], "traced": []}
+    kind, detail, _, _ = _copy_reason(proofs, "h", found, "/w/src/main.rs", "`x`", "Pt")
+    assert kind == "kept"
+    assert detail == (
+        "the program's own `c` (at line 20) may hold a copy of part of `x` that it goes on with, "
+        "which may be out of Peeky's reach (behind a cell, a lock, a channel or a pointer its "
+        "type holds)"
+    )
+    message = (
+        "`x` cannot be changed at src/main.rs:21, at any stop of this build: in a::f, at every "
+        f"place line 21 can stop at, {detail}, so a change there may never be seen"
+    )
+    assert mutation_hint(message) == (
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` there)."
+    )
+    # A type not known proves no copy: what it holds is said as derived from it.
+    _, detail, _, _ = _copy_reason(proofs, "h", found, "/w/src/main.rs", "`x`")
+    assert "`c` (at line 20) may hold state derived from `x` that it goes on with" in detail
+
+
+def test_a_plain_cell_of_a_value_with_one_state_keeps_nothing():
+    # `unit(&c, x)` with `c: Cell<()>`, `ghost(&g, x)` with `g: Cell<PhantomData<u32>>`:
+    # whatever is stored, the same value. The round-1 head said they "may hold state
+    # derived from `x`". A lock (poisoned), a once-cell (set) and a channel's end (a
+    # message count) keep state of their own.
+    unit = CrateType(payloads=frozenset(), parts=frozenset(), single=True)
+    layouts = TypeLayouts({"Unit": unit, "Count": CrateType(parts=frozenset({U32}))})
+    for kind, writes in (
+        ("&std::cell::Cell<()>", False),
+        ("&Cell<()>", False),
+        ("&std::cell::Cell<std::marker::PhantomData<u32>>", False),
+        ("&std::cell::Cell<std::marker::PhantomData<std::cell::Cell<u32>>>", False),
+        ("&std::cell::RefCell<((), [u32; 0])>", False),
+        ("&std::cell::UnsafeCell<[(); 3]>", False),
+        ("&std::cell::Cell<Unit>", False),
+        ("&(std::cell::Cell<()>, u32)", False),
+        ("&std::cell::Cell<Count>", True),
+        ("&std::cell::Cell<[(); N]>", True),
+        ("&std::cell::Cell<u32>", True),
+        ("&std::sync::mpsc::Sender<()>", True),
+        ("&std::sync::Mutex<()>", True),
+        ("&std::sync::RwLock<()>", True),
+        ("&std::cell::OnceCell<()>", True),
+        ("&std::sync::OnceLock<()>", True),
+    ):
+        assert _may_write(kind, (), True, layouts=layouts) is writes, kind
+        assert bool(_type_flags(kind, _STD_CRATES, layouts) & {"interior"}) is writes, kind
+    # The debug information's: `Quiet` holds only such cells; `Unit` has one state.
+    dies = Dies()
+    root = dies.root
+    crate = dies.add(root, "DW_TAG_namespace", "r")
+    core = dies.add(root, "DW_TAG_namespace", "core")
+    cell, marker = (dies.add(core, "DW_TAG_namespace", name) for name in ("cell", "marker"))
+    mpsc = dies.add(
+        dies.add(dies.add(root, "DW_TAG_namespace", "std"), "DW_TAG_namespace", "sync"),
+        "DW_TAG_namespace",
+        "mpsc",
+    )
+    u32, nothing = (dies.add(root, "DW_TAG_base_type", name) for name in ("u32", "()"))
+    ghost = dies.struct(marker, "PhantomData<u32>", arguments=(u32,))
+    own_unit = dies.struct(crate, "Unit")
+    dies.struct(
+        crate,
+        "Quiet",
+        ("a", dies.struct(cell, "Cell<()>", arguments=(nothing,))),
+        ("b", dies.struct(cell, "Cell<core::marker::PhantomData<u32>>", arguments=(ghost,))),
+        ("c", dies.struct(cell, "RefCell<r::Unit>", arguments=(own_unit,))),
+    )
+    dies.struct(crate, "Ping", ("tx", dies.struct(mpsc, "Sender<()>", arguments=(nothing,))))
+    found = interior_types(root, "r")
+    assert found["Quiet"].own == frozenset() and found["Quiet"].payloads == frozenset()
+    assert found["Unit"].single and not found["Quiet"].single
+    assert found["Ping"].own == {"interior", "owned", "shares"}
+    assert found["Ping"].payloads == {("tuple", ())}
+
+
+def test_an_array_counts_by_its_length():
+    # `look(&e, x)` with `e: [Cell<u32>; 0]`, and `Arr { none: [Cell<u32>; 0], n: u32 }`: an
+    # empty array holds nothing. The round-1 head read `[T; 0]` as `[T]`, which "may hold".
+    assert _parse_type("[std::cell::Cell<u32>; 0]") == (
+        "array",
+        ("path", "std::cell::Cell", [("path", "u32", [])]),
+        0,
+    )
+    assert _parse_type("[u8; 4_usize]") == ("array", ("path", "u8", []), 4)
+    assert _parse_type("[u8; N]") == ("array", ("path", "u8", []), None)
+    assert _parse_type("&[u8]") == ("ref", False, ("slice", ("path", "u8", [])))
+    for kind, writes in (
+        ("&[std::cell::Cell<u32>; 0]", False),
+        ("&[std::cell::Cell<u32>; 0_usize]", False),
+        ("&[[std::cell::Cell<u32>; 2]; 0]", False),
+        ("&[std::cell::Cell<u32>; 2]", True),
+        ("&[std::cell::Cell<u32>]", True),
+        ("&[std::cell::Cell<u32>; N]", True),
+        ("&[std::cell::Cell<u32>; { N + 1 }]", True),
+    ):
+        assert _may_write(kind, (), True) is writes, kind
+    # An instance's name keeps the length: `Wrap<[Cell<u32>; 0]>` is not `Wrap<[Cell<u32>;
+    # 2]>`, nor `Wrap<&[Cell<u32>]>`.
+    judge = _Judge(_STD_CRATES, TypeLayouts({"Wrap": CrateType()}))
+    keys = [
+        _key(judge.canon(_parse_type(kind)))
+        for kind in (
+            "Wrap<[std::cell::Cell<u32>; 0]>",
+            "Wrap<[std::cell::Cell<u32>; 2]>",
+            "Wrap<&[std::cell::Cell<u32>]>",
+            "Wrap<[std::cell::Cell<u32>; N]>",
+        )
+    ]
+    assert keys == [
+        "Wrap<[std:cell::Cell<u32>;0]>",
+        "Wrap<[std:cell::Cell<u32>;2]>",
+        "Wrap<&[std:cell::Cell<u32>]>",
+        "Wrap<[std:cell::Cell<u32>;?]>",
+    ]
+    # The debug information's: a subrange's count.
+    dies = Dies()
+    root = dies.root
+    crate = dies.add(root, "DW_TAG_namespace", "r")
+    cell = dies.add(dies.add(root, "DW_TAG_namespace", "core"), "DW_TAG_namespace", "cell")
+    u32 = dies.add(root, "DW_TAG_base_type", "u32")
+    cell_u32 = dies.struct(cell, "Cell<u32>", arguments=(u32,))
+    arrays = {}
+    for count in (0, 2, None):
+        array = dies.add(root, "DW_TAG_array_type", None, cell_u32)
+        bounds = dies.add(array, "DW_TAG_subrange_type")
+        if count is not None:
+            bounds.attributes["DW_AT_count"] = f"0x{count:02x})"
+        arrays[count] = array
+    dies.struct(crate, "Arr", ("none", arrays[0]), ("n", u32))
+    dies.struct(crate, "Two", ("two", arrays[2]))
+    dies.struct(crate, "Some", ("some", arrays[None]))
+    dies.struct(crate, "Wrap<[core::cell::Cell<u32>; 0]>", ("w", arrays[0]), arguments=[arrays[0]])
+    dies.struct(crate, "Wrap<[core::cell::Cell<u32>; 2]>", ("w", arrays[2]), arguments=[arrays[2]])
+    found = interior_types(root, "r")
+    assert found["Arr"].own == frozenset() and found["Arr"].payloads == frozenset()
+    assert found["Two"].own == {"interior", "owned"} and found["Two"].payloads == {U32}
+    assert found["Some"].own == {"interior", "owned"}
+    cell = standard("cell::Cell", U32)
+    assert found["Arr"].parts == {("array", cell, 0), U32}
+    assert {key: value[0] for key, value in found["Wrap"].instances.items()} == {
+        "Wrap<[std:cell::Cell<u32>;0]>": frozenset(),
+        "Wrap<[std:cell::Cell<u32>;2]>": frozenset({"interior", "owned"}),
+    }
+    layouts = TypeLayouts(found)
+    assert not _may_write("&Arr", (), True, layouts=layouts)
+    assert not _may_write("&Wrap<[std::cell::Cell<u32>; 0]>", (), True, layouts=layouts)
+    assert _may_write("&Wrap<[std::cell::Cell<u32>; 2]>", (), True, layouts=layouts)
+
+
+def test_a_default_naming_an_earlier_parameter_is_that_argument():
+    # `struct Pair<T, U = T>`: the dump names `Pair<u32, u32>` `&Pair<u32>`; `U` is `u32`.
+    # `struct Lst<T, U = Vec<T>>`: `Lst<u32>` is `Lst<u32, Vec<u32>>`. The round-1 head
+    # judged `T` as a type of the crate's it didn't know, and said "may hold a copy".
+    pair = CrateType(
+        frozenset(),
+        (frozenset({"interior", "owned"}), frozenset({"interior", "owned"})),
+        (frozenset({(False, False)}), frozenset({(False, False)})),
+        frozenset({("payloads", 0), ("payloads", 1)}),
+        frozenset({("arg", 0), ("arg", 1)}),
+        {
+            "Pair<u32,u32>": (frozenset(), frozenset(), frozenset({U32}), False),
+            "Pair<u32,std:cell::Cell<u32>>": (
+                frozenset({"interior", "owned"}),
+                frozenset({U32}),
+                frozenset({U32, standard("cell::Cell", U32)}),
+                False,
+            ),
+        },
+    )
+    defaults = {
+        "Pair": (("T", None), ("U", "T")),
+        "Lst": (("T", None), ("U", "Vec<T>")),
+        "Odd": (("T", None), ("U", "T::Item")),
+        "Twice": (("T", None), (None, None)),
+    }
+    layouts = TypeLayouts(
+        {"Pair": pair, "Lst": pair, "Odd": pair, "Twice": pair}, defaults=defaults
+    )
+    judge = _Judge(_STD_CRATES, layouts)
+    u32 = ("path", "u32", [])
+    assert judge.arguments("Pair", [u32]) == [u32, u32]
+    assert judge.arguments("Lst", [u32]) == [u32, ("path", "Vec", [u32])]
+    assert _key(judge.canon(_parse_type("Lst<u32>"))) == "Lst<u32,std:vec::Vec<u32>>"
+    assert not _may_write("&Pair<u32>", (), True, layouts=layouts)
+    assert _may_write("&Pair<u32, std::cell::Cell<u32>>", (), True, layouts=layouts)
+    assert _may_write("&Pair<std::cell::Cell<u32>>", (), True, layouts=layouts)
+    assert not _may_write("&Lst<u32>", (), True, layouts=layouts)
+    assert _may_write("&Lst<std::cell::Cell<u32>>", (), True, layouts=layouts)
+    # Where it can't be told (`T::Item`, declarations that disagree), which instance it is
+    # can't be told: "unsure".
+    assert judge.arguments("Odd", [u32]) == [u32, None]
+    for kind in ("&Odd<u32>", "&Twice<u32>"):
+        assert "unsure" in _type_flags(kind, _STD_CRATES, layouts), kind
+    assert "unsure" not in _type_flags("&Pair<u32>", _STD_CRATES, layouts)
+    # Each parameter's name and default, as the sources declare them.
+    source = (
+        "struct Pair<T, U = T> { a: T, b: U }\n"
+        "struct Lst<'a, T: Clone, U = Vec<T>, const N: usize = 3> { a: &'a T, b: U }\n"
+    )
+    owned = OwnedLocals([], {}, ("src/main.rs",), texts={"src/main.rs": source})
+    assert owned._declared_defaults() == {
+        "Pair": (("T", None), ("U", "T")),
+        "Lst": (("T", None), ("U", "Vec<T>"), ("N", None)),
+    }

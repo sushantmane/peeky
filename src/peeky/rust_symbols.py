@@ -1153,7 +1153,24 @@ _NOTHING_HELD = (
     "DW_TAG_subroutine_type",
     "DW_TAG_unspecified_type",
 )
-_WRAPPING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type", "DW_TAG_array_type")
+_WRAPPING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type")
+
+
+def _array_lengths(die):
+    """An array type's lengths, outermost first, from its subranges' counts (#321 review
+    round 2); None for one not given as a number."""
+    found = []
+    for child in die.children:
+        if child.tag != "DW_TAG_subrange_type":
+            continue
+        count, upper = (child.attributes.get(each) for each in ("DW_AT_count", "DW_AT_upper_bound"))
+        try:
+            found.append(
+                _hex(count) if count is not None else _hex(upper) + 1 if upper is not None else None
+            )
+        except ValueError:
+            found.append(None)
+    return found or [None]
 
 
 def interior_types(root, crate):
@@ -1176,15 +1193,21 @@ def interior_types(root, crate):
     A field whose type is one of the instance's own type arguments is left to the argument,
     noting how the type holds it (``uses``): the dump names the argument where the type is
     used (`Gen<std::cell::Cell<u32>>`), or leaves out a default the crate's sources declare.
-    Each instance's own flags are kept by its name too (``instances``). A function type and
-    `PhantomData` hold nothing. Raises ValueError on DWARF it does not read."""
+    Each instance's own is kept by its name too (``instances``). A function type,
+    `PhantomData`, an empty array (its subrange's count 0) and a plain cell of a value with
+    a single state (`Cell<()>`) hold nothing. What may be stored, and the fields, are kept
+    as rust_mir._Judge.canon's trees. Raises ValueError on DWARF it does not read."""
     from peeky.rust_mir import (
         _ATOMIC_VALUES,
         _MUTABLE_VIEWS,
+        _NUMERIC_PRIMITIVES,
+        _PLAIN_CELLS,
+        _UNKNOWN,
         CrateType,
-        _canonical,
-        _parse_type,
+        _key,
         _std_class,
+        _std_key,
+        _std_tree,
         merge_layout,
     )
 
@@ -1218,7 +1241,11 @@ def interior_types(root, crate):
 
     def name_of(die):
         raw = die.attributes.get("DW_AT_name")
-        return names.get(die.offset) or (_string(raw) if raw is not None else "")
+        return (
+            plain.get(die.offset)
+            or names.get(die.offset)
+            or (_string(raw) if raw is not None else "")
+        )
 
     def last(name):
         return name.split("<", 1)[0].rsplit("::", 1)[-1]
@@ -1229,6 +1256,22 @@ def interior_types(root, crate):
                 yield child
             elif child.tag in ("DW_TAG_variant_part", "DW_TAG_variant"):
                 yield from members(child)
+
+    def fields(die):
+        """The types of a struct's, union's or enum's fields, its variants' fields too (not an
+        enum's discriminant), for ``parts``; None for one not given."""
+        for child in die.children:
+            if child.tag == "DW_TAG_member":
+                yield target(child)
+            elif child.tag != "DW_TAG_variant_part":
+                continue
+            for variant in child.children:
+                for member in variant.children if variant.tag == "DW_TAG_variant" else ():
+                    inner = by_offset.get(target(member)) if target(member) else None
+                    if inner is not None and parents.get(inner.offset) is die:
+                        yield from fields(inner)
+                    elif member.tag == "DW_TAG_member":
+                        yield target(member)
 
     def parameters(die):
         """The type of each of its template parameters, in order (None for a value)."""
@@ -1274,8 +1317,11 @@ def interior_types(root, crate):
             tag, name = die.tag, name_of(die)
             if tag in _NOTHING_HELD or name.startswith(_UNNAMED_POINTERS):
                 return
-            if tag in _WRAPPING:
+            if tag in _WRAPPING or tag == "DW_TAG_array_type":
                 inner = target(die)
+                if tag == "DW_TAG_array_type" and 0 in _array_lengths(die):
+                    # #321 review round 2: an empty array holds nothing.
+                    return
                 if inner is None:
                     out |= _INTERIOR_ALL
                 else:
@@ -1319,9 +1365,18 @@ def interior_types(root, crate):
             else:
                 out |= _INTERIOR_ALL
 
+        def given(self, die):
+            return [each for each in parameters(die) if each is not None]
+
+        def plain_cell(self, die, path):
+            """Whether it is a plain cell of values with a single state (`Cell<()>`), which
+            keeps nothing (#321 review round 2)."""
+            given = self.given(die)
+            return last(path) in _PLAIN_CELLS and given and all(map(self.single, given))
+
         def standard(self, die, path, shared, handle, seen, out):
             kind = _std_class(path)
-            given = [each for each in parameters(die) if each is not None]
+            given = self.given(die)
             if "<" in name_of(die) and not given and kind != "inert":
                 out |= _INTERIOR_ALL
                 return
@@ -1331,6 +1386,8 @@ def interior_types(root, crate):
                     self.flags(each, shared, handle, seen, into)
 
             if kind == "cell":
+                if self.plain_cell(die, path):
+                    return
                 out |= {"interior", "owned"} | ({"shares"} if handle else set())
                 arguments(False, handle, out)
             elif kind in ("channel", "pointer", "unknown"):
@@ -1348,107 +1405,162 @@ def interior_types(root, crate):
                     out.add("owned")
                 arguments(shared, handle, out)
 
-        def contents(self, offset, seen):
-            """The words of what a value of the type at ``offset`` holds by value, `#n` for
-            argument `n`'s (rust_mir._Judge.contents)."""
-            if offset in self.covered:
-                return {f"#{self.covered[offset]}"}
-            if offset in seen:
-                return set()
-            seen.add(offset)
+        def single(self, offset, seen=frozenset()):
+            """Whether a value of the type at ``offset`` has a single state: `()`,
+            `PhantomData`, an empty array, a struct or tuple of such only (#321 review round
+            2). An argument of the type's own counts as not."""
             die = by_offset.get(offset)
-            if die is None or "DW_AT_declaration" in die.attributes:
-                return {"*"}
-            tag, name = die.tag, name_of(die)
-            if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
-                return {last(name)}
-            if tag in _NOTHING_HELD or name.startswith(_UNNAMED_POINTERS):
-                return set()
-            if tag in _WRAPPING:
+            if offset in self.covered or offset in seen or die is None:
+                return False
+            if "DW_AT_declaration" in die.attributes:
+                return False
+            tag, name, seen = die.tag, name_of(die), seen | {offset}
+            if tag == "DW_TAG_base_type":
+                return name == "()"
+            if tag in _WRAPPING or tag == "DW_TAG_array_type":
+                lengths = _array_lengths(die) if tag == "DW_TAG_array_type" else [1]
+                if 0 in lengths:
+                    return True
                 inner = target(die)
-                return {"*"} if inner is None else self.contents(inner, seen)
-            if tag == "DW_TAG_pointer_type":
-                inner = target(die)
-                if name.startswith("alloc::boxed::Box<") and inner is not None:
-                    return {"Box"} | self.contents(inner, seen)
-                return {"*"}
-            if "dyn " in name or name.startswith(("&", "*")):
-                return {"*"}
+                return None not in lengths and inner is not None and self.single(inner, seen)
+            if tag != "DW_TAG_structure_type" or "dyn " in name or name.startswith(("&", "*")):
+                return False
             if name.startswith(_STD_ROOTS):
+                return last(name) in ("PhantomData", "PhantomPinned")
+            if any(child.tag == "DW_TAG_variant_part" for child in die.children):
+                return False
+            return all(
+                target(member) is not None and self.single(target(member), seen)
+                for member in members(die)
+            )
+
+        def tree(self, offset, seen=frozenset()):
+            """The canonical tree (rust_mir._Judge.canon) of the type at ``offset``, ("arg",
+            n) for argument `n`."""
+            if offset in self.covered:
+                return ("arg", self.covered[offset])
+            die = by_offset.get(offset)
+            if offset in seen or die is None or "DW_AT_declaration" in die.attributes:
+                return _UNKNOWN
+            tag, name, seen = die.tag, name_of(die), seen | {offset}
+            inner = target(die)
+            if tag == "DW_TAG_base_type":
+                if name == "()":
+                    return ("tuple", ())
+                return ("prim", name) if name in _NUMERIC_PRIMITIVES else _UNKNOWN
+            if tag == "DW_TAG_enumeration_type":
                 path = name.split("<", 1)[0]
-                kind = _std_class(path)
-                if kind in ("pointer", "unknown"):
-                    return {"*"}
-                found = {last(path), *_ATOMIC_VALUES.get(last(path), "").split()}
-                if kind != "inert":
-                    for each in parameters(die):
-                        if each is not None:
-                            found |= self.contents(each, seen)
-                return found
-            found = set() if name.startswith("(") else {last(name)}
-            for member in members(die):
-                inner = target(member)
-                found |= {"*"} if inner is None else self.contents(inner, seen)
-            return found
+                if path.startswith(_STD_ROOTS):
+                    return _std_tree(_std_key(path), ())
+                return ("type", path.removeprefix(prefix), ())
+            if tag == "DW_TAG_subroutine_type" or name.startswith(_UNNAMED_POINTERS):
+                return ("fn",)
+            if tag in _WRAPPING:
+                return _UNKNOWN if inner is None else self.tree(inner, seen)
+            if tag == "DW_TAG_array_type":
+                node = _UNKNOWN if inner is None else self.tree(inner, seen)
+                for length in reversed(_array_lengths(die)):
+                    node = ("array", node, length)
+                return node
+            if tag == "DW_TAG_pointer_type":
+                node = _UNKNOWN if inner is None else self.tree(inner, seen)
+                if name.startswith(("*const ", "*mut ")):
+                    return ("raw",)
+                if name.startswith("&"):
+                    return ("ref", name.startswith("&mut "), node)
+                if name.startswith("alloc::boxed::Box<"):
+                    return _std_tree("boxed::Box", (node,))
+                return _UNKNOWN
+            if tag not in ("DW_TAG_structure_type", "DW_TAG_union_type") or "dyn " in name:
+                return _UNKNOWN
+            if name.startswith("*"):
+                return ("raw",)
+            if name.startswith("&"):
+                # A fat pointer: `&str`, `&mut [u32]`.
+                mutable = name.startswith("&mut ")
+                rest = name.removeprefix("&mut " if mutable else "&")
+                if rest == "str":
+                    return ("ref", mutable, ("prim", "str"))
+                data = data_pointer(die)
+                if rest.startswith("[") and data is not None and target(data) is not None:
+                    return ("ref", mutable, ("slice", self.tree(target(data), seen)))
+                return _UNKNOWN
+            if name.startswith("("):
+                return (
+                    "tuple",
+                    tuple(
+                        _UNKNOWN if target(each) is None else self.tree(target(each), seen)
+                        for each in members(die)
+                    ),
+                )
+            if "{" in name:
+                return _UNKNOWN
+            given = tuple(self.tree(each, seen) for each in self.given(die))
+            path = name.split("<", 1)[0]
+            if "<" in name and not given:
+                return _UNKNOWN
+            if path.startswith(_STD_ROOTS):
+                return _std_tree(_std_key(path), given)
+            return ("type", path.removeprefix(prefix), given)
 
         def payloads(self, offset, seen):
-            """The words of what a callee given a `&` to a value of the type at ``offset`` may
-            store in a cell, a lock, an atomic or a channel it holds, `#n`/`%n` for argument
-            `n`'s (rust_mir._Judge.payloads)."""
+            """The trees of what a callee given a `&` to a value of the type at ``offset`` may
+            store in a cell, a lock, an atomic or a channel it holds, ("payloads", n) for
+            what may be stored in argument `n` (rust_mir._Judge.payloads)."""
             if offset in self.covered:
-                return {f"%{self.covered[offset]}"}
+                return {("payloads", self.covered[offset])}
             if offset in seen:
                 return set()
             seen.add(offset)
             die = by_offset.get(offset)
             if die is None or "DW_AT_declaration" in die.attributes:
-                return {"*"}
+                return {_UNKNOWN}
             tag, name = die.tag, name_of(die)
-            if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
-                return set()
             if tag in _NOTHING_HELD or name.startswith(_UNNAMED_POINTERS):
                 return set()
-            if tag in _WRAPPING:
+            if tag in _WRAPPING or tag == "DW_TAG_array_type":
+                if tag == "DW_TAG_array_type" and 0 in _array_lengths(die):
+                    return set()
                 inner = target(die)
-                return {"*"} if inner is None else self.payloads(inner, seen)
+                return {_UNKNOWN} if inner is None else self.payloads(inner, seen)
             if tag == "DW_TAG_pointer_type":
                 inner = target(die)
                 if inner is None or name.startswith(("*const ", "*mut ")):
-                    return {"*"}
+                    return {_UNKNOWN}
                 return self.payloads(inner, seen)
             if "dyn " in name or name.startswith("*"):
-                return {"*"}
+                return {_UNKNOWN}
             if name.startswith("&"):
                 inner = data_pointer(die)
-                return {"*"} if inner is None else self.payloads(target(inner), seen)
+                return {_UNKNOWN} if inner is None else self.payloads(target(inner), seen)
             if name.startswith(_STD_ROOTS):
                 path = name.split("<", 1)[0]
                 kind = _std_class(path)
-                given = [each for each in parameters(die) if each is not None]
+                given = self.given(die)
                 if kind in ("pointer", "unknown") or last(path) == "AtomicPtr":
-                    return {"*"}
+                    return {_UNKNOWN}
                 if kind in ("cell", "channel", "receiving"):
                     if last(path) in _ATOMIC_VALUES:
-                        return {_ATOMIC_VALUES[last(path)]}
-                    return set().union(*(self.contents(each, set()) for each in given))
+                        return {("prim", _ATOMIC_VALUES[last(path)])}
+                    if kind == "cell" and self.plain_cell(die, path):
+                        return set()
+                    return {self.tree(each) for each in given} or {_UNKNOWN}
                 if kind == "inert":
                     return set()
                 return set().union(*(self.payloads(each, seen) for each in given))
             found = set()
             for member in members(die):
                 inner = target(member)
-                found |= {"*"} if inner is None else self.payloads(inner, seen)
+                found |= {_UNKNOWN} if inner is None else self.payloads(inner, seen)
             return found
 
     found = {}
-    for name in plain.values():
+    for offset, name in plain.items():
         if not name.startswith(_STD_ROOTS):
             path = name.removeprefix(prefix)
             for key in (path, "::" + path.rsplit("::", 1)[-1]):
                 merge_layout(
-                    found,
-                    key,
-                    CrateType(uses=(), payloads=frozenset(), contents=frozenset({last(path)})),
+                    found, key, CrateType(uses=(), payloads=frozenset(), parts=frozenset())
                 )
     for offset, name in names.items():
         die = by_offset[offset]
@@ -1469,36 +1581,49 @@ def interior_types(root, crate):
             continue
         given = parameters(die)
         walk = Walk({each: at for at, each in enumerate(given) if each is not None})
-        own, everything, payloads, contents = set(), set(), set(), set()
         whole = Walk({})
+        own, everything = set(), set()
+        payloads, parts, exact_payloads, exact_parts = set(), set(), set(), set()
         for member in members(die):
             inner = target(member)
             if inner is None:
                 own |= _INTERIOR_ALL
                 everything |= _INTERIOR_ALL
-                payloads.add("*")
-                contents.add("*")
+                payloads.add(_UNKNOWN)
+                exact_payloads.add(_UNKNOWN)
                 continue
             walk.flags(inner, False, False, set(), own)
             whole.flags(inner, False, False, set(), everything)
             payloads |= walk.payloads(inner, set())
-            contents |= walk.contents(inner, set())
+            exact_payloads |= whole.payloads(inner, set())
+        for inner in fields(die):
+            parts.add(_UNKNOWN if inner is None else walk.tree(inner))
+            exact_parts.add(_UNKNOWN if inner is None else whole.tree(inner))
         each_argument = []
         for each in given:
             flags = set()
             if each is not None:
                 whole.flags(each, False, False, set(), flags)
             each_argument.append(frozenset(flags))
-        node = _parse_type(name.removeprefix(prefix))
-        key = None if node is None else _canonical(node)
+        key = _key(whole.tree(offset))
         entry = CrateType(
             frozenset(own),
             tuple(each_argument),
             tuple(frozenset(each) for each in walk.uses)
             + tuple(frozenset() for _ in range(len(given) - len(walk.uses))),
             frozenset(payloads),
-            frozenset({last(path)} | contents),
-            {} if key is None else {key: frozenset(everything)},
+            frozenset(parts),
+            {}
+            if key is None
+            else {
+                key: (
+                    frozenset(everything),
+                    frozenset(exact_payloads),
+                    frozenset(exact_parts),
+                    whole.single(offset),
+                )
+            },
+            walk.single(offset),
         )
         # A signature in the dump may name it by its last segment alone (`::Inner`).
         for name_key in (path, "::" + path.rsplit("::", 1)[-1]):

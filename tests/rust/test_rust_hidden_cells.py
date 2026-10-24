@@ -487,6 +487,131 @@ fn main() {
 }
 """
 
+# Review round 2 of PR #328: plain cells of a value with one state, a channel of `()`, empty
+# arrays, defaults naming an earlier parameter, and a cell that takes a part of `x`.
+ROUND = """use std::cell::Cell;
+use std::env;
+use std::marker::PhantomData;
+use std::sync::mpsc;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+struct Pair<T, U = T> {
+    a: T,
+    b: U,
+}
+
+struct Lst<T, U = Vec<T>> {
+    a: T,
+    b: U,
+}
+
+#[derive(Clone, Copy)]
+struct Pt {
+    a: u32,
+    b: bool,
+}
+
+struct Arr {
+    none: [Cell<u32>; 0],
+    n: u32,
+}
+
+#[inline(never)]
+fn look<T>(_t: &T, x: u32) {
+    std::hint::black_box(x);
+}
+
+#[inline(never)]
+fn unit(c: &Cell<()>, x: u32) {
+    if x > 5 {
+        c.set(());
+    }
+}
+
+#[inline(never)]
+fn ghost(c: &Cell<PhantomData<u32>>, x: u32) {
+    if x > 5 {
+        c.set(PhantomData);
+    }
+}
+
+#[inline(never)]
+fn ping(tx: &mpsc::Sender<()>, x: u32) {
+    if x > 5 {
+        tx.send(()).unwrap();
+    }
+}
+
+#[inline(never)]
+fn keep(c: &Cell<u32>, p: Pt) {
+    c.set(p.a);
+}
+
+fn parted(arg: u32) -> u32 {
+    let x = Pt { a: std::convert::identity(arg), b: arg > 3 };
+    let c = Cell::new(0);
+    keep(&c, x); // KEEP
+    let k = other(); // PARTED
+    std::hint::black_box(&x);
+    c.get() + k + x.b as u32
+}
+
+fn units(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = Cell::new(());
+    let g: Cell<PhantomData<u32>> = Cell::new(PhantomData);
+    unit(&c, x); // UNIT
+    ghost(&g, x); // GHOST
+    let k = other(); // UNITS
+    c.get();
+    g.get();
+    *std::hint::black_box(&x) + k
+}
+
+fn pinged(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let (tx, rx) = mpsc::channel();
+    ping(&tx, x); // PING
+    let k = other(); // PINGED
+    std::hint::black_box(&x);
+    rx.try_iter().count() as u32 + k
+}
+
+fn arrays(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let e: [Cell<u32>; 0] = [];
+    let a = Arr { none: [], n: 2 };
+    look(&e, x);
+    look(&a, x);
+    let k = other(); // ARRAYS
+    a.n + e.len() as u32 + *std::hint::black_box(&x) + k
+}
+
+fn pairs(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let p: Pair<u32> = Pair { a: 1, b: 2 };
+    let pc: Pair<u32, Cell<u32>> = Pair { a: 1, b: Cell::new(3) };
+    let l: Lst<u32> = Lst { a: 1, b: vec![2] };
+    look(&p, x);
+    look(&l, x);
+    let k = other(); // PAIRS
+    p.a + p.b + pc.b.get() + l.b[0] + *std::hint::black_box(&x) + k
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("UNITS {}", units(x));
+    println!("PINGED {}", pinged(x));
+    println!("ARRAYS {}", arrays(x));
+    println!("PAIRS {}", pairs(x));
+    println!("PARTED {}", parted(x));
+}
+"""
+
 
 def line_of(marker, text=HIDDEN):
     return next(i for i, line in enumerate(text.splitlines(), 1) if line.endswith(f"// {marker}"))
@@ -513,6 +638,11 @@ def crate(tmp_path, monkeypatch):
 @pytest.fixture
 def review(tmp_path, monkeypatch):
     return make(tmp_path, monkeypatch, "review", REVIEW)
+
+
+@pytest.fixture
+def rounds(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "rounds", ROUND)
 
 
 def probe(capsys, root, marker, *argv, text=HIDDEN):
@@ -664,5 +794,41 @@ def test_an_instance_judged_by_its_default_cells_that_cant_take_it_and_types_tha
         assert "copies it" not in message + hint and "uses it" in hint, (marker, hint)
     for marker, printed in (("FLAG", "FLAGGED 2"), ("RAISE", "RAISED 5")):
         code, result = probe(capsys, review, marker, "--set", "x=100", text=REVIEW)
+        assert code == 0, (marker, result.get("error"))
+        assert printed in result["output"].splitlines(), (marker, result["output"])
+
+
+@pytest.mark.timeout(900)
+def test_what_holds_no_state_leaves_the_local_settable_and_a_part_is_said_so(rounds, capsys):
+    # `Cell<()>` and `Cell<PhantomData<u32>>` (whatever is stored, the same value), an empty
+    # array of cells, and `Pair<u32>`/`Lst<u32>` of `struct Pair<T, U = T>` and `struct
+    # Lst<T, U = Vec<T>>`: none can keep `x`. On round 1's head each was refused ("may hold
+    # state derived from `x`", "may hold a copy of `x`"); the set reaches the program.
+    for marker, printed in (
+        ("UNITS", "UNITS 101"),
+        ("ARRAYS", "ARRAYS 103"),
+        ("PAIRS", "PAIRS 109"),
+    ):
+        code, result = probe(capsys, rounds, marker, "--set", "x=100", text=ROUND)
+        assert code == 0, (marker, result.get("error"))
+        assert printed in result["output"].splitlines(), (marker, result["output"])
+    # A `Sender<()>` keeps a message count: `rx` may hold state derived from `x`.
+    code, result = probe(capsys, rounds, "PINGED", "--set", "x=100", text=ROUND)
+    message, hint = refused(code, result, "PINGED")
+    assert "the program's own `rx` (at lines " in message, message
+    assert "may hold state derived from `x` that it goes on with" in message, message
+    assert "uses it" in hint, hint
+    # `keep(&c, x)` with `c: Cell<u32>` and `x: Pt { a: u32, b: bool }`: a copy of a part.
+    code, result = probe(capsys, rounds, "PARTED", "--set", "x.a=100", text=ROUND)
+    message, hint = refused(code, result, "PARTED")
+    assert "the program's own `c` (at lines " in message, message
+    assert "may hold a copy of part of `x` that it goes on with, which may be out" in message
+    assert "change the copy" not in message + hint, hint
+    # A change before each call still reaches the program.
+    for marker, change, printed in (
+        ("PING", "x=100", "PINGED 2"),
+        ("KEEP", "x.a=100", "PARTED 102"),
+    ):
+        code, result = probe(capsys, rounds, marker, "--set", change, text=ROUND)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
