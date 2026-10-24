@@ -3116,7 +3116,7 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
     kept = "the program's own `n` (at line 32) may hold a copy of {} that it goes on with"
     lines = {("src/main.rs", 32)}
 
-    def reason(proofs, hashed, found, home, target="it"):
+    def reason(proofs, hashed, found, home, target="it", kind=None):
         return "kept", kept.format(target), lines, None
 
     monkeypatch.setattr(peeky.rust, "_copy_reason", reason)
@@ -3144,7 +3144,7 @@ def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_co
     assert _mutation_hint(refusal).startswith("Change it before the program copies it")
 
     # With a statement under way that may hold a copy at another place: both, hedged.
-    def mixed(proofs, hashed, found, home, target="it"):
+    def mixed(proofs, hashed, found, home, target="it", kind=None):
         said = f"reads {target} into a temporary (at line 12)"
         return "may", said, lines | {("src/main.rs", 12)}, kept.format(target)
 
