@@ -1,5 +1,7 @@
 """Where a C or C++ declaration statement ends, from its source (#104 review, round 3)."""
 
+import re
+
 import pytest
 
 from peeky.c_source import Statements, blank, macro_hazards, unsafe_macros
@@ -1860,6 +1862,110 @@ def test_a_cpp_line_naming_the_local_outside_a_declarations_scope_says_where():
     # `return r + t` after it; not the call's argument, outside the body.
     assert statements.named_outside(8, "t", None, body=True) == "both"
     assert statements.named_outside(8, "t", 2, others=True) is None
+
+
+SAME_LINE_OPERANDS = """long f(long x) {
+    long t = x;
+    { static long t = 5; use(t); } return use(0), t;
+    { static long t = 6; use(t); } x = use(0), t;
+    { static long t = 7; use(t); } return x * t;
+    { static long t = 8; use(t); } return x ? 1 : t;
+    long a = 1, *p = &t; { static long t = 9; use(t); }
+    long b = 2, c = t; { static long t = 10; use(t); }
+    return t;
+}
+"""
+SAME_LINE_OPERANDS_CPP = """long f(long x, bool ok) {
+    long t = x;
+    { static long t = 5; use(t); } return ok and t;
+    { static long t = 6; use(t); } return not t;
+    { static long t = 7; use(t); } return x > t;
+    return t;
+}
+"""
+
+
+def test_a_name_counts_as_a_declarator_only_where_it_surely_is_one():
+    # Review of PR #319: a name taken for a declarator (`_declarator`, which leans that way)
+    # was no mention, so a comma expression (`return use(0), t;`, also from a macro), or
+    # C++'s `ok and t`, kept the plain note after a block's `static`. Only a name surely
+    # declared there is left out now (`_declaring`); any other counts.
+    for source, raw_strings in ((SAME_LINE_OPERANDS, False), (SAME_LINE_OPERANDS_CPP, True)):
+        statements = Statements(source, raw_strings=raw_strings)
+        lines = range(3, len(source.splitlines()) - 1)
+        found = {line: statements.named_outside(line, "t", 2) for line in lines}
+        before = {7, 8} if not raw_strings else set()
+        assert found == {line: "before" if line in before else "after" for line in lines}, found
+    text = """void f(void) {
+    long t = 3;
+    struct S *t;
+    P t;
+    std::vector<long> t;
+    long a = 1, *t;
+    const P &t;
+    S::T &t;
+    decltype(x) t;
+    [[maybe_unused]] long t;
+    P *t;
+    a * t;
+    return use(0), t;
+    ok and t;
+    x = 1, t;
+    long(x), t;
+    for (long t = 0;;) {}
+}
+"""
+    statements = Statements(text, raw_strings=True)
+    code = statements._code()[0]
+    found = {}
+    for line in range(2, 18):
+        begin = statements.starts[line - 1]
+        name = re.search(r"\bt\b", code[begin : statements.starts[line]])
+        found[line] = statements._declaring(begin, begin + name.start())
+    # Surely declarations; then a lone name's `*` (may be a product), and expressions.
+    assert found == {line: line < 11 for line in range(2, 18)}, found
+
+
+IF_INIT_SCOPES = """long f(long x, bool ok) {
+    long t = x;
+    if (auto [t, u] = make(); ok) { use(u); } else use(t);
+    if (auto [t, u] = make(); ok) { use(u); } else { use(t); }
+    if (auto [t, u] = make(); ok) { use(u); } else if (t > 1) { use(t); }
+    if (auto [t, u] = make(); ok) use(u); else use(t);
+    if (auto [t, u] = make(); ok) { use(u); } use(t);
+    if (x) { } else if (auto [t, u] = make(); ok) { use(u); } use(t);
+    if (x) { } else if (auto [t, u] = make(); ok) { use(u); } else use(t);
+    if (auto [t, u] = make(); ok) {
+        use(u);
+    } else {
+        use(t);
+    }
+    use(t);
+    return t;
+}
+"""
+
+
+def test_an_if_headers_binding_is_in_scope_in_its_else():
+    # Review of PR #319: a header's declaration counted only in the header's own
+    # statement, so in `if (auto [t, u] = make(); ok) { use(u); } else use(t);` the
+    # `else` was read as past the binding's scope, and the note said so. It is in scope
+    # through all the `if` controls, its `else` (or `else if`) included.
+    statements = Statements(IF_INIT_SCOPES, raw_strings=True)
+    found = {line: statements.named_outside(line, "t", 2) for line in range(3, 10)}
+    assert found == {
+        # Braced and unbraced `else`, and `else if`: the binding's own `t`.
+        **{line: None for line in (3, 4, 5, 6)},
+        # After the whole `if`, or one of an `else if`'s own.
+        7: "after",
+        8: "after",
+        9: None,
+    }, found
+    assert {line: statements.block_storage(line, "t", 2, True) for line in (13, 15)} == {
+        # An `else` on a later line names the binding too; after the `if`, nothing does.
+        13: ("binding", 10),
+        15: False,
+    }
 
 
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():

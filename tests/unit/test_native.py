@@ -2673,6 +2673,61 @@ def test_a_line_naming_the_local_outside_a_declarations_scope_hedges_its_note(tm
         )
 
 
+OPERANDS_UNIT = b"""# 1 "a.c"
+long f(bool ok) {
+    long q = 1;
+    { static long q = 5; use(q); } return use(0), q;
+    { static long q = 6; use(q); } return ok and q;
+    if (auto [q, u] = make(); ok) { use(u); } else use(q);
+    if (auto [q, u] = make(); ok) {
+        use(u);
+    } else {
+        use(q);
+    }
+    return q;
+}
+"""
+
+
+def test_an_operand_or_an_else_is_read_as_the_code_reads_it(tmp_path):
+    # Review of PR #319: a comma expression (here as a macro `PAIR` for `use(0), q` expands,
+    # the preprocessed text Peeky reads) and C++'s `ok and q` named `q` after the block's
+    # `static`, but were taken for declarators, so the plain note stayed. And an `if`'s
+    # `else` is in its init-statement's binding's scope: the note said it was past it.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": OPERANDS_UNIT})
+    session.target.language = "cpp"
+
+    def static(line):
+        return f"the block's `static` `q` (line {line}), which the debugger does not list"
+
+    def binding(line):
+        return (
+            "not what the code reads",
+            f"the code here names the structured binding `q` (line {line}): this row is the "
+            "outer local of that name",
+        )
+
+    expected = {
+        **{
+            line: (
+                "may not be what the code reads",
+                f"the code here may name {static(line)}, but the line also names `q` after that "
+                "declaration's scope ends, and Peeky cannot tell whether that code reads this "
+                "local: this row is the outer local of that name",
+            )
+            for line in (3, 4)
+        },
+        5: binding(5),
+        # An `else` on a later line: it names the binding (no note at all before).
+        9: binding(6),
+    }
+    for line, want in expected.items():
+        found = session._block_storage("q", frame, "a.c", line)
+        assert found is not None, line
+        assert (found.label, str(found)) == want, (line, found)
+
+
 LAMBDAS_UNIT = b"""# 1 "a.c"
 long f(void) {
     long q = 1;

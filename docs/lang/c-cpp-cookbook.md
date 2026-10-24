@@ -1088,8 +1088,10 @@ example, `use(t); { static long t = 5; use(t); }` reads the outer `t` before the
 There the row says `may not be what the code reads` at every stop on the line. The note says
 whether the line names `t` before that declaration, after its scope ends, or both. Peeky can't
 tell whether that code reads this local, or another variable of that name. As with headers, it
-counts every `t` the line spells, except a member's name and a name a declaration there declares.
-In a lambda's own frame, only the lambda's body counts.
+counts every `t` the line spells, except a member's name and a name a declaration there surely
+declares, as in `long t = 3;`. A name an expression may hold counts, as in `return use(0), t;` or
+`ok and t`. What an `if`'s header declares, as in `if (auto [t, u] = make(); ok)`, is in scope in
+its `else` too. In a lambda's own frame, only the lambda's body counts.
 
 Peeky reads the source as the build's compiler preprocesses it (`-E`, with the same flags). So
 whatever a macro expands to counts, and only what a conditional keeps. A prototype's parameter

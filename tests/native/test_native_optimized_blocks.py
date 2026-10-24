@@ -274,15 +274,25 @@ def test_a_stop_back_inside_a_header_hedges_its_note(tmp_path, cc, monkeypatch, 
 
 
 # #293: lines that name the outer `t` outside the scope of their block's `static` `t`:
-# a `do` loop's condition and a call after the block ends, a call before it opens.
+# a `do` loop's condition and a call after the block ends, a call before it opens. Review
+# of PR #319: a comma expression after the block, also from a macro, names it too.
 SAME_LINE_SOURCE = """#include <stdio.h>
 __attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; }
+#define PAIR use(0), t
+__attribute__((noinline)) long last(long v) {
+    long t = v;
+    { static long t = 8; use(t); } return use(0), t; /* COMMA */
+}
+__attribute__((noinline)) long paired(long v) {
+    long t = v;
+    { static long t = 9; use(t); } return PAIR; /* MACRO */
+}
 int main(int argc, char **argv) {
     long t = argc + 2; /* OUTER */
     do { static long t = 5; use(t); } while (t-- > 2); /* DO */
     use(t); { static long t = 6; use(t); } /* BEFORE */
     { static long t = 7; use(t); } use(t); /* AFTER */
-    use(t);
+    use(last(t) + paired(t));
     return 0;
 }
 """
@@ -290,6 +300,8 @@ SAME_LINE = {
     "DO": "after that declaration's scope ends",
     "BEFORE": "before that declaration",
     "AFTER": "after that declaration's scope ends",
+    "COMMA": "after that declaration's scope ends",
+    "MACRO": "after that declaration's scope ends",
 }
 
 
@@ -303,10 +315,14 @@ def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
     # "not what the code reads: the code here names the block's `static`", though the
     # `while` condition runs after that `static` leaves scope and reads the outer `t`;
     # and so on `use(t); { static long t = 6; use(t); }`, whose first call reads it before
-    # the block. Withheld still, the note now says where the line names `t` outside.
+    # the block. Withheld still, the note now says where the line names `t` outside. In
+    # `last` and `paired`, their own `t` (1) is the outer one.
     lines = SAME_LINE_SOURCE.splitlines()
     line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"/* {marker} */"))
     outer = next(i for i, row in enumerate(lines, 1) if row.endswith("/* OUTER */"))
+    if marker in ("COMMA", "MACRO"):
+        # The function's own `t`, on the line above.
+        outer = line - 1
     (tmp_path / "blocks.c").write_text(SAME_LINE_SOURCE)
     selectors = ("t", f"t @ blocks.c:{outer}")
     result = run_probe(

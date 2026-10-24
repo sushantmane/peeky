@@ -566,15 +566,33 @@ def test_an_if_constexpr_blocks_static_withholds_the_outer_local(
             assert row["error"] in plain, row
 
 
-# #293: lines that name the outer `t` outside the scope of a block's `static` `t`.
+# #293: lines that name the outer `t` outside the scope of a block's `static` `t`. Review
+# of PR #319: `and` and `not` before it, after the block; and an `if`'s binding, in scope
+# in its `else` (on the line, or below it).
 SAME_LINE_SOURCE = """#include <cstdio>
+#include <utility>
 __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) std::pair<long, long> make(long v) { return {v + 40, v}; }
+__attribute__((noinline)) long both(long v, bool ok) {
+    long t = v;
+    { static long t = 8; use(t); } return ok and t; // AND
+}
+__attribute__((noinline)) long negated(long v) {
+    long t = v;
+    { static long t = 9; use(t); } return not t; // NOT
+}
 int main(int argc, char **argv) {
     long t = argc + 2; // OUTER
     do { static long t = 5; use(t); } while (t-- > 2); // DO
     use(t); { static long t = 6; use(t); } // BEFORE
     { static long t = 7; use(t); } use(t); // AFTER
-    use(t);
+    use(both(t, argc > 0) + negated(t));
+    if (auto [t, u] = make(argc); u > 5) { use(u); } else use(t); // ELSE
+    if (auto [t, u] = make(argc); u > 5) { // IF
+        use(u);
+    } else {
+        use(t); // ELSE_BODY
+    }
     return 0;
 }
 """
@@ -582,6 +600,8 @@ SAME_LINE = {
     "DO": "after that declaration's scope ends",
     "BEFORE": "before that declaration",
     "AFTER": "after that declaration's scope ends",
+    "AND": "after that declaration's scope ends",
+    "NOT": "after that declaration's scope ends",
 }
 
 
@@ -599,6 +619,9 @@ def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
     lines = SAME_LINE_SOURCE.splitlines()
     line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marker}"))
     outer = next(i for i, row in enumerate(lines, 1) if row.endswith("// OUTER"))
+    if marker in ("AND", "NOT"):
+        # The function's own `t`, on the line above.
+        outer = line - 1
     (tmp_path / "blocks.cpp").write_text(SAME_LINE_SOURCE)
     selectors = ("t", f"t @ blocks.cpp:{outer}")
     result = run_probe(
@@ -620,3 +643,40 @@ def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
     }
     for row in rows:
         assert row["error"] in hedged, row
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", ["ELSE", "ELSE_BODY"])
+def test_an_if_headers_binding_is_what_its_else_names(tmp_path, cxx, optimization, marker):
+    # Review of PR #319: an `if`'s init-statement binding is in scope in its `else`, but
+    # was read as out of it: on `if (auto [t, u] = make(argc); u > 5) { use(u); } else
+    # use(t);` the note said the line names `t` "after that declaration's scope ends"; and
+    # below the line, in a braced `else`, the outer `t` (1) was shown with no note at all,
+    # though the code there names the binding.
+    lines = SAME_LINE_SOURCE.splitlines()
+    line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marker}"))
+    outer = next(i for i, row in enumerate(lines, 1) if row.endswith("// OUTER"))
+    header = (
+        line
+        if marker == "ELSE"
+        else next(i for i, row in enumerate(lines, 1) if row.endswith("// IF"))
+    )
+    (tmp_path / "blocks.cpp").write_text(SAME_LINE_SOURCE)
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    result = run_probe(
+        tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # The outer `t` holds 1 here; the binding 41.
+    assert not [row for row in found if row.get("value") == "1"], found
+    assert not [row for row in found if "scope ends" in row.get("error", "")], found
+    rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
+    # Optimized, the outer `t` may be gone there ("no value here").
+    assert rows or optimization != "O0", found
+    for row in rows:
+        assert row["error"].startswith(
+            "not what the code reads: the code here names the structured binding "
+            f"`t` (line {header})"
+        ), row

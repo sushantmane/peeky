@@ -239,6 +239,64 @@ _NOT_DECLARING = frozenset(
         "co_await",
     )
 )
+# Words after which a name is an operand, never a declarator: what only uses a name
+# (`_USES`, `_NOT_DECLARING`), C++'s alternative tokens (`ok and t`, `not t`), and words that
+# begin an expression or a statement.
+_OPERAND_WORDS = (
+    _USES
+    | _NOT_DECLARING
+    | {"and", "and_eq", "bitand", "bitor", "compl", "not", "not_eq", "or", "or_eq", "xor"}
+    | {"xor_eq", "if", "while", "for", "switch", "this", "true", "false", "nullptr"}
+    | {"requires", "static_assert", "_Static_assert", "__real__", "__imag__", "noexcept"}
+)
+# Keywords a declaration of variables may begin with (`long a = 1, t;`, `struct S *t;`).
+# After one, a comma at the statement's own level separates declarators.
+_SPECIFIERS = frozenset(
+    (
+        "auto",
+        "bool",
+        "_Bool",
+        "char",
+        "char8_t",
+        "char16_t",
+        "char32_t",
+        "class",
+        "const",
+        "constexpr",
+        "constinit",
+        "double",
+        "enum",
+        "extern",
+        "float",
+        "inline",
+        "int",
+        "long",
+        "register",
+        "short",
+        "signed",
+        "static",
+        "struct",
+        "thread_local",
+        "_Thread_local",
+        "__thread",
+        "typedef",
+        "union",
+        "unsigned",
+        "void",
+        "volatile",
+        "wchar_t",
+        "_Atomic",
+    )
+)
+# Words a type's parentheses may follow (`decltype(x) t`, `__attribute__((unused)) long t`),
+# and qualifiers that may stand between a declarator's `*` and its name.
+_TYPE_GROUPS = frozenset(
+    ("decltype", "typeof", "__typeof__", "__typeof", "_Atomic", "alignas", "_Alignas")
+) | frozenset(("__attribute__", "__declspec"))
+_CV = frozenset(("const", "volatile", "restrict", "__restrict", "__restrict__", "_Atomic"))
+# A declaration's tokens before a name: a word, `::`, `->` (to tell it from `>`), or any
+# other character.
+_PREFIX = re.compile(f"{_NAME}|::|->|\\S")
 
 
 def macro_hazards(texts, raw_strings=True, trigraphs=None):
@@ -1024,6 +1082,96 @@ class Statements:
             # A member template's name (`P::template t<0>()`, #283), not a declaration.
             return False
         return previous is not None and previous not in _USES
+
+    def _declaring(self, low, position):
+        """Whether the name at ``position`` is surely one a declaration declares, in a
+        statement that begins at or after ``low``: after its type (`long t = 3;`, `struct S
+        *t;`, `std::vector<long> t;`, `P t;`), or after a `,` of a declaration that begins
+        with a type's keyword (`long a = 1, *t;`). Unlike ``_declarator``, never where an
+        expression may hold it: in brackets (an argument, a parameter, a header's), after
+        a comma that may be an operator (`return use(0), t;`), an operator word (`ok and
+        t`), or a `*` or `&` after a lone name (`a * t`). Else False."""
+        code = self._code()[0]
+        at, depth = position - 1, 0
+        while at >= low:
+            char = code[at]
+            if char in ")]":
+                depth += 1
+            elif char in "([":
+                if depth == 0:
+                    return False
+                depth -= 1
+            elif depth == 0 and char in ";{}":
+                break
+            elif (
+                depth == 0 and char == ":" and ":" not in code[at - 1 : at] + code[at + 1 : at + 2]
+            ):
+                # A label's, or a conditional's (`c ? a : t`).
+                break
+            at -= 1
+        else:
+            # The statement must begin at ``low`` (its line's start, or a body's).
+            before = self._before(low)
+            if before is not None and before[0] not in (";", "{", "}", "<%", "%>"):
+                return False
+        tokens = [mark[0] for mark in _PREFIX.finditer(code, at + 1, position)]
+        # Split at the commas outside brackets: a list of declarators, or an expression's.
+        segments, current, nesting = [], [], 0
+        for token in tokens:
+            nesting += (token in ("(", "[", "<")) - (token in (")", "]", ">"))
+            if nesting < 0:
+                return False
+            if token == "," and nesting == 0:
+                segments.append(current)
+                current = []
+            else:
+                current.append(token)
+        segments.append(current)
+        if len(segments) > 1:
+            head = segments[0]
+            if not head or head[0] not in _SPECIFIERS or head[1:2] == ["("]:
+                return False
+            return all(token in ("*", "&") or token in _CV for token in segments[-1])
+        return self._typed(tokens)
+
+    def _typed(self, tokens):
+        """Whether ``tokens``, a statement's from its start up to a name, are surely a
+        declaration's type for it (see ``_declaring``)."""
+        typed, names, last, index = False, 0, None, 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in ("<", "[", "("):
+                if token == "(" and last not in _TYPE_GROUPS:
+                    return False
+                if token == "[" and tokens[index + 1 : index + 2] != ["["]:
+                    return False
+                # A template's arguments, an attribute (`[[maybe_unused]]`), or a type's
+                # parentheses: to the bracket closing it.
+                closer, depth = {"<": ">", "[": "]", "(": ")"}[token], 0
+                for index in range(index, len(tokens)):
+                    depth += (tokens[index] == token) - (tokens[index] == closer)
+                    if depth == 0:
+                        break
+                else:
+                    return False
+                typed = typed or token == "<" or (token == "(" and last not in _ATTRIBUTES)
+                last, index = closer, index + 1
+                continue
+            if token == "::":
+                typed = True
+            elif token not in ("*", "&"):
+                if not _WORD.fullmatch(token) or token in _OPERAND_WORDS:
+                    return False
+                if token in _SPECIFIERS:
+                    typed = True
+                elif token not in _CV and token not in _TYPE_GROUPS:
+                    names += 1
+            last, index = token, index + 1
+        if last is None or last == "::" or not (names or typed):
+            return False
+        # A pointer's or a reference's declarator only after a type that is surely one
+        # (`long *t`, `S::T &t`, `const P *t`, `P Q *t`); `a * t` may be an expression.
+        return last not in ("*", "&") or typed or names > 1
 
     def _named_once(self, line, name):
         """Whether ``name`` appears exactly once on ``line`` (outside comments and
@@ -1822,9 +1970,11 @@ class Statements:
         nowhere, or Peeky cannot tell.
 
         A member's or a qualified name does not count, nor a name a declaration there
-        declares (`long t = 3;`, the local's own), nor one a statement's header names
-        before the declaration, which ``header_before`` tells (except with ``body``, where
-        it is not asked). With ``body``, only the frame's own body counts. As in
+        surely declares (``_declaring``: `long t = 3;`, the local's own; not `return
+        use(0), t;` or `ok and t`), nor one a statement's header names before the
+        declaration, which ``header_before`` tells (except with ``body``, where it is not
+        asked). What a header declares is in scope through all it controls, an `if`'s
+        `else` too. With ``body``, only the frame's own body counts. As in
         ``header_before``, the scan is lexical: any other `t` the line spells is a
         mention, also a lambda's own, which may weaken a true note into a hedge."""
         found = self.block_storage(line, name, after, True, body, entering, own, others=others)
@@ -1856,7 +2006,7 @@ class Statements:
         for word in _IDENTIFIER.finditer(code, low, high):
             if word[0] != name or self._member(word.start()):
                 continue
-            if self._declarator(low, word.start()):
+            if self._declaring(low, word.start()):
                 continue
             # Whatever is declared up to the name, and what of it is in scope there.
             earlier = read(word.end())
@@ -2060,8 +2210,11 @@ class Statements:
             if any(given or name in self.expansions.get(macro, {name}) for macro in hidden):
                 return None
             # Whether the stop is in the statement: it reaches the stop's line, or is the
-            # header of a block around it.
+            # header of a block around it, or of what holds the stop past its `)` (an
+            # `if`'s `else` too: `if (auto [t, u] = f(); ok) { ... } else use(t);`).
             last = last or bool(statement and within is not None and statement[-1][1] >= within)
+            if not last and statement and within is not None:
+                last = self._controls(statement, within)
             if statement and statement[0][1] in fresh:
                 last = False
             found = self._storage_of(statement, name, after, code, nested, last, own)
@@ -2166,6 +2319,29 @@ class Statements:
         # The statement the region ends in: the stop's, or the header of a block around it.
         return judged(statement, True)
 
+    def _controls(self, statement, position):
+        """Whether ``position`` is in what the statement header among a statement's
+        tokens (as ``_storage_declaration`` reads them) controls, past its `)`: its body,
+        and an `if`'s `else` (``_controlled``), where what the header declares is in
+        scope. True where Peeky cannot tell."""
+        pairs = self._code()[1] or {}
+        for index, (text, _, depth) in enumerate(statement):
+            if depth != 0 or text not in _HEADERS:
+                continue
+            following = statement[index + 1 : index + 3]
+            if following and following[0][0] == "constexpr":
+                following = following[1:]
+            if not following or following[0][0] != "(":
+                return False
+            closing = pairs.get(following[0][1])
+            if closing is None:
+                return True
+            if position <= closing:
+                return False
+            end = self._controlled(closing + 1, text)
+            return end is None or position <= end
+        return False
+
     def _storage_of(
         self, statement, name, after=None, code=None, nested=True, last=False, own=None
     ):
@@ -2184,7 +2360,8 @@ class Statements:
         if not words:
             return False
         at = bisect.bisect_right(self.starts, statement[0][1])
-        if self.raw_strings and (last or words[0] not in _HEADERS):
+        # A header's binding (also after `else` or a label: `else if (auto [q, r] = s; q)`).
+        if self.raw_strings and (last or not _HEADERS.intersection(words)):
             if (bound := self._binding(statement, name, after)) is not None:
                 return ("binding", bound)
         # A lambda's body (or an initializer's braces) in the statement is a scope of its
