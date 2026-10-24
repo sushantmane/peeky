@@ -93,9 +93,10 @@ TABLES = {
             "stops), refused or failed (at hit: its own change there), timeout or failed "
             "(the probe's, first), or lost_stop (the debugger lost a stop, which may have "
             "run without it), complete: carried out in full, and, for a restore "
-            "(name=@before) that left changes in place, unrestored: the latest one's "
-            "LINE@HIT, with unrestored_all: each one's, in the order made}; NULL for a run "
-            "saved before "
+            "(name=@before) that never made some it owed, unrestored: the LINE@HIT of the "
+            "latest write it never restored, with unrestored_all: each one's, in the order "
+            "made (no restore was made; the program may have written the value since)}; "
+            "NULL for a run saved before "
             "schema 16, or with no interventions. Queries read it only where every entry "
             "matches its request (option, at, name, value, each key of its type); else "
             "they read the run's warnings",
@@ -628,10 +629,10 @@ def _checked_outcome(text, entry, line, set_hit):
             return None
     elif ended in ("cap", "lost_stop") or made not in (0, 1) or (made == 1) != (ended == "made"):
         return None
-    # A restore (#305) that left changes in place: the latest one's LINE@HIT, and each
-    # one's in the order made (#331), at most one per hit, of its own hit for a restore
-    # at one hit, which was never made; it was not carried out in full. A run saved
-    # before has `unrestored` alone.
+    # A restore (#305) that never made some of the restores it owed: the latest such
+    # write's LINE@HIT, and each one's in the order made (#331), at most one per hit, of
+    # its own hit for a restore at one hit, which was never made; it was not carried out
+    # in full. A run saved before has `unrestored` alone.
     unrestored = outcome.get("unrestored")
     left = outcome.get("unrestored_all", [unrestored])
     hits = [str(item).partition("@")[2] for item in left] if isinstance(left, list) else None
@@ -670,10 +671,12 @@ def _set_outcome(text, entry, line, set_hit):
         from peeky.names import changes_named
 
         left = outcome.get("unrestored_all") or [outcome["unrestored"]]
+        # A write with no matching restore, which may have changed nothing; the program
+        # may have written the value since (#331).
         text += (
-            f"; the change at {left[0]} was left in place, not undone"
+            f"; the write at {left[0]} had no matching restore"
             if len(left) == 1
-            else f"; {len(left)} changes were left in place, not undone ({changes_named(left)})"
+            else f"; {len(left)} writes had no matching restore ({changes_named(left)})"
         )
     return text
 

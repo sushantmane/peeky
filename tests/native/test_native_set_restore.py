@@ -191,9 +191,10 @@ def test_the_guard_flip_skips_the_move_with_two_set_ats(native, capsys, name):
 
 
 @pytest.mark.timeout(300)
-def test_a_restore_line_that_never_runs_names_each_change_left_in_place(native, capsys):
+def test_a_restore_line_that_never_runs_names_each_write_it_never_restored(native, capsys):
     # Twelfth evaluation (in Python): the guard was flipped at each hit and restored at the
-    # line it guards, which then never ran. The run named only the latest change.
+    # line it guards, which then never ran. The run named only the latest change. Hit 2's
+    # wrote the 0 already there, which the worker proves changed nothing.
     path = write(native, "trail.c", TRAIL)
     guard, move = line_of(TRAIL, "/* GUARD */"), line_of(TRAIL, "/* MOVE */")
     code, result = probe(
@@ -203,7 +204,10 @@ def test_a_restore_line_that_never_runs_names_each_change_left_in_place(native, 
     )  # fmt: skip
     assert code == 4 and result["status"] == "completed", result
     text = _table(result)
-    assert f"3 changes left in place, not undone (line {guard}, hits 1 to 3))" in text, text
+    assert (
+        "3 writes had no matching restore: 2 changes and 1 with no change "
+        f"(line {guard}, hits 1 to 3))"
+    ) in text, text
     assert result["output"].strip() == "TRAIL:;FLAT=3", result["output"]
     ats = [f"{guard}@1", f"{guard}@2", f"{guard}@3"]
     assert [c["at"] for c in result["interventions"]] == ats
@@ -214,6 +218,7 @@ def test_a_restore_line_that_never_runs_names_each_change_left_in_place(native, 
         ats[-1],
         ats,
     )
+    assert entry["unrestored_kinds"] == ["change", "unchanged", "change"]
 
 
 @pytest.mark.timeout(300)

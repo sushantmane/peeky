@@ -3736,8 +3736,9 @@ class _Restores:
     def note(self, name, at, line, hit, here, restore, change):
         """Keep a change the probe made to ``name`` (at stop ``here``) if a restore may
         write back the value from before it: what the worker kept to write back, and to
-        which storage (``restore``), and the value the change wrote. A restore is kept
-        too, as the latest change; the change it undid is restored."""
+        which storage (``restore``), the value the change wrote, and its kind (a write may
+        change nothing). A restore is kept too, as the latest change; the change it undid
+        is restored."""
         if not self.wanted(name):
             return
         key = restore_key(name)
@@ -3749,6 +3750,8 @@ class _Restores:
             "restore": restore if isinstance(restore, dict) else {},
             "wrote": change.get("after"),
             "undoes": change.get("restores"),
+            # A change, a write proven to change nothing, or one of the same text (#331).
+            "kind": _write_kind(change),
         }
         made = self.by_hit.setdefault(key, {})
         # The latest at its hit, last in the order made.
@@ -5011,12 +5014,15 @@ def run_probe(
                     f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
                     f"{point['hit']} never came."
                 )
-    # A restore whose changes were never undone (#305): the run ended before the restore
-    # line's hits that pair with them. Each is named, not only the latest (#331).
+    # The writes a restore owed and never made (#305): the run ended before the restore
+    # line's hits that pair with them. Each is named, with its kind, not only the latest
+    # (#331). That says no restore was made, not that the value stayed: the program may
+    # have written it since.
     unrestored = {}
     if result.get("status") != "failed":
         for point, owes in restores.awaiting(seen):
             ats = [record["at"] for record in owes]
+            kinds = [record["kind"] for record in owes]
             unrestored[id(point)] = ats
             stops = seen.get(point["build_line"], 0)
             entry = {
@@ -5030,27 +5036,26 @@ def run_probe(
             listed = next((e for e in result.get("unapplied") or () if e == entry), None)
             if listed is None:
                 result.setdefault("unapplied", []).append(listed := entry)
-            listed.update(unrestored=ats[-1], unrestored_all=ats)
-            attached = (result.get("target_identity") or {}).get("mode") == "attach"
-            undone = (
-                f"the change at line {ats[0]}"
+            listed.update(unrestored=ats[-1], unrestored_all=ats, unrestored_kinds=kinds)
+            noun, detail = _writes_counted(kinds)
+            writes = (
+                f"the {noun} at line {ats[0]}{detail}"
                 if len(ats) == 1
-                else f"{len(ats)} changes ({changes_named(ats)})"
+                else f"{len(ats)} {noun} ({changes_named(ats)}){detail}"
             )
+            attached = (result.get("target_identity") or {}).get("mode") == "attach"
             warnings.append(
                 f"--set-at {probe.program}:{point['line']}@{point['hit']} {point['name']}="
-                f"{BEFORE} did not undo {undone}: line {point['build_line']} stopped {stops} "
-                "time(s) before the probe "
+                f"{BEFORE} made no restore for {writes}. Line {point['build_line']} stopped "
+                f"{stops} time(s) before the probe "
                 + ("timed out" if result.get("status") == "timeout" else "ended")
-                + f", so its {hits_named(record['hit'] for record in owes)} never came. The "
-                + ("attached " if attached else "")
-                + "program ran on from "
+                + f", so its {hits_named(record['hit'] for record in owes)} never came."
                 + (
-                    "that change without the restore"
-                    if len(ats) == 1
-                    else "each without its restore"
+                    " The attached program goes on running without "
+                    + ("that restore." if len(ats) == 1 else "those restores.")
+                    if attached
+                    else ""
                 )
-                + (", and goes on running." if attached else ".")
                 + " To undo a change, restore it on a line that runs after it in every pass."
             )
     if not result.get("refused_before_launch") and (
@@ -5166,6 +5171,38 @@ def _write_kind(change):
     if change.get("before") != change.get("after"):
         return "change"
     return "unchanged" if unchanged(change) else "alike"
+
+
+# Each kind of write (``_write_kind``) as a probe's text counts it.
+_KIND_WORDS = (
+    ("change", "change"),
+    ("unchanged", "with no change"),
+    ("alike", "with the same text, not proven unchanged"),
+)
+
+
+def _writes_counted(kinds):
+    """(the noun, then what follows it) for writes of ``kinds`` (each ``_write_kind``'s, or
+    None where not known), as the @all line counts them: ("changes", "") where each is a
+    change; ("writes", ", each with no change") where all are of another kind;
+    ("writes", ": 1 change and 5 with no change") for a mix; ("writes", "") where a kind
+    is not known."""
+    many = len(kinds) > 1
+    if None in kinds:
+        return ("writes" if many else "write"), ""
+    if set(kinds) == {"change"}:
+        return ("changes" if many else "change"), ""
+    if len(set(kinds)) == 1:
+        word = dict(_KIND_WORDS)[kinds[0]]
+        return ("writes" if many else "write"), f", {'each ' if many else ''}{word}"
+    listed = [
+        f"{kinds.count(kind)} {word}{'s' if kinds.count(kind) > 1 else ''}"
+        if kind == "change"
+        else f"{kinds.count(kind)} {word}"
+        for kind, word in _KIND_WORDS
+        if kind in kinds
+    ]
+    return "writes", ": " + ", ".join(listed[:-1]) + f" and {listed[-1]}"
 
 
 def unchanged(change):
@@ -5363,15 +5400,7 @@ def _table(result, short_names=True):
         # unchanged, counted apart, as NO_STOP counts them (eleventh evaluation: 35 of 42
         # `set free: 0 -> 0` writes were counted as changes).
         kinds = [_write_kind(change) for change in changes]
-        parts = [
-            (kinds.count(kind), word)
-            for kind, word in (
-                ("change", "change"),
-                ("unchanged", "with no change"),
-                ("alike", "with the same text, not proven unchanged"),
-            )
-            if kind in kinds
-        ]
+        parts = [(kinds.count(kind), word) for kind, word in _KIND_WORDS if kind in kinds]
         # A `@before` request's writes are restores (#305).
         writes = "restore" if all(change.get("restores") for change in changes) else "write"
         if parts == [(len(changes), "change")]:
@@ -5409,16 +5438,32 @@ def _table(result, short_names=True):
         )
     ]
     capped = len([entry for entry in entries if "made" in entry])
-    # The changes `@before` restores left in place (#305), each once, by its LINE@HIT:
-    # every one a restore owed, not only the latest (#331).
-    left = list(
-        dict.fromkeys(
-            at
-            for entry in entries
-            if "unrestored" in entry
-            for at in entry.get("unrestored_all") or [entry["unrestored"]]
+    # The writes `@before` restores owed and never made (#305), every one, not only the
+    # latest (#331); each once, by its selector and LINE@HIT, with its kind.
+    left = {}
+    for entry in entries:
+        if "unrestored" not in entry:
+            continue
+        ats = entry.get("unrestored_all") or [entry["unrestored"]]
+        kinds = entry.get("unrestored_kinds")
+        if not isinstance(kinds, list) or len(kinds) != len(ats):
+            # Not said: counted as writes.
+            kinds = [None] * len(ats)
+        try:
+            key = restore_key(entry["name"])
+        except (TypeError, ValueError):
+            key = entry["name"]
+        # One spelling per selector: the first restore's.
+        name = next((n for (k, _), (n, _, _) in left.items() if k == key), entry["name"])
+        for at, kind in zip(ats, kinds):
+            left.setdefault((key, at), (name, at, kind))
+    unrestored = ""
+    if left:
+        names, ats, kinds = zip(*left.values())
+        noun, detail = _writes_counted(kinds)
+        unrestored = (
+            f"{len(ats)} {noun} had no matching restore{detail} ({changes_named(ats, names)})"
         )
-    )
     lines.append(
         f"status: {result['status']}"
         + (
@@ -5430,10 +5475,7 @@ def _table(result, short_names=True):
                     if unmade
                     else "",
                     f"{capped} --set-at @all cut short at the cap" if capped else "",
-                    f"{len(left)} change{'s' if len(left) > 1 else ''} left in place, not "
-                    f"undone ({changes_named(left)})"
-                    if left
-                    else "",
+                    unrestored,
                 )
                 if part
             )

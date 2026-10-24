@@ -268,9 +268,10 @@ the restore (`MUTATION_REJECTED`, `` `@before` cannot be used here ``) where Pee
 function on its line for new calls. That is a Rust async body, a Python generator or coroutine, a
 Python lambda, comprehension or class body, or a function whose first line Peeky can't place.
 
-A restore whose hit never comes isn't refused. The changes it should have undone stay in place,
-and the probe exits 4. The status names each one: `6 changes left in place, not undone (line 49,
-hits 1 to 6)`. So does a warning, `did not undo 6 changes (…)`.
+A restore whose hit never comes isn't refused. Peeky makes no restore for the writes it owed,
+and the probe exits 4. The status names each one, by kind: `6 writes had no matching restore: 1
+change and 5 with no change (line 49, hits 1 to 6)`. So does a warning, `made no restore for 6
+writes (…)`. The program may have written the value since, so this doesn't say the value stayed.
 
 ### A field through a C pointer parameter
 
@@ -418,7 +419,7 @@ The CLI's exit status is the same for `peeky probe` and the `peeky-probe` script
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass; a `session get` with a failed selector. |
 | 2 | An error, or a refusal: anything Peeky turned down. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for. |
-| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. A `@before` restore whose hits never came, so that changes it should have undone stayed in place, exits 4 too. Its `unapplied` entry has `unrestored_all`, each such change's `LINE@HIT`, and `unrestored`, the latest one's. |
+| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. A `@before` restore whose hits never came, so that it made no restore for writes it owed, exits 4 too. Its `unapplied` entry has `unrestored_all`, each such write's `LINE@HIT`, `unrestored_kinds`, and `unrestored`, the latest one's. That says no restore was made, not that the value stayed. |
 
 Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
 whatever its code. Its JSON says `refused_before_launch`. The causes include:
