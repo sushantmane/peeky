@@ -673,7 +673,7 @@ def test_a_schema_15_store_gains_outcomes_and_its_runs_keep_their_warnings(tmp_p
     }  # fmt: skip
     evidence.record(store, newer)
     connection = sqlite3.connect(store)
-    assert connection.execute("PRAGMA user_version").fetchone() == (16,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
     assert [row[0] is None for row in connection.execute("SELECT set_outcomes FROM runs")] == [
         True,
         False,

@@ -1565,9 +1565,9 @@ runs.
 | 1 | `(status)`, `(output)`, `(edit)`, `(source)`, `(line)`, `(args)`, `(sets)` | How the runs differed |
 | 2 | `intervention only in run a` or `run b` | Values that only one run's `--set` changed |
 | 3 | values that differ | Real differences, in hit order |
-| 4 | `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
+| 4 | `the address of …`, `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
 | 5 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
-| 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr |
+| 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr, or a C pointer to the same element |
 | 7 | `only in run a` | Selectors only one run captured |
 
 **1. How the runs differed.** Check these rows before you credit an edit with a difference. Each
@@ -1616,6 +1616,11 @@ The table never cuts a note, so a note always shows what to do.
 in the other run, so such a row may be a real difference. A pointer into an array may point at
 element 6 in one run and at element 4 in the other.
 
+- First come C and C++ pointers at another element's address of an array both runs captured, in
+  hit order. Each says which, in each run: ``the address of `level[6]` in run a, of `level[4]` in
+  run b``. That is an address fact: the pointer may have changed, or only the array moved
+  ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
+
 - Most are a pointer or a reference, by their type, such as `const int *` or
   `const std::string &`. They say `it may point at another element too`.
 - Any other value of a C, C++ or Rust run is here too, as a struct's preview shows its pointers as
@@ -1624,7 +1629,12 @@ element 6 in one run and at element 4 in the other.
   not they point at another element. That is why these rows come after the real differences, not
   among them: the first real difference stays the first divergence.
 - To tell, compare each address's offset from a base with `address()`
-  ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element.
+  ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element's address.
+- C and C++ do that for you where both runs captured an array whose element address matches the
+  pointer: another element's address (first in this tier), or the same element's (6).
+- Where that array is a pointer, such as a parameter, the note shows each run's offset from it,
+  by address: ``by address, `level + 6` in run a and `level + 4` in run b``. It stays here, as two
+  pointers can point into separate blocks whose distance the allocator chose.
 - There is one row per selector, as for `addresses only` below. The note says at how many hits:
   `addresses differ at 2 hits (one row per selector: its first hit): …`.
 
@@ -1642,6 +1652,15 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
 
 **6. Address-only differences** say `addresses only`. These are other values that differ only in
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
+
+- A C or C++ pointer that holds the same element of an array both runs captured says
+  ``addresses only: the address of the same element of `level` in both runs``. Only the array
+  moved.
+- A C or C++ pointer or reference whose text after its address reads the same in both runs is
+  here too, such as `0x… "Maya"`. It says `what it points at reads the same in both runs, though
+  it may be another element that reads the same`. Two elements can hold the same text.
+- One whose text holds another address, such as `0x… {next = 0x…}`, stays in tier 4. What that
+  address points at may differ.
 
 - NULL is never treated as an address.
 - Text inside quotes is the program's data, never an address. So `"0x00000001deadbeef"` in a
@@ -2456,7 +2475,8 @@ Choose the base with care:
 - Otherwise take a known element's address, such as the first hit's:
   `FIRST_VALUE(address(value)) OVER (PARTITION BY run_id, selector ORDER BY hit)`.
 - Take it from addresses in one block of memory. A copy on the stack, or a global, is elsewhere.
-- An offset is in bytes. Divide it by the element's size for its index.
+- An offset is in bytes. Divide it by the element's size for its index. C and C++ rows give it as
+  `element_size`.
 - An offset holds only while the block stays put. A `Vec` or `std::vector` that grows may move.
 
 Read an address with its row's view and note, as you read the value:
@@ -2476,6 +2496,12 @@ below 2^63.
 - `printf('0x%x', address(value))` gives the hex back. It prints NULL as `0x0`.
 
 Peeky has no canned query for this: the base, and what pairs the runs, depend on the program.
+
+C and C++ need it less. Capture the array with the pointer, at the same stop. Where Peeky proves
+which element's address the pointer holds, its row says `[at level[6]'s address]`. The store
+keeps it in `at_element_of` and `element_index`, and `diff` compares it
+([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)). Where the array is a
+pointer, the row gives only an offset from it by address, in `offset_from` and `element_offset`.
 
 ---
 
