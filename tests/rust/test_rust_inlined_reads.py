@@ -228,10 +228,15 @@ def test_a_line_breakpoint_past_an_inlined_read_withholds_what_the_call_was_give
     # A field: the call is given a pointer to `p.a`.
     message = refused(*probe(capsys, root, "FIELD", "--set", "p.a=100"))
     assert f"line {line_of('FIELD')}'s code may already have read `p`" in message, message
-    # A String's text, where lldb-dap writes memory.
+    # A String's text, where lldb-dap writes memory. Past the inlined call, `n` may hold
+    # what `size` made of `s`, and the argument `s` is never read by value again before
+    # `sized` returns, which is refused first (#330).
     if WRITES:
         message = refused(*probe(capsys, root, "SIZE", "--set", 's="zz"'))
-        assert f"line {line_of('SIZE')}'s code may already have read `s`" in message, message
+        assert (
+            f"the program's own `n` (at line {line_of('SIZE')}) may hold a copy of `s` that it "
+            "goes on with"
+        ) in message, message
     # A line earlier, before the inlined code runs, the change reaches `y`: 100 + 1.
     code, result = probe(capsys, root, "BEFORE", "--set", "x=100")
     assert code == 0, result.get("error")

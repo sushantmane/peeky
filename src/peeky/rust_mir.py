@@ -6905,7 +6905,7 @@ class OwnedLocals:
         program may read it, or that is not understood: a pointer into it may still be
         used (``Body.lent_from``, or a borrow ``_pointers_to`` follows), a coroutine's body
         (its state outlives a suspension), or a crate with unsafe code (a pointer may be
-        kept where Peeky can't see). ``breakpoint``, ``column`` and ``block`` as for
+        kept where Peeky can't see); and where it may hold no value yet. ``breakpoint``, ``column`` and ``block`` as for
         ``copied_in_progress``; with ``coded``, only the places before a statement that
         emits code, as ``coded_hazards``."""
         if self.unsafe_code:
@@ -6914,7 +6914,9 @@ class OwnedLocals:
         if placed is None:
             return None
         body, local, positions = placed
-        if body.coroutine is not None:
+        # Where it may hold no value yet (its own `let` line), the change is refused for
+        # that (`_initialized`), which says more.
+        if body.coroutine is not None or not body.initialized_before(local, positions):
             return None
         if coded:
             positions = [

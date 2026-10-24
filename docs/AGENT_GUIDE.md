@@ -153,10 +153,10 @@ the commands.
   types, values and texts: its page, and 2.3.
 - **Never** through a pointer, reference or Box, nor in a union, enum, packed, std or JDK type,
   bitfield or const.
-- **Where:** a change writes the variable's storage, which later reads see. The program's copies
-  keep the old value (`let a = s.x;`, a statement under way), and the stop's line may overwrite the
-  change. So C, C++ and Rust allow a change only where Peeky proves none is under way (rule 3).
-  Rust also refuses where the program goes on with a copy (7.2).
+- **Where:** a change writes the variable's storage. The program's copies keep the old value
+  (`let a = s.x;`, a statement under way), and the stop's line may overwrite the change. So C, C++
+  and Rust allow a change only where Peeky proves none is under way (rule 3). Rust also refuses
+  where the program goes on with a copy or never reads it again (7.2).
 - **Refused before the run:** what the build rules out, such as a Rust local kept in a register
   (`[not settable: register]`, listed by `describe`), or a field through a pointer. So is a Java
   local whose declared type isn't supported, a value that doesn't fit, or a local never read after

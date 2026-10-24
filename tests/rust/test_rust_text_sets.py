@@ -159,8 +159,11 @@ fn main() {
 """
 # #320: `first` (`chars.next()`) and `copy` (`e.clone()`) hold copies of `a` and `e`, and
 # the program never reads either String by value again, so a change there is refused for
-# that before any borrow is judged. Moved at the end, they are read again.
-BORROWS_READ = BORROWS.replace("copy, e);\n}", "copy, e);\n    drop(a);\n    drop(e);\n}")
+# that before any borrow is judged. Moved at the end, they are read again. So is `b`, which
+# nothing reads after `// MANY` otherwise (#330).
+BORROWS_READ = BORROWS.replace(
+    "copy, e);\n}", "copy, e);\n    drop(a);\n    drop(e);\n    drop(b);\n}"
+)
 
 
 @pytest.mark.timeout(400)

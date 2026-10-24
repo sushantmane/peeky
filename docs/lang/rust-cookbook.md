@@ -31,6 +31,7 @@ are explained in [rust.md](rust.md#words-these-pages-use).
   - [What `--set` can change](#what---set-can-change)
   - [Where a change is allowed](#where-a-change-is-allowed)
   - [When the program has its own copy](#when-the-program-has-its-own-copy)
+  - [When the program never reads it again](#when-the-program-never-reads-it-again)
   - [Locals that can't change, and what to do](#locals-that-cant-change-and-what-to-do)
   - [Change a value behind a reference](#change-a-value-behind-a-reference)
   - [Set a String to a text](#set-a-string-to-a-text)
@@ -1401,8 +1402,9 @@ fields of structs and tuples your crate defines, and elements of fixed-size arra
 
 What a change makes true: the value's storage holds the new value, and the program's later reads
 of it see it. Copies that the program made itself keep the old value: `let a = s.a;` above the
-stop, or a `for` loop's iterator over `0..s.n`. The stop's own line may overwrite the change:
-`s = Tri { a: 9, ..s };`.
+stop, or a `for` loop's iterator over `0..s.n`. A change that no read can see is refused: the stop's
+own line `s = Tri { a: 9, ..s };` overwrites `s.a` before reading it
+([When the program never reads it again](#when-the-program-never-reads-it-again)).
 
 Every change is read back from the debugger. If it isn't the value asked for, the change is
 reported as not made (`MUTATION_REJECTED`). If something else was stored, the session is closed.
@@ -1547,6 +1549,8 @@ Rows withheld at such a stop say why, as `session inspect` does:
 - `[not settable: a statement under way read it (line 17)]`;
 - ``[not settable: copied into `n` (line 35)]``;
 - `[not settable: the program may hold a copy (line 34)]`, for your binding's copy;
+- `[not settable: not read after the stop (overwritten at line 68)]`, or `(out of scope at line
+  80)`, where no path reads it again;
 - `[not settable: part-way through line 12]`, after a step back from a call;
 - ``[not settable: line 20's inlined `clone` may have read it]``, at a breakpoint past an inlined
   call, with `(unsafe code)` where the crate has unsafe code;
@@ -1558,8 +1562,9 @@ lands on a statement's first line.
 ### When the program has its own copy
 
 The program may have copied the value into a binding of its own, and go on with that copy. Then
-it never sees the change, so Peeky refuses it. That is the case when the copy is used, and the
-local is then replaced or dropped without being read.
+it never sees the change, so Peeky refuses it. That is the case when the local is then replaced or
+goes out of scope without being read, and the copy is used, before or after that. After
+`u.push(y);`, at `let t = n;` before `y = t;`, `y` is refused where `u` is printed later.
 
 In [examples/rust](../../examples/rust), line 35 computes `start` from `request.page`:
 
@@ -1578,7 +1583,10 @@ These bindings copy a value:
 - a `while let`'s binding: `x = v - 1`;
 - a plain copy: `let y = x;` … `x = y + 1;`;
 - a `move` closure called before `x` goes out of scope unread. Writing a part, as in `s.a = t;`,
-  reads none of it.
+  reads none of it;
+- a Vec a struct is pushed into: after `laps.push(lap);`, `lap.start = finish;` overwrites a field
+  that `laps` holds a copy of;
+- a copy of an argument, `let z = x;`: the argument goes out of scope when the function returns.
 
 If the program reads the local again, before or after it uses the copy, it sees the change. The
 copy keeps the old value as the program's own: `let a = s.x;`.
@@ -1735,6 +1743,30 @@ These don't count, so the change is refused there, even where the call or print 
 
 A copy counts only for the part it may have taken. `let seen = r.end;` doesn't block a change to
 `o.marks[0]`.
+
+### When the program never reads it again
+
+Where no path from the stop reads the value before it is overwritten or goes out of scope, a change
+is never seen. So Peeky refuses it, and says where it ends. Here line 67 is `let k = other();`, and
+line 68 is `total = k + n;`:
+
+```
+error [MUTATION_REJECTED]: `total` cannot be changed at src/main.rs:67, at any stop of this build: in unseen::overwritten, the program does not read `total` after any stop of line 67, so a change there would never be seen: it is overwritten at line 68 first. Refused before the program runs: nothing ran. Change it on a later line, after the program overwrites it, or on an earlier line, before the program's last read of it (`--set-at` there); settable here: no root locals (fields where rows mark them [settable])
+```
+
+- The stop's own line counts: `total = k + n;` overwrites `total` before reading it. So does
+  `s = Tri { a: 9, ..s };` for a change to `s.a`, though it reads `s.b`.
+- Anything that may read the changed part counts as a read: a `copy` or `move` of it, a borrow, a
+  call it is given, or a drop that may run code. Reading another field doesn't count.
+- A pointer into the local that may still be used counts too. After `let r = &a;`, this rule
+  doesn't refuse a change to `a` while `b += *r;` is still to run.
+- Peeky doesn't refuse a change this way in an async body, or in a crate with unsafe code, where a
+  pointer may be kept out of its sight.
+- Where the program also goes on with a copy, the refusal names the copy instead
+  ([When the program has its own copy](#when-the-program-has-its-own-copy)).
+
+To change the value the program goes on with, change it after the line that overwrites it, where
+the program reads it. Or change it before the program's last read of it.
 
 ### Locals that can't change, and what to do
 

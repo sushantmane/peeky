@@ -2866,7 +2866,7 @@ class RustSession(NativeSession):
         ends = check(hashed, plain, line, path, projection=projection, coded=True)
         if ends is None:
             return None
-        owner = f"`{plain}`" if projection else "it"
+        owner = "it" if projection == () else f"`{plain}`"
         return ("unread", (_unread_where(ends, source, owner), _overwritten(ends)))
 
     def _copied_everywhere(self, hashed, plain, source, line, projection=()):
@@ -3331,7 +3331,11 @@ class RustSession(NativeSession):
         lines = {}
         for kind, file, line in ends:
             lines.setdefault(kind, set()).add((file, line))
-        short = {"write": "overwritten at", "scope": "out of scope at", "return": "returns at"}
+        short = {
+            "write": "overwritten at",
+            "scope": "out of scope at",
+            "return": "the function returns at",
+        }
         row = ", ".join(
             f"{short[kind]} {_line_list(lines[kind], home)}"
             for kind in ("write", "scope", "return")

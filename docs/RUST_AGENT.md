@@ -696,9 +696,14 @@ DWARF's `DW_AT_call_line`. That line may have no row of its own in the line tabl
 
 ### The program's own bindings
 
-A binding of the program's own blocks the change where, on some path, the program uses it and then
-assigns or ends the local without reading the changed part (`Body.copy_undoes`). Only direct copies
-count for bindings.
+A binding of the program's own blocks the change where, on some path, the program assigns or ends
+the local without reading the changed part, and uses the binding before or after that
+(`Body.copy_undoes`). Only direct copies count for bindings.
+
+- A use after the local is assigned or ends counts too (#330): `u.push(y);`, then `y = t;`, then
+  `u` printed. So does a Vec a struct was pushed into, used after the struct ends. The copy is all
+  that is left of the old value.
+- An argument has no `StorageDead`: it ends at the function's `return`.
 
 - Only a read that surely covers part of that part counts: `_root_access`, with the selector's MIR
   projection. `fields.member_indexes` maps fields, because rustc's DWARF lists them in declaration
@@ -719,6 +724,27 @@ count for bindings.
   message isn't one either, because a hook may never format it.
 - A borrow given to anything else is unknown, and the path goes on. A write to another part reads
   nothing, and one that covers the part assigns it.
+
+### Values no path reads again
+
+Where no path from the stop reads the changed part before it is overwritten or ends, a change is
+never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
+[When the program never reads it again](lang/rust-cookbook.md#when-the-program-never-reads-it-again).
+
+- `Body.unread_ends` walks every path from each place, as `copy_undoes` does. It returns where the
+  part ends: "write", "scope" (`StorageDead`) or "return". It returns None where a statement may
+  read it first.
+- `Body._unread_access` judges each statement strictly, unlike `_root_access`. A borrow, a
+  dereference, a `discriminant`, a call given the local, and a drop that may run code are reads. A
+  `copy` or `move` of a place `_apart` from the part isn't, nor is a drop `_quiet_drop` allows.
+- `OwnedLocals.unread_after` adds what the walk can't see. A pointer into the local, of `lent_from`
+  or `_pointers_to`, that is live ahead counts as a read, as for `borrow_live`. So does a crate with
+  unsafe code, or a coroutine's body: then it says nothing.
+- `mid_statement` gives this reason only where no copy hazard is found, so a copy's reason, with
+  its advice, comes first. Before the run, `RustSession._unread_everywhere` refuses it where every
+  place of the line that emits code is so (`coded`).
+- The wording, from `rust._unread_where`: "it is overwritten at line 7 first", "it goes out of
+  scope at line 14 first", "the function returns at line 9 first", joined with "or".
 
 ### How the change is written
 
