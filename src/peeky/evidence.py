@@ -1756,6 +1756,17 @@ def _authorize(action, first, second, database, trigger):
 # sqlite_master, and the authorizer denies it. Each is used once before the authorizer
 # is set, so SQLite never asks it that: it allows the same reads on every SQLite.
 _TABLE_FUNCTIONS = ("json_each", "json_tree", *(f"pragma_{name}" for name in sorted(_READ_PRAGMAS)))
+# Other table-valued functions (eponymous virtual tables) a build of SQLite may have.
+# Before 3.41 their first use fails as above; 3.41 or newer reads them.
+_OTHER_TABLE_FUNCTIONS = {
+    "bytecode",
+    "dbstat",
+    "fts3tokenize",
+    "generate_series",
+    "sqlite_dbpage",
+    "sqlite_stmt",
+    "tables_used",
+}
 
 
 def _connect_table_functions(connection):
@@ -1771,17 +1782,28 @@ def _connect_table_functions(connection):
 
 def _old_table_function(message):
     """Before SQLite 3.41, the table-valued function outside ``_TABLE_FUNCTIONS`` that an
-    error names, refused on its first use as above (3.37 to 3.40 say `vtable constructor
-    failed`, earlier ones `no such table`); else None."""
+    error names, refused on its first use as above; else None. 3.37 to 3.40 say `vtable
+    constructor failed`, which only such a function gives. Earlier ones say `no such table`,
+    as for any missing table: there the name must be a pragma (``pragma_pragma_list``) or
+    one of ``_OTHER_TABLE_FUNCTIONS`` this SQLite has (``pragma_module_list``)."""
     found = re.fullmatch(r"(vtable constructor failed|no such table): (\w+)", message)
-    if sqlite3.sqlite_version_info >= (3, 41, 0) or not found or found[2] in _TABLE_FUNCTIONS:
+    if sqlite3.sqlite_version_info >= (3, 41, 0) or not found:
         return None
-    if found[1] == "vtable constructor failed" or found[2].startswith("pragma_"):
-        return found[2]
+    name = found[2].lower()
+    pragma = name.startswith("pragma_")
+    if name in _TABLE_FUNCTIONS or not (
+        found[1] == "vtable constructor failed" or pragma or name in _OTHER_TABLE_FUNCTIONS
+    ):
+        return None
+    if found[1] == "vtable constructor failed":
+        return name
+    listed = "pragma_pragma_list" if pragma else "pragma_module_list"
     connection = sqlite3.connect(":memory:")
     try:
-        module = "SELECT 1 FROM pragma_module_list WHERE name = ?"
-        return found[2] if connection.execute(module, (found[2],)).fetchone() else None
+        known = connection.execute(
+            f"SELECT 1 FROM {listed} WHERE name = ?", (name[7:] if pragma else name,)
+        ).fetchone()
+        return name if known else None
     except sqlite3.Error:
         return None
     finally:
@@ -2028,9 +2050,13 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         message = str(exc)
         if "not authorized" in message or "denied" in message:
             message += " (queries are read-only: one SELECT; no writes, ATTACH or settings)"
-        elif _old_table_function(message):
+        elif name := _old_table_function(message):
+            # Another pragma is refused on every SQLite: a newer one would not help.
             message += (
-                f" (before SQLite 3.41, peeky sql can use only the table-valued functions "
+                " (peeky sql reads only the pragma functions "
+                f"{', '.join(n for n in _TABLE_FUNCTIONS if n.startswith('pragma_'))})"
+                if name.startswith("pragma_")
+                else f" (before SQLite 3.41, peeky sql can use only the table-valued functions "
                 f"{', '.join(_TABLE_FUNCTIONS)}; this Python's sqlite3 module has SQLite "
                 f"{sqlite3.sqlite_version}, so use those, or a Python with SQLite 3.41 or newer)"
             )
