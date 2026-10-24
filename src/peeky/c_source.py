@@ -88,9 +88,27 @@ _TRIGRAPH = re.compile(r"\?\?([=(/)'<!>-])")
 _TRIGRAPHS = dict(zip("=(/)'<!>-", "#[\\]^{|}~"))
 # Words a `(` follows in an expression, never in a function's head.
 _EXPRESSIONS = _USES | {"decltype", "noexcept", "and", "or", "not", "static_assert", "requires"}
-# What may stand between a function's (or a lambda's) parameters and its body.
-_QUALIFIED = re.compile(
-    r"(?:\s|const\b|volatile\b|noexcept\b|override\b|final\b|mutable\b|&|->[^;{}()]*)*"
+# What may stand between a function's (or a lambda's) parameters and its body
+# (`Statements._qualified`): its qualifiers and specifiers (a lambda's `constexpr`,
+# `consteval`, `static`), an exception specification, attributes, a trailing return type
+# and a trailing `requires` clause.
+_QUALIFIERS = frozenset(
+    (
+        "const",
+        "volatile",
+        "noexcept",
+        "override",
+        "final",
+        "mutable",
+        "constexpr",
+        "consteval",
+        "static",
+    )
+)
+# A group of parentheses that may stand there: `noexcept(true)`, `__attribute__((cold))`,
+# `-> decltype(x)`, `requires (N > 1)`.
+_SPECIFYING = frozenset(
+    ("noexcept", "throw", "__attribute__", "__declspec", "decltype", "requires")
 )
 # A directive's line (`%:` is `#`).
 _DIRECTIVE = re.compile(r"[ \t\f\v]*(?:#|%:)")
@@ -1487,6 +1505,7 @@ class Statements:
         entering=False,
         own=None,
         until=None,
+        others=False,
     ):
         """For the local ``name`` the debugger shows at a stop on ``line`` (declared on
         line ``after``; None for a parameter): ``(kind, its line)`` of a declaration of
@@ -1505,9 +1524,17 @@ class Statements:
 
         ``body``: the stop is in a function wholly on the line (a lambda in a statement
         there, #169): where the line opens one function's or lambda's body, it is that
-        one, and only its statements count, not the statement holding it (a
-        range-`for`'s binding names nothing inside a lambda in its range); where it
-        opens several, the line is read as any other.
+        one, and only its statements count, with those of each block in it (#290), not
+        the statement holding it (a range-`for`'s binding names nothing inside a lambda
+        in its range); where it opens several, the line is read as any other.
+
+        ``("bodies", line)``: with ``body``, where the line holds several functions' bodies
+        and a declaration there would hide the local: which function the frame runs, and
+        so whether the declaration is its own, cannot be told.
+
+        ``others``: the stop is in a known function that goes on past the line: a
+        function's or a lambda's body wholly on the line is another function's code,
+        and no block in it counts, as none of its statements does (#290).
 
         ``entering``: the stop is the first instruction of the statements that start on
         the line, so none of them has run: a range-`for` there whose header ends the
@@ -1569,12 +1596,18 @@ class Statements:
         ]
         cut = finish if until is None else until
         if len(bodies) == 1:
+            # The body's own statements, and those of each block in it (#290).
             opened = bodies[0]
-            start, stop = max(opened + 1, lower), min(pairs[opened], finish, cut)
-            if start >= stop:
-                return False
-            return self._storage_declaration(
-                code, start, stop, name, after, opened >= lower, position, fresh, own
+            closed = min(pairs[opened], finish)
+            blocks = [opened] + sorted(
+                inner
+                for inner in pairs
+                if opened < inner < closed
+                and code.startswith(("{", "<%"), inner)
+                and self._opens_statements(inner)
+            )
+            return self._blocks_storage(
+                code, blocks, closed, cut, name, after, lower, position, fresh, own
             )
         # Every block around the line, and every block of statements opening on it
         # before its end (`{ extern long gcount; total += use(gcount); }`, a statement
@@ -1588,6 +1621,22 @@ class Statements:
             and code.startswith(("{", "<%"), opened)
             and (opened < position or self._opens_statements(opened))
         )
+        if others:
+            # A block in a function's or lambda's body wholly on the line is that
+            # function's: the frame's goes on past the line (#290).
+            wholly = [
+                (opened, closed)
+                for opened, closed in pairs.items()
+                if begin <= opened
+                and closed < finish
+                and code.startswith(("{", "<%"), opened)
+                and self._brace(opened) in ("function", "lambda")
+            ]
+            around = [
+                block
+                for block in around
+                if not any(opened < block < closed for opened, closed in wholly)
+            ]
         if not around:
             return False
         if elsewhere and any(
@@ -1596,10 +1645,22 @@ class Statements:
         ):
             # An `#include` in a block (a fragment) may declare it so.
             return None
-        for index, opened in enumerate(around):
-            # This block's own statements, up to the next block around the line.
+        found = self._blocks_storage(
+            code, around, finish, cut, name, after, lower, position, fresh, own
+        )
+        if found and len(bodies) > 1:
+            # A frame wholly on a line holding several functions' bodies: which one it
+            # runs, and so whether what is found is its own, cannot be told (#299 review).
+            return ("bodies", found[1])
+        return found
+
+    def _blocks_storage(self, code, blocks, finish, cut, name, after, lower, position, fresh, own):
+        """``block_storage``'s verdict over ``blocks`` (where each opens, in order): each
+        one's own statements, up to the next one's opening (the last's up to ``finish``),
+        none past ``cut``."""
+        for index, opened in enumerate(blocks):
             start = max(opened + 1, lower)
-            stop = min(around[index + 1] if index + 1 < len(around) else finish, cut)
+            stop = min(blocks[index + 1] if index + 1 < len(blocks) else finish, cut)
             if start >= stop:
                 continue
             # A C++ class declared in the local's own block leaves the local named
@@ -1671,14 +1732,14 @@ class Statements:
                     return first, bisect.bisect_right(self.starts, closing)
         return None
 
-    def header_before(self, line, name, after=None, entering=False, own=None):
+    def header_before(self, line, name, after=None, entering=False, own=None, others=False):
         """(keyword, first line, last line, always) of a statement header (`if`, `switch`,
         `while` or `for`) holding ``line`` that names ``name`` where nothing hides the
         local of that name yet, in its condition, an init-statement (`if (long k = t;
         k)`) or a range's expression: `if (t) { static long t = 5; use(t); }`, where only
         the `static` the line declares later hides it (``block_storage``, read with
-        ``after``, ``entering`` and ``own`` as it is). Running that header may read the
-        outer local, or not (a mention need not be a read, #283). A member's or a
+        ``after``, ``entering``, ``own`` and ``others`` as it is). Running that header may
+        read the outer local, or not (a mention need not be a read, #283). A member's or a
         qualified name does not count (`p.t`, `n::t`, `p.template t<0>()`), nor one in a
         range-`for`'s structured binding. None if no header does, or Peeky cannot tell.
 
@@ -1690,7 +1751,7 @@ class Statements:
         header has run: a part naming ``name`` runs on each pass (a `while`'s condition, a
         `for`'s condition or increment), or the declaration is in the header itself (a
         block of a lambda there, which another function runs, never this one)."""
-        if not self.block_storage(line, name, after, True, False, entering, own):
+        if not self.block_storage(line, name, after, True, False, entering, own, others=others):
             return None
         code = self._code()[0]
         found = []
@@ -1716,14 +1777,14 @@ class Statements:
                 # Read up to the name's end: a declaration it completes (a `static`'s
                 # own) is no mention of the outer local.
                 hidden = self.block_storage(
-                    line, name, after, True, False, entering, own, until=word.end()
+                    line, name, after, True, False, entering, own, word.end(), others
                 )
                 if hidden is False:
                     named.append(word.start() > again)
             if not named:
                 continue
             inner = self.block_storage(
-                line, name, after, True, False, entering, own, until=closing + 1
+                line, name, after, True, False, entering, own, closing + 1, others
             )
             lines = bisect.bisect_right(self.starts, at), bisect.bisect_right(self.starts, closing)
             found.append((keyword, *lines, any(named) or inner is not False))
@@ -2408,7 +2469,7 @@ class Statements:
             return "statement" if self._label(at) else "other"
         if token in ("]", ":>"):
             return "lambda" if self._introducer(self._opening(at)) else "other"
-        parameters = self._opening(at) if token == ")" else self._parameters(opening)
+        parameters = self._parameters(opening)
         word = self._before(parameters) if parameters is not None else None
         if word is None:
             return "other"
@@ -2447,7 +2508,14 @@ class Statements:
                 else "other"
             )
         if word[0] == ">" and self.raw_strings:
-            return "function"  # a template's: `f<int>(int a) {` (C++ only)
+            # A template's: `f<int>(int a) {` (C++ only), or a generic lambda's with its
+            # own template parameters: `[]<class T>(T v) {`.
+            angle = self._angle(word[1])
+            before = self._before(angle) if angle is not None else None
+            if before is not None and before[0] in ("]", ":>"):
+                if self._introducer(self._opening(before[1])):
+                    return "lambda"
+            return "function"
         if self._word_before(word[1] + len(word[0])) == "operator":
             return "function"  # `operator+(...) {`
         if _WORD.fullmatch(word[0]) and word[0] not in _EXPRESSIONS:
@@ -2542,13 +2610,104 @@ class Statements:
 
     def _parameters(self, opening):
         """Where the parentheses before the brace at ``opening`` open, when only what may
-        follow a function's parameters stands between them (`const`, `noexcept`,
-        `mutable`, `override`, a trailing return type), else None."""
+        follow a function's parameters stands between them (`const`, `noexcept(true)`,
+        `mutable`, `override`, a lambda's `constexpr`, attributes, a trailing return type:
+        `_qualified`), else None. A header's or a macro's parentheses count too (`if (c)
+        {`, `FOR_EACH(x) {`): the caller tells them apart."""
         code = self._code()[0]
-        closing = code.rfind(")", 0, opening)
-        if closing < 0 or not _QUALIFIED.fullmatch(code, closing + 1, opening):
+        at = opening
+        for _ in range(64):
+            before = self._before(at)
+            if before is None or before[0] in (";", "{", "}", "<%", "%>"):
+                return None
+            token, position = before
+            if token in ("]", ":>"):
+                # Past an attribute, `[[deprecated("x")]]`; a lambda's introducer or a
+                # subscript has no parameters before it.
+                bracket = self._opening(position)
+                if bracket is None or not code.startswith(("[[", "<:<:", "[<:", "<:["), bracket):
+                    return None
+                at = bracket
+                continue
+            if token != ")":
+                # A specifier's or a trailing return type's word or punctuator.
+                at = position
+                continue
+            start = self._opening(position)
+            if start is None:
+                return None
+            word = self._before(start)
+            if word is None or word[0] not in _SPECIFYING:
+                closing = position
+                break
+            # Past `noexcept(...)`, `__attribute__((...))`, `decltype(...)`, read to their
+            # paired parentheses.
+            at = word[1]
+        else:
             return None
-        return self._opening(closing)
+        if not self._qualified(closing + 1, opening):
+            return None
+        return start
+
+    def _qualified(self, start, end):
+        """Whether only what may follow a function's parameters stands from ``start`` to
+        ``end`` (its brace): qualifiers and specifiers (``_QUALIFIERS``), `&`, `&&`,
+        `noexcept(...)`, `throw(...)`, `__attribute__((...))`, `__declspec(...)` and
+        `[[...]]` (each group read to its paired bracket, however deep), then maybe a
+        trailing return type or `requires` clause, with no `;`, `{` or `}`."""
+        code, pairs = self._code()
+        at = start
+        while at < end:
+            found = _NONBLANK.search(code, at, end)
+            if found is None:
+                return True
+            at = found.start()
+            if code.startswith(("->", "requires"), at):
+                if code.startswith("requires", at) and _word_char(code[at + 8 : at + 9] or " "):
+                    return False
+                return not any(char in ";{}" for char in code[at:end])
+            if code[at] == "&":
+                at += 1
+                continue
+            if code.startswith("[[", at):
+                closing = (pairs or {}).get(at)
+                if closing is None or closing >= end:
+                    return False
+                at = closing + 1
+                continue
+            word = _WORD.match(code, at)
+            if word is None:
+                return False
+            at = word.end()
+            if word[0] in ("noexcept", "throw", "__attribute__", "__declspec"):
+                group = _NONBLANK.search(code, at, end)
+                if group is not None and code[group.start()] == "(":
+                    closing = (pairs or {}).get(group.start())
+                    if closing is None or closing >= end:
+                        return False
+                    at = closing + 1
+                    continue
+                if word[0] != "noexcept":
+                    return False
+            elif word[0] not in _QUALIFIERS:
+                return False
+        return True
+
+    def _angle(self, closing):
+        """Where the `<` matching the `>` at ``closing`` is (`]<class T>`), or None."""
+        code = self._code()[0]
+        depth = 0
+        for at in range(closing, max(closing - 512, -1), -1):
+            char = code[at]
+            if char == ">" and not code.startswith("->", at - 1):
+                depth += 1
+            elif char == "<":
+                depth -= 1
+                if depth == 0:
+                    return at
+            elif char in ";{}":
+                return None
+        return None
 
     def _label(self, colon):
         """Whether the `:` at ``colon`` ends a label (`case 1:`, `default:`, `out:`)."""

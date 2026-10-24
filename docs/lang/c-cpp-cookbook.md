@@ -882,6 +882,14 @@ is:
 A block that opens on the stop line counts. So does the block of an `if constexpr (…)`, an
 `if consteval` or an `if !consteval`.
 
+A lambda's body that opens and closes on the stop line is that lambda's code, with every block
+in it. That holds for a generic lambda too, and whatever follows its parameters: `constexpr`,
+`mutable`, `noexcept(…)`, an attribute or a trailing return type. What they declare counts in the
+lambda's own frame, but not in the function that holds the lambda. It counts there too where
+Peeky can't tell which function the frame runs, or where the lambda goes on past the line. In a
+frame on a line that holds several lambdas' bodies, the row says `may not be what the code reads`.
+Peeky can't tell which of them the frame runs.
+
 A statement's header can also name the outer local, and run before the line's own declaration of
 that name exists. For example, `if (t) { static long t = 5; use(t); }` or
 `for (auto [t, u] : make(t)) { use(t); }`. A mention isn't always a read, as in `sizeof(t)`. So
@@ -896,8 +904,8 @@ the row says `may not be what the code reads` wherever Peeky can't tell that the
   setup, each pass's test and binding, and the range's cleanup. So a stop there counts as past;
 - at every stop on the line when part of the header runs on each pass. That is a `while`'s
   condition, or a `for`'s condition or increment;
-- at every stop on the line when the declaration is in a lambda in the header, which another
-  function runs.
+- at every stop on the line when the declaration is in a lambda in the header, where it counts
+  (see above).
 
 Peeky trusts the line table's column only on a line of plain ASCII text, without tabs, that no
 macro changes. Any `if`, `switch`, `while` or `for` header counts, also one with an
