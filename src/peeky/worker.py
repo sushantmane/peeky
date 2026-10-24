@@ -111,6 +111,26 @@ _UNAVAILABLE = re.compile(
 _POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
 # A C or C++ pointer's value that holds an address (`0x000000016f29b050`, `0x… "text"`).
 _NONZERO_ADDRESS = re.compile(r"0x0*[1-9a-fA-F][0-9a-fA-F]{0,15}(?![0-9a-zA-Z_])")
+# The bytes of what a C or C++ character pointer LLDB shows as text points at, by the type
+# LLDB names (`const char *`).
+_CHARACTER_SIZES = {
+    "char": 1,
+    "signed char": 1,
+    "unsigned char": 1,
+    "char8_t": 1,
+    "char16_t": 2,
+    "char32_t": 4,
+}
+
+
+def _character(identity):
+    """Whether a ``Typed.identity`` is a character type's (`base char DW_ATE_signed_char
+    1`): what a character pointer's text is read from."""
+    found = re.fullmatch(r"base (.+) (DW_ATE_\w+) ([0-9]+)", identity or "")
+    return bool(found) and (
+        found[2] in ("DW_ATE_signed_char", "DW_ATE_unsigned_char", "DW_ATE_UTF")
+        or found[1] in _CHARACTER_SIZES
+    )
 
 
 def optimization_level(identity):
@@ -897,6 +917,9 @@ class DebugWorker:
             if shown := getattr(runtime, "return_shown", None):
                 # As the language names and prints it (Rust: u8 65, not 'A').
                 kind, value = shown(entry)
+            if past := self.returned_past_end(kind, value, frames[0] if frames else None):
+                # A C string one past a character array's end (#336): its address alone.
+                returned["past_end"], value = past, _NONZERO_ADDRESS.match(value)[0]
             return {
                 **returned,
                 "value": str(value)[:2000],
@@ -2501,6 +2524,14 @@ class DebugWorker:
                 if not module:
                     roots += shown
                 pending.append((handle, scope, exposed, len(variables)))
+            if (
+                index == 0
+                and self.stop_reason == "step"
+                and getattr(runtime, "checks_past_ends", False) is True
+            ):
+                # What a step out returned is judged against the stop's arrays (#336): read
+                # them before the scopes are bound for changes.
+                self.stop_bases(selected_frame)
             references = [scope["variablesReference"] for _, scope, _, _ in pending]
             writable = quiescent and not self.view_timed_out
             if (self.view_fetches or self.preview_fetches or self.frame_scans) and writable:
@@ -3315,6 +3346,9 @@ class DebugWorker:
                 if ancestry and changing_container
                 else None
             )
+            # A C or C++ pointer one past an array's end (#336): nothing it points at is
+            # read below, not even a container's own count.
+            past = self.past_end_of(variable, frame, [step for step, _ in ancestry] + [name])
             # An unordered container the debugger counts otherwise than its own count says
             # (GCC's, read as empty, #167): withheld, its entries never listed.
             unlisted = (
@@ -3324,7 +3358,7 @@ class DebugWorker:
                     [*ancestry, (name, kind)],
                     lambda path: self.raw_value(frame, path),
                 )
-                if unlisted_container
+                if unlisted_container and past is None
                 else None
             )
             changing = changing or unlisted
@@ -3673,11 +3707,8 @@ class DebugWorker:
             }
             if display_value and (shown := display_value(variable)) is not None:
                 output["value"] = shown
-            past = (
-                self.past_end_of(variable, frame, [step for step, _ in path])
-                if reference_kind is None
-                else None
-            )
+            if reference_kind is not None:
+                past = None
             if past is not None:
                 # A C or C++ pointer one past an array's end (#336): nothing there belongs
                 # to the array, so only its address shows, never what LLDB read there.
@@ -3904,6 +3935,27 @@ class DebugWorker:
         from peeky.probe import past_end
 
         return past_end(value, pointer, self.stop_bases(frame))
+
+    def returned_past_end(self, kind, value, frame):
+        """``past_end`` of a character pointer a function returned (#336), whose text LLDB
+        read from where it points, against the arrays of the stop's frames (``frame``
+        is the one it returned to); its type is only LLDB's name, so a character type
+        stands for every one of its size, as C lets them alias. None otherwise."""
+        bare = re.sub(r"\b(?:const|volatile|restrict)\b|\s+", " ", str(kind or "")).split()
+        size = _CHARACTER_SIZES.get(" ".join(bare[:-1])) if bare[-1:] == ["*"] else None
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if size is None or held is None or held.end() == len(value) or frame is None:
+            return None
+        if getattr(self.runtime, "checks_past_ends", False) is not True:
+            return None
+        from peeky.probe import past_end
+
+        bases = [
+            (selector, {**extent, "element": "character"}, place)
+            for selector, extent, place in self.stop_bases(frame)
+            if _character(extent.get("element"))
+        ]
+        return past_end(value, {"pointee": "character", "element_size": size}, bases)
 
     def stop_bases(self, frame):
         """The arrays and objects the locals of each frame of the program the inspection

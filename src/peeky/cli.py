@@ -2071,7 +2071,8 @@ def _returned_text(returned):
         return f"{who} returned: void (no value: {returned.get('reason')})"
     if returned.get("unavailable"):
         return f"{who} returned: <withheld: {returned.get('reason')}>"
-    return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}"
+    pointed = f"  [{pointed_text(returned)}]" if returned.get("past_end") else ""
+    return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}{pointed}"
 
 
 def _require_stepping(record, client):

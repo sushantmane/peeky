@@ -190,7 +190,8 @@ end: long * = 0x000000016b8c3280  [at the address one past queue's end]
 
 A selector that reads through it, such as `end[0]`, or `pend.x` for a pointer to a struct, is
 refused with the same reason. A `char *` one past a `char` array's end shows its address alone,
-never the text LLDB read there.
+never the text LLDB read there. So does such a `char *` that a function returned, in
+`session step --out` and `--capture return`.
 
 Peeky looks for the array in the locals of each frame it lists, at most ten:
 
@@ -205,9 +206,11 @@ In a function the array was passed to, the row names the caller's frame:
 `[at the address one past queue's end in frame 1]`. Read the array there with
 `session get queue --frame 1`.
 
-Another object can start at that address, such as the next array. Peeky names it, but reads
-nothing: `` `t.b[0]` starts there too, but nothing shows `tend` points at it``. Read it by name if
-the pointer is meant to point at it.
+Another object of the pointer's type can start at that address, such as the next array. Peeky
+names it, `[at the address one past t.a's end, also t.b[0]'s]`, but reads nothing:
+`` `t.b[0]` starts there too, but nothing shows `tend` points at it``. Read it by name if the
+pointer is meant to point at it. So a pointer to the start of an array that sits right after
+another of its type is refused too.
 
 `--json` rows, `session get`'s children and `session inspect`'s locals give it as `past_end`,
 such as `{"selector": "queue", "length": 4}`. Where another frame holds the array, it also has

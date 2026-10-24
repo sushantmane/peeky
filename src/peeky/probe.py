@@ -2122,7 +2122,7 @@ def pointed_text(row):
     read. Or its `offset_from`, which names no element: `level + 6 by address; same array
     not proven` (`level - 2` before it). Then its `past_end`, where that says more
     (#336): `at the address one past queue's end`, `in frame 1` where another frame holds
-    the array."""
+    the array, and what else starts there (`, also b[0]'s`) where nothing above says."""
     shown = _element_text(row)
     past, into = row.get("past_end"), row.get("at_element_of")
     if not isinstance(past, dict) or not isinstance(past.get("selector"), str):
@@ -2136,6 +2136,9 @@ def pointed_text(row):
     end = f"at the address one past {past['selector']}'s end"
     if type(past.get("frame")) is int:
         end += f" in frame {past['frame']}"
+    also = [each for each in past.get("also") or () if isinstance(each, str)]
+    if also and not shown:
+        end += ", also " + " and ".join(f"{each}'s" for each in also)
     return f"{shown}; {end}" if shown else end
 
 
@@ -2411,6 +2414,9 @@ def _returned_row(row, snapshot):
                 "error": f"no value: {returned.get('reason')}",
             }
         return {**row, "unavailable": True, "error": f"withheld: {returned.get('reason')}"}
+    if isinstance(returned.get("past_end"), dict):
+        # One past a character array's end (#336): its address alone.
+        row["past_end"] = returned["past_end"]
     return {**row, "value": returned.get("value"), "type": returned.get("type")}
 
 

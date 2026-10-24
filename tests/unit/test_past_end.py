@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from peeky.cli import _get_lines
+from peeky.cli import _get_lines, _returned_text
 from peeky.native import HELD_EXTENTS, NativeSession
 from peeky.native_previews import Typed
-from peeky.probe import _capture, _table, past_end, past_end_text, pointed_text
+from peeky.probe import _capture, _returned_row, _table, past_end, past_end_text, pointed_text
 from peeky.worker import DebugWorker
 
 LONG = {"pointee": 1, "element_size": 8}
@@ -116,6 +116,10 @@ def test_rows_say_where_the_address_is():
     other = {"selector": "b", "index": 0, "length": 4}
     assert pointed_text({"past_end": past, "at_element_of": other}) == (
         "at b[0]'s address; at the address one past queue's end"
+    )
+    # What else starts there, where no captured array says it.
+    assert pointed_text({"past_end": {**past, "also": ["b[0]", "after"]}}) == (
+        "at the address one past queue's end, also b[0]'s and after's"
     )
 
 
@@ -520,3 +524,64 @@ def test_nothing_is_read_where_the_runtime_does_not_check(stopped):
     assert "past_end" not in shown["end"] and shown["end"]["variablesReference"]
     asked = [args.get("frameId") for operation, args in stopped.dap.calls if operation == "scopes"]
     assert asked == [1]
+
+
+def test_a_container_one_past_an_arrays_end_has_its_count_never_read(stopped):
+    # libstdc++'s unordered containers are counted through a pointer, `p->_M_h…`: never
+    # one past an array's end.
+    counted = []
+
+    def unlisted_container(variable, frame, path, raw):
+        counted.append(variable["name"])
+
+    stopped.runtime.unlisted_container = unlisted_container
+    call(stopped, "inspect", frame_id=1)
+    assert "end" not in counted and "tag" not in counted and "p" in counted
+
+
+class Returned:
+    """A worker whose step out of `fill` returned `value` (of LLDB's type `kind`) to a frame
+    whose arrays are ``bases``."""
+
+    checks_past_ends = True
+
+    def __init__(self, bases):
+        self.bases = bases
+
+    def returned(self, kind, value):
+        worker = SimpleNamespace(runtime=self, stop_bases=lambda frame: self.bases)
+        return DebugWorker.returned_past_end(worker, kind, value, {"id": 1})
+
+
+def test_a_returned_c_string_one_past_a_character_arrays_end_shows_its_address():
+    char, wide = "base char DW_ATE_signed_char 1", "base char32_t DW_ATE_UTF 4"
+    stop = Returned(
+        [
+            ("name", {"address": 0x1000, "length": 8, "element": char, "element_size": 1}, {}),
+            ("wide", {"address": 0x2000, "length": 2, "element": wide, "element_size": 4}, {}),
+            (
+                "longs",
+                {"address": 0x3000, "length": 1, "element": LONG_TYPE, "element_size": 8},
+                {},
+            ),
+        ]
+    )
+    found = {"selector": "name", "length": 8}
+    assert stop.returned("char *", f'{at(0x1008)} "zz"') == found
+    # Any character type of its size: C lets them alias.
+    assert stop.returned("const unsigned char *", f'{at(0x1008)} "zz"') == found
+    assert stop.returned("char32_t *", f'{at(0x2008)} U"z"')["selector"] == "wide"
+    # Inside the array; no text read; not a character pointer; another type's end: none.
+    assert stop.returned("char *", f'{at(0x1004)} "zz"') is None
+    assert stop.returned("char *", at(0x1008)) is None
+    assert stop.returned("long *", f'{at(0x3008)} "zz"') is None
+    assert stop.returned("char *", f'{at(0x3008)} "zz"') is None
+    assert stop.returned("char", "'a'") is None and stop.returned(None, at(0x1008)) is None
+
+    returned = {"function": "fill", "type": "char *", "value": at(0x1008), "past_end": found}
+    snapshot = {"returned": returned, "frames": [{"line": 16}], "location": "ret.c:16"}
+    row = _returned_row({"hit": 1, "phase": "returned", "selector": "(return)"}, snapshot)
+    assert row["past_end"] == found and row["value"] == at(0x1008)
+    assert _returned_text(returned) == (
+        f"fill returned: char * = {at(0x1008)}  [at the address one past name's end]"
+    )

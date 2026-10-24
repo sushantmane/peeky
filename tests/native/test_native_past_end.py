@@ -27,6 +27,11 @@ static long total(const long *p, const long *end) {
   return s; /* TOTAL */
 }
 
+static char *fill(char *out) {
+  memcpy(out, "abcdefg", 8);
+  return out + 8; /* FILL */
+}
+
 int main(void) {
   long queue[4] = {1, 2, 3, 4};
   long *end = queue + 4;
@@ -40,9 +45,11 @@ int main(void) {
   char name[8] = "abcdefg";
   char *nend = name + 8;
   char *nmid = name + 2;
+  char buf[8];
+  char *bend = fill(buf);
   long sum = total(queue, end) + total(t.a, tend);
-  printf("%ld %ld %ld %ld %s %ld\\n", sum, *last, rend[-1], pend[-1].x, nmid,
-         (long)strlen(nend - 1)); /* MAIN */
+  printf("%ld %ld %ld %ld %s %ld %s\\n", sum, *last, rend[-1], pend[-1].x, nmid,
+         (long)strlen(nend - 1), bend - 8); /* MAIN */
   return 0;
 }
 """
@@ -181,6 +188,16 @@ def test_an_array_in_another_source_file_is_known(program, capsys):
     rows = probed(capsys, program, at, "end,end[0]", "--config", str(config))
     assert placed(rows[0]) == {"selector": "queue", "length": 4, "frame": 1, "function": "main"}
     assert rows[1]["error"].startswith(f"end[0] {reason('end', 'queue', frame=1)}"), rows
+
+
+@pytest.mark.timeout(240)
+def test_a_returned_c_string_one_past_an_arrays_end_shows_its_address(program, capsys):
+    # `fill` returns `out + 8`: LLDB's text of it is what lies past `buf`.
+    (row,) = probed(capsys, program, f"ends.c:{line_of('FILL')}", "return")
+    assert row["type"].replace(" ", "") == "char*", row
+    if ADDRESSED:
+        assert '"' not in row["value"], row
+        assert placed(row) == {"selector": "buf", "length": 8}, row
 
 
 @pytest.mark.timeout(240)
