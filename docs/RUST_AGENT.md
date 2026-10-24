@@ -384,7 +384,32 @@ used again. Such a temporary is:
 - A source counts where it holds a direct copy or points at one (the flow's `kept`, review round
   2). That is a borrow of such a holder (`&a` after `let a = [x];`), a cast or aggregate of such a
   pointer, and a pointer a call returns from one or from a pointer into the local (`a.iter()`).
-  A value a call computes is not one (`x.to_string()`), as #192 has it for `x.len()`.
+- What a call returns is a direct copy where the call is given a pointer into the local or into
+  what holds a copy (#320: `x.clone()`, `x.to_string()`, `ptr::read(&x)`, `format!("{}", x)`).
+  That holds where its type may hold a value; a result that only points (`&str`, an iterator, a
+  type with a lifetime, a trait object) points into it instead (the flow's `aims`), as a cast,
+  copy or aggregate of one does.
+- A field read out of such a pointer-holding value a call made is a copy (`?` on a
+  `Result<u32, Box<dyn Error>>`), and so is a read through it. A call given one may store a copy
+  into what holds no pointer (`out.push_str(&name)`). Into what may hold one it may have stored
+  the pointer itself, as #164's `v.push(&s[2..])` does, so that isn't counted.
+- `Body._only_measures` proves a call the standard library's that only measures or compares, so
+  its result is no copy. It is a method of `_MEASURES` (`len`, `is_empty`, `contains`,
+  `starts_with`) of a standard type, slice or `str`, or `eq`, `lt`, `cmp`, `partial_cmp` and the
+  like of `PartialEq`, `PartialOrd` or `Ord`.
+- Each argument must point at a primitive or a standard type (`_standard_only`), and the inherent
+  method's type must be what the first argument points at. So the method is the standard
+  library's own.
+- `OwnedLocals._std_calls` proves the dump's standard paths and trait names (`_std_own`, and no
+  `PartialEq`, `PartialOrd` or `Ord` of the crate's own), set as `Body.std_calls`. What it returns
+  must be a `bool`, `usize` or `Ordering` the local's type can't hold (`_may_hold_type`): a
+  `Vec<usize>`'s `len()` may be a copy of a `usize`.
+- Where the proven standard `mem::take` or `mem::replace` is given a pointer surely to a local
+  (`_sure_pointee`: `&mut a`, reborrowed, each assigned once and never borrowed), that local holds
+  no copy after it. Its result holds what it held.
+- A call stores only into what the pointers it is given were made from (`_made_from`: `v` of
+  `&mut v`), since #320. It no longer stores into every alias `_stored_into` links to them, such as
+  a pointer `format_args!` puts in the same tuple. A store statement still writes into them all.
 - A callee may write through an argument only on positive evidence (`Body._may_write_through`,
   review round 3). Its type may show a writable pointer (`_may_write`): a `&mut` or raw pointer,
   a cell, a type parameter, or a mutable standard view (`_MUTABLE_VIEWS`: `Entry`, the `IterMut`
@@ -482,8 +507,11 @@ information shows. Standard types can view a local as another type: `Cell::from_
 - A call's result counts only on its return edge.
 - `Body.direct_copies_at` gives the direct copies, from the blocks reachable from `bb0` or a
   coroutine's resumption. That is a copy or move of the local or a part, what is computed from one,
-  a closure or aggregate holding one, and a read through a pointer to it. It isn't what a call
-  given a pointer returns, such as `x.len()`.
+  a closure or aggregate holding one, and a read through a pointer to it. It is also what a call
+  given a pointer into it returns (#320), but not what a standard measure returns, as `x.len()`.
+- Every reading of `copy_hazards` judges by `copy_undoes` the same direct copies: those the "any"
+  reading doesn't hold as temporaries. So a value `format!` made from a binding's copy is never
+  said to read the local.
 - A temporary that read the local blocks the change wherever it is used again. One taken from a
   binding's copy is judged as that binding is: `a + x` still reads `x`.
 - Copies are judged by the part they may have taken: `direct_copies_at(…, projection)`. An

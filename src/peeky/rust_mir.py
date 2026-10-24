@@ -338,6 +338,103 @@ def _quiet_drop(kind, generics):
     )
 
 
+# What a call returns that may point rather than hold a value (#320): a reference or raw
+# pointer, a type with a lifetime, a closure or coroutine, a trait object or `impl` type.
+_SHOWS_POINTER = re.compile(rf"{_BORROWING.pattern}|\b(?:dyn|impl)\b")
+# What the standard library's measures and comparisons return (#320): a count, a yes or
+# no, an ordering; each with the word a local's type shows where it may hold one.
+_ANSWERS = {
+    "bool": "bool",
+    "usize": "usize",
+    "std::cmp::Ordering": "Ordering",
+    "core::cmp::Ordering": "Ordering",
+    "std::option::Option<std::cmp::Ordering>": "Ordering",
+    "core::option::Option<core::cmp::Ordering>": "Ordering",
+}
+# The standard library's methods that only measure what they are given (#320): inherent
+# methods of a standard type (`Vec::<u32>::len`), a slice or `str`
+# (`core::slice::<impl [u32]>::contains`); and its comparison traits' methods
+# (`<u32 as PartialEq>::eq`). `min`, `max` and `clamp` return one of the values.
+_MEASURES = frozenset("len is_empty capacity contains contains_key starts_with ends_with".split())
+_COMPARISONS = {
+    "PartialEq": frozenset({"eq", "ne"}),
+    "PartialOrd": frozenset({"lt", "le", "gt", "ge", "partial_cmp"}),
+    "Ord": frozenset({"cmp"}),
+}
+_COMPARISON_METHOD = re.compile(
+    r"^<.+ as (?:(?:std|core)::cmp::)?(PartialEq|PartialOrd|Ord)(?:<.+>)?>::(\w+)$"
+)
+_SLICE_METHOD = re.compile(r"^(?:core|alloc|std)::(?:slice|str)::<impl (?:\[.+\]|str)>::(\w+)$")
+_INHERENT_METHOD = re.compile(r"^([A-Za-z_]\w*)(?:::<.+>)?::(\w+)$")
+# A proven standard `mem::take` or `mem::replace` (#320): what its first argument surely
+# points at holds the new value after it, and the call returns the old one.
+_STD_REPLACE = re.compile(
+    r"^_[0-9]+ = (?:std|core)::mem::(?:take|replace)::<.+?>\((?:move|copy) _([0-9]+)[,)]"
+)
+# A read of a field of a local or of its variant: `copy (_7.0: u32)`, `move ((_7 as
+# Continue).0: u32)`.
+_FIELD_READ = re.compile(r"^(?:copy|move) \((?:\(_([0-9]+) as \w+\)|_([0-9]+))\.[0-9]+: ")
+
+
+def _callee(value):
+    """(the path, the arguments' text) of the call ``value`` (`<u32 as PartialEq>::eq(move
+    _5, move _6) -> […]`), or None where it can't be told apart (#320)."""
+    depth = 0
+    for at, char in enumerate(value):
+        if char == "<":
+            depth += 1
+        elif char == ">" and value[at - 1 : at] != "-":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "(" and not depth:
+            close = value.rfind(") -> ")
+            return (value[:at], value[at + 1 : close]) if close > at else None
+    return None
+
+
+def _without_turbofish(path):
+    """``path`` without the type arguments of its last segment
+    (`HashMap::<u32, u32>::contains_key::<u32>` -> `HashMap::<u32, u32>::contains_key`)."""
+    if not path.endswith(">"):
+        return path
+    depth = 0
+    for at in range(len(path) - 1, -1, -1):
+        depth += {">": 1, "<": -1}.get(path[at], 0)
+        if not depth:
+            return path[: at - 2] if path[at - 2 : at] == "::" else path
+    return path
+
+
+def _standard_only(kind, generics):
+    """Whether every type the MIR type ``kind`` names is a primitive or the standard
+    library's (#320): no type of the crate's own, type parameter, closure or trait
+    object, so a method of the standard library's traits for it is the standard
+    library's own."""
+    if kind is None or generics is None or mentions(kind, generics):
+        return False
+    if re.search(r"[{}]|\b(?:dyn|impl|fn)\b", kind):
+        return False
+    return all(
+        word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS)
+        for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
+    )
+
+
+def _may_hold_type(kind, generics, word):
+    """Whether a value of the MIR type ``kind`` may hold a value of the type ``word``
+    (`bool`, `usize`, `Ordering`) among its parts (#320): it names that type, or a type
+    of the crate's own, a type parameter, a closure, a trait object, or it is not known.
+    A standard type counts by its type arguments only: a `String` holds no `usize`, a
+    `Vec<usize>` may."""
+    if not _standard_only(kind, generics):
+        return True
+    return any(
+        found == word or found.endswith(f"::{word}")
+        for found in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
+    )
+
+
 _NOT_A_CALL = re.compile(
     r"(?:drop|assert|switchInt|goto|falseEdge|falseUnwind|yield|return|resume|unreachable)\b"
 )
@@ -425,6 +522,10 @@ class Body:
     # is matched to it): a type named like a primitive (`i8`) may be one of them. None
     # until then (a twin a macro generates): any may be.
     generics: tuple | None = None
+    # Whether the dump's standard paths and comparison traits are the standard library's
+    # (OwnedLocals._std_calls, set when an IR function is matched to it), so its measures
+    # and comparisons, and `mem::take`, are known (#320). False until then.
+    std_calls: bool = False
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -456,6 +557,9 @@ class Body:
     _copies: dict | None = None
     _live: dict | None = None
     _copy_reads: tuple | None = None
+    # {(statement, local): ``_only_measures``}, and {pointer: ``_sure_pointee``} (#320).
+    _measure_cache: dict | None = None
+    _pointee_cache: dict | None = None
     # (the ``generics`` it was found for, {pointer: ``_stored_into``'s locals}) (#311).
     _stored_cache: tuple | None = None
     # {(local, formatting): {block: (holds, points) on entry}, or None past the budget}
@@ -1660,19 +1764,24 @@ class Body:
         it or of a part (`n` of `x = match x { n => … }`, `let y = x;`), a value computed
         from one (`v` of `while let Some(v) = (x > 0).then_some(x)`), a closure or
         aggregate holding one (`move || x`), or a read through a pointer to it (`*r` of
-        `let r = &x;`); not what a call given a pointer to it returns (`x.len()`), which
-        ``copies_at`` judges for temporaries only. With ``projection`` (``_root_access``),
-        only what may have been taken from that part counts (#192 review: `seen = r.end`
-        holds none of `o.marks`). None where the flow is past its budget. ``compares`` and
-        ``reads`` (``_copy_verdict``) change none of these, only the flow's key."""
+        `let r = &x;`); and what a call given a pointer into it, or to what may hold a copy
+        of it, returns (#320: `x.clone()`, `x.to_string()`, `ptr::read(&x)`,
+        `mem::take(&mut a)` after `let mut a = x;`), unless it only points
+        (``_copy_assign``) or the call is the standard library's that only measures or
+        compares (``_only_measures``: `x.len()`, as #192 has it). With ``projection``
+        (``_root_access``), only what may have been taken from that part counts (#192
+        review: `seen = r.end` holds none of `o.marks`). None where the flow is past its
+        budget. ``compares`` and ``reads`` (``_copy_verdict``) change none of these, only
+        the flow's key."""
         state = self._copy_state(local, position, formatting, projection, compares, reads)
         return None if state is None else state[2]
 
     def _copy_state(self, local, position, formatting, projection=(), compares=False, reads="any"):
-        """(holds, points, direct, own, kept) at ``position``, or None past the budget."""
+        """(holds, points, direct, own, kept, aims) at ``position``, or None past the
+        budget."""
         if self._copy_flows is None:
             self._copy_flows = {}
-        key = (local, formatting, projection, compares, reads)
+        key = (local, formatting, projection, compares, reads, self.std_calls)
         if key not in self._copy_flows:
             self._copy_flows[key] = self._copy_flow(local, formatting, projection, compares, reads)
         entry = self._copy_flows[key]
@@ -1689,15 +1798,18 @@ class Body:
     def _copy_step(
         self, local, formatting, number, index, state, projection=(), compares=False, reads="any"
     ):
-        """``copies_at``'s transfer over one statement: (holds, points, direct, own, kept)
-        after it: ``copies_of``'s holds and points, for temporaries; and the locals,
+        """``copies_at``'s transfer over one statement: (holds, points, direct, own, kept,
+        aims) after it: ``copies_of``'s holds and points, for temporaries; and the locals,
         named or not, holding a direct copy (``direct_copies_at``), the pointers made from
-        a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct, and
-        the locals that hold a direct copy or point at one (#311 review: `&a` of `let a =
+        a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct, the
+        locals that hold a direct copy or point at one (#311 review: `&a` of `let a =
         [x];`, casts and aggregates of it, and a pointer a call returns from one, as
-        `a.iter()`). Then what the statement writes through a
-        pointer (``_copy_store``), judged by what held a copy before it: a call's
-        arguments are read before it returns."""
+        `a.iter()`), and those that may point into ``local`` by way of a call (#320: what
+        `s.as_str()`, `v.iter()` or `format_args!`'s `Argument` return, and what is made
+        of them). Where the standard library's `mem::take` or `mem::replace` surely writes
+        into a local (``_sure_pointee``), it holds no copy after, but what is written.
+        Then what the statement writes through a pointer (``_copy_store``), judged by what
+        held a copy before it: a call's arguments are read before it returns."""
         block = self.blocks[number]
         text = _STRING.sub('""', block.statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
@@ -1705,7 +1817,7 @@ class Body:
             whole and int(whole[1]) == local
         ):
             # Its value starts again: what was copied before holds an earlier one.
-            return (frozenset(),) * 5
+            return (frozenset(),) * 6
         parts, _, _, at, named, stores = self._copy_parts()
         found = at.get((number, index))
         after = state
@@ -1722,6 +1834,11 @@ class Body:
                 compares,
                 reads,
             )
+        if self.std_calls and whole and (replaced := _STD_REPLACE.match(text)):
+            # `mem::take(&mut a)`: `a` holds its default now, the call's result what it held.
+            pointee = self._sure_pointee(int(replaced[1]))
+            if pointee is not None and pointee not in (local, int(whole[1])):
+                after = tuple(each - {pointee} for each in after)
         for stored in stores.get((number, index), ()):
             if stored[0]:
                 after = self._copy_store(
@@ -1732,39 +1849,67 @@ class Body:
     def _copy_assign(
         self, local, formatting, text, whole, part, named, state, projection, compares, reads
     ):
-        """``_copy_step`` over an assignment's own target, ``part``."""
-        holds, points, direct, own, kept = state
+        """``_copy_step`` over an assignment's own target, ``part``. What a call given a
+        pointer into the local, or to what may hold or point at a copy of it, returns may
+        hold a copy, where its type may hold a value (#320: `x.clone()`, `x.to_string()`,
+        `ptr::read(&x)`, `w.push(v)` given `&mut w`), unless the call is the standard
+        library's that only measures or compares (``_only_measures``: `x.len()`,
+        `x.cmp(&5)`). Where its type may point (a reference, an iterator, `Option<&u32>`,
+        a type with a lifetime), it points into the local (`aims`), as a cast, copy or
+        aggregate of such a pointer, or a borrow of one, does; it holds no copy (#311
+        review: `&s[2..]` holds no copy of `s`), but a field read out of one a call made
+        may (`?` on a `Result<u32, Box<dyn Error>>`), and so may a read through it."""
+        holds, points, direct, own, kept, aims = state
         target, mentioned, through, borrow, called, _, _, _ = part
         if target == local:
             return state
         # A place of it that may hold part of ``projection`` (#192 review).
         touched = local in mentioned and _touches(text, local, projection)
+        kind = self.types.get(target)
+        generic = kind is None or self.generics is None or mentions(kind, self.generics)
+        may_point = generic or bool(_SHOWS_POINTER.search(kind))
+        may_value = generic or not (_SHOWS_POINTER.search(kind) or kind in ("()", "!"))
         if borrow:
             mine = touched or bool(mentioned & own)
             taken = False
             # A pointer to what may hold a copy (`&a` of `let a = [x];`) points at one.
             keeps = bool(mentioned & kept)
+            # A borrow of what may point into it, or of what holds such a pointer (`&_9`
+            # of the `Argument`s `format!` makes), may point into it too.
+            aimed = bool(mentioned & aims)
         else:
             # By value: a copy, a move, what is computed from one (a call given one too),
-            # an aggregate or closure holding one; or a read through its own pointer.
+            # an aggregate or closure holding one; or a read through a pointer to it.
             mine = not called and bool(mentioned & own) and not through
-            taken = touched or bool(mentioned & direct) or (through and bool(mentioned & own))
+            reaching = own | aims | kept
+            taken = touched or bool(mentioned & direct) or (through and bool(mentioned & reaching))
             # And a cast, copy or aggregate of a pointer to one, or a pointer a call given
-            # one returns (`a.iter()`); not a value a call computes, as #192 has it for
-            # `x.len()` (`x.to_string()`, `w.push(v)`), nor a pointer into the local itself
-            # (`&s[2..]` holds no copy of `s`).
-            aims = not called or not _pointer_free(self.types.get(target), self.generics)
-            keeps = taken or (aims and bool(mentioned & kept))
+            # one returns (`a.iter()`); not a pointer into the local itself (`&s[2..]`
+            # holds no copy of `s`).
+            pointing = not called or not _pointer_free(kind, self.generics)
+            keeps = taken or (pointing and bool(mentioned & kept))
+            if called:
+                aimed = may_point and bool(mentioned & (own | aims))
+                if may_value and mentioned & reaching and not self._only_measures(text, local):
+                    taken = keeps = True
+            else:
+                aimed = may_point and not through and bool(mentioned & aims)
+                field = _FIELD_READ.match(whole[2]) if whole else None
+                source = field and int(field[1] or field[2])
+                if may_value and source in aims and self._call_made(source):
+                    taken = keeps = True
         if whole:
             # Reassigned: what it held before is gone (a call's result: on its return
             # edge, which is the only one ``_copy_flow`` gives this state).
             holds, points = holds - {target}, points - {target}
             direct, own, kept = direct - {target}, own - {target}, kept - {target}
+            aims = aims - {target}
         direct = direct | {target} if taken else direct
         own = own | {target} if mine else own
         kept = kept | {target} if keeps else kept
+        aims = aims | {target} if aimed else aims
         if target in named:
-            return holds, points, direct, own, kept
+            return holds, points, direct, own, kept, aims
         hold, point = _copy_verdict(
             part, local, holds, points, formatting, compares, reads, own, touched
         )
@@ -1774,7 +1919,92 @@ class Body:
             direct,
             own,
             kept,
+            aims,
         )
+
+    def _only_measures(self, text, local):
+        """Whether the call ``text`` is the standard library's that only measures or
+        compares what it is given, into what the type of ``local`` can't hold (#320): a
+        method of `_MEASURES` (`len`, `is_empty`, `contains`, `starts_with`) of a standard
+        type, a slice or `str` (`Vec::<u32>::len`, `core::slice::<impl [u32]>::contains`),
+        or one of `_COMPARISONS` (`eq`, `lt`, `cmp`, `partial_cmp`) of `PartialEq`,
+        `PartialOrd` or `Ord` (`<u32 as PartialEq>::eq`), returning a `bool`, `usize` or
+        `Ordering` (``_ANSWERS``). Every argument points at a primitive or a standard type
+        (``_standard_only``), so the method is the standard library's own (a crate can't
+        add one to its types, nor implement its traits between them), the inherent one's
+        type is the one its first argument points at, and ``std_calls`` proves the dump's
+        standard paths and trait names are the standard library's. Never by name alone;
+        and a `usize` local, a `Vec<bool>` or a type of the crate's own may hold what it
+        returns, so then it may be a copy."""
+        if not self.std_calls:
+            return False
+        if self._measure_cache is None:
+            self._measure_cache = {}
+        key = (text, local, self.generics)
+        if key not in self._measure_cache:
+            self._measure_cache[key] = self._measuring(text, local)
+        return self._measure_cache[key]
+
+    def _measuring(self, text, local):
+        """``_only_measures``, found."""
+        whole = _WHOLE_ASSIGNMENT.match(text)
+        answer = _ANSWERS.get(self.types.get(int(whole[1]), "")) if whole else None
+        if answer is None or _may_hold_type(self.types.get(local), self.generics, answer):
+            return False
+        found = _callee(whole[2])
+        if found is None:
+            return False
+        path, arguments = _without_turbofish(found[0]), found[1]
+        pointees = []
+        for number in map(int, _MENTIONED.findall(arguments)):
+            pointer = _REFERENCE.match(self.types.get(number) or "")
+            pointee = self.types[number][pointer.end() :] if pointer else None
+            if pointee is None or not _standard_only(pointee, self.generics):
+                return False
+            pointees.append(pointee)
+        if not pointees:
+            return False
+        if compared := _COMPARISON_METHOD.match(path):
+            return compared[2] in _COMPARISONS[compared[1]]
+        if sliced := _SLICE_METHOD.match(path):
+            return sliced[1] in _MEASURES and pointees[0].startswith(("[", "str"))
+        inherent = _INHERENT_METHOD.match(path)
+        return (
+            inherent is not None
+            and inherent[2] in _MEASURES
+            and pointees[0].startswith(_STD_PATHS)
+            and pointees[0].split("<", 1)[0].rsplit("::", 1)[-1] == inherent[1]
+        )
+
+    def _call_made(self, local):
+        """Whether every assignment to ``local`` is a call's result (#320)."""
+        values = self._assignments().get(local, ())
+        return bool(values) and all("->" in v and not _NOT_A_CALL.match(v) for v in values)
+
+    def _sure_pointee(self, pointer):
+        """The local ``pointer`` surely points at (#320: `a` of `mem::take(&mut a)`):
+        assigned once, a `&mut` of that local, or a reborrow, copy or move of such a
+        pointer, each assigned once, none with its own storage borrowed (which could
+        retarget it); else None."""
+        if self._pointee_cache is None:
+            self._pointee_cache = {}
+        start = pointer
+        if start not in self._pointee_cache:
+            found, seen, assigned = None, set(), self._assignments()
+            while pointer not in seen:
+                seen.add(pointer)
+                values = assigned.get(pointer, ())
+                if len(values) != 1 or pointer in self._borrowed():
+                    break
+                if borrowed := re.fullmatch(r"&mut _([0-9]+)", values[0]):
+                    found = int(borrowed[1])
+                    break
+                step = re.fullmatch(r"&mut \(\*_([0-9]+)\)|(?:move|copy) _([0-9]+)", values[0])
+                if step is None:
+                    break
+                pointer = int(step[1] or step[2])
+            self._pointee_cache[start] = found
+        return self._pointee_cache[start]
 
     def _copy_store(
         self, local, text, stored, state, after, formatting, projection, compares, reads
@@ -1787,14 +2017,19 @@ class Body:
         it), or point where it points, besides what it holds in ``after``. A temporary
         among them holds a copy the statement uses where it is used again (the Box, the Vec
         made from it, the pointer); a binding of the program's own holds a direct copy, as
-        `slot` of `*p = x;` and `v` of `v.push(x)` do. A pointer binding (`p`) holds none,
+        `slot` of `*p = x;` and `v` of `v.push(x)` do; a call, only into what its pointers
+        were made from (#320: `v` of `&mut v`). A pointer binding (`p`) holds none,
         but what is read through it does, as through a pointer made from a borrow; where
         nothing else stands for what it points at, it does (an argument `p`). A source that
         holds or points at a copy counts (``kept``, #311 review: `&a` given to
-        `v.extend_from_slice`), as does a pointer into the local itself."""
-        holds, points, direct, own, kept = state
+        `v.extend_from_slice`), as does a pointer into the local itself. So does one that
+        points into it by way of a call (``aims``, #320: `out.push_str(&name)` is given
+        what `deref` returns), read through, or given to a call storing into what holds no
+        pointer (`out`, a `String`): into what may hold one, it may have stored the
+        pointer itself (#164: `v.push(&s[2..])`)."""
+        holds, points, direct, own, kept, aims = state
         parts, _, _, _, named, _ = self._copy_parts()
-        made, targets, pointers, _, pointees, _ = stored
+        made, targets, pointers, owners, pointees, _ = stored
         first = parts[made[0]]
         _, mentioned, through, borrow, called, _, _, _ = first
         touched = local in mentioned and _touches(text, local, projection)
@@ -1803,16 +2038,29 @@ class Body:
             touched
             or bool(mentioned & (direct | kept))
             or ((through or called) and bool(mentioned & own))
+            or (through and bool(mentioned & aims))
         )
+        lent = not (borrow or taken) and called and bool(mentioned & aims)
         hold, point = _copy_verdict(
             first, local, holds, points, formatting, compares, reads, own, touched
         )
-        holds, points, direct, own, kept = after
+        holds, points, direct, own, kept, aims = after
         targets = targets - {local}
+        if called:
+            # A call writes where the pointers it is given were made from (`v` of `&mut v`),
+            # not into every alias the flow-insensitive ``_stored_into`` links to them, as
+            # a pointer `format_args!` puts in the same tuple (#320: what a call returns
+            # is a copy now, and more calls store one).
+            targets = targets & owners
         if taken:
             direct = direct | (targets - pointers) | (pointees - {local})
             own = own | (pointers - pointees - {local})
             kept = kept | targets
+        elif lent:
+            valued = frozenset(
+                n for n in targets if _pointer_free(self.types.get(n), self.generics)
+            )
+            direct, kept = direct | valued, kept | valued
         temporaries = targets - named
         return (
             holds | temporaries if hold else holds,
@@ -1820,6 +2068,7 @@ class Body:
             direct,
             own,
             kept,
+            aims,
         )
 
     def read_copies_at(self, local, position, projection=(), transfers=False):
@@ -2156,10 +2405,10 @@ class Body:
         return entry
 
     def _copy_flow(self, local, formatting, projection=(), compares=False, reads="any"):
-        """{block: (holds, points, direct, own, kept) on entry} for ``copies_at``: its
-        transfer, merged by union up from nothing (the least fixpoint); None past the
+        """{block: (holds, points, direct, own, kept, aims) on entry} for ``copies_at``:
+        its transfer, merged by union up from nothing (the least fixpoint); None past the
         budget."""
-        empty = (frozenset(),) * 5
+        empty = (frozenset(),) * 6
         entry = dict.fromkeys(self.blocks, empty)
         # Every block the code can reach once, whatever flows into it: a copy made in a
         # block whose entry holds none must still flow on (#192 review: a `while let`'s
@@ -4925,6 +5174,7 @@ class OwnedLocals:
                 self._unanalyzed[hashed] = list({id(body): body for body in candidates}.values())
         if found is not None:
             found.generics = function.generics
+            found.std_calls = self._std_calls()
         self._matched[hashed] = found
         return found
 
@@ -5191,9 +5441,17 @@ class OwnedLocals:
                 return direct & bindings
             temporaries = body.copies_at(local, position, formatting, compares, flow, part)
             temporaries -= bindings
+            # The direct copies "any" judges by their use are left out of every reading,
+            # so each finds the same: a value a call made from a binding's copy is no read
+            # of the local where only "any" holds it (#320: `format!("{:.1}", mean)`).
+            judged = (
+                temporaries
+                if flow == "any"
+                else body.copies_at(local, position, formatting, compares, "any") - bindings
+            )
             undone = frozenset(
                 n
-                for n in (direct - temporaries if named else ())
+                for n in (direct - judged if named else ())
                 if body.copy_undoes(n, local, position, projection, sinks)
             )
             if reads == "copied":
@@ -6027,6 +6285,20 @@ class OwnedLocals:
                 for code in codes
             )
         return self._std_own_known
+
+    def _std_calls(self):
+        """Whether the standard library's measures, comparisons and `mem::take` are
+        known in the dump (#320, ``Body.std_calls``): its paths that start `std::` or
+        `core::` are the standard library's (``_std_own``), and the crate names no item
+        or import `PartialEq`, `PartialOrd` or `Ord` of its own (``_named_own``), so the
+        dump's `<u32 as PartialEq>::eq` is the standard library's trait. A method of a
+        standard type (`Vec::<u32>::len`) or primitive (`core::slice::<impl [u32]>::len`)
+        is its own: a crate can't add one."""
+        if "_std_calls_known" not in self.__dict__:
+            self._std_calls_known = self._std_own() and not any(
+                _named_own(code, set(_COMPARISONS)) for code in self._crate_codes()
+            )
+        return self._std_calls_known
 
     def _std_transfers(self):
         """Whether the calls the dump names as the Box-to-Vec conversion `vec!` makes

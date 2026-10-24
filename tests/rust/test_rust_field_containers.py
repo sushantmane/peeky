@@ -506,14 +506,24 @@ def test_the_movavg_window_reads_its_values_through_self(tmp_path, state, capsys
         raw(rows[0]["self.values"], NO_MEMORY, "Capture self.values.len for the length")
         error = rows[0]["self.values[0]"]["error"]
         assert NO_MEMORY in error and "Capture self.values.len" in error, error
-    # main's `w`, which the MIR proves initialized (`w.sum` is [settable]), reads too.
+    # main's `w`, which the MIR proves initialized, reads too. `w.sum` is not [settable] at
+    # `out.push(format!(…, mean))` (#320): `mean = w.push(…)` may hold a value computed from
+    # it, which the program goes on with. On the last pass nothing reads `w.sum` again.
     result = probe(capsys, crate, MOVAVG, "// MEAN", "w.values,w.sum", "--arg", "3", "--arg", "3,6")
     rows = {row["selector"]: row for row in result["rows"] if row["hit"] == 1}
-    assert rows["w.sum"]["settable"] is True, rows
+    assert rows["w.sum"]["settable"] is False, rows
     if reads(rows["w.values"]):
         assert rows["w.values"]["value"] == "[3]", rows
     else:
         raw(rows["w.values"], NO_MEMORY)
+    at = line_of(MOVAVG, "// MEAN")
+    command = ["probe", str(crate), "--at", f"src/main.rs:{at}", "--set", "w.sum=100"]
+    code = main([*command, "--arg", "3", "--arg", "3,6", "--json", "--quiet"])
+    error = json.loads(capsys.readouterr().out).get("error") or {}
+    assert code == 2 and error.get("code") == "MUTATION_REJECTED", error
+    holders = f"the program's own `mean` and `out` (at lines {at - 3}, {at - 1} and {at})"
+    assert holders in error["message"], error
+    assert "may hold a copy of `w` that it goes on with" in error["message"], error
 
 
 @pytest.mark.timeout(400)

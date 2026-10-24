@@ -79,12 +79,22 @@ def test_a_deferred_macro_assignment_reads_at_the_next_lines_first_stop(tmp_path
     assert "error" not in first and not first.get("withheld"), first
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or first.get("view") == "memory":
         assert [rows[(hit, "label")]["value"] for hit in (1, 2, 3)] == ['"sum 6"'] * 3, rows
-    assert rows[(1, "sum")].get("settable") is True, rows[(1, "sum")]
-    # So `sum` changes at the default stop, where nothing under way has read it.
+    # Nothing under way has read `sum` there, but `label` holds what `format!` made of it,
+    # which the program prints and never reads `sum` again (#320): a change is never seen.
+    assert rows[(1, "sum")].get("settable") is False, rows[(1, "sum")]
+    assert rows[(1, "sum")].get("not_settable") == "the program may hold a copy (line 4)"
+    code, result = probe(capsys, crate, 5, "--capture", "sum", "--set", "sum=7")
+    error = result.get("error") or {}
+    assert code == 2 and error.get("code") == "MUTATION_REJECTED", result
+    assert "the program's own `label` (at line 4) may hold a copy of `sum`" in error["message"]
+    assert "statement under way" not in error["message"], error
+    # Where the program reads `sum` again, it sees the change at the default stop.
+    crate = crate_at(tmp_path, "reread", REPRO.replace('"{label}"', '"{label} {sum}"'))
     code, result = probe(capsys, crate, 5, "--capture", "sum", "--set", "sum=7")
     assert code == 0, result.get("error")
     (change,) = result["interventions"]
     assert (change["name"], change["after"], change["stop"]) == ("sum", "7", 1), change
+    assert "sum 6 7" in result["output"].splitlines(), result["output"]
 
 
 @pytest.mark.timeout(400)
