@@ -1538,6 +1538,13 @@ refusal says ``the program's own `y` (at line 11) may hold a copy of `x` that it
   struct with a `u32` and a `&u32` field.
 - `Box::new`, `Box::pin`, `Rc::new` and `Arc::new` return only what they are given. So a Box of a
   closure that borrows `s` holds no copy of `s`.
+- So do the standard library's iterator adapters. `let it = s.chars().rev();` only borrows `s`, so
+  a change to `s` there is refused for the borrow. A `map` closure that holds a copy of `x` holds
+  it; one that borrows `x` doesn't.
+- Where Peeky can't tell whether a result holds a copy or only points into the local, the refusal
+  says both: ``may hold a copy of `x` that it goes on with, unless `c` only points into it``.
+- A crate module named `std`, `core` or `alloc` makes paths under it the crate's own, not the
+  standard library's.
 - The standard library's measures and comparisons return none: `x.len()`, `x.eq(&5)`,
   `x.cmp(&5)`. That is so only where Peeky proves they are the standard library's own, and the
   local can't hold what they return.

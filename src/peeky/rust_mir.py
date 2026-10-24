@@ -386,6 +386,14 @@ _POINTER_VIEWS = frozenset(
     "cell::Ref cell::RefMut option::Iter option::IterMut path::Components path::Iter".split()
 )
 _STD_GENERIC = re.compile(r"^(?:std|core|alloc)::((?:\w+::)*\w+)(?:<(.*)>)?$")
+# The standard library's iterator adapters that hold nothing but the iterators they wrap
+# and counters of their own (#320 review): `Rev<I>`, `Fuse<I>`, `Enumerate<I>`,
+# `Cycle<I>`, `Cloned<I>`, `Copied<I>`, `Zip<A, B>`, `Chain<A, B>`. Not `Skip`, `Take` or
+# `StepBy` (a count they were given), `Peekable` (an item it peeked), nor one holding a
+# closure (`Map`, `Filter`).
+_TRANSPARENT = re.compile(
+    r"iter::(?:adapters::(?:\w+::)?)?(?:Rev|Fuse|Enumerate|Cycle|Cloned|Copied|Zip|Chain)"
+)
 # The standard library's types a dump may name by their short name alone in a call's path
 # (`String::len`, `Vec::<u32>::len`, `Box::<T>::new`), which the crate may also give an
 # item of its own (#320 review: ``OwnedLocals._trusted_names``).
@@ -406,6 +414,15 @@ _STD_TYPES = (
 # The standard library's calls that return only what they are given (#320 review), by
 # (the short name of the type, the method) and the types they return: whatever they
 # hold, what they were given held.
+# The standard library's iterator adapters (`<I as Iterator>::rev(move _7)`), which return
+# a value holding only what they were given: the iterator, a count, a closure (#320
+# review, ``Body._only_wraps``). Not `peekable` (it keeps an item it peeked, a `char` of
+# the text for `Chars`), nor `flat_map` or `flatten` (they keep iterators made of items).
+_ADAPTER_CALL = re.compile(
+    r"<.+ as (?:(?:std|core)::iter::)?Iterator>::(?:rev|skip|take|step_by|enumerate|fuse"
+    r"|cycle|cloned|copied|zip|chain|map|filter|filter_map|take_while|skip_while|map_while"
+    r"|inspect|by_ref)"
+)
 _WRAPPERS = {
     ("Box", "new"): ("std::boxed::Box<", "alloc::boxed::Box<"),
     ("Box", "pin"): ("std::pin::Pin<std::boxed::Box<", "core::pin::Pin<alloc::boxed::Box<"),
@@ -429,29 +446,35 @@ def _top_level_items(text):
     return [*items, tail] if tail else items
 
 
-def _pointer_only(kind, generics):
+def _pointer_only(kind, generics, trusted=frozenset()):
     """Whether a value of the MIR type ``kind`` holds nothing but pointers, so no copy of a
-    value (#320 review): a reference, a raw pointer, `NonNull`, `()`, a tuple, array or
-    `Option` of these, or one of the standard library's views of ``_POINTER_VIEWS``.
-    Not a tuple or struct holding a value besides a reference (`(u32, &'static ())`,
-    `Held<'_> { v: u32, r: &u32 }`), a closure, a trait object, a type parameter, or a
-    type not known."""
+    value (#320 review): a reference, a raw pointer, `()`, a tuple or array of these; and
+    under a path root of ``trusted`` (``Body.std_paths``: roots proven the standard
+    library's, not a crate's `mod alloc`), `NonNull`, an `Option` of these, one of the
+    standard library's views of ``_POINTER_VIEWS``, or an iterator adapter that holds only
+    such iterators (``_TRANSPARENT``: `Rev<Chars<'_>>`). Not a tuple or struct holding a
+    value besides a reference (`(u32, &'static ())`, `Held<'_> { v: u32, r: &u32 }`), an
+    adapter holding a closure or a count it was given (`Map`, `Skip`), a closure, a trait
+    object, a type parameter, or a type not known."""
     if kind is None or generics is None or mentions(kind, generics):
         return False
     kind = kind.strip()
-    if kind in ("()", "!") or _POINTER_TYPE.match(kind):
+    if kind in ("()", "!") or _REFERENCE.match(kind) or _RAW_ONLY.match(kind):
         return True
     if kind.startswith("(") and kind.endswith(")"):
-        return all(_pointer_only(item, generics) for item in _top_level_items(kind[1:-1]))
+        items = _top_level_items(kind[1:-1])
+        return all(_pointer_only(item, generics, trusted) for item in items)
     if kind.startswith("[") and kind.endswith("]"):
-        return _pointer_only(_top_level_items(kind[1:-1].split(";", 1)[0])[0], generics)
+        item = _top_level_items(kind[1:-1].split(";", 1)[0])[0]
+        return _pointer_only(item, generics, trusted)
     found = _STD_GENERIC.match(kind)
-    if found is None:
+    if found is None or kind.split("::", 1)[0] not in trusted:
         return False
-    if found[1] in _POINTER_VIEWS:
+    if found[1] in _POINTER_VIEWS or found[1] == "ptr::NonNull":
         return True
-    if found[1] == "option::Option" and found[2]:
-        return _pointer_only(found[2], generics)
+    arguments = [item for item in _top_level_items(found[2] or "") if not item.startswith("'")]
+    if found[1] == "option::Option" or _TRANSPARENT.fullmatch(found[1]):
+        return bool(arguments) and all(_pointer_only(item, generics, trusted) for item in arguments)
     return False
 
 
@@ -609,6 +632,12 @@ class Body:
     # (OwnedLocals._trusted_names, set with ``std_calls``), so a dump's `String::len` or
     # `Box::<T>::new` is the standard library's (#320 review). Empty until then.
     trusted_names: frozenset = frozenset()
+    # Which of the dump's `std::`, `core::` and `alloc::` path roots are the standard
+    # library's (OwnedLocals._std_crates), and whether its `<T as Iterator>` is the
+    # standard trait (OwnedLocals._std_iterator), set with ``std_calls`` (#320 review).
+    # None, and False, until then.
+    std_paths: frozenset = frozenset()
+    std_iterator: bool = False
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -1859,12 +1888,21 @@ class Body:
         state = self._copy_state(local, position, formatting, projection, compares, reads)
         return None if state is None else state[2]
 
+    def pointing_copies_at(self, local, position, formatting=True, projection=(), compares=False):
+        """The locals that may point into ``local`` at ``position`` by way of a call or
+        what is made of its result (the flow's `aims`, #320 review): a direct copy among
+        them may hold a copy of it or only point into it, which Peeky can't tell apart.
+        Empty where the flow is past its budget."""
+        state = self._copy_state(local, position, formatting, projection, compares, "any")
+        return frozenset() if state is None else state[5]
+
     def _copy_state(self, local, position, formatting, projection=(), compares=False, reads="any"):
         """(holds, points, direct, own, kept, aims) at ``position``, or None past the
         budget."""
         if self._copy_flows is None:
             self._copy_flows = {}
-        key = (local, formatting, projection, compares, reads, self.std_calls)
+        proofs = (self.std_calls, self.trusted_names, self.std_paths, self.std_iterator)
+        key = (local, formatting, projection, compares, reads, proofs)
         if key not in self._copy_flows:
             self._copy_flows[key] = self._copy_flow(local, formatting, projection, compares, reads)
         entry = self._copy_flows[key]
@@ -1953,7 +1991,7 @@ class Body:
         kind = self.types.get(target)
         generic = kind is None or self.generics is None or mentions(kind, self.generics)
         may_point = generic or bool(_SHOWS_POINTER.search(kind))
-        may_value = not _pointer_only(kind, self.generics)
+        may_value = not _pointer_only(kind, self.generics, self.std_paths)
         if borrow:
             mine = touched or bool(mentioned & own)
             taken = False
@@ -2069,14 +2107,39 @@ class Body:
 
     def _only_wraps(self, text):
         """Whether the call ``text`` is the standard library's that returns only what it
-        is given, by value (#320 review, ``_WRAPPERS``: `Box::<T>::new(move _7)`,
-        `Box::pin`, `Rc::new`, `Arc::new`): what it returns holds a copy only where what
-        it was given did. Its short name must be one the crate gives nothing of its own
-        (``trusted_names``), and what it returns the standard type."""
-        whole = _WHOLE_ASSIGNMENT.match(text) if self.std_calls else None
+        is given, by value: what it returns holds a copy only where what it was given did
+        (#320 review). That is `Box::<T>::new(move _7)`, `Box::pin`, `Rc::new` and
+        `Arc::new` (``_WRAPPERS``), whose short name must be one the crate gives nothing
+        of its own (``trusted_names``), returning the standard type. It is also an
+        iterator adapter of ``_ADAPTERS`` (`<std::str::Chars<'_> as Iterator>::rev`,
+        `…::map::<u32, {closure@…}>(move _6, move _9)`): `Iterator` the standard trait
+        (``std_iterator``), on a standard type (its root in ``std_paths``: its impl is the
+        standard library's). A closure it is given holds a copy where the flow says it
+        does."""
+        whole = _WHOLE_ASSIGNMENT.match(text)
         found = _callee(whole[2]) if whole else None
-        inherent = _INHERENT_METHOD.match(_without_turbofish(found[0])) if found else None
-        if inherent is None or inherent[1] not in self.trusted_names:
+        if found is None:
+            return False
+        given = _top_level_items(found[1])
+        by_value = bool(given) and all(
+            re.fullmatch(r"(?:move|copy) _[0-9]+|const .+", each) for each in given
+        )
+        adapter = _ADAPTER_CALL.fullmatch(_without_turbofish(found[0]))
+        if adapter and self.std_iterator and by_value:
+            first = (
+                int(_MENTIONED.search(given[0])[1])
+                if given[0].startswith(("move", "copy"))
+                else None
+            )
+            kind = self.types.get(first) if first is not None else None
+            outer = _REFERENCE.sub("", kind or "", count=1)
+            return (
+                kind is not None
+                and _STD_GENERIC.match(outer) is not None
+                and outer.split("::", 1)[0] in self.std_paths
+            )
+        inherent = _INHERENT_METHOD.match(_without_turbofish(found[0]))
+        if not self.std_calls or inherent is None or inherent[1] not in self.trusted_names:
             return False
         returned = _WRAPPERS.get((inherent[1], inherent[2]))
         return (
@@ -3885,14 +3948,20 @@ def _closings(code):
 
 
 def _passes_std(code):
-    """True if a macro invocation in ``code`` (comments and strings blanked) has `std` or
-    `core` among its arguments other than as a path's start (`make_mod!(std)`)."""
-    closing = _closings(code)
+    """True if a macro invocation in ``code`` (comments and strings blanked) has `std`,
+    `core` or `alloc` among its arguments other than as a path's start (`make_mod!(std)`)."""
+    return bool(_passed_std(code))
+
+
+def _passed_std(code):
+    """Which of `std`, `core` and `alloc` a macro invocation in ``code`` has among its
+    arguments other than as a path's start (``_passes_std``)."""
+    closing, found = _closings(code), set()
     for opening in _MACRO_OPENING.finditer(code):
         start = opening.start(1)
-        if _BARE_STD.search(code, start + 1, closing.get(start, len(code))):
-            return True
-    return False
+        end = closing.get(start, len(code))
+        found |= {each[1] for each in _BARE_STD.finditer(code, start + 1, end)}
+    return found
 
 
 def _named_own(code, names, bare=("Vec", "String", "Box")):
@@ -4225,13 +4294,14 @@ _STD_TRANSFER = re.compile(
     r"^(?:std|alloc)::boxed::box_assume_init_into_vec_unsafe::<.+>\(move _([0-9]+)\) -> "
 )
 _TRANSFER_NAME = re.compile(r"(?:^|::)box_assume_init_into_vec_unsafe$")
-# An invocation's opening, as ``_MACRO_CALL``, and a `std` or `core` in its arguments
-# that is not a path's start (`make_mod!(std)` may declare `mod std`); and an `extern
-# crate` renamed so.
+# An invocation's opening, as ``_MACRO_CALL``, and a `std`, `core` or `alloc` in its
+# arguments that is not a path's start (`make_mod!(std)` may declare `mod std`); and an
+# `extern crate` renamed so.
 _MACRO_OPENING = re.compile(r"(?<![\w:])(?:(?:::)?(?:\w+::)*\w+)\s*!\s*([(\[{])")
-_BARE_STD = re.compile(r"\b(?:std|core)\b(?!\s*::)")
+_BARE_STD = re.compile(r"\b(std|core|alloc)\b(?!\s*::)")
 # Either name may be a raw identifier (`extern crate evil as r#std;`).
-_EXTERN_AS_STD = re.compile(r"\bextern\s+crate\s+(?:r#)?\w+\s+as\s+(?:r#)?(?:std|core)\b")
+_EXTERN_AS_STD = re.compile(r"\bextern\s+crate\s+(?:r#)?\w+\s+as\s+(?:r#)?(std|core|alloc)\b")
+_STD_CRATES = frozenset({"std", "core", "alloc"})
 
 
 def _false(why, reason):
@@ -5276,6 +5346,8 @@ class OwnedLocals:
             found.generics = function.generics
             found.std_calls = self._std_calls()
             found.trusted_names = self._trusted_names()
+            found.std_paths = self._std_crates()
+            found.std_iterator = self._std_iterator()
         self._matched[hashed] = found
         return found
 
@@ -5485,7 +5557,9 @@ class OwnedLocals:
         "explicit", the temporaries that surely read it; "taken", what a binding's copy of
         it surely gave (``Body.read_copies_at``), and "sources", not hazards but the
         bindings those surely came from; "copied", what may hold such a copy, of "any";
-        "bindings", not hazards but the bindings that may hold a direct copy."""
+        "bindings", not hazards but the bindings that may hold a direct copy; "pointing",
+        those of them that may also point into it (#320 review: what a call returns, where
+        Peeky can't tell which it holds), for the refusal to say so."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -5510,7 +5584,9 @@ class OwnedLocals:
         compares, transfers = self._std_compares(), self._std_transfers()
         # "whole": as "value", for a change to the whole local (#300: another part read);
         # "copied", "bindings": of "any"'s flow.
-        flow = {"whole": "value", "copied": "any", "bindings": "any"}.get(reads, reads)
+        flow = {"whole": "value", "copied": "any", "bindings": "any", "pointing": "any"}.get(
+            reads, reads
+        )
         part = projection if reads == "value" else ()
         # What a call std's printing makes reads (#192 review 4: by its file and path).
         sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
@@ -5540,6 +5616,9 @@ class OwnedLocals:
                 return None
             if reads == "bindings":
                 return direct & bindings
+            if reads == "pointing":
+                aims = body.pointing_copies_at(local, position, formatting, projection, compares)
+                return direct & bindings & aims
             temporaries = body.copies_at(local, position, formatting, compares, flow, part)
             temporaries -= bindings
             # The direct copies "any" judges by their use are left out of every reading,
@@ -6372,20 +6451,27 @@ class OwnedLocals:
         return self._crate_codes_known
 
     def _std_own(self):
-        """Whether a path the dump starts `std::` or `core::` is the standard library's:
-        the crate's sources lex, and none names an item or import `std` or `core` of its
-        own (``_named_own``), renames an `extern crate` so, or passes `std` or `core` to a
-        macro other than as a path's start (#259, #311)."""
-        if "_std_own_known" not in self.__dict__:
-            codes = self._crate_codes()
-            self._std_own_known = bool(codes) and all(
-                code is not None
-                and not _named_own(code, {"std", "core"})
-                and not _EXTERN_AS_STD.search(code)
-                and not _passes_std(code)
-                for code in codes
-            )
-        return self._std_own_known
+        """Whether every path the dump starts `std::`, `core::` or `alloc::` is the
+        standard library's (``_std_crates``: all three) (#259, #311, #320 review)."""
+        return self._std_crates() == _STD_CRATES
+
+    def _std_crates(self):
+        """Which of `std`, `core` and `alloc` a path the dump starts with is the standard
+        library's under: the crate's sources lex, and none names an item or import of that
+        name of its own (``_named_own``: `mod alloc { pub mod str { … } }`, #320 review),
+        renames an `extern crate` so, or passes it to a macro other than as a path's start
+        (#259, #311). A crate's `mod alloc` leaves `std::` paths the standard library's."""
+        if "_std_crates_known" not in self.__dict__:
+            codes, own = self._crate_codes(), set()
+            for code in codes:
+                if code is None:
+                    own = set(_STD_CRATES)
+                    break
+                own |= _named_own(code, _STD_CRATES)
+                own |= {found[1] for found in _EXTERN_AS_STD.finditer(code)}
+                own |= _passed_std(code)
+            self._std_crates_known = _STD_CRATES - own if codes else frozenset()
+        return self._std_crates_known
 
     def _std_calls(self):
         """Whether the standard library's measures, comparisons and `mem::take` are

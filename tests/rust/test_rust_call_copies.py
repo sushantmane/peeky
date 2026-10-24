@@ -207,6 +207,90 @@ fn main() {
 }
 """
 
+# #320 review round 2: a crate `mod alloc` whose `str::Chars` holds a value beside a
+# reference, and the standard library's iterator adapters.
+ADAPTERS = """use std::env;
+
+// A module of the crate's own named like the standard library's `alloc`, whose `Chars`
+// holds a value beside a reference.
+mod alloc {
+    pub mod str {
+        pub struct Chars<'a> {
+            pub v: u32,
+            pub r: &'a (),
+        }
+    }
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+#[inline(never)]
+fn mark() {}
+
+#[inline(never)]
+fn shadow(x: &u32) -> alloc::str::Chars<'static> {
+    alloc::str::Chars { v: *x, r: &() }
+}
+
+#[inline(never)]
+fn rev_of(s: &str) -> std::iter::Rev<std::str::Chars<'_>> {
+    s.chars().rev()
+}
+
+fn shadowed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = shadow(&x); // SHADOW
+    let k = other(); // SHADOWED
+    let t = c.v + k;
+    std::hint::black_box((&x, c.r));
+    t
+}
+
+fn reversed() -> usize {
+    let mut s = String::with_capacity(16);
+    s.push_str("abc");
+    let it = s.chars().rev(); // REV
+    mark(); // REVERSED
+    let n = it.count();
+    let made = rev_of(&s); // MADE
+    mark(); // REMADE
+    let m = made.count();
+    s.push('!');
+    n + m
+}
+
+fn mapped(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [1u32, 2];
+    let it = a.iter().map(move |e| e + x); // MAP
+    let k = other(); // MAPPED
+    let t = it.sum::<u32>() + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn lent(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [1u32, 2];
+    let it = a.iter().map(|e| e + x); // LEND
+    let k = other(); // LENT
+    let t = it.sum::<u32>() + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("SHADOWED {}", shadowed(x));
+    println!("REVERSED {}", reversed());
+    println!("MAPPED {}", mapped(x));
+    println!("LENT {}", lent(x));
+}
+"""
+
 
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if f"// {marker}" in line)
@@ -318,5 +402,43 @@ def test_a_crate_type_named_like_a_standard_one_measures_nothing(crate, capsys):
     # Before the call, the change reaches it.
     for marker, printed in (("TEXT", "TEXTS 101"), ("ITEM", "ITEMS 101")):
         code, result = probe(capsys, root, marker, "--set", "x=100", text=OWNED)
+        assert code == 0, (marker, result.get("error"))
+        assert printed in result["output"].splitlines(), (marker, result["output"])
+
+
+@pytest.mark.timeout(400)
+def test_a_shadowed_view_or_an_adapter_is_said_to_hold_what_it_holds(crate, capsys):
+    root = crate("adapters", ADAPTERS)
+
+    def at(marker, *argv):
+        return probe(capsys, root, marker, *argv, text=ADAPTERS)
+
+    # The crate's `alloc::str::Chars` is not the standard library's view: `c` may hold a
+    # copy of `x`, or only point into it, and there may be no copy to change.
+    code, result = at("SHADOWED", "--set", "x=100")
+    message = refused(code, result, "SHADOWED")
+    assert (
+        f"the program's own `c` (at line {line_of(ADAPTERS, 'SHADOW')}) may hold a copy of `x` "
+        "that it goes on with, unless `c` only points into it"
+    ) in message, message
+    assert "copies or borrows it" in result["error"]["hint"], result["error"]
+    code, result = at("SHADOW", "--set", "x=100")
+    assert code == 0 and "SHADOWED 101" in result["output"].splitlines(), result
+    # `s.chars().rev()` only borrows `s`: refused for that borrow, not for a copy.
+    code, result = at("REVERSED", "--set", 's="xy"')
+    message = (result.get("error") or {}).get("message", "")
+    assert code != 0 and "`s` cannot be changed to a text at this stop: change it before a" in (
+        message
+    ), result
+    assert "the program's own" not in message, message
+    # `map` with a `move` closure holding `x`'s copy holds a copy; with one borrowing `x`, the
+    # change reaches the sum.
+    message = refused(*at("MAPPED", "--set", "x=100"), "MAPPED")
+    assert (
+        f"the program's own `it` (at line {line_of(ADAPTERS, 'MAP')}) may hold a copy of `x` "
+        "that it goes on with, so"
+    ) in message, message
+    for marker, printed in (("MAP", "MAPPED 204"), ("LENT", "LENT 204")):
+        code, result = at(marker, "--set", "x=100")
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])

@@ -326,6 +326,13 @@ _MUTATION_HINTS = (
         "itself refused this write, which no [settable] mark can promise.",
     ),
     (
+        # #320 review: a binding a call returned may hold a copy or only point into it.
+        r"may hold a copy of (?:it|`[^`]+`) that it goes on with, unless [^.:]* only points? "
+        r"into it",
+        "Change it before the program copies or borrows it (a stop on an earlier line, or "
+        "`--set-at` there).",
+    ),
+    (
         # #300 review: or a binding's copy that a call since may have changed.
         r"has already copied (?:its value|`[^`]+`) into"
         r"|^(?:(?!statement under way).)*may hold a copy of (?:it|`[^`]+`) that it goes on with",

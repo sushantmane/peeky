@@ -390,6 +390,13 @@ used again. Such a temporary is:
   reference, a raw pointer, `NonNull`, a tuple, array or `Option` of these, or a standard view of
   `_POINTER_VIEWS` (`slice::Iter`, `str::Chars`, `fmt::Arguments`). `(u32, &'static ())` and a
   struct `Hybrid<'_> { v: u32, r: &u32 }` may hold a copy.
+- An adapter of `_TRANSPARENT` holds only the iterators it wraps (review round 2): `Rev`, `Fuse`,
+  `Enumerate`, `Cycle`, `Cloned`, `Copied`, `Zip` and `Chain`. So `Rev<Chars<'_>>` holds no copy.
+  `Skip`, `Take`, `StepBy`, `Peekable` and those holding a closure (`Map`) may.
+- A standard path counts only under a root the crate gives nothing of its own
+  (`OwnedLocals._std_crates`, set as `Body.std_paths`, review round 2). A `mod alloc` of the
+  crate's makes `alloc::str::Chars` its own, and leaves `std::` paths the standard library's.
+  `_std_own` needs all three of `std`, `core` and `alloc`.
 - A result whose type shows a pointer (a reference, a lifetime, a closure, a trait object) may
   also point into the local (the flow's `aims`), as a cast, copy or aggregate of one does. A read
   through it may be a copy. A call given one may store a copy into what holds no pointer
@@ -399,6 +406,13 @@ used again. Such a temporary is:
   (`_WRAPPERS`: `Box::new`, `Box::pin`, `Rc::new`, `Arc::new`). What it returns holds a copy only
   where what it was given did. So #164's `Box::new(move || check(t))`, with `t = &s[2..]`, holds
   none.
+- So does an iterator adapter call (`_ADAPTER_CALL`: `<std::str::Chars<'_> as Iterator>::rev`,
+  `map`, `filter`, `skip`, review round 2). `Iterator` must be the standard trait
+  (`_std_iterator`), on a type under a trusted standard root. A `map` given a `move` closure that
+  holds a copy holds it; one given a closure that borrows the local holds none.
+- A binding that may hold a copy and may point into the local (`Body.pointing_copies_at`) is said
+  to hold a copy "unless it only points into it" (`copy_hazards(reads="pointing")`). The advice
+  then doesn't offer to change the copy.
 - A cast to a type naming a function (`as Box<dyn Fn() -> usize>`) is no call: only a statement
   with a `return:` edge is one.
 - `Body._only_measures` proves a call the standard library's that only measures or compares, so
