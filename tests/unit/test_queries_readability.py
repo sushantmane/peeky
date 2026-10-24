@@ -200,16 +200,19 @@ def test_values_a_change_moved_tell_nothing_of_alignment(store):
     ):
         (note,) = evidence.run_query(store, "diff", {"a": 1, "b": b})["notes"]
         assert "do not settle" not in note and "join --param" not in note, note
-        assert "the hits line up as" not in note and "line up by" not in note, note
+        assert "hits line up" not in note and "pair by" not in note, note
         short = cause.split(" (")[0].removesuffix(" and")
+        full = cause.removesuffix(" and")
         assert note == (
-            f"{start} between the runs at each of the 32 hits, but it reads alike at some "
-            f"hits, which could still trade places; `db.count` differs after {cause} may "
-            f"follow from {'them' if b == 2 else 'it'}, so this check leaves it out; but runs "
-            f"1 and {b} saw `db.stable`'s values at other hits (run {b}'s hit 10 matches run 1's "
-            f"hit 9: 1): `db.stable` may differ because of {short}, so this does not prove a "
-            "reorder, but it keeps Peeky from saying the hits line up; no captured selector "
-            "tells the hits apart, so `queries join` could not pair them"
+            "hits may not line up: the calls may have come in another order or number\n"
+            f"- runs 1 and {b} saw `db.stable`'s values at other hits (run {b}'s hit 10 matches "
+            "run 1's hit 9: 1)\n"
+            f"- `db.stable` may differ because of {full}, so this does not prove a reorder\n"
+            f"- {start} between the runs at each of the 32 hits, but it reads alike at some "
+            "hits, which could still trade places\n"
+            f"- `db.count` differs after {short} and may follow from "
+            f"{'them' if b == 2 else 'it'}, so this check leaves it out\n"
+            "- no captured selector tells the hits apart, so `queries join` could not pair them"
         )
 
 
@@ -229,12 +232,15 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
         changes=[(hit, "db.count", "1", "0", hit - 1, 80) for _, hit, _, _ in SETS],
     )
     assert evidence.run_query(store, "diff")["notes"] == [
-        "`ms` agrees between the runs at each of the 32 hits, and its value is different at "
-        "every hit, so pairing hits by number pairs them as `queries join` by it would, though "
-        "that does not prove the hits are the same moments; but runs 1 and 2 saw "
-        "`db.stable`'s values at other hits (run 2's hit 10 matches run 1's hit 9: 1): "
-        "`db.stable` may differ because of the interventions (run 2's on `db.count` in main), "
-        "so this does not prove a reorder, but it keeps Peeky from saying the hits line up"
+        "hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique "
+        "across these hits\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=ms` would, but that does not prove the hits are the same moments\n"
+        "- runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 10 matches run 1's "
+        "hit 9: 1)\n"
+        "- that alternate alignment does not settle whether the calls were reordered: "
+        "`db.stable` may differ because of the interventions (run 2's on `db.count` in main), or "
+        "match by chance"
     ]
 
 
@@ -248,14 +254,16 @@ def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
         edit="--- a/a.py\n",
     )
     (note,) = evidence.run_query(store, "diff")["notes"]
-    assert "the hits line up by" not in note and "the hits line up as" not in note, note
+    assert "hits line up" not in note, note
     assert note == (
-        "`key` agrees between the runs at each of the 3 hits, and its value is different at "
-        "every hit, so pairing hits by number pairs them as `queries join` by it would, though "
-        "that does not prove the hits are the same moments; but runs 1 and 2 saw the same "
-        "values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B'): `call` "
-        "may differ because of the edit, so this does not prove a reorder, but it keeps Peeky "
-        "from saying the hits line up"
+        "hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique "
+        "across these hits\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
+        "--param key=key` would, but that does not prove the hits are the same moments\n"
+        "- runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches "
+        "run 1's hit 2: 'B')\n"
+        "- that alternate alignment does not settle whether the calls were reordered: `call` "
+        "may differ because of the edit, or match by chance"
     )
 
 
@@ -272,9 +280,9 @@ def test_a_candidate_that_changes_every_value_gets_a_short_note(store):
             edit=edit,
         )
     assert evidence.run_query(store, "diff")["notes"] == [
-        "the values cannot show whether the hits line up: `previous` and `self.items[2]` "
-        "differ after the edit and may follow from it, and no other selector both agrees "
-        "between the runs and changes from hit to hit"
+        "hits may not line up: the values cannot show whether they do\n"
+        "- `previous` and `self.items[2]` differ after the edit and may follow from it\n"
+        "- no other selector both agrees between the runs and changes from hit to hit"
     ]
 
 
@@ -286,8 +294,9 @@ def test_agreement_is_said_as_agreement_between_the_runs(store):
         saved(store, [{"payer": p, "e.cents": c} for p, c in zip(payers, cents)], line=72)
     (note,) = evidence.run_query(store, "diff")["notes"]
     assert note.startswith(
-        "`e.cents` agrees between the runs at each of the 3 hits, but `payer` differs at 2 "
-        "of them: the values do not show that a hit is the same moment in both"
+        "hits may not line up: `payer` differs at 2 of the 3 hits\n- `e.cents` agrees between "
+        "the runs at each of the 3 hits, but that does not show that a hit is the same moment "
+        "in both"
     ), note
     # kitty's own candidate (settle before the sort): `payer` follows from the edit.
     saved(
@@ -297,10 +306,11 @@ def test_agreement_is_said_as_agreement_between_the_runs(store):
         edit="--- a/src/main.rs\n",
     )
     assert evidence.run_query(store, "diff", {"a": 1, "b": 3})["notes"] == [
-        "`e.cents` agrees between the runs at each of the 3 hits, and its value is different "
-        "at every hit, so pairing hits by number pairs them as `queries join` by it would, "
-        "though that does not prove the hits are the same moments; `payer` differs after the "
-        "edit and may follow from it, so this check leaves it out"
+        "hits pair by `e.cents`: it agrees between the runs at each of the 3 hits and is unique "
+        "across these hits\n"
+        "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 "
+        "--param key=e.cents` would, but that does not prove the hits are the same moments\n"
+        "- `payer` differs after the edit and may follow from it, so this check leaves it out"
     ]
 
 
@@ -451,8 +461,9 @@ def test_diff_notes_read_the_runs_its_rows_came_from(store, monkeypatch):
     assert {(row["run_a"], row["run_b"]) for row in result["rows"]} == {(1, 2)}
     (note,) = result["notes"]
     assert note.startswith(
-        "`key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the same "
-        "values of `call` in another order"
+        "hits may not line up: the values do not settle how they pair\n- `key` agrees between "
+        "the runs at each of the 2 hits\n- but runs 1 and 2 saw the same values of `call` in "
+        "another order"
     ), note
 
 
@@ -492,8 +503,9 @@ def test_a_run_evicted_after_the_rows_never_silences_the_alignment_note(store, m
     saving[0].join()
     (note,) = result["notes"]
     assert note.startswith(
-        "`key` agrees between the runs at each of the 2 hits, but runs 1 and 2 saw the same "
-        "values of `call` in another order"
+        "hits may not line up: the values do not settle how they pair\n- `key` agrees between "
+        "the runs at each of the 2 hits\n- but runs 1 and 2 saw the same values of `call` in "
+        "another order"
     ), note
     # The probe did save run 501, and it evicted run 1, once the query was done.
     runs = evidence.query(store, "SELECT MIN(run_id) AS first, MAX(run_id) AS last FROM runs")
