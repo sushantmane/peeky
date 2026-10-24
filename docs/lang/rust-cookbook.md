@@ -1357,6 +1357,9 @@ holds for integer locals too.
 - Some lines can only stop inside such a statement. An example is a statement's later line:
   `s.b];` of `let arr = [s.a,` / `k,` / `s.b];`. A probe there is refused before it runs, naming
   that line.
+- A copy that the statement stores through a pointer counts as a read too. `vec![x, 1]` stores
+  `x`'s copy in its Box through a raw pointer. So at `+ other();` under
+  `let t = total(vec![x, 1])`, `x` is refused: the statement has already read it, at the first line.
 
 Peeky follows the MIR in the order the code runs. A temporary made before the local took its
 current value holds an older value, so it doesn't block a change. For example, in
@@ -1446,6 +1449,12 @@ copy keeps the old value as the program's own: `let a = s.x;`.
 A call given `&mut x` after the copy, as `let y = x; keep(&mut x);`, may change `x`. Then `y` may
 no longer hold a copy of its value, and the refusal says only that it may:
 ``the program's own `y` (at line 34) may hold a copy of `x` that it goes on with``.
+
+A copy stored through a pointer counts too. After `let p = slot.as_mut_ptr();` and `*p = x;`,
+`slot` may hold a copy of `x`, and a later `*p` reads it. Peeky doesn't follow which element `p`
+points at, so the refusal says that `slot` may hold a copy. Where a later write through a pointer
+may overwrite the copy, as `b[0] = 7;` does after `let mut b = Box::new([x, 1]);`, the refusal
+says only that the program may hold one.
 
 To change the value, change it before the copy is made, or change the copy.
 

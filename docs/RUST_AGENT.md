@@ -369,7 +369,12 @@ used again. Such a temporary is:
 - a copy of the local, or of a field;
 - a read through a pointer that may point into it;
 - what a call given such a pointer returns. `format_args!`'s calls don't count, because they keep
-  the pointer, unless the crate itself names something `core` or `std` that could pass for them.
+  the pointer, unless the crate itself names something `core` or `std` that could pass for them;
+- what a store through a pointer of such a value writes into (#311). `vec![x, 1]` fills its Box by
+  `((*_10).1: …) = [move _7, const 1_u32]`, then makes the Vec of it. Each local the store may
+  write into holds it: the pointer's aliases (`_aliases`, the Box and the Vec) and what they borrow
+  (`Body._stored_into`). A binding among them holds the program's own copy; a pointer binding
+  (`p` of `*p = x;`) only points at one. `_pointers_to` follows `p = slot.as_mut_ptr()` too.
 
 A pointer that Peeky doesn't follow may point into any local: a read through a reference variable,
 or a call given one. A raw pointer counts as any other, since the source alone doesn't show unsafe
@@ -402,6 +407,14 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   it: "the program's own `y` (at line 34) may hold a copy of it that it goes on with".
 - It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
   a coroutine's body. `rust._copy_reason` decides the wording.
+- A store through a pointer surely into a local, or into what it owns, of a value surely holding a
+  read, makes that local hold it (`Body._read_store`). Such a pointer is a borrow of the local, a
+  Box's own pointer (`_BOX_POINTER`, `vec!`'s), or a copy or reborrow of one. A Box written
+  through itself (`ShallowInitBox`) counts too.
+- A store through a pointer that may point into what holds a read ends that holder: one of
+  `_stored_into`, or any, through a pointer loaded from memory. So does a call given an alias of it
+  that is a raw pointer or `&mut` (`_read_clobber`), and a drop through one. Only a local whose
+  storage is borrowed, or whose type may hold a pointer, can be reached (`_addressable`).
 - Otherwise it hedges, by what each other reading finds:
   - `reads="value"`: reads by value, on some path, of what may overlap the changed part;
   - `reads="whole"`: the same for the whole local, so another part's read;
