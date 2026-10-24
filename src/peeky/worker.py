@@ -2693,7 +2693,15 @@ class DebugWorker:
                 "name": args["name"],
                 "before": before,
                 "after": after,
-                **_set_type(variable),
+                **_written(
+                    runtime,
+                    variable,
+                    changed,
+                    before,
+                    after,
+                    frame=self.reference_frames.get(ref),
+                    root=variable,
+                ),
                 **({"note": unread_note} if unread_note else {}),
             }
         if operation == "breakpoints":
@@ -4261,7 +4269,12 @@ class DebugWorker:
             )
         if confirm := getattr(runtime, "confirm_mutation", None):
             confirm(selector, value, before, after, variable=variable)
-        return {"name": name, "before": before, "after": after, **_set_type(variable)}
+        return {
+            "name": name,
+            "before": before,
+            "after": after,
+            **_written(runtime, variable, reread[0], before, after),
+        }
 
     def _set_scalar_member(
         self, record, runtime, frame, ancestry, trail, reference, variable, args, previewed=False
@@ -4337,7 +4350,12 @@ class DebugWorker:
         runtime.confirm_mutation(name, value, before, after, variable=variable)
         if previewed:
             self._confirm_preview(record, runtime, name, after)
-        return {"name": name, "before": before, "after": after, **_set_type(variable)}
+        return {
+            "name": name,
+            "before": before,
+            "after": after,
+            **_written(runtime, variable, found[0], before, after, frame, root, steps),
+        }
 
     def text_stop(self):
         """The stop's reason as a text change judges where in its line the stop is
@@ -4460,12 +4478,7 @@ class DebugWorker:
         )
         changed = change_text(variable, text, memory, relist, kind, shape)
         runtime.assert_current()
-        result = {
-            "name": name,
-            "before": changed["before"],
-            "after": changed["after"],
-            **_set_type(variable),
-        }
+        result = {"name": name, "before": changed["before"], "after": changed["after"]}
         if kind == "std":
             # What the program took from it before cannot be seen, nor changed (#164).
             result["note"] = STRING_VIEW_NOTE
@@ -4678,12 +4691,28 @@ class DebugWorker:
         return self.last_cleanup if adapter else None
 
 
-def _set_type(variable):
-    """{"type": the changed value's type, as the debugger lists it}, or {}: a change's
-    result carries it, so that a write of the value already there is told by its type
-    (a Java `char` shows raw, `+`; a float's text may be rounded)."""
-    kind = variable.get("type") if isinstance(variable, dict) else None
-    return {"type": kind[:300]} if isinstance(kind, str) and kind else {}
+def _written(runtime, variable, reply, before, after, frame=None, root=None, steps=()):
+    """What a change's result says of the value it wrote, besides its text: ``type``, the
+    value's type after the write, as the debugger's reply to it or a read after it names
+    it (a Python write can change it: `callback` from a function to `None`); and
+    ``unchanged``, True where the write left the value as it was: the text read before
+    and after is the same, and the runtime proves that text exact for the value's type
+    (``exact_text``: a C, C++ or Rust built-in integer, bool or char by the type the
+    debug information gives, through typedefs; a Java primitive but a float or double;
+    Python's True, False or None). ``variable`` is the value as read before the write,
+    and ``frame``, ``root`` and ``steps`` where it is (a root local, or a field or
+    element ``steps`` reach from it)."""
+    kind = reply.get("type") if isinstance(reply, dict) else None
+    written = {"type": kind[:300]} if isinstance(kind, str) and kind else {}
+    exact = getattr(runtime, "exact_text", None)
+    if isinstance(before, str) and before == after and exact is not None:
+        try:
+            proven = exact(variable, frame=frame, root=root, steps=steps) is True
+        except Exception:
+            proven = False
+        if proven:
+            written["unchanged"] = True
+    return written
 
 
 def _frame_identity(frame):

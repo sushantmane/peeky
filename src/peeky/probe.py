@@ -4125,30 +4125,48 @@ def run_probe(
             where = f"{probe.program}:{line}" + (
                 f" of the candidate (line {probe.line} before the edit)" if probe.edit else ""
             )
-            # The run's changes (eleventh evaluation: six --set-at changes kept line 33
-            # from running, and NO_STOP said to pick a line the program executes). Only
-            # writes that changed a value's text count, and nothing proves one came before
-            # the line's chance to run: the message names them, and claims no cause.
+            # The run's writes (eleventh evaluation: six --set-at changes kept line 33
+            # from running, and NO_STOP said to pick a line the program executes): each a
+            # change its text shows, one proven to change nothing (``unchanged``), or one
+            # whose text stayed but which may still be a change (a new String, a Python
+            # `1000`). Nothing proves that one came before the line's chance to run: the
+            # message names them, and claims no cause. Only where every write is a proven
+            # no-op is the line blamed, as with none.
             made = [change for change in changes if change.get("before") != change.get("after")]
-            at = [str(n) for n in sorted({c["line"] for c in made if type(c.get("line")) is int})]
-            ran = (
-                f"The run made {len(made)} change{'s' if len(made) > 1 else ''} by --set-at"
-                + (
-                    f" (at line{'s' if len(at) > 1 else ''} "
-                    + (f"{', '.join(at[:-1])} and {at[-1]}" if len(at) > 1 else at[0])
-                    + ")"
-                    if at
-                    else ""
+            alike = [
+                change
+                for change in changes
+                if change.get("before") == change.get("after") and not unchanged(change)
+            ]
+
+            def lines_of(found):
+                lines = sorted(
+                    {str(c["line"]) for c in found if type(c.get("line")) is int}, key=int
                 )
-                + ": compare with a run without them"
-            )
-            if code == 0 and made:
+                if not lines:
+                    return ""
+                listed = f"{', '.join(lines[:-1])} and {lines[-1]}" if len(lines) > 1 else lines[0]
+                return f" (at line{'s' if len(lines) > 1 else ''} {listed})"
+
+            ran = [
+                f"{len(made)} change{'s' if len(made) > 1 else ''} by --set-at{lines_of(made)}"
+                if made
+                else "",
+                f"{len(alike)} write{'s' if len(alike) > 1 else ''} by --set-at that kept the "
+                f"same text, not proven to change nothing{lines_of(alike)}"
+                if alike
+                else "",
+            ]
+            wrote = bool(made or alike)
+            ran = "The run made " + ", and ".join(part for part in ran if part)
+            ran += ": compare with a run without them"
+            if code == 0 and wrote:
                 message = f"The program finished without stopping at {where}. {ran}"
                 hint = (
                     "Probe the line without the changes to compare; if it never stops there "
                     "either, pick a line the program executes (`peeky describe`)."
                 )
-            elif code is not None and code != 0 and made:
+            elif code is not None and code != 0 and wrote:
                 message = (
                     f"The program failed (exit code {code}) without stopping at {where}; its "
                     f"output says why. {ran}"
@@ -4157,7 +4175,7 @@ def run_probe(
                     "Read its output, and check its arguments and input; probe without the "
                     "changes to compare."
                 )
-            elif code is None and made:
+            elif code is None and wrote:
                 message = (
                     f"The program ended without stopping at {where} (exit code unknown). {ran}"
                 )
@@ -4528,36 +4546,13 @@ _WHOLE_SCALAR = re.compile(
 
 _JAVA_PRIMITIVES = frozenset(("byte", "short", "int", "long", "float", "double", "boolean", "char"))
 
-# A value whose text shows it exactly: an integer, a boolean, a character or null. A
-# float's text may be rounded; a text, or a Python object, may be a new one alike.
-_EXACT = re.compile(r"-?\d+|true|false|True|False|None|null|nullptr|'(?:[^'\\]|\\.)+'")
-_PYTHON_SINGLETONS = frozenset(("True", "False", "None"))
-# Java's primitives whose text is exact: java-debug shows a `char` raw (`+`, no quotes).
-_JAVA_EXACT = frozenset(("byte", "short", "int", "long", "boolean", "char"))
-# A C, C++ or Rust floating-point type, whose text may be rounded.
-_FLOATING = re.compile(r"\b(?:float|double|_Float\d+|__fp16|f16|f32|f64|f128)\b")
 
-
-def unchanged(change, language):
-    """Whether an intervention wrote the value its target already held: the values read
-    before and after it are alike, and their text is exact for the target's ``type``
-    (as the change's result names it) in its language. Java: a primitive but a `float`
-    or `double` (a `char` shows raw, `+`); without a type, ``_EXACT``. C, C++ and Rust:
-    ``_EXACT``, never a floating-point type. Python, or a language not known (a Python
-    run has no target identity): only True, False and None, the objects that are always
-    the same."""
-    before, after = change.get("before"), change.get("after")
-    if not isinstance(before, str) or before != after:
-        return False
-    kind = change.get("type") if isinstance(change.get("type"), str) else None
-    language = language or "python"
-    if language == "python":
-        return before in _PYTHON_SINGLETONS
-    if language.startswith("java") and kind is not None:
-        return kind in _JAVA_EXACT
-    if kind is not None and _FLOATING.search(kind):
-        return False
-    return bool(_EXACT.fullmatch(before))
+def unchanged(change):
+    """Whether an intervention wrote the value its target already held, as the worker
+    proved it (``unchanged`` in its result: the same text before and after, and a type
+    whose text is exact; see worker._written). Never from the text alone: a Java String
+    or a Python `1000` written alike is a new object, and a float's text may be rounded."""
+    return change.get("unchanged") is True and change.get("before") == change.get("after")
 
 
 def _holds(selector, target):
@@ -4683,7 +4678,6 @@ def _table(result, short_names=True):
     if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
-    language = (result.get("target_identity") or {}).get("language") or ""
 
     def key_of(change):
         return (f"{str(change.get('at')).partition('@')[0]}@{ALL}", change.get("name"))
@@ -4709,7 +4703,7 @@ def _table(result, short_names=True):
         hit = f", hit {change.get('hit')}" if change.get("all") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
-            + (", no change" if unchanged(change, language) else "")
+            + (", no change" if unchanged(change) else "")
             + (
                 f"  (--set-at line {at}{hit}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
@@ -4730,7 +4724,7 @@ def _table(result, short_names=True):
         )
         # A write of the value already there is counted apart (eleventh evaluation: 35 of
         # 42 `set free: 0 -> 0` writes were counted as changes).
-        same = sum(unchanged(change, language) for change in changes)
+        same = sum(unchanged(change) for change in changes)
         made = len(changes) - same
         counted = f"{len(changes)} more " + (
             f"change{'s' if made > 1 else ''} by --set-at line {at}{span}"

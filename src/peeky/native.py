@@ -4341,6 +4341,20 @@ _UNJUDGED = {
 }
 
 
+# The base types whose text LLDB shows whole and exact (NativeSession.exact_text): an
+# integer, a bool, a character. Never a float's, which may be rounded.
+EXACT_ENCODINGS = frozenset(
+    (
+        "DW_ATE_signed",
+        "DW_ATE_unsigned",
+        "DW_ATE_boolean",
+        "DW_ATE_signed_char",
+        "DW_ATE_unsigned_char",
+        "DW_ATE_UTF",
+    )
+)
+
+
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
     reports_unavailable_as_text = True
@@ -8149,6 +8163,29 @@ class NativeSession:
             "debugger may read a struct, class or reference from the wrong place, so "
             "Peeky shows only scalar returns"
         )
+
+    def exact_text(self, variable, frame=None, root=None, steps=()):
+        """Whether the value a change wrote shows its whole value as text, so that the same
+        text before and after it proves the write changed nothing: a built-in integer,
+        bool or character, by the type the debug information gives the root local
+        ``root`` of ``frame`` (or the field or element ``steps`` reach from it), through
+        typedefs and qualifiers. Never by the name the debugger shows (`typedef float
+        int64_t;` is a float). False where Peeky cannot read that type."""
+        from peeky.fields import _strip, settable_member
+
+        if frame is None or not isinstance(root, dict):
+            return False
+        try:
+            kind, _, graph = self._root_type(frame, root)
+            name = str(root.get("name"))
+            if steps:
+                # Only a 16- to 64-bit integer gets past (fields.settable_member).
+                settable_member(graph, kind, name, list(steps))
+                return True
+            _, node, _ = _strip(graph, kind, name)
+        except Exception:
+            return False
+        return node[0] == "base" and node[2] in EXACT_ENCODINGS
 
     def returns_nothing(self, frame):
         """Whether the C or C++ function ``frame`` runs (a step's origin, as listed before

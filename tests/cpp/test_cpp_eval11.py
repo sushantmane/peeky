@@ -106,3 +106,46 @@ def test_a_step_onto_the_breakpoint_line_leaves_its_pass_to_the_next_hit(program
         assert row["value"] == "1", row
     finally:
         main(["session", "close"])
+
+
+TYPEDEF = """#include <cstdio>
+
+struct Box {
+    int count;
+    long total;
+};
+
+int main() {
+    typedef float int64_t;
+    int64_t lossy = 1;
+    int plain = 7;
+    Box box{3, 4};
+    std::printf("TD:%d %.0f %d\\n", plain, lossy, box.count); /* STOP */
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_write_is_proven_a_no_op_by_its_debug_type_never_its_name(program, cxx, capsys):
+    # Review round 2 of PR #314: `typedef float int64_t;` (as in test_cpp_cli.py) read as
+    # an integer by its name, so `lossy: 1 -> 1` was marked as no change. The type the
+    # debug information gives, through typedefs, decides: a float's text proves nothing.
+    (program / "td.cpp").write_text(TYPEDEF)
+    stop = next(i for i, text in enumerate(TYPEDEF.splitlines(), 1) if "/* STOP */" in text)
+    command = ["probe", "td.cpp", "--at", str(stop), "--capture", "plain", "--no-save"]
+    command += ["--set", "lossy=1", "--set", "plain=7", "--set", "box.count=3"]
+    assert main([*command, "--json", "--quiet"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    changes = {change["name"]: change for change in result["interventions"]}
+    assert [(c["before"], c["after"]) for c in changes.values()] == [
+        ("1", "1"),
+        ("7", "7"),
+        ("3", "3"),
+    ]
+    assert "unchanged" not in changes["lossy"], changes
+    assert changes["plain"]["unchanged"] is True and changes["box.count"]["unchanged"] is True
+    assert main(command) == 0
+    text = capsys.readouterr().out
+    assert "\nset lossy: 1 -> 1\n" in text, text
+    assert "set plain: 7 -> 7, no change" in text and "set box.count: 3 -> 3, no change" in text

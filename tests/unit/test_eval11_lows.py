@@ -81,10 +81,18 @@ def test_one_change_past_the_first_few_is_shown_whole():
     assert "set n: 2 more changes by --set-at line 26@all, at hit 4 (" in text, text
 
 
+def _proven(changes):
+    """The worker's proof that a write left the value as it was (worker._written)."""
+    return [
+        {**change, "unchanged": True} if change["before"] == change["after"] else change
+        for change in changes
+    ]
+
+
 def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
     # seats 3: `set free: 0 -> 0` counted as a change; 35 of the @all's 42 writes were.
     pairs = [("3", "0"), ("0", "0"), ("3", "0"), ("0", "0"), ("2", "0"), ("0", "0"), ("1", "0")]
-    changes = _all("free", pairs, function="Seats.block(boolean[],int)")
+    changes = _proven(_all("free", pairs, function="Seats.block(boolean[],int)"))
     text = _table(_result(interventions=changes, language="java"))
     assert "set free: 3 -> 0  (--set-at line 26@all, hit 1, in Seats.block(" in text, text
     assert "set free: 0 -> 0, no change  (--set-at line 26@all, hit 2, in Seats.block(" in text
@@ -92,69 +100,126 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
         "set free: 4 more writes by --set-at line 26@all, at hits 4 to 7: 2 changes and 2 with "
         "no change (`--json` lists each)"
     ) in text, text
-    every = _all("free", [("0", "0")] * 5)
+    every = _proven(_all("free", [("0", "0")] * 5))
     text = _table(_result(interventions=every, language="java"))
     assert "set free: 2 more writes by --set-at line 26@all, at hits 4 to 5, each with no" in text
     # Review of PR #314: java-debug shows a char bare, so five `+ -> +` writes were "2 more
-    # changes". The change's type decides it, for a root local (`sign`) and a field alike.
+    # changes". The worker's proof decides it, for a root local (`sign`) and a field alike.
     for name in ("sign", "chars.mark"):
-        chars = [{**change, "type": "char"} for change in _all(name, [("+", "+")] * 5)]
+        chars = _proven(_all(name, [("+", "+")] * 5))
         text = _table(_result(interventions=chars, language="java"))
         assert f"set {name}: + -> +, no change  (--set-at line 26@all, hit 3, in main)" in text
         assert (
             f"set {name}: 2 more writes by --set-at line 26@all, at hits 4 to 5, each with no "
             "change (`--json` lists each)"
         ) in text, text
-        # Without a type (an older worker), a bare text proves nothing.
-        text = _table(_result(interventions=_all(name, [("+", "+")] * 5), language="java"))
-        assert f"set {name}: 2 more changes by --set-at line 26@all, at hits 4 to 5 (" in text
-    for before, language, kind, same in (
-        ("+", "java", "char", True),
-        ("+", "java", None, False),
-        ("0", "java", "int", True),
-        ("true", "java", "boolean", True),
-        ("1.0", "java", "double", False),
-        ("0", "java", "float", False),
-        ("abc", "java", "java.lang.String", False),
-        ("1", "c", "double", False),
-        ("1", "cpp", "const float", False),
-        ("1", "rust", "f64", False),
-        ("1", "c", "int", True),
-        ("'a'", "rust", "char", True),
-        ("1", "python", "int", False),
-    ):
-        change = {"name": "x", "before": before, "after": before, "type": kind}
-        assert probe_module.unchanged(change, language) is same, (before, language, kind)
-    # Only an exact value's text shows it unchanged: never a float's (it may be rounded),
-    # a text, or a Python object other than True, False and None.
-    for before, language, same in (
-        ("0", "c", True),
-        ("'a'", "cpp", True),
-        ("true", "rust", True),
-        ("null", "java", True),
-        ("0.1", "cpp", False),
-        ('"a"', "java", False),
-        ("0x0000000100000000", "c", False),
-        ("1000", "python", False),
-        ("0", "", False),
-        ("None", "python", True),
-    ):
-        change = {"name": "x", "before": before, "after": before}
-        assert probe_module.unchanged(change, language) is same, (before, language)
-    assert not probe_module.unchanged({"name": "x", "before": "1", "after": "2"}, "c")
+    # Round 2: the text alone is never proof (a Java String, a Python `1000`, a float, or
+    # an older worker's result): such writes are counted as changes, never as no-ops.
+    alike = _all("x", [("1000", "1000")] * 5)
+    text = _table(_result(interventions=alike, language="python"))
+    assert "set x: 1000 -> 1000  (--set-at line 26@all, hit 1, in main)" in text, text
+    assert "set x: 2 more changes by --set-at line 26@all, at hits 4 to 5 (" in text, text
+    assert not probe_module.unchanged({"before": "1", "after": "1"})
+    assert not probe_module.unchanged({"before": "1", "after": "2", "unchanged": True})
+    assert probe_module.unchanged({"before": "1", "after": "1", "unchanged": True})
     # One change, not an @all's, is marked too.
-    single = [{"name": "x", "before": "5", "after": "5", "hit": 1, "capture_hit": 1}]
+    single = [{"name": "x", "before": "5", "after": "5", "hit": 1, "unchanged": True}]
     assert "set x: 5 -> 5, no change" in _table(_result(interventions=single))
 
 
-def test_a_change_carries_its_values_type():
-    # Review of PR #314: what tells a Java char's `+ -> +` from a text's.
-    from peeky.worker import _set_type
+class _Runtime:
+    def __init__(self, exact):
+        self.exact, self.asked = exact, []
 
-    assert _set_type({"name": "sign", "type": "char", "value": "+"}) == {"type": "char"}
-    assert _set_type({"name": "x", "value": "1"}) == {}
-    assert _set_type({"type": ""}) == {} and _set_type(None) == {}
-    assert _set_type({"type": "T" * 400}) == {"type": "T" * 300}
+    def exact_text(self, variable, frame=None, root=None, steps=()):
+        self.asked.append((variable["name"], frame, root, steps))
+        return self.exact
+
+
+def test_a_change_says_its_type_after_the_write_and_whether_it_changed_anything():
+    # Round 2 of PR #314: the type came from the value read before the write, so a Python
+    # `callback` set from `print` to `None` said `builtin_function_or_method`.
+    from peeky.worker import _written
+
+    callback = {"name": "callback", "type": "builtin_function_or_method", "value": "<print>"}
+    reply = {"value": "None", "type": "NoneType"}
+    assert _written(_Runtime(True), callback, reply, "<print>", "None") == {"type": "NoneType"}
+    # No type in the reply: none is said.
+    assert _written(_Runtime(True), callback, {"value": "None"}, "<print>", "None") == {}
+    # The same text proves nothing until the runtime proves it exact for the value's type.
+    flag = {"name": "flag", "type": "bool", "value": "True"}
+    proof = _Runtime(True)
+    assert _written(proof, flag, {"type": "bool"}, "True", "True", "frame", flag, ("a",)) == {
+        "type": "bool",
+        "unchanged": True,
+    }
+    assert proof.asked == [("flag", "frame", flag, ("a",))]
+    assert _written(_Runtime(False), flag, {"type": "bool"}, "True", "True") == {"type": "bool"}
+    assert _written(object(), flag, {"type": "bool"}, "True", "True") == {"type": "bool"}
+    assert _written(_Runtime(True), {"name": "t"}, {"type": "T" * 400}, "1", "2") == {
+        "type": "T" * 300
+    }
+
+
+def test_each_runtime_proves_a_no_op_by_the_values_type_never_its_name():
+    from peeky.adapters import PythonAdapter
+    from peeky.java import JavaSession
+
+    # Java: a primitive but a float or double (a primitive's name is a keyword).
+    for kind, exact in (
+        ("char", True),
+        ("int", True),
+        ("boolean", True),
+        ("long", True),
+        ("double", False),
+        ("float", False),
+        ("String", False),
+        ("Integer", False),
+    ):
+        assert JavaSession.exact_text({"type": kind}) is exact, kind
+    # Python: True, False and None, which are always the same objects.
+    for kind, value, exact in (
+        ("bool", "True", True),
+        ("NoneType", "None", True),
+        ("int", "1000", False),
+        ("str", "'a'", False),
+        ("MyFlag", "True", False),
+    ):
+        assert PythonAdapter.exact_text({"type": kind, "value": value}) is exact, (kind, value)
+
+    # C, C++ and Rust: the type the debug information gives, through typedefs. Round 2:
+    # `typedef float int64_t;` (tests/cpp/test_cpp_cli.py) was taken for an integer.
+    graph = {
+        1: ("typedef", "int64_t", 2),
+        2: ("base", "float", "DW_ATE_float", 4),
+        3: ("typedef", "count_t", 4),
+        4: ("qualifier", "restrict", 5),
+        5: ("base", "long", "DW_ATE_signed", 8),
+        6: ("base", "bool", "DW_ATE_boolean", 1),
+        7: ("base", "char", "DW_ATE_signed_char", 1),
+        8: ("pointer", "", 5, 8),
+        9: ("base", "double", "DW_ATE_float", 8),
+    }
+
+    class Session:
+        exact_text = NativeSession.exact_text
+
+        def __init__(self, kind):
+            self.kind = kind
+
+        def _root_type(self, frame, root):
+            if self.kind is None:
+                from peeky.fields import Unsettable
+
+                raise Unsettable("not read")
+            return self.kind, True, graph
+
+    lossy = {"name": "lossy", "type": "int64_t", "value": "1"}
+    for kind, exact in ((1, False), (3, True), (6, True), (7, True), (8, False), (9, False)):
+        assert Session(kind).exact_text(lossy, frame={}, root=lossy) is exact, kind
+    # Where Peeky cannot read the type, or has no frame: never proven.
+    assert Session(None).exact_text(lossy, frame={}, root=lossy) is False
+    assert Session(3).exact_text(lossy) is False
 
 
 def test_a_return_row_names_the_line_it_returned_to():
@@ -449,8 +514,10 @@ class _Stops:
     """Stops once at each of ``lines`` (a --set-at line's stops), never at the --at line,
     then ends with ``exit_code``. `trend` holds "1" until a change."""
 
-    def __init__(self, lines, exit_code=0):
+    def __init__(self, lines, exit_code=0, proven=True):
         self.lines, self.exit_code, self.value, self.line = list(lines), exit_code, "1", None
+        # Whether the worker proves a write of the same text a no-op (worker._written).
+        self.proven = proven
 
     def dispatch(self, operation, args):
         if operation == "launch":
@@ -490,7 +557,14 @@ class _Stops:
             }
         if operation == "set_variable":
             before, self.value = self.value, args["value"]
-            return {"name": args["name"], "before": before, "after": args["value"], "type": "int"}
+            same = self.proven and before == args["value"]
+            return {
+                "name": args["name"],
+                "before": before,
+                "after": args["value"],
+                "type": "int",
+                **({"unchanged": True} if same else {}),
+            }
         if operation == "report":
             return {"output": "", "output_truncated": False, "exit_code": self.exit_code}
         return {}
@@ -546,17 +620,18 @@ def test_no_stop_after_changes_counts_them_and_claims_no_cause(
     assert result["error"]["hint"] == "Pick a line the program executes; see `peeky describe`."
 
 
-def _no_stop(monkeypatch, lines, set_at):
-    worker = _Stops(lines)
+def _no_stop(monkeypatch, lines, set_at, proven=True):
+    worker = _Stops(lines, proven=proven)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     result = probe_module.run_probe("/w", Probe("tides.c", 8, ("trend",), set_at=set_at))
     assert result["status"] == "no-stop", result
     return result
 
 
-def test_no_stop_after_writes_of_the_value_already_there_blames_the_line(monkeypatch):
+def test_no_stop_after_writes_proven_to_change_nothing_blames_the_line(monkeypatch):
     # Review of PR #314: `trend: 1 -> 1` counted as a change ("after 1 change by --set-at:
-    # they may have kept the line from running"). A write that changed nothing is not one.
+    # they may have kept the line from running"). A write proven to change nothing is not
+    # one: where every write is such, the line is blamed, as with none.
     result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "1")))
     assert [(c["before"], c["after"]) for c in result["interventions"]] == [("1", "1")] * 2
     assert result["error"]["message"] == (
@@ -564,11 +639,49 @@ def test_no_stop_after_writes_of_the_value_already_there_blames_the_line(monkeyp
         "executable lines"
     )
     assert result["error"]["hint"] == "Pick a line the program executes; see `peeky describe`."
-    # One no-op and one change: the change alone is counted.
+    # One proven no-op and one change: the change alone is counted.
     result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "5")))
-    assert (
-        "The run made 1 change by --set-at (at line 9): compare with"
-        in (result["error"]["message"])
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8. The run made 1 change by "
+        "--set-at (at line 9): compare with a run without them"
+    )
+
+
+def test_no_stop_after_writes_of_the_same_text_not_proven_no_ops_names_them(monkeypatch):
+    # Round 2 of PR #314: the same text is not always a no-op (a Java String written alike
+    # is a new object; a Python `1000` may be another). Such writes are named, never taken
+    # for no-ops, and never blamed on the line.
+    result = _no_stop(
+        monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "1")), proven=False
+    )
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8. The run made 2 writes by "
+        "--set-at that kept the same text, not proven to change nothing (at line 9): "
+        "compare with a run without them"
+    )
+    # A change, a write not proven a no-op, and one proven: the first two are named.
+    worker = _Stops([9, 20, 31])
+
+    def dispatch(operation, args, plain=worker.dispatch):
+        reply = plain(operation, args)
+        if operation == "set_variable" and worker.line == 20:
+            reply.pop("unchanged", None)
+        return reply
+
+    worker.dispatch = dispatch
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    request = Probe(
+        "tides.c",
+        8,
+        ("trend",),
+        set_at=((9, 1, "trend", "0"), (20, 1, "trend", "0"), (31, 1, "trend", "0")),
+    )
+    result = probe_module.run_probe("/w", request)
+    assert [c.get("unchanged") for c in result["interventions"]] == [None, None, True]
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8. The run made 1 change by "
+        "--set-at (at line 9), and 1 write by --set-at that kept the same text, not proven to "
+        "change nothing (at line 20): compare with a run without them"
     )
 
 

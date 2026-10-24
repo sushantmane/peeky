@@ -1089,7 +1089,8 @@ Branch on the exit status:
   were, and says to compare with a run without them:
   `The run made 6 changes by --set-at (at lines 32 and 35): compare with a run without them`.
   Nothing proves that a change came before the line's chance to run, so it claims no cause. A
-  write of the value already there isn't counted.
+  write that kept the same text, but isn't proven to change nothing, is named too. Only where
+  every write is proven to change nothing is the line blamed, as without changes.
 
 #### Example: change a value for one line
 
@@ -1224,12 +1225,15 @@ How `@all` works:
   `interventions`, with its own `at` (`18@4`) and `"all": true`.
   `set_outcomes` says how far each request got ([below](#how-the-evidence-records-changes)).
 - A write of the value already there says `0 -> 0, no change`, and the line that counts the rest
-  counts those apart: `13 more writes …: 5 changes and 8 with no change`. That holds for an exact
-  value, by the changed value's `type`, which each change in JSON carries (a probe's
-  `interventions`, and `session set --json`). Exact are an integer, a
-  boolean, a character or null, and a Java `char`, which java-debug shows bare (`+`). A float's
-  text may be rounded, so it is never marked. In Python, only `True`, `False` and `None` are, since
-  another value may be a new object. Any `set` line in a probe's text is marked so.
+  counts those apart: `13 more writes …: 5 changes and 8 with no change`. The same text alone
+  never proves it. The worker must also prove that the value's type shows its whole value as text:
+  - **C, C++ and Rust:** a built-in integer, bool or character, by the type the debug information
+    gives, through typedefs. So `typedef float int64_t;` is a float, whose text may be rounded.
+  - **Java:** a primitive other than `float` and `double`. java-debug shows a `char` bare: `+`.
+  - **Python:** only `True`, `False` and `None`, since another value may be a new object.
+- Any `set` line in a probe's text is marked so. In JSON, such a change (in a probe's
+  `interventions`, or `session set --json`) has `"unchanged": true`. Each change also has `type`,
+  the value's type after the write, as the debugger names it (LLDB's C name for a Rust value).
 
 #### Where and when a change is made
 

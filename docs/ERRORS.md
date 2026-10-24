@@ -69,6 +69,9 @@ The last column is the `retryable` field.
   lines 32 and 35): compare with a run without them`. Nothing proves that a change came first, so
   it doesn't say that one kept the line from running. Probe the line without the changes to see
   whether it runs.
+- A write that kept the same text but isn't proven to change nothing is named too: `1 write by
+  --set-at that kept the same text, not proven to change nothing`. A Java String or a Python `1000`
+  written alike may be a new object. Only writes proven to change nothing are left out.
 
 ### BUILD_FAILED
 
