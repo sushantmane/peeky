@@ -2602,6 +2602,304 @@ def test_a_statement_header_naming_the_outer_local_hedges_its_note(tmp_path, lan
         )
 
 
+SAME_LINE_UNIT = b"""# 1 "a.c"
+long f(void) {
+    long q = 1;
+    do { static long q = 5; use(q); } while (q-- > 0);
+    use(q); { static long q = 6; use(q); }
+    use(q); { static long q = 7; use(q); } use(q);
+    if (q) { static long q = 8; use(q); } use(q);
+    { static long q = 9; use(q); } { static long q = 10; use(q); }
+    return q;
+}
+"""
+
+
+@pytest.mark.parametrize("entered", ["caller", None, True, False])
+def test_a_line_naming_the_local_outside_a_declarations_scope_hedges_its_note(tmp_path, entered):
+    # #293: `do { static long q = 5; use(q); } while (q-- > 0);` gave the outer `q` the
+    # unhedged "not what the code reads: the code here names the block's `static`", though
+    # the `while` condition runs after that `q` leaves scope; and so did `use(q); { static
+    # long q = 6; use(q); }`, whose first call runs before the block. entered: as in the
+    # header tests above; a stop past the line's first instruction has not run the code
+    # after the block, and Peeky does not tell whether it has run the code before it.
+    session = preprocessing_session(tmp_path, {"a.c": SAME_LINE_UNIT})
+    (tmp_path / "a.c").write_bytes(SAME_LINE_UNIT.split(b"\n", 1)[1])
+    where = "past" if entered is False else None
+
+    def note(line):
+        frame = stopped(SAME_LINE_UNIT, line, where)
+        entering = None if entered == "caller" else (lambda: entered)
+        return session._block_storage("q", frame, "a.c", line, entering=entering)
+
+    def static(line):
+        return f"the block's `static` `q` (line {line}), which the debugger does not list"
+
+    def outside(line, where):
+        return (
+            "may not be what the code reads",
+            f"the code here may name {static(line)}, but the line also names `q` {where}, and "
+            "Peeky cannot tell whether that code reads this local: this row is the outer local "
+            "of that name",
+        )
+
+    expected = {
+        3: outside(3, "after that declaration's scope ends"),
+        4: outside(4, "before that declaration"),
+        5: outside(5, "before that declaration and after its scope ends"),
+        # The header's own hedge (#286) where it may not have run; past it, the call after
+        # the block still names `q`.
+        6: outside(6, "after that declaration's scope ends")
+        if entered is False
+        else (
+            "may not be what the code reads",
+            f"the code here may name {static(6)}, but the `if` statement's header names `q` "
+            "before that declaration, and Peeky cannot tell whether running the header reads "
+            "this local: this row is the outer local of that name",
+        ),
+        # Each block's own `static`: the plain note stays.
+        7: (
+            "not what the code reads",
+            f"the code here names {static(7)}: this row is the outer local of that name",
+        ),
+    }
+    for line, want in expected.items():
+        found = note(line)
+        assert (found.label, str(found)) == want, (line, found)
+        would = "may not" if want[0].startswith("may") else "would not"
+        assert found.refusal.endswith(f"so a change to it {would} reach that code"), found.refusal
+        assert want[1].split(": this row")[0][len("the code here ") :] in found.refusal, (
+            found.refusal
+        )
+
+
+OPERANDS_UNIT = b"""# 1 "a.c"
+long f(bool ok) {
+    long q = 1;
+    { static long q = 5; use(q); } return use(0), q;
+    { static long q = 6; use(q); } return ok and q;
+    if (auto [q, u] = make(); ok) { use(u); } else use(q);
+    if (auto [q, u] = make(); ok) {
+        use(u);
+    } else {
+        use(q);
+    }
+    return q;
+}
+"""
+
+
+def test_an_operand_or_an_else_is_read_as_the_code_reads_it(tmp_path):
+    # Review of PR #319: a comma expression (here as a macro `PAIR` for `use(0), q` expands,
+    # the preprocessed text Peeky reads) and C++'s `ok and q` named `q` after the block's
+    # `static`, but were taken for declarators, so the plain note stayed. And an `if`'s
+    # `else` is in its init-statement's binding's scope: the note said it was past it.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": OPERANDS_UNIT})
+    session.target.language = "cpp"
+
+    def static(line):
+        return f"the block's `static` `q` (line {line}), which the debugger does not list"
+
+    def binding(line):
+        return (
+            "not what the code reads",
+            f"the code here names the structured binding `q` (line {line}): this row is the "
+            "outer local of that name",
+        )
+
+    expected = {
+        **{
+            line: (
+                "may not be what the code reads",
+                f"the code here may name {static(line)}, but the line also names `q` after that "
+                "declaration's scope ends, and Peeky cannot tell whether that code reads this "
+                "local: this row is the outer local of that name",
+            )
+            for line in (3, 4)
+        },
+        5: binding(5),
+        # An `else` on a later line: it names the binding (no note at all before).
+        9: binding(6),
+    }
+    for line, want in expected.items():
+        found = session._block_storage("q", frame, "a.c", line)
+        assert found is not None, line
+        assert (found.label, str(found)) == want, (line, found)
+
+
+CONTROLLED_UNIT = b"""# 1 "a.c"
+long f(bool ok) {
+    long q = 1;
+    if (auto [q, u] = make(); ok) do { use(u); } while (false); use(q);
+    if (auto [q, u] = make(); ok) try { use(u); } use(q);
+    return q;
+}
+"""
+
+
+def test_where_a_headers_statement_ends_decides_its_bindings_scope(tmp_path):
+    # Review round 2 of PR #319: a `do` loop an `if` controls had no known end, and the
+    # binding was taken to be in scope after it: the last `use(q)` reads the outer `q`.
+    # Where the end is unknown (a `try` with no handler), Peeky says it cannot tell.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": CONTROLLED_UNIT})
+    session.target.language = "cpp"
+
+    def hedged(line, where):
+        return (
+            "may not be what the code reads",
+            f"the code here may name the structured binding `q` (line {line}), but the line "
+            f"also names `q` {where}, and Peeky cannot tell whether that code reads this "
+            "local: this row is the outer local of that name",
+        )
+
+    expected = {
+        3: hedged(3, "after that declaration's scope ends"),
+        4: hedged(4, "where that declaration may be out of scope"),
+    }
+    for line, want in expected.items():
+        found = session._block_storage("q", frame, "a.c", line)
+        assert (found.label, str(found)) == want, (line, found)
+    # Below it, whether the binding is in scope cannot be told: withheld.
+    found = session._block_storage("q", frame, "a.c", 5)
+    assert found.label == "may not be what the code reads", found
+
+
+LABELLED_UNIT = b"""# 1 "a.c"
+long f(bool ok) {
+    long q = 1;
+    if (auto [q, u] = make(); ok) label: { use(u); } use(q);
+    if (auto [q, u] = make(); ok) again: {
+        use(u);
+    } use(q);
+    return q;
+}
+"""
+
+
+def test_a_labelled_statement_ends_the_bindings_scope_where_it_ends(tmp_path):
+    # Review round 3 of PR #319: a label before the statement an `if` controls was read as
+    # a plain statement's start, run on to the `;` after the block, so the last `use(q)`,
+    # which reads the outer `q`, was taken to name the binding: the plain note stayed.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": LABELLED_UNIT})
+    session.target.language = "cpp"
+    for line, header in ((3, 3), (6, 4)):
+        found = session._block_storage("q", frame, "a.c", line)
+        assert (found.label, str(found)) == (
+            "may not be what the code reads",
+            f"the code here may name the structured binding `q` (line {header}), but the line "
+            "also names `q` after that declaration's scope ends, and Peeky cannot tell "
+            "whether that code reads this local: this row is the outer local of that name",
+        ), (line, found)
+
+
+PARAMETER_UNIT = b"""# 1 "a.c"
+long f(long q) {
+    { static long q = 5; use(q); } return use(0), q;
+}
+"""
+
+
+def located_parameter_table():
+    """A function whose parameter `q` (line 1) has a block's `static` `q` (line 2) beside
+    it, which an optimized build keeps as a constant: LLDB lists both by their lines."""
+    return [
+        {
+            "ranges": [(0x100, 0x200)],
+            "locals": {"q": {(None, None, False), ("a.c", 2, False)}},
+            "visible": {
+                ("q", None, None, False): [(0x100, 0x200)],
+                ("q", "a.c", 2, False): [(0x100, 0x200)],
+            },
+            "parameters": {"q": {("a.c", 1)}},
+            "unstored": frozenset({("q", "a.c", 2)}),
+        }
+    ]
+
+
+def test_a_parameter_lldb_names_by_its_line_is_judged(tmp_path):
+    # Review round 2 of PR #319 (on main too): at -O1, LLDB lists a parameter beside a
+    # block's `static` kept as a constant as `q @ a.c:1`, which no local matched, so
+    # `shown_declaration` gave None and the row was never judged: it showed its value,
+    # though `use(q)` in the block reads the `static`. It is the parameter now; a line
+    # the function declares nothing on cannot be told.
+    from peeky.native import shown_declaration
+
+    table = located_parameter_table()
+    assert shown_declaration(table, "q @ a.c:1", 0x150, unstored=True) == (
+        table[0],
+        (None, None, False),
+    )
+    assert shown_declaration(table, "q @ a.c:2", 0x150, unstored=True) == (
+        table[0],
+        ("a.c", 2, False),
+    )
+    assert shown_declaration(table, "q @ a.c:9", 0x150, unstored=True) is False
+    # A `static` with an address is no frame local (as before); nor is another name.
+    assert shown_declaration(table, "q @ a.c:2", 0x150) is None
+    assert shown_declaration(table, "r @ a.c:1", 0x150) is None
+
+    # A file of another name: not the parameter's line (review round 3).
+    assert shown_declaration(table, "q @ b.c:1", 0x150, unstored=True) is False
+
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": PARAMETER_UNIT})
+    session.declarations = table
+    session._function_at = lambda frame: None
+    siblings = [{"name": "q @ a.c:1"}, {"name": "q @ a.c:2"}]
+    found = session._block_storage("q @ a.c:1", frame, "a.c", 2, siblings=siblings)
+    assert (found.label, str(found)) == (
+        "may not be what the code reads",
+        "the code here may name the block's `static` `q` (line 2), listed separately as "
+        "`q @ a.c:2`, but the line also names `q` after that declaration's scope ends, and "
+        "Peeky cannot tell whether that code reads this local: this row is the outer local "
+        "of that name",
+    )
+
+
+ONE_LINE_PARAMETER_UNIT = b"""# 1 "a.c"
+long f(long q) { { static long q = 5; use(q); } return q; }
+"""
+
+
+@pytest.mark.parametrize("constant", [False, True])
+def test_a_parameter_and_a_static_on_its_line_cannot_be_told_apart(tmp_path, constant):
+    # Review round 3 of PR #319: `q @ a.c:1` was taken for the parameter whenever one was
+    # declared on line 1, though the block's `static` is declared there too (with an
+    # address, or kept as a constant): which one the row is cannot be told, so it is
+    # withheld with no claim that it is the outer local.
+    from peeky.native import shown_declaration
+
+    table = [
+        {
+            "ranges": [(0x100, 0x200)],
+            "locals": {"q": {(None, None, False), ("a.c", 1, False)}},
+            "visible": {
+                ("q", None, None, False): [(0x100, 0x200)],
+                ("q", "a.c", 1, False): [(0x100, 0x200)],
+            },
+            "parameters": {"q": {("a.c", 1)}},
+            "unstored": frozenset({("q", "a.c", 1)} if constant else ()),
+        }
+    ]
+    assert shown_declaration(table, "q @ a.c:1", 0x150, unstored=True) is False
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": ONE_LINE_PARAMETER_UNIT})
+    session.declarations = table
+    session._function_at = lambda frame: None
+    found = session._block_storage("q @ a.c:1", frame, "a.c", 1)
+    assert (found.label, str(found)) == (
+        "may not be what the code reads",
+        "a block around line 1 may declare `q` (a `static`, an `extern`, an enumerator, a "
+        "function or a type), which the code would name instead of this local: this row is "
+        "LLDB's `q @ a.c:1`, and Peeky cannot tell which of this function's declarations of "
+        "`q` that is",
+    )
+    assert "outer local" not in found and "cannot be changed" in found.refusal
+
+
 LAMBDAS_UNIT = b"""# 1 "a.c"
 long f(void) {
     long q = 1;
@@ -2639,11 +2937,14 @@ def test_a_lambdas_block_counts_only_in_its_own_frame(tmp_path, span):
         )
         assert "may not reach that code" in found.refusal
     else:
-        # The lambda's own frame, or one Peeky cannot place: its enumerator hides `q`.
+        # The lambda's own frame, or one Peeky cannot place: its enumerator hides `q`, but
+        # `long r = q` before its block and `return r + q` after it name `q` too (#293).
         assert (found.label, str(found)) == (
-            "not what the code reads",
-            "the code here names the block's enumerator `q` (line 3), a constant: this row is "
-            "the outer local of that name",
+            "may not be what the code reads",
+            "the code here may name the block's enumerator `q` (line 3), a constant, but the "
+            "line also names `q` before that declaration and after its scope ends, and Peeky "
+            "cannot tell whether that code reads this local: this row is the outer local of "
+            "that name",
         )
 
 

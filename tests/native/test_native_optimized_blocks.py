@@ -5,7 +5,9 @@ scan (#144) skipped it: plain `n` showed the outer local's value where the code 
 the block's. The structured binding case is in tests/cpp/test_cpp_optimized_blocks.py.
 #286: a one-line statement whose header names the outer local before its block declares
 the name again hedges that local's note, at -O0 too, with clang and GCC; also at a stop
-back inside that header, past the line's first instruction."""
+back inside that header, past the line's first instruction. #293: so does a line that
+names the outer local outside the scope of its block's declaration, before the block or
+after it ends."""
 
 import json
 import os
@@ -269,3 +271,75 @@ def test_a_stop_back_inside_a_header_hedges_its_note(tmp_path, cc, monkeypatch, 
         assert not [row for row in rows if "value" in row], rows
         outer = [row for row in rows if "this row is the outer local" in row.get("error", "")]
         assert outer and all(row["error"] == error for row in outer), (marker, rows)
+
+
+# #293: lines that name the outer `t` outside the scope of their block's `static` `t`:
+# a `do` loop's condition and a call after the block ends, a call before it opens. Review
+# of PR #319: a comma expression after the block, also from a macro, names it too.
+SAME_LINE_SOURCE = """#include <stdio.h>
+__attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; }
+#define PAIR use(0), t
+__attribute__((noinline)) long last(long t) {
+    { static long t = 8; use(t); } return use(0), t; /* COMMA */
+}
+__attribute__((noinline)) long paired(long t) {
+    { static long t = 9; use(t); } return PAIR; /* MACRO */
+}
+int main(int argc, char **argv) {
+    long t = argc + 2; /* OUTER */
+    do { static long t = 5; use(t); } while (t-- > 2); /* DO */
+    use(t); { static long t = 6; use(t); } /* BEFORE */
+    { static long t = 7; use(t); } use(t); /* AFTER */
+    use(last(t) + paired(t));
+    return 0;
+}
+"""
+SAME_LINE = {
+    "DO": "after that declaration's scope ends",
+    "BEFORE": "before that declaration",
+    "AFTER": "after that declaration's scope ends",
+    "COMMA": "after that declaration's scope ends",
+    "MACRO": "after that declaration's scope ends",
+}
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", sorted(SAME_LINE))
+def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
+    tmp_path, cc, optimization, marker
+):
+    # #293: on `do { static long t = 5; use(t); } while (t-- > 2);` the outer `t` said
+    # "not what the code reads: the code here names the block's `static`", though the
+    # `while` condition runs after that `static` leaves scope and reads the outer `t`;
+    # and so on `use(t); { static long t = 6; use(t); }`, whose first call reads it before
+    # the block. Withheld still, the note now says where the line names `t` outside. In
+    # `last` and `paired`, the parameter `t` (1) is the outer one.
+    lines = SAME_LINE_SOURCE.splitlines()
+    line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"/* {marker} */"))
+    outer = next(i for i, row in enumerate(lines, 1) if row.endswith("/* OUTER */"))
+    if marker in ("COMMA", "MACRO"):
+        # The function's parameter, on the line above: at -O1 LLDB lists it as `t @
+        # blocks.c:N` beside the block's `static` kept as a constant (review round 2).
+        outer = line - 1
+    (tmp_path / "blocks.c").write_text(SAME_LINE_SOURCE)
+    selectors = ("t", f"t @ blocks.c:{outer}")
+    result = run_probe(
+        tmp_path, Probe("blocks.c", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    # The outer `t` holds 1 to 3 here; each block's `static` 5 or more.
+    assert not [row for row in found if row.get("value") in ("1", "2", "3")], found
+    rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
+    assert any(row["hit"] == 1 for row in rows), found
+    static = f"the block's `static` `t` (line {line}), "
+    listed = ("which the debugger does not list", f"listed separately as `t @ blocks.c:{line}`")
+    hedged = {
+        f"may not be what the code reads: the code here may name {static}{how}, but the line "
+        f"also names `t` {SAME_LINE[marker]}, and Peeky cannot tell whether that code reads "
+        "this local: this row is the outer local of that name"
+        for how in listed
+    }
+    for row in rows:
+        assert row["error"] in hedged, row
