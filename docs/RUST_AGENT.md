@@ -384,7 +384,8 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   It counts a `copy` or `move` of an overlapping place (`_reads_part`), and a read through a pointer
   surely made from a borrow of the whole local. A temporary computed from either counts too.
 - A temporary computed from a binding's copy doesn't count as read: the statement read the copy.
-  It counts only as the binding's (#192), through `copy_undoes`.
+  It counts only as the binding's (#192), through `copy_undoes` (`reads="taken"`, or `"copied"`
+  where it may). `copy_sources` finds the binding to name, walking back from the temporary.
 - It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
   a coroutine's body. `rust._copy_reason` decides the wording.
 - Otherwise it hedges, by what each other reading finds:

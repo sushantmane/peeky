@@ -1384,6 +1384,7 @@ what the statement does, and that it may hold a copy:
 
 - ``reads it into a temporary (at line 12)``: the read may be on another path, or past the stop;
 - ``reads another part of it into a temporary (at line 12)``, for a change to one field;
+- ``uses the program's own copy of it, `week` (at line 32)``, after `let week = weeks;`;
 - ``uses a pointer that may point into it (at line 13)``: a read through it, or a call given it,
   which may read through it or not;
 - ``uses `p` and `q` (at line 23), raw pointers Peeky can't trace that may point at it``. Each name

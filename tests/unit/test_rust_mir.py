@@ -2932,16 +2932,17 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     from peeky.rust import _copy_reason
 
     proofs = SimpleNamespace(
-        body=lambda hashed: SimpleNamespace(named_locals=lambda: frozenset({20})),
         copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", min(held))},
         copy_names=lambda hashed, held: ["n"],
+        # `_5` is computed from the binding `_20`.
+        copy_sources=lambda hashed, held, among: frozenset({20}) & among if held else held,
         untraced_reads=lambda hashed, held: ({("src/main.rs", 9)}, [("e", "reference")]),
     )
     a, b = (1, 0), (2, 0)
 
-    def reason(any_, explicit=None, value=None, traced=None, whole=None):
+    def reason(any_, explicit=(), value=None, traced=None, **others):
         found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
-        found["whole"] = value if whole is None else whole
+        found |= {"taken": [], "copied": [], "bindings": [], "whole": value} | others
         return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
 
     assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})]) == ("read", None)
@@ -2963,18 +2964,27 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     assert reason([(a, {6})], [(a, set())], [(a, {6})], [(a, {6})])[1] == (
         "reads it into a temporary (at line 6)"
     )
-    assert reason([(a, {7}), (b, {7})], None, [(a, set()), (b, set())], [(a, {7}), (b, {7})]) == (
+    none = [(a, set()), (b, set())]
+    assert reason([(a, {7}), (b, {7})], none, none, [(a, {7}), (b, {7})]) == (
         "may",
         "uses a pointer that may point into it (at line 7)",
     )
-    # The program's own binding: named where every place holds something that surely
-    # read it (at one, what it took from the binding, `let z = y + 1;`).
-    assert reason([(a, {20}), (b, {20})], [(a, {20}), (b, {20})]) == ("named", ["n"])
-    assert reason([(a, {20}), (b, {5})], [(a, {20}), (b, {5})]) == ("named", ["n"])
-    named_at_a = [(a, {20}), (b, set())]
-    assert reason([(a, {20}), (b, {7})], named_at_a, named_at_a, named_at_a) == (
+    # The program's own binding `_20` (`n`): named where every place holds what it, or a
+    # temporary computed from it (`_5`, `let z = n + 1;`), surely took.
+    bindings = [(a, {20}), (b, {20})]
+    for taken in ([(a, {20}), (b, {20})], [(a, {20}), (b, {5})], [(a, {5}), (b, {5})]):
+        named = reason(taken, none, none, none, taken=taken, copied=taken, bindings=bindings)
+        assert named == ("named", ["n"]), taken
+    # Nor read: a temporary computed from the binding's copy.
+    copied = [(a, {5}), (b, set())]
+    assert reason(copied, none, copied, copied, copied=copied, bindings=bindings) == (
         "may",
-        "copies it into `n` (at line 20) or uses `e` (at line 9), a reference Peeky can't "
+        "uses the program's own copy of it, `n` (at line 20)",
+    )
+    named_at_a = [(a, {20}), (b, set())]
+    assert reason([(a, {20}), (b, {7})], none, none, none, taken=named_at_a, copied=named_at_a) == (
+        "may",
+        "uses the program's own copy of it, `n` (at line 20) or uses `e` (at line 9), a reference Peeky can't "
         "trace that may point at it",
     )
 
@@ -3044,6 +3054,36 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     assert part == (
         "a statement under way at the stop reads another part of it into a temporary (at "
         "line 39)" + maybe
+    )
+    # `let week = weeks;` on line 32, then `weeks = week + 1 …`: the program goes on with
+    # its own copy, on every path or on one.
+    assign = (
+        "    bb3: {\n",
+        "    bb3: {\n        _2 = move _17;  // scope 2 at src/main.rs:39:20: 39:21\n",
+    )
+    plus = line_39("_17 = Add(copy _4, const 1_u32);", "_10 = &raw const (*_13);")
+    assert why("same(const 0_u32)", plus, assign, name="weeks") == (
+        "the program has already copied its value into `week` (at line 32) and goes on with "
+        "that copy, so a change to `weeks` may never be seen: Peeky proves no read of the "
+        "changed part first (a reference lent to a call, or `{:?}`, is not one)"
+    )
+    plus_or_zero = line_39(
+        "switchInt(copy _12) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_17 = Add(copy _4, const 1_u32);",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "_17 = const 0_u32;",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_10 = &raw const (*_13);",
+    )
+    found = why(
+        "same(const 0_u32)", plus_or_zero, assign, name="weeks", bb6={39}, bb7={39}, bb8={39}
+    )
+    assert found == (
+        "a statement under way at the stop uses the program's own copy of it, `week` (at line "
+        "32)" + maybe
     )
     # `let week = weeks;` on line 32, then `same(week, e.shifts)`: the statement reads the
     # program's own copy, not `weeks`; only `e` may have reached it.

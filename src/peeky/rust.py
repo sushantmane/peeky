@@ -1015,7 +1015,7 @@ def _either(clauses):
 
 
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
-_READINGS = ("any", "explicit", "value", "whole", "traced")
+_READINGS = ("any", "explicit", "taken", "copied", "bindings", "value", "whole", "traced")
 
 
 def _copy_reason(proofs, hashed, found, home, target="it"):
@@ -1023,24 +1023,26 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
     [(place, hazards)], or None where not understood}):
 
-    - where at every place something that surely read it ("explicit") is used again:
-      ("named", the program's own bindings among them, their places) where there are
-      some (#192), else ("read", None, the places of those temporaries);
+    - where at every place the statement surely read it ("explicit"), or a binding's copy
+      of it surely gave what it holds ("taken"): ("named", those bindings, their places)
+      where any place has the latter (#192), else ("read", None, the places of those
+      temporaries);
     - else ("may", what the statement does that may leave a copy of ``target``, places):
-      it reads it ("value", on some path, maybe past the stop), copies it into a binding,
-      reads another part of it ("whole"), uses a pointer that may point into it
-      ("traced"), or uses one Peeky does not follow."""
-    bindings = proofs.body(hashed).named_locals()
+      it reads it ("value", on some path, maybe past the stop), uses a binding's copy of
+      it ("copied"), reads another part of it ("whole"), uses a pointer that may point
+      into it ("traced"), or uses one Peeky does not follow."""
     every = dict(found["any"])
     held = {reads: frozenset().union(*(dict(found[reads] or ()).values())) for reads in _READINGS}
-    sure = dict(found["explicit"] or ())
-    if all(sure.get(place) for place in every):
-        if copied := held["explicit"] & bindings:
-            return (
-                "named",
-                proofs.copy_names(hashed, copied),
-                proofs.copy_lines(hashed, copied, True),
-            )
+    sure, kept = dict(found["explicit"] or ()), dict(found["taken"] or ())
+
+    def bindings(locals_):
+        among = held["bindings"] | held["taken"] | held["copied"]
+        return proofs.copy_sources(hashed, locals_, among)
+
+    if all(sure.get(place) or kept.get(place) for place in every):
+        if held["taken"]:
+            named = bindings(held["taken"])
+            return "named", proofs.copy_names(hashed, named), proofs.copy_lines(hashed, named, True)
         return "read", None, proofs.copy_lines(hashed, held["explicit"])
     clauses, places = [], set()
 
@@ -1049,21 +1051,23 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
         places.update(lines)
         clauses.append(f"{text} (at {_line_list(lines, home)})")
 
-    if any(found[reads] is None for reads in _READINGS[2:]):
+    if any(found[reads] is None for reads in _READINGS[3:]):
         # What Peeky cannot tell apart: no more than that it may have read it.
         clause(f"may have read {target}", held["any"])
         return "may", _either(clauses), places
-    read = held["explicit"] | held["value"]
-    other = held["whole"] - read
-    if read - bindings:
-        clause(f"reads {target} into a temporary", read - bindings)
-    if copied := held["any"] & bindings:
-        clause(f"copies {target} into {_names(proofs.copy_names(hashed, copied))}", copied, True)
-    if other - bindings:
-        clause(f"reads another part of {target} into a temporary", other - bindings)
-    if given := held["traced"] - read - other - bindings:
+    copied = held["taken"] | held["copied"]
+    read = held["explicit"] | (held["value"] - copied)
+    other = held["whole"] - read - copied
+    if read:
+        clause(f"reads {target} into a temporary", read)
+    if copied and (named := bindings(copied)):
+        names = _names(proofs.copy_names(hashed, named))
+        clause(f"uses the program's own copy of {target}, {names}", named, True)
+    if other:
+        clause(f"reads another part of {target} into a temporary", other)
+    if given := held["traced"] - read - other - copied:
         clause(f"uses a pointer that may point into {target}", given)
-    rest = held["any"] - held["traced"] - read - other - bindings
+    rest = held["any"] - held["traced"] - read - other - copied
     if rest or not clauses:
         text, lines = _untraced(proofs, hashed, rest, home, target)
         places |= lines

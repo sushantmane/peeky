@@ -4492,8 +4492,10 @@ class OwnedLocals:
         (what holds for every part of an aggregate, whose parts are judged each). The
         standard library's `ptr::eq` reads no pointee (#300, ``_std_compares``).
         ``reads``: which pointers count ("any", "traced", "value": ``_copy_verdict``; and
-        "whole", as "value" for the whole local), or "explicit": only what surely read it
-        (``Body.read_copies_at``), which a refusal may state as a fact (#300)."""
+        "whole", as "value" for the whole local), or what a refusal may say of each (#300):
+        "explicit", the temporaries that surely read it; "taken", what a binding's copy of
+        it surely gave (``Body.read_copies_at``); "copied", what may hold such a copy, of
+        "any"; "bindings", not hazards but the bindings that may hold a direct copy."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -4516,8 +4518,9 @@ class OwnedLocals:
             positions = _first_places(body, function, positions)
         formatting, bindings = self._formatting(), body.named_locals()
         compares = self._std_compares()
-        # "whole": as "value", for a change to the whole local (#300: another part read).
-        flow = "value" if reads == "whole" else reads
+        # "whole": as "value", for a change to the whole local (#300: another part read);
+        # "copied", "bindings": of "any"'s flow.
+        flow = {"whole": "value", "copied": "any", "bindings": "any"}.get(reads, reads)
         part = projection if reads == "value" else ()
         # What a call std's printing makes reads (#192 review 4: by its file and path).
         sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
@@ -4527,12 +4530,14 @@ class OwnedLocals:
             # holding a direct copy (or a temporary taken from one) the program goes on
             # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
-            if reads == "explicit":
+            if reads in ("explicit", "taken"):
                 sure = body.read_copies_at(local, position, projection)
                 if sure is None:
                     return None
                 read, taken = sure
-                return frozenset(n for n in read if live >> n & 1) | frozenset(
+                if reads == "explicit":
+                    return frozenset(n for n in read if live >> n & 1)
+                return frozenset(
                     n
                     for n in (taken - read if named else ())
                     if body.copy_undoes(n, local, position, projection, sinks)
@@ -4540,13 +4545,18 @@ class OwnedLocals:
             direct = body.direct_copies_at(local, position, formatting, projection, compares, flow)
             if direct is None:
                 return None
+            if reads == "bindings":
+                return direct & bindings
             temporaries = body.copies_at(local, position, formatting, compares, flow, part)
             temporaries -= bindings
-            return frozenset(n for n in temporaries if live >> n & 1) | frozenset(
+            undone = frozenset(
                 n
                 for n in (direct - temporaries if named else ())
                 if body.copy_undoes(n, local, position, projection, sinks)
             )
+            if reads == "copied":
+                return undone
+            return frozenset(n for n in temporaries if live >> n & 1) | undone
 
         found = [(position, hazards(position)) for position in positions]
         return None if any(each is None for _, each in found) else found
@@ -4568,6 +4578,32 @@ class OwnedLocals:
                 if file is not None and number_line is not None:
                     found.add((file, number_line))
         return found
+
+    def copy_sources(self, hashed, temporaries, among):
+        """The bindings of ``among`` that ``temporaries`` are computed from, walking back
+        through what each assignment to them mentions to the program's own bindings
+        (#300: a binding's copy a refusal names, `week` of `let week = weeks;` for
+        `same(week + 1)`); a binding among ``temporaries`` is its own."""
+        body = self.body(hashed)
+        if body is None:
+            return frozenset()
+        parts, _, _, at, named = body._copy_parts()
+        made = {}
+        for part in at.values():
+            made.setdefault(parts[part][0], []).append(parts[part])
+        found, seen, pending = set(), set(), list(temporaries)
+        while pending:
+            local = pending.pop()
+            if local in seen:
+                continue
+            seen.add(local)
+            if local in named:
+                if local in among:
+                    found.add(local)
+                continue
+            for part in made.get(local, ()):
+                pending.extend(part[1])
+        return frozenset(found)
 
     def untraced_reads(self, hashed, temporaries):
         """Where ``temporaries`` (``copy_hazards``'s, only with ``reads="any"``) may have
