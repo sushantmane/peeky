@@ -432,6 +432,23 @@ def test_recursive_calls_each_get_their_own_return(monkeypatch, tmp_path):
     assert resumed == ["step", "step", "step", "continue"]
 
 
+def test_a_void_return_is_no_value_the_debugger_failed_to_read(monkeypatch, tmp_path):
+    # Eleventh evaluation (grades 4): a `void` function's `(return)` row says it returns
+    # nothing; the warning about selectors the debugger could not read is not for it.
+    void = {"function": "fact", "type": "void", "unavailable": True}
+    void["reason"] = "the function returns nothing"
+    result, returns, _ = probe_with(
+        monkeypatch, tmp_path, [("hit", 2), ("step", 1, void), ("end",)]
+    )
+    assert returns[1]["type"] == "void" and "value" not in returns[1]
+    assert returns[1]["error"] == "no value: the function returns nothing"
+    assert not any("could not be read" in warning for warning in result["warnings"]), result
+    withheld = {**void, "reason": "the debugger reported no value"}
+    del withheld["type"]
+    result, _, _ = probe_with(monkeypatch, tmp_path, [("hit", 2), ("step", 1, withheld), ("end",)])
+    assert any("could not be read" in warning for warning in result["warnings"]), result
+
+
 def test_a_line_reached_again_before_the_return_is_never_attributed(monkeypatch, tmp_path):
     # A loop's next pass, or a call that ended by an exception and the next call: not
     # proven either way (no watch said so), so the earlier hit gets no value, and the

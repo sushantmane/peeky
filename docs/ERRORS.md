@@ -64,6 +64,10 @@ The last column is the `retryable` field.
 - The line never runs, or the program failed first. `exit_code` is set when the debugger reports
   it.
 - After a failure, read the output and check the program's arguments.
+- After `--set-at` changes, the message says how many came first:
+  `The program finished without stopping at tides.c:33, after 6 changes by --set-at: they may have
+  kept the line from running`. The line may run without them. Probe it without the changes to see,
+  or put `--at` on a line that runs after them.
 
 ### BUILD_FAILED
 
@@ -107,6 +111,10 @@ file lists what it reads.
 
 - Malformed arguments, such as a `--frame` past the stack. The message says how many frames there
   are.
+- A `verify` of a directory whose config declares several sources, without `--at`. The message
+  lists them, and gives the form `peeky describe` shows:
+  `verify needs --at <source> (one of: a/One.java, b/Two.java) for this target: the file the edit
+  changes, …`. With one source, `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A client and a remote worker of different protocols: `Worker speaks protocol 2, this client 3`,
   or, from the worker, `Client speaks protocol 2, this worker 3`. Install the same Peeky version

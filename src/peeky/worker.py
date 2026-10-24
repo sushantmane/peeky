@@ -72,6 +72,8 @@ ABANDONED = (
 INLINED = (
     "it was inlined into its caller: it has no return of its own, so there is no value to read"
 )
+# A C or C++ function its debug information gives no return type (`void`).
+RETURNS_NOTHING = "the function returns nothing"
 # Lost `stopped` events on attached JVMs (#27): see find_lost_stop. java-debug reports a
 # breakpoint stop within milliseconds. Polls start LOST_STOP_POLL_S after a resume and
 # run at most that often. Each is one `threads` request and one-frame `stackTrace`
@@ -260,6 +262,8 @@ class DebugWorker:
         # Stops at the session's own breakpoints so far (None once a stop could not be
         # classified: numbers are never guessed); the current stop's number.
         self.hits, self.stop_hit, self.stop_line = 0, None, None
+        # The steps the session's debugger was asked for so far (`session report`).
+        self.steps = 0
         # Lines the session's own breakpoints were requested at or placed on, their
         # adapter ids, and every one-shot `--to` line the session has used.
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
@@ -835,6 +839,11 @@ class DebugWorker:
         if entry is None and (by_command := getattr(runtime, "returned_by_command", None)):
             # lldb-dap before LLVM 21 lists none; LLDB itself still has it.
             entry = by_command(self.dap, self.thread_id)
+        void, began = getattr(runtime, "returns_nothing", None), self.step_origin.get("frame")
+        if entry is None and void and began and void(began):
+            # Its debug information gives it no return type: nothing was withheld (eleventh
+            # evaluation: `(return):  = <withheld: the debugger reported no value …>`).
+            return {**returned, "type": "void", "unavailable": True, "reason": RETURNS_NOTHING}
         if entry is None:
             reason = (
                 getattr(
@@ -1941,7 +1950,7 @@ class DebugWorker:
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
             self.temporary_line = None
-            self.hits, self.stop_hit, self.stop_line = 0, None, None
+            self.hits, self.stop_hit, self.stop_line, self.steps = 0, None, None, 0
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
             self.forget_places()
             self.loop_lines = {}
@@ -2783,6 +2792,9 @@ class DebugWorker:
                 origin["kind"] = kind
                 # Where it began: a stop that interrupts it may be proven in the same call.
                 origin["stop_id"] = self.stop_id
+                if kind == "out" and listed:
+                    # Its function, to tell one that returns nothing (`returned_value`).
+                    origin["frame"] = listed[0]
             if before_step := getattr(runtime, "before_step", None):
                 # LLDB: a step out leaves one frame, not the library frames above (#155).
                 before_step(self.dap)
@@ -2815,6 +2827,7 @@ class DebugWorker:
                 # before this step describe nothing current. Otherwise (java-debug) each
                 # earlier stop is a thread still suspended there, so none is skipped.
                 self.cursor = max(self.cursor, consumed)
+            self.steps += 1
             # Until this thread reports a stop, it may sit suspended anywhere the step
             # ends, a breakpoint line included: never a lost-stop candidate (#27).
             self.stepping.add(self.thread_id)
@@ -2836,6 +2849,12 @@ class DebugWorker:
         return {
             "session_id": self.session,
             "state": self.state,
+            # Where it is stopped, and how far the session has come: its breakpoint stops
+            # (`hits`, while they are numbered) and steps (eleventh evaluation: a report
+            # gave only its state and output).
+            **self.location(),
+            **({"hits": self.hits} if type(self.hits) is int else {}),
+            "steps": self.steps,
             "output": output,
             "output_truncated": truncated,
             # The debugger's own lines, left out of the output (#167).

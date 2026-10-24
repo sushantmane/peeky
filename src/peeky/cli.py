@@ -588,8 +588,19 @@ def _default_program(program, data, command):
     if command == "describe" and sources:
         # Breakpoint lines cover every declared source; any one prepares the target.
         return sources[0]
+    if command == "verify" and len(sources) == 1:
+        # The one source is the only file an edit can change (eleventh evaluation: a Java
+        # verify without --at was refused, though its config declares one source).
+        return sources[0]
     listed = f" (one of: {', '.join(sources[:10])})" if sources else ""
-    raise ValueError(f"{command} needs --at <source>{listed} for this target")
+    raise ValueError(
+        f"{command} needs --at <source>{listed} for this target"
+        + (
+            f": the file the edit changes, as `peeky describe` shows (`--at {sources[0]}`)"
+            if command == "verify" and sources
+            else ""
+        )
+    )
 
 
 def describe(args):
@@ -1745,17 +1756,20 @@ def _named(text, name):
     )
 
 
-def _relative_location(location):
-    """`path:line`, the path relative to the working directory where the file is below
-    it, as a probe names its program (ninth evaluation: session states printed absolute
-    paths); else as given. Text only: JSON keeps the path whole."""
+def _relative_location(location, base=None):
+    """`path:line`, the path relative to ``base`` (a session's: the directory its `session
+    start` ran in), else the working directory, where the file is below it, as a probe
+    names its program (ninth evaluation: session states printed absolute paths); else as
+    given. A session's commands so name a file as its start did, from any directory
+    (eleventh evaluation: `grades.cpp:61`, then `outputs/…/grades.cpp:26`). Text only:
+    JSON keeps the path whole."""
     if not isinstance(location, str):
         return location
     path, sep, line = location.rpartition(":")
     if not sep or not line.isdigit() or not os.path.isabs(path):
         return location
     try:
-        relative = Path(path).resolve().relative_to(Path.cwd().resolve())
+        relative = Path(path).resolve().relative_to(Path(base or Path.cwd()).resolve())
     except (OSError, ValueError):
         return location
     return f"{relative}:{line}"
@@ -1796,8 +1810,8 @@ def _call_text(change, since=False):
     )
 
 
-def _state_text(state, name="default"):
-    where = f" at {_relative_location(state['location'])}" if state.get("location") else ""
+def _state_text(state, name="default", base=None):
+    where = f" at {_relative_location(state['location'], base)}" if state.get("location") else ""
     if where and state.get("function"):
         from peeky.names import display_function
 
@@ -1854,6 +1868,71 @@ def _state_text(state, name="default"):
     return _named(text, name)
 
 
+def _step_onto_breakpoint(record, state):
+    """The note for a step's stop (over or into, which end at a line's start) on the line
+    `session start` put the session's breakpoint on, in its program, or None (eleventh
+    evaluation: a step onto it showed no hit, and nothing said whether it counted). Hits,
+    `--hit` and `continue --count` count only the stops the debugger reports as the
+    breakpoint's: debugpy reports such a stop so (a hit), java-debug and LLDB as the
+    step's. java-debug's next `continue` runs on to the line's next pass; Xcode's LLDB stops
+    here again first where the step ended at one of the line's breakpoint locations."""
+    path, _, line = str(state.get("location") or "").rpartition(":")
+    if state.get("state") != "stopped" or not line.isdigit() or int(line) != record.get("line"):
+        return None
+    try:
+        program = Path(str(record.get("root"))) / str(record.get("program"))
+        if not path or Path(path).resolve() != program.resolve():
+            return None
+    except (OSError, ValueError):
+        return None
+    language = str(record.get("language") or "")
+    if language.startswith("java"):
+        return (
+            "not a hit: java-debug reports this stop as the step's, and `session continue` "
+            "runs on to the line's next pass, so this pass gets no hit number and later hits "
+            "number lower than a probe's"
+        )
+    if language in ("c", "cpp", "rust"):
+        return (
+            "not a hit: LLDB reports this stop as the step's; where it is at one of the line's "
+            "breakpoint locations, `session continue` stops here again first, as the next hit"
+        )
+    return "not a hit: hits count only the stops the debugger reports as the breakpoint's"
+
+
+def _report_text(report, base=None):
+    """`session report` text: the state, where the program is stopped, the session's hits
+    and steps so far as its worker counted them (an older worker's report has neither),
+    and the program's output. The worker's request history (`history`, several per
+    command) is JSON only: a bare count of it read as the commands run (sixth evaluation,
+    finding 14)."""
+    from peeky.names import display_function
+
+    where = ""
+    if report.get("state") == "stopped" and report.get("location"):
+        where = f" at {_relative_location(report['location'], base)}"
+        if report.get("function"):
+            where += f" in {display_function(report['function'])}"
+        if type(report.get("hit")) is int:
+            where += f", hit {report['hit']}"
+        if type(report.get("place")) is int and type(report.get("places")) is int:
+            where += f", stop {report['place']} of {report['places']}"
+    counts = [
+        f"{count} {word}{'s' if count != 1 else ''}{what}"
+        for key, word, what in (
+            ("hits", "hit", " (stops at the session's breakpoint)"),
+            ("steps", "step", ""),
+        )
+        if type(count := report.get(key)) is int
+    ]
+    return (
+        f"state: {report['state']}{where}"
+        + (f"\nso far: {', '.join(counts)}" if counts else "")
+        + f"\noutput:\n{report['output'].rstrip(chr(10)) or '(none)'}"
+        + (f"\nwarning: {warned}" if (warned := debugger_diagnostics({}, report)) else "")
+    )
+
+
 def _stop(record):
     if record.get("state") != "stopped" or not record.get("stop_id"):
         raise ValueError(
@@ -1862,19 +1941,18 @@ def _stop(record):
     return {"session_id": record["session_id"], "stop_id": record["stop_id"]}
 
 
-def _frame_text(snapshot):
+def _frame_text(snapshot, base=None):
     """`frame 1: tags (app.py:12)`: the caller frame a read came from."""
     from peeky.names import display_function
 
     index = snapshot.get("frame", 0)
     frame = snapshot["frames"][index] if len(snapshot["frames"]) > index else {}
     where = snapshot.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
-    return (
-        f"frame {index}: {display_function(snapshot.get('function'))} ({_relative_location(where)})"
-    )
+    function = display_function(snapshot.get("function"))
+    return f"frame {index}: {function} ({_relative_location(where, base)})"
 
 
-def _variables_text(snapshot, name="default"):
+def _variables_text(snapshot, name="default", base=None):
     from peeky.names import display_function
 
     index = snapshot.get("frame", 0)
@@ -1882,7 +1960,8 @@ def _variables_text(snapshot, name="default"):
     # Where the program stopped; a caller frame's own location is on the next line.
     stopped = snapshot.get("innermost") or {"function": frame.get("name")} if index else snapshot
     where = _relative_location(
-        stopped.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}"
+        stopped.get("location") or f"{frame.get('source', {}).get('path')}:{frame.get('line')}",
+        base,
     )
     if function := stopped.get("function"):
         where += f" in {display_function(function)}"
@@ -1892,7 +1971,7 @@ def _variables_text(snapshot, name="default"):
         where += f", stop {snapshot['place']} of {snapshot['places']}"
     lines = [f"stopped at {where}" + _pause_text(snapshot)]
     if index:
-        lines.append(_frame_text(snapshot))
+        lines.append(_frame_text(snapshot, base))
     # Selectors read the frame that was inspected: say so in the commands shown.
     reads = (f" --name {name}" if name != "default" else "") + (
         f" --frame {index}" if index else ""
@@ -1985,6 +2064,8 @@ def _returned_text(returned):
     from peeky.names import display_function
 
     who = display_function(returned.get("function")) or "the function"
+    if returned.get("unavailable") and returned.get("type") == "void":
+        return f"{who} returned: void (no value: {returned.get('reason')})"
     if returned.get("unavailable"):
         return f"{who} returned: <withheld: {returned.get('reason')}>"
     return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}"
@@ -2019,13 +2100,13 @@ def _stop_place(record, row):
     return f"{display_function(function)} at {where}" if function else where
 
 
-def _read_frame(row):
+def _read_frame(row, base=None):
     """`frame 1: tags (app.py:12)`: which caller frame `get --frame` read."""
     from peeky.names import display_function
 
     return (
         f"frame {row.get('frame')}: {display_function(row.get('function'))} "
-        f"({_relative_location(row.get('location'))})"
+        f"({_relative_location(row.get('location'), base)})"
     )
 
 
@@ -2053,6 +2134,9 @@ def _get_lines(row, session="default"):
     if "value" not in row and not row.get("unavailable"):
         # Nothing was read: there is no type or value to show, only why.
         lines = [f"{row['selector']}: <{row.get('error', '')}>"]
+    elif row.get("unavailable") and row.get("type") == "void":
+        # A function that returns nothing: no value was withheld (C, C++).
+        lines = [f"{row['selector']}: void ({row.get('error', 'no value')})"]
     else:
         value = row.get("value", "<" + row.get("error", "") + ">")
         lines = [
@@ -2143,9 +2227,11 @@ def session(args):
         return 0
     record, client = _load(args.name)
     _NOTES[:] = [record["note"]] if record.get("note") else []
+    # Paths as `session start` named them (from the directory it ran in).
+    base = record.get("cwd") if isinstance(record.get("cwd"), str) else None
     if args.action == "wait":
         state = _wait(record, client, args.timeout)
-        _emit(state, args.json, lambda shown: _state_text(shown, args.name))
+        _emit(state, args.json, lambda shown: _state_text(shown, args.name, base))
     elif args.action == "inspect":
         if args.globals and record.get("language") not in (None, "python"):
             raise ValueError("--globals lists a Python module's globals; this is not Python")
@@ -2172,7 +2258,7 @@ def session(args):
             snapshot["warning"] = _OPTIMIZED_NOTE.format(snapshot["optimized"]).removeprefix(
                 "warning: "
             )
-        _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name))
+        _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name, base))
     elif args.action == "get":
         from peeky.probe import returns
 
@@ -2212,7 +2298,7 @@ def session(args):
             rows,
             args.json,
             lambda rows: "\n".join(
-                [_read_frame(rows[0])] * bool(args.frame and rows)
+                [_read_frame(rows[0], base)] * bool(args.frame and rows)
                 + [line for row in _repeats_shortened(rows) for line in _get_lines(row, args.name)]
                 + ([f"note: this stop is in {place}"] if place else [])
                 + ([_OPTIMIZED_NOTE.format(record["optimized"])] if record.get("optimized") else [])
@@ -2296,7 +2382,7 @@ def session(args):
                 break
             client.call("continue", **_stop(record), to_exit=True)
             state = _wait(record, client, args.timeout)
-        _emit(state, args.json, lambda shown: _state_text(shown, args.name))
+        _emit(state, args.json, lambda shown: _state_text(shown, args.name, base))
         if not complete:
             return 3
     elif args.action == "step":
@@ -2311,6 +2397,12 @@ def session(args):
                 f"the session's breakpoint (hit {state['hit']}) stopped the step before it "
                 "ended, and the step is over"
             )
+        elif (
+            kind != "out"
+            and state.get("reason") == "step"
+            and (note := _step_onto_breakpoint(record, state))
+        ):
+            state["note"] = note
         returned = None
         if kind == "out" and state["state"] == "stopped" and record.get("language") != "python":
             # What the function returned, as `session get return` reads it, shown with the
@@ -2331,23 +2423,14 @@ def session(args):
             args.json,
             lambda shown: "\n".join(
                 [
-                    _state_text(shown, args.name),
+                    _state_text(shown, args.name, base),
                     *(_get_lines(returned, args.name) if returned else []),
                 ]
             ),
         )
     elif args.action == "report":
         report = client.call("report", session_id=record["session_id"])
-        _emit(
-            report,
-            args.json,
-            # The worker's request history (`history`, several per command) is JSON only:
-            # a bare count of it read as the commands run (sixth evaluation, finding 14).
-            lambda r: (
-                f"state: {r['state']}\noutput:\n{r['output'].rstrip(chr(10)) or '(none)'}"
-                + (f"\nwarning: {warned}" if (warned := debugger_diagnostics({}, r)) else "")
-            ),
-        )
+        _emit(report, args.json, lambda r: _report_text(r, base))
     elif args.action == "close":
         from peeky.client import TransportLost, WorkerUnreachable
 
@@ -2648,7 +2731,7 @@ def _start_remote(args, root, program, line, language, max_pause):
         client.call("close", session_id=launch["session_id"])
         raise
     record = {"name": args.name, "url": args.worker, "token": token, "remote": True}
-    record.update(root=str(root), program=program, language=language)
+    record.update(root=str(root), program=program, language=language, cwd=os.getcwd(), line=line)
     # What a later command checks again before it uses this session (#249).
     record.update(protocol=PROTOCOL_VERSION, inputs_checked=launch["inputs_checked"])
     if (client.sources or {}).get("kind") == "python":
@@ -2808,7 +2891,9 @@ def _start_local(args, root, program, line, language, data, max_pause):
             raise RuntimeError(f"Worker did not start; see {log_path}")
         client = _LocalClient(match[1], token, process.pid)
         record = {"name": args.name, "url": match[1], "token": token, "pid": process.pid}
-        record.update(root=str(root), program=program, language=language)
+        record.update(
+            root=str(root), program=program, language=language, cwd=os.getcwd(), line=line
+        )
         launch = client.call(
             "launch",
             program=program,
@@ -3733,7 +3818,11 @@ def main(argv=None, _job=False, _edits=None):
         ),
         ("continue", "Resume to the next breakpoint stop, --to LINE, or --to-exit"),
         ("step", "Run to the next line (--into a call, --out of the function)"),
-        ("report", "State and program output (--json also lists the worker's requests)"),
+        (
+            "report",
+            "State, where it is stopped, its hits and steps so far, and program output "
+            "(--json also lists the worker's requests)",
+        ),
         ("close", "End the session and stop its local worker"),
     ):
         common(actions.add_parser(name, help=about), target=False)

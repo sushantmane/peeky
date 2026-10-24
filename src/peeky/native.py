@@ -1963,6 +1963,8 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
     _local_classes.
     ``types``: fields.local_types, the type and storage of each local (#105);
     ``referred``: fields.referred_locals, those the frame reaches through a pointer.
+    ``returns_nothing``: whether it is a `void` function (no return type, and no
+    constructor or destructor).
     ``prologues``, when given, gets _prologue_windows: every function's, placed or not;
     ``code``, _function_entries's code."""
     from peeky.fields import local_types, referred_locals
@@ -2077,6 +2079,14 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 "unstored": frozenset(unstored),
                 # Rows at or after this address run only as an exception unwinds (#158).
                 "returned": returned,
+                # Whether it is a `void` function: its debug information gives it no
+                # return type, and it is no constructor or destructor (which have none).
+                "returns_nothing": not constructor
+                and not (_text(_first(dies, entry["chain"], "DW_AT_name")) or "").startswith("~")
+                and not any(
+                    _first(dies, _chain(dies, body), "DW_AT_type") is not None
+                    for body in (*entry["bodies"], root)
+                ),
             }
         )
     return table
@@ -8139,6 +8149,18 @@ class NativeSession:
             "debugger may read a struct, class or reference from the wrong place, so "
             "Peeky shows only scalar returns"
         )
+
+    def returns_nothing(self, frame):
+        """Whether the C or C++ function ``frame`` runs (a step's origin, as listed before
+        the step) has no return type in its debug information, so a step out of it has no
+        value to show; False where Peeky cannot place the frame's function."""
+        if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
+            return False
+        try:
+            function = self._function_at(frame)
+        except Exception:
+            return False
+        return bool(function and function.get("returns_nothing") is True)
 
     @staticmethod
     def listed_threads(dap):
