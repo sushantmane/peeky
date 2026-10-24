@@ -2942,7 +2942,8 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
 
     def reason(any_, explicit=(), value=None, traced=None, **others):
         found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
-        found |= {"taken": [], "copied": [], "bindings": [], "whole": value} | others
+        found |= {"taken": [], "sources": [], "copied": [], "bindings": [], "whole": value}
+        found |= others
         return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
 
     assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})]) == ("read", None)
@@ -2973,19 +2974,27 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     # temporary computed from it (`_5`, `let z = n + 1;`), surely took.
     bindings = [(a, {20}), (b, {20})]
     for taken in ([(a, {20}), (b, {20})], [(a, {20}), (b, {5})], [(a, {5}), (b, {5})]):
-        named = reason(taken, none, none, none, taken=taken, copied=taken, bindings=bindings)
-        assert named == ("named", ["n"]), taken
+        sure = {"taken": taken, "sources": bindings, "copied": taken, "bindings": bindings}
+        assert reason(taken, none, none, none, **sure) == ("named", ["n"]), taken
+        # Where Peeky cannot tell which binding gave it, it says that it may have.
+        sure["sources"] = []
+        assert reason(taken, none, none, none, **sure)[0] == "may", taken
     # Nor read: a temporary computed from the binding's copy.
     copied = [(a, {5}), (b, set())]
     assert reason(copied, none, copied, copied, copied=copied, bindings=bindings) == (
         "may",
-        "uses the program's own copy of it, `n` (at line 20)",
+        "uses `n` (at line 20), which may hold the program's own copy of it",
+    )
+    assert reason(copied, none, copied, copied, copied=copied) == (
+        "may",
+        "uses what may be the program's own copy of it (at line 5)",
     )
     named_at_a = [(a, {20}), (b, set())]
-    assert reason([(a, {20}), (b, {7})], none, none, none, taken=named_at_a, copied=named_at_a) == (
+    sure = {"taken": named_at_a, "sources": named_at_a, "copied": named_at_a}
+    assert reason([(a, {20}), (b, {7})], none, none, none, **sure) == (
         "may",
-        "uses the program's own copy of it, `n` (at line 20) or uses `e` (at line 9), a reference Peeky can't "
-        "trace that may point at it",
+        "uses `n` (at line 20), which may hold the program's own copy of it or uses `e` (at "
+        "line 9), a reference Peeky can't trace that may point at it",
     )
 
 
@@ -3082,8 +3091,52 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
         "same(const 0_u32)", plus_or_zero, assign, name="weeks", bb6={39}, bb7={39}, bb8={39}
     )
     assert found == (
-        "a statement under way at the stop uses the program's own copy of it, `week` (at line "
-        "32)" + maybe
+        "a statement under way at the stop uses `week` (at line 32), which may hold the "
+        "program's own copy of it" + maybe
+    )
+    # `if c { pick = weeks; }` on one path only: `pick` is no copy it surely uses.
+    branch_pick = line_39(
+        "switchInt(copy _9) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_12 = copy _2;",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_17 = Add(copy _4, copy _12);",
+        "_10 = &raw const (*_13);",
+    )
+    blocks = {"bb6": {39}, "bb7": {39}, "bb8": {39}}
+    found = why("same(const 0_u32)", branch_pick, assign, name="weeks", **blocks)
+    assert found.startswith(
+        "the program has already copied its value into `week` (at line 32) and goes on"
+    ), found
+    # `week = 0` after `week + 1` was computed: still the copy it was computed from, and
+    # where `week` took it.
+    reset = line_39(
+        "_17 = Add(copy _4, const 1_u32);", "_4 = const 0_u32;", "_10 = &raw const (*_13);"
+    )
+    found = why("same(const 0_u32)", reset, assign, name="weeks")
+    assert found.startswith(
+        "the program has already copied its value into `week` (at line 32) and goes on"
+    ), found
+    # On one path only, and `week` reset since: what may be the program's copy.
+    branch_reset = line_39(
+        "switchInt(copy _12) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_17 = Add(copy _4, const 1_u32);",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "_17 = const 0_u32;",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_4 = const 0_u32;",
+        "_10 = &raw const (*_13);",
+    )
+    found = why("same(const 0_u32)", branch_reset, assign, name="weeks", **blocks)
+    assert found == (
+        "a statement under way at the stop uses what may be the program's own copy of it (at "
+        "line 39)" + maybe
     )
     # `let week = weeks;` on line 32, then `same(week, e.shifts)`: the statement reads the
     # program's own copy, not `weeks`; only `e` may have reached it.

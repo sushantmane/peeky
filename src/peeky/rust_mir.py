@@ -1445,8 +1445,9 @@ class Body:
         """What surely holds a value read from ``local``'s current value (or from its part
         ``projection``) at ``position``, on every path from bb0 (#300: what a refusal may
         say the statement has read): (the temporaries that read it, the locals, the
-        program's own bindings among them, that took it by value), or None where that is
-        not known (past the budget). A read is a `copy` or `move` of it or of an
+        program's own bindings among them, that took it by value, and (each such local
+        taken through a binding's copy, a binding it was computed from)), or None where
+        that is not known (past the budget). A read is a `copy` or `move` of it or of an
         overlapping place (``_reads_part``), a read through a pointer made from a borrow of
         it (the whole local only), or a value computed from what holds one; a temporary
         computed from a binding's copy took it, but the statement did not read it (#192).
@@ -1464,25 +1465,30 @@ class Body:
         if entry is None:
             return None
         if number not in entry:
-            return frozenset(), frozenset()
+            return frozenset(), frozenset(), frozenset()
         state = entry[number]
         for at in range(min(index, len(self.blocks[number].statements))):
             state = self._read_step(local, projection, number, at, state)
-        return state[0], state[1]
+        return state[0], state[1], state[3]
 
     def _read_step(self, local, projection, number, index, state):
-        """``read_copies_at``'s transfer over one statement: (read, taken, own) after it:
-        its two sets, and the pointers surely made from a borrow of the local
-        (``projection`` () only)."""
+        """``read_copies_at``'s transfer over one statement: (read, taken, own, origins)
+        after it: its two sets, the pointers surely made from a borrow of the local
+        (``projection`` () only), and (a local taken through a binding's copy, that
+        binding) for every binding it was surely computed from, which stays true after
+        the binding is assigned again."""
         empty = frozenset()
         text = _STRING.sub('""', self.blocks[number].statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
         if re.match(rf"Storage(?:Live|Dead)\(_{local}\);$", text) or (
             whole and int(whole[1]) == local
         ):
-            return empty, empty, empty
+            return empty, empty, empty, empty
+        read, taken, own, origins = state
         if ended := _STORAGE.match(text) or _DROP.match(text):
-            return tuple(each - {int(ended[1])} for each in state)
+            gone = int(ended[1])
+            kept = frozenset(pair for pair in origins if pair[0] != gone)
+            return read - {gone}, taken - {gone}, own - {gone}, kept
         parts, _, _, at, named = self._copy_parts()
         found = at.get((number, index))
         if found is None:
@@ -1490,7 +1496,10 @@ class Body:
         target, mentioned, _, borrow, _, _, _, _ = parts[found]
         if target == local:
             return state
-        read, taken, own = (each - {target} for each in state)
+        read, taken, own = read - {target}, taken - {target}, own - {target}
+        given = {binding for made, binding in origins if made in mentioned}
+        given |= mentioned & taken & named
+        origins = frozenset(pair for pair in origins if pair[0] != target)
         if self._writable_borrows is None:
             self._writable_borrows = frozenset(
                 int(n)
@@ -1499,7 +1508,7 @@ class Body:
                 for n in _WRITABLE_BORROW.findall(_STRING.sub('""', statement))
             )
         if not whole or target in self._writable_borrows:
-            return read, taken, own
+            return read, taken, own, origins
         value, whole_local = whole[2], projection == ()
         plain = [int(n) for n in re.findall(r"\(\*_([0-9]+)\)", value)]
         through = bool(plain) and len(plain) == value.count("(*") and set(plain) <= own
@@ -1507,22 +1516,23 @@ class Body:
             rooted = _DIRECT_BORROW.match(value)
             if whole_local and ((rooted and int(rooted[1]) == local) or through):
                 own = own | {target}
-            return read, taken, own
+            return read, taken, own, origins
         reads = _reads_part(value, local, projection) or (whole_local and through)
         if reads or mentioned & taken:
             taken = taken | {target}
+            origins = origins | {(target, binding) for binding in given}
         if target not in named and (reads or mentioned & read):
             read = read | {target}
         copied = re.fullmatch(r"(?:copy|move) _([0-9]+)", value)
         if whole_local and copied and int(copied[1]) in own:
             own = own | {target}
-        return read, taken, own
+        return read, taken, own, origins
 
     def _read_flow(self, local, projection):
-        """{block: (read, taken, own) on entry} for ``read_copies_at``: its transfer, met
+        """{block: (read, taken, own, origins) on entry} for ``read_copies_at``: its transfer, met
         by intersection over every way in (the greatest fixpoint from bb0); None past the
         budget. A call sets its result on its return edge only."""
-        entry = {0: (frozenset(),) * 3}
+        entry = {0: (frozenset(),) * 4}
         work, queued, steps = [0], {0}, 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
         while work:
@@ -4494,8 +4504,9 @@ class OwnedLocals:
         ``reads``: which pointers count ("any", "traced", "value": ``_copy_verdict``; and
         "whole", as "value" for the whole local), or what a refusal may say of each (#300):
         "explicit", the temporaries that surely read it; "taken", what a binding's copy of
-        it surely gave (``Body.read_copies_at``); "copied", what may hold such a copy, of
-        "any"; "bindings", not hazards but the bindings that may hold a direct copy."""
+        it surely gave (``Body.read_copies_at``), and "sources", not hazards but the
+        bindings those surely came from; "copied", what may hold such a copy, of "any";
+        "bindings", not hazards but the bindings that may hold a direct copy."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -4530,18 +4541,21 @@ class OwnedLocals:
             # holding a direct copy (or a temporary taken from one) the program goes on
             # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
-            if reads in ("explicit", "taken"):
+            if reads in ("explicit", "taken", "sources"):
                 sure = body.read_copies_at(local, position, projection)
                 if sure is None:
                     return None
-                read, taken = sure
+                read, taken, origins = sure
                 if reads == "explicit":
                     return frozenset(n for n in read if live >> n & 1)
-                return frozenset(
+                kept = frozenset(
                     n
                     for n in (taken - read if named else ())
                     if body.copy_undoes(n, local, position, projection, sinks)
                 )
+                if reads == "taken":
+                    return kept
+                return (kept & bindings) | {binding for made, binding in origins if made in kept}
             direct = body.direct_copies_at(local, position, formatting, projection, compares, flow)
             if direct is None:
                 return None
@@ -4564,7 +4578,8 @@ class OwnedLocals:
     def copy_lines(self, hashed, temporaries, named_only=False):
         """The source lines where the code assigns any of ``temporaries`` in the body of
         ``hashed`` ({(file, line)}), for a refusal to name (#183); with ``named_only``,
-        only the program's own bindings among them (#192)."""
+        only the program's own bindings among them (#192), where they are not assigned a
+        constant (#300: `week = 0` after its copy is no copy)."""
         body = self.body(hashed)
         if body is None:
             return set()
@@ -4573,7 +4588,8 @@ class OwnedLocals:
         parts, _, _, at, _ = body._copy_parts()
         found = set()
         for (number, index), part in at.items():
-            if parts[part][0] in temporaries:
+            text = body.blocks[number].statements[index][0]
+            if parts[part][0] in temporaries and not (named_only and _CONSTANT_STORE.match(text)):
                 _, file, number_line = body.blocks[number].statements[index]
                 if file is not None and number_line is not None:
                     found.add((file, number_line))

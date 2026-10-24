@@ -1015,7 +1015,17 @@ def _either(clauses):
 
 
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
-_READINGS = ("any", "explicit", "taken", "copied", "bindings", "value", "whole", "traced")
+_READINGS = (
+    "any",
+    "explicit",
+    "taken",
+    "sources",
+    "copied",
+    "bindings",
+    "value",
+    "whole",
+    "traced",
+)
 
 
 def _copy_reason(proofs, hashed, found, home, target="it"):
@@ -1024,9 +1034,9 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     [(place, hazards)], or None where not understood}):
 
     - where at every place the statement surely read it ("explicit"), or a binding's copy
-      of it surely gave what it holds ("taken"): ("named", those bindings, their places)
-      where any place has the latter (#192), else ("read", None, the places of those
-      temporaries);
+      of it surely gave what it holds ("taken"): ("named", those bindings ("sources"),
+      their places) where any place has the latter (#192), else ("read", None, the places
+      of those temporaries);
     - else ("may", what the statement does that may leave a copy of ``target``, places):
       it reads it ("value", on some path, maybe past the stop), uses a binding's copy of
       it ("copied"), reads another part of it ("whole"), uses a pointer that may point
@@ -1034,24 +1044,20 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     every = dict(found["any"])
     held = {reads: frozenset().union(*(dict(found[reads] or ()).values())) for reads in _READINGS}
     sure, kept = dict(found["explicit"] or ()), dict(found["taken"] or ())
-
-    def bindings(locals_):
-        among = held["bindings"] | held["taken"] | held["copied"]
-        return proofs.copy_sources(hashed, locals_, among)
-
-    if all(sure.get(place) or kept.get(place) for place in every):
-        if held["taken"]:
-            named = bindings(held["taken"])
+    if all(sure.get(place) or kept.get(place) for place in every) and (
+        held["sources"] or not held["taken"]
+    ):
+        if named := held["sources"]:
             return "named", proofs.copy_names(hashed, named), proofs.copy_lines(hashed, named, True)
         return "read", None, proofs.copy_lines(hashed, held["explicit"])
     clauses, places = [], set()
 
-    def clause(text, locals_, named_only=False):
+    def clause(text, locals_, named_only=False, then=""):
         lines = proofs.copy_lines(hashed, locals_, named_only)
         places.update(lines)
-        clauses.append(f"{text} (at {_line_list(lines, home)})")
+        clauses.append(f"{text} (at {_line_list(lines, home)}){then}")
 
-    if any(found[reads] is None for reads in _READINGS[3:]):
+    if any(found[reads] is None for reads in _READINGS[4:]):
         # What Peeky cannot tell apart: no more than that it may have read it.
         clause(f"may have read {target}", held["any"])
         return "may", _either(clauses), places
@@ -1060,9 +1066,14 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     other = held["whole"] - read - copied
     if read:
         clause(f"reads {target} into a temporary", read)
-    if copied and (named := bindings(copied)):
-        names = _names(proofs.copy_names(hashed, named))
-        clause(f"uses the program's own copy of {target}, {names}", named, True)
+    if copied:
+        among = held["bindings"] | held["sources"]
+        if named := held["sources"] | proofs.copy_sources(hashed, copied, among):
+            names = _names(proofs.copy_names(hashed, named))
+            then = f", which may hold the program's own copy of {target}"
+            clause(f"uses {names}", named, True, then)
+        else:
+            clause(f"uses what may be the program's own copy of {target}", copied)
     if other:
         clause(f"reads another part of {target} into a temporary", other)
     if given := held["traced"] - read - other - copied:
