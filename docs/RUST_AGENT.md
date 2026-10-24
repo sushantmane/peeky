@@ -454,6 +454,10 @@ used again. Such a temporary is:
 - A type counts by everything it holds, however deep (#321, `_may_write`, `_type_flags`). Each
   type it names gives flags: "interior" (a `&` to it may take a value), "owned" (by value or
   through a `&mut`, it may) and "shares" (another value may reach what it holds).
+- A type's name is parsed into a tree (`_parse_type`), which `_Judge` walks, noting where it is
+  reached through a shared `&` and behind a pointer others may hold (review). A function
+  pointer or item (`for<'a> fn(&'a Cell<u32>) -> u32 {read}`) holds nothing, its signature's
+  types and `&mut`s included.
 - A standard type counts by its class (`_std_class`, `_STD_NAMED`), by the module its path names
   second and its last segment. That reads the dump's paths (`std::sync::Mutex`) and the debug
   information's (`std::sync::poison::mutex::Mutex`) alike. Its root must be trusted
@@ -461,7 +465,9 @@ used again. Such a temporary is:
 - The classes: "cell" (`Cell`, `RefCell`, `UnsafeCell`, `OnceCell`, `OnceLock`, `Mutex`, `RwLock`,
   the atomics), "channel" (`Sender`, `SyncSender`), "pointer" (`NonNull`), "receiving"
   (`Receiver`, which reads what a sender stored), "shared" (`Rc`, `Arc`, `Weak`, `LocalKey`),
-  "lazy" (`LazyCell`, `LazyLock`), "inert" (`Condvar`, `Barrier`, `Once`) and "plain".
+  "lazy" (`LazyCell`, `LazyLock`), "inert" and "plain".
+- "inert" types hold no value of the program's, and their type arguments aren't held: `Condvar`,
+  `Barrier`, `Once`, `PhantomData`.
 - "plain" is every other type of `_PLAIN_MODULES` (`vec`, `collections`, `slice`, `iter`, `fmt`,
   `path`, `time` and the like): it holds what its arguments hold, which the word scan reads as
   types of their own. `ChunksExact` and `btree_map::Iter` are plain (review round 3).
@@ -474,10 +480,21 @@ used again. Such a temporary is:
   they hold (`rust_symbols.interior_types`, read with the application units' symbols). It walks
   every field, variant and element, and gives `OwnedLocals.interior` per type path and last
   segment.
-- A field whose type is one of the instance's own type arguments is left to the argument, which
-  the dump names where the type is used: `Gen<u32>` holds no cell, `Gen<Cell<u32>>` does. Each
-  argument's flags are kept by position too, so an argument the dump leaves out (a default)
-  counts.
+- Each type's entry is a `CrateType`. A field whose type is one of the instance's own type
+  arguments is left to the argument: `uses` notes how the type holds each (by value, through a
+  `&`, not at all as in `PhantomData<T>`). `instances` keeps each instance's flags by its name
+  (`_canonical`: last segments, no default allocator or hasher).
+- At a use, `_Judge.crate_flags` takes the instance by name where it can, else what it holds
+  besides its arguments, and each argument as the type holds it.
+- rustc leaves an argument that is its default out of the type's name (`&Gen` for `Gen<u32>` of
+  `struct Gen<T = u32>`). Its default comes from the crate's sources
+  (`OwnedLocals._declared_defaults`, set as `TypeLayouts.defaults`).
+- Where a default can't be found, and the instances' arguments differ, the type may hold
+  anything ("unsure"). The refusal says which instance it is can't be told.
+- `payloads` and `contents` give the words of what a callee given a `&` may store, and of what
+  the type holds by value (`#n`, `%n` for argument `n`'s). `_may_take` checks they can hold the
+  local's type. A `Cell<bool>` can't take a `u32`, so the refusal says it "may hold state
+  derived from" the local (`OwnedLocals.holder_kinds`), and advises a change before it's used.
 - A closure counts by what it captures, from the aggregate that builds it
   (`Body.closure_captures`). Where the debug information wasn't read, every type of the crate's may
   hold anything. These make `TypeLayouts`, set as `Body.layouts` when the body is matched.
@@ -487,9 +504,10 @@ used again. Such a temporary is:
   only (`_reached`). So `look(&rx, x)` writes nothing, though `mpsc::channel()`'s tuple holds a
   `Sender` beside `rx`.
 - A call given a `&` to what may take a value also stores into what shares it (`Body._sharers`).
-  That is a local moved or copied out of what the argument was made from, or returned by a call
-  given one or a pointer to one, whose type `_may_share`. So `send(&tx, x)` stores into `rx`, and
-  `put(&a, x)` into `b` of `let b = Rc::clone(&a);`.
+  That is a local moved or copied out of what the argument was made from, returned by a call
+  given one or a pointer to one, or an aggregate, closure or cast built of one, whose type
+  `_may_share`. So `send(&tx, x)` stores into `rx`, and `put(&a, x)` into `b` of
+  `let b = Rc::clone(&a);` and `h` of `let h = Hold { c: a.clone() };`.
 - A pointer to such a value is no sharer: its uses are the value's (`_pointers_to`). Nor is a
   cell moved out by value, which holds what it held then.
 - A call's argument made only of constants carries no value (`f(0)` is `Fn::call(&f, (0,))`).

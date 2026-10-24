@@ -1022,8 +1022,10 @@ def _either(clauses):
 # What a refusal says of a binding that may hold a copy or only point into the local
 # (#320 review: ``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
-# And of bindings that may keep the copy where no change Peeky makes reaches (#321).
+# And of bindings that may keep the copy where no change Peeky makes reaches (#321), and
+# what such a binding's type can't hold a copy in, only what was computed from it.
 _HIDDEN_COPY = ", which may be out of Peeky's reach ("
+_DERIVED = " state derived from "
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1038,7 +1040,7 @@ _READINGS = (
 )
 
 
-def _copy_reason(proofs, hashed, found, home, target="it"):
+def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
     """How sure a refusal may be of what a statement under way holds (#300), from
     ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
     [(place, hazards)], or None where not understood}):
@@ -1136,9 +1138,22 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     ):
         # #321: a cell, a channel's state (`rx`), a struct's cell field, where a callee
         # given a `&` may have stored the copy: no field change Peeky makes reaches it.
-        own += (
-            f"{_HIDDEN_COPY}behind a cell, a lock, a channel or a pointer "
-            f"{'its type holds' if len(bound) == 1 else 'their types hold'})"
+        takes, unsure = (
+            proofs.holder_kinds(hashed, bound, kind)
+            if kind is not None and hasattr(proofs, "holder_kinds")
+            else (bound, ())
+        )
+        if takes != bound:
+            # #321 review: a `Cell<bool>` takes no copy of a `u32`, only what was computed
+            # from one.
+            what = "state derived from" if not takes else "a copy of, or state derived from,"
+            own = own.replace(f" may hold a copy of {target} ", f" may hold {what} {target} ")
+        types = "its type" if len(bound) == 1 else "their types"
+        own += f"{_HIDDEN_COPY}behind a cell, a lock, a channel or a pointer {types} " + (
+            f"may hold: which instance of {types} {'it is' if len(bound) == 1 else 'they are'} "
+            "can't be told)"
+            if unsure
+            else "hold" + ("s)" if len(bound) == 1 else ")")
         )
     if not clauses:
         return "kept", own, at, None
@@ -2817,7 +2832,10 @@ class RustSession(NativeSession):
             reads: proofs.coded_hazards(hashed, plain, line, path, projection, reads)
             for reads in (*_READINGS, "pointing")
         }
-        kind, detail, places, kept = _copy_reason(proofs, hashed, found, source, f"`{plain}`")
+        local_kind = getattr(proofs, "declared_type", lambda *args: None)(hashed, plain, line, path)
+        kind, detail, places, kept = _copy_reason(
+            proofs, hashed, found, source, f"`{plain}`", local_kind
+        )
         made = _line_list(places, source)
         unseen = (
             "so a change there may never be seen: Peeky proves no read of the changed part "
@@ -2893,7 +2911,9 @@ class RustSession(NativeSession):
             elif kind == "statement":
                 kept = "that it goes on with" in detail
                 statements = (
-                    "copied"
+                    "derived"
+                    if kept and _DERIVED in detail and "statement under way" not in detail
+                    else "copied"
                     if "has already copied" in detail
                     or (
                         kept
@@ -2941,6 +2961,8 @@ class RustSession(NativeSession):
             )
         elif statements == "holds":
             text += ". Change it before the program copies it (`--set-at` an earlier line)"
+        elif statements == "derived":
+            text += ". Change it before the program uses it (`--set-at` an earlier line)"
         elif statements:
             text += (
                 ". Change it at the first line of that statement (`--set-at` it), before it "
@@ -3130,7 +3152,12 @@ class RustSession(NativeSession):
                 reads: proofs.copy_hazards(**asked, reads=reads)
                 for reads in (*_READINGS[1:], "pointing")
             }
-            kind, detail, places, kept = _copy_reason(proofs, hashed[1], found, home)
+            local_kind = getattr(proofs, "declared_type", lambda *args: None)(
+                hashed[1], variable.get("name"), place.get("line"), home
+            )
+            kind, detail, places, kept = _copy_reason(
+                proofs, hashed[1], found, home, kind=local_kind
+            )
             made = _line_list(places, home)
             unseen = (
                 f"so a change to `{variable.get('name')}` may never be seen: Peeky proves no "
@@ -3156,12 +3183,20 @@ class RustSession(NativeSession):
                     f"{detail}, {unseen}",
                     "Change it before the program copies or borrows it (a stop on an earlier line)"
                     if _ONLY_POINTS in detail
+                    # #321 review: what was computed from it, not a copy.
+                    else "Change it before the program uses it (a stop on an earlier line)"
+                    if _DERIVED in detail
                     # #321: a copy no change reaches has nothing to change instead.
                     else "Change it before the program copies it (a stop on an earlier line)"
                     if _HIDDEN_COPY in detail
                     else "Change it before the program copies it (a stop on an earlier line), "
                     "or change the copy instead",
-                    "the program may hold a copy" + (f" ({made})" if made else ""),
+                    (
+                        "the program may hold state derived from it"
+                        if _DERIVED in detail
+                        else "the program may hold a copy"
+                    )
+                    + (f" ({made})" if made else ""),
                 )
             if kind == "may" and kept:
                 return _Copied(

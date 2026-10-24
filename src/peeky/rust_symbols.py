@@ -1145,7 +1145,15 @@ def enum_layouts(text, unit, root=None):
 
 _INTERIOR_ALL = frozenset({"interior", "owned", "shares"})
 _STD_ROOTS = ("std::", "core::", "alloc::")
+# A function pointer's or item's type, which holds nothing (#321 review).
 _UNNAMED_POINTERS = ("fn(", "unsafe ", "extern ", "for<")
+_NOTHING_HELD = (
+    "DW_TAG_base_type",
+    "DW_TAG_enumeration_type",
+    "DW_TAG_subroutine_type",
+    "DW_TAG_unspecified_type",
+)
+_WRAPPING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type", "DW_TAG_array_type")
 
 
 def interior_types(root, crate):
@@ -1153,10 +1161,8 @@ def interior_types(root, crate):
     application unit's DWARF (``root``): {its path without its type arguments, from the root
     of ``crate`` for the crate's own (`Counter`, `m::Inner`, `Gen`) and with its crate's name
     for another's (`mylib::Pool`), and its last segment after `::` (`::Inner`, every type so
-    named together): (the flags of what it holds
-    besides its type arguments, (the flags of each type argument, in order))}, as
-    rust_mir.TypeLayouts reads them. A type's instances (`Gen<u32>`, `Gen<Cell<u32>>`) are
-    judged together. The flags, every field, variant and element walked however deep:
+    named together): its rust_mir.CrateType}. Every field, variant and element is walked,
+    however deep, for the flags:
 
     - "interior": a callee given a `&` to it may store a value in what it holds: a raw
       pointer, a standard cell, lock, atomic, `NonNull` or channel's sending end (by
@@ -1167,11 +1173,20 @@ def interior_types(root, crate):
     - "shares": what it holds may be reached through another value: a raw pointer, a
       channel's end, a cell behind a reference, `Rc`, `Arc`, `Weak` or `LocalKey`.
 
-    A field whose type is one of the instance's own type arguments is left to them: the
-    dump names them where the type is used (`Gen<std::cell::Cell<u32>>`), unless it leaves
-    out a default one, which the arguments' flags then cover. Raises ValueError on DWARF it
-    does not read."""
-    from peeky.rust_mir import _MUTABLE_VIEWS, _std_class
+    A field whose type is one of the instance's own type arguments is left to the argument,
+    noting how the type holds it (``uses``): the dump names the argument where the type is
+    used (`Gen<std::cell::Cell<u32>>`), or leaves out a default the crate's sources declare.
+    Each instance's own flags are kept by its name too (``instances``). A function type and
+    `PhantomData` hold nothing. Raises ValueError on DWARF it does not read."""
+    from peeky.rust_mir import (
+        _ATOMIC_VALUES,
+        _MUTABLE_VIEWS,
+        CrateType,
+        _canonical,
+        _parse_type,
+        _std_class,
+        merge_layout,
+    )
 
     by_offset, parents = {}, {}
 
@@ -1205,6 +1220,9 @@ def interior_types(root, crate):
         raw = die.attributes.get("DW_AT_name")
         return names.get(die.offset) or (_string(raw) if raw is not None else "")
 
+    def last(name):
+        return name.split("<", 1)[0].rsplit("::", 1)[-1]
+
     def members(die):
         for child in die.children:
             if child.tag == "DW_TAG_member":
@@ -1227,117 +1245,211 @@ def interior_types(root, crate):
                 return found
         return []
 
-    def walk(offset, shared, handle, covered, seen, out):
-        if offset in covered:
-            return
-        key = (offset, shared, handle)
-        if key in seen or out >= _INTERIOR_ALL:
-            return
-        seen.add(key)
-        die = by_offset.get(offset)
-        if die is None or "DW_AT_declaration" in die.attributes:
-            out |= _INTERIOR_ALL
-            return
-        tag, name = die.tag, name_of(die)
-        if tag in (
-            "DW_TAG_base_type",
-            "DW_TAG_enumeration_type",
-            "DW_TAG_subroutine_type",
-            "DW_TAG_unspecified_type",
-        ):
-            return
-        if tag in (
-            "DW_TAG_typedef",
-            "DW_TAG_const_type",
-            "DW_TAG_volatile_type",
-            "DW_TAG_array_type",
-        ):
-            inner = target(die)
-            if inner is None:
+    def data_pointer(die):
+        """The pointer type a fat pointer's (`&[u32]`, `&str`) data pointer has, or None."""
+        data = [each for each in members(die) if each.attributes.get("DW_AT_name") == '"data_ptr")']
+        inner = by_offset.get(target(data[0])) if len(data) == 1 and target(data[0]) else None
+        return inner if inner is not None and inner.tag == "DW_TAG_pointer_type" else None
+
+    class Walk:
+        """One type's walk: its own arguments' DIEs (``covered``: {offset: position}), and
+        how its fields reach each (``uses``)."""
+
+        def __init__(self, covered):
+            self.covered = covered
+            self.uses = [set() for _ in range(max(covered.values(), default=-1) + 1)]
+
+        def flags(self, offset, shared, handle, seen, out):
+            if offset in self.covered:
+                self.uses[self.covered[offset]].add((shared, handle))
+                return
+            key = (offset, shared, handle)
+            if key in seen or out >= _INTERIOR_ALL:
+                return
+            seen.add(key)
+            die = by_offset.get(offset)
+            if die is None or "DW_AT_declaration" in die.attributes:
                 out |= _INTERIOR_ALL
-            else:
-                walk(inner, shared, handle, covered, seen, out)
-            return
-        if tag == "DW_TAG_pointer_type":
-            pointer(name, target(die), shared, handle, covered, seen, out)
-            return
-        if tag not in ("DW_TAG_structure_type", "DW_TAG_union_type") or "dyn " in name:
-            out |= _INTERIOR_ALL
-            return
-        if name.startswith(("&", "*")):
-            # A fat pointer (`&[u32]`, `&mut str`): what its data pointer points at.
-            data = [
-                each for each in members(die) if each.attributes.get("DW_AT_name") == '"data_ptr")'
-            ]
-            inner = by_offset.get(target(data[0])) if len(data) == 1 and target(data[0]) else None
-            if inner is None or inner.tag != "DW_TAG_pointer_type":
+                return
+            tag, name = die.tag, name_of(die)
+            if tag in _NOTHING_HELD or name.startswith(_UNNAMED_POINTERS):
+                return
+            if tag in _WRAPPING:
+                inner = target(die)
+                if inner is None:
+                    out |= _INTERIOR_ALL
+                else:
+                    self.flags(inner, shared, handle, seen, out)
+                return
+            if tag == "DW_TAG_pointer_type":
+                self.pointer(name, target(die), shared, handle, seen, out)
+                return
+            if tag not in ("DW_TAG_structure_type", "DW_TAG_union_type") or "dyn " in name:
                 out |= _INTERIOR_ALL
-            else:
-                pointer(name, target(inner), shared, handle, covered, seen, out)
-            return
-        if name.startswith(_STD_ROOTS):
-            standard(die, name.split("<", 1)[0], shared, handle, covered, seen, out)
-            return
-        # The crate's own, a tuple, a closure's captures, or another crate's: its fields.
-        for member in members(die):
-            inner = target(member)
-            if inner is None:
+                return
+            if name.startswith(("&", "*")):
+                inner = data_pointer(die)
+                if inner is None:
+                    out |= _INTERIOR_ALL
+                else:
+                    self.pointer(name, target(inner), shared, handle, seen, out)
+                return
+            if name.startswith(_STD_ROOTS):
+                self.standard(die, name.split("<", 1)[0], shared, handle, seen, out)
+                return
+            # The crate's own, a tuple, a closure's captures, or another crate's: its fields.
+            for member in members(die):
+                inner = target(member)
+                if inner is None:
+                    out |= _INTERIOR_ALL
+                else:
+                    self.flags(inner, shared, handle, seen, out)
+
+        def pointer(self, name, inner, shared, handle, seen, out):
+            if inner is None or name.startswith(("*const ", "*mut ")):
                 out |= _INTERIOR_ALL
+            elif name.startswith("&mut "):
+                if not shared:
+                    out.add("owned")
+                self.flags(inner, shared, True, seen, out)
+            elif name.startswith("&"):
+                self.flags(inner, True, True, seen, out)
+            elif name.startswith("alloc::boxed::Box<"):
+                self.flags(inner, shared, handle, seen, out)
             else:
-                walk(inner, shared, handle, covered, seen, out)
+                out |= _INTERIOR_ALL
 
-    def pointer(name, inner, shared, handle, covered, seen, out):
-        if name.startswith(_UNNAMED_POINTERS):
-            return
-        if inner is None or name.startswith(("*const ", "*mut ")):
-            out |= _INTERIOR_ALL
-        elif name.startswith("&mut "):
-            if not shared:
-                out.add("owned")
-            walk(inner, shared, True, covered, seen, out)
-        elif name.startswith("&"):
-            walk(inner, True, True, covered, seen, out)
-        elif name.startswith("alloc::boxed::Box<"):
-            walk(inner, shared, handle, covered, seen, out)
-        else:
-            out |= _INTERIOR_ALL
+        def standard(self, die, path, shared, handle, seen, out):
+            kind = _std_class(path)
+            given = [each for each in parameters(die) if each is not None]
+            if "<" in name_of(die) and not given and kind != "inert":
+                out |= _INTERIOR_ALL
+                return
 
-    def standard(die, path, shared, handle, covered, seen, out):
-        kind = _std_class(path)
-        given = parameters(die)
-        if "<" in name_of(die) and not given:
-            out |= _INTERIOR_ALL
-            return
+            def arguments(shared, handle, into):
+                for each in given:
+                    self.flags(each, shared, handle, seen, into)
 
-        def arguments(shared, handle, into):
-            for each in given:
-                if each is not None:
-                    walk(each, shared, handle, covered, seen, into)
+            if kind == "cell":
+                out |= {"interior", "owned"} | ({"shares"} if handle else set())
+                arguments(False, handle, out)
+            elif kind in ("channel", "pointer", "unknown"):
+                out |= _INTERIOR_ALL
+            elif kind == "receiving":
+                received = set()
+                arguments(False, True, received)
+                out |= received | {"shares"}
+                if received & {"interior", "owned"}:
+                    out |= {"interior", "owned"}
+            elif kind in ("shared", "lazy"):
+                arguments(True, handle or kind == "shared", out)
+            elif kind == "plain":
+                if not shared and last(path) in _MUTABLE_VIEWS:
+                    out.add("owned")
+                arguments(shared, handle, out)
 
-        if kind == "cell":
-            out |= {"interior", "owned"} | ({"shares"} if handle else set())
-            arguments(False, handle, out)
-        elif kind in ("channel", "pointer", "unknown"):
-            out |= _INTERIOR_ALL
-        elif kind == "receiving":
-            received = set()
-            arguments(False, True, received)
-            out |= received | {"shares"} | ({"interior"} if "owned" in received else set())
-        elif kind == "shared":
-            arguments(True, True, out)
-        elif kind == "lazy":
-            arguments(True, handle, out)
-        elif kind == "plain":
-            if not shared and path.rsplit("::", 1)[-1] in _MUTABLE_VIEWS:
-                out.add("owned")
-            arguments(shared, handle, out)
+        def contents(self, offset, seen):
+            """The words of what a value of the type at ``offset`` holds by value, `#n` for
+            argument `n`'s (rust_mir._Judge.contents)."""
+            if offset in self.covered:
+                return {f"#{self.covered[offset]}"}
+            if offset in seen:
+                return set()
+            seen.add(offset)
+            die = by_offset.get(offset)
+            if die is None or "DW_AT_declaration" in die.attributes:
+                return {"*"}
+            tag, name = die.tag, name_of(die)
+            if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
+                return {last(name)}
+            if tag in _NOTHING_HELD or name.startswith(_UNNAMED_POINTERS):
+                return set()
+            if tag in _WRAPPING:
+                inner = target(die)
+                return {"*"} if inner is None else self.contents(inner, seen)
+            if tag == "DW_TAG_pointer_type":
+                inner = target(die)
+                if name.startswith("alloc::boxed::Box<") and inner is not None:
+                    return {"Box"} | self.contents(inner, seen)
+                return {"*"}
+            if "dyn " in name or name.startswith(("&", "*")):
+                return {"*"}
+            if name.startswith(_STD_ROOTS):
+                path = name.split("<", 1)[0]
+                kind = _std_class(path)
+                if kind in ("pointer", "unknown"):
+                    return {"*"}
+                found = {last(path), *_ATOMIC_VALUES.get(last(path), "").split()}
+                if kind != "inert":
+                    for each in parameters(die):
+                        if each is not None:
+                            found |= self.contents(each, seen)
+                return found
+            found = set() if name.startswith("(") else {last(name)}
+            for member in members(die):
+                inner = target(member)
+                found |= {"*"} if inner is None else self.contents(inner, seen)
+            return found
+
+        def payloads(self, offset, seen):
+            """The words of what a callee given a `&` to a value of the type at ``offset`` may
+            store in a cell, a lock, an atomic or a channel it holds, `#n`/`%n` for argument
+            `n`'s (rust_mir._Judge.payloads)."""
+            if offset in self.covered:
+                return {f"%{self.covered[offset]}"}
+            if offset in seen:
+                return set()
+            seen.add(offset)
+            die = by_offset.get(offset)
+            if die is None or "DW_AT_declaration" in die.attributes:
+                return {"*"}
+            tag, name = die.tag, name_of(die)
+            if tag in ("DW_TAG_base_type", "DW_TAG_enumeration_type"):
+                return set()
+            if tag in _NOTHING_HELD or name.startswith(_UNNAMED_POINTERS):
+                return set()
+            if tag in _WRAPPING:
+                inner = target(die)
+                return {"*"} if inner is None else self.payloads(inner, seen)
+            if tag == "DW_TAG_pointer_type":
+                inner = target(die)
+                if inner is None or name.startswith(("*const ", "*mut ")):
+                    return {"*"}
+                return self.payloads(inner, seen)
+            if "dyn " in name or name.startswith("*"):
+                return {"*"}
+            if name.startswith("&"):
+                inner = data_pointer(die)
+                return {"*"} if inner is None else self.payloads(target(inner), seen)
+            if name.startswith(_STD_ROOTS):
+                path = name.split("<", 1)[0]
+                kind = _std_class(path)
+                given = [each for each in parameters(die) if each is not None]
+                if kind in ("pointer", "unknown") or last(path) == "AtomicPtr":
+                    return {"*"}
+                if kind in ("cell", "channel", "receiving"):
+                    if last(path) in _ATOMIC_VALUES:
+                        return {_ATOMIC_VALUES[last(path)]}
+                    return set().union(*(self.contents(each, set()) for each in given))
+                if kind == "inert":
+                    return set()
+                return set().union(*(self.payloads(each, seen) for each in given))
+            found = set()
+            for member in members(die):
+                inner = target(member)
+                found |= {"*"} if inner is None else self.payloads(inner, seen)
+            return found
 
     found = {}
     for name in plain.values():
         if not name.startswith(_STD_ROOTS):
             path = name.removeprefix(prefix)
             for key in (path, "::" + path.rsplit("::", 1)[-1]):
-                merge_interior(found, key, (frozenset(), ()))
+                merge_layout(
+                    found,
+                    key,
+                    CrateType(uses=(), payloads=frozenset(), contents=frozenset({last(path)})),
+                )
     for offset, name in names.items():
         die = by_offset[offset]
         parent = parents.get(offset)
@@ -1356,40 +1468,42 @@ def interior_types(root, crate):
             # A closure's captures: the dump names closures by where they are written.
             continue
         given = parameters(die)
-        covered = frozenset(each for each in given if each is not None)
-        own = set()
+        walk = Walk({each: at for at, each in enumerate(given) if each is not None})
+        own, everything, payloads, contents = set(), set(), set(), set()
+        whole = Walk({})
         for member in members(die):
             inner = target(member)
             if inner is None:
                 own |= _INTERIOR_ALL
-            else:
-                walk(inner, False, False, covered, set(), own)
+                everything |= _INTERIOR_ALL
+                payloads.add("*")
+                contents.add("*")
+                continue
+            walk.flags(inner, False, False, set(), own)
+            whole.flags(inner, False, False, set(), everything)
+            payloads |= walk.payloads(inner, set())
+            contents |= walk.contents(inner, set())
         each_argument = []
         for each in given:
             flags = set()
             if each is not None:
-                walk(each, False, False, frozenset(), set(), flags)
+                whole.flags(each, False, False, set(), flags)
             each_argument.append(frozenset(flags))
+        node = _parse_type(name.removeprefix(prefix))
+        key = None if node is None else _canonical(node)
+        entry = CrateType(
+            frozenset(own),
+            tuple(each_argument),
+            tuple(frozenset(each) for each in walk.uses)
+            + tuple(frozenset() for _ in range(len(given) - len(walk.uses))),
+            frozenset(payloads),
+            frozenset({last(path)} | contents),
+            {} if key is None else {key: frozenset(everything)},
+        )
         # A signature in the dump may name it by its last segment alone (`::Inner`).
-        for key in (path, "::" + path.rsplit("::", 1)[-1]):
-            merge_interior(found, key, (frozenset(own), tuple(each_argument)))
+        for name_key in (path, "::" + path.rsplit("::", 1)[-1]):
+            merge_layout(found, name_key, entry)
     return found
-
-
-def merge_interior(found, name, entry):
-    """Add ``entry`` (``interior_types``') for ``name`` to ``found``: what every type so
-    named holds, each argument's flags by its position."""
-    own, arguments = entry
-    before, merged = found.get(name, (frozenset(), ()))
-    longest = max(len(merged), len(arguments))
-    found[name] = (
-        before | own,
-        tuple(
-            (merged[at] if at < len(merged) else frozenset())
-            | (arguments[at] if at < len(arguments) else frozenset())
-            for at in range(longest)
-        ),
-    )
 
 
 def application_symbols(
@@ -1398,6 +1512,8 @@ def application_symbols(
     """Return declared-source lines, enum layouts, the application units, their functions'
     lexical blocks (``code_blocks``) and what the crate's own types hold
     (``interior_types``, None where not read) from application units only."""
+    from peeky.rust_mir import merge_layout
+
     workspace = Path(workspace).resolve(strict=True)
     if type(budget) not in (int, float) or not 0 < budget <= SYMBOL_DEADLINE_S:
         raise ValueError("Rust symbol extraction has no remaining time budget")
@@ -1446,7 +1562,7 @@ def application_symbols(
         except (KeyError, ValueError, RecursionError):
             interior = None
         for name, entry in types.items() if interior is not None else ():
-            merge_interior(interior, name, entry)
+            merge_layout(interior, name, entry)
     lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA, rust=True)
     return lines, layouts, units, blocks, interior
 
