@@ -366,6 +366,12 @@ _MUTATION_HINTS = (
         "or edit the source with `--old`/`--new`.",
     ),
     (
+        # #324 review: code inlined just before the stop that Peeky can't place.
+        r"code may already have read `[^`]+` before this stop: .*Peeky cannot tell",
+        "Change it at a stop on an earlier line (`--at`, `session continue --to LINE`), "
+        "where `inspect` marks it [settable].",
+    ),
+    (
         # #324: code the build inlined from a call on the line ran before the breakpoint.
         r"code may already have read `[^`]+` before this stop",
         "Change it at a stop on an earlier line (`--at`, `session continue --to LINE`), or "

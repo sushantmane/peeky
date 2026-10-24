@@ -1398,10 +1398,17 @@ holds for integer locals too.
 - So at a breakpoint on `let y = x.clone();`, `x` is refused: the inlined `clone` may already have
   read it. Peeky reads where each inlined call is made from, and its addresses, from the build's
   debug information.
-- Only what such a call is given, or what may point into it, is refused. In
+- In safe code, only what such a call is given, or what may point into it, is refused. In
   `let y = z.clone() + x;`, `z` is refused, but `x` can change: the line reads it after the stop.
+- In a crate with unsafe code, such a call may read a local through a pointer it isn't given,
+  such as one a `static mut` holds. So every local is refused there. Only the standard library's
+  `ptr::eq` and `ptr::addr_eq` are exempt.
+- Inlined code just before the stop whose call Peeky can't place refuses every local too. That is
+  a call made from a macro's definition, as `$v.clone()` in `mclone!(x)`, or from another file.
+  It is so too where the build's IR and debug information name different inlined calls.
 - A `session step` from the line before stops at the inlined call's first instruction, before it
-  runs. There, `x` can change.
+  runs. There, `x` can change. A macro's code is the exception: LLDB shows that stop on the
+  macro's definition, so change the value on an earlier line instead.
 - A line in another file, a macro's code, is named with its file:
   `(at alloc/src/macros.rs:113)` for `format!`.
 - The refusal says where a change works instead: before that statement starts. That is a stop
@@ -1474,7 +1481,8 @@ Rows withheld at such a stop say why, as `session inspect` does:
 - `[not settable: the program may hold a copy (line 34)]`, for your binding's copy;
 - `[not settable: part-way through line 12]`, after a step back from a call;
 - ``[not settable: line 20's inlined `clone` may have read it]``, at a breakpoint past an inlined
-  call.
+  call, with `(unsafe code)` where the crate has unsafe code;
+- `[not settable: code inlined before the stop may have read it]`, after a macro's inlined code.
 
 To get a stop where values can change, use `session continue --to LINE`, or a `session step` that
 lands on a statement's first line.

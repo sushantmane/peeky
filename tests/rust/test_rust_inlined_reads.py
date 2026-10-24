@@ -104,8 +104,54 @@ WRITES = sys.platform == "darwin"
 RUN = ("--", "5", "hello")
 
 
-def line_of(marker):
-    return next(i for i, line in enumerate(SOURCE.splitlines(), 1) if f"// {marker}" in line)
+# #324 review: a macro's inlined call names the macro's definition as its site, not the line.
+MACROS = """use std::env;
+
+macro_rules! mclone {
+    ($v:expr) => {{ $v.clone() }};
+}
+
+fn macro_line(x: u32) -> u32 {
+    let k = std::convert::identity(1u32); // MBEFORE
+    let y = mclone!(x) + k; // MACRO
+    std::hint::black_box(&x);
+    y
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("MACRO {}", macro_line(x));
+}
+"""
+# #324 review: unsafe code reads `x` through a pointer the inlined call isn't given.
+GLOBALS = """use std::env;
+
+static mut G: *const u32 = std::ptr::null();
+
+#[inline(always)]
+fn read_global() -> u32 {
+    unsafe { *G }
+}
+
+fn global(x: u32) -> u32 {
+    unsafe {
+        G = &x;
+    }
+    let k = std::convert::identity(1u32); // GBEFORE
+    let y = read_global() + k; // GLOBAL
+    std::hint::black_box(&x);
+    y
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("GLOBAL {}", global(x));
+}
+"""
+
+
+def line_of(marker, text=SOURCE):
+    return next(i for i, line in enumerate(text.splitlines(), 1) if f"// {marker}" in line)
 
 
 @pytest.fixture
@@ -114,16 +160,21 @@ def crate(tmp_path, monkeypatch):
     if not all(os.environ.get("PEEKY_RUST_" + name) for name in names):
         pytest.skip("set PEEKY_RUST_* tool paths to enable Rust conformance")
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    root = tmp_path / "inlined"
-    (root / "src").mkdir(parents=True)
-    (root / "Cargo.toml").write_text(MANIFEST)
-    (root / "Cargo.lock").write_text(LOCK)
-    (root / "src/main.rs").write_text(SOURCE)
-    return root
+
+    def make(text=SOURCE):
+        root = tmp_path / f"inlined{len(list(tmp_path.glob('inlined*')))}"
+        (root / "src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text(MANIFEST)
+        (root / "Cargo.lock").write_text(LOCK)
+        (root / "src/main.rs").write_text(text)
+        return root
+
+    return make
 
 
 def probe(capsys, root, marker, *argv):
-    at = ["probe", str(root), "--at", f"src/main.rs:{line_of(marker)}", "--json", "--quiet"]
+    text = (root / "src/main.rs").read_text()
+    at = ["probe", str(root), "--at", f"src/main.rs:{line_of(marker, text)}", "--json", "--quiet"]
     code = main([*at, *argv, *RUN])
     return code, json.loads(capsys.readouterr().out)
 
@@ -150,18 +201,19 @@ def printed(result, label):
 
 @pytest.mark.timeout(600)
 def test_a_line_breakpoint_past_an_inlined_read_withholds_what_the_call_was_given(crate, capsys):
+    root = crate()
     for marker, local, call in (
         ("CLONE", "x", "clone"),
         ("THROUGH", "x", "clone"),
         ("TWICE", "x", "twice"),
     ):
         line = line_of(marker)
-        code, result = probe(capsys, crate, marker, "--capture", local)
+        code, result = probe(capsys, root, marker, "--capture", local)
         assert code == 0, result.get("error")
         (row,) = rows(result, local)
         assert row.get("settable") is False, row
         assert row.get("not_settable") == f"line {line}'s inlined `{call}` may have read it", row
-        code, result = probe(capsys, crate, marker, "--set", f"{local}=100")
+        code, result = probe(capsys, root, marker, "--set", f"{local}=100")
         message = refused(code, result)
         assert result["error"]["hint"].endswith(
             "or `session step` onto the line from the one before it."
@@ -174,40 +226,42 @@ def test_a_line_breakpoint_past_an_inlined_read_withholds_what_the_call_was_give
         ) in message, message
         assert f"reach line {line} with `session step` from the line before it" in message
     # A field: the call is given a pointer to `p.a`.
-    message = refused(*probe(capsys, crate, "FIELD", "--set", "p.a=100"))
+    message = refused(*probe(capsys, root, "FIELD", "--set", "p.a=100"))
     assert f"line {line_of('FIELD')}'s code may already have read `p`" in message, message
     # A String's text, where lldb-dap writes memory.
     if WRITES:
-        message = refused(*probe(capsys, crate, "SIZE", "--set", 's="zz"'))
+        message = refused(*probe(capsys, root, "SIZE", "--set", 's="zz"'))
         assert f"line {line_of('SIZE')}'s code may already have read `s`" in message, message
     # A line earlier, before the inlined code runs, the change reaches `y`: 100 + 1.
-    code, result = probe(capsys, crate, "BEFORE", "--set", "x=100")
+    code, result = probe(capsys, root, "BEFORE", "--set", "x=100")
     assert code == 0, result.get("error")
     assert printed(result, "CLONE") == ["CLONE 101"], result["output"]
 
 
 @pytest.mark.timeout(600)
 def test_the_inlined_call_withholds_only_what_it_is_given(crate, capsys):
+    root = crate()
     # `let y = z.clone() + x;`: the inlined `clone` read `z`; the line reads `x` after the
     # stop, so `x` stays settable and the change reaches `y`: 10 + 100.
-    code, result = probe(capsys, crate, "MIXED", "--capture", "x,z", "--set", "x=100")
+    code, result = probe(capsys, root, "MIXED", "--capture", "x,z", "--set", "x=100")
     assert code == 0, result.get("error")
     # `z` is withheld: the statement's temporary may hold its copy.
     (z,) = rows(result, "z")
     assert z.get("settable") is False and z.get("not_settable"), z
     assert printed(result, "MIXED") == ["MIXED 110"], result["output"]
     # `vec!`'s inlined allocation is given nothing of the program's: `x` is stored after it.
-    code, result = probe(capsys, crate, "VEC", "--set", "x=100")
+    code, result = probe(capsys, root, "VEC", "--set", "x=100")
     assert code == 0, result.get("error")
     assert printed(result, "VEC") == ["VEC 100"], result["output"]
 
 
 @pytest.mark.timeout(600)
 def test_a_step_onto_the_line_stops_before_its_inlined_code(crate, capsys):
+    root = crate()
     # A step from the line before stops at the inlined call's first instruction (LLDB shows
     # the caller there): nothing of the line has run, so the change reaches `y`.
     at = f"src/main.rs:{line_of('BEFORE')}"
-    assert main(["session", "start", str(crate), "--at", at, *RUN]) == 0
+    assert main(["session", "start", str(root), "--at", at, *RUN]) == 0
     capsys.readouterr()
     assert main(["session", "step"]) == 0
     capsys.readouterr()
@@ -224,3 +278,79 @@ def test_a_step_onto_the_line_stops_before_its_inlined_code(crate, capsys):
     text = json.loads(capsys.readouterr().out)["output"]
     assert main(["session", "close"]) == 0
     assert "CLONE 101" in text, text
+
+
+def stepped(capsys, root, before, assignment):
+    """The program's output after a step from line ``before`` and ``assignment`` there, and
+    the stop's frame and rows."""
+    text = (root / "src/main.rs").read_text()
+    at = f"src/main.rs:{line_of(before, text)}"
+    assert main(["session", "start", str(root), "--at", at, *RUN]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "step"]) == 0
+        capsys.readouterr()
+        assert main(["session", "inspect", "--json"]) == 0
+        snapshot = json.loads(capsys.readouterr().out)
+        assert main(["session", "set", assignment, "--json"]) == 0
+        capsys.readouterr()
+        assert main(["session", "continue", "--to-exit"]) == 0
+        capsys.readouterr()
+        assert main(["session", "report", "--json"]) == 0
+        return json.loads(capsys.readouterr().out)["output"], snapshot
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(600)
+def test_a_macros_inlined_code_before_the_stop_withholds_every_local(crate, capsys):
+    # #324 review: `mclone!(x)` inlines `clone` from the macro's definition, line 4, before
+    # line 10's first row: `x` was `[settable]`, and `--set x=100` printed `MACRO 6`.
+    root, line = crate(MACROS), line_of("MACRO", MACROS)
+    code, result = probe(capsys, root, "MACRO", "--capture", "x")
+    assert code == 0, result.get("error")
+    (row,) = rows(result, "x")
+    assert row.get("settable") is False, row
+    assert row.get("not_settable") == "code inlined before the stop may have read it", row
+    code, result = probe(capsys, root, "MACRO", "--set", "x=100")
+    message = refused(code, result)
+    assert (
+        f"line {line}'s code may already have read `x` before this stop: code the build "
+        "inlined from line 4 (a macro's definition) runs just before the stop, and Peeky "
+        "cannot tell whether it is this line's code or what it read"
+    ) in message, message
+    assert "session step" not in message and "session step" not in result["error"]["hint"]
+    # A line earlier the change reaches `y`: 100 + 1.
+    code, result = probe(capsys, root, "MBEFORE", "--set", "x=100")
+    assert code == 0, result.get("error")
+    assert printed(result, "MACRO") == ["MACRO 101"], result["output"]
+
+
+@pytest.mark.timeout(600)
+def test_unsafe_code_may_read_the_local_through_a_pointer_the_call_is_not_given(crate, capsys):
+    # #324 review: `read_global()` is given nothing, but reads `x` through `G`, a
+    # `static mut`: `x` was `[settable]`, and `--set x=100` printed `GLOBAL 6`.
+    root, line = crate(GLOBALS), line_of("GLOBAL", GLOBALS)
+    code, result = probe(capsys, root, "GLOBAL", "--capture", "x")
+    assert code == 0, result.get("error")
+    (row,) = rows(result, "x")
+    assert row.get("settable") is False, row
+    assert row.get("not_settable") == (
+        f"line {line}'s inlined `read_global` may have read it (unsafe code)"
+    ), row
+    message = refused(*probe(capsys, root, "GLOBAL", "--set", "x=100"))
+    assert (
+        "The crate has unsafe code, so that code may read `x` through a pointer it isn't "
+        "given, such as one a `static mut` holds"
+    ) in message, message
+    # A line earlier, and after a step from there, which stops before `read_global` runs,
+    # the change reaches `y`: 100 + 1.
+    code, result = probe(capsys, root, "GBEFORE", "--set", "x=100")
+    assert code == 0, result.get("error")
+    assert printed(result, "GLOBAL") == ["GLOBAL 101"], result["output"]
+    output, snapshot = stepped(capsys, root, "GBEFORE", "x=100")
+    assert snapshot["frames"][0]["line"] == line, snapshot["frames"][0]
+    (x,) = [v for s in snapshot["scopes"] for v in s["variables"] if v["name"] == "x"]
+    assert x.get("settable") is True, x
+    assert "GLOBAL 101" in output, output

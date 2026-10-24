@@ -16,6 +16,7 @@ from peeky.rust_mir import (
     _call_operands,
     _callee,
     _covers,
+    macro_lines,
     parse_body,
 )
 from peeky.rust_symbols import CodeBlock
@@ -257,47 +258,74 @@ def owned_of(text, name, inlined=None, source=SOURCE):
 
 
 AT = "/w/src/main.rs"
+UNSAFE = "the crate has unsafe code (in src/main.rs)"
 
 
 def test_a_call_inlined_before_the_stop_may_have_read_what_it_is_given():
-    owned = owned_of(CLONED, "cloned")
+    owned = owned_of(CLONED, "cloned", inlined={20: {15}})
     # The DWARF's inlined `clone` is called from column 15 of line 20 (`x.clone()`): it is
     # given `_4 = &_1`, a pointer to `x`; `k` it is not given.
-    assert owned.inlined_reads(HASH, "x", 20, AT, ((15, "clone"),)) == (["clone"], True)
-    assert owned.inlined_reads(HASH, "k", 20, AT, ((15, "clone"),)) == ([], False)
+    assert owned.inlined_reads(HASH, "x", 20, AT, ((15, "clone"),)) == (["clone"], "given")
+    assert owned.inlined_reads(HASH, "k", 20, AT, ((15, "clone"),)) == ([], None)
     # Where DWARF gives no column, any call of the line may be it.
-    assert owned.inlined_reads(HASH, "x", 20, AT, ((0, "clone"),)) == (["clone"], True)
+    assert owned.inlined_reads(HASH, "x", 20, AT, ((0, "clone"),)) == (["clone"], "given")
     # No call of the line spans the column: Peeky cannot tell which call it is.
     assert owned.inlined_reads(HASH, "x", 20, AT, ((40, "clone"),)) is None
     # Nothing inlined runs below the stop: nothing ran before it.
-    assert owned.inlined_reads(HASH, "x", 20, AT, ()) == ([], False)
+    assert owned.inlined_reads(HASH, "x", 20, AT, ()) == ([], None)
     # Where the stop's address is not known, every call the IR shows inlined on the line.
-    assert owned.inlined_reads(HASH, "x", 20, AT, None) == ([], False)
+    assert owned.inlined_reads(HASH, "x", 20, AT, None) == (["clone"], "given")
+    assert owned_of(CLONED, "cloned").inlined_reads(HASH, "x", 20, AT, None) == ([], None)
+    # Then a line that may invoke a macro is not understood: its calls may be inlined from
+    # the macro's own lines.
+    macro = SOURCE.replace("let y = x.clone(); // CLONE", "let y = m!(x); // CLONE")
+    assert owned_of(CLONED, "cloned", source=macro).inlined_reads(HASH, "x", 20, AT, None) is None
+
+
+def test_the_debug_information_must_agree_with_the_ir_on_the_lines_inlined_calls():
+    # #324 review: DWARF with no inlined call of the line, where the IR shows one, said
+    # "nothing ran before the stop". The two must name the same calls, wherever their code.
     owned = owned_of(CLONED, "cloned", inlined={20: {15}})
-    assert owned.inlined_reads(HASH, "x", 20, AT, None) == (["clone"], True)
+    agreed = owned.inlined_reads(HASH, "k", 20, AT, (), everywhere=frozenset({15}))
+    assert agreed == ([], None)
+    assert owned.inlined_reads(HASH, "k", 20, AT, (), everywhere=frozenset()) is None
+    owned = owned_of(CLONED, "cloned")
+    assert owned.inlined_reads(HASH, "k", 20, AT, (), everywhere=frozenset({15})) is None
+    assert owned.inlined_reads(HASH, "k", 20, AT, (), everywhere=frozenset()) == ([], None)
 
 
 def test_only_what_the_inlined_call_is_given_is_withheld():
     # `let y = z.clone() + x;`: the inlined `clone` reads `z`; the line's own code reads `x`
     # after the stop, so a change to `x` there reaches `y`.
     owned = owned_of(MIXED, "mixed")
-    assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "clone"),)) == (["clone"], True)
-    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == ([], False)
+    assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "clone"),)) == (["clone"], "given")
+    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == ([], None)
     # In unsafe code a raw pointer may point anywhere: one given to the call may read `x`.
-    owned = owned_of(MIXED.replace("let mut _5: &u32;", "let mut _5: *const u32;"), "mixed")
-    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == ([], False)
-    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
-    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == (["clone"], True)
-    # The standard library's `ptr::eq` reads the two addresses, never what they point at
-    # (#300), unsafe code or not; given `z` itself, it reads it.
+    pointer = MIXED.replace("let mut _5: &u32;", "let mut _5: *const u32;")
+    owned = owned_of(pointer, "mixed")
+    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == ([], None)
+    owned.unsafe_code = UNSAFE
+    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == (["clone"], "given")
+    # #324 review: in unsafe code any call may read it through a pointer it isn't given
+    # (`static mut G: *const u32`): every local is withheld.
+    owned = owned_of(MIXED, "mixed")
+    owned.unsafe_code = UNSAFE
+    assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "clone"),)) == (["clone"], "unsafe")
+    assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "clone"),)) == (["clone"], "given")
+    # Except the standard library's `ptr::eq`, which reads the two addresses, never what they
+    # point at (#300); given `z` itself, it reads it.
     clone = "_4 = <u32 as Clone>::clone(move _5)"
     assert MIXED.count(clone) == 1
-    for given, verdict in (("copy _5, copy _5", ([], False)), ("copy _2, copy _5", (["eq"], True))):
+    for given, verdict in (
+        ("copy _5, copy _5", ([], None)),
+        ("copy _2, copy _5", (["eq"], "given")),
+    ):
         compared = MIXED.replace(clone, f"_4 = std::ptr::eq::<u32>({given})")
         owned = owned_of(compared, "mixed")
         assert owned._std_compares()
-        owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
+        owned.unsafe_code = UNSAFE
         assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "eq"),)) == verdict
+        assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "eq"),)) == ([], None)
 
 
 def test_an_enclosing_call_is_not_the_inlined_one_its_name_tells():
@@ -305,14 +333,37 @@ def test_an_enclosing_call_is_not_the_inlined_one_its_name_tells():
     # too; `keep` is given `&y`, but it runs after the stop. By the name DWARF gives it,
     # only `clone` is the inlined call.
     owned = owned_of(NESTED, "nested", source=NESTED_SOURCE)
-    assert owned.inlined_reads(HASH, "x", 6, AT, ((12, "clone"),)) == (["clone"], True)
-    assert owned.inlined_reads(HASH, "y", 6, AT, ((12, "clone"),)) == ([], False)
+    assert owned.inlined_reads(HASH, "x", 6, AT, ((12, "clone"),)) == (["clone"], "given")
+    assert owned.inlined_reads(HASH, "y", 6, AT, ((12, "clone"),)) == ([], None)
     # Without a name, either may be it.
-    assert owned.inlined_reads(HASH, "y", 6, AT, ((12, ""),)) == (["keep"], True)
+    assert owned.inlined_reads(HASH, "y", 6, AT, ((12, ""),)) == (["keep"], "given")
     # A name no call there has (a closure's call): any of them may be it.
-    assert owned.inlined_reads(HASH, "y", 6, AT, ((12, "{closure#0}"),)) == (["keep"], True)
+    assert owned.inlined_reads(HASH, "y", 6, AT, ((12, "{closure#0}"),)) == (["keep"], "given")
     # `keep`'s own column.
-    assert owned.inlined_reads(HASH, "y", 6, AT, ((5, "keep"),)) == (["keep"], True)
+    assert owned.inlined_reads(HASH, "y", 6, AT, ((5, "keep"),)) == (["keep"], "given")
+
+
+def test_a_macros_definition_lines_are_read_from_the_source():
+    text = (
+        "use std::env;\n"
+        "\n"
+        "macro_rules! mclone {\n"
+        "    ($v:expr) => {{ $v.clone() }};\n"
+        "}\n"
+        "// macro_rules! commented { }\n"
+        "fn f() {\n"
+        '    let s = "macro_rules! quoted {}";\n'
+        "    macro_rules! inner ( () => { 1 } );\n"
+        "}\n"
+        "macro m($x:expr) {\n"
+        "    $x\n"
+        "}\n"
+        "fn g() {}\n"
+    )
+    assert sorted(macro_lines(text)) == [3, 4, 5, 9, 11, 12, 13]
+    # A source not read as rustc reads it, or not known: none is known.
+    assert macro_lines('fn f() { "x') is None
+    assert macro_lines(None) is None
 
 
 def test_a_calls_operands_name_and_columns():
@@ -353,12 +404,20 @@ def test_a_calls_operands_name_and_columns():
     assert _covers(block, 1, 15, 20, "src/main.rs", facts)
 
 
-def stopped(tmp_path, pc, blocks, line=20):
+# A source for the stops below: SOURCE with a macro's definition at lines 3 to 5.
+STRUCT = "struct P {\n    a: u32,\n    b: u32,\n}"
+STOPPED = SOURCE.replace(STRUCT, "macro_rules! mclone {\n    ($v:expr) => {{ $v.clone() }};\n}\n")
+assert STRUCT in SOURCE and STOPPED.count("\n") == SOURCE.count("\n")
+
+
+def stopped(tmp_path, pc, blocks, line=20, text=STOPPED):
     """A RustSession stopped at ``pc`` (unslid) on ``line`` of `cloned`, with its DWARF
-    ``blocks``: line 19's own row at 0x1a0, line 20's at 0x1b8, line 21's at 0x1c0."""
+    ``blocks``: line 19's own row at 0x1a0, line 20's at 0x1b8, line 21's at 0x1c0. The
+    stop's source reads ``text``."""
     session = object.__new__(RustSession)
     session.code_blocks = {HASH: blocks}
     session.prepared = SimpleNamespace(workspace=tmp_path)
+    session.owned = SimpleNamespace(texts={"src/main.rs": text} if text else {})
     session.load_bias = 0x4000
     session._rows = [
         (0x1A0, "src/main.rs", 19),
@@ -375,54 +434,111 @@ def stopped(tmp_path, pc, blocks, line=20):
     return session, frame
 
 
+def inlined(tmp_path, low, high, line, column=0, name="", file=None):
+    """An inlined call's DWARF block in `cloned`, made from ``line``."""
+    site = (file or str(Path(tmp_path) / "src/main.rs"), line, column, name)
+    return CodeBlock(0, ((low, high),), (), True, site)
+
+
 def blocks_of(tmp_path, *more):
-    main = str(Path(tmp_path) / "src/main.rs")
     return (
         CodeBlock(None, ((0x100, 0x200),), ("x",)),
         # `clone` inlined from line 20, column 15, below line 20's own row.
-        CodeBlock(0, ((0x1B0, 0x1B8),), (), True, (main, 20, 15, "clone")),
-        # `identity`'s from line 19, and std's own inlined code (its site in std).
-        CodeBlock(0, ((0x190, 0x198),), (), True, (main, 19, 13, "identity")),
-        CodeBlock(
-            0, ((0x1B2, 0x1B4),), (), True, ("/rustc/a/library/core/src/clone.rs", 20, 7, "")
-        ),
+        inlined(tmp_path, 0x1B0, 0x1B8, 20, 15, "clone"),
+        # `identity`'s from line 19, before line 19's own row.
+        inlined(tmp_path, 0x190, 0x198, 19, 13, "identity"),
         *more,
     )
 
 
 def test_the_stop_is_past_the_lines_inlined_code_where_its_breakpoint_is(tmp_path):
     blocks = blocks_of(tmp_path)
+    clone = ((15, "clone"),)
     # LLDB's breakpoint on line 20: its first row of its own, past the inlined `clone`.
     session, frame = stopped(tmp_path, 0x1B8, blocks)
-    assert session._inlined_below(frame) == ((15, "clone"),)
+    assert session._inlined_below(frame) == (clone, None, {15})
     assert session._line_start(frame)
     # A step from line 19 stops at the inlined call's first instruction, before it runs.
     session, frame = stopped(tmp_path, 0x1B0, blocks)
-    assert session._inlined_below(frame) == ()
+    assert session._inlined_below(frame) == ((), None, {15})
     assert session._line_start(frame)
     # Inside the inlined code: neither where the line starts nor its breakpoint.
     session, frame = stopped(tmp_path, 0x1B4, blocks)
-    assert session._inlined_below(frame) == ((15, "clone"),)
+    assert session._inlined_below(frame) == (clone, None, {15})
     assert not session._line_start(frame)
     # Line 21's stop: line 20's inlined call is not its own.
     session, frame = stopped(tmp_path, 0x1C0, blocks, line=21)
-    assert session._inlined_below(frame) == ()
+    assert session._inlined_below(frame) == ((), None, frozenset())
     assert session._line_start(frame)
-    # An inlined call below the stop whose site is not read: not known.
-    unread = CodeBlock(0, ((0x1A4, 0x1A8),), (), True, ())
-    session, frame = stopped(tmp_path, 0x1B8, (*blocks, unread))
-    assert session._inlined_below(frame) is None
-    # Nor without the function's DWARF blocks.
+    # Without the function's DWARF blocks, nothing is known.
     session, frame = stopped(tmp_path, 0x1B8, ())
     assert session._inlined_below(frame) is None
     assert not session._line_start(frame)
 
 
+def test_code_just_before_the_stop_that_peeky_cannot_place_is_a_doubt(tmp_path):
+    # #324 review: `let y = mclone!(x) + 1;` inlines `clone` from the macro's definition,
+    # line 4, just before line 20's first row: its site is not line 20.
+    session, frame = stopped(
+        tmp_path, 0x1B8, blocks_of(tmp_path, inlined(tmp_path, 0x1A8, 0x1AC, 4))
+    )
+    assert session._inlined_below(frame) == (
+        ((15, "clone"),),
+        "code the build inlined from line 4 (a macro's definition)",
+        {15},
+    )
+    # Its row of line 4 is no statement's: it does not end the code just before the stop.
+    session, frame = stopped(
+        tmp_path, 0x1B8, blocks_of(tmp_path, inlined(tmp_path, 0x1A8, 0x1AC, 4))
+    )
+    session._rows = sorted([*session._rows, (0x1AC, "src/main.rs", 4)])
+    assert (
+        session._inlined_below(frame)[1]
+        == "code the build inlined from line 4 (a macro's definition)"
+    )
+    # Before line 19's row, the macro's code is line 19's statement's.
+    session, frame = stopped(
+        tmp_path, 0x1B8, blocks_of(tmp_path, inlined(tmp_path, 0x194, 0x198, 4))
+    )
+    assert session._inlined_below(frame)[1] is None
+    # Another file's code (a macro from another module), and a site not given.
+    elsewhere = inlined(tmp_path, 0x1A4, 0x1A8, 7, file=str(tmp_path / "src/macros.rs"))
+    session, frame = stopped(tmp_path, 0x1B8, blocks_of(tmp_path, elsewhere))
+    assert session._inlined_below(frame)[1] == (
+        "code the build inlined from a call at src/macros.rs:7 (another file's code, a macro's)"
+    )
+    unread = CodeBlock(0, ((0x1A4, 0x1A8),), (), True, ())
+    session, frame = stopped(tmp_path, 0x1B8, blocks_of(tmp_path, unread))
+    assert session._inlined_below(frame)[1] == (
+        "code the build inlined from a call its debug information gives no site for"
+    )
+    # A statement's call of line 19 that ends its code: line 19's, which the MIR judges.
+    session, frame = stopped(
+        tmp_path, 0x1B8, blocks_of(tmp_path, inlined(tmp_path, 0x1A4, 0x1A8, 19))
+    )
+    assert session._inlined_below(frame)[1] is None
+    # A source not read: no line is known to be a statement's.
+    session, frame = stopped(tmp_path, 0x1B8, blocks_of(tmp_path), text=None)
+    assert session._inlined_below(frame)[1] == (
+        "code the build inlined before the stop, where the line's source isn't read"
+    )
+    # A step onto line 20 that stops at the macro's code (as LLDB shows line 20 there)
+    # stops where the line's code starts.
+    session, frame = stopped(
+        tmp_path, 0x1A8, blocks_of(tmp_path, inlined(tmp_path, 0x1A8, 0x1AC, 4))
+    )
+    assert session._line_start(frame)
+
+
 def test_the_breakpoint_withholds_what_the_inlined_call_was_given(tmp_path):
-    session, frame = stopped(tmp_path, 0x1B8, blocks_of(tmp_path))
-    session.owned = owned_of(CLONED, "cloned")
-    session._optimized = lambda: False
-    session._stop_block = lambda hashed, frame: None
+    def at(pc, *more, owned=None):
+        session, frame = stopped(tmp_path, pc, blocks_of(tmp_path, *more))
+        session.owned = owned or owned_of(CLONED, "cloned", inlined={20: {15}}, source=STOPPED)
+        session._optimized = lambda: False
+        session._stop_block = lambda hashed, frame: None
+        return session, frame
+
+    session, frame = at(0x1B8)
     found = session.mid_statement({"name": "x"}, frame, "breakpoint")
     assert str(found) == (
         "line 20's code may already have read `x` before this stop: the build inlined `clone` "
@@ -436,26 +552,45 @@ def test_the_breakpoint_withholds_what_the_inlined_call_was_given(tmp_path):
     )
     # `k` was not given to it; a step's stop before the inlined code withholds nothing so.
     assert session._inlined_read({"name": "k"}, frame, HASH, session.owned) is None
-    session, frame = stopped(tmp_path, 0x1B0, blocks_of(tmp_path))
-    session.owned = owned_of(CLONED, "cloned")
-    session._stop_block = lambda hashed, frame: None
+    session, frame = at(0x1B0)
     assert session._inlined_read({"name": "x"}, frame, HASH, session.owned) is None
     # A step that lands inside it is part-way through the line, as before.
-    session, frame = stopped(tmp_path, 0x1B4, blocks_of(tmp_path))
-    session.owned = owned_of(CLONED, "cloned")
-    session._optimized = lambda: False
+    session, frame = at(0x1B4)
     assert session.mid_statement({"name": "x"}, frame, "step").row == "part-way through line 20"
-    # A call the MIR cannot place: withheld, saying Peeky cannot tell what it read.
-    session, frame = stopped(tmp_path, 0x1B8, blocks_of(tmp_path))
-    session.code_blocks[HASH] = (
-        *session.code_blocks[HASH][:1],
-        CodeBlock(0, ((0x1B0, 0x1B8),), (), True, (str(tmp_path / "src/main.rs"), 20, 40, "clone")),
-    )
-    session.owned = owned_of(CLONED, "cloned")
-    session._stop_block = lambda hashed, frame: None
+    # Code just before the stop that Peeky can't place: every local, and no step offered.
+    session, frame = at(0x1B8, inlined(tmp_path, 0x1A8, 0x1AC, 4))
     found = session._inlined_read({"name": "k"}, frame, HASH, session.owned)
-    assert found.row == "line 20's inlined code may have read it"
-    assert "Peeky cannot tell from the MIR what that call read" in found
+    assert str(found) == (
+        "line 20's code may already have read `k` before this stop: code the build inlined "
+        "from line 4 (a macro's definition) runs just before the stop, and Peeky cannot tell "
+        "whether it is this line's code or what it read"
+    )
+    assert found.row == "code inlined before the stop may have read it"
+    assert found.advice == (
+        "Change it at a stop on an earlier line (a probe's `--at`), where `inspect` marks it "
+        "[settable]"
+    )
+    # A call the MIR cannot place, or DWARF and the IR at odds: withheld, saying so.
+    for owned in (
+        owned_of(CLONED, "cloned", inlined={20: {15, 40}}, source=STOPPED),
+        owned_of(CLONED, "cloned", source=STOPPED),
+    ):
+        session, frame = at(0x1B8, owned=owned)
+        found = session._inlined_read({"name": "k"}, frame, HASH, session.owned)
+        assert found.row == "line 20's inlined code may have read it"
+        assert "Peeky cannot tell from the build's MIR and IR which call it is" in found
+    # #324 review: unsafe code may read `k` through a pointer `clone` isn't given.
+    session, frame = at(0x1B8)
+    session.owned.unsafe_code = UNSAFE
+    found = session._inlined_read({"name": "k"}, frame, HASH, session.owned)
+    assert str(found) == (
+        "line 20's code may already have read `k` before this stop: the build inlined `clone` "
+        "there, and that code runs before the line's first instruction of its own, where a "
+        "line breakpoint stops. The crate has unsafe code, so that code may read `k` through "
+        "a pointer it isn't given, such as one a `static mut` holds"
+    )
+    assert found.row == "line 20's inlined `clone` may have read it (unsafe code)"
+    assert "with `session step` from the line before it" in found.advice
 
 
 def test_the_refusal_hints_a_stop_before_the_inlined_code():
@@ -470,5 +605,18 @@ def test_the_refusal_hints_a_stop_before_the_inlined_code():
     assert found["hint"] == (
         "Change it at a stop on an earlier line (`--at`, `session continue --to LINE`), or "
         "`session step` onto the line from the one before it."
+    )
+    assert len(found["hint"]) <= 150
+    # Code Peeky can't place: no step is offered.
+    found = classify(
+        ValueError(
+            "'x' cannot be changed here: line 20's code may already have read `x` before this "
+            "stop: code the build inlined from line 4 (a macro's definition) runs just before "
+            "the stop, and Peeky cannot tell whether it is this line's code or what it read"
+        )
+    )
+    assert found["hint"] == (
+        "Change it at a stop on an earlier line (`--at`, `session continue --to LINE`), "
+        "where `inspect` marks it [settable]."
     )
     assert len(found["hint"]) <= 150

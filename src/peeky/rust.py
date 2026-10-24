@@ -58,6 +58,7 @@ from peeky.rust_mir import (
     frame_shape,
     ir_functions,
     load_bodies,
+    macro_lines,
     stop_block,
 )
 from peeky.rust_symbols import (
@@ -3194,35 +3195,39 @@ class RustSession(NativeSession):
     def _line_start(self, frame):
         """Whether the frame's pc is where its line's code starts in its function: the
         lowest address of the line's own rows, where a line breakpoint stops and a step
-        onto the line does; or (#324) the lowest of those and of the code LLVM inlined
-        from calls on the line, where a step stops when that code comes first. At the
-        first, ``_inlined_below`` tells what such code ran before it. False where it is
-        neither, or that is not known."""
+        onto the line does; or (#324) the lowest of those and of the code inlined there
+        that is the line's (``_line_inlined``: LLVM's inlined calls made from the line,
+        and those just before it that Peeky can't place), where a step stops when that
+        code comes first. At the first, ``_inlined_below`` tells what such code ran before
+        it. False where it is neither, or that is not known."""
         hashed, pc, place = _frame_hash(frame), self._unslid(frame), self._place(frame)
         blocks = self.code_blocks.get(hashed[1]) if hashed else None
         if not blocks or pc is None or place is None:
             return False
+        addresses = self._own_rows(blocks, place)
+        if not addresses:
+            return False
+        start = min(addresses)
+        found = self._line_inlined(blocks, place, start)
+        lows = [min(low for low, _ in block.ranges) for block, _ in found or ()]
+        return pc in (start, min([start, *lows]))
+
+    def _own_rows(self, blocks, place):
+        """The addresses of the rows of ``place`` (source, line) in the function whose
+        ``blocks`` are given, outside the code LLVM inlined into it."""
         ranges = blocks[0].ranges
-        addresses = [
+        inlined = [span for block in blocks if block.inlined for span in block.ranges]
+        return [
             address
             for address, name, number in self._address_rows()
-            if (name, number) == place and any(low <= address < high for low, high in ranges)
+            if (name, number) == place
+            and any(low <= address < high for low, high in ranges)
+            and not any(low <= address < high for low, high in inlined)
         ]
-        inlined = [
-            min(low for low, _ in block.ranges)
-            for block in blocks
-            if block.inlined and self._called_from(block, place)
-        ]
-        return bool(addresses) and pc in (min(addresses), min(addresses + inlined))
 
-    def _called_from(self, block, place):
-        """Whether the inlined call ``block`` (a ``CodeBlock``) is made from ``place``
-        (source, line); None where its site is not known."""
-        if not block.call:
-            return None
-        file, number = block.call[:2]
-        if number != place[1]:
-            return False
+    def _call_source(self, file):
+        """The declared source (relative to the workspace) a DWARF call file names, or
+        None for another file."""
         sources = self.__dict__.setdefault("_call_sources", {})
         if file not in sources:
             try:
@@ -3231,41 +3236,129 @@ class RustSession(NativeSession):
             except (AttributeError, OSError, ValueError):
                 found = None
             sources[file] = found
-        return sources[file] == place[0]
+        return sources[file]
+
+    def _called_from(self, block, place):
+        """Whether the inlined call ``block`` (a ``CodeBlock``) is made from ``place``
+        (source, line); None where its site is not known."""
+        if not block.call:
+            return None
+        file, number = block.call[:2]
+        return number == place[1] and self._call_source(file) == place[0]
+
+    def _window(self, blocks, place, pc):
+        """The lowest address of the code that runs just before ``pc`` on its line
+        (#324 review): past the last row below it of another line of the stop's source
+        that is a statement's, outside inlined code and macro definitions (whose rows
+        may be any invocation's); the function's first address where there is none. None
+        where the source's macro definitions are not known."""
+        texts = getattr(getattr(self, "owned", None), "texts", None) or {}
+        defined = macro_lines(texts.get(place[0]))
+        if defined is None:
+            return None
+        ranges = blocks[0].ranges
+        inlined = [span for block in blocks if block.inlined for span in block.ranges]
+        statements = [
+            address
+            for address, name, number in self._address_rows()
+            if address < pc
+            and name == place[0]
+            and number != place[1]
+            and number not in defined
+            and any(low <= address < high for low, high in ranges)
+            and not any(low <= address < high for low, high in inlined)
+        ]
+        return max(statements, default=min(low for low, _ in ranges))
+
+    def _unplaced(self, block, place):
+        """What an inlined call (``block``) that runs just before a stop on ``place`` is,
+        where Peeky can't place it as a statement's (#324 review), or None for a call of a
+        statement of the stop's own source: one whose site is not known, in another file
+        (a macro from another module), or in a macro's definition (`$v.clone()` of
+        `macro_rules! mclone`, invoked on the line)."""
+        if not block.call:
+            return "code the build inlined from a call its debug information gives no site for"
+        file, number = block.call[:2]
+        source = self._call_source(file)
+        if source != place[0]:
+            where = f"{source or Path(file).name}:{number}"
+            return f"code the build inlined from a call at {where} (another file's code, a macro's)"
+        texts = getattr(getattr(self, "owned", None), "texts", None) or {}
+        defined = macro_lines(texts.get(place[0]))
+        if defined is None or number in defined:
+            return f"code the build inlined from line {number} (a macro's definition)"
+        return None
+
+    def _line_inlined(self, blocks, place, pc):
+        """[(block, what Peeky can't place of it, or None)] of LLVM's inlined calls below
+        ``pc`` that are the code of ``place`` (source, line): each made from the line, and
+        each in the code just before ``pc`` (``_window``) that Peeky can't place
+        (``_unplaced``); None where the window is not known."""
+        start = self._window(blocks, place, pc)
+        found = []
+        for block in blocks:
+            if not block.inlined or min(low for low, _ in block.ranges) >= pc:
+                continue
+            if self._called_from(block, place):
+                found.append((block, None))
+            elif start is None or any(low < pc and high > start for low, high in block.ranges):
+                if (why := self._unplaced(block, place)) is not None:
+                    found.append((block, why))
+        return found if start is not None else None
 
     def _inlined_below(self, frame):
-        """#324: (DWARF column in bytes, 0 where not given; the function's name, "" where
-        not read) of each call on the frame's line whose code LLVM inlined into its function
-        below the frame's pc (`clone` of `let y = x.clone();`, inlined even at opt-level 0,
-        before the line's first row of its own, where a line breakpoint stops): () if none;
-        None where that is not known (no pc or DWARF blocks, or an inlined call there whose
-        site is not)."""
+        """#324: what LLVM inlined before the stop of the frame's line: ((DWARF column in
+        bytes, 0 where not given; the function's name, "" where not read) of each call
+        made from the line with code below the frame's pc, what of the code just before
+        the pc Peeky can't place or None, the columns of every call made from the line
+        that LLVM inlined into the function); None where that is not known (no pc or
+        DWARF blocks). `clone` of `let y = x.clone();` is inlined even at opt-level 0,
+        before the line's first row of its own, where a line breakpoint stops."""
         hashed = _frame_hash(frame)
         blocks = self.code_blocks.get(hashed[1]) if hashed else None
         pc = self._unslid(frame) if blocks else None
         place = self._place(frame) if pc is not None else None
         if place is None:
             return None
-        found = set()
-        for block in blocks:
-            if not block.inlined or min(low for low, _ in block.ranges) >= pc:
-                continue
-            called = self._called_from(block, place)
-            if called is None:
-                return None
-            if called:
-                found.add(block.call[2:4])
-        return tuple(sorted(found))
+        memo = self.__dict__.setdefault("_inlined_memo", {})
+        key = (hashed[1], pc, place)
+        if key not in memo:
+            if len(memo) >= 1024:
+                memo.clear()
+            found = self._line_inlined(blocks, place, pc)
+            calls = {block.call[2:4] for block, why in found or () if why is None}
+            doubts = sorted({why for _, why in found or () if why is not None})
+            if found is None:
+                doubts = [
+                    "code the build inlined before the stop, where the line's source isn't read"
+                ]
+            everywhere = frozenset(
+                block.call[2]
+                for block in blocks
+                if block.inlined and self._called_from(block, place)
+            )
+            memo[key] = (tuple(sorted(calls)), doubts[0] if doubts else None, everywhere)
+        return memo[key]
 
     def _inlined_read(self, variable, frame, hashed, proofs):
-        """``mid_statement``'s reason where code LLVM inlined from a call on the stop's
-        line ran before the stop and may have read the root local ``variable``
-        (``OwnedLocals.inlined_reads``), else None."""
-        inlined = self._inlined_below(frame)
-        if inlined == ():
-            return None
+        """``mid_statement``'s reason where code LLVM inlined before the stop on the
+        frame's line may have read the root local ``variable``
+        (``OwnedLocals.inlined_reads``), or where Peeky can't place such code, else None."""
+        inlined, doubt, everywhere = self._inlined_below(frame) or (None, None, None)
         place = frame or {}
         name, line = variable.get("name"), place.get("line")
+        rule = f"line {line}'s code may already have read `{name}` before this stop"
+        earlier = (
+            "Change it at a stop on an earlier line (a probe's `--at`), where `inspect` marks "
+            "it [settable]"
+        )
+        if doubt:
+            return _Copied(
+                f"{rule}: {doubt} runs just before the stop, and Peeky cannot tell whether "
+                "it is this line's code or what it read",
+                earlier,
+                "code inlined before the stop may have read it",
+            )
         found = proofs.inlined_reads(
             hashed,
             name,
@@ -3273,31 +3366,39 @@ class RustSession(NativeSession):
             (place.get("source") or {}).get("path"),
             inlined,
             block=self._stop_block(hashed, frame),
+            everywhere=everywhere,
         )
-        if found is not None and not found[1]:
+        if found is not None and found[1] is None:
             return None
-        advice = (
-            "Change it at a stop on an earlier line (a probe's `--at`), or reach line "
-            f"{line} with `session step` from the line before it, which stops before that code"
-        )
-        rule = f"line {line}'s code may already have read `{name}` before this stop"
-        where = (
-            "that code runs before the line's first instruction of its own, where a line "
-            "breakpoint stops"
-        )
         if found is None:
             return _Copied(
-                f"{rule}: the build inlined a call on the line, {where}, and Peeky cannot tell "
-                "from the MIR what that call read",
-                advice,
+                f"{rule}: the build inlined code on the line that runs before the stop, and "
+                "Peeky cannot tell from the build's MIR and IR which call it is or what it read",
+                earlier,
                 f"line {line}'s inlined code may have read it",
             )
         names = sorted({each for each in found[0] if each})
         calls = _names(names) if names else "a call"
+        where = (
+            "that code runs before the line's first instruction of its own, where a line "
+            "breakpoint stops"
+        )
+        stepped = (
+            "Change it at a stop on an earlier line (a probe's `--at`), or reach line "
+            f"{line} with `session step` from the line before it, which stops before that code"
+        )
+        if found[1] == "unsafe":
+            return _Copied(
+                f"{rule}: the build inlined {calls} there, and {where}. The crate has unsafe "
+                f"code, so that code may read `{name}` through a pointer it isn't given, such as "
+                "one a `static mut` holds",
+                stepped,
+                f"line {line}'s inlined {calls} may have read it (unsafe code)",
+            )
         return _Copied(
             f"{rule}: the build inlined {calls} there, which is given `{name}` or what may "
             f"point into it, and {where}",
-            advice,
+            stepped,
             f"line {line}'s inlined {calls} may have read it",
         )
 
