@@ -1390,10 +1390,18 @@ def sql(args):
     from peeky import evidence
 
     path = _evidence_store(args)
-    if args.schema:
-        if args.query:
+    if args.schema is not None:
+        if args.query or any(re.search(r"\s", name.strip()) for name in args.schema):
             raise ValueError("Pass either SQL or --schema, not both")
-        _emit(evidence.schema(path), args.json, evidence.schema_text)
+        manifest = evidence.schema(path)
+        if not args.schema:
+            # Text: a short index; --json: the whole manifest, as before.
+            _emit(manifest, args.json, evidence.schema_index)
+            return 0
+        part = evidence.schema_part(manifest, args.schema)
+        _emit(
+            part, args.json, evidence.schema_text if part is manifest else evidence.schema_part_text
+        )
         return 0
     if not args.query:
         raise ValueError(
@@ -3484,6 +3492,20 @@ def _job_text(spec, out):
     return text + "\n"
 
 
+# `peeky queries --help`'s epilog, filled in only when help is shown: the evidence module,
+# which lists the canned queries, is imported only by the commands that read the store.
+_QUERIES_HELP = "(canned queries)"
+
+
+class _QueriesHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    def add_text(self, text):
+        if text is _QUERIES_HELP:
+            from peeky.evidence import queries_help
+
+            text = queries_help()
+        super().add_text(text)
+
+
 def main(argv=None, _job=False, _edits=None):
     from peeky.processes import keep_children_waitable
 
@@ -3651,10 +3673,19 @@ def main(argv=None, _job=False, _edits=None):
     common(sub, target=False)
     sub.add_argument("query", nargs="?", help='One SELECT, e.g. "SELECT * FROM last_run"')
     sub.add_argument(
-        "--schema", action="store_true", help="Tables, columns, canned queries and examples"
+        "--schema",
+        nargs="*",
+        metavar="NAME",
+        help="A short index of the tables, views, joins, canned queries, functions, examples "
+        "and rules; with NAMEs (any of those, or all), those in full",
     )
     queried(sub)
-    sub = commands.add_parser("queries", help="Canned evidence queries: no SQL needed")
+    sub = commands.add_parser(
+        "queries",
+        help="Canned evidence queries: no SQL needed",
+        epilog=_QUERIES_HELP,
+        formatter_class=_QueriesHelpFormatter,
+    )
     common(sub, target=False)
     sub.add_argument("name", nargs="?", help="Query to run; omit to list them")
     queried(sub)

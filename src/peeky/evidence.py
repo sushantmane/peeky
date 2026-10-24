@@ -9,10 +9,12 @@ in rows, time and value size; SQL never reaches a debugger or a debuggee.
 
 import contextlib
 import contextvars
+import itertools
 import json
 import math
 import os
 import re
+import shlex
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -998,12 +1000,16 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
         "which pairs by value (and, for the first case, says how many rows come after the first "
         "hit with a real difference, if any); where they stopped as often, a note says what suggests the hits do not "
-        "line up, or what plain values agree between the runs at every hit (that the hits line up "
-        "by them only where nothing suggests otherwise, neither run made an intervention, and no "
-        "selector was left out). A selector that differs after an intervention or an edit may "
+        "line up, or what plain values agree between the runs at every hit (where they are "
+        "unique across the hits, that pairing by hit number is what join by the fewest of them "
+        "(at most 8) gives, named whole, with masked=1 where they agree only with addresses "
+        "masked; never that the hits are the same moments). A selector that differs after an "
+        "intervention or an edit may "
         "follow from it, so it is left out of what agrees; where its values line up better at "
         "other hits, the note says so, that the change may account for it, and that the hits are "
-        "not said to line up. The text table shows a long value from just before where it first "
+        "not said to line up. Such a note's first line is its verdict (hits pair by, hits pair "
+        "as far as, or hits may not line up), then each detail on a line of its own after `- `. "
+        "The text table shows a long value from just before where it first "
         "differs from the other run's, and (sets) as a count and the first change that differs; "
         "--json has them whole",
         _DIFF,
@@ -1012,9 +1018,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     ),
     "outputs": (
         'Inputs, requested interventions (sets: each [name, value, "requested at '
-        'LINE@HIT"], a --set\'s too, with how it went: ", not made: that hit never came", '
-        '", made at 6 stops; refused at hit 7", ", made at 1 stop before --until hits ended '
-        'the probe"), outcome and program output of two runs',
+        'LINE@HIT"], a --set\'s too, with how it went where recorded: ", not made: that hit '
+        'never came", ", made at 6 stops; refused at hit 7", ", made at 1 stop before --until '
+        'hits ended the probe"), outcome and program output of two runs',
         f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
         f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
@@ -1135,6 +1141,51 @@ EXAMPLES = (
     "peeky queries wide --param run=3",
     "peeky queries join --param a=3 --param b=4 --param key=v",
 )
+# Each canned query in a few words, for `peeky queries --help` (eleventh evaluation: an
+# agent passed set_effect a and b, since only the 20 KB schema said which takes which).
+QUERY_SUMMARIES = {
+    "runs": "the latest runs (20 unless count), newest first",
+    "run": "every captured value of one run, in capture order",
+    "hits": "each selector's observed and returned values by hit, with changed (NULL where "
+    "unknown)",
+    "compare": "every value of two runs side by side, paired by hit; first the status of a run "
+    "that did not complete, and any requested interventions",
+    "diff": "how two runs compare: outcome, then what differs (or may) in output, edit, source, "
+    "line, arguments, interventions and captured values",
+    "outputs": "arguments, requested interventions (with how they went, where recorded), "
+    "outcome and output of two runs",
+    "set_effect": "values before and after one run's interventions",
+    "values": "one selector's distinct observed and returned values per program and line, "
+    "across non-candidate runs",
+    "wide": "one run, a row per hit and phase, a column per selector",
+    "join": "two runs' hits paired by the values of one or more key selectors, then the "
+    "unpaired hits",
+    "unreadable": "the captures of one run that have no value, with unavailable and error",
+    "failures": "the latest runs that did not complete (20 unless count), newest first",
+}
+
+
+def query_usage(name):
+    """Canned query ``name`` with the parameters it takes: `diff [a] [b]`, `values selector`."""
+    _, _, accepted, required = QUERIES[name]
+    return " ".join([name, *(p if p in required else f"[{p}]" for p in accepted)])
+
+
+def queries_help():
+    """`peeky queries --help`'s list: each canned query, its parameters and what it answers."""
+    usages = {name: query_usage(name) for name in QUERIES}
+    width = max(map(len, usages.values())) + 2
+    return "\n".join(
+        [
+            "canned queries, each with the --param names it takes ([optional]):",
+            *(f"  {usages[name].ljust(width)}{QUERY_SUMMARIES[name]}" for name in QUERIES),
+            "",
+            "a and b pick two runs (default: the last two); run picks one (default: the newest).",
+            "e.g. peeky queries set_effect --param run=3; peeky queries diff --param a=3 "
+            "--param b=4",
+            "`peeky queries` with no name describes each query and parameter in full.",
+        ]
+    )
 
 
 def _number(value):
@@ -2272,7 +2323,7 @@ def _unaligned(path, params):
     hits need not line up (a sort's comparator called on other pairs: seventh
     evaluation, finding 20), naming `join`, which pairs them by a value instead; or where
     they stopped as often but something says a hit may not be the same moment in both,
-    or that the hits line up (#201)."""
+    or how they pair (#201)."""
     found = query(
         path,
         f"SELECT ra.run_id AS a, rb.run_id AS b, ra.hits AS ha, rb.hits AS hb FROM runs ra, "
@@ -2399,11 +2450,16 @@ def _structure_apart(path, run):
     the hits line up (review of PR #269).
 
     Where nothing above is found and some values agree between the runs at every hit,
-    the note says what agrees: that the hits line up by them, or as far as they show,
-    with no intervention in either run and nothing left out; else only that they agree,
-    and what pairing by number amounts to, since a change can change other values and
-    which calls reach the line. `join` is named only where some captured selectors
-    together tell each run's hits apart, so that it could pair them."""
+    the note says what agrees, and what pairing by number amounts to: where they are
+    unique across the hits, what `join` by them gives. Never that the hits line up
+    (review of PR #308: `i` 1 to 4 in both runs, the first two moments swapped): Peeky
+    cannot tell whether a value names the call. `join` is named only where some captured
+    selectors together tell each run's hits apart, so that it could pair them.
+
+    Each note leads with its verdict on a line of its own (``_note``; eleventh
+    evaluation: three agents could not find it in one long sentence): `hits pair by`,
+    `hits pair as far as`, or `hits may not line up:`. Each detail follows on its own
+    line."""
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
@@ -2445,24 +2501,49 @@ def _structure_apart(path, run):
             return skipped
         return values[run].get(selector, {}).get(hit, (missing,))[0]
 
+    def stored(run, selector, hit):
+        """The value as stored: what `join` matches without `--param masked=1`."""
+        return values[run].get(selector, {}).get(hit, (missing, missing))[1]
+
+    def apart(chosen):
+        """Whether ``chosen``'s values, addresses masked, tell each run's hits apart."""
+        return bool(chosen) and all(
+            len({tuple(seen(r, s, hit) for s in chosen) for hit in common}) == len(common)
+            for r in (a, b)
+        )
+
     # Whether `join` could pair the hits: the plain values of the selectors both runs
     # read at every hit tell each run's hits apart, taken together (tenth evaluation:
     # debounce's `settle` has no value that names its call, so `join` cannot help).
+    # Where only values that carry addresses do, `join` matches them only with
+    # `--param masked=1` (review 2 of PR #308: each run's addresses differ).
     plain = [
         s
         for s in selectors
         if all(seen(r, s, hit) not in (missing, skipped) for r in (a, b) for hit in common)
     ]
-    keyable = bool(plain) and all(
-        len({tuple(seen(r, s, hit) for s in plain) for hit in common}) == len(common)
-        for r in (a, b)
+    carries = {
+        s
+        for s in plain
+        if any(seen(r, s, hit) != stored(r, s, hit) for r in (a, b) for hit in common)
+    }
+    keyable = apart(plain)
+    join_masked = keyable and not apart([s for s in plain if s not in carries])
+    pair_by = (
+        "pair hits by a value that names the call and that the edit leaves alone (an "
+        "argument, an index)"
+        + (
+            "; the values that tell the hits apart carry addresses, so match them masked"
+            if join_masked
+            else ""
+        )
+        + f": `peeky queries join --param a={a} --param b={b} {_JOIN_KEY}"
+        + (" --param masked=1`" if join_masked else "`")
     )
     join = (
-        "; if so, pair hits by a value that names the call and that the edit leaves alone "
-        f"(an argument, an index): `peeky queries join --param a={a} --param b={b} "
-        f"{_JOIN_KEY}`"
+        f"if they don't, {pair_by}"
         if keyable
-        else "; no captured selector tells the hits apart, so `queries join` could not pair them"
+        else "no captured selector tells the hits apart, so `queries join` could not pair them"
     )
     # Each place of one run pairs with one place of the other, and the pair's first hit.
     forward, backward = {}, {}
@@ -2480,9 +2561,14 @@ def _structure_apart(path, run):
         else:
             then, earlier = (backward[here_b][0], here_b), backward[here_b][1]
         return [
-            f"at hit {hit} run {a} stopped {_place(here_a)} and run {b} {_place(here_b)}, "
-            f"but at hit {earlier} run {a} {_place(then[0])} paired with run {b} "
-            f"{_place(then[1])}: a hit need not be the same moment in both{join}"
+            _note(
+                "hits may not line up: where the runs stopped does not pair the same way at "
+                "every hit",
+                f"at hit {hit} run {a} stopped {_place(here_a)} and run {b} {_place(here_b)}",
+                f"but at hit {earlier} run {a} {_place(then[0])} paired with run {b} "
+                f"{_place(then[1])}",
+                join,
+            )
         ], True
 
     def unlike(selector, hit):
@@ -2516,6 +2602,12 @@ def _structure_apart(path, run):
         )
     ]
     shown = [s for s in agreeing if len({seen(a, s, hit) for hit in common}) > 1]
+    # Alike only once addresses are masked (review 2 of PR #308: a C++ string reference's
+    # address, then its text): the note says so, and names `join --param masked=1`.
+    masked_only = {
+        s for s in agreeing if any(stored(a, s, hit) != stored(b, s, hit) for hit in common)
+    }
+    alike_masked = bool(set(shown) & masked_only)
 
     def moved_in(found, among):
         """(selector, what it saw) for the first of ``among`` whose values in ``found``
@@ -2550,14 +2642,15 @@ def _structure_apart(path, run):
     moved = moved_in(values, selectors)
     if moved and shown:
         return [
-            f"{_agrees(shown, len(common))}, but {moved[1]}: the values do not settle "
-            f"whether a hit is the same moment in both{join}"
+            _note(
+                "hits may not line up: the values do not settle how they pair",
+                _agrees(shown, len(common), masked=alike_masked),
+                f"but {moved[1]}",
+                join,
+            )
         ], True
     if moved:
-        return [
-            f"{moved[1]}: the calls may have come in another order or number, so a hit need "
-            f"not be the same moment in both{join}"
-        ], True
+        return [_note(f"hits may not line up: {_REORDER}", moved[1], join)], True
     # Then on those left out: the change may account for it, but it still vetoes saying
     # the hits line up (review of PR #269: `call` A, B, C against B, A, C after an edit,
     # beside `key` 1, 2, 3 in both, gave "the hits line up by `key`").
@@ -2575,30 +2668,60 @@ def _structure_apart(path, run):
     # of PR #209: `key` 1, 2 in both runs said nothing about `call` A, B against C, D).
     differ = [hit for hit in common if any(unlike(selector, hit) for selector in selectors)]
     if len(differ) >= 2 and 2 * len(differ) > len(common):
-        calls = (
-            f"; if the edit changed which calls reach the line, {join[len('; if so, ') :]}"
-            if keyable
-            else join
-        )
+        calls = f"if the edit changed which calls reach the line, {pair_by}" if keyable else join
         if shown:
             apart = [
                 selector for selector in selectors if any(unlike(selector, hit) for hit in common)
             ]
             return [
-                f"{_agrees(shown, len(common))}, but {_quoted(apart)} "
-                f"{'differ' if len(apart) > 1 else 'differs'} at {len(differ)} of them: the "
-                f"values do not show that a hit is the same moment in both{calls}"
+                _note(
+                    f"hits may not line up: {_quoted(apart)} "
+                    f"{'differ' if len(apart) > 1 else 'differs'} at {len(differ)} of the "
+                    f"{len(common)} hits",
+                    f"{_agrees(shown, len(common), masked=alike_masked)}, but that does not "
+                    "show that a hit is the same moment in both",
+                    calls,
+                )
             ], True
         return [
-            f"the runs' values differ at {len(differ)} of {len(common)} hits, so they cannot "
-            f"show that a hit is the same moment in both{calls}"
+            _note(
+                f"hits may not line up: the runs' values differ at {len(differ)} of "
+                f"{len(common)} hits",
+                "so they cannot show that a hit is the same moment in both",
+                calls,
+            )
         ], True
     if len(common) < 2 or not differs:
         return [], False
-    keys = _telling_apart(shown, [[seen(a, s, hit) for s in shown] for hit in common])
+    rows = [[seen(a, s, hit) for s in shown] for hit in common]
+    keys = _join_key(shown, rows)
+    paired = keys and _paired(keys, len(common), (a, b), bool(set(keys) & masked_only))
+    # Without a key: the values read alike at some hits, or only more of them together
+    # than `join` takes are unique (review 3 of PR #308).
+    loose = agreed = None
+    if shown and not keys:
+        wide = len({tuple(row) for row in rows}) == len(rows)
+        one = len(shown) == 1
+        why = (
+            f"no `queries join` key of {MAX_KEYS} selectors or fewer among them was found "
+            "unique across these hits"
+            if wide
+            else f"{'it reads' if one else 'they read'} alike at some hits, which could still "
+            "trade places"
+        )
+        loose = [
+            f"hits pair as far as {_quoted(shown)} {'shows' if one else 'show'}: "
+            f"{_agrees(shown, len(common), pronoun=True, apart=wide, masked=alike_masked)}",
+            f"but {why}",
+            "pairing by hit number agrees with their values, but that does not prove the hits "
+            "are the same moments"
+            if wide
+            else None,
+        ]
+        agreed = f"{_agrees(shown, len(common), masked=alike_masked)}, but {why}"
     if left_out:
         return [
-            _after_change(shown, keys, len(common), changes, edited, left_out, hedged, join)
+            _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedged, join)
         ], hedged is not None
     if not shown:
         return [], False
@@ -2611,7 +2734,7 @@ def _structure_apart(path, run):
             for hit in common
         )
     ]
-    return [_agreement(shown, keys, len(common), changes, differing, (a, b))], False
+    return [_agreement(paired or loose, changes, differing, (a, b))], False
 
 
 def _cause(changes, edited, detail=True):
@@ -2628,50 +2751,72 @@ def _cause(changes, edited, detail=True):
     return " and ".join(causes)
 
 
-def _after_change(shown, keys, count, changes, edited, left_out, hedged, join):
+def _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedged, join):
     """The note where a change left selectors out (tenth evaluation): what agrees, never
     that the hits line up (review of PR #269); what was left out, and why; and a sign
     that the hits may not line up among those left out (``hedged``: the selector and
-    what it saw), which the change may account for, but which still stands."""
-    cause = _cause(changes, edited)
+    what it saw), which the change may account for. Where some values that agree are
+    unique across the hits, the verdict is that the hits pair by them, and such a sign
+    comes last (eleventh evaluation: grades' `quiz` 88 at another hit, beside `name`):
+    it does not settle whether the calls were reordered, and is never graded (review of
+    PR #308: a key may be a counter, which is no evidence against a reorder). Else the
+    sign is the verdict. ``paired`` is `_paired`'s lines where some values that agree are
+    unique across the hits, as a `join` key; else ``loose`` is the verdict that they pair
+    as far as ``shown`` show, and ``agreed`` says what agrees and why it is no key."""
     it = "them" if any(changes.values()) else "it"
     others = [selector for selector in left_out if not hedged or selector != hedged[0]]
-    parts = []
+
+    def leaves(detail):
+        if not others:
+            return None
+        one = len(others) == 1
+        return (
+            f"{_quoted(others)} {'differs' if one else 'differ'} after "
+            f"{_cause(changes, edited, detail)} and may follow from {it}, so this check leaves "
+            f"{'it' if one else 'them'} out"
+        )
+
     if not shown and not hedged:
         one = len(left_out) == 1
-        return (
-            f"the values cannot show whether the hits line up: {_quoted(left_out)} "
-            f"{'differs' if one else 'differ'} after {cause} and may follow from {it}, and no "
-            "other selector both agrees between the runs and changes from hit to hit"
+        return _note(
+            "hits may not line up: the values cannot show whether they do",
+            f"{_quoted(left_out)} {'differs' if one else 'differ'} after "
+            f"{_cause(changes, edited)} and may follow from {it}",
+            "no other selector both agrees between the runs and changes from hit to hit",
         )
-    if keys:
-        by = "it" if len(keys) == 1 else "them"
-        parts.append(
-            f"{_agrees(keys, count, distinct=True)}, so pairing hits by number pairs them as "
-            f"`queries join` by {by} would, though that does not prove the hits are the same "
-            "moments"
-        )
-    elif shown:
-        one = len(shown) == 1
-        parts.append(
-            f"{_agrees(shown, count)}, but {'it reads' if one else 'they read'} alike at some "
-            "hits, which could still trade places"
-        )
-    if others:
-        one = len(others) == 1
-        parts.append(
-            f"{_quoted(others)} {'differs' if one else 'differ'} after {cause} and may follow "
-            f"from {it}, so this check leaves {'it' if one else 'them'} out"
-        )
-    if hedged:
-        selector, saw = hedged
-        because = _cause(changes, edited, detail=not others)
-        parts.append(
-            f"{'but ' if parts else ''}{saw}: `{selector}` may differ because of {because}, so "
-            "this does not prove a reorder, but it keeps Peeky from saying the hits line up"
-            + ("" if keys else join)
-        )
-    return "; ".join(parts)
+    if paired:
+        lines = [*paired, leaves(True)]
+        if hedged:
+            selector, saw = hedged
+            lines += [
+                saw,
+                "that alternate alignment does not settle whether the calls were reordered: "
+                f"`{selector}` may differ because of {_cause(changes, edited, not others)}, "
+                "or match by chance",
+            ]
+        return _note(*lines)
+    if not hedged:
+        return _note(*loose, leaves(True))
+    selector, saw = hedged
+    return _note(
+        f"hits may not line up: {_REORDER}",
+        saw,
+        f"`{selector}` may differ because of {_cause(changes, edited)}, so this does not prove "
+        "a reorder",
+        agreed if shown else None,
+        leaves(False),
+        join,
+    )
+
+
+_REORDER = "the calls may have come in another order or number"
+
+
+def _note(verdict, *details):
+    """An alignment note: its verdict, then each detail (none where None) on a line of its
+    own after `- ` (eleventh evaluation: three agents could not find the verdict in one
+    long sentence). The text table indents the details under `note:`."""
+    return "\n".join([verdict, *(f"- {detail}" for detail in details if detail)])
 
 
 def _interventions(changes, reached):
@@ -2687,84 +2832,111 @@ def _interventions(changes, reached):
     return _listed(named)
 
 
-def _agrees(selectors, count, *, pronoun=False, distinct=False):
-    """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), and
-    with ``distinct`` `, and its value is different at every hit`."""
+def _agrees(selectors, count, *, pronoun=False, apart=False, masked=False):
+    """`` `i` agrees between the runs at each of the 4 hits`` (or `it agrees …`), with
+    ``masked`` ` with addresses masked` (alike only so: review 2 of PR #308), and with
+    ``apart`` ` and is unique across these hits` (`and together are unique …`)."""
     one = len(selectors) == 1
     subject = ("it" if one else "they") if pronoun else _quoted(selectors)
     text = f"{subject} {'agrees' if one else 'agree'} between the runs at each of the {count} hits"
-    if distinct:
-        text += f", and {'its value is' if one else 'their values are'} different at every hit"
+    if masked:
+        text += " with addresses masked"
+    if apart:
+        text += f" and {'is' if one else 'together are'} unique across these hits"
     return text
 
 
-def _agreement(shown, keys, count, changes, differing, runs):
-    """What agrees where nothing suggests another pairing and nothing was left out
-    (#201), as `_structure_apart` says it: categorically only with no intervention in
-    either run; else what agrees, what differs (``differing``, as read) and which
-    interventions there were."""
-    one = len(shown) == 1
-    alike = (
-        f"{'it reads' if one else 'they read'} alike at some hits, which could still trade places"
+def _paired(keys, count, runs, masked):
+    """The verdict where ``keys`` agree between the runs at every hit and are unique across
+    them, and what it amounts to: hit-number pairing is what `join` by them gives, which
+    does not prove the hits are the same moments (review of PR #308: Peeky cannot tell
+    whether a value names the call, so it never says the hits line up). The `join` is
+    given whole, with `--param masked=1` where a key agrees only with addresses masked:
+    plain `join` compares the stored text (review 2 of PR #308)."""
+    a, b = runs
+    command = (
+        f"peeky queries join --param a={a} --param b={b} --param "
+        f"{shlex.quote('key=' + ','.join(keys))}" + (" --param masked=1" if masked else "")
     )
+    return [
+        f"hits pair by {_quoted(keys)}: "
+        f"{_agrees(keys, count, pronoun=True, apart=True, masked=masked)}",
+        f"pairing by hit number pairs them as `{command}` would, but that does not prove the "
+        "hits are the same moments",
+    ]
+
+
+def _agreement(verdict, changes, differing, runs):
+    """What agrees where nothing suggests another pairing and nothing was left out
+    (#201), as `_structure_apart` says it: its ``verdict`` lines, that the hits pair by
+    what agrees (a `join` key) or as far as it shows, never that they line up (review of
+    PR #308); then, with no intervention in either run, that no single selector suggests
+    another pairing; else what differs (``differing``, as read) and which interventions
+    there were."""
     single = "no single selector's values line up better at other hits"
     reached = [run for run in runs if changes[run]]
-    by = "it" if keys and len(keys) == 1 else "them"
-    joined = f"pairing hits by number pairs them as `queries join` by {by} would"
-    # Selectors are checked one at a time: two that differ could line up better together
-    # (review 3 of PR #209), which is not checked, so then nothing is said categorically.
-    together = (
-        f"; {_quoted(differing)} differ, and how they line up together was not checked"
-        if len(differing) > 1
-        else ""
-    )
     if not reached:
-        if keys and not together:
-            return (
-                f"the hits line up by {_quoted(keys)}: "
-                f"{_agrees(keys, count, pronoun=True, distinct=True)}, and {single}, so {joined}"
-            )
-        if keys:
-            return (
-                f"the hits line up by {_quoted(keys)} as far as each selector alone shows: "
-                f"{_agrees(keys, count, pronoun=True, distinct=True)}, and {single}{together}"
-            )
-        return (
-            f"the hits line up as far as {_quoted(shown)} {'shows' if one else 'show'}: "
-            f"{_agrees(shown, count, pronoun=True)}, and {single}; but {alike}{together}"
+        # Selectors are checked one at a time: two that differ could line up better
+        # together (review 3 of PR #209), which is not checked.
+        return _note(
+            *verdict,
+            single,
+            f"{_quoted(differing)} differ, and how they line up together was not checked"
+            if len(differing) > 1
+            else None,
         )
     # After an intervention, what follows from it is unknown (review of PR #209): what
     # agrees, what does not, and no more.
-    return (
-        f"{_agrees(shown, count, distinct=bool(keys))}, and {single}"
-        + (
-            f"; {_quoted(differing)} {'differs' if len(differing) == 1 else 'differ'}"
-            if differing
-            else ""
-        )
-        + f"; but the interventions ({_interventions(changes, reached)}) can change other "
-        "values and which calls reach the line, so this does not show that each hit is the "
-        "same moment in both"
+    return _note(
+        *verdict,
+        single,
+        f"{_quoted(differing)} {'differs' if len(differing) == 1 else 'differ'}"
+        if differing
+        else None,
+        f"the interventions ({_interventions(changes, reached)}) can change other values and "
+        "which calls reach the line, so this does not show that each hit is the same moment in "
+        "both",
     )
 
 
-def _telling_apart(selectors, rows):
-    """Some of ``selectors`` (in their order) whose values, ``rows`` (one list per hit,
-    in ``selectors`` order), differ at every hit; None if all of them together do not.
-    Each is chosen in turn to tell the most hits apart, the first of equals, so one
-    that tells every hit apart alone is the one named."""
+def _join_key(selectors, rows):
+    """The fewest of ``selectors`` (in their order) whose values, ``rows`` (one list per
+    hit, in ``selectors`` order), together are unique across the hits, as a `queries
+    join` key: at most ``MAX_KEYS`` of them, as `join` takes no more (review 3 of PR
+    #308: nine named together made the command fail). None where all of them together
+    are not unique, or where no such key is found.
+
+    One that is unique alone is the first such. Else each is chosen in turn to tell the
+    most hits apart, the first of equals; then smaller sets are tried, in order, while
+    the work stays within ``_KEY_SEARCH`` values read."""
     if not rows or not selectors or len({tuple(row) for row in rows}) < len(rows):
         return None
+    columns = [tuple(row[i] for row in rows) for i in range(len(selectors))]
+
+    def unique(chosen):
+        return len(set(zip(*(columns[i] for i in chosen)))) == len(rows)
+
     chosen = []
-    while True:
-        told = len({tuple(row[i] for i in chosen) for row in rows}) if chosen else 1
-        if told == len(rows):
-            return [selectors[i] for i in sorted(chosen)]
-        best = max(
-            (i for i in range(len(selectors)) if i not in chosen),
-            key=lambda i: len({tuple(row[j] for j in [*chosen, i]) for row in rows}),
+    while not chosen or not unique(chosen):
+        chosen.append(
+            max(
+                (i for i in range(len(selectors)) if i not in chosen),
+                key=lambda i: len(set(zip(*(columns[j] for j in [*chosen, i])))),
+            )
         )
-        chosen.append(best)
+    budget = _KEY_SEARCH // len(rows)
+    for size in range(2, min(len(chosen), MAX_KEYS + 1)):
+        for smaller in itertools.combinations(range(len(selectors)), size):
+            budget -= size
+            if budget < 0:
+                break
+            if unique(smaller):
+                return [selectors[i] for i in smaller]
+    return [selectors[i] for i in sorted(chosen)] if len(chosen) <= MAX_KEYS else None
+
+
+# How many values `_join_key` may read trying smaller keys.
+_KEY_SEARCH = 2_000_000
 
 
 def _place(place):
@@ -2883,8 +3055,10 @@ def schema(path):
             for name, (description, columns) in TABLES.items()
         },
         "views": VIEWS,
-        "joins": "captures, interventions and pauses join runs on run_id; or use the "
-        "evidence view, which already has the run's columns",
+        "joins": "captures, interventions and pauses join runs on run_id. The evidence view "
+        "has some of the run's columns (label, program, status, args, sets, language and a "
+        "few more); the others, such as output, error_code, seconds and warnings, need a "
+        "join with runs",
         "queries": {
             name: {"description": description, "params": params}
             for name, (description, _, params, _) in QUERIES.items()
@@ -3096,7 +3270,9 @@ def table(result, width=120, changes=None):
     count = result["row_count"]
     if note := shortened_note(shortened):
         lines.append(note)
-    lines.extend(f"note: {note}" for note in result.get("notes", ()))
+    # A note of several lines (`diff`'s verdict on how hits pair, then its details) keeps
+    # its details under its `note:`.
+    lines.extend(f"note: {note}".replace("\n", "\n  ") for note in result.get("notes", ()))
     lines.append(
         f"({count} row{'s' if count != 1 else ''}"
         + (
@@ -3162,25 +3338,128 @@ def query_table(path, result, params=None):
     return table(result, changes=changes)
 
 
+# What `peeky sql --schema NAME` takes besides a table or view, in the whole text's order.
+SCHEMA_PARTS = ("joins", "queries", "functions", "examples", "rules")
+# Each view in a few words, for `peeky sql --schema`'s index.
+_VIEW_SUMMARIES = {
+    "evidence": "captures with some of their run's columns (label, program, status, args, ...; "
+    "not output)",
+    "last_run": "The evidence rows of the newest run",
+}
+
+
+def _schema_lines(manifest, name):
+    """The text of one table, view or other part (``SCHEMA_PARTS``) of ``manifest``."""
+    if name in manifest.get("tables", {}):
+        info = manifest["tables"][name]
+        return [
+            f"table {name}: {info['description']}",
+            *(f"  {column}: {meaning}" for column, meaning in info["columns"].items()),
+        ]
+    if name in manifest.get("views", {}):
+        return [f"view {name}: {manifest['views'][name]}"]
+    if name == "joins":
+        return [f"joins: {manifest['joins']}"]
+    if name == "queries":
+        lines = ["canned queries (peeky queries <name> [--param k=v]):"]
+        for query_name, info in manifest["queries"].items():
+            params = ", ".join(f"{p}: {d}" for p, d in info["params"].items())
+            lines.append(
+                f"  {query_name}: {info['description']}" + (f" [{params}]" if params else "")
+            )
+        return lines
+    if name == "functions":
+        return [
+            "functions:",
+            *(f"  {f}: {meaning}" for f, meaning in manifest["functions"].items()),
+        ]
+    if name == "examples":
+        return ["examples:", *(f"  {example}" for example in manifest["examples"])]
+    return ["rules:", *(f"  - {rule}" for rule in manifest["rules"])]
+
+
 def schema_text(manifest):
+    """The whole schema as text: `peeky sql --schema all`."""
     lines = [f"store: {manifest['store']} ({manifest['engine']})", ""]
-    for name, info in manifest["tables"].items():
-        lines.append(f"table {name}: {info['description']}")
-        lines.extend(f"  {column}: {meaning}" for column, meaning in info["columns"].items())
-        lines.append("")
-    lines.extend(f"view {name}: {meaning}" for name, meaning in manifest["views"].items())
-    lines.append(f"joins: {manifest['joins']}")
+    for name in manifest["tables"]:
+        lines.extend([*_schema_lines(manifest, name), ""])
+    for name in [*manifest["views"], "joins"]:
+        lines.extend(_schema_lines(manifest, name))
     lines.append("")
-    lines.append("canned queries (peeky queries <name> [--param k=v]):")
-    for name, info in manifest["queries"].items():
-        params = ", ".join(f"{p}: {d}" for p, d in info["params"].items())
-        lines.append(f"  {name}: {info['description']}" + (f" [{params}]" if params else ""))
-    lines.append("")
-    lines.append("functions:")
-    lines.extend(f"  {name}: {meaning}" for name, meaning in manifest["functions"].items())
-    lines.append("")
-    lines.append("examples:")
-    lines.extend(f"  {example}" for example in manifest["examples"])
-    lines.append("rules:")
-    lines.extend(f"  - {rule}" for rule in manifest["rules"])
+    for name in ("queries", "functions"):
+        lines.extend([*_schema_lines(manifest, name), ""])
+    lines.extend(_schema_lines(manifest, "examples"))
+    lines.extend(_schema_lines(manifest, "rules"))
     return "\n".join(lines)
+
+
+def schema_index(manifest):
+    """`peeky sql --schema`'s short form: a line for each table, view and other part, and
+    how to see them in full (eleventh evaluation: the whole is 20 KB, and two agents'
+    tools cut it off)."""
+    tables, views = manifest["tables"], manifest["views"]
+    width = max(map(len, [*tables, *views, *SCHEMA_PARTS])) + 2
+    functions = ", ".join(name.split("(")[0] for name in manifest["functions"])
+    parts = {
+        "joins": manifest["joins"],
+        "queries": f"{len(manifest['queries'])} canned queries, each described in full; "
+        "`peeky queries --help` lists their parameters",
+        "functions": f"SQL functions Peeky adds: {functions}",
+        "examples": f"{len(manifest['examples'])} example commands",
+        "rules": f"Read-only, one SELECT (or WITH ... SELECT) per call; at most {DEFAULT_ROWS} "
+        f"rows unless --limit (up to {MAX_ROWS}), {QUERY_SECONDS} s per query, and other bounds; "
+        ":name takes --param name=value",
+    }
+    return "\n".join(
+        [
+            f"store: {manifest['store']} ({manifest['engine']})",
+            "",
+            "tables:",
+            *(
+                f"  {name.ljust(width)}{info['description'].rstrip('.')} "
+                f"({len(info['columns'])} columns)"
+                for name, info in tables.items()
+            ),
+            "views:",
+            *(f"  {name.ljust(width)}{_VIEW_SUMMARIES[name]}" for name in views),
+            "other parts:",
+            *(f"  {name.ljust(width)}{text}" for name, text in parts.items()),
+            "",
+            "`peeky sql --schema NAME [NAME ...]` shows those in full (e.g. --schema captures "
+            "functions); --schema all shows everything.",
+        ]
+    )
+
+
+def schema_part(manifest, names):
+    """The tables, views and other parts of ``manifest`` that ``names`` name, in its
+    shape (with its store and engine), for `peeky sql --schema NAME ...`; the whole
+    manifest for `all`. An unknown name is refused, with the names there are."""
+    tables, views = manifest["tables"], manifest["views"]
+    wanted = list(dict.fromkeys(name.strip().lower() for name in names))
+    if unknown := [n for n in wanted if n != "all" and n not in [*tables, *views, *SCHEMA_PARTS]]:
+        raise ValueError(
+            f"Evidence query failed: --schema has no {_quoted(unknown)}: name a table "
+            f"({', '.join(tables)}), a view ({', '.join(views)}), "
+            f"{', '.join(SCHEMA_PARTS)}, or all"
+        )
+    if "all" in wanted:
+        return manifest
+    part = {"store": manifest["store"], "engine": manifest["engine"]}
+    for name in wanted:
+        if name in tables:
+            part.setdefault("tables", {})[name] = tables[name]
+        elif name in views:
+            part.setdefault("views", {})[name] = views[name]
+        else:
+            part[name] = manifest[name]
+    return part
+
+
+def schema_part_text(part):
+    """``schema_part``'s text: each table, view or other part in full, a blank line apart."""
+    names = [*part.get("tables", {}), *part.get("views", {})]
+    names += [name for name in SCHEMA_PARTS if name in part]
+    blocks = [[f"store: {part['store']} ({part['engine']})"]]
+    blocks += [_schema_lines(part, name) for name in names]
+    return "\n\n".join("\n".join(block) for block in blocks)
