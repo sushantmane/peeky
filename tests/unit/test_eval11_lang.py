@@ -2,6 +2,7 @@
 types in `describe`, the bindings a `for` loop desugars to, the `for` item an element's
 note names, a Rust raw pointer's rows in `queries diff`, and a GCC lambda's captures."""
 
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -152,40 +153,54 @@ LAYOUT = {
 }
 
 
-def _leave(item):
-    _, children = _partial_elements(LAYOUT, [bytes(32)], None, item=item)
-    [element] = children
-    return {member["name"]: member for member in element["children"]}["leave"]["reason"]
+def _leave(item, holder=None):
+    _, children = _partial_elements(LAYOUT, [bytes(32)] * 2, None, item=item, holder=holder)
+    return {member["name"]: member for member in children[1]["children"]}["leave"]["reason"]
 
 
 def test_an_unread_field_names_the_for_loops_item_in_scope():
     # rota 8: `team[1].leave` said to read it "through a reference to the element, such as
-    # a for loop's item", while the loop's `e` was in scope, and `e.leave` read.
+    # a for loop's item", while the loop's `e` was in scope, and `e.leave` read. Nothing
+    # proves the loop goes over `team` (review of PR #315: `for e in backups.iter()`), nor
+    # which element `e` is at a stop, so the note says so.
+    assert _leave("e", "team").endswith(
+        "read it through a reference to the element: if the `for` loop's item `e` is "
+        "`team[1]` at a stop, read `e.leave`; Peeky can't prove it is"
+    )
     assert _leave("e").endswith(
-        "read it through a reference to the element: `e.leave`, at a stop where the `for` "
-        "loop's item `e` is this element"
+        "if the `for` loop's item `e` is `this element` at a stop, "
+        "read `e.leave`; Peeky can't prove it is"
     )
     # Without one in scope, the hint stays general.
-    assert _leave(None).endswith(
+    assert _leave(None, "team").endswith(
         "read it through a reference to the element, such as a `for` loop's item"
     )
 
 
 def _typed(rows, language="rust"):
-    """A probe result of (hit, selector, type, value, view) observed rows."""
+    """A probe result of (hit, selector, type, value, view[, debugger_type]) observed
+    rows."""
     return {
         "status": "completed",
         "hits": max(row[0] for row in rows),
-        "probe": {"program": "src/main.rs", "line": 39, "capture": ["e", "l"]},
+        "probe": {
+            "program": "src/main.rs",
+            "line": 39,
+            "capture": list(dict.fromkeys(row[1] for row in rows)),
+        },
         "output": "",
         "rows": [
             dict(hit=hit, phase="observed", line=39, selector=s, type=t, value=v, view=view)
-            for hit, s, t, v, view in rows
+            | ({"debugger_type": more[0]} if more else {})
+            for hit, s, t, v, view, *more in rows
         ],
     }
 
 
 POINTS = "it may point at another element too; compare offsets with address() (COOKBOOK 4.8)"
+
+
+MOVED = "its addresses differ too: it may point at another element; compare offsets with "
 
 
 def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
@@ -200,20 +215,23 @@ def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
         rows = []
         for hit in range(1, 4):
             e = f"0x{heap + 0x38 * hit:016x}"
+            debugger = "rota::Engineer *"
             rows += [
-                (hit, "e", "&rota::Engineer", e, None),
-                (hit, "l", kind, f"0x{stack or heap:016x}", view),
+                (hit, "e", "&rota::Engineer", e, None, debugger),
+                (hit, "l", kind, f"0x{stack or heap:016x}", view, debugger),
             ]
         evidence.record(store, _typed(rows), language="rust")
     rows = evidence.run_query(store, "diff")["rows"]
-    once = "addresses differ at 3 hits (one row per selector: its first hit): "
+    # The edit made `l` a raw pointer: a real difference, first, in one row (review of PR
+    # #315: as an address difference, it ranked after later real differences).
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
-        (1, "e", once + POINTS),
         (
             1,
             "l",
-            once + f"its type changed, &rota::Engineer -> *const rota::Engineer; {POINTS}",
+            "type &rota::Engineer -> *const rota::Engineer at 3 hits (one row per selector: "
+            f"its first hit); {MOVED}address() (COOKBOOK 4.8)",
         ),
+        (1, "e", "addresses differ at 3 hits (one row per selector: its first hit): " + POINTS),
     ]
     # Both runs' raw pointers: one row too, never qualified.
     for heap in (0x1004151E0, 0x1046AD1E0):
@@ -225,6 +243,82 @@ def test_a_raw_pointers_address_is_evidence_and_its_rows_fold(tmp_path):
     )
     hits = evidence.run_query(store, "hits")["rows"]
     assert [row["caveat"] for row in hits] == [None, None]
+
+
+def test_a_pointers_type_change_is_the_first_divergence(tmp_path):
+    # Review of PR #315: `p`'s type changed at hit 1 (`int *` -> `long *`), and its values
+    # differ only in addresses; `n` differs at hit 2. As an address difference, `p` came
+    # after `n`, so the first divergence was hit 2's.
+    store = tmp_path / "evidence.db"
+    for base, kind, counts in ((0x16B42B028, "int *", "0"), (0x16F527038, "long *", "1")):
+        rows = [
+            (1, "p", kind, f"0x{base:016x}", None),
+            (1, "n", "int", "0", None),
+            (2, "p", kind, f"0x{base + 8:016x}", None),
+            (2, "n", "int", counts, None),
+        ]
+        evidence.record(store, _typed(rows), language="c")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (
+            1,
+            "p",
+            "type int * -> long * at 2 hits (one row per selector: its first hit); "
+            f"{MOVED}address() (COOKBOOK 4.8)",
+        ),
+        (2, "n", None),
+    ]
+    # A value that differs beyond its address keeps a row per hit.
+    for value in ('0x000000016b42b028 "ab"', '0x000000016f527038 "cd"'):
+        rows = [
+            (h, "s", "char *" if "ab" in value else "const char *", value, None) for h in (1, 2)
+        ]
+        evidence.record(store, _typed(rows), language="c")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(r["hit"], r["note"]) for r in rows] == [
+        (1, "type char * -> const char *"),
+        (2, "type char * -> const char *"),
+    ]
+
+
+def test_a_type_spelled_before_schema_18_is_no_type_change(tmp_path):
+    # Review of PR #315: a run saved before Rust references were spelled as Rust spells
+    # them stored `rota::Engineer *`; a new run `&rota::Engineer`. `diff` said the type
+    # changed, though only its spelling did.
+    store = tmp_path / "evidence.db"
+    old = [(h, "e", "rota::Engineer *", f"0x{0x1004151E0 + 0x38 * h:016x}", None) for h in (1, 2)]
+    evidence.record(store, _typed(old), language="rust")
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; ALTER TABLE captures DROP COLUMN "
+        "debugger_type; PRAGMA user_version = 17;"
+    )
+    connection.close()
+    new = [
+        (h, "e", "&rota::Engineer", f"0x{0x1046AD1E0 + 0x38 * h:016x}", None, "rota::Engineer *")
+        for h in (1, 2)
+    ]
+    evidence.record(store, _typed(new), language="rust")
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
+    connection.close()
+    stored = evidence.query(store, "SELECT run_id, type, debugger_type FROM evidence")["rows"]
+    assert {(r["run_id"], r["type"], r["debugger_type"]) for r in stored} == {
+        (1, "rota::Engineer *", None),
+        (2, "&rota::Engineer", "rota::Engineer *"),
+    }
+    [row] = evidence.run_query(store, "diff")["rows"]
+    assert row["note"] == "addresses differ at 2 hits (one row per selector: its first hit): " + (
+        POINTS
+    )
+    # Two new runs: a raw pointer where a reference was is a type change.
+    raw = [
+        (h, "e", "*const rota::Engineer", f"0x{0x1046AD1E0:016x}", "unproven", "rota::Engineer *")
+        for h in (1, 2)
+    ]
+    evidence.record(store, _typed(raw), language="rust")
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert rows[0]["note"].startswith("type &rota::Engineer -> *const rota::Engineer at 2 hits")
 
 
 def test_unproven_text_beyond_an_address_stays_qualified(tmp_path):

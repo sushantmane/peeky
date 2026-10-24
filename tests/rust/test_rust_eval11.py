@@ -32,7 +32,7 @@ struct Engineer {
     leave: Vec<u32>,
 }
 
-fn plan(team: &mut [Engineer], weeks: u32) -> usize {
+fn plan(team: &mut [Engineer], backups: &[Engineer], weeks: u32) -> usize {
     let mut last: Option<*const Engineer> = None;
     let mut picks = 0;
     for week in 1..=weeks {
@@ -50,18 +50,35 @@ fn plan(team: &mut [Engineer], weeks: u32) -> usize {
         last = Some(ptr::from_ref(&team[0]));
         let first = &team[0];
         picks += first.name.len(); // AFTER
+        for b in backups.iter() {
+            picks += b.leave.len(); // BACKUP
+        }
     }
     picks
+}
+
+fn own_iter() -> u32 {
+    let iter = 41u32;
+    let mut total = iter;
+    for k in 0..3u32 {
+        total += k + iter; // OWN_ITER
+    }
+    total
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut team: Vec<Engineer> =
         args.iter().map(|a| Engineer { name: a.clone(), shifts: 0, leave: vec![2] }).collect();
+    let backups = vec![Engineer { name: String::from("Dev"), shifts: 0, leave: vec![9] }];
     let mut n = 3u32;
     let counted = &mut n;
     *counted += 1;
-    println!("{}", plan(&mut team, n));
+    let a = [1u32, 2, 3];
+    let lent = &a;
+    let raw_array: *const [u32; 3] = &a;
+    println!("{} {}", lent[0], raw_array.is_null()); // ARRAYS
+    println!("{} {}", plan(&mut team, &backups, n), own_iter());
 }
 """
 ARGS = ("--", "Ana", "Björn", "Chloé")
@@ -105,8 +122,8 @@ def test_describe_spells_references_and_leaves_out_loop_iterators(crate, capsys)
     assert main(["describe", str(crate), "--json"]) == 0
     scopes = {scope["scope"]: scope for scope in json.loads(capsys.readouterr().out)["scopes"]}
     plan = scopes["eval11::plan"]
-    # Before: `e (eval11::Engineer *)`, `l (eval11::Engineer *)`, and `iter @ main.rs:12`
-    # and `iter @ main.rs:13`, the loops' iterators.
+    # Before: `e (eval11::Engineer *)`, `l (eval11::Engineer *)`, and `iter @ main.rs:N`
+    # for each loop's iterator.
     assert plan["types"]["e"] == "&eval11::Engineer", plan
     assert plan["types"]["l"] == "*const eval11::Engineer", plan
     assert plan["types"]["first"] == "&eval11::Engineer", plan
@@ -114,6 +131,10 @@ def test_describe_spells_references_and_leaves_out_loop_iterators(crate, capsys)
     closure = scopes["eval11::main::{{closure}}"]
     assert closure["types"]["a"] == "&alloc::string::String", closure
     assert scopes["eval11::main"]["types"]["counted"] == "&mut u32"
+    assert scopes["eval11::main"]["types"]["lent"] == "&[u32; 3]"
+    assert scopes["eval11::main"]["types"]["raw_array"] == "*const [u32; 3]"
+    # The program's own `iter` is listed, by its plain name.
+    assert "iter" in scopes["eval11::own_iter"]["names"], scopes["eval11::own_iter"]
     assert main(["describe", str(crate)]) == 0
     text = capsys.readouterr().out
     assert "a (&String)" in text and "counted (&mut u32" in text, text
@@ -131,6 +152,12 @@ def test_rows_spell_references_and_raw_pointers_as_rust(crate, capsys):
     assert rows["l"].get("unproven_pointer") == "raw", rows["l"]
     if reads_memory(rows["e.name"]):
         assert rows["e.name"]["value"] == '"Björn"', rows
+    # Review of PR #315: a pointer to an array, which LLDB writes `unsigned int (*)[3]`
+    # for both, was left in LLDB's spelling, so a reference and a raw pointer read alike.
+    rows = probe(capsys, crate, "ARRAYS", "lent", "raw_array")
+    assert (rows["lent"]["type"], rows["raw_array"]["type"]) == ("&[u32; 3]", "*const [u32; 3]")
+    assert rows["lent"]["debugger_type"] == rows["raw_array"]["debugger_type"], rows
+    assert rows["raw_array"].get("unproven_pointer") == "raw", rows
 
 
 @pytest.mark.timeout(400)
@@ -152,16 +179,32 @@ def test_a_stops_listing_leaves_out_loop_iterators(crate, capsys):
 
 
 @pytest.mark.timeout(400)
+def test_the_programs_own_iter_reads_by_its_plain_name(crate, capsys):
+    # Review of PR #315: beside a `for` loop's hidden `iter`, lldb-dap lists the program's
+    # `iter` as `iter @ main.rs:N`, and plain `iter`, as `describe` lists it, was not found.
+    rows = probe(capsys, crate, "OWN_ITER", "iter")
+    assert rows["iter"]["value"] == "41", rows
+
+
+@pytest.mark.timeout(400)
 def test_an_unread_element_field_names_the_loops_item(crate, capsys):
     # rota 8: `team[1].leave` said "such as a for loop's item" while `e` was in scope.
     rows = probe(capsys, crate, "EQ", "team[1].leave", "e.leave")
     if not reads_memory(rows["e.leave"]):
         pytest.skip("reading a slice's elements needs a debugger with readMemory (lldb-dap 20)")
     assert rows["team[1].leave"]["error"].endswith(
-        "read it through a reference to the element: `e.leave`, at a stop where the `for` "
-        "loop's item `e` is this element"
+        "read it through a reference to the element: if the `for` loop's item `e` is "
+        "`team[1]` at a stop, read `e.leave`; Peeky can't prove it is"
     ), rows
     assert rows["e.leave"]["value"] == "[2]", rows
+    # Review of PR #315: a loop over another container names its item too, but nothing
+    # proves which container it goes over, so the note says so.
+    rows = probe(capsys, crate, "BACKUP", "team[1].leave", "b.leave")
+    assert rows["b.leave"]["value"] == "[9]", rows
+    assert rows["team[1].leave"]["error"].endswith(
+        "if the `for` loop's item `b` is `team[1]` at a stop, read `b.leave`; Peeky can't "
+        "prove it is"
+    ), rows
     # `first` is a reference to an element, but no loop's item: the hint stays general.
     rows = probe(capsys, crate, "AFTER", "team[1].leave")
     assert rows["team[1].leave"]["error"].endswith(

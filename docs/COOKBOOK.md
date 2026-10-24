@@ -248,8 +248,8 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
   exception leaves the block. So `name (std::string, lines 22-25, 35)` is an `if` block's local.
   It is visible on the block's lines, and at the closing `}` while an exception unwinds. It is not
   visible on the lines between. C blocks have no such cleanup code.
-- A probe at that closing `}` stops where the function returns, with no exception under way. So
-  such a local is `not found` there. Read it on the block's own lines.
+- On the normal path, where no exception is under way, a probe at that closing `}` stops where
+  the function returns. There such a local is `not found`. Read it on the block's own lines.
 - A span is never narrower than where the debugger can show the local. So it keeps the lines
   inside it without code, such as comments or a lone `}`.
 - A block that also runs another file's code, such as an `#include` inside it, gives no lines. A
@@ -1608,6 +1608,13 @@ divergence.
 - A hit that one run never reached says `missing in run b`.
 - A value whose type changed says so, for example after an edit to `long long`:
   `type unsigned int -> long long`.
+- A pointer whose type changed, but whose values differ only in addresses, has one row per
+  selector, its first hit's. An edit from a reference to a raw pointer gives such a row:
+  `type &rota::Engineer -> *const rota::Engineer at 6 hits (one row per selector: its first hit);
+  its addresses differ too: …`.
+- A run saved before schema 18 spells a Rust reference or raw pointer as LLDB does:
+  `rota::Engineer *`. `diff` compares that with a newer run's `debugger_type`, so a new spelling
+  alone is no type change.
 
 **Long values.** The table cuts a value at 120 characters. Where the two runs' values first differ
 near or past that cut, both show from 40 characters before the difference instead. Both start at
@@ -1639,10 +1646,6 @@ element 6 in one run and at element 4 in the other.
   pointers can point into separate blocks whose distance the allocator chose.
 - There is one row per selector, as for `addresses only` below. The note says at how many hits:
   `addresses differ at 2 hits (one row per selector: its first hit): …`.
-- A pointer whose type changed too, but whose values differ only in addresses, ranks here, not
-  with the real differences. Its note says so: `its type changed, &rota::Engineer ->
-  *const rota::Engineer; it may point at another element too`. An edit from a reference to a raw
-  pointer gives such a row.
 
 **5. Qualified values.** A value that a view or a note qualifies, in either run, ranks here. Its
 note says `qualified (run a: note, run b: note): not evidence by itself`.
@@ -1657,7 +1660,8 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
 - `queries run` shows each note.
 - A Rust raw pointer that shows only its address isn't qualified here. Its `[unproven]` and its
   note are about what it points at, and its address is its own value
-  ([4.8](#48-compare-addresses-across-runs)). It ranks as a pointer, in tier 4.
+  ([4.8](#48-compare-addresses-across-runs)). It ranks as a pointer: in tier 4, or in tier 3
+  where its type changed.
 
 **6. Address-only differences** say `addresses only`. These are other values that differ only in
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.

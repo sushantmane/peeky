@@ -36,7 +36,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.compiled_verification import CompiledVerification
-from peeky.identifiers import is_located, is_name
+from peeky.identifiers import changeable, is_located, is_name, split_located
 from peeky.names import display_function
 from peeky.native import (
     _RUST_POINTER,
@@ -2205,19 +2205,56 @@ class RustSession(NativeSession):
         if len(found) != 1:
             return False
         source, line = found.pop()
+        return self._made_by_compiler(body, name, source, line)
+
+    def _made_by_compiler(self, body, name, source, line):
+        """Whether the MIR ``body`` binds ``name`` on ``line`` of ``source`` only as rustc
+        desugars a `for` loop (`iter`) or a `?` (`residual`, `val`): see
+        compiler_binding."""
+        if name not in ("iter", "residual", "val"):
+            return False
         texts = self.__dict__.setdefault("_binding_texts", {})
         return self._loop_iterators([body], source, name, line, texts) or (
             name != "iter" and self._try_bindings([body], source, name, line, texts)
         )
 
+    def selected_as(self, variable, frame, siblings=()):
+        """The plain name a selector reads a root local by, where lldb-dap lists it with
+        where it is declared (NativeSession.selected_as); and a Rust local lldb-dap lists
+        so only because a binding rustc makes shares its name (`iter @ main.rs:2` beside a
+        `for` loop's `iter`): every other binding of the name in the frame's body is the
+        compiler's, which a stop's listing leaves out, so the plain name is this one, as
+        `describe` lists it (review of PR #315)."""
+        found = super().selected_as(variable, frame, siblings)
+        shown = split_located(str(variable.get("name")))
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        if found is not None or shown is None or not hashed or proofs is None:
+            return found
+        base = shown[0]
+        if base not in ("iter", "residual", "val") or not changeable(str(variable.get("name"))):
+            return None
+        if any(str(sibling.get("name")) == base for sibling in siblings or ()):
+            return None
+        body = proofs.body(hashed[1])
+        bindings = body.bindings.get(base, ()) if body is not None else ()
+        mine = {(b[1], b[2]) for b in bindings if (Path(b[1]).name, b[2]) == shown[1:]}
+        others = {(b[1], b[2]) for b in bindings} - mine
+        if len(mine) != 1 or not others or self._made_by_compiler(body, base, *next(iter(mine))):
+            return None
+        if all(self._made_by_compiler(body, base, *other) for other in others):
+            return base
+        return None
+
     def _loop_item(self, frame, siblings, element):
         """The name of a `for` loop's item among ``siblings`` (the frame's root locals, as
         lldb-dap lists them) that is a reference to a value of type ``element`` (the
         debug information's name), through which a field a container's view does not
-        read can be read (eleventh evaluation: `team[1].leave` did not read where `e`,
+        read may be read (eleventh evaluation: `team[1].leave` did not read where `e`,
         the loop's `&Engineer`, did). A loop's item is a binding of the MIR scope just
-        inside the one holding the loop's `iter` (_loop_iterators). None where there is
-        none, or no MIR."""
+        inside the one holding the loop's `iter` (_loop_iterators). Nothing proves the
+        loop goes over that container (`for e in backups.iter()`), so the note that
+        names it hedges (rust_symbols._through_element). None where there is none, or
+        no MIR."""
         hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
         body = proofs.body(hashed[1]) if hashed and proofs is not None else None
         if body is None or not siblings:
@@ -2271,7 +2308,12 @@ class RustSession(NativeSession):
         if not hashed or proofs is None or not is_name(str(name), limit=None):
             return None
         body = proofs.body(hashed[1])
-        places = {(Path(b[1]).name, b[2]) for b in (body.bindings.get(name, ()) if body else ())}
+        places = {
+            (Path(b[1]).name, b[2])
+            for b in (body.bindings.get(name, ()) if body else ())
+            # A binding rustc makes is listed nowhere (compiler_binding).
+            if not self._made_by_compiler(body, name, b[1], b[2])
+        }
         if len(places) < 2:
             return None
         place = frame or {}
@@ -3769,16 +3811,19 @@ class RustSession(NativeSession):
 
     def _pointer_name(self, frame, path, kind):
         """A reference's or raw pointer's Rust type (`&rota::Engineer`, `&&str`, `*const
-        u32`), where LLDB names it as C would (`rota::Engineer *`, `&str *`, `unsigned int
-        *`): the name the build's debug information gives the pointer type at ``path``
-        (the root local's name, then the debugger's child names), through each level of
-        pointer, where LLDB's ``kind`` spells what the last one points at. None where it
-        does not, or the debug information names no Rust pointer there."""
+        [u32; 3]`), where LLDB names it as C would (`rota::Engineer *`, `&str *`, `unsigned
+        int (*)[3]`): the name the build's debug information gives the pointer type at
+        ``path`` (the root local's name, then the debugger's child names). Taken where
+        LLDB's ``kind`` starts with as many pointer levels (_constructors), then an array
+        where the last pointer points at one, or else spells what it points at. None
+        where it does not, or the debug information names no Rust pointer there."""
         from peeky.fields import Unsettable, member_type
 
-        stars = re.fullmatch(r"(.*?\S) ?(\*+)", str(kind or ""))
+        levels = _constructors(kind)
         hashed = _frame_hash(frame)
-        if not stars or not hashed or not path or not all(isinstance(s, str) for s in path):
+        if levels[:1] != ["pointer"] or not hashed or not path:
+            return None
+        if not all(isinstance(step, str) for step in path):
             return None
         try:
             functions, _ = self._field_types()
@@ -3792,15 +3837,22 @@ class RustSession(NativeSession):
         except (Unsettable, TypeError, IndexError):
             return None
         name = node[1] if node is not None and node[0] == "pointer" else None
-        levels = 0
-        while node is not None and node[0] == "pointer" and node[2] is not None and levels < 8:
+        depth = 0
+        while node is not None and node[0] == "pointer" and node[2] is not None and depth < 8:
             if not _RUST_POINTER.fullmatch(node[1] or ""):
                 return None
-            levels, node = levels + 1, graph.get(node[2])
-        if not name or node is None or levels != len(stars[2]):
+            depth, node = depth + 1, graph.get(node[2])
+        if not name or node is None or levels[:depth] != ["pointer"] * depth:
             return None
+        rest = levels[depth:]
+        if node[0] == "array":
+            # LLDB writes a pointer to an array with its own grammar (`T (*)[3]`).
+            return rust_spelling(name) if rest[:1] == ["array"] else None
         pointee = node[11] if node[0] == "record" else node[1] if node[0] == "base" else None
-        return rust_spelling(name) if pointee and _spelled(pointee, stars[1]) else None
+        stars = re.fullmatch(r"(.*?\S) ?\*+", str(kind))
+        if rest or not pointee or not stars or not _spelled(pointee, stars[1]):
+            return None
+        return rust_spelling(name)
 
     def _rust_name(self, frame, path, kind):
         """A library type as the program spells it (#183: `Vec<u32>`, not LLDB's

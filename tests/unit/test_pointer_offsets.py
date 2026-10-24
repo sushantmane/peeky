@@ -800,7 +800,7 @@ def test_a_schema_16_store_gains_the_columns_and_keeps_its_runs(store):
         },
     ]
     connection = sqlite3.connect(store)
-    assert connection.execute("PRAGMA user_version").fetchone() == (17,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
     for column in COLUMNS:
         assert column in evidence.TABLES["captures"][1], column
 

@@ -71,6 +71,10 @@ the loop's `{` comes right after it. A local you name `iter` is still listed.
 `session inspect` and probes leave out these bindings of the compiler's too, the `?`'s and the
 loop's. So a `visible:` list doesn't name them, and a selector can't read them.
 
+A local you name `iter` beside such a loop is still `iter`, as `describe` lists it. lldb-dap lists
+it as `iter @ main.rs:2` where the loop's `iter` is in scope too. The plain name selects it all
+the same, since the other binding is the compiler's.
+
 ### Read types as the program spells them
 
 Types are spelled as the program spells them: `Vec<u32>`, `String`, `Option<i32>`. This holds in
@@ -87,8 +91,8 @@ A line with no code of its own may have no breakpoint, such as `continue;`, `bre
 `}`. The compiler gives its jump to a line nearby, such as the `if` above it. So `describe`'s
 breakpoint lines may skip it: `38-39, 43-44` for an `if` on lines 38 to 42 with `continue;` on 40.
 
-- An `--at` on such a line moves to the next line with code, and Peeky says so:
-  `values are from line 43`.
+- An `--at` on such a line moves to another line with code, which the debugger picks, and Peeky
+  says so: `values are from line 43`.
 - To see whether the `continue` runs, stop on the line before it, the `if`. Then `session step`:
   the next stop shows where the program went.
 
@@ -453,9 +457,10 @@ Fields stay selectable: `w.start`, `runs[0].__0`.
   `limiter::Window *`, is kept in `debugger_type`.
 - A reference or raw pointer local or field shows its Rust type too: `f  &kitty::Friend` for a
   `&Friend` loop item, `*const kitty::Friend` for a raw pointer, `&&str` for a `&str` loop item.
-  `describe` spells them the same way. The name is the build's debug information's, taken only
-  where LLDB's type, such as `kitty::Friend *`, spells what it points at. `debugger_type` keeps
-  LLDB's.
+  `&[u32; 3]` and `*const [u32; 3]` differ too, though LLDB writes both `unsigned int (*)[3]`.
+  `describe` spells them the same way. The name is the build's debug information's. It is taken
+  only where LLDB's type has as many pointer levels, and spells what the last one points at, or
+  an array there. `debugger_type` keeps LLDB's.
 - A raw pointer also has its `[unproven]` mark and its note, and in JSON
   `unproven_pointer: "raw"`. A `Box` keeps LLDB's type, such as `int *`.
 - A field's or element's type comes from the build's debug information: `self.k  usize`, where
@@ -581,9 +586,10 @@ hit  phase     line  function       selector         type                  value
   fields. A later one shows `not read:`, with its length.
 - Any other field shows `not read:` and why: a raw pointer, a `Vec`, a `&str`, an enum or a nested
   struct. Read it through a reference to the element, such as `e.payer` of `for e in expenses`.
-- Where a `for` loop's item that refers to such an element is in scope, the note names it. In
-  `for (i, e) in team.iter().enumerate()`, `team[1].leave` says to read `e.leave`, at a stop where
-  `e` is that element.
+- Where a `for` loop's item that refers to such an element is in scope, the note names it.
+  Nothing proves the loop goes over this container, nor which element the item is at a stop. So
+  `team[1].leave` says ``if the `for` loop's item `e` is `team[1]` at a stop, read `e.leave`; Peeky
+  can't prove it is``.
 - The element's value leaves such a field out: `Expense { cents: 4500, .. }` in a struct, and `_`
   in a tuple, as in `(_, 3)`.
 - A container of wide elements shows those that fit one 4096-byte read, then `(first 102 of 300)`.
