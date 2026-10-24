@@ -1870,9 +1870,11 @@ _HELD = re.compile(r"0x([0-9a-fA-F]{1,16})(?![0-9a-zA-Z_])")
 
 
 def pointed_element(value, pointer, base):
-    """Which element of ``base`` the pointer whose row's value is ``value`` holds the
-    address of (#302): its index from 0, or the base's length where it is one past its
-    end (an object, with no length, is one element). ``pointer`` and ``base`` are what
+    """Which element of ``base``'s address the pointer whose row's value is ``value``
+    holds (#302): its index from 0, or the base's length where it is the address one past
+    its end (an object, with no length, is one element). An address alone: another
+    object can share it (a union's other member, the array after this one, storage
+    reused), so it never says which object the pointer designates. ``pointer`` and ``base`` are what
     their addresses can tell (``NativeSession.value_extent``), read at one stop of one
     frame. None unless all of it is proven: the pointer points at the type of the base's
     elements, typedefs and qualifiers aside, of the same size; and its address is a whole
@@ -1934,16 +1936,17 @@ def _plain(row):
 
 def _pointed(rows, extents):
     """Gives each pointer and array row of one stop and frame the size of its element
-    (`element_size`), and says on each pointer row which element of another captured
-    array or object it holds the address of, where ``pointed_element`` proves it
-    (`points_into`: {selector, index, and the array's length}; #302). An element inside
-    the base comes before one past another's end (two neighbours), then capture order.
+    (`element_size`), and says on each pointer row which element's address of another
+    captured array or object it holds, where ``pointed_element`` proves it and exactly one
+    captured base matches (`at_element_of`: {selector, index, and the array's length};
+    #302). Where several match (a union's two arrays, one array's end and the next one's
+    start), it says none: the address alone cannot tell them apart.
 
-    A pointer it proves none for says how far it is from another captured pointer of its
-    type, by address alone (`offset_from`: {selector, offset}; ``pointer_offset``): from
-    one base for all of them, the first that is a parameter of the function (the array a
-    caller passed, as `level` in `find_waters(const int *level, ...)`), else the first
-    captured. The base itself says nothing."""
+    A pointer with none says how far it is from another captured pointer of its type, by
+    address alone (`offset_from`: {selector, offset}; ``pointer_offset``): from one base
+    for all of them, the first that is a parameter of the function (the array a caller
+    passed, as `level` in `find_waters(const int *level, ...)`), else the first captured.
+    The base itself says nothing."""
     bases = [
         (index, extent)
         for index, extent in extents.items()
@@ -1961,10 +1964,10 @@ def _pointed(rows, extents):
                 continue
             element = pointed_element(row["value"], extent, base)
             if element is not None:
-                found.append((element == base.get("length", 1), other, element, base))
-        if found:
-            _, other, element, base = min(found, key=lambda each: each[:2])
-            row["points_into"] = {
+                found.append((other, element, base))
+        if len(found) == 1:
+            ((other, element, base),) = found
+            row["at_element_of"] = {
                 "selector": rows[other]["selector"],
                 "index": element,
                 **({"length": base["length"]} if "length" in base else {}),
@@ -1976,7 +1979,7 @@ def _pointed(rows, extents):
     ]
     for index, extent in pointers:
         row = rows[index]
-        if "points_into" in row:
+        if "at_element_of" in row:
             continue
         alike = [
             each
@@ -1993,11 +1996,11 @@ def _pointed(rows, extents):
 
 
 def pointed_text(row):
-    """A row's `points_into` as tables show it: `points at level[6]`, `points at x`, or
-    `level + 96: one past its end` (`&x + 1` for an object), which is never read. Or its
-    `offset_from`, which names no element: `level + 6 by address; same array not
-    proven` (`level - 2` before it)."""
-    into = row.get("points_into")
+    """A row's `at_element_of` as tables show it, an address fact: `at level[6]'s
+    address`, `at x's address`, or `at the address one past level's end`, which is never
+    read. Or its `offset_from`, which names no element: `level + 6 by address; same array
+    not proven` (`level - 2` before it)."""
+    into = row.get("at_element_of")
     apart = row.get("offset_from")
     if not isinstance(into, dict) and isinstance(apart, dict):
         base, offset = apart.get("selector"), apart.get("offset")
@@ -2010,11 +2013,9 @@ def pointed_text(row):
     base, index, length = into.get("selector"), into.get("index"), into.get("length")
     if not isinstance(base, str) or type(index) is not int:
         return ""
-    if length is None:
-        return f"points at {base}" if index == 0 else f"&{base} + 1: one past its end"
-    if index == length:
-        return f"{base} + {index}: one past its end"
-    return f"points at {base}[{index}]"
+    if index == (1 if length is None else length):
+        return f"at the address one past {base}'s end"
+    return f"at {base}'s address" if length is None else f"at {base}[{index}]'s address"
 
 
 DEPTH_LIMITED_CHILDREN = (

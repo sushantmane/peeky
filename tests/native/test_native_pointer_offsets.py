@@ -69,20 +69,20 @@ def probed(capsys, program, marker, capture, *extra):
 def test_a_pointer_says_which_element_of_a_captured_array_it_holds(program, capsys):
     result = probed(capsys, program, "MAIN", "top,end,bytes,first,level")
     rows = {row["selector"]: row for row in result["rows"]}
-    assert rows["top"]["points_into"] == {"selector": "level", "index": 2, "length": 6}, rows
+    assert rows["top"]["at_element_of"] == {"selector": "level", "index": 2, "length": 6}, rows
     # One past the end: C lets a pointer hold it, never read it.
-    assert rows["end"]["points_into"] == {"selector": "level", "index": 6, "length": 6}, rows
-    assert rows["first"]["points_into"] == {"selector": "level", "index": 0, "length": 6}, rows
+    assert rows["end"]["at_element_of"] == {"selector": "level", "index": 6, "length": 6}, rows
+    assert rows["first"]["at_element_of"] == {"selector": "level", "index": 0, "length": 6}, rows
     # A `char *` into an `int` array points at no whole element of it.
-    assert "points_into" not in rows["bytes"] and rows["bytes"]["element_size"] == 1, rows
-    assert "points_into" not in rows["level"], rows
+    assert "at_element_of" not in rows["bytes"] and rows["bytes"]["element_size"] == 1, rows
+    assert "at_element_of" not in rows["level"], rows
     assert [rows[name]["element_size"] for name in ("top", "end", "first", "level")] == [4] * 4
 
     # Where the array is a parameter, `level` is a pointer: its length is not known, so
     # no element is named, only how far `top` is from it by address.
     inner = probed(capsys, program, "PEAK", "top,level")
     rows = {row["selector"]: row for row in inner["rows"]}
-    assert not any("points_into" in row for row in rows.values()), rows
+    assert not any("at_element_of" in row for row in rows.values()), rows
     assert rows["top"]["element_size"] == rows["level"]["element_size"] == 4, rows
     assert rows["top"]["offset_from"] == {"selector": "level", "offset": 2}, rows
     assert "offset_from" not in rows["level"], rows
@@ -90,20 +90,20 @@ def test_a_pointer_says_which_element_of_a_captured_array_it_holds(program, caps
     at = f"levels.c:{line_of('MAIN')}"
     assert main(["probe", str(program), "--at", at, "--capture", "top,end,level", *ARGS]) == 0
     table = capsys.readouterr().out
-    assert "  [points at level[2]]" in table, table
-    assert "  [level + 6: one past its end]" in table, table
+    assert "  [at level[2]'s address]" in table, table
+    assert "  [at the address one past level's end]" in table, table
 
     # The store keeps it, for SQL.
-    sql = "SELECT selector, element_size, points_into, element_index FROM last_run"
+    sql = "SELECT selector, element_size, at_element_of, element_index FROM last_run"
     assert main(["sql", sql, "--json"]) == 0
     stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     assert stored["top"] == {
         "selector": "top",
         "element_size": 4,
-        "points_into": "level",
+        "at_element_of": "level",
         "element_index": 2,
     }
-    assert stored["level"]["points_into"] is None and stored["level"]["element_size"] == 4
+    assert stored["level"]["at_element_of"] is None and stored["level"]["element_size"] == 4
 
 
 @pytest.mark.timeout(240)
@@ -134,26 +134,27 @@ def test_pointers_walking_a_parameter_say_how_far_they_are_from_it(program, caps
     assert main([*command, *ARGS]) == 0
     table = capsys.readouterr().out
     assert "  [level + 0 by address; same array not proven]" in table, table
-    assert "points at" not in table, table
-    sql = "SELECT selector, offset_from, element_offset, points_into FROM last_run"
+    assert "'s address]" not in table, table
+    sql = "SELECT selector, offset_from, element_offset, at_element_of FROM last_run"
     assert main(["sql", sql, "--json"]) == 0
     stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     assert stored["p"] == {
         "selector": "p",
         "offset_from": "level",
         "element_offset": 0,
-        "points_into": None,
+        "at_element_of": None,
     }
 
-    # The edit takes the first of equal readings: `top` is another offset from `level`.
+    # The edit takes the first of equal readings: `top` is at another offset from `level`,
+    # shown, but ranked with the addresses that differ, as nothing proves one array.
     for extra in ([], EDIT):
         probed(capsys, program, "PEAK", "top,level", *extra)
     assert main(["queries", "diff", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)["rows"]
     notes = {row["selector"]: row["note"] for row in rows}
     assert notes["top"] == (
-        "another offset from `level` by address: `level + 2` in run a, `level + 1` in run b; "
-        "same array not proven"
+        "addresses differ: by address, `level + 2` in run a and `level + 1` in run b; nothing "
+        "proves they point into one array, so it may or may not be another element"
     ), rows
 
 
@@ -165,13 +166,12 @@ def test_diff_compares_the_elements_a_pointer_holds(program, capsys):
     assert main(["queries", "diff", "--param", "a=1", "--param", "b=2", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)["rows"]
     notes = {row["selector"]: row["note"] for row in rows}
-    assert notes["top"] == "another element of `level`: index 2 in run a, 1 in run b", rows
+    assert notes["top"] == "the address of `level[2]` in run a, of `level[1]` in run b", rows
     # A real difference: right after the run-level rows, before any address-only row.
     assert [row["selector"] for row in rows][:3] == ["(output)", "(edit)", "top"], rows
     # `first` holds element 0's address in both: where the stack moved, addresses only.
-    assert notes.get("first", "addresses only: the same element of `level` in both runs") == (
-        "addresses only: the same element of `level` in both runs"
-    ), rows
+    same = "addresses only: the address of the same element of `level` in both runs"
+    assert notes.get("first", same) == (same), rows
     assert "level" not in notes, rows
 
 
@@ -183,10 +183,10 @@ def test_session_get_says_which_element_a_pointer_holds(program, capsys):
     try:
         assert main(["session", "get", "top", "level"]) == 0
         out = capsys.readouterr().out
-        assert "top: const int * = 0x" in out and "  [points at level[2]]" in out, out
+        assert "top: const int * = 0x" in out and "  [at level[2]'s address]" in out, out
         # Read alone, nothing at the same stop proves which array it points into.
         assert main(["session", "get", "top"]) == 0
-        assert "points at" not in capsys.readouterr().out
+        assert "'s address" not in capsys.readouterr().out
     finally:
         main(["session", "close"])
         capsys.readouterr()
@@ -232,6 +232,41 @@ def test_cpp_raw_pointers_say_which_element_they_hold(program, cxx, capsys):
     output = capsys.readouterr().out
     assert code == 0, output
     rows = {row["selector"]: row for row in json.loads(output)["rows"]}
-    assert rows["best"]["points_into"] == {"selector": "roster", "index": 2, "length": 3}, rows
-    assert rows["last"]["points_into"] == {"selector": "names", "index": 2, "length": 3}, rows
-    assert "points_into" not in rows["first"], rows
+    assert rows["best"]["at_element_of"] == {"selector": "roster", "index": 2, "length": 3}, rows
+    assert rows["last"]["at_element_of"] == {"selector": "names", "index": 2, "length": 3}, rows
+    assert "at_element_of" not in rows["first"], rows
+
+
+SHARED = """#include <stdio.h>
+union both {
+  int a[4];
+  int b[4];
+};
+int main(void) {
+  union both u = {{1, 2, 3, 4}};
+  int *p = &u.a[2];
+  printf("%d\\n", *p); /* SHARED */
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_an_address_two_captured_arrays_share_names_neither(program, capsys):
+    # Review of PR #312: `u.a[2]` and `u.b[2]` have one address, which cannot tell which
+    # the pointer designates; the first captured was named.
+    (program / "shared.c").write_text(SHARED)
+    at = "shared.c:" + str(next(i for i, t in enumerate(SHARED.splitlines(), 1) if "SHARED" in t))
+
+    def rows(capture):
+        code = main(
+            ["probe", str(program / "shared.c"), "--at", at, "--capture", capture, "--json"]
+        )
+        output = capsys.readouterr().out
+        assert code == 0, output
+        return {row["selector"]: row for row in json.loads(output)["rows"]}
+
+    both = rows("p,u.a,u.b")
+    assert "at_element_of" not in both["p"], both
+    one = rows("p,u.b")
+    assert one["p"]["at_element_of"] == {"selector": "u.b", "index": 2, "length": 4}, one

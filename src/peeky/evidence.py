@@ -155,16 +155,19 @@ TABLES = {
             "information; NULL for other values, other languages and runs saved before "
             "schema 17. (address(p.value) - address(q.value)) / p.element_size is how many "
             "elements apart two pointers of one type are",
-            "points_into": "C and C++: the selector of the array (or other object) captured "
-            "at the same hit, phase and frame that this pointer holds the address of an "
-            "element of, where Peeky proves it: the pointer points at the array's element "
-            "type, and its address is a whole number of elements from the array's first, "
-            "at most one past its end. NULL where any of that is not proven (the array is "
-            "a pointer itself, such as a parameter), and for runs saved before schema 17",
-            "element_index": "With points_into: which element, from 0. The array's length "
-            "(1 for another object) means one past its end, which C lets a pointer hold but "
-            "never read; else NULL",
-            "offset_from": "C and C++, a pointer with no points_into: the selector of another "
+            "at_element_of": "C and C++: the selector of the one array (or other object) "
+            "captured at the same hit, phase and frame at one of whose elements' addresses "
+            "this pointer is: the pointer points at the array's element type, and its "
+            "address is a whole number of elements from the array's first, at most one past "
+            "its end. An address fact: another object can share that address (a union's "
+            "other member, the next array, reused storage), so it never says which object "
+            "the pointer designates. NULL where any of that is not proven (the array is a "
+            "pointer itself, such as a parameter), where several captured bases match, and "
+            "for runs saved before schema 17",
+            "element_index": "With at_element_of: which element's address, from 0. The "
+            "array's length (1 for another object) is the address one past its end, which C "
+            "lets a pointer hold but never read; else NULL",
+            "offset_from": "C and C++, a pointer with no at_element_of: the selector of another "
             "pointer to the same type, captured at the same hit, phase and frame, that its "
             "address is counted from by address arithmetic alone: not proven to point into "
             "one array, so no element is named. The base is the first such pointer that is "
@@ -172,7 +175,8 @@ TABLES = {
             "captured; it has none itself. NULL where the difference is not a whole number "
             "of elements or over 2**20 of them, and for runs saved before schema 17",
             "element_offset": "With offset_from: how many elements (element_size bytes each) "
-            "past that pointer this one's address is; negative where it is before. Else NULL",
+            "past that pointer's address this one's is; negative where it is before. The "
+            "addresses differ by element_offset * element_size bytes. Else NULL",
         },
     ),
     "interventions": (
@@ -211,7 +215,7 @@ _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
     "instance, selector, type, "
     "value, num, unavailable, error, view, note, identity, scope, element_size, "
-    "points_into, element_index, offset_from, element_offset, args, sets, "
+    "at_element_of, element_index, offset_from, element_offset, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
 )
 VIEWS = {
@@ -226,7 +230,7 @@ _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.lab
         c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
         c.type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, c.element_size,
-        c.points_into, c.element_index, c.offset_from, c.element_offset, r.args, r.sets,
+        c.at_element_of, c.element_index, c.offset_from, c.element_offset, r.args, r.sets,
         r.artifact_manifest_id,
         r.source_sha256, r.edit IS NOT NULL AS candidate, r.language
         FROM captures c JOIN runs r ON r.run_id = c.run_id"""
@@ -239,7 +243,7 @@ _CAPTURES = """CREATE TABLE {} (
         run_id INTEGER NOT NULL, hit INTEGER, phase TEXT, line INTEGER, function TEXT,
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
         error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
-        stop INTEGER, element_size INTEGER, points_into TEXT, element_index INTEGER,
+        stop INTEGER, element_size INTEGER, at_element_of TEXT, element_index INTEGER,
         offset_from TEXT, element_offset INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
@@ -283,9 +287,9 @@ _DDL = (
 # (#174), from that hit's other rows where they agree (NULL where they give none, as with
 # `--capture return` alone, or disagree); version 16 adds runs.set_outcomes, how each
 # requested change went (NULL for earlier runs); version 17 adds captures.element_size,
-# points_into and element_index (#302), which element of a captured array a C or C++
-# pointer holds the address of, and offset_from and element_offset, how far it is from
-# another pointer by address alone (NULL for earlier runs).
+# at_element_of and element_index (#302), at which element's address of a captured array
+# a C or C++ pointer is, and offset_from and element_offset, how far it is from another
+# pointer by address alone (NULL for earlier runs).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -404,7 +408,7 @@ _MIGRATIONS = {
         *_DROP_VIEWS,
         _add_columns(
             ("element_size", "INTEGER"),
-            ("points_into", "TEXT"),
+            ("at_element_of", "TEXT"),
             ("element_index", "INTEGER"),
             ("offset_from", "TEXT"),
             ("element_offset", "INTEGER"),
@@ -720,38 +724,45 @@ _ADDRESS_KIND = f"""CASE
           ELSE 'addresses only' END"""
 
 
-# A C or C++ pointer that holds the address of an element of the same captured array in
-# both runs (captures.points_into, #302), each element's by its index: another element is
-# a real difference, even where the addresses read the same; the same one, with
-# addresses that differ, is no more than that.
+# A C or C++ pointer at an element's address of the same captured array in both runs
+# (captures.at_element_of, #302), each element's by its index. Another element's address is
+# a real difference, even where the addresses read the same: an offset within one array of
+# the frame lies inside that array's own storage, so where the allocator or the stack put
+# other objects cannot change it; the program put the pointer elsewhere in that storage.
+# The same element's address, with addresses that differ, is no more than that.
 _ELSEWHERE = "a.pi IS NOT NULL AND a.pi IS b.pi AND a.ei IS NOT b.ei"
-# A pointer counted from the same captured pointer in both runs by address alone
-# (captures.offset_from): another offset is a real difference of how the two pointers
-# lie, the same one no more than their addresses; neither names an element.
-_SHIFTED = "a.ofs IS NOT NULL AND a.ofs IS b.ofs AND a.eo IS NOT b.eo"
 
 
-def _from(run, offset):
-    """SQL: `level + 6` (`level - 2`), the offset column ``offset`` of ``run`` from its
-    base."""
+def _from(run):
+    """SQL: `level + 6` (`level - 2`), ``run``'s offset by address from its base pointer."""
     return (
-        f"'`' || {run}.ofs || CASE WHEN {offset} < 0 THEN ' - ' || -{offset} ELSE ' + ' || "
-        f"{offset} END || '`'"
+        f"'`' || {run}.ofs || CASE WHEN {run}.eo < 0 THEN ' - ' || -{run}.eo ELSE ' + ' || "
+        f"{run}.eo END || '`'"
     )
+
+
+# A C or C++ pointer counted from the same captured pointer in both runs by address alone
+# (captures.offset_from): its offsets are shown, but rank with the addresses that differ
+# (review of PR #312). Two pointers of one type may point into separate blocks within the
+# cap (`src`, `dst`), whose distance is the allocator's layout, not the program's, so
+# another offset need not be another element; and the base itself may point elsewhere.
+_OFFSETS = f"""'addresses differ: by address, ' || CASE WHEN a.eo IS b.eo
+      THEN {_from("a")} || ' in both runs' ELSE {_from("a")} || ' in run a and ' || {_from("b")}
+      || ' in run b' END || '; nothing proves they point into one array, so it may or may not '
+      || 'be another element'"""
 
 
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
-    points_into AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
+    at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
     FROM captures s WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
-    points_into AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
+    at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
-    a.v IS NOT b.v OR ({_ELSEWHERE}) OR ({_SHIFTED}) AS differs,
-    COALESCE(a.pos, b.pos) AS pos,
+    a.v IS NOT b.v OR ({_ELSEWHERE}) AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
       WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
@@ -763,19 +774,15 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       WHEN a.pos IS NULL THEN 'missing in run a' || COALESCE(' (run b: stop ' || k.st || ')', '')
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
-      WHEN {_ELSEWHERE} THEN 'another element of `' || a.pi || '`: index ' || a.ei
-        || ' in run a, ' || b.ei || ' in run b'
-      WHEN a.v IS NOT b.v AND a.pi IS NOT NULL AND a.pi IS b.pi
-        AND no_addresses(a.v, {_LANGUAGE.format(_A)}) IS no_addresses(b.v, {_LANGUAGE.format(_B)})
-        THEN 'addresses only: the same element of `' || a.pi || '` in both runs'
-      WHEN {_SHIFTED} THEN 'another offset from `' || a.ofs || '` by address: '
-        || {_from("a", "a.eo")} || ' in run a, ' || {_from("b", "b.eo")}
-        || ' in run b; same array not proven'
-      WHEN a.v IS NOT b.v AND a.ofs IS NOT NULL AND a.ofs IS b.ofs
-        AND no_addresses(a.v, {_LANGUAGE.format(_A)}) IS no_addresses(b.v, {_LANGUAGE.format(_B)})
-        THEN 'addresses only: the same offset from `' || a.ofs || '` in both runs, by address'
+      WHEN {_ELSEWHERE} THEN 'the address of `' || a.pi || '[' || a.ei || ']` in run a, of `'
+        || b.pi || '[' || b.ei || ']` in run b'
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
-        IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN {_ADDRESS_KIND}
+        IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN CASE
+          WHEN a.pi IS NOT NULL AND a.pi IS b.pi
+            THEN 'addresses only: the address of the same element of `' || a.pi
+              || '` in both runs'
+          WHEN a.ofs IS NOT NULL AND a.ofs IS b.ofs THEN {_OFFSETS}
+          ELSE {_ADDRESS_KIND} END
     END AS kind,
     CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
       WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
@@ -786,11 +793,9 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       AND a.st IS k.st
     LEFT JOIN b ON b.hit = k.hit AND b.phase = k.phase AND b.selector = k.selector
       AND b.st IS k.st),
-  -- Whatever else a row says, a qualified value says so too (review 3 of #139). Read once:
-  -- flattened into each tier's GROUP BY, its many columns passed SQLite's limit of 100
-  -- aggregate terms (#302).
-  pair AS MATERIALIZED (SELECT *, CASE WHEN qualified IS NULL THEN kind
-    WHEN kind IS NULL THEN qualified ELSE kind || '; ' || qualified END AS note FROM kinds)"""
+  -- Whatever else a row says, a qualified value says so too (review 3 of #139).
+  pair AS (SELECT *, CASE WHEN qualified IS NULL THEN kind WHEN kind IS NULL THEN qualified
+    ELSE kind || '; ' || qualified END AS note FROM kinds)"""
 _PAIR_COLUMNS = (
     f"{_A} AS run_a, {_B} AS run_b, hit, phase, selector, value_a, value_b, differs, note"
 )
@@ -803,16 +808,17 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # for selectors only one run captured). Then values changed by an intervention only one
 # run made, before what may follow from them (tenth evaluation: they came after 70 rows
 # of its effects); then real divergences, in hit and capture order (a hit only one run
-# reached is one, and so is a C or C++ pointer to another element of an array both runs
-# captured, #302); then pointers whose addresses differ, which may point at another
-# element (`_ADDRESS_KIND`): not with the real divergences, since the stack and heap move
+# reached is one, and so is a C or C++ pointer at another element's address of an array
+# both runs captured, #302); then pointers whose addresses differ, which may point at another
+# element (`_ADDRESS_KIND`, and `_OFFSETS`, by address from another pointer): not with the
+# real divergences, since the stack and heap move
 # between runs, so most pointers differ whether or not they point at another element,
 # and the first real difference stays the first divergence; then values a view or a note
 # qualifies in either run (a C local's leftovers
 # on a `do` body's first line, a moved Rust local's bytes: review of #139), whatever else
 # their note says (`missing in run b; qualified (run a: note)`); then other values
-# that differ only in memory addresses (a C or C++ pointer to the same element, or one
-# whose text after its address reads the same: `_READS_ALIKE`); last, one row per
+# that differ only in memory addresses (a C or C++ pointer at the same element's address,
+# or one whose text after its address reads the same: `_READS_ALIKE`); last, one row per
 # selector only one run asked
 # for. Nothing is dropped: an address-only or qualified difference may still be real;
 # but an after-set value equal to its run's observed value at that hit, in each run
@@ -829,7 +835,7 @@ _RANKED = f"""(
   SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %'
-      OR kind LIKE 'another element of %' OR kind LIKE 'another offset from %')
+      OR kind LIKE 'the address of %')
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -838,12 +844,14 @@ _RANKED = f"""(
     FROM (SELECT *, COUNT(*) OVER (PARTITION BY selector, note, value_a, value_b) AS alike
       FROM pair WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged)
     GROUP BY selector, note, value_a, value_b, CASE WHEN alike > 3 THEN NULL ELSE pos END
-  -- As rank 13 below, but the count goes after `addresses differ`, before what to do.
+  -- As rank 13 below, but the count goes after `addresses differ`, before what to do. With
+  -- no qualified value, note is kind: named once, the GROUP BY's terms stay well within
+  -- SQLite's limit, the column limit Peeky sets (#302).
   UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses differ at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
       || 'selector') || ': its first hit)' || substr(kind, length('addresses differ') + 1)
-      ELSE note END, MIN(pos) FROM pair
+      ELSE kind END, MIN(pos) FROM pair
     WHERE qualified IS NULL AND kind LIKE 'addresses differ:%' AND NOT unchanged
     GROUP BY selector, phase, st, kind
   UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
@@ -854,7 +862,7 @@ _RANKED = f"""(
     CASE WHEN COUNT(*) > 1 THEN 'addresses only, at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
       || 'selector') || ': its first hit)' || substr(kind, length('addresses only') + 1)
-      ELSE note END, MIN(pos) FROM pair
+      ELSE kind END, MIN(pos) FROM pair
     WHERE qualified IS NULL AND (kind = 'addresses only' OR kind LIKE 'addresses only:%')
     AND NOT unchanged
     GROUP BY selector, phase, st, kind
@@ -1064,10 +1072,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "value is missing from a run, qualified in either (a view or a note: not evidence "
         "by itself) or differs only in memory addresses (`addresses differ: ...` where an "
         "address may be another element's: a pointer or a reference, or any C, C++ or Rust "
-        "value; else `addresses only`); a C or C++ pointer into an array both runs captured "
-        "says which element in each (`another element of ...`, `addresses only: the same "
-        "element of ...`), and one counted from the same pointer by address its offset "
-        "(`another offset from ...`). First a (status) row where either "
+        "value; else `addresses only`); a C or C++ pointer at an element's address of an array "
+        "both runs captured says which in each (`the address of ...`, `addresses only: the "
+        "address of the same element of ...`), and one counted from the same pointer by "
+        "address its offsets (`addresses differ: by address, ...`). First a (status) row "
+        "where either "
         "run did not complete (its error too), and a (sets) row where either requested "
         'interventions: each [name, value, "requested at LINE@HIT"] with how it went, as '
         "`outputs` says it; requests that read alike are said to be made alike only where "
@@ -1086,16 +1095,16 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "then values only one run's intervention changed (an after-set value equal to its hit's "
         "observed one is left out; more than 3 alike are one row, its first hit's); then real "
         "differences in hit and capture order (the first is the first divergence; a C or C++ "
-        "pointer to another element of an array both runs captured is one: `another element "
-        "of ...`, and so is one at another offset from the same pointer by address: `another "
-        "offset from ...`); then values "
+        "pointer at another element's address of an array both runs captured is one: `the "
+        "address of ...`); then values "
         "whose addresses differ where an address may be another element's (a pointer or a "
         "reference, or any C, C++ or Rust value: note `addresses differ: ...`, which says to "
-        "compare offsets with address()), one row per selector (and stop); then values a "
+        "compare offsets with address(), or shows a C or C++ pointer's offsets by address from "
+        "another), one row per selector (and stop); then values a "
         "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
         "itself: leftovers, a moved Rust local's bytes); then other address-only differences (a "
-        "Python repr, a Java object number, a C or C++ pointer to the same element or at the "
-        "same offset, or one whose text after its address reads the same), one row "
+        "Python repr, a Java object number, a C or C++ pointer at the same element's address, "
+        "or one whose text after its address reads the same), one row "
         "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
         "by stop where both runs label them (a line with several breakpoint locations): where the "
         "runs stopped a different number of times, or a hit at another stop, a note names `join`, "
@@ -1361,9 +1370,10 @@ def _ensure(path):
     return connection
 
 
-def _points_into(row, key="points_into", number="index"):
-    """(points_into, element_index) of a probe row's `points_into` (#302), or with ``key``
-    "offset_from" and ``number`` "offset", (offset_from, element_offset); else NULLs."""
+def _points_into(row, key="at_element_of", number="index"):
+    """(at_element_of, element_index) of a probe row's `at_element_of` (#302), or with
+    ``key`` "offset_from" and ``number`` "offset", (offset_from, element_offset); else
+    NULLs."""
     into = row.get(key)
     if not isinstance(into, dict) or type(into.get(number)) is not int:
         return None, None
@@ -1447,7 +1457,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         connection.executemany(
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
             "num, unavailable, error, view, identity, scope, note, instance, stop, "
-            "element_size, points_into, element_index, offset_from, element_offset) "
+            "element_size, at_element_of, element_index, offset_from, element_offset) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
@@ -2524,9 +2534,9 @@ def _structure_apart(path, run):
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
-        f"c.value, {_caveat('c')} AS caveat, r.language, c.points_into, c.element_index, "
-        "c.offset_from, c.element_offset FROM captures c JOIN runs r ON r.run_id = c.run_id "
-        "WHERE c.run_id IN (:a, :b) ORDER BY c.run_id, c.hit, c.rowid",
+        f"c.value, {_caveat('c')} AS caveat, r.language, c.at_element_of, c.element_index FROM "
+        "captures c JOIN runs r ON r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY "
+        "c.run_id, c.hit, c.rowid",
         {"a": run["a"], "b": run["b"]},
         limit=MAX_ROWS,
     )["rows"]
@@ -2542,12 +2552,10 @@ def _structure_apart(path, run):
     for row in rows:
         here = row["run_id"]
         masked = None if row["value"] is None else _no_addresses(row["value"], row["language"])
-        if masked is not None and row["points_into"] is not None:
-            # Which element a C or C++ pointer holds (#302): another is another value.
-            masked = f"{masked} [{row['points_into']} + {row['element_index']}]"
-        elif masked is not None and row["offset_from"] is not None:
-            # Or how far it is from another pointer, by address: so is another offset.
-            masked = f"{masked} [{row['offset_from']} by {row['element_offset']}]"
+        if masked is not None and row["at_element_of"] is not None:
+            # At which element's address of a captured array a C or C++ pointer is (#302):
+            # another is another value. An offset by address alone is not (layout).
+            masked = f"{masked} [{row['at_element_of']} + {row['element_index']}]"
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue

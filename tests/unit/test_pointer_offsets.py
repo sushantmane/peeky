@@ -192,16 +192,16 @@ def test_rows_of_one_stop_say_which_element_and_its_size():
         row("count", "2", "int"),
     ]
     _pointed(rows, {0: INT, 1: LEVEL})
-    assert rows[0]["points_into"] == {"selector": "level", "index": 6, "length": 96}
+    assert rows[0]["at_element_of"] == {"selector": "level", "index": 6, "length": 96}
     assert rows[0]["element_size"] == rows[1]["element_size"] == 4
-    assert "points_into" not in rows[1] and "element_size" not in rows[2]
+    assert "at_element_of" not in rows[1] and "element_size" not in rows[2]
 
 
 def test_a_pointer_base_a_qualified_value_or_itself_proves_nothing():
     # tides' `find_waters`: `level` is a `const int *` parameter, whose length is unknown.
     rows = [row("turn", "0x0000000000001018", "const int *"), row("level", "0x1000", "const int *")]
     _pointed(rows, {0: INT, 1: dict(INT)})
-    assert not any("points_into" in each for each in rows)
+    assert not any("at_element_of" in each for each in rows)
     assert [each["element_size"] for each in rows] == [4, 4]
     # Only its offset by address, which names no element.
     assert rows[1]["offset_from"] == {"selector": "turn", "offset": -6}
@@ -211,32 +211,43 @@ def test_a_pointer_base_a_qualified_value_or_itself_proves_nothing():
             row("level", "[1]", "int[96]"),
         ]
         _pointed(rows, {0: INT, 1: LEVEL})
-        assert "points_into" not in rows[0], qualified
+        assert "at_element_of" not in rows[0], qualified
         rows = [
             row("p", "0x0000000000001018", "int *"),
             row("level", "[1]", "int[96]", **qualified),
         ]
         _pointed(rows, {0: INT, 1: LEVEL})
-        assert "points_into" not in rows[0], qualified
+        assert "at_element_of" not in rows[0], qualified
     unread = [row("p", "0x0000000000001018", "int *"), {"selector": "level", "unavailable": True}]
     _pointed(unread, {0: INT, 1: LEVEL})
-    assert "points_into" not in unread[0]
+    assert "at_element_of" not in unread[0]
 
 
-def test_an_element_inside_one_array_comes_before_one_past_another():
-    # `a` ends where `b` starts: the pointer is b + 0, and a + 4 (one past a's end).
+@pytest.mark.parametrize(
+    "second",
+    [
+        # `a` ends where `b` starts: the address one past a's end is b[0]'s.
+        {"address": 0x1010, "length": 4, "element": 1, "element_size": 4},
+        # A union's two arrays share one address: u.a[0]'s is u.b[0]'s.
+        {"address": 0x1000, "length": 8, "element": 1, "element_size": 4},
+    ],
+)
+def test_an_address_two_captured_bases_share_names_neither(second):
+    # Review of PR #312: the first in capture order was named, as if the address told
+    # which object the pointer designates.
     a = {"address": 0x1000, "length": 4, "element": 1, "element_size": 4}
-    b = {"address": 0x1010, "length": 4, "element": 1, "element_size": 4}
-    rows = [
-        row("p", "0x0000000000001010", "int *"),
-        row("a", "[1]", "int[4]"),
-        row("b", "[2]", "int[4]"),
-    ]
-    _pointed(rows, {0: INT, 1: a, 2: b})
-    assert rows[0]["points_into"] == {"selector": "b", "index": 0, "length": 4}
+    at = 0x1010 if second["address"] == 0x1010 else 0x1000
+    rows = [row("p", f"0x{at:016x}", "int *"), row("a", "[1]", "int[4]"), row("b", "[2]", "int[4]")]
+    _pointed(rows, {0: INT, 1: a, 2: second})
+    assert "at_element_of" not in rows[0], rows
+    # One of them alone says it, as an address.
     rows = rows[:2]
     _pointed(rows, {0: INT, 1: a})
-    assert rows[0]["points_into"] == {"selector": "a", "index": 4, "length": 4}
+    index = 4 if at == 0x1010 else 0
+    assert rows[0]["at_element_of"] == {"selector": "a", "index": index, "length": 4}
+    assert pointed_text(rows[0]) == (
+        "at the address one past a's end" if index == 4 else "at a[0]'s address"
+    )
 
 
 PARAMETER = {**INT, "parameter": True}
@@ -293,7 +304,7 @@ def test_pointers_into_an_unproven_array_say_their_offset_from_a_parameter():
     _pointed(rows, {0: INT, 1: INT, 2: PARAMETER})
     assert rows[0]["offset_from"] == {"selector": "level", "offset": 6}
     assert rows[1]["offset_from"] == {"selector": "level", "offset": 7}
-    assert not any("offset_from" in each or "points_into" in each for each in rows[2:])
+    assert not any("offset_from" in each or "at_element_of" in each for each in rows[2:])
     # Shown as arithmetic, never an element.
     assert pointed_text(rows[0]) == "level + 6 by address; same array not proven"
     assert pointed_text({"offset_from": {"selector": "level", "offset": -2}}) == (
@@ -326,20 +337,21 @@ def test_an_offset_needs_a_captured_base_of_its_type_and_a_plain_value():
         row("data", "[1, 2]", "int[4]"),
     ]
     _pointed(rows, {0: PARAMETER, 1: INT, 2: {**LEVEL, "address": 0x2000, "length": 4}})
-    assert rows[1]["points_into"] == {"selector": "data", "index": 2, "length": 4}
+    assert rows[1]["at_element_of"] == {"selector": "data", "index": 2, "length": 4}
     assert "offset_from" not in rows[1]
 
 
 def test_tables_and_session_get_show_the_element():
-    assert pointed_text({"points_into": {"selector": "level", "index": 6, "length": 96}}) == (
-        "points at level[6]"
+    assert pointed_text({"at_element_of": {"selector": "level", "index": 6, "length": 96}}) == (
+        "at level[6]'s address"
     )
-    assert pointed_text({"points_into": {"selector": "level", "index": 96, "length": 96}}) == (
-        "level + 96: one past its end"
+    assert pointed_text({"at_element_of": {"selector": "level", "index": 96, "length": 96}}) == (
+        "at the address one past level's end"
     )
-    assert pointed_text({"points_into": {"selector": "x", "index": 0}}) == "points at x"
+    assert pointed_text({"at_element_of": {"selector": "x", "index": 0}}) == "at x's address"
     assert (
-        pointed_text({"points_into": {"selector": "x", "index": 1}}) == "&x + 1: one past its end"
+        pointed_text({"at_element_of": {"selector": "x", "index": 1}})
+        == "at the address one past x's end"
     )
     assert pointed_text({}) == ""
     shown = row(
@@ -347,13 +359,13 @@ def test_tables_and_session_get_show_the_element():
         "0x0000000000001018",
         "const int *",
         element_size=4,
-        points_into={"selector": "level", "index": 6, "length": 96},
+        at_element_of={"selector": "level", "index": 6, "length": 96},
     )
     table = _table(
         {"rows": [shown], "interventions": [], "status": "completed", "hits": 1, "seconds": 1}
     )
-    assert "0x0000000000001018  [points at level[6]]" in table
-    assert _get_lines(shown)[0] == "turn: const int * = 0x0000000000001018  [points at level[6]]"
+    assert "0x0000000000001018  [at level[6]'s address]" in table
+    assert _get_lines(shown)[0] == "turn: const int * = 0x0000000000001018  [at level[6]'s address]"
 
 
 class Frames:
@@ -393,12 +405,12 @@ def test_only_values_of_one_frame_at_one_stop_are_compared():
     stop = {"session_id": "s", "stop_id": "t"}
     (pointer,) = _capture(worker, stop, ("p",), 1, "observed")
     (base,) = _capture(worker, stop, ("level",), 1, "observed", frame=1)
-    assert "points_into" not in pointer and "points_into" not in base
+    assert "at_element_of" not in pointer and "at_element_of" not in base
     assert pointer["element_size"] == base["element_size"] == 4
     # The roots read say what their addresses can tell, as they are previewed.
     assert worker.requests[0]["extents"] == ["p"]
     rows = _capture(worker, stop, ("q", "level"), 1, "observed", frame=1)
-    assert rows[0]["points_into"] == {"selector": "level", "index": 2, "length": 96}
+    assert rows[0]["at_element_of"] == {"selector": "level", "index": 2, "length": 96}
     # Pointers of two frames are never counted from each other either.
     worker.pointers = True
     (pointer,) = _capture(worker, stop, ("p",), 1, "observed")
@@ -468,7 +480,7 @@ def captured(rows, language="c", output="TIDES:H 03:00\n"):
 
 
 def into(index):
-    return {"element_size": 4, "points_into": {"selector": "level", "index": index, "length": 96}}
+    return {"element_size": 4, "at_element_of": {"selector": "level", "index": index, "length": 96}}
 
 
 def apart(offset, base="level"):
@@ -509,9 +521,9 @@ def test_diff_says_which_element_a_pointer_holds_in_each_run(store):
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
         (None, "(output)", "output differs at line 1, column 4"),
         # Another element is a real difference, in hit and capture order.
-        (1, "turn", "another element of `level`: index 6 in run a, 4 in run b"),
+        (1, "turn", "the address of `level[6]` in run a, of `level[4]` in run b"),
         (1, "count", None),
-        (2, "turn", "another element of `level`: index 17 in run a, 16 in run b"),
+        (2, "turn", "the address of `level[17]` in run a, of `level[16]` in run b"),
         (2, "count", None),
         # Proven nothing of: it may still point at another element.
         (1, "p", POINTS),
@@ -521,20 +533,20 @@ def test_diff_says_which_element_a_pointer_holds_in_each_run(store):
         (
             1,
             "first",
-            "addresses only, at 2 hits (one row per selector: its first hit): the same "
-            "element of `level` in both runs",
+            "addresses only, at 2 hits (one row per selector: its first hit): the address of "
+            "the same element of `level` in both runs",
         ),
     ]
     # The array itself, whose elements agree, is no difference at all.
     assert not any(r["selector"] == "level" for r in rows)
     compared = evidence.run_query(store, "compare")["rows"]
     assert {(r["hit"], r["selector"], r["note"]) for r in compared} >= {
-        (1, "turn", "another element of `level`: index 6 in run a, 4 in run b"),
-        (2, "first", "addresses only: the same element of `level` in both runs"),
+        (1, "turn", "the address of `level[6]` in run a, of `level[4]` in run b"),
+        (2, "first", "addresses only: the address of the same element of `level` in both runs"),
     }
-    sql = "SELECT run_id, hit, element_size, points_into, element_index FROM evidence WHERE "
+    sql = "SELECT run_id, hit, element_size, at_element_of, element_index FROM evidence WHERE "
     found = evidence.query(store, sql + "selector = 'turn' ORDER BY run_id, hit")["rows"]
-    assert [(r["element_size"], r["points_into"], r["element_index"]) for r in found] == [
+    assert [(r["element_size"], r["at_element_of"], r["element_index"]) for r in found] == [
         (4, "level", 6),
         (4, "level", 17),
         (4, "level", 4),
@@ -551,7 +563,7 @@ def test_another_element_at_the_same_address_is_still_a_difference(store):
         ]
         evidence.record(store, captured(rows), language="c")
     [found] = evidence.run_query(store, "diff")["rows"]
-    assert found["note"] == "another element of `level`: index 6 in run a, 4 in run b"
+    assert found["note"] == "the address of `level[6]` in run a, of `level[4]` in run b"
     assert found["differs"] == 1
 
 
@@ -566,13 +578,13 @@ def test_a_pointer_proven_in_one_run_only_may_point_elsewhere(store):
     )
 
 
-@pytest.mark.parametrize("key", ["points_into", "offset_from"])
-def test_a_pointer_to_another_element_never_agrees_in_the_alignment_note(store, key):
-    # `word` reads "a", "b", "c" in both runs, at other elements of `text` (or other
-    # offsets from it): the note said it agreed between the runs at each hit, under rows
-    # that said otherwise.
+@pytest.mark.parametrize("key", ["at_element_of", "offset_from"])
+def test_the_alignment_note_counts_proven_elements_but_not_offsets(store, key):
+    # `word` reads "a", "b", "c" in both runs, at other elements' addresses of `text`: the
+    # note said it agreed between the runs at each hit, under rows that said another
+    # element. An offset by address alone may be layout, so it agrees or not as before.
     def at(index):
-        number = "index" if key == "points_into" else "offset"
+        number = "index" if key == "at_element_of" else "offset"
         return {"element_size": 1, key: {"selector": "text", number: index}}
 
     for base, starts, quiz in ((0x16B42B028, 4, (87, 88, 90)), (0x16F527038, 16, (84, 87, 88))):
@@ -587,70 +599,70 @@ def test_a_pointer_to_another_element_never_agrees_in_the_alignment_note(store, 
         evidence.record(store, captured(rows, output=f"{base}\n"), language="c")
     found = evidence.run_query(store, "diff")
     said = [r["note"] for r in found["rows"] if r["selector"] == "word"]
-    if key == "points_into":
+    notes = " ".join(found.get("notes") or [])
+    if key == "at_element_of":
         assert said == [
-            f"another element of `text`: index {8 + 4 * hit} in run a, {20 + 4 * hit} in run b"
+            f"the address of `text[{8 + 4 * hit}]` in run a, of `text[{20 + 4 * hit}]` in run b"
             for hit in (0, 1, 2)
         ]
+        assert "`quiz`" in notes and "`word` agrees" not in notes, notes
     else:
         assert said == [
-            f"another offset from `text` by address: `text + {8 + 4 * hit}` in run a, "
-            f"`text + {20 + 4 * hit}` in run b; same array not proven"
+            f"addresses differ: by address, `text + {8 + 4 * hit}` in run a and "
+            f"`text + {20 + 4 * hit}` in run b; nothing proves they point into one array, so "
+            "it may or may not be another element"
             for hit in (0, 1, 2)
         ]
-    notes = " ".join(found.get("notes") or [])
-    assert "`quiz`" in notes and "`word` agrees" not in notes, notes
+        assert "`word` agrees" in notes, notes
 
 
-def test_diff_compares_offsets_by_address_from_the_same_pointer(store):
+def test_diff_shows_offsets_by_address_but_ranks_them_with_addresses(store):
     # tides' line 40: `level` is a parameter, so no element is proven, but `turn` is 6
-    # ints past it in one run and 4 in the other.
-    def run(base, turns, firsts, output):
+    # ints past it in one run and 4 in the other. Review of PR #312: unrelated pointers of
+    # one type (`src`, `dst`: two heap blocks within the cap) differ by the allocator's
+    # layout, so another offset ranks with the addresses that differ, showing both.
+    def run(base, turns, firsts, gap, output):
         rows = []
         for hit, (element, first) in enumerate(zip(turns, firsts), 1):
             rows += [
                 (hit, "turn", "const int *", f"0x{base + 4 * element:016x}", apart(element)),
                 (hit, "first", "const int *", f"0x{base + 4 * first:016x}", apart(first)),
                 (hit, "level", "const int *", f"0x{base:016x}", {"element_size": 4}),
+                (hit, "dst", "const int *", f"0x{base + 4 * gap:016x}", apart(gap)),
                 (hit, "trend", "int", str(hit)),
             ]
         return captured(rows, output=output)
 
-    evidence.record(store, run(0x16B42B028, [6, 17], [-2, 0], "H 03:00\n"), language="c")
-    evidence.record(store, run(0x16F527038, [4, 16], [-2, 0], "H 02:00\n"), language="c")
+    evidence.record(store, run(0x16B42B028, [6, 17], [-2, 0], 1026, "H 03:00\n"), language="c")
+    evidence.record(store, run(0x16F527038, [4, 16], [-2, 0], 2050, "H 02:00\n"), language="c")
     rows = evidence.run_query(store, "diff")["rows"]
+    hedge = "; nothing proves they point into one array, so it may or may not be another element"
+    by = "addresses differ: by address, "
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
         (None, "(output)", "output differs at line 1, column 4"),
-        # Another offset is a real difference; it names no element.
-        (
-            1,
-            "turn",
-            "another offset from `level` by address: `level + 6` in run a, `level + 4` in "
-            "run b; same array not proven",
-        ),
-        (
-            2,
-            "turn",
-            "another offset from `level` by address: `level + 17` in run a, `level + 16` in "
-            "run b; same array not proven",
-        ),
-        # The base itself proves nothing of where it points.
+        # No real difference: each offset ranks with the addresses that differ.
+        (1, "turn", f"{by}`level + 6` in run a and `level + 4` in run b{hedge}"),
+        (1, "first", f"{by}`level - 2` in both runs{hedge}"),
         (1, "level", POINTS),
-        # The same offset, where only the stack moved: addresses only.
         (
             1,
-            "first",
-            "addresses only, at 2 hits (one row per selector: its first hit): the same "
-            "offset from `level` in both runs, by address",
+            "dst",
+            "addresses differ at 2 hits (one row per selector: its first hit): by address, "
+            f"`level + 1026` in run a and `level + 2050` in run b{hedge}",
         ),
+        (2, "turn", f"{by}`level + 17` in run a and `level + 16` in run b{hedge}"),
+        (2, "first", f"{by}`level + 0` in both runs{hedge}"),
     ]
-    assert all("[" not in (r["note"] or "") for r in rows)
     found = evidence.query(
         store,
-        "SELECT offset_from, element_offset, points_into FROM evidence WHERE selector = "
+        "SELECT offset_from, element_offset, at_element_of FROM evidence WHERE selector = "
         "'first' AND hit = 1 ORDER BY run_id",
     )["rows"]
-    assert found == [{"offset_from": "level", "element_offset": -2, "points_into": None}] * 2
+    assert found == [{"offset_from": "level", "element_offset": -2, "at_element_of": None}] * 2
+    # The same address in both runs is no difference, whatever the offsets.
+    evidence.record(store, run(0x16B42B028, [6, 17], [-2, 0], 1026, "x\n"), language="c")
+    evidence.record(store, run(0x16B42B028, [6, 17], [-2, 0], 1026, "x\n"), language="c")
+    assert evidence.run_query(store, "diff", {"a": 3, "b": 4})["rows"] == []
 
 
 def test_offsets_from_other_bases_or_one_run_only_are_not_compared(store):
@@ -720,7 +732,7 @@ def test_a_rust_pointers_text_is_left_as_it_was(store):
     assert found["note"].startswith("addresses differ: it may point at another element too")
 
 
-COLUMNS = ("element_size", "points_into", "element_index", "offset_from", "element_offset")
+COLUMNS = ("element_size", "at_element_of", "element_index", "offset_from", "element_offset")
 
 
 def test_a_schema_16_store_gains_the_columns_and_keeps_its_runs(store):
@@ -765,3 +777,69 @@ def test_a_schema_16_store_gains_the_columns_and_keeps_its_runs(store):
     assert connection.execute("PRAGMA user_version").fetchone() == (17,)
     for column in COLUMNS:
         assert column in evidence.TABLES["captures"][1], column
+
+
+def test_the_diff_needs_no_materialized_cte_and_stays_within_the_column_limit(store):
+    # Review of PR #312: `pair AS MATERIALIZED` needs SQLite 3.35, while Python 3.11 may link
+    # an older one. Without it, the tiers' GROUP BY read every term behind `note`, and
+    # newer SQLite counts aggregate terms against the column limit Peeky sets (100). The
+    # tiers now name `kind` where `note` is `kind`: the rows are the same, far within it.
+    for name, (sql, _, _, _) in evidence.QUERIES.items():
+        assert "MATERIALIZED" not in str(sql).upper(), name
+    assert "MATERIALIZED" not in evidence._DIFF_RANKS.upper()
+
+    def run(base, shift, output):
+        rows = []
+        for hit in (1, 2, 3):
+            element = hit + shift
+            rows += [
+                (hit, "turn", "const int *", f"0x{base + 4 * element:016x}", into(element)),
+                (hit, "p", "const int *", f"0x{base + 4 * element:016x}", apart(element)),
+                (hit, "q", "const int *", f"0x{base + 8:016x}"),
+                (hit, "name", "const std::string &", f'0x{base + 24 * hit:016x} "Maya"'),
+                (hit, "left", "int", str(shift), {"note": "leftovers"}),
+                (hit, "count", "int", str(hit * (shift + 1))),
+            ]
+        if shift:
+            rows.append((4, "count", "int", "9"))
+        recorded = captured(rows, output=output)
+        recorded["rows"].append(
+            dict(hit=1, phase="after-set", line=40, selector="count", value=str(7 + shift))
+        )
+        return recorded
+
+    evidence.record(store, run(0x16B42B028, 0, "a\n"), language="c")
+    evidence.record(store, run(0x16F527038, 1, "b\n"), language="cpp")
+    expected = evidence.run_query(store, "diff", limit=1000)["rows"]
+    notes = [str(r["note"]) for r in expected]
+    # Every tier is there: the proven element's address, offsets by address, the reference
+    # whose text agrees, a qualified value, a missing hit, a pointer proven nothing of.
+    for start in (
+        "the address of `level[1]` in run a, of `level[2]` in run b",
+        "addresses differ: by address, `level + 1` in run a and `level + 2` in run b",
+        "addresses only, at 3 hits (one row per selector: its first hit): what it points at",
+        "qualified (run a: note, run b: note)",
+        "missing in run a",
+        "addresses differ at 3 hits (one row per selector: its first hit): it may point",
+    ):
+        assert any(note.startswith(start) for note in notes), (start, notes)
+    for sql in (evidence._DIFF, evidence._DIFF_RANKS, evidence.QUERIES["compare"][1]):
+        connection, _ = evidence._reader(store)
+        try:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, 50)
+            shown = connection.execute(sql, {"a": 1, "b": 2}).fetchall()
+        finally:
+            connection.close()
+        assert shown, sql[:60]
+    # The same rows as the CTE read once, where this SQLite has MATERIALIZED (3.35 on).
+    if sqlite3.sqlite_version_info >= (3, 35):
+        connection, _ = evidence._reader(store)
+        try:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_COLUMN, 1000)
+            materialized = evidence._DIFF.replace("pair AS (", "pair AS MATERIALIZED (", 1)
+            assert materialized != evidence._DIFF
+            plain = connection.execute(evidence._DIFF, {"a": 1, "b": 2}).fetchall()
+            assert connection.execute(materialized, {"a": 1, "b": 2}).fetchall() == plain
+        finally:
+            connection.close()
+        assert [r["note"] for r in expected] == [row[-1] for row in plain]

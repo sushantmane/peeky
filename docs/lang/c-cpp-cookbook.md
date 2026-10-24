@@ -14,7 +14,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [How a C++ function's name is shown](#how-a-c-functions-name-is-shown)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a pointer](#read-through-a-pointer)
-  - [Which element a pointer points at](#which-element-a-pointer-points-at)
+  - [Which element's address a pointer holds](#which-elements-address-a-pointer-holds)
   - [How far a pointer is from a pointer parameter](#how-far-a-pointer-is-from-a-pointer-parameter)
   - [Read a C++ map or set](#read-a-c-map-or-set)
 - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop)
@@ -117,11 +117,11 @@ refuses it, naming that selector.
   container.
 - A NULL or unreadable pointer is refused: `p is NULL`.
 
-### Which element a pointer points at
+### Which element's address a pointer holds
 
-Capture the array with the pointer, at the same stop. Where Peeky can prove which element the
-pointer holds the address of, its row says so. This `main` keeps its readings in
-`int level[6]`. `top` points at the highest, and `end` one past the last:
+Capture the array with the pointer, at the same stop. Where Peeky can prove which element's
+address the pointer holds, its row says so. This `main` keeps its readings in `int level[6]`.
+`top` points at the highest, and `end` one past the last:
 
 ```c
 const int *end = level + 6;
@@ -135,8 +135,8 @@ peeky probe levels.c --at levels.c:21 --capture top,end,level -- 1 5 5 2
 
 ```
 hit  phase     line  function  selector  type         value
-1    observed  21    main      top       const int *  0x000000016dc6f2c8  [points at level[2]]
-1    observed  21    main      end       const int *  0x000000016dc6f2d8  [level + 6: one past its end]
+1    observed  21    main      top       const int *  0x000000016dc6f2c8  [at level[2]'s address]
+1    observed  21    main      end       const int *  0x000000016dc6f2d8  [at the address one past level's end]
 1    observed  21    main      level     int[6]       [1, 5, 5, 2, 0, 0]
 ```
 
@@ -150,9 +150,18 @@ Peeky says it only where all of this holds:
 - Its address is a whole number of elements from the array's first.
 - It is at most one past the end, as `end` is. C lets a pointer hold that address, but reading it
   is undefined, so Peeky never reads it.
+- Only one captured array or object matches. Where several do, the row says none.
+
+It is a fact about the address, not about which object the pointer designates. Another object can
+have the same address:
+
+- A union's two arrays: `u.a[2]` and `u.b[2]` are one address. With both captured, neither is
+  named. With only `u.b`, a pointer set to `&u.a[2]` says `[at u.b[2]'s address]`.
+- The array that follows: the address one past `a`'s end can be `b[0]`'s.
+- Storage the program reuses, or an object you didn't capture.
 
 Otherwise the row shows the address alone. A C++ reference never says, nor does a pointer read
-alone. `--json` rows have `points_into`, such as `{"selector": "level", "index": 2, "length": 6}`,
+alone. `--json` rows have `at_element_of`, such as `{"selector": "level", "index": 2, "length": 6}`,
 and `element_size`, the bytes of one element. An object has no `length`.
 
 An array passed to a function is a pointer there, with no length. So no element is named in it.
@@ -175,8 +184,9 @@ hit  phase     line  function  selector  type         value
 3    observed  8     peak      level     const int *  0x000000016b42b2c0
 ```
 
-`level + 2` is the C expression whose address `p` holds. It names no element, and Peeky reads
-nothing there. A row says it only where all of this holds:
+`[level + 2 by address]` says that `p`'s address is `level`'s plus `2 * sizeof(*level)` bytes.
+Nothing proves that both point into one array, so it is no C expression Peeky vouches for. It
+names no element, and Peeky reads nothing there. A row says it only where all of this holds:
 
 - Both pointers are read at one stop, in one frame.
 - Both point at the same type, as for an element above: `const int *` and `int *` count.
@@ -186,12 +196,12 @@ nothing there. A row says it only where all of this holds:
 
 Every pointer of one type is counted from one base. It is the first of them that is a parameter
 of the function, such as `level`, else the first you capture. The base itself says nothing. A
-pointer proven to point into a captured array says that instead
-([above](#which-element-a-pointer-points-at)).
+pointer at an element's address of a captured array says that instead
+([above](#which-elements-address-a-pointer-holds)).
 
 `--json` rows have `offset_from`, such as `{"selector": "level", "offset": 2}`. The store keeps
-it in `offset_from` and `element_offset`, apart from `points_into`, so SQL never takes one for the
-other ([4.8](#offsets-from-a-pointer-in-each-run)).
+it in `offset_from` and `element_offset`, apart from `at_element_of`, so SQL never takes one for
+the other ([4.8](#offsets-from-a-pointer-in-each-run)).
 
 ### Read a C++ map or set
 
@@ -258,28 +268,32 @@ Read [COOKBOOK 4.8](../COOKBOOK.md#48-compare-addresses-across-runs) first.
 
 ### Which element in each run
 
-Where both runs captured the array, `queries diff` compares the element each pointer holds
-([2.1](#which-element-a-pointer-points-at)). `peak` takes the last of equal readings. A
-candidate edit makes it take the first, `--old '*p >= *top' --new '*p > *top'`:
+Where both runs captured the array, `queries diff` compares which element's address each pointer
+holds ([2.1](#which-elements-address-a-pointer-holds)). `peak` takes the last of equal readings.
+A candidate edit makes it take the first, `--old '*p >= *top' --new '*p > *top'`:
 
 ```
 run_a  run_b  hit  phase     selector  value_a             value_b             differs  note
-1      2      1    observed  top       0x000000016dc6f2c8  0x000000016b31b2c4  1        another element of `level`: index 2 in run a, 1 in run b
-1      2      1    observed  end       0x000000016dc6f2d8  0x000000016b31b2d8  1        addresses only: the same element of `level` in both runs
+1      2      1    observed  top       0x000000016aee72d8  0x000000016f29b2c4  1        the address of `level[2]` in run a, of `level[1]` in run b
+1      2      1    observed  end       0x000000016aee72e8  0x000000016f29b2d8  1        addresses only: the address of the same element of `level` in both runs
 ```
 
-- Another element is a real difference. It ranks with the values that differ, even where the two
-  addresses read the same, as when only the array moved.
-- The same element says ``addresses only: the same element of `level` in both runs``. It ranks
-  with the address-only values.
+- Another element's address is a real difference. It ranks with the values that differ, even
+  where the two addresses read the same, as when only the array moved.
+- That holds for an address fact because the offset lies inside the array's own storage. Where
+  the stack or the allocator put other objects can't change it. The program put the pointer
+  elsewhere in that storage.
+- The same element's address says
+  ``addresses only: the address of the same element of `level` in both runs``. It ranks with the
+  address-only values.
 - Where either run didn't prove it, the row says `addresses differ: it may point at another
   element too`. Then compare offsets yourself.
 
-The store keeps each in `points_into` and `element_index`:
+The store keeps each in `at_element_of` and `element_index`:
 
 ```sh
-peeky sql "SELECT run_id, hit, selector, points_into, element_index FROM evidence
-  WHERE points_into IS NOT NULL ORDER BY selector, run_id, hit"
+peeky sql "SELECT run_id, hit, selector, at_element_of, element_index FROM evidence
+  WHERE at_element_of IS NOT NULL ORDER BY selector, run_id, hit"
 ```
 
 A pointer or reference whose text after the address reads the same, such as a
@@ -288,20 +302,23 @@ It may still be another element with the same text.
 
 ### Offsets from a pointer in each run
 
-Where the array is a pointer, such as a parameter, `diff` compares each pointer's offset from the
+Where the array is a pointer, such as a parameter, `diff` shows each pointer's offset from the
 same base in both runs ([2.1](#how-far-a-pointer-is-from-a-pointer-parameter)). With the same
 edit, at the `return` in `peak`:
 
 ```
 run_a  run_b  hit  phase     selector  value_a             value_b             differs  note
-1      2      1    observed  top       0x000000016d2b72c8  0x000000016f63f2c4  1        another offset from `level` by address: `level + 2` in run a, `level + 1` in run b; same array not proven
-1      2      1    observed  level     0x000000016d2b72c0  0x000000016f63f2c0  1        addresses differ: it may point at another element too; compare offsets with address() (COOKBOOK 4.8)
+1      2      1    observed  top       0x000000016f65f2d8  0x000000016b0232c4  1        addresses differ: by address, `level + 2` in run a and `level + 1` in run b; nothing proves they point into one array, so it may or may not be another element
+1      2      1    observed  level     0x000000016f65f2d0  0x000000016b0232c0  1        addresses differ: it may point at another element too; compare offsets with address() (COOKBOOK 4.8)
 ```
 
-- Another offset is a real difference: the two pointers lie otherwise. It names no element.
-- The same offset says ``addresses only: the same offset from `level` in both runs, by address``.
+- These rows rank with the addresses that differ, after the real differences. Two pointers of one
+  type can point into separate blocks, such as `src` and `dst` on the heap. Their distance is then
+  where the allocator put them, which can change between runs.
+- So read the offsets with the program: here `top` is `level`'s own walker, and `level + 2` against
+  `level + 1` is the change.
 - The base itself says `addresses differ: it may point at another element too`. Nothing tells
-  where it points.
+  where it points, so the same offset in both runs ranks there too.
 
 To count from another pointer than the base Peeky chose, use SQL. `element_size` is the size of
 what a pointer points at:
