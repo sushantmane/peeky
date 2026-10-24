@@ -157,7 +157,13 @@ def test_a_struct_kept_in_registers_says_so_as_its_fields_do(crate, capsys):
     # keeps a two-field struct in registers, and the debugger reads its own copy.
     _, rows = probe(capsys, crate, "PAIR", "p", "p.a", "q", "q.a")
     assert rows["p.a"].get("not_settable") == "register", rows["p.a"]
-    assert rows["p"].get("not_settable") == "register", rows["p"]
+    if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["p"].get("view") == "memory":
+        # Its `[memory]` preview is the debugger's copy: the row says no change reaches it.
+        assert rows["p"].get("view") == "memory" and rows["p"]["value"] == "P { a: 4, b: 11 }"
+        assert rows["p"].get("not_settable") == "register", rows["p"]
+    else:
+        # Without memory reads (lldb-dap 18), the debugger's own struct, as on main.
+        assert "view" not in rows["p"], rows["p"]
     # A three-field struct is in memory: its fields can change, and its row says nothing.
     assert rows["q.a"].get("settable") is True, rows["q.a"]
     assert "not_settable" not in rows["q"], rows["q"]
