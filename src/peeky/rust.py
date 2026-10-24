@@ -1107,10 +1107,14 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
         return "may", _either(clauses), places, None
     at = proofs.copy_lines(hashed, bound, True)
     made = _line_list(at, home)
+    # A pointer of the program's own stands for what it points at (#311 review: `p` of
+    # `*p = x;`, an argument): it may point at a copy.
+    aiming = getattr(proofs, "pointer_bindings", lambda *args: frozenset())(hashed, bound)
+    holds = "may point at" if aiming == bound else "may hold or point at" if aiming else "may hold"
     own = (
         f"the program's own {_names(proofs.copy_names(hashed, bound))}"
         + (f" (at {made})" if made else "")
-        + f" may hold a copy of {target} that it goes on with"
+        + f" {holds} a copy of {target} that it goes on with"
     )
     if not clauses:
         return "kept", own, at, None
@@ -2830,9 +2834,14 @@ class RustSession(NativeSession):
         """The integer locals the build keeps in memory, bound in scopes of ``line``:
         those `set` may change there once assigned (the stop decides the rest), as
         selectors name them: `z @ main.rs:10` where several of the name are in scope,
-        as LLDB shows them."""
+        as LLDB shows them. Not one the build rules out at every stop of ``line`` in each
+        function it is listed for (``_never_in``): a refusal before the run never lists
+        the local it refuses, nor another that a statement under way holds a copy of
+        there."""
+        from peeky.fields import Unsettable
+
         proofs = getattr(self, "owned", None)
-        found = set()
+        found = {}
         for hashed, _ in self._line_functions(source, line):
             body = proofs.body(hashed) if proofs is not None else None
             visible = body.visible_scopes(line, source) if body is not None else None
@@ -2846,8 +2855,21 @@ class RustSession(NativeSession):
                     if binding[0] is None or body.types.get(binding[0]) not in _SETTABLE_RUST:
                         continue
                     where = f"{Path(binding[1]).name}:{binding[2]}"
-                    found.add(name if len(shown) == 1 else f"{name} @ {where}")
-        return sorted(found)[:20]
+                    selector = name if len(shown) == 1 else f"{name} @ {where}"
+                    found.setdefault(selector, set()).add(hashed)
+
+        def allowed(selector, hashed):
+            try:
+                return self._never_in(hashed, selector, [], source, line) is None
+            except Unsettable:
+                return True
+
+        settable = [
+            selector
+            for selector in sorted(found)
+            if any(allowed(selector, hashed) for hashed in sorted(found[selector]))
+        ]
+        return settable[:20]
 
     @staticmethod
     def _settable_here(listed):
