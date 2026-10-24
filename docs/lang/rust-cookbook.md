@@ -270,6 +270,10 @@ Peeky refuses these the same way, before the program runs:
 - any `--set-at` that the build rules out on its own line
   ([2.8](../COOKBOOK.md#28-change-a-value-then-restore-it)).
 
+The refusal ends with the integer locals that may be set at that line instead: `settable here:`.
+It leaves out every local the build rules out at each stop of the line, so never the one it
+refuses. Where none is left, it says `no root locals`.
+
 To change it, keep it in memory with a candidate edit, in the same probe. Declare the parameter
 `mut`, and borrow it with `std::hint::black_box` as the function's first statement:
 

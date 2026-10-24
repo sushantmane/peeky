@@ -2,8 +2,12 @@
 into. `vec![x, 1]` fills its Box by `((*_10).1: …) = [move _7, const 1_u32]`, then makes
 the Vec from that Box, and `total(…)` sums it. The copy analysis skipped every store
 through a pointer: once `_7` died, nothing held `x`'s copy, so `x` was `[settable]` on the
-statement's later line, and a change there never reached the program."""
+statement's later line, and a change there never reached the program.
 
+On the same path, a refusal before the run listed the very local it refused as "settable
+here"."""
+
+import json
 from types import SimpleNamespace
 
 from peeky.rust import RustSession
@@ -821,4 +825,98 @@ def test_a_copy_stored_through_a_pointer_into_a_binding_is_the_programs_own():
         "with, so a change to `x` may never be seen: Peeky proves no read of the changed part "
         "first (a reference lent to a call, or `{:?}`, is not one)",
         "the program may hold a copy (lines 10 and 13)",
+    )
+
+
+# rustc 1.96.0's MIR of (lines 13 to 17 of a crate of its own):
+#
+#     fn passed(x: u32, y: u32) -> u32 {
+#         let t = add(x,
+#             other());
+#         t + y
+#     }
+PASSED = """// MIR for `passed` after PreCodegen
+
+fn passed(_1: u32, _2: u32) -> u32 {
+    debug x => _1;                       // in scope 0 at src/main.rs:13:11: 13:12
+    debug y => _2;                       // in scope 0 at src/main.rs:13:19: 13:20
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:13:30: 13:33
+    let _3: u32;                         // in scope 0 at src/main.rs:14:9: 14:10
+    let mut _4: u32;                     // in scope 0 at src/main.rs:14:17: 14:18
+    let mut _5: u32;                     // in scope 0 at src/main.rs:15:9: 15:16
+    let mut _6: u32;                     // in scope 0 at src/main.rs:16:5: 16:6
+    let mut _7: u32;                     // in scope 0 at src/main.rs:16:9: 16:10
+    let mut _8: (u32, bool);             // in scope 0 at src/main.rs:16:5: 16:10
+    scope 1 {
+        debug t => _3;                   // in scope 1 at src/main.rs:14:9: 14:10
+    }
+
+    bb0: {
+        StorageLive(_3);                 // scope 0 at src/main.rs:14:9: 14:10
+        StorageLive(_4);                 // scope 0 at src/main.rs:14:17: 14:18
+        _4 = copy _1;                    // scope 0 at src/main.rs:14:17: 14:18
+        StorageLive(_5);                 // scope 0 at src/main.rs:15:9: 15:16
+        _5 = other() -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:15:9: 15:16
+    }
+
+    bb1: {
+        _3 = add(move _4, move _5) -> [return: bb2, unwind continue]; // scope 0 at src/main.rs:14:13: 15:17
+    }
+
+    bb2: {
+        StorageDead(_5);                 // scope 0 at src/main.rs:15:16: 15:17
+        StorageDead(_4);                 // scope 0 at src/main.rs:15:16: 15:17
+        StorageLive(_6);                 // scope 1 at src/main.rs:16:5: 16:6
+        _6 = copy _3;                    // scope 1 at src/main.rs:16:5: 16:6
+        StorageLive(_7);                 // scope 1 at src/main.rs:16:9: 16:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:16:9: 16:10
+        _8 = AddWithOverflow(copy _6, copy _7); // scope 1 at src/main.rs:16:5: 16:10
+        assert(!move (_8.1: bool), "attempt to compute `{} + {}`, which would overflow", move _6, move _7) -> [success: bb3, unwind continue]; // scope 1 at src/main.rs:16:5: 16:10
+    }
+
+    bb3: {
+        _0 = move (_8.0: u32);           // scope 1 at src/main.rs:16:5: 16:10
+        StorageDead(_7);                 // scope 1 at src/main.rs:16:9: 16:10
+        StorageDead(_6);                 // scope 1 at src/main.rs:16:9: 16:10
+        StorageDead(_3);                 // scope 0 at src/main.rs:17:1: 17:2
+        return;                          // scope 0 at src/main.rs:17:2: 17:2
+    }
+}
+"""
+
+
+def test_a_refusal_before_the_run_lists_no_local_refused_at_its_line(tmp_path):
+    # At `other());`, `x` is already in `_4`: refused before the run. The refusal ended
+    # "settable here: x, y", naming the local it had just refused.
+    body = parse_body(PASSED)
+    blocks = {"start": {14, 15}, "bb1": {14, 15}, "bb2": {15, 16}, "bb3": {16, 17}}
+    function = IrFunction("passed", "crate", "src/main.rs", blocks, {}, 13)
+    owned = OwnedLocals([body], {HASH: function}, ("src/main.rs",), texts={"src/main.rs": ""})
+    # Before `other()` and back from it: both past `_4 = copy _1`.
+    owned._positions = lambda site, line, facts, block=None: [(0, 3), (0, 4)]
+    session = object.__new__(RustSession)
+    session.owned = owned
+    session.memory = {(HASH, "x"): True, (HASH, "y"): True}
+    session.prepared = SimpleNamespace(source_root=tmp_path)
+    session._lines_data = json.dumps({"src/main.rs": [14, 15, 16]})
+    session._optimized = lambda: False
+
+    def refusal(name):
+        return session.never_settable(tmp_path / "src/main.rs", [15], [name])
+
+    message = refusal("x")
+    assert "has already read `x` into a temporary (at line 14)" in message, message
+    assert message.endswith(
+        "; settable here: y (root locals; fields too where rows mark them [settable])"
+    ), message
+    # `y` is settable there; asking for a name not in scope lists it too.
+    assert refusal("y") is None
+    code, message = refusal("nope")
+    assert code == "NOT_FOUND" and message.endswith(
+        "settable here: y (root locals; fields too where rows mark them [settable])"
+    )
+    # Where every local in scope is refused there, it says that none is.
+    session.memory = {(HASH, "x"): True}
+    assert refusal("x").endswith(
+        "; settable here: no root locals (fields where rows mark them [settable])"
     )

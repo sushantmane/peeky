@@ -2672,9 +2672,14 @@ class RustSession(NativeSession):
         """The integer locals the build keeps in memory, bound in scopes of ``line``:
         those `set` may change there once assigned (the stop decides the rest), as
         selectors name them: `z @ main.rs:10` where several of the name are in scope,
-        as LLDB shows them."""
+        as LLDB shows them. Not one the build rules out at every stop of ``line`` in each
+        function it is listed for (``_never_in``): a refusal before the run never lists
+        the local it refuses, nor another that a statement under way holds a copy of
+        there."""
+        from peeky.fields import Unsettable
+
         proofs = getattr(self, "owned", None)
-        found = set()
+        found = {}
         for hashed, _ in self._line_functions(source, line):
             body = proofs.body(hashed) if proofs is not None else None
             visible = body.visible_scopes(line, source) if body is not None else None
@@ -2688,8 +2693,21 @@ class RustSession(NativeSession):
                     if binding[0] is None or body.types.get(binding[0]) not in _SETTABLE_RUST:
                         continue
                     where = f"{Path(binding[1]).name}:{binding[2]}"
-                    found.add(name if len(shown) == 1 else f"{name} @ {where}")
-        return sorted(found)[:20]
+                    selector = name if len(shown) == 1 else f"{name} @ {where}"
+                    found.setdefault(selector, set()).add(hashed)
+
+        def allowed(selector, hashed):
+            try:
+                return self._never_in(hashed, selector, [], source, line) is None
+            except Unsettable:
+                return True
+
+        settable = [
+            selector
+            for selector in sorted(found)
+            if any(allowed(selector, hashed) for hashed in sorted(found[selector]))
+        ]
+        return settable[:20]
 
     @staticmethod
     def _settable_here(listed):

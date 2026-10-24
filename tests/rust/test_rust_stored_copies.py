@@ -143,6 +143,10 @@ def test_a_value_vec_stored_through_its_box_is_refused_on_the_statements_later_l
         f"every place line {SECOND} can stop at is inside a statement that has already read "
         f"`x` into a temporary (at line {FIRST}), which it uses after the stop"
     ) in message, message
+    # Nor is `x` listed as what may be set there instead.
+    assert message.endswith(
+        "; settable here: no root locals (fields where rows mark them [settable])"
+    ), message
     # Before the statement starts, the change reaches the program: `t` is 100 + 1 + 1.
     code, result = probe(capsys, root, FIRST, "--set", "x=100", *run)
     assert code == 0, result.get("error")
