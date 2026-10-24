@@ -959,6 +959,9 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     session.memory = {("h1", "total"): True, ("h1", "flag"): True, ("h1", "width"): False}
     session.memory[("h3", "x")] = False
     session.memory.update({("h5", "k"): False, ("h5", "q"): True})
+    # What the IR declares each on: a `.dbg.spill` copy (review of PR #335: no declaration
+    # proves no register).
+    session.declarations_ir = {("h1", "width"): [(3, "copy")], ("h3", "x"): [(3, "copy")]}
     session.owned = SimpleNamespace(
         functions=functions,
         body=bodies.get,
@@ -1004,6 +1007,46 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     assert session.never_settable_row({"name": "x", "type": "int"}, {}) is None
 
 
+def test_a_row_says_register_only_where_every_piece_is_the_debuggers_copy():
+    # Review of PR #335: a struct's row, and its fields', said `[not settable: register]`
+    # wherever the IR's memory proof wasn't True: a closure's capture (declared through its
+    # environment's pointer), a binding with no declaration, pieces in a slot and in a
+    # register. Only a binding whose every declaration is a `.dbg.spill` copy is in a
+    # register; anything else says only what is true: it isn't proven in memory.
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    hashed = "h0123456789abcdef"
+    session = object.__new__(RustSession)
+    session.target = SimpleNamespace(opt_level="0")
+    body = SimpleNamespace(bindings={}, coroutine=None)
+    session.owned = SimpleNamespace(
+        body=lambda hashed: body, _local=lambda body, name, line, path: None
+    )
+    session.declarations_ir = {
+        (hashed, "pair"): [(3, "copy")],
+        (hashed, "split"): [(4, "copy"), (4, "slot")],
+        (hashed, "lap"): [(14, "unknown")],
+        (hashed, "kept"): [(5, "slot")],
+    }
+    session.memory = {(hashed, name): False for name in ("pair", "split", "lap", "nothing")}
+    session.memory[(hashed, "kept")] = True
+    frame = {"name": f"app::f::{hashed}", "line": 20, "source": {"path": "/w/src/main.rs"}}
+
+    def row(name):
+        return session.never_settable_row({"name": name, "type": "app::P"}, frame, member=True)
+
+    assert row("pair") == "register"
+    assert row("kept") is None
+    for name in ("split", "lap", "nothing"):
+        assert row(name) == "not proven in memory", name
+    # A root integer row says the same.
+    assert session.never_settable_row({"name": "lap", "type": "unsigned int"}, frame) == (
+        "not proven in memory"
+    )
+
+
 def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     # Review of #138: the IR's proof covers every binding of a name; the binding asked
     # for may have its slot while another, or an inlined copy, does not.
@@ -1023,6 +1066,11 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ("h", "y"): [(9, "copy")],
         ("h", "far"): [(3, "inlined"), (3, "inlined")],
         ("h", "both"): [(5, "copy"), (5, "slot")],
+        # Review of PR #335: pieces of one binding, one spilled and one in a slot; a
+        # closure's capture, declared through its environment's pointer.
+        ("h", "piece"): [(7, "copy"), (7, "copy"), (7, "slot")],
+        ("h", "capture"): [(14, "unknown")],
+        ("h", "spilled"): [(15, "copy"), (15, "copy")],
     }
     judged = session._not_in_memory
     assert judged("h", "x @ main.rs:6") == ("other", [4])
@@ -1031,15 +1079,27 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     assert judged("h", "x", 7, "src/main.rs") == ("some", [4])  # not told which
     assert judged("h", "y") == ("own", None)
     assert judged("h", "far") == ("inlined", None)
-    assert judged("h", "both") == ("own", None)
-    assert judged("h", "unknown") == ("own", None)
+    # Review of PR #335: "register" only where every piece of the binding is a spill
+    # copy; a slot and a spill on its line, no declaration, or one through a pointer
+    # prove nothing.
+    assert judged("h", "both") == ("unknown", None)
+    assert judged("h", "unknown") == ("unknown", None)
+    assert judged("h", "piece") == ("unknown", None)
+    assert judged("h", "capture") == ("unknown", None)
+    assert judged("h", "spilled") == ("own", None)
+    rule, advice = RustSession._register_text("app::f", "lap", ("unknown", None))
+    assert "doesn't prove `lap` in memory" in rule and "register" not in rule.split(":")[0]
+    assert "a change might not reach the program" in rule and "candidate edit" in advice
     rule, advice = RustSession._register_text("app::f", "x", ("other", [4]))
     assert "another binding of `x` (declared on line 4)" in rule
     assert "after the `let` on line 4" in advice
     rule, advice = RustSession._register_text("app::far", "y", ("inlined", None))
     assert "inlined where it is called" in rule and advice.startswith("Inlining prevents")
     # `describe` gives each name the reason its rows give (review round 3).
-    session.memory = {("h0123456789abcdef", name): False for name in ("x", "y", "far", "k")}
+    session.memory = {
+        ("h0123456789abcdef", name): False
+        for name in ("x", "y", "far", "k", "both", "piece", "capture", "spilled")
+    }
     session.declarations_ir = {
         ("h0123456789abcdef", name): found for (_, name), found in session.declarations_ir.items()
     }
@@ -1049,11 +1109,16 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     session.owned = SimpleNamespace(body=lambda hashed: body)
     linkages = {"_ZN3app1f17h0123456789abcdefE"}
     names = {"x": {"u64"}, "y": {"u32"}, "far": {"u64"}, "k": {"u64"}, "s": {"String"}}
+    names.update({name: {"u32"} for name in ("both", "piece", "capture", "spilled")})
     assert session._register_names(linkages, names) == {
         "x": "another binding in a register (line 4)",
         "y": "register",
         "far": "inlined",
         "k": "async state",
+        "both": "not proven in memory",
+        "piece": "not proven in memory",
+        "capture": "not proven in memory",
+        "spilled": "register",
     }
 
 

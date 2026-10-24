@@ -146,6 +146,18 @@ def test_a_captured_struct_with_no_pointer_is_withheld_with_a_note_that_fits(cra
         assert "own memory through a pointer" not in row["note"], row
     # Probe rows mark it as `session inspect` does.
     assert "  [stale]" in _table(result), _table(result)
+    # Review of PR #335: the capture is declared through the closure's environment, not in
+    # a register: its field says only that Peeky doesn't prove it in memory, and so does a
+    # change's refusal.
+    assert rows["lap.number"].get("not_settable") == "not proven in memory", rows["lap.number"]
+    at = f"src/main.rs:{line_of('CAPTURE')}"
+    code = main(
+        ["probe", str(crate), "--at", at, "--capture", "lap.number"]
+        + ["--set", "lap.number=5", "--json"]
+    )
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert code == 2 and "doesn't prove `lap` in memory" in error["message"], error
+    assert "kept in a register" not in error["message"], error
     # A struct holding a String keeps the note about memory it may own.
     _, rows = probe(capsys, crate, "NAMED", "own")
     assert "may own memory through a pointer" in rows["own"]["note"], rows["own"]

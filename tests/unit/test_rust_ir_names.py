@@ -168,3 +168,54 @@ def test_a_slot_named_for_another_variable_proves_nothing(tmp_path):
         ('"gr\\C3\\B6\\C3\\9Fe.dbg.spill"', "gr\\C3\\B6sse"),
     ):
         assert proofs(tmp_path, declare(pointer, "!50"), parameter(50, name)) == {}, pointer
+
+
+PIECES_IR = r"""
+define internal void @_ZN4demo1f17h4444444444444444E(ptr align 8 %_1) !dbg !40 {
+start:
+  %pair.dbg.spill = alloca [8 x i8], align 4
+  %split = alloca [8 x i8], align 4
+  %split.dbg.spill = alloca [4 x i8], align 4
+  %_1.dbg.spill = alloca [8 x i8], align 8
+  %both = alloca [4 x i8], align 4
+  %both.dbg.spill = alloca [4 x i8], align 4
+  %whole = alloca [8 x i8], align 4
+  #dbg_declare(ptr %pair.dbg.spill, !50, !DIExpression(), !60)
+  #dbg_declare(ptr %split, !51, !DIExpression(DW_OP_LLVM_fragment, 0, 32), !60)
+  #dbg_declare(ptr %split.dbg.spill, !51, !DIExpression(DW_OP_LLVM_fragment, 32, 32), !60)
+  #dbg_declare(ptr %_1.dbg.spill, !52, !DIExpression(DW_OP_deref, DW_OP_deref), !60)
+  #dbg_declare(ptr %both, !53, !DIExpression(), !60)
+  #dbg_declare(ptr %both.dbg.spill, !54, !DIExpression(), !60)
+  #dbg_declare(ptr %whole, !55, !DIExpression(DW_OP_LLVM_fragment, 0, 32), !60)
+  #dbg_declare(ptr %whole, !55, !DIExpression(DW_OP_LLVM_fragment, 32, 32), !60)
+  ret void
+}
+!40 = distinct !DISubprogram(name: "f", linkageName: "_ZN4demo1f17h4444444444444444E", scope: !1, file: !2, line: 10, type: !3, scopeLine: 11, unit: !9)
+!50 = !DILocalVariable(name: "pair", scope: !40, file: !2, line: 12, type: !5, align: 32)
+!51 = !DILocalVariable(name: "split", scope: !40, file: !2, line: 13, type: !5, align: 32)
+!52 = !DILocalVariable(name: "lap", scope: !40, file: !2, line: 14, type: !5, align: 32)
+!53 = !DILocalVariable(name: "both", scope: !40, file: !2, line: 15, type: !5, align: 32)
+!54 = !DILocalVariable(name: "both", scope: !40, file: !2, line: 16, type: !5, align: 32)
+!55 = !DILocalVariable(name: "whole", scope: !40, file: !2, line: 17, type: !5, align: 32)
+!60 = !DILocation(line: 10, column: 1, scope: !40)
+"""
+
+
+def test_each_declaration_says_where_its_piece_is(tmp_path):
+    # Review of PR #335: every declaration of a name was a slot or a `.dbg.spill` copy,
+    # whatever its expression: a closure's capture, declared through its environment's
+    # pointer (`DW_OP_deref, DW_OP_deref`), read as a copy kept in a register.
+    path = tmp_path / "demo.ll"
+    path.write_text(PIECES_IR)
+    declarations = {}
+    memory, _ = ir_locals(path, declarations)
+    function = "h4444444444444444"
+    assert declarations[(function, "pair")] == [(12, "copy")]
+    # One piece in its slot, one spilled: in neither as a whole.
+    assert declarations[(function, "split")] == [(13, "slot"), (13, "copy")]
+    assert declarations[(function, "lap")] == [(14, "unknown")]
+    assert declarations[(function, "both")] == [(15, "slot"), (16, "copy")]
+    assert declarations[(function, "whole")] == [(17, "slot"), (17, "slot")]
+    assert memory[(function, "whole")] is True
+    for name in ("pair", "split", "lap", "both"):
+        assert memory[(function, name)] is False, name

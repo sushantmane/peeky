@@ -20,7 +20,7 @@ from peeky.fields import (
     settable_member,
     type_graph,
 )
-from peeky.native import NativeSession, _parse_dies
+from peeky.native import INTEGER_RANGES, NativeSession, _parse_dies
 from peeky.worker import DebugWorker
 
 
@@ -238,10 +238,13 @@ def test_everything_else_is_refused_with_its_reason(root, steps, words):
         (0x3C, "`n` is a pointer"),
         (0x40, "`n` has type `PairPtr`"),
         (0x44, "`n` is a reference"),
-        # A writable integer, and what a text may change, are judged at the stop.
+        # Review of PR #335: the stop takes a type by its name, not its width: a typedef
+        # it doesn't list is refused there, so here too.
+        (0x30, "`n` has type `myint`"),
+        # A listed integer, and what a text may change, are judged at the stop.
         (0x10, None),
-        (0x30, None),
         (0x24, None),
+        (0x14, None),
         (0x60, None),
         (0x50, None),
         (0x160, None),
@@ -249,11 +252,14 @@ def test_everything_else_is_refused_with_its_reason(root, steps, words):
     ],
 )
 def test_a_root_that_is_never_a_writable_integer_is_named_with_its_type(root, words):
-    assert root_never_integer(GRAPH, root, "n") == words
+    assert root_never_integer(GRAPH, root, "n", INTEGER_RANGES) == words
 
 
-def test_a_root_named_as_an_integer_is_left_to_the_stop():
-    # The stop takes a type by its name (`typedef float int64_t;`): so is it here.
+def test_a_root_is_judged_by_the_name_the_debugger_gives_its_type():
+    # Review of PR #335: `_BitInt(32)` is a 4-byte DW_ATE_signed, which the stop refuses by
+    # its name (lldb-dap on macOS shows `_BitInt(32)`), so its width can't admit it here.
+    # GCC's `long unsigned int` is the debugger's `unsigned long`; a typedef the stop takes
+    # by its name (`typedef float int64_t;`) is the stop's to judge.
     graph = type_graph(
         _parse_dies(
             dump(
@@ -266,14 +272,36 @@ def test_a_root_named_as_an_integer_is_left_to_the_stop():
                     {"DW_AT_type": "0x00000010", "DW_AT_name": '"int64_t"'},
                 ),
                 (0x18, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000014"}),
+                (0x20, 1, "DW_TAG_base_type", base("_BitInt(16)", "DW_ATE_signed", "0x02")),
+                (0x24, 1, "DW_TAG_base_type", base("_BitInt(32)", "DW_ATE_signed", "0x04")),
+                (0x28, 1, "DW_TAG_base_type", base("_BitInt(64)", "DW_ATE_signed", "0x08")),
+                (
+                    0x2C,
+                    1,
+                    "DW_TAG_base_type",
+                    base("unsigned _BitInt(32)", "DW_ATE_unsigned", "0x04"),
+                ),
+                (0x30, 1, "DW_TAG_base_type", base("long unsigned int", "DW_ATE_unsigned", "0x08")),
+                (0x34, 1, "DW_TAG_base_type", base("short int", "DW_ATE_signed", "0x02")),
+                (0x38, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000030"}),
             )
         ),
-        (0x14, 0x18),
+        (0x14, 0x18, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38),
         CPP_LIBRARIES,
     )
-    assert root_never_integer(graph, 0x14, "lossy", {"int64_t"}) is None
-    assert root_never_integer(graph, 0x14, "lossy") == "`lossy` has type `int64_t`"
-    assert root_never_integer(graph, 0x18, "c", {"int64_t"}) == "`c` has type `const int64_t`"
+    for offset, bits in ((0x20, 16), (0x24, 32), (0x28, 64)):
+        why = root_never_integer(graph, offset, "b", INTEGER_RANGES)
+        assert why == f"`b` has type `_BitInt({bits})`", why
+    assert root_never_integer(graph, 0x2C, "b", INTEGER_RANGES) == (
+        "`b` has type `unsigned _BitInt(32)`"
+    )
+    assert root_never_integer(graph, 0x30, "u", INTEGER_RANGES) is None
+    assert root_never_integer(graph, 0x34, "s", INTEGER_RANGES) is None
+    assert (
+        root_never_integer(graph, 0x38, "u", INTEGER_RANGES) == "`u` has type `const unsigned long`"
+    )
+    assert root_never_integer(graph, 0x14, "lossy", INTEGER_RANGES) is None
+    assert root_never_integer(graph, 0x18, "c", INTEGER_RANGES) == "`c` has type `const int64_t`"
 
 
 DECLARED = dump(

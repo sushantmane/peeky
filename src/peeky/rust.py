@@ -2035,7 +2035,7 @@ class RustSession(NativeSession):
                 return "inlined"
             if kind in ("other", "some"):
                 return f"another binding in a register (line {', '.join(map(str, lines))})"
-            return "register"
+            return "register" if kind == "own" else "not proven in memory"
 
         found = {}
         for name, kinds in names.items():
@@ -2314,7 +2314,14 @@ class RustSession(NativeSession):
                     f"Rust mutation requires a local the program keeps in memory; {rule}. "
                     + advice.replace(", with this `--set`", ", with `--set` in the same probe")
                 )
-        if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
+        if not hashed:
+            where = display_function((frame or {}).get("name")) or "this frame"
+            raise ValueError(
+                "Rust mutation requires a local the program keeps in memory: edit the source "
+                f"and run verify. Peeky can't match {where} to the build's IR, so it proves "
+                f"no memory for {name!r}, and a change might not affect the program"
+            )
+        if self.memory.get((hashed[1], _plain(name))) is not True:
             where = display_function((frame or {}).get("name")) or "this frame"
             raise ValueError(
                 "Rust mutation requires a local the program keeps in memory: keep it there with "
@@ -2381,7 +2388,9 @@ class RustSession(NativeSession):
             return "inlined"
         if kind in ("other", "some"):
             return f"another binding in a register (line {', '.join(map(str, lines))})"
-        return "register"
+        # Only where every piece of the binding is proven the debugger's copy (review of
+        # PR #335: a closure's capture, a value split between a slot and a register).
+        return "register" if kind == "own" else "not proven in memory"
 
     def _path_refused(self, frame, root, steps):
         """Whether `set` refuses the member ``steps`` reach from the root local ``root``
@@ -2399,34 +2408,47 @@ class RustSession(NativeSession):
     def _not_in_memory(self, hashed, name, line=None, path=None):
         """Why the IR proves no memory for ``name`` (as LLDB names it: `x @ main.rs:5`
         too) in the function ``hashed``, a proof that covers every binding of its name
-        there (rust_ir): ("own", None) where the binding asked for (the one in scope at
-        ``line`` of ``path``) is itself kept in a register, or the IR does not say;
-        ("other", [lines]) where it has a slot but other bindings of its name, declared
-        on those lines, are kept in a register; ("inlined", None) where every binding
-        without a slot is in a copy of the function inlined where it is called."""
+        there (rust_ir), from each binding's declarations (one per piece of it):
+        ("own", None) where every declaration of the binding asked for (the one in scope
+        at ``line`` of ``path``; every binding, where that isn't told) is a `.dbg.spill`
+        copy of a value kept in a register; ("other", [lines]) where it has a slot but
+        other bindings of its name, declared on those lines, are such copies; ("some",
+        [lines]) where which binding is asked isn't told and those are; ("inlined",
+        None) where every binding without a slot is in a copy of the function inlined
+        where it is called; ("unknown", None) where none of these is proven: no
+        declaration Peeky reads, one through a pointer (a closure's capture) or in a
+        place it doesn't recognize, or pieces in a slot and in a register."""
         plain, _, at = str(name).partition(" @ ")
         found = (getattr(self, "declarations_ir", None) or {}).get((hashed, plain), [])
         unproven = [(number, kind) for number, kind in found if kind != "slot"]
         if not unproven:
-            return ("own", None)
+            return ("unknown", None)
         if all(kind == "inlined" for _, kind in unproven):
             return ("inlined", None)
         asked = at.rpartition(":")[2]
         asked = int(asked) if asked.isdigit() else self._binding_line(hashed, plain, line, path)
-        copies = sorted({number for number, kind in unproven if kind == "copy" and number})
-        own = [kind for number, kind in found if asked is not None and number == asked]
-        if own and all(kind == "slot" for kind in own) and copies:
-            return ("other", copies)
+        # Each binding's declarations, by the line it is declared on: a piece each.
+        kinds = {}
+        for number, kind in found:
+            kinds.setdefault(number, set()).add(kind)
+        copies = sorted(number for number, each in kinds.items() if number and each == {"copy"})
+        if asked is not None and kinds.get(asked) == {"slot"}:
+            others = [each for number, each in kinds.items() if number != asked]
+            if copies and all(each in ({"slot"}, {"copy"}) for each in others):
+                return ("other", copies)
+            return ("unknown", None)
         if (
             asked is None
             and copies
-            and any(kind == "slot" for _, kind in found)
-            and len({number for number, _ in found}) > 1
+            and len(kinds) > 1
+            and {"slot"} in kinds.values()
+            and all(each in ({"slot"}, {"copy"}) for each in kinds.values())
         ):
             # Which binding is asked for is not told (several in scope): name the ones
             # kept in a register.
             return ("some", copies)
-        return ("own", None)
+        chosen = kinds.get(asked) if asked is not None else set().union(*kinds.values())
+        return ("own", None) if chosen == {"copy"} else ("unknown", None)
 
     def _binding_line(self, hashed, name, line, path):
         """The line the binding of ``name`` in scope at ``line`` of ``path`` is declared
@@ -2637,6 +2659,15 @@ class RustSession(NativeSession):
                 "inlined copy, so a change would not reach the program",
                 "Inlining prevents the change: drop `#[inline(always)]` with a candidate "
                 "edit, or change the value where it comes from, in the caller",
+            )
+        if kind == "unknown":
+            return (
+                f"in {function}, the build's IR doesn't prove `{name}` in memory: Peeky "
+                f"reads no slot of its own for every binding of `{name}` (one may be reached "
+                "through a pointer, as a closure's capture is, or split between a slot and a "
+                "register), so a change might not reach the program",
+                "Change it where the program computes it, by a candidate edit "
+                "(`--old`/`--new`), or in the frame that declares it, before its use",
             )
         if kind in ("other", "some"):
             listed = ", ".join(map(str, lines))
@@ -3790,8 +3821,9 @@ class RustSession(NativeSession):
         hashed = _frame_hash(frame)
         if not hashed or self.memory.get((hashed[1], _plain(name))) is not True:
             raise Unsettable(
-                f"the build's IR does not keep `{name}` in memory here (the debugger may "
-                "show a copy), so a change would not reach the program"
+                f"the build's IR doesn't prove `{name}` in memory here (the debugger may "
+                "show a copy, or reach it through a pointer), so a change might not reach the "
+                "program"
             )
         proofs = getattr(self, "owned", None)
         place = frame or {}

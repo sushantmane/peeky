@@ -445,11 +445,14 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   struct. Or it says that it can't.
 - Sometimes the build's debug information rules out a probe's `--set` like this in every function
   on its `--at` line. Then the probe is refused before the program runs. The debugger's launch
-  request isn't sent, and no run is saved. A root local whose type is no writable integer is
-  refused so too, with the type the debug information gives:
+  request isn't sent, and no run is saved. A root local whose type isn't one of the integers
+  `set` lists is refused so too, by the name the debugger gives that type:
   ``in main, only writable integer locals of these types support native mutation: …; `tracks`
   has type `const long` ``. That covers a `const` or `volatile` one, a `char`, `bool`, float,
-  enum, pointer or reference. A struct, an array or a `std::string` is judged at the stop.
+  enum, pointer or reference, a typedef `set` doesn't list (`typedef long Count;`), and
+  `_BitInt(32)`. A struct, an array or a `std::string` is judged at the stop.
+- The stop judges a root by the same names, its debug information's too. LLDB 18 and 20 show a
+  `_BitInt(32)` as `int`, but it is never `[settable]`.
 
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' --set start=0

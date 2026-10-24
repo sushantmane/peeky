@@ -180,7 +180,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   `--set größe.zähler=30` change a local and a field that the frame keeps in memory
   ([2.1](../COOKBOOK.md#21-fields-and-indexes)).
 - A local kept in a register is `[not settable: register]`. `describe`'s `mutable:` line lists
-  them ([Rust 6.6](rust-cookbook.md#change-a-local-kept-in-a-register)).
+  them ([Rust 6.6](rust-cookbook.md#change-a-local-kept-in-a-register)). Where the IR doesn't
+  show where it is, such as a closure's capture, rows say `[not settable: not proven in memory]`.
 - To change one, add `std::hint::black_box(&mut x);` after its `let` with a candidate edit. That
   keeps it in memory, and the same probe can set it
   ([Rust 6.6](rust-cookbook.md#change-a-local-kept-in-a-register)).

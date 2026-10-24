@@ -785,64 +785,69 @@ def holds_pointer(graph, offset, limit=4096):
     return False
 
 
-def root_never_integer(graph, root, name, accepted=frozenset()):
+def root_never_integer(graph, root, name, accepted):
     """Why the root local ``name`` of type ``root`` is never an integer `set` changes,
-    where the stop refuses it too (its debugger type is none of the native integers):
-    a const, volatile or atomic type, a character, boolean or floating-point value, an
-    integer not 16, 32 or 64 bits, an enum, a pointer or a reference. None for a
-    writable integer, a record or an array (a text may change those), and a type the
-    debug information does not give; and for one named as the stop takes an integer
-    by its name (``accepted``: `typedef float int64_t;`), which the stop judges."""
-    qualifiers, offset = [], root
+    by the contract the stop applies (native._writable_integer): its type, named as the
+    debugger names it (``debugger_type_name``), is none of ``accepted``, the native
+    integers' names. None where it is one, or where the debug information gives no
+    such name: a record or an array (a text may change those), or a type not read."""
+    found = debugger_type_name(graph, root)
+    if found is None:
+        return None
+    label, kind = found
+    if label is not None:
+        return None if label in accepted else f"`{name}` has type `{label}`"
+    return f"`{name}` is " + (
+        "atomic" if kind == "atomic" else f"{'an' if kind == 'enum' else 'a'} {kind}"
+    )
+
+
+# The words of C's standard integer types' names, which compilers order as they like
+# (GCC's `long unsigned int`) and the debugger spells as clang does (`unsigned long`).
+_INTEGER_WORDS = frozenset({"signed", "unsigned", "short", "long", "int"})
+
+
+def _spelled(name):
+    """A standard integer type's name as clang and LLDB spell it (`unsigned long` for
+    GCC's `long unsigned int`, `long` for `long int`); any other name as it is
+    (`_BitInt(32)`, `__int128`, `char`)."""
+    words = name.split()
+    if not words or not set(words) <= _INTEGER_WORDS:
+        return name
+    longs, shorts = words.count("long"), words.count("short")
+    signs = [word for word in words if word in ("signed", "unsigned")]
+    if len(signs) > 1 or words.count("int") > 1 or shorts > 1 or longs > 2 or shorts and longs:
+        return name
+    base = "short" if shorts else "long long" if longs == 2 else "long" if longs else "int"
+    return f"unsigned {base}" if signs == ["unsigned"] else base
+
+
+def debugger_type_name(graph, offset):
+    """(name, kind) of the type at ``offset`` as the debugger names a local of it: its
+    qualifiers, then the first named type under them, a typedef by its own name and a
+    standard integer as clang spells it (`const unsigned long`, `size_t`,
+    `_BitInt(32)`). The name is None where the debug information names none, and kind
+    says what it is then: "pointer", "reference", "enum" or "atomic". None for a
+    record, an array, or a type the graph does not hold."""
+    words = []
     for _ in range(64):
         node = graph.get(offset)
         if node is None or node[0] in ("unknown", "other", "record", "array"):
             return None
-        if node[0] == "typedef":
-            offset = node[2]
-            continue
         if node[0] == "qualifier":
-            qualifiers.append(node[1])
+            if node[1] == "atomic":
+                return None, "atomic"
+            if node[1] in ("const", "volatile"):
+                words.append(node[1])
             offset = node[2]
             continue
-        break
-    else:
-        return None
-    kind = node[0]
-    plain = kind == "base" and node[2] in ("DW_ATE_signed", "DW_ATE_unsigned")
-    if plain and node[3] in (2, 4, 8) and node[1] not in _CHARACTERS and not qualifiers:
-        return None
-    label = type_label(graph, root)
-    if label in accepted:
-        return None
-    if label:
-        return f"`{name}` has type `{label}`"
-    if kind in ("pointer", "reference", "enum"):
-        return f"`{name}` is {'an' if kind == 'enum' else 'a'} {kind}"
-    return f"`{name}` is {qualifiers[0]}" if qualifiers else None
-
-
-def type_label(graph, offset):
-    """A type's name as a debugger writes it: its qualifiers, then the name of the first
-    named type under them (`const long`, `volatile size_t`); None where none is named,
-    or an atomic one (`_Atomic(int)`)."""
-    words = []
-    for _ in range(64):
-        node = graph.get(offset)
-        if node is None:
-            return None
-        if node[0] == "qualifier":
-            if node[1] not in ("const", "volatile"):
-                return None
-            words.append(node[1])
+        if node[0] == "typedef" and not node[1]:
             offset = node[2]
             continue
-        if node[0] in ("typedef", "base", "enum") and node[1]:
-            return " ".join([*words, node[1]])
-        if node[0] == "typedef":
-            offset = node[2]
-            continue
-        return None
+        if node[0] == "typedef" or (node[0] in ("base", "enum") and node[1]):
+            named = _spelled(node[1]) if node[0] == "base" else node[1]
+            return " ".join([*words, named]), node[0]
+        return None, node[0]
     return None
 
 

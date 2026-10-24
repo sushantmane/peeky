@@ -4504,12 +4504,6 @@ class NativeSession:
     # So a `stderr` line of exactly this shape is moved out of the output, and the
     # warning says a program line like it would be moved too.
     debugger_diagnostics = r"error: \S(?:.*\S)? 0x[0-9a-fA-F]{8}: DW_TAG_\w+ \S.*"
-    # lldb-dap sends the program's output only from its event thread, which stops once it
-    # has sent `exited`, and LLDB reads all the program wrote before it reports the end
-    # (Process::ShouldBroadcastEvent waits for its stdio read thread). So what came before
-    # `exited` is all of it, whatever lldb-dap sends as it shuts down (lldb-dap 18 on
-    # Linux: its own crash, on `stderr`).
-    output_ends_at_exit = True
 
     @property
     def implicit_receiver(self):
@@ -7311,6 +7305,14 @@ class NativeSession:
         return declared
 
     def validate_mutation_target(self, variable, frame):
+        found = self._declared_name(variable, frame)
+        if found is not None and found[0] not in INTEGER_RANGES:
+            # The debug information's name for it decides too, as before the run.
+            raise ValueError(
+                f"{NATIVE_INTEGERS}; {variable.get('name')!r} has type "
+                f"{found[0] or 'a ' + found[1]!r} in the build's debug information (the "
+                f"debugger shows {variable.get('type')!r})"
+            )
         reason = self.not_yet_declared(variable, frame)
         if refusal := getattr(reason, "refusal", None):
             raise ValueError(refusal)
@@ -8839,8 +8841,27 @@ class NativeSession:
         return node is not None and node[0] == "array"
 
     def settable(self, variable, frame=None):
-        """Whether a root local is a writable integer of a type Peeky can change."""
-        return _writable_integer(variable)
+        """Whether a root local is a writable integer of a type Peeky can change: by the
+        debugger's name for its type and, where Peeky reads it, the debug information's
+        (``_declared_name``: LLDB 18 shows a `_BitInt(32)` as `int`)."""
+        if not _writable_integer(variable):
+            return False
+        found = self._declared_name(variable, frame) if frame is not None else None
+        return found is None or found[0] in INTEGER_RANGES
+
+    def _declared_name(self, variable, frame):
+        """The root local ``variable``'s type as the debugger would name it, from the
+        build's debug information (fields.debugger_type_name): (name or None, kind); None
+        where Peeky doesn't read it there (a record, an array, a frame it can't place)."""
+        from peeky.fields import Unsettable, debugger_type_name
+
+        if getattr(self, "fields", None) is None:
+            return None
+        try:
+            kind, _, graph = self._root_type(frame, variable)
+        except Unsettable:
+            return None
+        return debugger_type_name(graph, kind)
 
     def mutation_literal(self, value, variable=None):
         """The canonical decimal sent to LLDB (`+5` and unsigned `-0` are not its syntax)."""

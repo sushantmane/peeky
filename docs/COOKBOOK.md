@@ -1019,7 +1019,7 @@ program ended `but its output may still have been arriving`:
 - The adapter keeps its stream open for 2 s.
 - The adapter sends text once Peeky began closing the session, even before it answers the
   disconnect. That text, its own or the program's that was still on its way, is kept apart in
-  `output_after_disconnect`.
+  `output_after_disconnect`. For example, lldb-dap 18 on Linux prints its crash as it exits.
 - The adapter exits with a status other than 0. The result has `adapter_exit` and a warning: the
   adapter may have dropped output it held.
 - The end is only Peeky's inference: java-debug dropped its exit event (see [Java](lang/java.md)).
@@ -1028,12 +1028,9 @@ One non-zero exit doesn't count. debugpy exits with status 1 when Peeky ends its
 answers the disconnect. Peeky provokes that exit. If debugpy's only failure is the one it then
 prints on stderr, the result has `exit_provoked: true` and no warning.
 
-lldb-dap (C, C++ and Rust) sends none of the program's output after it reports the program's end.
-LLDB reads all that the program wrote before it reports the end, and lldb-dap stops sending output
-there. So once lldb-dap has reported the end, the output is whole, whatever lldb-dap sends or how
-it exits next. lldb-dap 18 on Linux prints its own crash as it exits. That text stays in
-`output_after_disconnect`, and the text says
-`the debugger sent text of its own as Peeky closed the session, after the program's output had all come`.
+The program's reported end alone never makes the output whole, whatever the adapter: only a clean
+end of the adapter's stream does. So with lldb-dap 18 on Linux, whose crash follows the end, the
+output stays `output so far`, even where it is all there.
 
 These rules hold for any probe, not only for `--until hits`.
 

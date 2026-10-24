@@ -157,13 +157,13 @@ hit  phase      line  function  selector  type  value
 1    after-set  7     main      start     int   0  [settable]
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.736  max pause: 33.5 ms
-output:
+output so far (the program ended, but its output may still have been arriving):
   START:0
-the debugger sent text of its own as Peeky closed the session, after the program's output had all come (output_after_disconnect in --json)
+the debugger sent more text once Peeky began closing the session, its own or the program's still on its way (output_after_disconnect in --json)
 ```
 
-The last line is lldb-dap 18's, on Linux. It prints its own crash as it exits, after the program's
-output has all come ([COOKBOOK](COOKBOOK.md#when-the-program-ended-but-its-output-isnt-proven-whole)).
+The last lines are lldb-dap 18's, on Linux. It sends text as it exits, so the output isn't proven
+whole ([COOKBOOK](COOKBOOK.md#when-the-program-ended-but-its-output-isnt-proven-whole)).
 
 A Rust session:
 

@@ -104,14 +104,7 @@ def read_message(stream):
 
 class DAP:
     def __init__(
-        self,
-        command=None,
-        *,
-        env=None,
-        fatal_stderr=None,
-        provoked_exit=None,
-        diagnostics=None,
-        output_ends_at_exit=False,
+        self, command=None, *, env=None, fatal_stderr=None, provoked_exit=None, diagnostics=None
     ):
         """``fatal_stderr`` maps a regex to a message: an adapter stderr line matching it
         means the adapter can no longer work (e.g. a dead event thread), and fails the
@@ -125,12 +118,7 @@ class DAP:
         streams as `stdout`; that is no DAP rule, and lldb-dap sends a program's stderr as
         `stderr` where it is no terminal. A `stderr` event whose every line the pattern
         matches is kept apart (``debugger_diagnostics``), and the caller warns that a
-        program line of that exact shape would be kept apart too.
-        ``output_ends_at_exit``: the adapter sends none of the program's output after its
-        `exited` event (lldb-dap: LLDB reads all the program wrote before it reports the
-        end, and the one thread that sends it stops there). close() then takes the output
-        up to that event as whole, whatever the adapter sends or how it exits after it:
-        lldb-dap 18 on Linux prints its own crash on `stderr` as it shuts down."""
+        program line of that exact shape would be kept apart too."""
         # Trusted worker configuration only. Never forward agent-provided argv.
         command = PythonAdapter().command if command is None else command
         if (
@@ -212,7 +200,6 @@ class DAP:
         # (`after_disconnect`); the exit code.
         self.final = None
         self.provoked_exit = provoked_exit
-        self.output_ends_at_exit = output_ends_at_exit
         self.sequence = 0
         self.event_sequence = 0
         self.error = None
@@ -869,11 +856,6 @@ class DAP:
             # the program's output.
             with self.condition:
                 ended = self._end_reported()
-                # An adapter that sends no program output after its `exited` event: the
-                # output so far is all of it, whatever comes next.
-                whole = getattr(self, "output_ends_at_exit", False) and any(
-                    event["event"] == "exited" for event in self.events
-                )
                 mark, kept = self.output_count, ("".join(self.output), self.output_truncated)
             # Whether the disconnect was sent, and when it was answered.
             asked, answered = False, None
@@ -927,9 +909,8 @@ class DAP:
                     "ended": ended,
                     # Any status but 0 leaves it partial, save the one known case
                     # (_provoked): debugpy exits 1 when its input ends while it still
-                    # handles the disconnect. Whole, too, where the adapter sends none
-                    # of the program's output after its `exited` event (``whole``).
-                    "drained": (clean and (status == 0 or provoked)) or whole,
+                    # handles the disconnect.
+                    "drained": clean and (status == 0 or provoked),
                     # The stream ended cleanly, nothing after the mark: then only the
                     # adapter's exit status (`adapter_exit`) can leave it partial.
                     "stream_drained": clean,

@@ -366,7 +366,7 @@ def test_threads_a_thread_event_says_started_are_kept():
 # stays open after the end; `running`: the program never ends. `lldb` reports the end as
 # lldb-dap does (`exited`, then `terminated`), and `lldb-terminated` with `terminated`
 # alone; both then print a crash on `stderr` once they answered the disconnect, and abort,
-# as lldb-dap 18 does on Linux.
+# as lldb-dap 18 does on Linux. Any adapter can: none is named.
 ENDING_ADAPTER = r"""
 import json, sys, time
 mode = sys.argv[1]
@@ -483,10 +483,10 @@ DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Clien
         ("provoked-bare", True, True, False, "early\n", None, "", 1),
         ("provoked-other", True, True, False, "early\n", None, "", 1),
         ("open", False, True, False, "early\n", None, "", None),
-        # lldb-dap sends none of the program's output after `exited`: what came before it
-        # is whole, whatever it sends or how it exits next (twelfth evaluation's
-        # preparation: lldb-dap 18's crash as it shuts down).
-        ("lldb", False, True, True, "early\n", 0, "free(): invalid pointer\n", None),
+        # Review of PR #335: an `exited` event alone never makes the output whole, whatever
+        # the adapter; only a clean end of its stream does. lldb-dap 18 on Linux, and any
+        # other adapter that prints after the disconnect and aborts, leave it partial.
+        ("lldb", False, True, False, "early\n", 0, "free(): invalid pointer\n", None),
         ("lldb-terminated", False, True, False, "early\n", None, "free(): invalid pointer\n", None),
         ("running", False, False, False, "early\n", None, "", None),
     ],
@@ -521,10 +521,7 @@ def test_close_reads_the_output_to_the_adapters_end(
         return popen([sys.executable, "-c", ENDING_ADAPTER, mode, str(said)], **kwargs)
 
     monkeypatch.setattr("peeky.dap.subprocess.Popen", spawn)
-    dap = DAP(
-        provoked_exit=PythonAdapter.provoked_exit if debugpy else None,
-        output_ends_at_exit=mode.startswith("lldb"),
-    )
+    dap = DAP(provoked_exit=PythonAdapter.provoked_exit if debugpy else None)
     try:
         dap.wait_event({"terminated"} if ended else {"never"}, 0, 5)
     except TimeoutError:

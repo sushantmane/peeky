@@ -5562,13 +5562,8 @@ def _table(result, short_names=True):
         lines.extend("  " + line for line in shown[-20:])
     if result.get("output_after_disconnect"):
         lines.append(
-            # Whole output: the debugger said so, and nothing more of the program's could
-            # follow, so the text is the debugger's own (lldb-dap 18's crash on Linux).
-            "the debugger sent text of its own as Peeky closed the session, after the "
-            "program's output had all come (output_after_disconnect in --json)"
-            if result.get("output_complete") is True
-            else "the debugger sent more text once Peeky began closing the session, its own "
-            "or the program's still on its way (output_after_disconnect in --json)"
+            "the debugger sent more text once Peeky began closing the session, its own or "
+            "the program's still on its way (output_after_disconnect in --json)"
         )
     return "\n".join(lines)
 

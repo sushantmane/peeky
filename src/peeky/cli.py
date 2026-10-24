@@ -876,6 +876,9 @@ def _describe_text(manifest):
         "edit to it helps; change the value in the caller)",
         "async state": "held in an async body's state across an `.await` (change what it is "
         "computed from, or copy it into a local after the `.await`)",
+        "not proven in memory": "not proven in memory (Peeky reads no slot of its own for "
+        "every binding: a closure's capture is reached through the closure; change it where "
+        "it is declared, or with a candidate edit)",
     }
     for why, label in whys.items():
         never = []

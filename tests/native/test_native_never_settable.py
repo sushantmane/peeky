@@ -206,3 +206,42 @@ def test_a_root_of_no_writable_integer_type_is_refused_before_the_run(tmp_path, 
     changed = run_probe(tmp_path, probe, adapter=debug)
     assert changed["status"] == "completed", changed.get("error")
     assert "P 13 4" in changed["output"], changed["output"]
+
+
+BITS = """#include <stdio.h>
+
+int main(void) {
+    _BitInt(16) b16 = 5;
+    _BitInt(32) b32 = 6;
+    _BitInt(64) b64 = 7;
+    long plain = 8;
+    long total = (long)b16 + (long)b32 + (long)b64 + plain; /* BITS */
+    printf("B %ld\\n", total);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_bit_precise_integer_is_judged_by_its_name_not_its_width(tmp_path):
+    # Review of PR #335: `_BitInt(32)` is a 4-byte DW_ATE_signed. lldb-dap on macOS shows it
+    # as `_BitInt(32)`, which the stop refuses by name, so a probe ran to its stop to learn
+    # that; LLDB 18 and 20 show it as `int`, and changed it. Neither the debug information's
+    # name nor the stop's list admits it: refused before the run, and never marked.
+    debug = target("c", "O0")
+    if "gcc" in os.path.basename(debug.compiler):
+        pytest.skip("GCC 13 has no `_BitInt`; the clang lanes build this case")
+    (tmp_path / "reg.c").write_text(BITS)
+    at = next(i for i, text in enumerate(BITS.splitlines(), 1) if "BITS" in text)
+    for bits in (16, 32, 64):
+        probe = Probe("reg.c", at, ("plain",), ((f"b{bits}", "9"),))
+        message = refused_before_launch(run_probe(tmp_path, probe, adapter=debug))
+        assert f"`b{bits}` has type `_BitInt({bits})`" in message, message
+        assert "only writable integer locals of these types" in message, message
+    marked = run_probe(tmp_path, Probe("reg.c", at, ("b16", "b32", "b64", "plain")), adapter=debug)
+    rows = {row["selector"]: row for row in marked["rows"]}
+    assert [rows[f"b{bits}"].get("settable") for bits in (16, 32, 64)] == [False] * 3, rows
+    assert rows["plain"]["settable"] is True, rows["plain"]
+    changed = run_probe(tmp_path, Probe("reg.c", at, (), (("plain", "10"),)), adapter=debug)
+    assert changed["status"] == "completed", changed.get("error")
+    assert "B 28" in changed["output"], changed["output"]

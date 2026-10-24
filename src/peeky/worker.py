@@ -2063,7 +2063,6 @@ class DebugWorker:
                     fatal_stderr=getattr(runtime, "fatal_stderr", None),
                     provoked_exit=getattr(runtime, "provoked_exit", None),
                     diagnostics=getattr(runtime, "debugger_diagnostics", None),
-                    output_ends_at_exit=getattr(runtime, "output_ends_at_exit", False),
                 )
                 if self.accepted_sources is not None:
                     self.dap.frames_check = self.check_frames
