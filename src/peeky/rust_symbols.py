@@ -1143,11 +1143,244 @@ def enum_layouts(text, unit, root=None):
     return layouts
 
 
+_INTERIOR_ALL = frozenset({"interior", "owned", "shares"})
+_STD_ROOTS = ("std::", "core::", "alloc::")
+_UNNAMED_POINTERS = ("fn(", "unsafe ", "extern ", "for<")
+
+
+def interior_types(root, crate):
+    """What each struct, enum and union outside the standard library holds (#321), from one
+    application unit's DWARF (``root``): {its path without its type arguments, from the root
+    of ``crate`` for the crate's own (`Counter`, `m::Inner`, `Gen`) and with its crate's name
+    for another's (`mylib::Pool`), and its last segment after `::` (`::Inner`, every type so
+    named together): (the flags of what it holds
+    besides its type arguments, (the flags of each type argument, in order))}, as
+    rust_mir.TypeLayouts reads them. A type's instances (`Gen<u32>`, `Gen<Cell<u32>>`) are
+    judged together. The flags, every field, variant and element walked however deep:
+
+    - "interior": a callee given a `&` to it may store a value in what it holds: a raw
+      pointer, a standard cell, lock, atomic, `NonNull` or channel's sending end (by
+      rust_mir._std_class), a trait object, a standard type in no class, or a type not
+      described;
+    - "owned": given it by value or through a `&mut`, it may: also a `&mut` or a standard
+      mutable view it holds, not behind a shared `&`;
+    - "shares": what it holds may be reached through another value: a raw pointer, a
+      channel's end, a cell behind a reference, `Rc`, `Arc`, `Weak` or `LocalKey`.
+
+    A field whose type is one of the instance's own type arguments is left to them: the
+    dump names them where the type is used (`Gen<std::cell::Cell<u32>>`), unless it leaves
+    out a default one, which the arguments' flags then cover. Raises ValueError on DWARF it
+    does not read."""
+    from peeky.rust_mir import _MUTABLE_VIEWS, _std_class
+
+    by_offset, parents = {}, {}
+
+    def index(die, parent):
+        by_offset[die.offset] = die
+        parents[die.offset] = parent
+        for child in die.children:
+            index(child, die)
+
+    index(root, None)
+    names = _qualified_names(root)
+    prefix = crate + "::"
+
+    def target(die):
+        raw = die.attributes.get("DW_AT_type")
+        return None if raw is None else _reference(raw)[0]
+
+    def name_of(die):
+        raw = die.attributes.get("DW_AT_name")
+        return names.get(die.offset) or (_string(raw) if raw is not None else "")
+
+    def members(die):
+        for child in die.children:
+            if child.tag == "DW_TAG_member":
+                yield child
+            elif child.tag in ("DW_TAG_variant_part", "DW_TAG_variant"):
+                yield from members(child)
+
+    def parameters(die):
+        """The type of each of its template parameters, in order (None for a value)."""
+        found = [
+            target(child) if child.tag == "DW_TAG_template_type_parameter" else None
+            for child in die.children
+            if child.tag in ("DW_TAG_template_type_parameter", "DW_TAG_template_value_parameter")
+        ]
+        if found:
+            return found
+        # An enum's are on its variants' structs (`Option<T>`'s on `Some`).
+        for child in die.children:
+            if child.tag == "DW_TAG_structure_type" and (found := parameters(child)):
+                return found
+        return []
+
+    def walk(offset, shared, handle, covered, seen, out):
+        if offset in covered:
+            return
+        key = (offset, shared, handle)
+        if key in seen or out >= _INTERIOR_ALL:
+            return
+        seen.add(key)
+        die = by_offset.get(offset)
+        if die is None or "DW_AT_declaration" in die.attributes:
+            out |= _INTERIOR_ALL
+            return
+        tag, name = die.tag, name_of(die)
+        if tag in (
+            "DW_TAG_base_type",
+            "DW_TAG_enumeration_type",
+            "DW_TAG_subroutine_type",
+            "DW_TAG_unspecified_type",
+        ):
+            return
+        if tag in (
+            "DW_TAG_typedef",
+            "DW_TAG_const_type",
+            "DW_TAG_volatile_type",
+            "DW_TAG_array_type",
+        ):
+            inner = target(die)
+            if inner is None:
+                out |= _INTERIOR_ALL
+            else:
+                walk(inner, shared, handle, covered, seen, out)
+            return
+        if tag == "DW_TAG_pointer_type":
+            pointer(name, target(die), shared, handle, covered, seen, out)
+            return
+        if tag not in ("DW_TAG_structure_type", "DW_TAG_union_type") or "dyn " in name:
+            out |= _INTERIOR_ALL
+            return
+        if name.startswith(("&", "*")):
+            # A fat pointer (`&[u32]`, `&mut str`): what its data pointer points at.
+            data = [
+                each for each in members(die) if each.attributes.get("DW_AT_name") == '"data_ptr")'
+            ]
+            inner = by_offset.get(target(data[0])) if len(data) == 1 and target(data[0]) else None
+            if inner is None or inner.tag != "DW_TAG_pointer_type":
+                out |= _INTERIOR_ALL
+            else:
+                pointer(name, target(inner), shared, handle, covered, seen, out)
+            return
+        if name.startswith(_STD_ROOTS):
+            standard(die, name.split("<", 1)[0], shared, handle, covered, seen, out)
+            return
+        # The crate's own, a tuple, a closure's captures, or another crate's: its fields.
+        for member in members(die):
+            inner = target(member)
+            if inner is None:
+                out |= _INTERIOR_ALL
+            else:
+                walk(inner, shared, handle, covered, seen, out)
+
+    def pointer(name, inner, shared, handle, covered, seen, out):
+        if name.startswith(_UNNAMED_POINTERS):
+            return
+        if inner is None or name.startswith(("*const ", "*mut ")):
+            out |= _INTERIOR_ALL
+        elif name.startswith("&mut "):
+            if not shared:
+                out.add("owned")
+            walk(inner, shared, True, covered, seen, out)
+        elif name.startswith("&"):
+            walk(inner, True, True, covered, seen, out)
+        elif name.startswith("alloc::boxed::Box<"):
+            walk(inner, shared, handle, covered, seen, out)
+        else:
+            out |= _INTERIOR_ALL
+
+    def standard(die, path, shared, handle, covered, seen, out):
+        kind = _std_class(path)
+        given = parameters(die)
+        if "<" in name_of(die) and not given:
+            out |= _INTERIOR_ALL
+            return
+
+        def arguments(shared, handle, into):
+            for each in given:
+                if each is not None:
+                    walk(each, shared, handle, covered, seen, into)
+
+        if kind == "cell":
+            out |= {"interior", "owned"} | ({"shares"} if handle else set())
+            arguments(False, handle, out)
+        elif kind in ("channel", "pointer", "unknown"):
+            out |= _INTERIOR_ALL
+        elif kind == "receiving":
+            received = set()
+            arguments(False, True, received)
+            out |= received | {"shares"} | ({"interior"} if "owned" in received else set())
+        elif kind == "shared":
+            arguments(True, True, out)
+        elif kind == "lazy":
+            arguments(True, handle, out)
+        elif kind == "plain":
+            if not shared and path.rsplit("::", 1)[-1] in _MUTABLE_VIEWS:
+                out.add("owned")
+            arguments(shared, handle, out)
+
+    found = {}
+    for offset, name in names.items():
+        die = by_offset[offset]
+        parent = parents.get(offset)
+        if (
+            # A standard type, a tuple, a reference, a pointer or a trait object: none is named
+            # in the dump as a type of a crate's.
+            name.startswith((*_STD_ROOTS, "(", "&", "*", "[", "dyn "))
+            or die.tag not in ("DW_TAG_structure_type", "DW_TAG_union_type")
+            or "DW_AT_declaration" in die.attributes
+            or (parent is not None and parent.tag in ("DW_TAG_structure_type", "DW_TAG_union_type"))
+        ):
+            continue
+        # The dump names the crate's own types from its root, another crate's with its name.
+        path = name.removeprefix(prefix).split("<", 1)[0]
+        if "{" in path:
+            # A closure's captures: the dump names closures by where they are written.
+            continue
+        given = parameters(die)
+        covered = frozenset(each for each in given if each is not None)
+        own = set()
+        for member in members(die):
+            inner = target(member)
+            if inner is None:
+                own |= _INTERIOR_ALL
+            else:
+                walk(inner, False, False, covered, set(), own)
+        each_argument = []
+        for each in given:
+            flags = set()
+            if each is not None:
+                walk(each, False, False, frozenset(), set(), flags)
+            each_argument.append(frozenset(flags))
+        # A signature in the dump may name it by its last segment alone (`::Inner`).
+        for key in (path, "::" + path.rsplit("::", 1)[-1]):
+            merge_interior(found, key, (frozenset(own), tuple(each_argument)))
+    return found
+
+
+def merge_interior(found, name, entry):
+    """Add ``entry`` (``interior_types``') for ``name`` to ``found``: what every type so
+    named holds, each argument's flags by its position."""
+    own, arguments = entry
+    before, merged = found.get(name, (frozenset(), ()))
+    longest = max(len(merged), len(arguments))
+    found[name] = (
+        before | own,
+        tuple(
+            (merged[at] if at < len(merged) else frozenset())
+            | (arguments[at] if at < len(arguments) else frozenset())
+            for at in range(longest)
+        ),
+    )
+
+
 def application_symbols(
     dwarfdump, symbols, workspace, env, *, entrypoint, crate, declared, budget=SYMBOL_DEADLINE_S
 ):
-    """Return declared-source lines, enum layouts, the application units and their
-    functions' lexical blocks (``code_blocks``) from application units only."""
+    """Return declared-source lines, enum layouts, the application units, their functions'
+    lexical blocks (``code_blocks``) and what the crate's own types hold
+    (``interior_types``, None where not read) from application units only."""
     workspace = Path(workspace).resolve(strict=True)
     if type(budget) not in (int, float) or not 0 < budget <= SYMBOL_DEADLINE_S:
         raise ValueError("Rust symbol extraction has no remaining time budget")
@@ -1168,7 +1401,7 @@ def application_symbols(
 
     index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
-    tables, layouts, blocks = [], {}, {}
+    tables, layouts, blocks, interior = [], {}, {}, {}
     for unit in units:
         table = dump([f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)])
         offsets = re.findall(r"^debug_line\[0x([0-9a-f]{8,16})\]$", table, re.MULTILINE)
@@ -1189,8 +1422,16 @@ def application_symbols(
             functions = {}
         for hashed, function in functions.items():
             blocks[hashed] = None if hashed in blocks else function
+        try:
+            # Only withholds less where read (#321): without it, every type of the crate's
+            # may hold anything.
+            types = interior_types(root, crate) if interior is not None else {}
+        except (KeyError, ValueError, RecursionError):
+            interior = None
+        for name, entry in types.items() if interior is not None else ():
+            merge_interior(interior, name, entry)
     lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA, rust=True)
-    return lines, layouts, units, blocks
+    return lines, layouts, units, blocks, interior
 
 
 _LEGACY_HASH = re.compile(r"17(h[0-9a-f]{16})E$")

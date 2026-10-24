@@ -678,7 +678,7 @@ class RustTarget:
                     self.sources,
                 )
             env = dict(prepared.manifest.effective_environment)
-            lines, layouts, units, blocks = application_symbols(
+            lines, layouts, units, blocks, interior = application_symbols(
                 dwarfdump,
                 symbols,
                 prepared.workspace,
@@ -731,6 +731,9 @@ class RustTarget:
             session.unsafe_code = unsafe_source(texts, rust)
             if owned is not None:
                 owned.unsafe_code = session.unsafe_code
+                # What the crate's own types hold, to judge what a callee may change
+                # through them (#321).
+                owned.interior = interior
                 # Where std's printing is written, to trust a read it makes (#192 review).
                 owned.std_macros = std_macro_files(
                     rustc, prepared.manifest.probes, (prepared.workspace, root)
@@ -1019,6 +1022,8 @@ def _either(clauses):
 # What a refusal says of a binding that may hold a copy or only point into the local
 # (#320 review: ``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
+# And of bindings that may keep the copy where no change Peeky makes reaches (#321).
+_HIDDEN_COPY = ", which Peeky can't change ("
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1126,6 +1131,15 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     pointing = frozenset().union(*(dict(found.get("pointing") or ()).values())) & bound
     if names := proofs.copy_names(hashed, pointing):
         own += f", unless {_names(names)} only point{'s' if len(names) == 1 else ''} into it"
+    elif not aiming and bound == getattr(proofs, "hidden_holders", lambda *args: None)(
+        hashed, bound
+    ):
+        # #321: a cell, a channel's state (`rx`), a struct's cell field, where a callee
+        # given a `&` may have stored the copy: no field change Peeky makes reaches it.
+        own += (
+            f"{_HIDDEN_COPY}{'its type' if len(bound) == 1 else 'their types'} may keep it "
+            "behind a cell, a lock, a channel or a pointer)"
+        )
     if not clauses:
         return "kept", own, at, None
     return "may", _either(clauses), places | at, own
@@ -2881,7 +2895,12 @@ class RustSession(NativeSession):
                 statements = (
                     "copied"
                     if "has already copied" in detail
-                    or (kept and "statement under way" not in detail and _ONLY_POINTS not in detail)
+                    or (
+                        kept
+                        and "statement under way" not in detail
+                        and _ONLY_POINTS not in detail
+                        and _HIDDEN_COPY not in detail
+                    )
                     else "holds"
                     if kept or "already holds a copy" in detail
                     else "untraced"
@@ -3137,6 +3156,9 @@ class RustSession(NativeSession):
                     f"{detail}, {unseen}",
                     "Change it before the program copies or borrows it (a stop on an earlier line)"
                     if _ONLY_POINTS in detail
+                    # #321: a copy no change reaches has nothing to change instead.
+                    else "Change it before the program copies it (a stop on an earlier line)"
+                    if _HIDDEN_COPY in detail
                     else "Change it before the program copies it (a stop on an earlier line), "
                     "or change the copy instead",
                     "the program may hold a copy" + (f" ({made})" if made else ""),

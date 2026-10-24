@@ -439,7 +439,7 @@ def test_application_symbols_dump_only_selected_tables(tmp_path):
             "0x0000000b": option_dump(),
         },
     )
-    lines, layouts, units, blocks = application_symbols(
+    lines, layouts, units, blocks, interior = application_symbols(
         tool,
         "program",
         workspace,
@@ -452,6 +452,8 @@ def test_application_symbols_dump_only_selected_tables(tmp_path):
     assert layouts[OPTION]["kind"] == "option"
     assert [unit.stmt_list for unit in units] == [0]
     assert blocks == {}
+    # The unit's own types are read too (#321): its `Option<i32>` is the standard one.
+    assert interior == {}
     assert not list(workspace.glob("peeky-symbols-*"))
 
 

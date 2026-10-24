@@ -342,6 +342,11 @@ _MUTATION_HINTS = (
         "`--set-at` there).",
     ),
     (
+        # #321: a binding that may keep the copy behind a cell or a channel, out of reach.
+        r"may hold a copy of (?:it|`[^`]+`) that it goes on with, which Peeky can't change",
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
+    ),
+    (
         # #300 review: or a binding's copy that a call since may have changed.
         r"has already copied (?:its value|`[^`]+`) into"
         r"|^(?:(?!statement under way).)*may hold a copy of (?:it|`[^`]+`) that it goes on with",

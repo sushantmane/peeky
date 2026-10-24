@@ -1433,6 +1433,15 @@ holds for integer locals too.
   be a method of a standard type, and return a `bool`, `usize` or `Ordering` the local can't hold.
 - A crate type of its own named `String` or `Vec` is not the standard one. Its `String::len` may
   return a copy, so it is counted as one.
+- A call given only a `&` may still store a copy, where what it points at holds a cell, a lock, an
+  atomic or a channel, however deep. After `send(&tx, x)`, with `tx` an `mpsc::Sender`, the
+  channel holds `x`, and `rx.recv()` reads it.
+- So after such a call, `x` is refused, naming what may hold the copy:
+  ``the program's own `rx` (at lines 54 and 55) may hold a copy of `x` that it goes on with``.
+- Your own types count by their fields, as the build's debug information shows them. So
+  `bump(&c, x)`, with `c = Counter::new()` and a `Cell` field in `Counter`, refuses `x` after it.
+  A struct of numbers and `Vec`s, lent by `&`, leaves `x` settable
+  ([Copies behind a cell or a channel](#copies-behind-a-cell-or-a-channel)).
 
 Peeky follows the MIR in the order the code runs. A temporary made before the local took its
 current value holds an older value, so it doesn't block a change. For example, in
@@ -1547,7 +1556,9 @@ A call may store a copy too, through a `&mut` or raw pointer it is given, of ano
 - a struct holding `&mut v`, passed by value or as `&mut h`: `v` may hold a copy. Passed as `&h`,
   it writes nothing through that `&mut`, so it leaves `v` out. Through `&h`, a raw pointer or a
   `Cell` it holds may still be written. Only the standard library's cells, locks and atomics
-  count, not a type of your own named `NotCell` or `Atomicity`.
+  count, not a type of your own named `NotCell` or `Atomicity`;
+- a value holding a cell, a lock or a channel, passed as `&c`
+  ([Copies behind a cell or a channel](#copies-behind-a-cell-or-a-channel)).
 
 A read through a pointer made from the binding is a use of it. So after
 `let r = v.last_mut().unwrap();` and `*r = x;`, a later `*r` uses `v`'s copy.
@@ -1585,6 +1596,42 @@ That is so for an argument `p`, or one `Box::into_raw` returned. After `*p = x;`
 ``the program's own `p` (at line 49) may point at a copy of `x` that it goes on with``.
 
 To change the value, change it before the copy is made, or change the copy.
+
+#### Copies behind a cell or a channel
+
+A callee given only a `&` can still store a value in a cell, a lock, an atomic or a channel.
+Peeky decides whether it can from everything the type holds, however deep:
+
+- The standard library's types count by what each is known to hold:
+  - `Cell`, `RefCell`, `UnsafeCell`, `OnceCell`, `OnceLock`, `Mutex`, `RwLock` and the atomics
+    take a value;
+  - a channel's `Sender` or `SyncSender` takes one, and its `Receiver` reads it;
+  - `Rc`, `Arc`, `Weak`, `LocalKey`, `LazyCell`, `LazyLock`, `Option`, `Vec` and the other
+    containers and views count by what they hold;
+  - `Condvar` and `Barrier` change, but hold no value of yours.
+- A standard type on none of these lists, a trait object, or a dependency's type may take a
+  value. A refusal then says only that a binding may hold a copy.
+- Your own structs, enums and unions count by their fields and variants, as the build's debug
+  information shows them. A closure counts by what it captures.
+- A generic type counts by its type arguments too: `Gen<u32>` holds no cell, even where the
+  program also has a `Gen<Cell<u32>>`.
+- What shares the value the call reaches counts too: `rx` beside `tx` of `mpsc::channel()`, or
+  `b` of `let b = Rc::clone(&a);` for `put(&a, x)`.
+
+Peeky can't change such a copy, since it sits in a standard type's fields. So the refusal says so,
+and advises only a change before the call:
+
+```
+error [MUTATION_REJECTED]: `x` cannot be changed at src/main.rs:56, at any stop of this build: in hidden::sent, at every place line 56 can stop at, the program's own `rx` (at lines 54 and 55) may hold a copy of `x` that it goes on with, which Peeky can't change (its type may keep it behind a cell, a lock, a channel or a pointer), so a change there may never be seen: …
+hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there).
+```
+
+A `--set x=100` at line 55, before `send(&tx, x)` runs, reaches the program: `rx.recv()` returns
+100.
+
+A call can also keep a copy in a `static` or a `thread_local!` that a later call reads. Peeky
+doesn't follow that, so `x` stays `[settable]` there. Look for such state before you trust a
+change.
 
 #### What counts as reading it again
 
