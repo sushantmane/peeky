@@ -2880,10 +2880,18 @@ def test_a_drop_reads_a_part_only_where_its_drop_surely_reads_it():
     # wherever a `Drop` impl may run, so after `let z = d.1;` a change to `d.1` was
     # `[settable]`, and the program never saw it. Now only a proven read counts.
     first, second = (("field", 0),), (("field", 1),)
-    drop = parse_body(DROPPER)
-    body = review_body(SCOPED)
-    assert body._drop_proves_read(drop, list(first))
-    assert not body._drop_proves_read(drop, list(second))
+    # `d.1`: the drop may read it or not, which Peeky can't tell. The copy's refusal stays,
+    # and says so instead of proving no read.
+    line = review_line("second", "let k")
+    body = review_body(SECOND)
+    at = place(body, stop_text(SECOND, line))
+    local = body.bindings["d"][0][0]
+    (copy,) = body.direct_copies_at(local, at, projection=second)
+    assert body.copy_undoes(copy, local, at, second)
+    assert review_why(SECOND, "second", line, stop_text(SECOND, line), "d", second) == hedged(
+        "d", line, line - 1, dropped_at(SECOND, local)
+    )
+    assert {block for block, _ in body.doubtful_drops(local, at, second)}
     # `d.0`, a scoped local or a by-value argument: the drop reads it, and the change is
     # seen there.
     for text, name in ((SCOPED, "scoped"), (TAKEN, "taken")):
@@ -2893,20 +2901,11 @@ def test_a_drop_reads_a_part_only_where_its_drop_surely_reads_it():
         local = body.bindings["d"][0][0]
         (copy,) = body.direct_copies_at(local, at, projection=first)
         assert not body.copy_undoes(copy, local, at, first), name
-        assert not body.doubtful_drops(local, at, first), name
         assert review_why(text, name, line, stop_text(text, line), "d", first) == (None, None)
-    # `d.1`: the drop may read it or not, which Peeky can't tell. The copy's refusal stays,
-    # and says so instead of proving no read.
-    line = review_line("second", "let k")
-    body = review_body(SECOND)
-    at = place(body, stop_text(SECOND, line))
-    local = body.bindings["d"][0][0]
-    (copy,) = body.direct_copies_at(local, at, projection=second)
-    assert body.copy_undoes(copy, local, at, second)
-    assert {block for block, _ in body.doubtful_drops(local, at, second)}
-    assert review_why(SECOND, "second", line, stop_text(SECOND, line), "d", second) == hedged(
-        "d", line, line - 1, dropped_at(SECOND, local)
-    )
+        assert not body.doubtful_drops(local, at, first), name
+    drop = parse_body(DROPPER)
+    assert body._drop_proves_read(drop, list(first))
+    assert not body._drop_proves_read(drop, list(second))
 
 
 def test_a_drop_on_another_field_or_none_keeps_the_refusal_as_it_was():
@@ -2920,13 +2919,13 @@ def test_a_drop_on_another_field_or_none_keeps_the_refusal_as_it_was():
         line = review_line(name, "let k")
         body = review_body(text)
         local = body.bindings[variable][0][0]
-        drop = f"drop(_{local}) -> [return: bb1, unwind: bb2];"
-        assert body._drop_effect(drop, local, part) is None, name
         assert review_why(text, name, line, stop_text(text, line), variable, part) == (
             f"the program has already copied its value into `z` (at line {line - 1}) and goes "
             f"on with that copy, " + SEEN.format(variable),
             f"copied into `z` (line {line - 1})",
         ), name
+        drop = f"drop(_{local}) -> [return: bb1, unwind: bb2];"
+        assert body._drop_effect(drop, local, part) is None, name
     # Through the field path from the local: `h.d.0` is what `D`'s drop reads, so the change
     # is seen there; `h.d.1` it may read or not.
     body = review_body(HELD)
@@ -3036,9 +3035,9 @@ def test_a_panic_that_leaves_the_frame_ends_the_local():
     # and never reads `x`: the panic ends `x` too, with no cleanup of its own (`unwind
     # continue`) or through one. Here `y + u[0]`'s overflow check comes after `u` is read.
     body = review_body(PUSHED)
-    assert any(block.leaves for block in body.blocks.values())
     at_11 = place(body, "_9 = copy _1;")
     assert body.copy_undoes(5, 2, at_11)
+    assert any(block.leaves for block in body.blocks.values())
     # `w.push(x)`, then `x + k` reads `x` before `w` is used: no panic between uses `w`.
     body = review_body(LATER)
     at = place(body, stop(LATER, 28, "_"))
