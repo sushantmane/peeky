@@ -3267,7 +3267,7 @@ class RustSession(NativeSession):
             return None
         return tuple(dict.fromkeys(name for name, low, high in spans if low <= place[1] <= high))
 
-    def _inlined_site(self, frame):
+    def _inlined_site(self, frame, innermost=None):
         """(#326) Whether the frame's line, one with no row in the build, is where LLDB shows
         a stop at a call the build inlined: True where the frame's pc is in the code of a
         call inlined into its function from that line (a caller frame's return address
@@ -3275,7 +3275,8 @@ class RustSession(NativeSession):
         can't be placed; None where the pc isn't known yet (the load bias is read with the
         module, in ``validate_debugger``). Only without the function's DWARF blocks does a
         line in a macro's definition count by the source alone: such a stop reads no value
-        (``macro_stop``)."""
+        (``macro_stop``). ``innermost``: whether the frame is the stop's innermost; None
+        where the frames an inspection last listed tell."""
         place, hashed = self._place(frame), _frame_hash(frame)
         if place is None or place[0] not in self.lines:
             return False
@@ -3285,8 +3286,10 @@ class RustSession(NativeSession):
         pc = self._unslid(frame)
         if pc is None:
             return None
-        innermost = getattr(self, "innermost_id", None)
-        pcs = (pc,) if innermost is None or frame.get("id") == innermost else (pc, pc - 1)
+        if innermost is None:
+            listed = getattr(self, "innermost_id", None)
+            innermost = listed is None or frame.get("id") == listed
+        pcs = (pc,) if innermost else (pc, pc - 1)
         return any(
             low <= at < high
             for block in blocks
@@ -3345,6 +3348,27 @@ class RustSession(NativeSession):
             # Its function's blocks are not known: the line has rows of its own somewhere.
             return None
         return names or ()
+
+    def macro_stop_state(self, dap, frame):
+        """``macro_stop_note`` for the innermost frame, for the stop's state, which is built
+        before anything validates the stop. Where the frame's function's DWARF blocks are
+        known, only once its pc is proven in the code of a call inlined from its line
+        (``_inlined_site``), the load bias read first where it isn't yet, with the module
+        (``validate_debugger``); else None, and `inspect` decides. Without them, the source
+        alone tells, as `inspect`'s refusal does: nothing of the frame is read either way."""
+        if self.macro_stop(frame) is None:
+            return None
+        hashed = _frame_hash(frame)
+        if hashed and self.code_blocks.get(hashed[1]):
+            if self._inlined_site(frame, innermost=True) is None:
+                try:
+                    self.validate_debugger(dap, frame)
+                except Exception:
+                    # A stop that doesn't match the build: `inspect` says so, and closes.
+                    return None
+            if self._inlined_site(frame, innermost=True) is not True:
+                return None
+        return self.macro_stop_note(frame)
 
     def macro_stop_note(self, frame, index=0):
         """Why ``session inspect`` reads no value of frame ``index`` stopped as

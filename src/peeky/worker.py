@@ -733,9 +733,10 @@ class DebugWorker:
                 _in_program_sources(self.runtime, caller, self.root) for caller in frames[1:]
             )
             self.stop_macro = None
-            if not self.stop_outside and (note := getattr(self.runtime, "macro_stop_note", None)):
-                # A stop the debugger shows in a macro's definition (#326): never read.
-                self.stop_macro = note(frame)
+            if not self.stop_outside and (note := getattr(self.runtime, "macro_stop_state", None)):
+                # A stop the debugger shows in a macro's definition (#326): never read. Only
+                # where the stop's address proves it, which nothing has validated yet.
+                self.stop_macro = note(self.dap, frame)
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")

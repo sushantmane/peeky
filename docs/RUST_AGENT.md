@@ -577,6 +577,9 @@ DWARF's `DW_AT_call_line`. That line may have no row of its own in the line tabl
 - The worker then reads no value of that frame: `inspect` raises `macro_stop_note` as
   `UnplacedStop`, a request error, and the state carries it as `macro_stop`. A step or continue
   goes on.
+- The state is built before anything validates the stop. So `macro_stop_state` gives the note
+  only where the pc is proven in the inlined call's code, the load bias read first
+  (`validate_debugger`). Without the function's blocks, the source alone tells, as `inspect` does.
 - Where the source isn't read as rustc reads it, `macro_stop` gives `()`: the line may be a
   macro's, and the note says Peeky can't tell.
 - A probe that stops there (its breakpoint told by the frame's place) withholds each selector's

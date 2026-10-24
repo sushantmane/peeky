@@ -286,12 +286,16 @@ class Runtime:
 
     def validate_debugger(self, dap, frame):
         self.validated.append(frame["id"])
+        self.session.validate_debugger(dap, frame)
 
     def local_scopes(self, scopes):
         return scopes
 
     def validate_breakpoints(self, points):
         pass
+
+    def macro_stop_state(self, dap, frame):
+        return self.session.macro_stop_state(dap, frame)
 
     def macro_stop_note(self, frame, index=0):
         return self.session.macro_stop_note(frame, index)
@@ -306,8 +310,17 @@ class Runtime:
         pass
 
 
-def test_the_worker_keeps_the_session_at_such_a_stop(tmp_path):
-    session, frame = session_at(tmp_path, 1, 0x1B0)
+def stopped_worker(tmp_path, monkeypatch, line, pc, bias=0x4000):
+    """A worker stopped by a step at ``pc`` on ``line`` of `f`, under `main`'s frame; the
+    load bias is read as ``bias`` (None: it can't be) once the module is."""
+    from peeky.native import NativeSession
+
+    monkeypatch.setattr(
+        NativeSession,
+        "validate_debugger",
+        lambda self, dap, frame: setattr(self, "load_bias", bias),
+    )
+    session, frame = session_at(tmp_path, line, pc)
     caller = {**frame, "id": 2, "name": f"macros::main::{HASH}", "line": 12}
     worker = DebugWorker(tmp_path)
     worker.dap = Backend([{**frame, "id": 1}, caller])
@@ -315,6 +328,11 @@ def test_the_worker_keeps_the_session_at_such_a_stop(tmp_path):
     worker.session, worker.stop_id, worker.state = "session", "stop", "stopped"
     worker.stop_reason, worker.thread_id = "step", 1
     worker.capabilities = {}
+    return worker, session, frame
+
+
+def test_the_worker_keeps_the_session_at_such_a_stop(tmp_path, monkeypatch):
+    worker, session, frame = stopped_worker(tmp_path, monkeypatch, 1, 0x1B0)
     # The state says why nothing is read.
     worker.stop_location = worker.read_location()
     assert worker.location()["macro_stop"] == session.macro_stop_note(frame)
@@ -460,3 +478,37 @@ def test_a_probe_withholds_a_stop_inside_a_macros_definition_and_goes_on(monkeyp
     assert (
         "Stopped at /w/src/main.rs:1 (breakpoint), not the requested" in result["error"]["message"]
     )
+
+
+def test_the_state_names_a_macro_stop_only_where_its_address_proves_it(tmp_path, monkeypatch):
+    # #326 review round 2: the state is built before anything validates the stop. Line 1
+    # claimed at line 12's pc (0x1d0), before the load bias was read, still said the stop
+    # was inside `mclone!`'s definition; only `inspect` then found the mismatch.
+    worker, session, _ = stopped_worker(tmp_path, monkeypatch, 1, 0x1D0)
+    session.load_bias = None
+    worker.stop_location = worker.read_location()
+    assert "macro_stop" not in worker.location() and worker.stop_macro is None
+    with pytest.raises(RuntimeError, match="Native stopped line does not match"):
+        worker.dispatch("inspect", {"session_id": "session", "stop_id": "stop"})
+    # At `clone`'s first instruction, the bias is read with the module first, and proves it.
+    worker, session, frame = stopped_worker(tmp_path, monkeypatch, 1, 0x1B0)
+    session.load_bias = None
+    worker.stop_location = worker.read_location()
+    assert worker.location()["macro_stop"] == session.macro_stop_note(frame)
+    assert session.load_bias == 0x4000
+    # A bias that can't be read proves nothing: no note, and `inspect` refuses the stop.
+    worker, session, _ = stopped_worker(tmp_path, monkeypatch, 1, 0x1B0, bias=None)
+    session.load_bias = None
+    worker.stop_location = worker.read_location()
+    assert "macro_stop" not in worker.location()
+    # A frame named as the innermost is never taken for a caller's (pc - 1), though an
+    # older inspection's innermost frame had another id.
+    worker, session, _ = stopped_worker(tmp_path, monkeypatch, 1, 0x1B8)
+    session.innermost_id = 99
+    worker.stop_location = worker.read_location()
+    assert "macro_stop" not in worker.location()
+    # Without the function's DWARF blocks, the source alone tells, as `inspect` does.
+    worker, session, frame = stopped_worker(tmp_path, monkeypatch, 1, 0x1D0)
+    session.code_blocks, session.load_bias = {}, None
+    worker.stop_location = worker.read_location()
+    assert worker.location()["macro_stop"] == session.macro_stop_note(frame)
