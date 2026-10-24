@@ -281,23 +281,41 @@ def test_a_pointers_type_change_is_the_first_divergence(tmp_path):
     ]
 
 
-def test_a_type_spelled_before_schema_18_is_no_type_change(tmp_path):
-    # Review of PR #315: a run saved before Rust references were spelled as Rust spells
-    # them stored `rota::Engineer *`; a new run `&rota::Engineer`. `diff` said the type
-    # changed, though only its spelling did.
-    store = tmp_path / "evidence.db"
-    old = [(h, "e", "rota::Engineer *", f"0x{0x1004151E0 + 0x38 * h:016x}", None) for h in (1, 2)]
-    evidence.record(store, _typed(old), language="rust")
+def _as_schema_17(store):
+    """The store as schema 17 saved it: no captures.debugger_type."""
     connection = sqlite3.connect(store)
     connection.executescript(
         "DROP VIEW last_run; DROP VIEW evidence; ALTER TABLE captures DROP COLUMN "
         "debugger_type; PRAGMA user_version = 17;"
     )
     connection.close()
-    new = [
-        (h, "e", "&rota::Engineer", f"0x{0x1046AD1E0 + 0x38 * h:016x}", None, "rota::Engineer *")
-        for h in (1, 2)
-    ]
+
+
+UNTOLD = "the older run predates Rust type spellings, so Peeky can't tell whether the type changed"
+
+
+@pytest.mark.parametrize("kind", ["&rota::Engineer", "*const rota::Engineer"])
+def test_a_rust_type_spelled_before_schema_18_is_said_to_be_untold(tmp_path, kind):
+    # Review of PR #315: a run saved before Rust references were spelled as Rust spells
+    # them stored `rota::Engineer *`, for a reference and a raw pointer alike; a new run
+    # `&rota::Engineer`. `diff` said the type changed, though only its spelling may have;
+    # then (round 2) it said nothing, though an old raw pointer may now be a reference.
+    store = tmp_path / "evidence.db"
+    old = []
+    for h in (1, 2):
+        old += [
+            (h, "e", "rota::Engineer *", f"0x{0x1004151E0 + 0x38 * h:016x}", None),
+            (h, "n", "u32", "0", None),
+        ]
+    evidence.record(store, _typed(old), language="rust")
+    _as_schema_17(store)
+    view = "unproven" if kind.startswith("*") else None
+    new = []
+    for h in (1, 2):
+        new += [
+            (h, "e", kind, f"0x{0x1046AD1E0 + 0x38 * h:016x}", view, "rota::Engineer *"),
+            (h, "n", "u32", str(h - 1), None, "unsigned int"),
+        ]
     evidence.record(store, _typed(new), language="rust")
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
@@ -305,20 +323,42 @@ def test_a_type_spelled_before_schema_18_is_no_type_change(tmp_path):
     stored = evidence.query(store, "SELECT run_id, type, debugger_type FROM evidence")["rows"]
     assert {(r["run_id"], r["type"], r["debugger_type"]) for r in stored} == {
         (1, "rota::Engineer *", None),
-        (2, "&rota::Engineer", "rota::Engineer *"),
+        (1, "u32", None),
+        (2, kind, "rota::Engineer *"),
+        (2, "u32", "unsigned int"),
     }
-    [row] = evidence.run_query(store, "diff")["rows"]
-    assert row["note"] == "addresses differ at 2 hits (one row per selector: its first hit): " + (
-        POINTS
-    )
-    # Two new runs: a raw pointer where a reference was is a type change.
-    raw = [
-        (h, "e", "*const rota::Engineer", f"0x{0x1046AD1E0:016x}", "unproven", "rota::Engineer *")
-        for h in (1, 2)
-    ]
-    evidence.record(store, _typed(raw), language="rust")
     rows = evidence.run_query(store, "diff")["rows"]
-    assert rows[0]["note"].startswith("type &rota::Engineer -> *const rota::Engineer at 2 hits")
+    # Visible, right after the real differences: `n` at hit 2 stays the first divergence.
+    assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
+        (2, "n", None),
+        (
+            1,
+            "e",
+            f"{UNTOLD} (`rota::Engineer *` then, `{kind}` now) at 2 hits (one row per "
+            f"selector: its first hit); {MOVED}address() (COOKBOOK 4.8)",
+        ),
+    ]
+    # The other way round, the older run named first as run b.
+    rows = evidence.run_query(store, "diff", {"a": 2, "b": 1})["rows"]
+    assert rows[1]["note"].startswith(f"{UNTOLD} (`rota::Engineer *` then, `{kind}` now)")
+    # Two new runs: a raw pointer where a reference was is a type change.
+    other = "*const rota::Engineer" if kind.startswith("&") else "&rota::Engineer"
+    raw = [(h, "e", other, f"0x{0x1046AD1E0:016x}", None, "rota::Engineer *") for h in (1, 2)]
+    evidence.record(store, _typed(raw), language="rust")
+    rows = evidence.run_query(store, "diff", {"a": 2, "b": 3})["rows"]
+    assert rows[0]["note"].startswith(f"type {kind} -> {other} at 2 hits")
+
+
+def test_another_languages_type_change_is_never_taken_for_a_spelling(tmp_path):
+    # Round 2 review of PR #315: a schema-17 C++ row of type `long &&` (a structured
+    # binding's reference), against a newer row of type `long` whose debugger type is
+    # `long &&`, with values 1 and 2, lost its type change.
+    store = tmp_path / "evidence.db"
+    evidence.record(store, _typed([(1, "t", "long &&", "1", None)]), language="cpp")
+    _as_schema_17(store)
+    evidence.record(store, _typed([(1, "t", "long", "2", None, "long &&")]), language="cpp")
+    [row] = evidence.run_query(store, "diff")["rows"]
+    assert (row["selector"], row["note"]) == ("t", "type long && -> long"), row
 
 
 def test_unproven_text_beyond_an_address_stays_qualified(tmp_path):

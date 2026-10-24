@@ -1612,9 +1612,12 @@ divergence.
   selector, its first hit's. An edit from a reference to a raw pointer gives such a row:
   `type &rota::Engineer -> *const rota::Engineer at 6 hits (one row per selector: its first hit);
   its addresses differ too: …`.
-- A run saved before schema 18 spells a Rust reference or raw pointer as LLDB does:
-  `rota::Engineer *`. `diff` compares that with a newer run's `debugger_type`, so a new spelling
-  alone is no type change.
+- A Rust run saved before schema 18 spells a reference and a raw pointer alike, as LLDB does:
+  `rota::Engineer *`. Against a newer Rust run's `&rota::Engineer` or `*const rota::Engineer`,
+  `diff` can't tell whether the type changed, and says so. Such a pointer's row comes right
+  after the real differences: ``the older run predates Rust type spellings, so Peeky can't tell
+  whether the type changed (`rota::Engineer *` then, `&rota::Engineer` now)``.
+- Any other type that differs is a change, in any language, whatever its `debugger_type`.
 
 **Long values.** The table cuts a value at 120 characters. Where the two runs' values first differ
 near or past that cut, both show from 40 characters before the difference instead. Both start at
