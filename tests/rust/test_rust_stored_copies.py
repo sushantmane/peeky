@@ -82,6 +82,85 @@ fn main() {
 }
 """
 
+# #311 review: a crate function's result, and writes a call or a pointer to memory no local
+# stands for makes. `x` is never read again: `black_box(&x)` only lends it.
+CALLS = """use std::env;
+
+#[inline(never)]
+fn total(v: Vec<u32>) -> u32 {
+    v.iter().sum()
+}
+
+#[inline(never)]
+fn discard(_: Vec<u32>) -> Vec<u32> {
+    vec![7, 1]
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+fn discarded(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let t = total(discard(vec![x, 1]))
+        + other(); // DISCARDED
+    std::hint::black_box(&x);
+    t
+}
+
+fn pushed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v = Vec::new();
+    v.push(x); // PUSH
+    let k = other(); // PUSHED
+    let t = v[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn written(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut slot = 0u32;
+    let p: *mut u32 = &raw mut slot;
+    unsafe { std::ptr::write(p, x) };
+    let k = other(); // WRITTEN
+    let t = slot + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn through(p: *mut u32, arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    unsafe { *p = x };
+    let k = other(); // THROUGH
+    let t = unsafe { *p } + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn raw(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let p = Box::into_raw(Box::new(0u32));
+    unsafe { *p = x };
+    let k = other(); // RAW
+    let t = unsafe { *p } + k;
+    drop(unsafe { Box::from_raw(p) });
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    let mut s = 0u32;
+    println!("DISCARDED {}", discarded(x));
+    println!("PUSHED {}", pushed(x));
+    println!("WRITTEN {}", written(x));
+    println!("THROUGH {}", through(&raw mut s, x));
+    println!("RAW {}", raw(x));
+}
+"""
+
 
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
@@ -135,13 +214,14 @@ def test_a_value_vec_stored_through_its_box_is_refused_on_the_statements_later_l
     assert code == 0, result.get("error")
     (row,) = [row for row in result["rows"] if row["selector"] == "x"]
     assert row["value"] == "5" and row.get("settable") is False, row
-    assert row.get("not_settable") == f"a statement under way read it (line {FIRST})", row
+    # `total` is the crate's own: what it returns is no sure copy, so it may hold one.
+    assert row.get("not_settable") == f"a statement under way may hold a copy (line {FIRST})", row
     assert result["output"].startswith("T 7 5 "), result["output"]
-    # The refusal says the statement has already read it, and where.
+    # The refusal says the statement read it, and where, and that it may hold a copy.
     message = refused(*probe(capsys, root, SECOND, "--set", "x=100", *run))
     assert (
-        f"every place line {SECOND} can stop at is inside a statement that has already read "
-        f"`x` into a temporary (at line {FIRST}), which it uses after the stop"
+        f"every place line {SECOND} can stop at is inside a statement that reads `x` into a "
+        f"temporary (at line {FIRST}), so it may hold a copy, which it uses after the stop"
     ) in message, message
     # Nor is `x` listed as what may be set there instead.
     assert message.endswith(
@@ -187,3 +267,33 @@ def test_a_copy_a_raw_pointer_stores_in_the_programs_array_is_its_own(crate, cap
     code, result = probe(capsys, root, STORE, "--set", "x=100", "--", "5")
     assert code == 0, result.get("error")
     assert result["output"].strip() == "STORED 101", result["output"]
+
+
+@pytest.mark.timeout(400)
+def test_writes_a_call_or_an_untraced_pointer_makes_withhold_the_local(crate, capsys):
+    root = crate("writes", CALLS)
+    reasons = {
+        # `discard(vec![x, 1])` returns `vec![7, 1]`: the statement may hold a copy, no more.
+        "DISCARDED": f"inside a statement that reads `x` into a temporary (at line "
+        f"{line_of(CALLS, '// DISCARDED') - 1}), so it may hold a copy",
+        # `v.push(x)`, then `v[0]`.
+        "PUSHED": f"the program's own `v` (at lines {line_of(CALLS, 'Vec::new()')} and "
+        f"{line_of(CALLS, '// PUSH')}) may hold a copy of `x` that it goes on with",
+        # `ptr::write(p, x)` into `slot`, then `slot + k`.
+        "WRITTEN": f"the program's own `slot` (at line {line_of(CALLS, 'ptr::write')}) may "
+        "hold a copy of `x` that it goes on with",
+        # `*p = x;` through an argument, then `*p`.
+        "THROUGH": f"the program's own `p` (at line {line_of(CALLS, '// THROUGH') - 1}) may "
+        "point at a copy of `x` that it goes on with",
+        # `*p = x;` through `Box::into_raw`'s pointer, then `*p`.
+        "RAW": f"the program's own `p` (at lines {line_of(CALLS, 'Box::into_raw')} and "
+        f"{line_of(CALLS, '// RAW') - 1}) may point at a copy of `x` that it goes on with",
+    }
+    for marker, reason in reasons.items():
+        line = line_of(CALLS, f"// {marker}")
+        message = refused(*probe(capsys, root, line, "--set", "x=100", "--", "5"))
+        assert reason in message, (marker, message)
+    # Before `v.push(x)`, the change reaches the program: `v[0] + k` is 100 + 1.
+    code, result = probe(capsys, root, line_of(CALLS, "// PUSH"), "--set", "x=100", "--", "5")
+    assert code == 0, result.get("error")
+    assert "PUSHED 101" in result["output"], result["output"]

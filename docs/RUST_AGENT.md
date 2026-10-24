@@ -375,6 +375,16 @@ used again. Such a temporary is:
   write into holds it: the pointer's aliases (`_aliases`, the Box and the Vec) and what they borrow
   (`Body._stored_into`). A binding among them holds the program's own copy; a pointer binding
   (`p` of `*p = x;`) only points at one. `_pointers_to` follows `p = slot.as_mut_ptr()` too.
+- what a call may write through a pointer it is given, of what else it is given (#311 review). An
+  argument counts where a callee may write through it (`_may_write`): a `&mut` or raw pointer,
+  `NonNull`, a cell, an aggregate holding one, a crate's type or a type not known. So
+  `Vec::push(move _6, move _7)` with `_6 = &mut v` makes `v` hold `_7`'s copy, as do `ptr::write`,
+  `mem::replace`, `mem::swap` and a `copy_nonoverlapping` statement. `Box::new` given a closure
+  holding `&s` stores no copy of `s`: nothing else is given.
+- Where no local the pointers were made from stands for what they point at (`_pointees`), each
+  pointer binding among them does. That is an argument `p`, or `Box::into_raw`'s pointer, whose Box
+  is moved out of. `copy_undoes` judges it as a binding, and the refusal says it "may point at a
+  copy" (`OwnedLocals.pointer_bindings`).
 
 A pointer that Peeky doesn't follow may point into any local: a read through a reference variable,
 or a call given one. A raw pointer counts as any other, since the source alone doesn't show unsafe
@@ -387,7 +397,8 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
 - A refusal states a read only where `copy_hazards(reads="explicit")` finds one at every place.
   That is `Body.read_copies_at`, a must-analysis met by intersection over every way into a block.
   It counts a `copy` or `move` of an overlapping place (`_reads_part`), and a read through a pointer
-  surely made from a borrow of the whole local. A temporary computed from either counts too.
+  surely made from a borrow of the whole local. A temporary computed from either counts too, but
+  not a call's result (below).
 - A write that may overlap the changed part ends what it knows: `_written_place` and `_apart`. A
   write through a pointer ends it too, unless the pointer surely points apart from the part: a
   borrow of another local, or of a part `_apart` from it, a copy of one, or an argument. A pointer
@@ -412,9 +423,14 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   Box's own pointer (`_BOX_POINTER`, `vec!`'s), or a copy or reborrow of one. A Box written
   through itself (`ShallowInitBox`) counts too.
 - A store through a pointer that may point into what holds a read ends that holder: one of
-  `_stored_into`, or any, through a pointer loaded from memory. So does a call given an alias of it
-  that is a raw pointer or `&mut` (`_read_clobber`), and a drop through one. Only a local whose
-  storage is borrowed, or whose type may hold a pointer, can be reached (`_addressable`).
+  `_stored_into`, or any, through a pointer loaded from memory. So does a drop through one. Only a
+  local whose storage is borrowed, or whose type may hold a pointer, can be reached
+  (`_addressable`).
+- A call's result holds no sure copy: the callee may return anything (#311 review). What a call is
+  given holds none after it, nor does a holder it is given an alias of that `_may_write` allows
+  (`_read_clobber`). The one exception is `std::boxed::box_assume_init_into_vec_unsafe`, the step
+  `vec!` makes its Vec with (`_STD_TRANSFER`). Its result holds what its Box held, where
+  `OwnedLocals._std_transfers` proves the path the standard library's, as `_std_compares` does.
 - Otherwise it hedges, by what each other reading finds:
   - `reads="value"`: reads by value, on some path, of what may overlap the changed part;
   - `reads="whole"`: the same for the whole local, so another part's read;

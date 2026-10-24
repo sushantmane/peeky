@@ -1106,10 +1106,14 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
         return "may", _either(clauses), places, None
     at = proofs.copy_lines(hashed, bound, True)
     made = _line_list(at, home)
+    # A pointer of the program's own stands for what it points at (#311 review: `p` of
+    # `*p = x;`, an argument): it may point at a copy.
+    aiming = getattr(proofs, "pointer_bindings", lambda *args: frozenset())(hashed, bound)
+    holds = "may point at" if aiming == bound else "may hold or point at" if aiming else "may hold"
     own = (
         f"the program's own {_names(proofs.copy_names(hashed, bound))}"
         + (f" (at {made})" if made else "")
-        + f" may hold a copy of {target} that it goes on with"
+        + f" {holds} a copy of {target} that it goes on with"
     )
     if not clauses:
         return "kept", own, at, None

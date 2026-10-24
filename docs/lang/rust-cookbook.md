@@ -1361,9 +1361,12 @@ holds for integer locals too.
 - Some lines can only stop inside such a statement. An example is a statement's later line:
   `s.b];` of `let arr = [s.a,` / `k,` / `s.b];`. A probe there is refused before it runs, naming
   that line.
-- A copy that the statement stores through a pointer counts as a read too. `vec![x, 1]` stores
-  `x`'s copy in its Box through a raw pointer. So at `+ other();` under
-  `let t = total(vec![x, 1])`, `x` is refused: the statement has already read it, at the first line.
+- A copy that the statement stores through a pointer counts too. `vec![x, 1]` stores `x`'s copy
+  in its Box through a raw pointer. So at `+ other();` under `let t = total(vec![x, 1])`, `x` is
+  refused. The note says the statement reads it at the first line, and may hold a copy.
+- What a function of the crate's returns is never said to hold a copy for sure. `total` may
+  return anything, so the note says the statement may hold one. Only the standard library's own
+  step that makes `vec!`'s Vec of its Box passes on what the Box holds.
 
 Peeky follows the MIR in the order the code runs. A temporary made before the local took its
 current value holds an older value, so it doesn't block a change. For example, in
@@ -1389,7 +1392,8 @@ path to every place the stop can be. A read through an aggregate that also holds
 doesn't count, nor a read of another field than the one a change makes. Nor does a read the
 program has overwritten since, as `s.a = 3;` does for `s.a`, or written through a pointer that may
 point into it. Where the function lends the local with `&mut` or a raw pointer, a later call or
-drop may change it, so nothing read before counts either.
+drop may change it, so nothing read before counts either. What a call returns never counts, nor
+what it was given, since the callee may do anything with it.
 
 - It names your binding, as in ``has already copied its value into `n` ``, only where `n` gave
   the copy at every such place.
@@ -1459,6 +1463,16 @@ A copy stored through a pointer counts too. After `let p = slot.as_mut_ptr();` a
 points at, so the refusal says that `slot` may hold a copy. Where a later write through a pointer
 may overwrite the copy, as `b[0] = 7;` does after `let mut b = Box::new([x, 1]);`, the refusal
 says only that the program may hold one.
+
+A call may store a copy too, through a `&mut` or raw pointer it is given, of another argument:
+
+- `v.push(x)`: `v` may hold a copy of `x`;
+- `ptr::write(p, x)` with `p = &raw mut slot`: `slot` may hold one;
+- `mem::replace(&mut slot, x)`, and `copy_nonoverlapping`, in the same way.
+
+Where no local of the function stands for what the pointer points at, the pointer itself does.
+That is so for an argument `p`, or one `Box::into_raw` returned. After `*p = x;`, the refusal says
+``the program's own `p` (at line 49) may point at a copy of `x` that it goes on with``.
 
 To change the value, change it before the copy is made, or change the copy.
 

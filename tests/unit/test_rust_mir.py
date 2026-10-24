@@ -2885,18 +2885,48 @@ def test_a_refusal_says_the_statement_read_it_only_where_every_place_it_can_stop
         "a statement under way at the stop reads it into a temporary (at line 39), so it may "
         "hold a copy of it, which it uses after the stop"
     )
-    # Where the stop can only be past the call, a crate function given a copy of `e` has
-    # read it.
+    # `let c = e; same(c, l)`: where the stop can only be past `c = e`, the statement has
+    # read `e`; where it can be before it too, it only may have.
+    text = raw_eq_variant(
+        "same(move _17, copy _8)", line_39("_17 = copy _13;", "_10 = &raw const (*_13);")
+    )
+    copied, call = at_statement(text, "_17 = copy _13;"), at_statement(text, "_9 = same(")
+    for places, sure in (([call], True), ([copied, call], False)):
+        owned = raw_eq_owned(text)
+        owned._positions = lambda site, line, facts, block=None, places=places: places
+        found = raw_eq_session(owned)("e")
+        if sure:
+            assert found == (
+                "a statement under way at the stop has already read it into a temporary (at "
+                "line 39), which it uses after the stop"
+            )
+            assert found.row == "a statement under way read it (line 39)"
+        else:
+            assert found.startswith("a statement under way at the stop reads it into a temporary")
+    # Past the call, what a crate function given a copy of `e` returns may be anything
+    # (#311 review): only may.
     owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
     owned._positions = lambda site, line, facts, block=None: [(3, 0)]
     why = raw_eq_session(owned)
     assert why("e") == (
-        "a statement under way at the stop has already read it into a temporary (at line "
-        "39), which it uses after the stop"
+        "a statement under way at the stop reads it into a temporary (at line 39), so it may "
+        "hold a copy of it, which it uses after the stop"
     )
-    assert why("e").row == "a statement under way read it (line 39)"
-    assert why("l").startswith("a statement under way at the stop has already read it")
+    assert why("e").row == "a statement under way may hold a copy (line 39)"
     assert why("week").startswith("a statement under way at the stop uses `e` and `l` (at")
+
+
+def at_statement(text, start):
+    """Where the one statement of ``text``'s body starting ``start`` is: (block, index)."""
+    body = parse_body(text)
+    found = [
+        (number, index)
+        for number, block in body.blocks.items()
+        for index, (statement, _, _) in enumerate(block.statements)
+        if statement.startswith(start)
+    ]
+    assert len(found) == 1, (start, found)
+    return found[0]
 
 
 def test_a_refusal_names_each_variable_it_cannot_trace_by_what_it_is():
@@ -3382,17 +3412,26 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     # Review round 2 of #300: what surely read the local was taken from what may have
     # (joined over the paths, through an aggregate holding pointers to other locals too,
     # whatever part a change makes), so "has already read it" could be false.
-    def why(call, *changes, name="week", projection=(), **blocks):
-        owned = raw_eq_owned(raw_eq_variant(call, *changes), **blocks)
-        owned._positions = lambda site, line, facts, block=None: [(3, 0)]
+    def why(call, *changes, name="week", projection=(), past=True, **blocks):
+        # Past the call (`(3, 0)`), or at it, where what it is given is still to be used.
+        text = raw_eq_variant(call, *changes)
+        owned = raw_eq_owned(text, **blocks)
+        places = [(3, 0)] if past else [at_statement(text, "_9 = same(")]
+        owned._positions = lambda site, line, facts, block=None: places
         return raw_eq_session(owned, projection)(name)
 
     sure = "a statement under way at the stop has already read it into a temporary (at line 39)"
     maybe = ", so it may hold a copy of it, which it uses after the stop"
-    # `same(week)`: read by value on every path.
-    assert why("same(copy _4)").startswith(sure)
+    # `let c = week; same(c)`: read by value on every path. Past the call, its result may
+    # be anything (#311 review): only may.
+    by_value = line_39("_17 = copy _4;", "_10 = &raw const (*_13);")
+    assert why("same(move _17)", by_value, past=False).startswith(sure)
+    assert why("same(move _17)", by_value) == (
+        "a statement under way at the stop reads it into a temporary (at line 39)" + maybe
+    )
     # `let r = &week; same(*r)`: through a pointer made from it.
-    assert why("same(move _17)", line_39("_16 = &_4;", "_17 = copy (*_16);")).startswith(sure)
+    through = line_39("_16 = &_4;", "_17 = copy (*_16);")
+    assert why("same(move _17)", through, past=False).startswith(sure)
     # `let pair = (&week, &pick); same(*pair.1)` reads only `pick`.
     pair = line_39(
         "_16 = &_4;",
@@ -3426,7 +3465,7 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
         "        debug pick => _12;  ",
     )
     field = line_39("_17 = copy (_16.1: u32);", "_10 = &raw const (*_13);")
-    whole = why("same(copy _17)", pair_local, field, name="tt")
+    whole = why("same(copy _17)", pair_local, field, name="tt", past=False)
     assert whole.startswith(sure), whole
     part = why("same(copy _17)", pair_local, field, name="tt", projection=(("field", 0),))
     assert part == (
@@ -3716,25 +3755,53 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
 
     from peeky.rust_mir import (
         _BORROWING,
+        _CALL_ARGUMENTS,
+        _COPY_NONOVERLAPPING,
         _MENTIONED,
         _NOT_A_CALL,
         _PART_ASSIGNMENT,
+        _STORE_BASE,
         _STRING,
         _WHOLE_ASSIGNMENT,
+        _may_write,
     )
 
     def passes(body, local):
         named = {b[0] for bs in body.bindings.values() for b in bs if b[0] is not None}
         found = []
+
+        def written(bases, value, mentioned=None):
+            # #311: what a write through a pointer may reach holds what its value holds.
+            if mentioned is None:
+                mentioned = {int(n) for n in _MENTIONED.findall(value)}
+            for base in bases:
+                for target in body._stored_into(base):
+                    if target not in named and target not in (0, local):
+                        found.append((target, value, mentioned))
+
         for block in body.blocks.values():
             for text, _, _ in block.statements:
                 text = _STRING.sub('""', text)
+                if (stored := _STORE_BASE.match(text)) and " = " in text:
+                    written({int(stored[1])}, text.split(" = ", 1)[1].removesuffix(";"))
+                    continue
+                if copied := _COPY_NONOVERLAPPING.match(text):
+                    written({int(copied[1])}, f"copy (*_{copied[2]})")
+                    continue
                 part = _WHOLE_ASSIGNMENT.match(text) or (
                     None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
                 )
                 if part and int(part[1]) not in named and int(part[1]) not in (0, local):
                     mentioned = {int(n) for n in _MENTIONED.findall(part[2])}
                     found.append((int(part[1]), part[2], mentioned))
+                call = part and "->" in part[2] and not _NOT_A_CALL.match(part[2])
+                if call and (arguments := _CALL_ARGUMENTS.match(text)):
+                    # Through each argument a callee may write through, what else it is given.
+                    given = {int(n) for n in _MENTIONED.findall(arguments[1])}
+                    for base in given:
+                        others = {n for n in given - {base} if body.types.get(n) != "()"}
+                        if others and _may_write(body.types.get(base), body.generics):
+                            written({base}, part[2], others)
         holds, points, changed = set(), set(), True
         while changed:
             changed = False

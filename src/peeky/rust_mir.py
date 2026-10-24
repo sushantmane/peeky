@@ -131,6 +131,16 @@ _STORE = re.compile(r"^(\(+\*_[0-9]+\).*?|\(\*_[0-9]+\)) = ")
 # T) = …`, `_6` of `(*((*_6).0: &mut u32)) = …` (#311).
 _STORE_BASE = re.compile(r"^\(+\*[(*]*_([0-9]+)\b")
 _BOX_TYPE = re.compile(r"^(?:(?:std|alloc)::boxed::)?Box<")
+# `copy_nonoverlapping(dst = move _5, src = move _6, count = const 1_usize);`: a store
+# through `dst` of what `src` points at.
+_COPY_NONOVERLAPPING = re.compile(
+    r"^copy_nonoverlapping\(dst = (?:copy|move) _([0-9]+), src = (?:copy|move) _([0-9]+),"
+)
+# A type a callee may write through (#311 review): a `&mut` or raw pointer, `NonNull`, a
+# cell or lock, wherever it is in the type (an aggregate wrapping one).
+_WRITABLE_TYPE = re.compile(
+    r"&mut |\*mut |\*const |NonNull<|Cell<|UnsafeCell<|Atomic|Mutex<|RwLock<|OnceLock<"
+)
 # A reference or raw pointer itself (`&mut [u32]`, `*mut u32`, `NonNull<T>`).
 _POINTER_TYPE = re.compile(r"^(?:&|\*const |\*mut |(?:(?:std|core)::ptr::)?NonNull<)")
 # `_23 = copy ((BOX.0: Unique<T>).0: NonNull<T>) as *const T (Transmute)`: BOX is a Box
@@ -215,6 +225,23 @@ def _pointer_free(kind, generics, free_types=frozenset()):
     return all(
         word in _PRIMITIVE_WORDS or word in _FREE_PATHS or word in free_types
         for word in _TYPE_WORDS.findall(kind)
+    )
+
+
+def _may_write(kind, generics):
+    """Whether a callee given a value of the MIR type ``kind`` may write through a pointer
+    it holds (#311 review): a `&mut` or raw pointer, `NonNull`, a cell or lock, wherever
+    it is in the type (``_WRITABLE_TYPE``: `(&mut Vec<u32>, u32)` too); a type of the
+    crate's own, a type parameter, a closure, a trait object or a type not known, which may
+    hold one. Not the standard library's types otherwise, by value or by shared reference
+    (`&Vec<u32>`, `&str`, `std::fmt::Arguments<'_>`)."""
+    if kind is None or _WRITABLE_TYPE.search(kind):
+        return True
+    if generics is None or mentions(kind, generics) or re.search(r"[{}]|\b(?:dyn|impl)\b", kind):
+        return True
+    return not all(
+        word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS)
+        for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
     )
 
 
@@ -1311,11 +1338,21 @@ class Body:
         a call the dump names as the standard library's address comparison)], {local: the
         indexes of those mentioning it}, the indexes of those that may hold or point
         whatever local is judged, {(block, index): its part}, the named locals, {(block,
-        index): (the parts of a store through a pointer, the locals it may write into, the
-        pointer bindings among them, the locals the pointer was made from)}). A store
-        (`(*_35) = [move _15, const 1_u32]`, as `vec![x, 1]` fills its Box) has a part for
-        each local it may write into (``_stored_into``), which it leaves holding what it
-        held too (#311)."""
+        index): the writes through a pointer there, each (its parts, the locals it may
+        write into, the pointer bindings among them, the locals the pointers were made
+        from, the pointer bindings that stand for what they point at, the locals a refusal
+        may name it as a line of)}).
+
+        A write through a pointer has a part for each local it may write into
+        (``_stored_into``), which it leaves holding what it held too (#311): a store
+        (`(*_35) = [move _15, const 1_u32]`, as `vec![x, 1]` fills its Box), a
+        `copy_nonoverlapping`, and a call given a pointer it may write through
+        (``_may_write``), of what else the call is given (#311 review: `Vec::push(move _6,
+        move _7)` with `_6 = &mut v`, `ptr::write(p, x)`, `mem::replace`, `mem::swap`); not
+        of that pointer itself (`Box::new` given a closure holding `&s` copies no `s`). Where no local the
+        pointers were made from stands for what they point at (an argument, the Box
+        `Box::into_raw` was given), each pointer binding among them does
+        (``_pointees``)."""
         if self._copy_reads is None:
             named = {
                 binding[0]
@@ -1324,6 +1361,50 @@ class Body:
                 if binding[0] is not None
             }
             parts, mentions, seeds, at, stores = [], {}, [], {}, {}
+
+            def add(value, targets, text, mentioned=None):
+                if mentioned is None:
+                    mentioned = frozenset(int(n) for n in _MENTIONED.findall(value))
+                pointers = frozenset(
+                    n for n in mentioned if n in named and _BORROWING.search(self.types.get(n, "&"))
+                )
+                through = bool(re.search(r"\(\*[(_]", value))
+                made = []
+                for target in targets:
+                    parts.append(
+                        (
+                            target,
+                            mentioned,
+                            through,
+                            bool(re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value)),
+                            "->" in value and not _NOT_A_CALL.match(value),
+                            bool(
+                                _FORMAT_CALL.match(value)
+                                and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
+                            ),
+                            pointers,
+                            bool(_ADDRESS_COMPARISON.match(text)),
+                        )
+                    )
+                    made.append(len(parts) - 1)
+                    for n in mentioned:
+                        mentions.setdefault(n, []).append(len(parts) - 1)
+                    if through or pointers:
+                        seeds.append(len(parts) - 1)
+                return tuple(made)
+
+            def through(bases, value, text, carried=True, mentioned=None):
+                targets = frozenset().union(*(self._stored_into(n) for n in bases)) - {0}
+                owners = frozenset().union(*(self._made_from(n) for n in bases))
+                aiming = frozenset(
+                    n for n in targets if n in named and _POINTER_TYPE.match(self.types.get(n, ""))
+                )
+                made = add(value, sorted(targets), text, mentioned)
+                pointees = self._pointees(owners, aiming)
+                # A call given only the pointers it may write through brings no new value
+                # (`slot.as_mut_ptr()`): never named where a copy was made.
+                return made, targets, aiming, owners, pointees, owners if carried else frozenset()
+
             for number, block in self.blocks.items():
                 for index, (text, _, _) in enumerate(block.statements):
                     text = _STRING.sub('""', text)
@@ -1331,68 +1412,64 @@ class Body:
                     found = _WHOLE_ASSIGNMENT.match(text) or (
                         None if re.match(r"\(+\*_", text) else _PART_ASSIGNMENT.match(text)
                     )
+                    copied = _COPY_NONOVERLAPPING.match(text)
                     if stored and " = " in text:
                         value = text.split(" = ", 1)[1].removesuffix(";")
-                        targets = sorted(self._stored_into(int(stored[1])) - {0})
-                    elif found and int(found[1]) != 0:
-                        value, targets = found[2], [int(found[1])]
-                    else:
-                        continue
-                    mentioned = frozenset(int(n) for n in _MENTIONED.findall(value))
-                    pointers = frozenset(
-                        n
-                        for n in mentioned
-                        if n in named and _BORROWING.search(self.types.get(n, "&"))
-                    )
-                    through = bool(re.search(r"\(\*[(_]", value))
-                    made = []
-                    for target in targets:
-                        parts.append(
-                            (
-                                target,
-                                mentioned,
-                                through,
-                                bool(re.match(r"&(?:mut |raw const |raw mut |fake \w+ )?", value)),
-                                "->" in value and not _NOT_A_CALL.match(value),
-                                bool(
-                                    _FORMAT_CALL.match(value)
-                                    and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
-                                ),
-                                pointers,
-                                bool(_ADDRESS_COMPARISON.match(text)),
-                            )
+                        stores[number, index] = (through({int(stored[1])}, value, text),)
+                    elif copied:
+                        value = f"copy (*_{copied[2]})"
+                        stores[number, index] = (through({int(copied[1])}, value, text),)
+                    elif found:
+                        value = found[2]
+                        if int(found[1]) != 0:
+                            at[number, index] = add(value, [int(found[1])], text)[0]
+                        arguments = (
+                            _CALL_ARGUMENTS.match(text)
+                            if "->" in value and not _NOT_A_CALL.match(value)
+                            else None
                         )
-                        made.append(len(parts) - 1)
-                        for n in mentioned:
-                            mentions.setdefault(n, []).append(len(parts) - 1)
-                        if through or pointers:
-                            seeds.append(len(parts) - 1)
-                    if stored:
-                        aiming = frozenset(
-                            n
-                            for n in targets
-                            if n in named and _POINTER_TYPE.match(self.types.get(n, ""))
+                        given = (
+                            {int(n) for n in _MENTIONED.findall(arguments[1])} if arguments else ()
                         )
-                        owners = self._made_from(int(stored[1]))
-                        stores[number, index] = (tuple(made), frozenset(targets), aiming, owners)
-                    else:
-                        at[number, index] = made[0]
+                        bases = {n for n in given if _may_write(self.types.get(n), self.generics)}
+                        # Through each, what else it is given; `()` carries nothing.
+                        writes = tuple(
+                            through({base}, value, text, True, frozenset(others))
+                            for base in sorted(bases)
+                            if (others := {n for n in given - {base} if self.types.get(n) != "()"})
+                        )
+                        if writes:
+                            stores[number, index] = writes
             self._copy_reads = (parts, mentions, seeds, at, frozenset(named), stores)
         return self._copy_reads
 
+    def _pointees(self, owners, aiming):
+        """The pointer bindings of ``aiming`` that stand for what a write through them
+        reaches (#311 review): all of them, where no local of ``owners`` (what the pointers
+        were made from) does, one not itself a pointer and never moved out of (`slot` of
+        `p = slot.as_mut_ptr()`; not the Box `Box::into_raw` was given, nor anything for an
+        argument `p`)."""
+        moved = self._moved()
+        standing = any(
+            not _POINTER_TYPE.match(self.types.get(n, "")) and n not in moved for n in owners
+        )
+        return frozenset() if standing else aiming
+
     def _copy_places(self):
         """[((block, index), the index of a part ``_copy_parts`` reads there)], of an
-        assignment, and of a store through a pointer for each local the pointer was made
-        from (#311: the Box `vec!` fills, `slot` of `*p = x;`). Not for its other aliases,
-        so `team[pick].shifts += 1;` is never where `p` of `same(p, q)` was made."""
+        assignment, and of a write through a pointer for each local the pointer was made
+        from (#311: the Box `vec!` fills, `slot` of `*p = x;`, `v` of `v.push(x)`). Not for
+        its other aliases, so `team[pick].shifts += 1;` is never where `p` of `same(p, q)`
+        was made."""
         parts, _, _, at, _, stores = self._copy_parts()
         return [
             *at.items(),
             *(
                 (place, part)
-                for place, (made, _, _, owners) in stores.items()
+                for place, writes in stores.items()
+                for made, _, _, _, _, reported in writes
                 for part in made
-                if parts[part][0] in owners
+                if parts[part][0] in reported
             ),
         ]
 
@@ -1490,8 +1567,9 @@ class Body:
         """``copies_at``'s transfer over one statement: (holds, points, direct, own)
         after it: ``copies_of``'s holds and points, for temporaries; and the locals,
         named or not, holding a direct copy (``direct_copies_at``), and the pointers made
-        from a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct."""
-        holds, points, direct, own = state
+        from a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct.
+        Then what the statement writes through a pointer (``_copy_store``), judged by what
+        held a copy before it: a call's arguments are read before it returns."""
         block = self.blocks[number]
         text = _STRING.sub('""', block.statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
@@ -1502,14 +1580,33 @@ class Body:
             return (frozenset(),) * 4
         parts, _, _, at, named, stores = self._copy_parts()
         found = at.get((number, index))
-        if found is None:
-            stored = stores.get((number, index))
-            if not stored or not stored[0]:
-                return state
-            return self._copy_store(
-                local, text, stored, state, formatting, projection, compares, reads
+        after = state
+        if found is not None:
+            after = self._copy_assign(
+                local,
+                formatting,
+                text,
+                whole,
+                parts[found],
+                named,
+                state,
+                projection,
+                compares,
+                reads,
             )
-        target, mentioned, through, borrow, called, _, _, _ = parts[found]
+        for stored in stores.get((number, index), ()):
+            if stored[0]:
+                after = self._copy_store(
+                    local, text, stored, state, after, formatting, projection, compares, reads
+                )
+        return after
+
+    def _copy_assign(
+        self, local, formatting, text, whole, part, named, state, projection, compares, reads
+    ):
+        """``_copy_step`` over an assignment's own target, ``part``."""
+        holds, points, direct, own = state
+        target, mentioned, through, borrow, called, _, _, _ = part
         if target == local:
             return state
         # A place of it that may hold part of ``projection`` (#192 review).
@@ -1532,7 +1629,7 @@ class Body:
         if target in named:
             return holds, points, direct, own
         hold, point = _copy_verdict(
-            parts[found], local, holds, points, formatting, compares, reads, own, touched
+            part, local, holds, points, formatting, compares, reads, own, touched
         )
         return (
             holds | {target} if hold else holds,
@@ -1541,30 +1638,38 @@ class Body:
             own,
         )
 
-    def _copy_store(self, local, text, stored, state, formatting, projection, compares, reads):
-        """``_copy_step`` over a store through a pointer (#311: `((*_35).1: …) = [move
-        _15, const 1_u32]`, as `vec![x, 1]` fills its Box): each local it may write into
-        (``stored``: its parts, those locals, the pointer bindings among them) may hold
-        what the value holds, or point where it points, besides what it held. A temporary
-        among them holds a copy the statement uses where it is used again (the Box, the
-        Vec made from it, the pointer); a binding of the program's own holds a direct
-        copy, as `slot` of `*p = x;` does. A binding that is itself a pointer (`p`) holds
-        none: what is read through it does, as through a pointer made from a borrow."""
+    def _copy_store(
+        self, local, text, stored, state, after, formatting, projection, compares, reads
+    ):
+        """``_copy_step`` over a write through a pointer (#311: `((*_35).1: …) = [move
+        _15, const 1_u32]`, as `vec![x, 1]` fills its Box; a call given `&mut v` and `x`):
+        each local it may write into (``stored``: its parts, those locals, the pointer
+        bindings among them, what they were made from, the pointer bindings standing for
+        what they point at) may hold what the value holds, judged by ``state`` (before
+        it), or point where it points, besides what it holds in ``after``. A temporary
+        among them holds a copy the statement uses where it is used again (the Box, the Vec
+        made from it, the pointer); a binding of the program's own holds a direct copy, as
+        `slot` of `*p = x;` and `v` of `v.push(x)` do. A pointer binding (`p`) holds none,
+        but what is read through it does, as through a pointer made from a borrow; where
+        nothing else stands for what it points at, it does (an argument `p`)."""
         holds, points, direct, own = state
         parts, _, _, _, named, _ = self._copy_parts()
-        made, targets, pointers, _ = stored
+        made, targets, pointers, _, pointees, _ = stored
         first = parts[made[0]]
-        _, mentioned, through, borrow, _, _, _, _ = first
+        _, mentioned, through, borrow, called, _, _, _ = first
         touched = local in mentioned and _touches(text, local, projection)
+        # A call given a pointer into the local may copy what it points at.
         taken = not borrow and (
-            touched or bool(mentioned & direct) or (through and bool(mentioned & own))
+            touched or bool(mentioned & direct) or ((through or called) and bool(mentioned & own))
         )
         hold, point = _copy_verdict(
             first, local, holds, points, formatting, compares, reads, own, touched
         )
+        holds, points, direct, own = after
         targets = targets - {local}
         if taken:
-            direct, own = direct | (targets - pointers), own | (pointers - {local})
+            direct = direct | (targets - pointers) | (pointees - {local})
+            own = own | (pointers - pointees - {local})
         temporaries = targets - named
         return (
             holds | temporaries if hold else holds,
@@ -1573,7 +1678,7 @@ class Body:
             own,
         )
 
-    def read_copies_at(self, local, position, projection=()):
+    def read_copies_at(self, local, position, projection=(), transfers=False):
         """What surely holds a value read from ``local``'s current value (or from its part
         ``projection``) at ``position``, on every path from bb0 (#300: what a refusal may
         say the statement has read): (the temporaries that read it, the locals, the
@@ -1591,14 +1696,17 @@ class Body:
         through a pointer surely into a local, or into what it owns (`vec![x, 1]` fills its
         Box so), of what holds a read makes that local hold it; one, or a call given a
         pointer, that may write into what holds a read leaves it holding it no more (#311:
-        ``_read_store``, ``_read_clobber``)."""
+        ``_read_store``, ``_read_clobber``). A call's result holds no sure copy, and what
+        it is given holds none after it (#311 review: `discard(vec![x, 1])` may return
+        anything), but for the standard library's Box-to-Vec conversion `vec!` makes, where
+        ``transfers`` (``OwnedLocals._std_transfers``) proves it is."""
         if self.coroutine is not None:
             return None
         if self._read_flows is None:
             self._read_flows = {}
-        key = (local, projection)
+        key = (local, projection, transfers)
         if key not in self._read_flows:
-            self._read_flows[key] = self._read_flow(local, projection)
+            self._read_flows[key] = self._read_flow(local, projection, transfers)
         entry = self._read_flows[key]
         number, index = position
         if entry is None:
@@ -1607,10 +1715,10 @@ class Body:
             return frozenset(), frozenset(), frozenset()
         state = entry[number]
         for at in range(min(index, len(self.blocks[number].statements))):
-            state = self._read_step(local, projection, number, at, state)
+            state = self._read_step(local, projection, number, at, state, transfers)
         return state[0], state[1], state[3]
 
-    def _read_step(self, local, projection, number, index, state):
+    def _read_step(self, local, projection, number, index, state, transfers=False):
         """``read_copies_at``'s transfer over one statement: (read, taken, own, origins,
         apart, into) after it: its two sets, the pointers surely made from a borrow of the
         local (``projection`` () only), (a local taken through a binding's copy, that
@@ -1619,7 +1727,7 @@ class Body:
         another local, a part of it apart from ``projection``, or the caller's), and (a
         pointer, a local it surely points into or into what that owns) for each pointer
         made from a borrow of a local or a Box's own pointer, which a store through it
-        fills (#311: ``_read_store``)."""
+        fills (#311: ``_read_store``). ``transfers`` as for ``read_copies_at``."""
         empty = (frozenset(),) * 6
         text = _STRING.sub('""', self.blocks[number].statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
@@ -1629,6 +1737,7 @@ class Body:
             return empty
         if self._read_ends(local, projection, text):
             return empty
+        before = state
         read, taken, own, origins, apart, into = self._read_clobber(text, state)
         if ended := _STORAGE.match(text) or _DROP.match(text):
             gone = int(ended[1])
@@ -1674,6 +1783,21 @@ class Body:
         # for `q = &mut p`), or through a `Cell` it is in: never known to point apart.
         aimed = target not in self._borrowed()
         value, whole_local = whole[2], projection == ()
+        if "->" in value and not _NOT_A_CALL.match(value):
+            # A call's result holds no sure copy: the callee may return anything (#311
+            # review: `discard(vec![x, 1])` returns `vec![7, 1]`). Only the standard
+            # library's Box-to-Vec conversion `vec!` makes gives the Vec what its Box held.
+            transfer = _STD_TRANSFER.match(value) if transfers else None
+            if transfer:
+                box, (was_read, was_taken, _, was_origins, _, _) = int(transfer[1]), before
+                if box in was_taken:
+                    gave = {binding for made, binding in was_origins if made == box}
+                    gave |= {box} & named
+                    taken = taken | {target}
+                    origins = origins | {(target, binding) for binding in gave}
+                if box in was_read and target not in named:
+                    read = read | {target}
+            return read, taken, own, origins, apart, into
         plain = [int(n) for n in re.findall(r"\(\*_([0-9]+)\)", value)]
         only = bool(plain) and len(plain) == value.count("(*")
         through = only and set(plain) <= own
@@ -1778,22 +1902,31 @@ class Body:
         return local in self._borrowed() or (kind is not None and not _POINTERLESS.fullmatch(kind))
 
     def _read_clobber(self, text, state):
-        """``state`` (``_read_step``'s) less what a call ``text`` may write into, where
-        something holds a read (#311): a local it is given a pointer that may point into
-        (an alias of it of a raw pointer, `&mut`, `NonNull` or `Cell` type, or of a type
-        not known), as `fill(p)` may overwrite the Box `p` was made from."""
+        """``state`` (``_read_step``'s) less what a call ``text``, or a
+        `copy_nonoverlapping`, may change, where something holds a read (#311): what it is
+        given, moved or passed (#311 review: what a callee does with it is not known), and
+        a local it is given a pointer that may point into, as `fill(p)` may overwrite the
+        Box `p` was made from: an alias of it of a type a callee may write through
+        (``_may_write``: a `&mut` or raw pointer, an aggregate or a crate's type that may
+        hold one, a type not known)."""
         read, taken, own, origins, apart, into = state
-        held = frozenset(each for each in read | taken if self._addressable(each))
-        if not held or "->" not in text or text.startswith("goto") or _NOT_A_CALL.match(text):
+        if not (read or taken):
             return state
-        arguments = _CALL_ARGUMENTS.match(text)
-        given = {int(n) for n in _MENTIONED.findall(arguments[1] if arguments else text)}
-        writable = {
-            n
-            for n in given
-            if re.search(r"&mut |\*mut |\*const |NonNull<|Cell<", self.types.get(n, "&mut "))
+        if copied := _COPY_NONOVERLAPPING.match(text):
+            given, writable = set(), {int(copied[1])}
+        elif "->" not in text or text.startswith("goto") or _NOT_A_CALL.match(text):
+            return state
+        else:
+            arguments = _CALL_ARGUMENTS.match(text)
+            given = {int(n) for n in _MENTIONED.findall(arguments[1] if arguments else text)}
+            writable = {n for n in given if _may_write(self.types.get(n), self.generics)}
+        held = read | taken
+        lost = held & given
+        lost |= {
+            each
+            for each in held
+            if self._addressable(each) and (self._aliases(each) - {each}) & writable
         }
-        lost = frozenset(each for each in held if (self._aliases(each) - {each}) & writable)
         if not lost:
             return state
         origins = frozenset(pair for pair in origins if pair[0] not in lost)
@@ -1830,7 +1963,7 @@ class Body:
             self._exposed_cache[key] = found
         return self._exposed_cache[key]
 
-    def _read_flow(self, local, projection):
+    def _read_flow(self, local, projection, transfers=False):
         """{block: (read, taken, own, origins, apart, into) on entry} for
         ``read_copies_at``: its transfer, met by intersection over every way in (the
         greatest fixpoint from bb0); None past the budget. A call sets its result on its
@@ -1855,8 +1988,12 @@ class Body:
             state = entry[number]
             last = len(block.statements) - 1
             for index in range(last):
-                state = self._read_step(local, projection, number, index, state)
-            after = self._read_step(local, projection, number, last, state) if last >= 0 else state
+                state = self._read_step(local, projection, number, index, state, transfers)
+            after = (
+                self._read_step(local, projection, number, last, state, transfers)
+                if last >= 0
+                else state
+            )
             text = _STRING.sub('""', block.statements[last][0]) if last >= 0 else ""
             ends = last >= 0 and self._read_ends(local, projection, text)
             for target in self._flows(number):
@@ -3590,6 +3727,12 @@ _ADDRESS_COMPARISON = re.compile(
 # A function of the crate's own that a call could be dumped under one of those names
 # (`fn std::ptr::eq`, `fn inner::addr_eq`): its header's path, any prefix.
 _COMPARISON_NAME = re.compile(r"(?:^|::)(?:ptr::eq|addr_eq)$")
+# The standard library's conversion of the Box `vec!` fills into the Vec it gives (#311):
+# what the Box holds, the Vec holds. Only where ``OwnedLocals._std_transfers`` proves it.
+_STD_TRANSFER = re.compile(
+    r"^(?:std|alloc)::boxed::box_assume_init_into_vec_unsafe::<.+>\(move _([0-9]+)\) -> "
+)
+_TRANSFER_NAME = re.compile(r"(?:^|::)box_assume_init_into_vec_unsafe$")
 # An invocation's opening, as ``_MACRO_CALL``, and a `std` or `core` in its arguments
 # that is not a path's start (`make_mod!(std)` may declare `mod std`); and an `extern
 # crate` renamed so.
@@ -4870,7 +5013,7 @@ class OwnedLocals:
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
         formatting, bindings = self._formatting(), body.named_locals()
-        compares = self._std_compares()
+        compares, transfers = self._std_compares(), self._std_transfers()
         # "whole": as "value", for a change to the whole local (#300: another part read);
         # "copied", "bindings": of "any"'s flow.
         flow = {"whole": "value", "copied": "any", "bindings": "any"}.get(reads, reads)
@@ -4884,7 +5027,7 @@ class OwnedLocals:
             # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
             if reads in ("explicit", "taken", "sources"):
-                sure = body.read_copies_at(local, position, projection)
+                sure = body.read_copies_at(local, position, projection, transfers)
                 if sure is None:
                     return None
                 read, taken, origins = sure
@@ -4999,6 +5142,19 @@ class OwnedLocals:
                     kinds.setdefault(name, set()).add(_pointer_kind(body.types.get(binding[0])))
         return lines, sorted(
             (name, found.pop() if len(found) == 1 else None) for name, found in kinds.items()
+        )
+
+    def pointer_bindings(self, hashed, locals_):
+        """Those of ``locals_`` that are the program's own references or raw pointers in the
+        body of ``hashed`` (#311 review: `p` of `*p = x;`, which stands for what it points
+        at, where nothing else does)."""
+        body = self.body(hashed)
+        if body is None:
+            return frozenset()
+        return frozenset(
+            local
+            for local in locals_
+            if local in body.named_locals() and _POINTER_TYPE.match(body.types.get(local, ""))
         )
 
     def copy_names(self, hashed, locals_):
@@ -5688,27 +5844,58 @@ class OwnedLocals:
           as a path's start (`println!("{}", std::process::id())` is fine);
         - its code names `addr_eq` only after `ptr::`, so it declares none."""
         if "_std_compares_known" not in self.__dict__:
-            from peeky.rust_lexer import code_only
-
             names = {body.path for body in self.bodies} | self.defined
-            codes = [
-                code_only(self.texts[source]) if source in self.texts else None
-                for source in self.sources
-            ]
+            codes = self._crate_codes()
             self._std_compares_known = (
-                bool(codes)
+                self._std_own()
                 and not any(_COMPARISON_NAME.search(name) for name in names)
                 and all(
-                    code is not None
-                    and not _named_own(code, {"std", "core"})
-                    and not _EXTERN_AS_STD.search(code)
-                    and not _passes_std(code)
-                    and len(re.findall(r"\baddr_eq\b", code))
+                    len(re.findall(r"\baddr_eq\b", code))
                     == len(re.findall(r"\bptr\s*::\s*addr_eq\b", code))
                     for code in codes
                 )
             )
         return self._std_compares_known
+
+    def _crate_codes(self):
+        """The crate's sources with comments and literals blanked (``code_only``), each
+        None where it does not lex."""
+        if "_crate_codes_known" not in self.__dict__:
+            from peeky.rust_lexer import code_only
+
+            self._crate_codes_known = [
+                code_only(self.texts[source]) if source in self.texts else None
+                for source in self.sources
+            ]
+        return self._crate_codes_known
+
+    def _std_own(self):
+        """Whether a path the dump starts `std::` or `core::` is the standard library's:
+        the crate's sources lex, and none names an item or import `std` or `core` of its
+        own (``_named_own``), renames an `extern crate` so, or passes `std` or `core` to a
+        macro other than as a path's start (#259, #311)."""
+        if "_std_own_known" not in self.__dict__:
+            codes = self._crate_codes()
+            self._std_own_known = bool(codes) and all(
+                code is not None
+                and not _named_own(code, {"std", "core"})
+                and not _EXTERN_AS_STD.search(code)
+                and not _passes_std(code)
+                for code in codes
+            )
+        return self._std_own_known
+
+    def _std_transfers(self):
+        """Whether the calls the dump names as the Box-to-Vec conversion `vec!` makes
+        (``_STD_TRANSFER``: `std::boxed::box_assume_init_into_vec_unsafe`) are the standard
+        library's (#311), as ``_std_compares`` proves `ptr::eq`: its paths are std's
+        (``_std_own``), and no function the crate's MIR dump holds is so named."""
+        if "_std_transfers_known" not in self.__dict__:
+            names = {body.path for body in self.bodies} | self.defined
+            self._std_transfers_known = self._std_own() and not any(
+                _TRANSFER_NAME.search(name) for name in names
+            )
+        return self._std_transfers_known
 
     def _frozen(self, site, local, value, line):
         """True if ``local`` assigned ``value`` points where nothing can move or free
