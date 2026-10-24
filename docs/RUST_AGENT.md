@@ -386,13 +386,21 @@ used again. Such a temporary is:
   pointer, and a pointer a call returns from one or from a pointer into the local (`a.iter()`).
 - What a call returns is a direct copy where the call is given a pointer into the local or into
   what holds a copy (#320: `x.clone()`, `x.to_string()`, `ptr::read(&x)`, `format!("{}", x)`).
-  That holds where its type may hold a value; a result that only points (`&str`, an iterator, a
-  type with a lifetime, a trait object) points into it instead (the flow's `aims`), as a cast,
-  copy or aggregate of one does.
-- A field read out of such a pointer-holding value a call made is a copy (`?` on a
-  `Result<u32, Box<dyn Error>>`), and so is a read through it. A call given one may store a copy
-  into what holds no pointer (`out.push_str(&name)`). Into what may hold one it may have stored
-  the pointer itself, as #164's `v.push(&s[2..])` does, so that isn't counted.
+  Only a result type holding nothing but pointers holds no copy (`_pointer_only`, review): a
+  reference, a raw pointer, `NonNull`, a tuple, array or `Option` of these, or a standard view of
+  `_POINTER_VIEWS` (`slice::Iter`, `str::Chars`, `fmt::Arguments`). `(u32, &'static ())` and a
+  struct `Hybrid<'_> { v: u32, r: &u32 }` may hold a copy.
+- A result whose type shows a pointer (a reference, a lifetime, a closure, a trait object) may
+  also point into the local (the flow's `aims`), as a cast, copy or aggregate of one does. A read
+  through it may be a copy. A call given one may store a copy into what holds no pointer
+  (`out.push_str(&name)`). Into what may hold one it may have stored the pointer itself, as
+  #164's `v.push(&s[2..])` does, so that isn't counted.
+- `Body._only_wraps` proves a call the standard library's that returns only what it is given
+  (`_WRAPPERS`: `Box::new`, `Box::pin`, `Rc::new`, `Arc::new`). What it returns holds a copy only
+  where what it was given did. So #164's `Box::new(move || check(t))`, with `t = &s[2..]`, holds
+  none.
+- A cast to a type naming a function (`as Box<dyn Fn() -> usize>`) is no call: only a statement
+  with a `return:` edge is one.
 - `Body._only_measures` proves a call the standard library's that only measures or compares, so
   its result is no copy. It is a method of `_MEASURES` (`len`, `is_empty`, `contains`,
   `starts_with`) of a standard type, slice or `str`, or `eq`, `lt`, `cmp`, `partial_cmp` and the
@@ -400,6 +408,10 @@ used again. Such a temporary is:
 - Each argument must point at a primitive or a standard type (`_standard_only`), and the inherent
   method's type must be what the first argument points at. So the method is the standard
   library's own.
+- A dump names an inherent method by its type's short name (`String::len`), as it would a type of
+  the crate's own of that name. So the name must be one the crate gives no item of its own
+  (`OwnedLocals._trusted_names`, set as `Body.trusted_names`): none it declares, imports under
+  that name, passes bare to a macro, or names in a `macro_rules!` body (`_named_own`).
 - `OwnedLocals._std_calls` proves the dump's standard paths and trait names (`_std_own`, and no
   `PartialEq`, `PartialOrd` or `Ord` of the crate's own), set as `Body.std_calls`. What it returns
   must be a `bool`, `usize` or `Ordering` the local's type can't hold (`_may_hold_type`): a

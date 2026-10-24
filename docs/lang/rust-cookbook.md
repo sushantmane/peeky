@@ -1407,6 +1407,8 @@ holds for integer locals too.
 - Only the standard library's measures and comparisons are proven to return no copy: `len`,
   `is_empty`, `contains`, `starts_with`, `eq`, `lt`, `cmp`, `partial_cmp` and the like. Each must
   be a method of a standard type, and return a `bool`, `usize` or `Ordering` the local can't hold.
+- A crate type of its own named `String` or `Vec` is not the standard one. Its `String::len` may
+  return a copy, so it is counted as one.
 
 Peeky follows the MIR in the order the code runs. A temporary made before the local took its
 current value holds an older value, so it doesn't block a change. For example, in
@@ -1532,6 +1534,10 @@ refusal says ``the program's own `y` (at line 11) may hold a copy of `x` that it
   since the program prints the old `mean`.
 - A result that only points, as a `&str`, an iterator or `Option<&u32>`, points into the local.
   It holds no copy, but a call given it may return one: `v.iter().sum()`.
+- A result that holds a value beside a reference may hold a copy: `(u32, &'static ())`, or a
+  struct with a `u32` and a `&u32` field.
+- `Box::new`, `Box::pin`, `Rc::new` and `Arc::new` return only what they are given. So a Box of a
+  closure that borrows `s` holds no copy of `s`.
 - The standard library's measures and comparisons return none: `x.len()`, `x.eq(&5)`,
   `x.cmp(&5)`. That is so only where Peeky proves they are the standard library's own, and the
   local can't hold what they return.

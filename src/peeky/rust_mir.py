@@ -371,9 +371,88 @@ _INHERENT_METHOD = re.compile(r"^([A-Za-z_]\w*)(?:::<.+>)?::(\w+)$")
 _STD_REPLACE = re.compile(
     r"^_[0-9]+ = (?:std|core)::mem::(?:take|replace)::<.+?>\((?:move|copy) _([0-9]+)[,)]"
 )
-# A read of a field of a local or of its variant: `copy (_7.0: u32)`, `move ((_7 as
-# Continue).0: u32)`.
-_FIELD_READ = re.compile(r"^(?:copy|move) \((?:\(_([0-9]+) as \w+\)|_([0-9]+))\.[0-9]+: ")
+# The standard library's views that hold nothing but pointers into what they were made
+# from (#320 review), by their path past `std::`, `core::` or `alloc::`: their type
+# arguments are what they point at. Not one holding a value it was given (`Split`'s
+# pattern, `Chunks`' size, an `Entry`'s key).
+_POINTER_VIEWS = frozenset(
+    "slice::Iter slice::IterMut str::Chars str::CharIndices str::Bytes str::Lines "
+    "str::SplitWhitespace str::SplitAsciiWhitespace fmt::Arguments fmt::rt::Argument "
+    "collections::hash_map::Iter collections::hash_map::IterMut collections::hash_map::Keys "
+    "collections::hash_map::Values collections::hash_map::ValuesMut "
+    "collections::btree_map::Iter collections::btree_map::IterMut collections::btree_map::Keys "
+    "collections::btree_map::Values collections::btree_map::ValuesMut collections::hash_set::Iter "
+    "collections::btree_set::Iter collections::vec_deque::Iter collections::vec_deque::IterMut "
+    "cell::Ref cell::RefMut option::Iter option::IterMut path::Components path::Iter".split()
+)
+_STD_GENERIC = re.compile(r"^(?:std|core|alloc)::((?:\w+::)*\w+)(?:<(.*)>)?$")
+# The standard library's types a dump may name by their short name alone in a call's path
+# (`String::len`, `Vec::<u32>::len`, `Box::<T>::new`), which the crate may also give an
+# item of its own (#320 review: ``OwnedLocals._trusted_names``).
+_STD_TYPES = (
+    "String",
+    "Vec",
+    "VecDeque",
+    "HashMap",
+    "HashSet",
+    "BTreeMap",
+    "BTreeSet",
+    "BinaryHeap",
+    "LinkedList",
+    "Box",
+    "Rc",
+    "Arc",
+)
+# The standard library's calls that return only what they are given (#320 review), by
+# (the short name of the type, the method) and the types they return: whatever they
+# hold, what they were given held.
+_WRAPPERS = {
+    ("Box", "new"): ("std::boxed::Box<", "alloc::boxed::Box<"),
+    ("Box", "pin"): ("std::pin::Pin<std::boxed::Box<", "core::pin::Pin<alloc::boxed::Box<"),
+    ("Rc", "new"): ("std::rc::Rc<", "alloc::rc::Rc<"),
+    ("Arc", "new"): ("std::sync::Arc<", "alloc::sync::Arc<"),
+}
+
+
+def _top_level_items(text):
+    """``text`` (a tuple's or a type list's inside) split at its top-level commas."""
+    items, depth, start = [], 0, 0
+    for at, char in enumerate(text):
+        if char in "<([{":
+            depth += 1
+        elif char in ">)]}" and text[at - 1 : at] != "-":
+            depth -= 1
+        elif char == "," and not depth:
+            items.append(text[start:at].strip())
+            start = at + 1
+    tail = text[start:].strip()
+    return [*items, tail] if tail else items
+
+
+def _pointer_only(kind, generics):
+    """Whether a value of the MIR type ``kind`` holds nothing but pointers, so no copy of a
+    value (#320 review): a reference, a raw pointer, `NonNull`, `()`, a tuple, array or
+    `Option` of these, or one of the standard library's views of ``_POINTER_VIEWS``.
+    Not a tuple or struct holding a value besides a reference (`(u32, &'static ())`,
+    `Held<'_> { v: u32, r: &u32 }`), a closure, a trait object, a type parameter, or a
+    type not known."""
+    if kind is None or generics is None or mentions(kind, generics):
+        return False
+    kind = kind.strip()
+    if kind in ("()", "!") or _POINTER_TYPE.match(kind):
+        return True
+    if kind.startswith("(") and kind.endswith(")"):
+        return all(_pointer_only(item, generics) for item in _top_level_items(kind[1:-1]))
+    if kind.startswith("[") and kind.endswith("]"):
+        return _pointer_only(_top_level_items(kind[1:-1].split(";", 1)[0])[0], generics)
+    found = _STD_GENERIC.match(kind)
+    if found is None:
+        return False
+    if found[1] in _POINTER_VIEWS:
+        return True
+    if found[1] == "option::Option" and found[2]:
+        return _pointer_only(found[2], generics)
+    return False
 
 
 def _callee(value):
@@ -526,6 +605,10 @@ class Body:
     # (OwnedLocals._std_calls, set when an IR function is matched to it), so its measures
     # and comparisons, and `mem::take`, are known (#320). False until then.
     std_calls: bool = False
+    # The short names of ``_STD_TYPES`` the crate gives no item of its own
+    # (OwnedLocals._trusted_names, set with ``std_calls``), so a dump's `String::len` or
+    # `Box::<T>::new` is the standard library's (#320 review). Empty until then.
+    trusted_names: frozenset = frozenset()
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -1854,11 +1937,13 @@ class Body:
         hold a copy, where its type may hold a value (#320: `x.clone()`, `x.to_string()`,
         `ptr::read(&x)`, `w.push(v)` given `&mut w`), unless the call is the standard
         library's that only measures or compares (``_only_measures``: `x.len()`,
-        `x.cmp(&5)`). Where its type may point (a reference, an iterator, `Option<&u32>`,
-        a type with a lifetime), it points into the local (`aims`), as a cast, copy or
-        aggregate of such a pointer, or a borrow of one, does; it holds no copy (#311
-        review: `&s[2..]` holds no copy of `s`), but a field read out of one a call made
-        may (`?` on a `Result<u32, Box<dyn Error>>`), and so may a read through it."""
+        `x.cmp(&5)`), or that returns only what it is given (``_only_wraps``: `Box::new`).
+        Where its type may point (a reference, an iterator, a type with a lifetime), it
+        points into the local too (`aims`), as a cast, copy or aggregate of such a
+        pointer, or a borrow of one, does. Only a type holding nothing but pointers
+        (``_pointer_only``: `&str`, `Option<&u32>`, `slice::Iter`) holds no copy (#311
+        review: `&s[2..]`); a tuple or struct holding a value besides a reference may
+        (#320 review: `(u32, &'static ())`). A read through such a pointer may be one."""
         holds, points, direct, own, kept, aims = state
         target, mentioned, through, borrow, called, _, _, _ = part
         if target == local:
@@ -1868,7 +1953,7 @@ class Body:
         kind = self.types.get(target)
         generic = kind is None or self.generics is None or mentions(kind, self.generics)
         may_point = generic or bool(_SHOWS_POINTER.search(kind))
-        may_value = generic or not (_SHOWS_POINTER.search(kind) or kind in ("()", "!"))
+        may_value = not _pointer_only(kind, self.generics)
         if borrow:
             mine = touched or bool(mentioned & own)
             taken = False
@@ -1888,16 +1973,18 @@ class Body:
             # holds no copy of `s`).
             pointing = not called or not _pointer_free(kind, self.generics)
             keeps = taken or (pointing and bool(mentioned & kept))
-            if called:
+            # A call, not a cast to a type that names one (`as Box<dyn Fn() -> usize>`).
+            if called and _RETURN_EDGE.search(text):
                 aimed = may_point and bool(mentioned & (own | aims))
-                if may_value and mentioned & reaching and not self._only_measures(text, local):
+                if (
+                    may_value
+                    and mentioned & reaching
+                    and not self._only_measures(text, local)
+                    and not self._only_wraps(text)
+                ):
                     taken = keeps = True
             else:
                 aimed = may_point and not through and bool(mentioned & aims)
-                field = _FIELD_READ.match(whole[2]) if whole else None
-                source = field and int(field[1] or field[2])
-                if may_value and source in aims and self._call_made(source):
-                    taken = keeps = True
         if whole:
             # Reassigned: what it held before is gone (a call's result: on its return
             # edge, which is the only one ``_copy_flow`` gives this state).
@@ -1968,18 +2055,35 @@ class Body:
             return compared[2] in _COMPARISONS[compared[1]]
         if sliced := _SLICE_METHOD.match(path):
             return sliced[1] in _MEASURES and pointees[0].startswith(("[", "str"))
+        # A short name (`String::len`) is the standard library's type only where the crate
+        # gives that name nothing of its own (#320 review: `struct String;` with `fn
+        # len(s: &std::string::String)`).
         inherent = _INHERENT_METHOD.match(path)
         return (
             inherent is not None
+            and inherent[1] in self.trusted_names
             and inherent[2] in _MEASURES
             and pointees[0].startswith(_STD_PATHS)
             and pointees[0].split("<", 1)[0].rsplit("::", 1)[-1] == inherent[1]
         )
 
-    def _call_made(self, local):
-        """Whether every assignment to ``local`` is a call's result (#320)."""
-        values = self._assignments().get(local, ())
-        return bool(values) and all("->" in v and not _NOT_A_CALL.match(v) for v in values)
+    def _only_wraps(self, text):
+        """Whether the call ``text`` is the standard library's that returns only what it
+        is given, by value (#320 review, ``_WRAPPERS``: `Box::<T>::new(move _7)`,
+        `Box::pin`, `Rc::new`, `Arc::new`): what it returns holds a copy only where what
+        it was given did. Its short name must be one the crate gives nothing of its own
+        (``trusted_names``), and what it returns the standard type."""
+        whole = _WHOLE_ASSIGNMENT.match(text) if self.std_calls else None
+        found = _callee(whole[2]) if whole else None
+        inherent = _INHERENT_METHOD.match(_without_turbofish(found[0])) if found else None
+        if inherent is None or inherent[1] not in self.trusted_names:
+            return False
+        returned = _WRAPPERS.get((inherent[1], inherent[2]))
+        return (
+            returned is not None
+            and self.types.get(int(whole[1]), "").startswith(returned)
+            and re.fullmatch(r"(?:move|copy) _[0-9]+", found[1].strip()) is not None
+        )
 
     def _sure_pointee(self, pointer):
         """The local ``pointer`` surely points at (#320: `a` of `mem::take(&mut a)`):
@@ -3791,9 +3895,10 @@ def _passes_std(code):
     return False
 
 
-def _named_own(code, names):
+def _named_own(code, names, bare=("Vec", "String", "Box")):
     """Which of ``names`` the source ``code`` (comments and strings blanked) may give an
-    item of its own (see OwnedLocals._untrusted_names), in one pass over its words."""
+    item of its own (see OwnedLocals._untrusted_names), in one pass over its words; of
+    ``bare``, also one passed bare to a macro (`mk!(String)`), which may declare it."""
     closing, found = _closings(code), set()
     # A `use` up to its `;` (and whether it imports from std, core or alloc); a macro's
     # arguments up to the next `;`; the end of the `macro_rules!` body a word is in.
@@ -3817,12 +3922,7 @@ def _named_own(code, names):
                 (previous and previous[0] in _DECLARING and gap.strip() == "" and gap)
                 or (using and previous and previous[0] == "as" and gap.strip() == "" and gap)
                 or (using and not std_use)
-                or (
-                    macro
-                    and word in ("Vec", "String", "Box")
-                    and before != ":"
-                    and not _TYPE_FOLLOWS.match(code, end)
-                )
+                or (macro and word in bare and before != ":" and not _TYPE_FOLLOWS.match(code, end))
                 or (start < body_end and before not in (":", "$"))
             ):
                 found.add(word)
@@ -5175,6 +5275,7 @@ class OwnedLocals:
         if found is not None:
             found.generics = function.generics
             found.std_calls = self._std_calls()
+            found.trusted_names = self._trusted_names()
         self._matched[hashed] = found
         return found
 
@@ -6299,6 +6400,24 @@ class OwnedLocals:
                 _named_own(code, set(_COMPARISONS)) for code in self._crate_codes()
             )
         return self._std_calls_known
+
+    def _trusted_names(self):
+        """The short names of ``_STD_TYPES`` the crate gives no item of its own, so a call
+        the dump names by one (`String::len`, `Box::<T>::new`) is a method of the standard
+        library's type (#320 review): none it declares (`struct String;`), imports under
+        that name (`use x::Vec`, `as String`), passes bare to a macro (`mk!(Vec)`), or
+        names in a `macro_rules!` body (``_named_own``). None where ``_std_calls`` isn't
+        proven."""
+        if "_trusted_known" not in self.__dict__:
+            names = frozenset(_STD_TYPES)
+            self._trusted_known = (
+                names.difference(
+                    *(_named_own(code, names, bare=names) for code in self._crate_codes())
+                )
+                if self._std_calls()
+                else frozenset()
+            )
+        return self._trusted_known
 
     def _std_transfers(self):
         """Whether the calls the dump names as the Box-to-Vec conversion `vec!` makes

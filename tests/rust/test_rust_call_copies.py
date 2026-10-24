@@ -4,7 +4,8 @@ unsafe { std::ptr::read(&x) };`, `x` was `[settable]` where the program goes on 
 copy: `--set x=100` was reported, and the output kept the old value. Now `x` is refused
 there, naming the copy, and a change before the copy still reaches the program. The
 standard library's measures and comparisons (`len`, `contains`, `eq`, `cmp`) return no
-copy. After `mem::take(&mut a)`, the refusal names its result `b`, not `a`."""
+copy, but a crate's own `String::len` may. After `mem::take(&mut a)`, the refusal names
+its result `b`, not `a`."""
 
 import json
 import os
@@ -106,6 +107,39 @@ fn measured(arg: u32) -> u32 {
     t
 }
 
+#[inline(never)]
+fn hybrid(x: &u32) -> (u32, &'static ()) {
+    (*x, &())
+}
+
+struct Hybrid<'a> {
+    v: u32,
+    r: &'a u32,
+}
+
+#[inline(never)]
+fn hybrid_struct(x: &u32) -> Hybrid<'_> {
+    Hybrid { v: *x, r: x }
+}
+
+fn paired(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let h = hybrid(&x); // PAIR
+    let k = other(); // PAIRED
+    let t = h.0 + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn held(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let h = hybrid_struct(&x); // HOLD
+    let k = other(); // HELD
+    let t = h.v + k;
+    std::hint::black_box(h.r);
+    t
+}
+
 fn main() {
     let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
     println!("CLONED {}", cloned(x));
@@ -115,6 +149,61 @@ fn main() {
     println!("FORMATTED {}", formatted(x));
     println!("EXTENDED {}", extended(x));
     println!("MEASURED {}", measured(x));
+    println!("PAIRED {}", paired(x));
+    println!("HELD {}", held(x));
+}
+"""
+# #320 review: types of the crate's own named as the standard library's `String` and `Vec`,
+# whose `len` the dump names `String::len` and `Vec::len`, as it would the standard one.
+OWNED = """use std::env;
+
+// Types of the crate's own, named as the standard library's, with a `len` that returns
+// what it reads.
+struct String;
+
+impl String {
+    #[inline(never)]
+    fn len(s: &std::string::String) -> usize {
+        s.parse().unwrap()
+    }
+}
+
+struct Vec;
+
+impl Vec {
+    #[inline(never)]
+    fn len(v: &std::vec::Vec<u32>) -> usize {
+        v[0] as usize
+    }
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+fn texts(arg: u32) -> usize {
+    let x = std::convert::identity(arg);
+    let n = String::len(&x.to_string()); // TEXT
+    let k = other(); // TEXTS
+    let t = n + k as usize;
+    std::hint::black_box(&x);
+    t
+}
+
+fn items(arg: u32) -> usize {
+    let x = std::convert::identity(arg);
+    let n = Vec::len(&vec![x, 2]); // ITEM
+    let k = other(); // ITEMS
+    let t = n + k as usize;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("TEXTS {}", texts(x));
+    println!("ITEMS {}", items(x));
 }
 """
 
@@ -129,22 +218,35 @@ def crate(tmp_path, monkeypatch):
     if not all(os.environ.get("PEEKY_RUST_" + name) for name in names):
         pytest.skip("set PEEKY_RUST_* tool paths to enable Rust conformance")
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    root = tmp_path / "calls"
-    (root / "src").mkdir(parents=True)
-    (root / "Cargo.toml").write_text(MANIFEST.format(name="calls"))
-    (root / "Cargo.lock").write_text(LOCK.format(name="calls"))
-    (root / "src/main.rs").write_text(CALLS)
-    return root
+
+    def make(name, text):
+        root = tmp_path / name
+        (root / "src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text(MANIFEST.format(name=name))
+        (root / "Cargo.lock").write_text(LOCK.format(name=name))
+        (root / "src/main.rs").write_text(text)
+        return root
+
+    return make
 
 
-def probe(capsys, root, marker, *argv):
-    at = ["probe", str(root), "--at", f"src/main.rs:{line_of(CALLS, marker)}", "--json", "--quiet"]
+def probe(capsys, root, marker, *argv, text=CALLS):
+    at = ["probe", str(root), "--at", f"src/main.rs:{line_of(text, marker)}", "--json", "--quiet"]
     code = main([*at, *argv, "--", "5"])
     return code, json.loads(capsys.readouterr().out)
 
 
+def refused(code, result, marker):
+    """The message of a refusal made before the program runs."""
+    error = result.get("error") or {}
+    assert code == 2 and error.get("code") == "MUTATION_REJECTED", (marker, result)
+    assert result.get("refused_before_launch") is True, (marker, result)
+    return error["message"]
+
+
 @pytest.mark.timeout(400)
 def test_a_copy_a_call_returns_withholds_the_local_where_the_program_goes_on_with_it(crate, capsys):
+    root = crate("calls", CALLS)
     # Each line after the copy: `x` is never read again (`black_box(&x)` only lends it).
     for marker, holder, made in (
         ("CLONED", "y", "CLONE"),
@@ -153,21 +255,20 @@ def test_a_copy_a_call_returns_withholds_the_local_where_the_program_goes_on_wit
         ("TAKEN", "b", "TAKE"),
         ("FORMATTED", "s", None),
         ("EXTENDED", "v", "EXTEND"),
+        # #320 review: a value beside a reference, `(u32, &'static ())` and `Hybrid<'_>`.
+        ("PAIRED", "h", "PAIR"),
+        ("HELD", "h", "HOLD"),
     ):
-        code, result = probe(capsys, crate, marker, "--set", "x=100")
-        error = result.get("error") or {}
-        assert code == 2 and error.get("code") == "MUTATION_REJECTED", (marker, result)
-        assert result.get("refused_before_launch") is True, (marker, result)
-        message = error["message"]
+        message = refused(*probe(capsys, root, marker, "--set", "x=100"), marker)
         assert f"the program's own `{holder}` (at " in message, (marker, message)
         if made is not None:
             assert f"{line_of(CALLS, made)})" in message, (marker, message)
         assert "may hold a copy of `x` that it goes on with" in message, (marker, message)
     # `a` holds its default after `mem::take`; `b` holds the copy.
-    code, result = probe(capsys, crate, "TAKEN", "--set", "x=100")
+    code, result = probe(capsys, root, "TAKEN", "--set", "x=100")
     assert "`a`" not in result["error"]["message"].split("Refused")[0], result["error"]
     # The row says so too, without a `--set`.
-    code, result = probe(capsys, crate, "CLONED", "--capture", "x")
+    code, result = probe(capsys, root, "CLONED", "--capture", "x")
     assert code == 0, result.get("error")
     (row,) = [row for row in result["rows"] if row["selector"] == "x"]
     assert row["value"] == "5" and row.get("settable") is False, row
@@ -177,6 +278,7 @@ def test_a_copy_a_call_returns_withholds_the_local_where_the_program_goes_on_wit
 
 @pytest.mark.timeout(400)
 def test_a_change_before_the_copy_still_reaches_the_program(crate, capsys):
+    root = crate("calls", CALLS)
     for marker, printed in (
         ("BEFORE", "CLONED 102"),
         ("TEXT", "TEXTED 100+1"),
@@ -184,8 +286,10 @@ def test_a_change_before_the_copy_still_reaches_the_program(crate, capsys):
         ("MOVE", "TAKEN 101"),
         ("FORMAT", "FORMATTED <100>1"),
         ("EXTEND", "EXTENDED 101"),
+        ("PAIR", "PAIRED 101"),
+        ("HOLD", "HELD 101"),
     ):
-        code, result = probe(capsys, crate, marker, "--set", "x=100")
+        code, result = probe(capsys, root, marker, "--set", "x=100")
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
 
@@ -194,7 +298,25 @@ def test_a_change_before_the_copy_still_reaches_the_program(crate, capsys):
 def test_the_standard_librarys_measures_and_comparisons_leave_the_local_settable(crate, capsys):
     # `a.len()`, `a.contains(&5)`, `x.eq(&5)`, `x.cmp(&5)`, `x.partial_cmp(&5)`: what each
     # returns can't hold a `u32`. `a = [x, 2]` holds a copy, but isn't used after the stop.
-    code, result = probe(capsys, crate, "MEASURED", "--capture", "x", "--set", "x=100")
+    root = crate("calls", CALLS)
+    code, result = probe(capsys, root, "MEASURED", "--capture", "x", "--set", "x=100")
     assert code == 0, result.get("error")
     assert result["interventions"][0]["after"] == "100", result["interventions"]
     assert "MEASURED 6" in result["output"].splitlines(), result["output"]
+
+
+@pytest.mark.timeout(400)
+def test_a_crate_type_named_like_a_standard_one_measures_nothing(crate, capsys):
+    # #320 review: `String::len(&x.to_string())` and `Vec::len(&vec![x, 2])` call the
+    # crate's own `len`, which returns what it reads. Taken for the standard library's,
+    # `x` was settable after them, and the program printed the old `n`.
+    root = crate("owned", OWNED)
+    for marker, made in (("TEXTS", "TEXT"), ("ITEMS", "ITEM")):
+        message = refused(*probe(capsys, root, marker, "--set", "x=100", text=OWNED), marker)
+        held = f"the program's own `n` (at line {line_of(OWNED, made)}) may hold a copy of `x`"
+        assert held in message, (marker, message)
+    # Before the call, the change reaches it.
+    for marker, printed in (("TEXT", "TEXTS 101"), ("ITEM", "ITEMS 101")):
+        code, result = probe(capsys, root, marker, "--set", "x=100", text=OWNED)
+        assert code == 0, (marker, result.get("error"))
+        assert printed in result["output"].splitlines(), (marker, result["output"])

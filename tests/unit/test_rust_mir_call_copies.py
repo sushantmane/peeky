@@ -10,7 +10,14 @@ its default now, not `b`."""
 from types import SimpleNamespace
 
 from peeky.rust import RustSession
-from peeky.rust_mir import IrFunction, OwnedLocals, _may_hold_type, parse_body
+from peeky.rust_mir import (
+    _STD_TYPES,
+    IrFunction,
+    OwnedLocals,
+    _may_hold_type,
+    _pointer_only,
+    parse_body,
+)
 
 ALLOC = "/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/alloc/src/macros.rs"
 # The crate the fixtures below are rustc 1.96.0's MIR of (`-Zmir-opt-level=0
@@ -94,6 +101,39 @@ fn measured(arg: u32) -> u32 {
     t
 }
 
+#[inline(never)]
+fn hybrid(x: &u32) -> (u32, &'static ()) {
+    (*x, &())
+}
+
+struct Hybrid<'a> {
+    v: u32,
+    r: &'a u32,
+}
+
+#[inline(never)]
+fn hybrid_struct(x: &u32) -> Hybrid<'_> {
+    Hybrid { v: *x, r: x }
+}
+
+fn paired(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let h = hybrid(&x); // PAIR
+    let k = other(); // PAIRED
+    let t = h.0 + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn held(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let h = hybrid_struct(&x); // HOLD
+    let k = other(); // HELD
+    let t = h.v + k;
+    std::hint::black_box(h.r);
+    t
+}
+
 fn main() {
     let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
     println!("CLONED {}", cloned(x));
@@ -103,6 +143,8 @@ fn main() {
     println!("FORMATTED {}", formatted(x));
     println!("EXTENDED {}", extended(x));
     println!("MEASURED {}", measured(x));
+    println!("PAIRED {}", paired(x));
+    println!("HELD {}", held(x));
 }
 """
 
@@ -1254,6 +1296,506 @@ fn measured(_1: u32) -> u32 {
 }
 """
 
+PAIRED = r"""// MIR for `paired` after PreCodegen
+
+fn paired(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:94:11: 94:14
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:94:24: 94:27
+    let _2: u32;                         // in scope 0 at src/main.rs:95:9: 95:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:95:36: 95:39
+    let mut _5: &u32;                    // in scope 0 at src/main.rs:96:20: 96:22
+    let _6: &u32;                        // in scope 0 at src/main.rs:96:20: 96:22
+    let mut _9: u32;                     // in scope 0 at src/main.rs:98:13: 98:16
+    let mut _10: u32;                    // in scope 0 at src/main.rs:98:19: 98:20
+    let mut _11: (u32, bool);            // in scope 0 at src/main.rs:98:13: 98:20
+    let _12: &u32;                       // in scope 0 at src/main.rs:99:5: 99:29
+    let mut _13: &u32;                   // in scope 0 at src/main.rs:99:26: 99:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:95:9: 95:10
+        let _4: (u32, &());              // in scope 1 at src/main.rs:96:9: 96:10
+        scope 2 {
+            debug h => _4;               // in scope 2 at src/main.rs:96:9: 96:10
+            let _7: u32;                 // in scope 2 at src/main.rs:97:9: 97:10
+            scope 3 {
+                debug k => _7;           // in scope 3 at src/main.rs:97:9: 97:10
+                let _8: u32;             // in scope 3 at src/main.rs:98:9: 98:10
+                scope 4 {
+                    debug t => _8;       // in scope 4 at src/main.rs:98:9: 98:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:95:9: 95:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:95:36: 95:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:95:36: 95:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:95:13: 95:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:95:39: 95:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:96:9: 96:10
+        StorageLive(_5);                 // scope 1 at src/main.rs:96:20: 96:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:96:20: 96:22
+        _6 = &_2;                        // scope 1 at src/main.rs:96:20: 96:22
+        _5 = &(*_6);                     // scope 1 at src/main.rs:96:20: 96:22
+        _4 = hybrid(move _5) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:96:13: 96:23
+    }
+
+    bb2: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:96:22: 96:23
+        StorageDead(_6);                 // scope 1 at src/main.rs:96:23: 96:24
+        StorageLive(_7);                 // scope 2 at src/main.rs:97:9: 97:10
+        _7 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:97:13: 97:20
+    }
+
+    bb3: {
+        StorageLive(_8);                 // scope 3 at src/main.rs:98:9: 98:10
+        StorageLive(_9);                 // scope 3 at src/main.rs:98:13: 98:16
+        _9 = copy (_4.0: u32);           // scope 3 at src/main.rs:98:13: 98:16
+        StorageLive(_10);                // scope 3 at src/main.rs:98:19: 98:20
+        _10 = copy _7;                   // scope 3 at src/main.rs:98:19: 98:20
+        _11 = AddWithOverflow(copy _9, copy _10); // scope 3 at src/main.rs:98:13: 98:20
+        assert(!move (_11.1: bool), "attempt to compute `{} + {}`, which would overflow", move _9, move _10) -> [success: bb4, unwind continue]; // scope 3 at src/main.rs:98:13: 98:20
+    }
+
+    bb4: {
+        _8 = move (_11.0: u32);          // scope 3 at src/main.rs:98:13: 98:20
+        StorageDead(_10);                // scope 3 at src/main.rs:98:19: 98:20
+        StorageDead(_9);                 // scope 3 at src/main.rs:98:19: 98:20
+        StorageLive(_12);                // scope 4 at src/main.rs:99:5: 99:29
+        StorageLive(_13);                // scope 4 at src/main.rs:99:26: 99:28
+        _13 = &_2;                       // scope 4 at src/main.rs:99:26: 99:28
+        _12 = std::hint::black_box::<&u32>(move _13) -> [return: bb5, unwind continue]; // scope 4 at src/main.rs:99:5: 99:29
+    }
+
+    bb5: {
+        StorageDead(_13);                // scope 4 at src/main.rs:99:28: 99:29
+        StorageDead(_12);                // scope 4 at src/main.rs:99:29: 99:30
+        _0 = copy _8;                    // scope 4 at src/main.rs:100:5: 100:6
+        StorageDead(_8);                 // scope 3 at src/main.rs:101:1: 101:2
+        StorageDead(_7);                 // scope 2 at src/main.rs:101:1: 101:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:101:1: 101:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:101:1: 101:2
+        return;                          // scope 0 at src/main.rs:101:2: 101:2
+    }
+}
+"""
+
+HELD = r"""// MIR for `held` after PreCodegen
+
+fn held(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:103:9: 103:12
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:103:22: 103:25
+    let _2: u32;                         // in scope 0 at src/main.rs:104:9: 104:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:104:36: 104:39
+    let mut _5: &u32;                    // in scope 0 at src/main.rs:105:27: 105:29
+    let _6: &u32;                        // in scope 0 at src/main.rs:105:27: 105:29
+    let mut _9: u32;                     // in scope 0 at src/main.rs:107:13: 107:16
+    let mut _10: u32;                    // in scope 0 at src/main.rs:107:19: 107:20
+    let mut _11: (u32, bool);            // in scope 0 at src/main.rs:107:13: 107:20
+    let _12: &u32;                       // in scope 0 at src/main.rs:108:5: 108:30
+    let mut _13: &u32;                   // in scope 0 at src/main.rs:108:26: 108:29
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:104:9: 104:10
+        let _4: Hybrid<'_>;              // in scope 1 at src/main.rs:105:9: 105:10
+        scope 2 {
+            debug h => _4;               // in scope 2 at src/main.rs:105:9: 105:10
+            let _7: u32;                 // in scope 2 at src/main.rs:106:9: 106:10
+            scope 3 {
+                debug k => _7;           // in scope 3 at src/main.rs:106:9: 106:10
+                let _8: u32;             // in scope 3 at src/main.rs:107:9: 107:10
+                scope 4 {
+                    debug t => _8;       // in scope 4 at src/main.rs:107:9: 107:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:104:9: 104:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:104:36: 104:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:104:36: 104:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:104:13: 104:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:104:39: 104:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:105:9: 105:10
+        StorageLive(_5);                 // scope 1 at src/main.rs:105:27: 105:29
+        StorageLive(_6);                 // scope 1 at src/main.rs:105:27: 105:29
+        _6 = &_2;                        // scope 1 at src/main.rs:105:27: 105:29
+        _5 = &(*_6);                     // scope 1 at src/main.rs:105:27: 105:29
+        _4 = hybrid_struct(move _5) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:105:13: 105:30
+    }
+
+    bb2: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:105:29: 105:30
+        StorageDead(_6);                 // scope 1 at src/main.rs:105:30: 105:31
+        StorageLive(_7);                 // scope 2 at src/main.rs:106:9: 106:10
+        _7 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:106:13: 106:20
+    }
+
+    bb3: {
+        StorageLive(_8);                 // scope 3 at src/main.rs:107:9: 107:10
+        StorageLive(_9);                 // scope 3 at src/main.rs:107:13: 107:16
+        _9 = copy (_4.0: u32);           // scope 3 at src/main.rs:107:13: 107:16
+        StorageLive(_10);                // scope 3 at src/main.rs:107:19: 107:20
+        _10 = copy _7;                   // scope 3 at src/main.rs:107:19: 107:20
+        _11 = AddWithOverflow(copy _9, copy _10); // scope 3 at src/main.rs:107:13: 107:20
+        assert(!move (_11.1: bool), "attempt to compute `{} + {}`, which would overflow", move _9, move _10) -> [success: bb4, unwind continue]; // scope 3 at src/main.rs:107:13: 107:20
+    }
+
+    bb4: {
+        _8 = move (_11.0: u32);          // scope 3 at src/main.rs:107:13: 107:20
+        StorageDead(_10);                // scope 3 at src/main.rs:107:19: 107:20
+        StorageDead(_9);                 // scope 3 at src/main.rs:107:19: 107:20
+        StorageLive(_12);                // scope 4 at src/main.rs:108:5: 108:30
+        StorageLive(_13);                // scope 4 at src/main.rs:108:26: 108:29
+        _13 = copy (_4.1: &u32);         // scope 4 at src/main.rs:108:26: 108:29
+        _12 = std::hint::black_box::<&u32>(move _13) -> [return: bb5, unwind continue]; // scope 4 at src/main.rs:108:5: 108:30
+    }
+
+    bb5: {
+        StorageDead(_13);                // scope 4 at src/main.rs:108:29: 108:30
+        StorageDead(_12);                // scope 4 at src/main.rs:108:30: 108:31
+        _0 = copy _8;                    // scope 4 at src/main.rs:109:5: 109:6
+        StorageDead(_8);                 // scope 3 at src/main.rs:110:1: 110:2
+        StorageDead(_7);                 // scope 2 at src/main.rs:110:1: 110:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:110:1: 110:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:110:1: 110:2
+        return;                          // scope 0 at src/main.rs:110:2: 110:2
+    }
+}
+"""
+
+# #320 review: a crate whose own `String` and `Vec` have a `len` that returns what it reads,
+# and rustc 1.96.0's MIR of its `texts` and `items`.
+OWNED = """use std::env;
+
+// Types of the crate's own, named as the standard library's, with a `len` that returns
+// what it reads.
+struct String;
+
+impl String {
+    #[inline(never)]
+    fn len(s: &std::string::String) -> usize {
+        s.parse().unwrap()
+    }
+}
+
+struct Vec;
+
+impl Vec {
+    #[inline(never)]
+    fn len(v: &std::vec::Vec<u32>) -> usize {
+        v[0] as usize
+    }
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+fn texts(arg: u32) -> usize {
+    let x = std::convert::identity(arg);
+    let n = String::len(&x.to_string()); // TEXT
+    let k = other(); // TEXTS
+    let t = n + k as usize;
+    std::hint::black_box(&x);
+    t
+}
+
+fn items(arg: u32) -> usize {
+    let x = std::convert::identity(arg);
+    let n = Vec::len(&vec![x, 2]); // ITEM
+    let k = other(); // ITEMS
+    let t = n + k as usize;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("TEXTS {}", texts(x));
+    println!("ITEMS {}", items(x));
+}
+"""
+
+OWNED_TEXTS = r"""// MIR for `texts` after PreCodegen
+
+fn texts(_1: u32) -> usize {
+    debug arg => _1;                     // in scope 0 at src/main.rs:28:10: 28:13
+    let mut _0: usize;                   // return place in scope 0 at src/main.rs:28:23: 28:28
+    let _2: u32;                         // in scope 0 at src/main.rs:29:9: 29:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:29:36: 29:39
+    let mut _5: &std::string::String;    // in scope 0 at src/main.rs:30:25: 30:39
+    let _6: &std::string::String;        // in scope 0 at src/main.rs:30:25: 30:39
+    let _7: std::string::String;         // in scope 0 at src/main.rs:30:26: 30:39
+    let mut _8: &u32;                    // in scope 0 at src/main.rs:30:26: 30:27
+    let mut _11: usize;                  // in scope 0 at src/main.rs:32:13: 32:14
+    let mut _12: usize;                  // in scope 0 at src/main.rs:32:17: 32:27
+    let mut _13: u32;                    // in scope 0 at src/main.rs:32:17: 32:18
+    let mut _14: (usize, bool);          // in scope 0 at src/main.rs:32:13: 32:27
+    let _15: &u32;                       // in scope 0 at src/main.rs:33:5: 33:29
+    let mut _16: &u32;                   // in scope 0 at src/main.rs:33:26: 33:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:29:9: 29:10
+        let _4: usize;                   // in scope 1 at src/main.rs:30:9: 30:10
+        scope 2 {
+            debug n => _4;               // in scope 2 at src/main.rs:30:9: 30:10
+            let _9: u32;                 // in scope 2 at src/main.rs:31:9: 31:10
+            scope 3 {
+                debug k => _9;           // in scope 3 at src/main.rs:31:9: 31:10
+                let _10: usize;          // in scope 3 at src/main.rs:32:9: 32:10
+                scope 4 {
+                    debug t => _10;      // in scope 4 at src/main.rs:32:9: 32:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:29:9: 29:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:29:36: 29:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:29:36: 29:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:29:13: 29:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:29:39: 29:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:30:9: 30:10
+        StorageLive(_5);                 // scope 1 at src/main.rs:30:25: 30:39
+        StorageLive(_6);                 // scope 1 at src/main.rs:30:25: 30:39
+        StorageLive(_7);                 // scope 1 at src/main.rs:30:26: 30:39
+        StorageLive(_8);                 // scope 1 at src/main.rs:30:26: 30:27
+        _8 = &_2;                        // scope 1 at src/main.rs:30:26: 30:27
+        _7 = <u32 as ToString>::to_string(move _8) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:30:26: 30:39
+    }
+
+    bb2: {
+        StorageDead(_8);                 // scope 1 at src/main.rs:30:38: 30:39
+        _6 = &_7;                        // scope 1 at src/main.rs:30:25: 30:39
+        _5 = &(*_6);                     // scope 1 at src/main.rs:30:25: 30:39
+        _4 = String::len(move _5) -> [return: bb3, unwind: bb8]; // scope 1 at src/main.rs:30:13: 30:40
+    }
+
+    bb3: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:30:39: 30:40
+        drop(_7) -> [return: bb4, unwind: bb9]; // scope 1 at src/main.rs:30:40: 30:41
+    }
+
+    bb4: {
+        StorageDead(_7);                 // scope 1 at src/main.rs:30:40: 30:41
+        StorageDead(_6);                 // scope 1 at src/main.rs:30:40: 30:41
+        StorageLive(_9);                 // scope 2 at src/main.rs:31:9: 31:10
+        _9 = other() -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:31:13: 31:20
+    }
+
+    bb5: {
+        StorageLive(_10);                // scope 3 at src/main.rs:32:9: 32:10
+        StorageLive(_11);                // scope 3 at src/main.rs:32:13: 32:14
+        _11 = copy _4;                   // scope 3 at src/main.rs:32:13: 32:14
+        StorageLive(_12);                // scope 3 at src/main.rs:32:17: 32:27
+        StorageLive(_13);                // scope 3 at src/main.rs:32:17: 32:18
+        _13 = copy _9;                   // scope 3 at src/main.rs:32:17: 32:18
+        _12 = move _13 as usize (IntToInt); // scope 3 at src/main.rs:32:17: 32:27
+        StorageDead(_13);                // scope 3 at src/main.rs:32:26: 32:27
+        _14 = AddWithOverflow(copy _11, copy _12); // scope 3 at src/main.rs:32:13: 32:27
+        assert(!move (_14.1: bool), "attempt to compute `{} + {}`, which would overflow", move _11, move _12) -> [success: bb6, unwind continue]; // scope 3 at src/main.rs:32:13: 32:27
+    }
+
+    bb6: {
+        _10 = move (_14.0: usize);       // scope 3 at src/main.rs:32:13: 32:27
+        StorageDead(_12);                // scope 3 at src/main.rs:32:26: 32:27
+        StorageDead(_11);                // scope 3 at src/main.rs:32:26: 32:27
+        StorageLive(_15);                // scope 4 at src/main.rs:33:5: 33:29
+        StorageLive(_16);                // scope 4 at src/main.rs:33:26: 33:28
+        _16 = &_2;                       // scope 4 at src/main.rs:33:26: 33:28
+        _15 = std::hint::black_box::<&u32>(move _16) -> [return: bb7, unwind continue]; // scope 4 at src/main.rs:33:5: 33:29
+    }
+
+    bb7: {
+        StorageDead(_16);                // scope 4 at src/main.rs:33:28: 33:29
+        StorageDead(_15);                // scope 4 at src/main.rs:33:29: 33:30
+        _0 = copy _10;                   // scope 4 at src/main.rs:34:5: 34:6
+        StorageDead(_10);                // scope 3 at src/main.rs:35:1: 35:2
+        StorageDead(_9);                 // scope 2 at src/main.rs:35:1: 35:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:35:1: 35:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:35:1: 35:2
+        return;                          // scope 0 at src/main.rs:35:2: 35:2
+    }
+
+    bb8 (cleanup): {
+        drop(_7) -> [return: bb9, unwind terminate(cleanup)]; // scope 1 at src/main.rs:30:40: 30:41
+    }
+
+    bb9 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:28:1: 35:2
+    }
+}
+"""
+
+OWNED_ITEMS = r"""// MIR for `items` after PreCodegen
+
+fn items(_1: u32) -> usize {
+    debug arg => _1;                     // in scope 0 at src/main.rs:37:10: 37:13
+    let mut _0: usize;                   // return place in scope 0 at src/main.rs:37:23: 37:28
+    let _2: u32;                         // in scope 0 at src/main.rs:38:9: 38:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:38:36: 38:39
+    let mut _5: &std::vec::Vec<u32>;     // in scope 0 at src/main.rs:39:22: 39:33
+    let _6: &std::vec::Vec<u32>;         // in scope 0 at src/main.rs:39:22: 39:33
+    let _7: std::vec::Vec<u32>;          // in scope 0 at {ALLOC}:58:9: 60:10
+    let mut _8: std::boxed::Box<std::mem::MaybeUninit<[u32; 2]>>; // in scope 0 at {ALLOC}:59:13: 59:96
+    let mut _9: std::boxed::Box<std::mem::MaybeUninit<[u32; 2]>>; // in scope 0 at {ALLOC}:59:52: 59:84
+    let mut _10: u32;                    // in scope 0 at src/main.rs:39:28: 39:29
+    let mut _13: usize;                  // in scope 0 at src/main.rs:41:13: 41:14
+    let mut _14: usize;                  // in scope 0 at src/main.rs:41:17: 41:27
+    let mut _15: u32;                    // in scope 0 at src/main.rs:41:17: 41:18
+    let mut _16: (usize, bool);          // in scope 0 at src/main.rs:41:13: 41:27
+    let _17: &u32;                       // in scope 0 at src/main.rs:42:5: 42:29
+    let mut _18: &u32;                   // in scope 0 at src/main.rs:42:26: 42:28
+    let mut _19: *const std::mem::MaybeUninit<[u32; 2]>; // in scope 0 at {ALLOC}:59:52: 59:84
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:38:9: 38:10
+        let _4: usize;                   // in scope 1 at src/main.rs:39:9: 39:10
+        let mut _20: *const ();          // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _21: usize;              // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _22: usize;              // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _23: usize;              // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _24: bool;               // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _25: *const ();          // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _26: usize;              // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _27: bool;               // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _28: bool;               // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _29: bool;               // in scope 1 at {ALLOC}:59:86: 59:95
+        let mut _30: bool;               // in scope 1 at {ALLOC}:59:86: 59:95
+        scope 2 {
+            debug n => _4;               // in scope 2 at src/main.rs:39:9: 39:10
+            let _11: u32;                // in scope 2 at src/main.rs:40:9: 40:10
+            scope 3 {
+                debug k => _11;          // in scope 3 at src/main.rs:40:9: 40:10
+                let _12: usize;          // in scope 3 at src/main.rs:41:9: 41:10
+                scope 4 {
+                    debug t => _12;      // in scope 4 at src/main.rs:41:9: 41:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:38:9: 38:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:38:36: 38:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:38:36: 38:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:38:13: 38:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:38:39: 38:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:39:9: 39:10
+        StorageLive(_5);                 // scope 1 at src/main.rs:39:22: 39:33
+        StorageLive(_6);                 // scope 1 at src/main.rs:39:22: 39:33
+        StorageLive(_7);                 // scope 1 at {ALLOC}:58:9: 60:10
+        StorageLive(_8);                 // scope 1 at {ALLOC}:59:13: 59:96
+        StorageLive(_9);                 // scope 1 at {ALLOC}:59:52: 59:84
+        _9 = Box::<[u32; 2]>::new_uninit() -> [return: bb2, unwind continue]; // scope 1 at {ALLOC}:59:52: 59:84
+    }
+
+    bb2: {
+        StorageLive(_10);                // scope 1 at src/main.rs:39:28: 39:29
+        _10 = copy _2;                   // scope 1 at src/main.rs:39:28: 39:29
+        _19 = copy ((_9.0: std::ptr::Unique<std::mem::MaybeUninit<[u32; 2]>>).0: std::ptr::NonNull<std::mem::MaybeUninit<[u32; 2]>>) as *const std::mem::MaybeUninit<[u32; 2]> (Transmute); // scope 1 at {ALLOC}:59:86: 59:95
+        _20 = copy _19 as *const () (PtrToPtr); // scope 1 at {ALLOC}:59:86: 59:95
+        _21 = copy _20 as usize (Transmute); // scope 1 at {ALLOC}:59:86: 59:95
+        _22 = Sub(const <std::mem::MaybeUninit<[u32; 2]> as std::mem::SizedTypeProperties>::ALIGN, const 1_usize); // scope 1 at {ALLOC}:59:86: 59:95
+        _23 = BitAnd(copy _21, copy _22); // scope 1 at {ALLOC}:59:86: 59:95
+        _24 = Eq(copy _23, const 0_usize); // scope 1 at {ALLOC}:59:86: 59:95
+        assert(copy _24, "misaligned pointer dereference: address must be a multiple of {} but is {}", const <std::mem::MaybeUninit<[u32; 2]> as std::mem::SizedTypeProperties>::ALIGN, copy _21) -> [success: bb11, unwind unreachable]; // scope 1 at {ALLOC}:59:86: 59:95
+    }
+
+    bb3: {
+        StorageDead(_8);                 // scope 1 at {ALLOC}:60:9: 60:10
+        _6 = &_7;                        // scope 1 at src/main.rs:39:22: 39:33
+        _5 = &(*_6);                     // scope 1 at src/main.rs:39:22: 39:33
+        _4 = Vec::len(move _5) -> [return: bb4, unwind: bb9]; // scope 1 at src/main.rs:39:13: 39:34
+    }
+
+    bb4: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:39:33: 39:34
+        drop(_7) -> [return: bb5, unwind: bb10]; // scope 1 at src/main.rs:39:34: 39:35
+    }
+
+    bb5: {
+        StorageDead(_7);                 // scope 1 at src/main.rs:39:34: 39:35
+        StorageDead(_6);                 // scope 1 at src/main.rs:39:34: 39:35
+        StorageLive(_11);                // scope 2 at src/main.rs:40:9: 40:10
+        _11 = other() -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:40:13: 40:20
+    }
+
+    bb6: {
+        StorageLive(_12);                // scope 3 at src/main.rs:41:9: 41:10
+        StorageLive(_13);                // scope 3 at src/main.rs:41:13: 41:14
+        _13 = copy _4;                   // scope 3 at src/main.rs:41:13: 41:14
+        StorageLive(_14);                // scope 3 at src/main.rs:41:17: 41:27
+        StorageLive(_15);                // scope 3 at src/main.rs:41:17: 41:18
+        _15 = copy _11;                  // scope 3 at src/main.rs:41:17: 41:18
+        _14 = move _15 as usize (IntToInt); // scope 3 at src/main.rs:41:17: 41:27
+        StorageDead(_15);                // scope 3 at src/main.rs:41:26: 41:27
+        _16 = AddWithOverflow(copy _13, copy _14); // scope 3 at src/main.rs:41:13: 41:27
+        assert(!move (_16.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _14) -> [success: bb7, unwind continue]; // scope 3 at src/main.rs:41:13: 41:27
+    }
+
+    bb7: {
+        _12 = move (_16.0: usize);       // scope 3 at src/main.rs:41:13: 41:27
+        StorageDead(_14);                // scope 3 at src/main.rs:41:26: 41:27
+        StorageDead(_13);                // scope 3 at src/main.rs:41:26: 41:27
+        StorageLive(_17);                // scope 4 at src/main.rs:42:5: 42:29
+        StorageLive(_18);                // scope 4 at src/main.rs:42:26: 42:28
+        _18 = &_2;                       // scope 4 at src/main.rs:42:26: 42:28
+        _17 = std::hint::black_box::<&u32>(move _18) -> [return: bb8, unwind continue]; // scope 4 at src/main.rs:42:5: 42:29
+    }
+
+    bb8: {
+        StorageDead(_18);                // scope 4 at src/main.rs:42:28: 42:29
+        StorageDead(_17);                // scope 4 at src/main.rs:42:29: 42:30
+        _0 = copy _12;                   // scope 4 at src/main.rs:43:5: 43:6
+        StorageDead(_12);                // scope 3 at src/main.rs:44:1: 44:2
+        StorageDead(_11);                // scope 2 at src/main.rs:44:1: 44:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:44:1: 44:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:44:1: 44:2
+        return;                          // scope 0 at src/main.rs:44:2: 44:2
+    }
+
+    bb9 (cleanup): {
+        drop(_7) -> [return: bb10, unwind terminate(cleanup)]; // scope 1 at src/main.rs:39:34: 39:35
+    }
+
+    bb10 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:37:1: 44:2
+    }
+
+    bb11: {
+        _25 = copy _19 as *const () (PtrToPtr); // scope 1 at {ALLOC}:59:86: 59:95
+        _26 = copy _25 as usize (Transmute); // scope 1 at {ALLOC}:59:86: 59:95
+        _27 = Ne(const <std::mem::MaybeUninit<[u32; 2]> as std::mem::SizedTypeProperties>::SIZE, const 0_usize); // scope 1 at {ALLOC}:59:86: 59:95
+        _28 = Eq(copy _26, const 0_usize); // scope 1 at {ALLOC}:59:86: 59:95
+        _29 = BitAnd(copy _28, copy _27); // scope 1 at {ALLOC}:59:86: 59:95
+        _30 = Not(copy _29);             // scope 1 at {ALLOC}:59:86: 59:95
+        assert(copy _30, "null pointer dereference occurred") -> [success: bb12, unwind unreachable]; // scope 1 at {ALLOC}:59:86: 59:95
+    }
+
+    bb12: {
+        ((((*_19).1: std::mem::ManuallyDrop<[u32; 2]>).0: std::mem::MaybeDangling<[u32; 2]>).0: [u32; 2]) = [move _10, const 2_u32]; // scope 1 at {ALLOC}:59:86: 59:95
+        StorageDead(_10);                // scope 1 at {ALLOC}:59:94: 59:95
+        _8 = move _9;                    // scope 1 at {ALLOC}:59:13: 59:96
+        StorageDead(_9);                 // scope 1 at {ALLOC}:59:95: 59:96
+        _7 = std::boxed::box_assume_init_into_vec_unsafe::<u32, 2>(move _8) -> [return: bb3, unwind: bb10]; // scope 1 at {ALLOC}:58:9: 60:10
+    }
+}
+""".replace("{ALLOC}", ALLOC)
+
 HASH = "h0123456789abcdef"
 
 
@@ -1263,6 +1805,7 @@ def body_of(text, proven=True):
     body = parse_body(text)
     body.generics = ()
     body.std_calls = proven
+    body.trusted_names = frozenset(_STD_TYPES) if proven else frozenset()
     return body
 
 
@@ -1458,3 +2001,100 @@ def test_only_a_standard_method_of_a_standard_type_is_a_measure():
         body = body_of(MEASURED)
         body.types[9] = kind
         assert body._only_measures(call, 2) is measures, kind
+
+
+def test_a_result_holding_a_value_beside_a_reference_may_be_a_copy():
+    # #320 review: `hybrid(&x) -> (u32, &'static ())` and `hybrid_struct(&x) -> Hybrid<'_>
+    # { v: u32, r: &u32 }` return a copy of `x` beside a reference. A type showing a
+    # reference was taken for one holding only pointers, so `x` stayed settable there.
+    for text, name, line in ((PAIRED, "paired", 97), (HELD, "held", 106)):
+        body = body_of(text)
+        at = place(body, "_7 = other()")
+        assert body.direct_copies_at(2, at) == {4}, name
+        # It may also point into `x`, as `h.r` does.
+        assert 4 in body._copy_state(2, at, True)[5], name
+        assert why(text, name, line, "_7 = other()") == kept("h", f"line {line - 1}"), name
+
+
+def test_only_a_type_holding_nothing_but_pointers_holds_no_copy():
+    for kind in (
+        "&str",
+        "&mut std::vec::Vec<u32>",
+        "*const u32",
+        "std::ptr::NonNull<u32>",
+        "()",
+        "(&str, &str)",
+        "[&u32; 2]",
+        "std::option::Option<&u32>",
+        "std::option::Option<(&str, &str)>",
+        "std::slice::Iter<'_, u32>",
+        "std::str::Chars<'_>",
+        "core::fmt::rt::Argument<'_>",
+        "std::fmt::Arguments<'_>",
+        "std::cell::Ref<'_, std::vec::Vec<&str>>",
+    ):
+        assert _pointer_only(kind, ()), kind
+    for kind in (
+        "(u32, &())",
+        "Hybrid<'_>",
+        "std::option::Option<(u32, &str)>",
+        "std::result::Result<&u32, u32>",
+        "std::boxed::Box<dyn std::ops::Fn() -> usize>",
+        "{closure@src/main.rs:25:51: 25:58}",
+        # A pattern, a size or a key is a value it was given.
+        "std::str::Split<'_, char>",
+        "std::slice::Chunks<'_, u32>",
+        "std::collections::hash_map::Entry<'_, u32, u32>",
+        "T",
+        None,
+    ):
+        assert not _pointer_only(kind, ("T",)), kind
+
+
+def test_box_new_returns_only_what_it_is_given():
+    # #164's `Box::new(move || check("boxed", t))` with `t = &s[2..]`: what it returns
+    # holds the closure, which holds only the pointer; no copy of `s`.
+    body = body_of(CLONED)
+    body.types[9] = "std::boxed::Box<{closure@src/main.rs:25:51: 25:58}>"
+    call = "_9 = Box::<{closure@src/main.rs:25:51: 25:58}>::new(move _10) -> [return: bb3];"
+    assert body._only_wraps(call)
+    # Not where `Box` may be the crate's own, nor what returns another type.
+    assert not body_of(CLONED, proven=False)._only_wraps(call)
+    body.trusted_names = frozenset(_STD_TYPES) - {"Box"}
+    assert not body._only_wraps(call)
+    other = body_of(CLONED)
+    other.types[9] = "Boxed"
+    assert not other._only_wraps(call)
+
+
+def test_a_short_type_name_the_crate_gives_its_own_proves_no_measure():
+    # #320 review: `struct String;` with `fn len(s: &std::string::String) -> usize`, and a
+    # `struct Vec;` likewise: the dump's `String::len(move _5)`, given a `&std::string::
+    # String`, is the crate's, which returns what it parsed out of `x`'s text.
+    for text, name, line in ((OWNED_TEXTS, "texts", 31), (OWNED_ITEMS, "items", 40)):
+        body = body_of(text)
+        stop = next(
+            each.split(" -> ")[0]
+            for block in body.blocks.values()
+            for each, _, at in block.statements
+            if at == line and "other()" in each
+        )
+        assert why(text, name, line, stop, OWNED) == kept("n", f"line {line - 1}"), name
+        # Taken for the standard library's, it would measure, and `n` hold no copy.
+        assert 4 not in body.direct_copies_at(2, place(body, stop)), name
+    _, owned = owned_for(OWNED_TEXTS, "texts", OWNED)
+    assert {"String", "Vec"}.isdisjoint(owned._trusted_names())
+    assert {"Box", "HashMap"} <= owned._trusted_names()
+    # Declared, imported or made by a macro.
+    for code in (
+        "use other::Vec;",
+        "use std::vec::Vec as String;",
+        "make!(Vec);",
+        "macro_rules! make { () => { struct String; } }",
+        "struct HashMap;",
+    ):
+        source = SOURCE.replace("use std::env;", f"use std::env;\n{code}")
+        _, owned = owned_for(MEASURED, "measured", source)
+        assert len(owned._trusted_names()) == len(_STD_TYPES) - 1, code
+    _, owned = owned_for(MEASURED, "measured")
+    assert owned._trusted_names() == frozenset(_STD_TYPES)
