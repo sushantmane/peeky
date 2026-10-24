@@ -282,6 +282,8 @@ class DebugWorker:
         # The stop a step out began at, where this stop interrupted it and its watch
         # proves the caller's frame is the one the step was returning to (#174).
         self.step_held = None
+        # Breakpoint lines a probe watches only for a function's new calls (#305).
+        self.watch_lines = set()
         self.reset_calls()
         self.forget_places()
         # {line: stops}: the launch's breakpoint lines that are loop headers stopping
@@ -1392,7 +1394,7 @@ class DebugWorker:
 
         notes = []
         for line, count in sorted(self.loop_lines.items()):
-            if line not in self.places:
+            if line not in self.places or line in self.watch_lines:
                 continue
             count, exact = count
             note = loop_header_note(line, count, exact)
@@ -1435,8 +1437,9 @@ class DebugWorker:
         )
         notes = []
         for line in sorted(self.places):
-            if line in self.loop_lines:
-                # Its loop note says more: none of those stops is at a pass.
+            if line in self.loop_lines or line in self.watch_lines:
+                # Its loop note says more: none of those stops is at a pass. A line
+                # watched only for new calls (#305) was not asked for.
                 continue
             for function, addresses in self.places[line]:
                 if len(addresses) > 1:
@@ -1542,12 +1545,9 @@ class DebugWorker:
     def breakpoint_notes(self, program, args):
         """Runtime warnings about the requested breakpoint lines (display only)."""
         notes = getattr(self.runtime, "breakpoint_notes", None)
+        asked = [p for p in args.get("breakpoints", []) if p.get("line") not in self.watch_lines]
         try:
-            return (
-                [str(note)[:500] for note in notes(program, args.get("breakpoints", []))][:5]
-                if notes
-                else []
-            )
+            return [str(note)[:500] for note in notes(program, asked)][:5] if notes else []
         except (KeyError, TypeError, ValueError, OSError):
             return []
 
@@ -1783,6 +1783,16 @@ class DebugWorker:
                     parse_selector(change["name"])
                 except ValueError as exc:
                     raise ValueError(f"sets: {exc}") from None
+        if operation == "launch" and args.get("entry_lines") is not None:
+            # The lines a probe restores a value at (`@before`, #305): the first line of
+            # each function with code there is watched too, for new calls.
+            lines = args["entry_lines"]
+            if (
+                not isinstance(lines, list)
+                or len(lines) > 8
+                or not all(type(line) is int and line > 0 for line in lines)
+            ):
+                raise ValueError("entry_lines must be a list of at most 8 positive line numbers")
         if operation == "launch" and args.get("max_pause") is not None:
             value = args["max_pause"]
             if type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= 300:
@@ -1858,6 +1868,12 @@ class DebugWorker:
                 raise ValueError("reference must be an integer")
             if not isinstance(args.get("name"), str) or not isinstance(args.get("value"), str):
                 raise ValueError("name and value must be strings")
+            if type(args.get("restorable", False)) is not bool:
+                raise ValueError("restorable must be true or false")
+            if "target" in args and (
+                not isinstance(args["target"], str) or not 0 < len(args["target"]) <= 500
+            ):
+                raise ValueError("target must be a nonempty string of at most 500 characters")
             # Only what a selector can name (#195): a change never reaches a variable the
             # CLI could not select, such as one whose name holds an invisible character.
             name = args["name"]
@@ -1958,6 +1974,8 @@ class DebugWorker:
             # The session's own breakpoints in its program, restored after a one-shot
             # `continue --to` line is reached.
             self.points = list(args.get("breakpoints", []))
+            # Lines watched only for a function's new calls (#305): never warned about.
+            self.watch_lines = set()
             self.temporary_line = None
             self.hits, self.stop_hit, self.stop_line, self.steps = 0, None, None, 0
             self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
@@ -2010,6 +2028,20 @@ class DebugWorker:
                     )
                 if args.get("sets"):
                     self.refuse_never_settable(runtime, program, args["sets"])
+                watched = None
+                if args.get("entry_lines"):
+                    # Set before the program runs, so every call's start is seen (#305).
+                    watched = self.watch_entries(runtime, program, args["entry_lines"])
+                    requested = args.get("breakpoints", [])
+                    extra = sorted(
+                        {line for _, lines in watched for line in lines}
+                        - {point["line"] for point in requested}
+                    )
+                    args = {**args, "breakpoints": [*requested, *({"line": n} for n in extra)]}
+                    self.adapter.validate_breakpoints(args["breakpoints"])
+                    self.points = list(args["breakpoints"])
+                    self.breakpoint_counts[str(program)] = len(self.points)
+                    self.watch_lines = set(extra)
                 left()
                 self.dap = DAP(
                     command=runtime.command,
@@ -2110,6 +2142,8 @@ class DebugWorker:
                     # Fields and array elements too (Java), not only root locals.
                     "supports_member_set": self.member_set(),
                     "supports_expand": True,
+                    # [[restore line, [the first lines watched for it]], ...] (#305).
+                    **({"entry_lines": watched} if watched is not None else {}),
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
                     "source_manifest": getattr(runtime, "source_manifest", None),
@@ -2691,8 +2725,15 @@ class DebugWorker:
             self.refuse_mid_statement(
                 runtime, variable, self.reference_frames.get(ref), args["name"]
             )
+            target, untargeted = self.storage_target(
+                runtime, args, variable, args["name"], frame=self.reference_frames.get(ref)
+            )
             if text is not None:
-                return self.set_text(runtime, variable, adapter_ref, kind, text, shape)
+                written = self.set_text(runtime, variable, adapter_ref, kind, text, shape)
+                if args.get("restorable"):
+                    # A text is written in place, and its whole old text is not kept.
+                    written = {**written, "restore": {"refused": _TEXT_NOT_RESTORED}}
+                return written
             before = variable.get("value")
             literal = getattr(runtime, "mutation_literal", None)
             try:
@@ -2730,6 +2771,8 @@ class DebugWorker:
                     after,
                     frame=self.reference_frames.get(ref),
                     root=variable,
+                    restorable=args.get("restorable", False),
+                    target=(target, untargeted),
                 ),
                 **({"note": unread_note} if unread_note else {}),
             }
@@ -4310,6 +4353,14 @@ class DebugWorker:
         if reason := check(variable, parent=parent):
             raise ValueError(f"`{selector}` cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
+        target, untargeted = self.storage_target(
+            # The value holding it, as read again from the frame just now (`walk`).
+            runtime,
+            args,
+            variable,
+            selector,
+            parent=trail[-1] if trail else {},
+        )
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         request = {
@@ -4343,7 +4394,15 @@ class DebugWorker:
             "name": name,
             "before": before,
             "after": after,
-            **_written(runtime, variable, reread[0], before, after),
+            **_written(
+                runtime,
+                variable,
+                reread[0],
+                before,
+                after,
+                restorable=args.get("restorable", False),
+                target=(target, untargeted),
+            ),
         }
 
     def _set_scalar_member(
@@ -4382,6 +4441,9 @@ class DebugWorker:
             step if step.startswith("[") else f".{step}" for step in steps
         )
         self.refuse_mid_statement(runtime, root, frame, selector, steps)
+        target, untargeted = self.storage_target(
+            runtime, args, variable, selector, frame=frame, root=root, steps=steps
+        )
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         try:
@@ -4424,7 +4486,18 @@ class DebugWorker:
             "name": name,
             "before": before,
             "after": after,
-            **_written(runtime, variable, found[0], before, after, frame, root, steps),
+            **_written(
+                runtime,
+                variable,
+                found[0],
+                before,
+                after,
+                frame,
+                root,
+                steps,
+                restorable=args.get("restorable", False),
+                target=(target, untargeted),
+            ),
         }
 
     def text_stop(self):
@@ -4602,6 +4675,64 @@ class DebugWorker:
             return {"top": True}
         return {"top": False, "path": [step for step, _ in ancestry] + [name]}
 
+    def storage_target(self, runtime, args, variable, shown, **where):
+        """(identity, why not): which storage a change writes (the runtime's
+        ``storage_identity``: a local's declaration, or the object holding a field), only
+        where a probe asks (`restorable`, `target`; #305), else (None, None). A restore
+        names the storage its change wrote (``target``): it is refused, before anything is
+        written, where this one is another, or Peeky cannot tell which it is."""
+        if not args.get("restorable") and "target" not in args:
+            return None, None
+        hook = getattr(runtime, "storage_identity", None)
+        identity, why = None, "Peeky cannot tell which storage this language's names hold"
+        if hook is not None:
+            try:
+                identity, why = str(hook(variable, **where))[:500], None
+            except ValueError as exc:
+                why = str(exc)[:300]
+            except Exception:
+                why = "Peeky could not tell which storage it is"
+        expected = args.get("target")
+        if expected is not None and identity != expected:
+            raise ValueError(
+                f"`{shown}` cannot be changed back here: "
+                + (
+                    f"it is {identity}, not {expected}, which the change was made to"
+                    if identity is not None
+                    else why
+                )
+                + ". The value from before that change is not this one's"
+            )
+        return identity, why
+
+    def watch_entries(self, runtime, program, lines):
+        """[[line, [first lines]], ...]: for each line a probe restores a value at
+        (`@before`, #305), the first line of each function with code there, which the
+        probe watches for that function's new calls (``entry_lines``). A restore is made
+        only in the call that made the change, so where a function's calls cannot be
+        watched, it is refused before the program runs."""
+        from peeky.errors import Refused
+
+        hook = getattr(runtime, "entry_lines", None)
+        why = None
+        if hook is None:
+            why = "Peeky cannot watch this language's functions for new calls"
+        else:
+            try:
+                found = hook(program, list(lines))
+            except ValueError as exc:
+                why = str(exc)[:500]
+        if why is not None:
+            refused = Refused(
+                "MUTATION_REJECTED",
+                f"`@before` cannot be used here: {why}. A "
+                "restore is made only in the call that made the change, so Peeky must see "
+                "each call of the function begin" + _BEFORE_LAUNCH,
+            )
+            refused.before_launch = True
+            raise refused
+        return [[line, sorted(set(found.get(line, ())))] for line in lines]
+
     def refuse_never_settable(self, runtime, program, changes):
         """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at
         its `--at` line, a `--set-at` at its own, #137) that no stop of its line can make
@@ -4767,7 +4898,18 @@ class DebugWorker:
         return self.last_cleanup if adapter else None
 
 
-def _written(runtime, variable, reply, before, after, frame=None, root=None, steps=()):
+def _written(
+    runtime,
+    variable,
+    reply,
+    before,
+    after,
+    frame=None,
+    root=None,
+    steps=(),
+    restorable=False,
+    target=(None, None),
+):
     """What a change's result says of the value it wrote, besides its text: ``type``, the
     value's type after the write, as the debugger's reply to it or a read after it names
     it (a Python write can change it: `callback` from a function to `None`); and
@@ -4777,7 +4919,9 @@ def _written(runtime, variable, reply, before, after, frame=None, root=None, ste
     debug information gives, through typedefs; a Java primitive but a float or double;
     Python's True, False or None). ``variable`` is the value as read before the write,
     and ``frame``, ``root`` and ``steps`` where it is (a root local, or a field or
-    element ``steps`` reach from it)."""
+    element ``steps`` reach from it). With ``restorable``, ``restore``: what a later
+    `@before` may write back, and to which storage (``target``: (identity, why not),
+    storage_target; _restorable)."""
     kind = reply.get("type") if isinstance(reply, dict) else None
     written = {"type": kind[:300]} if isinstance(kind, str) and kind else {}
     exact = getattr(runtime, "exact_text", None)
@@ -4788,7 +4932,38 @@ def _written(runtime, variable, reply, before, after, frame=None, root=None, ste
             proven = False
         if proven:
             written["unchanged"] = True
+    if restorable:
+        written["restore"] = _restorable(runtime, variable, before, frame, root, steps)
+        identity, why = target
+        if identity is None:
+            written["restore"] = {
+                "refused": f"Peeky cannot tell which storage it wrote ({why})"
+                if why
+                else "Peeky cannot tell which storage it wrote"
+            }
+        elif "value" in written["restore"]:
+            written["restore"]["target"] = identity
     return written
+
+
+_TEXT_NOT_RESTORED = "it holds a text, and Peeky writes back only a number, true, false or None"
+
+
+def _restorable(runtime, variable, before, frame, root, steps):
+    """What a probe's `@before` may write back for this change (#305), read at this
+    write: {"value": the literal}, only where the runtime proves the text read before it
+    is all of the value (``restore_literal``); else {"refused": why}."""
+    hook = getattr(runtime, "restore_literal", None)
+    if hook is None:
+        return {"refused": "Peeky restores no value of this language's"}
+    if not isinstance(before, str):
+        return {"refused": "the debugger gave no text for it"}
+    try:
+        return {"value": hook(variable, before, frame=frame, root=root, steps=steps)}
+    except ValueError as exc:
+        return {"refused": str(exc)[:300]}
+    except Exception:
+        return {"refused": "Peeky could not tell whether its text is all of its value"}
 
 
 def _frame_identity(frame):

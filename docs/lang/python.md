@@ -67,6 +67,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 - To change values at several lines or hits, repeat `--set-at LINE@HIT name=value`
   ([2.8](../COOKBOOK.md#28-change-a-value-then-restore-it)). `--set-at LINE@all name=value`
   changes a local at every stop of the line ([2.8](../COOKBOOK.md#change-it-at-every-stop-all)).
+  `name=@before` writes back a number, `True`, `False` or `None` as it was before the probe's
+  change at the same hit ([Python 2.8](python-cookbook.md#restore-a-value-with-before)).
 
 ## See what a function returned
 

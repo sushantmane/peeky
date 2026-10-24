@@ -886,6 +886,102 @@ class JavaSession:
         makes a new one."""
         return isinstance(variable, dict) and variable.get("type") in _EXACT_PRIMITIVES
 
+    @staticmethod
+    def restore_literal(variable, before, **where):
+        """The literal a probe's `@before` writes back (#305): the text read just before
+        a change, of a primitive java-debug shows whole (``exact_text``): an integer or
+        boolean as read, a char as its code point. A float or double may be shown
+        rounded, and a String or other object is a new one when written: ValueError."""
+        kind = variable.get("type") if isinstance(variable, dict) else None
+        if kind in ("float", "double"):
+            raise ValueError(
+                f"it is a {kind}, which java-debug may show rounded, so writing its text "
+                "back may not restore it exactly"
+            )
+        if kind not in _EXACT_PRIMITIVES:
+            raise ValueError(
+                f"it holds {('a ' + kind) if kind else 'a value'}, not a primitive: a write "
+                "makes a new object. Peeky writes back an integer, a boolean or a char"
+            )
+        if kind == "char":
+            if len(before) != 1 or len(before.encode("utf-16-le")) != 2:
+                raise ValueError(f"it read {before[:80]!r}, not one char Peeky can write back")
+            return str(ord(before))
+        if not re.fullmatch(r"true|false" if kind == "boolean" else r"-?[0-9]{1,19}", before):
+            raise ValueError(f"it read {before[:80]!r}, not a {kind} Peeky can write back")
+        return before
+
+    def storage_identity(self, variable, frame=None, root=None, steps=(), parent=None):
+        """Which storage a change writes, as a `@before` restore compares it (#305): for a
+        field or element, the object or array holding it (``parent``, by java-debug's
+        object id, `Box@27`, which no other object takes while the program runs); for a
+        local, its declaration in the stopped method's local variable table, the one in
+        scope on the stop's line. ValueError where it cannot be singled out."""
+        name = str((variable or {}).get("name"))
+        if parent is not None:
+            held = str(parent.get("value") or "")
+            if not (_JAVA_OBJECT.fullmatch(held) or JAVA_ARRAY.fullmatch(held)):
+                raise ValueError(f"Peeky cannot tell which object holds `{name}` ({held[:80]})")
+            return f"`{name}` of {held}"
+        found = self._frame_method(frame)
+        if found is None:
+            raise ValueError("Peeky cannot find the stopped method in the class files")
+        method, line = found
+        pcs = method.get("line_pcs", {}).get(line, ())
+        held = {
+            (slot, start, length)
+            for local, slot, start, length in method.get("slots", ())
+            if local == name and any(start <= pc < start + length for pc in pcs)
+        }
+        if len(held) != 1:
+            raise ValueError(
+                f"Peeky cannot tell which declaration of `{name}` the debugger shows on line {line}"
+            )
+        slot, start, length = held.pop()
+        return (
+            f"`{name}` (declared in {_method_shown(method['name'])}: slot {slot}, bytecode "
+            f"{start} to {start + length})"
+        )
+
+    def entry_lines(self, program, lines):
+        """{line: the first line of each method with code on it} (#305): the line its
+        code starts at (pc 0), where each call first stops. A probe watches them, so a
+        value is restored only in the call that changed it. ValueError where a method's
+        calls cannot be seen begin there: the debugger stops on that line in another
+        method of the class only, or the class files cannot be read."""
+        path = Path(self.source_path(program)).resolve()
+        declared = self._declared()
+        if not declared:
+            raise ValueError("Peeky could not read the class files' line tables")
+        found = {line: set() for line in lines}
+        for binary, entry in self.mapping["classes"].items():
+            if Path(entry["path"]).resolve() != path:
+                continue
+            methods = (declared.get(binary.replace(".", "/")) or {}).get("methods", ())
+            for method in methods:
+                line_pcs = method.get("line_pcs") or {}
+                first = next((n for n, pcs in line_pcs.items() if 0 in pcs), None)
+                name = _method_shown(method["name"])
+                for line in (n for n in lines if n in line_pcs):
+                    if first is None:
+                        raise ValueError(
+                            f"Peeky cannot place the first line of `{name}`, which has code "
+                            f"on line {line}"
+                        )
+                    shared = entry.get("shared_lines", {}).get(str(first))
+                    if shared and (
+                        shared["stops"].split("(", 1)[0] != method["name"]
+                        or any(n.split("(", 1)[0] == method["name"] for n in shared["never"])
+                    ):
+                        raise ValueError(
+                            f"`{name}`, which has code on line {line}, begins on line {first}, "
+                            "where the debugger stops only in "
+                            f"{_method_shown(shared['stops'])}, so Peeky cannot see each "
+                            f"call of `{name}` begin"
+                        )
+                    found[line].add(first)
+        return {line: sorted(starts) for line, starts in found.items()}
+
     def confirm_mutation(self, name, value, before, after, variable=None):
         """A String (#137) must read back as the text asked, as java-debug shows one
         (between quotes, nothing escaped), and a char (#183) as the char itself: else

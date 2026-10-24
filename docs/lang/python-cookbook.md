@@ -14,6 +14,7 @@ Peeky debugs Python with debugpy, Python's debugger.
   - [Read a dict entry](#read-a-dict-entry)
 - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it)
   - [Change a value in one of two lambdas on a line](#change-a-value-in-one-of-two-lambdas-on-a-line)
+  - [Restore a value with `@before`](#restore-a-value-with-before)
 - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python)
   - [Tell the same object from a copy](#tell-the-same-object-from-a-copy)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
@@ -117,6 +118,20 @@ their stops apart:
 - A change in one of them says `one of 2 on the line the debugger names alike`.
 
 Lambdas on separate lines are counted separately.
+
+### Restore a value with `@before`
+
+`--set-at LINE@HIT name=@before` writes back what a local held before the probe's change at the
+same hit ([COOKBOOK 2.8](../COOKBOOK.md#skip-a-statement-restore-with-before)). In Python:
+
+- It writes back an `int`, a `float`, `True`, `False` or `None` whose text reads back as the same
+  value. Writing it makes an equal value. An int past 256 or a float is a new object, which `is`
+  tells apart. A text, a list or another object is refused.
+- Peeky watches the first statement of the function holding the restore line, after its
+  docstring, for each new call. At module level, it watches the module's first statement.
+- A restore line in a generator or coroutine is refused before the run. Each resumption runs on
+  part-way through it, so its calls can't be told apart. So is one in a lambda, a comprehension or
+  a class body.
 
 ## 4.6 Same Object, or a Copy? (Java, Python)
 

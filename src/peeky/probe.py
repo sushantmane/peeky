@@ -42,6 +42,9 @@ MAX_HITS = 100
 MAX_SET_AT_HIT = 1000
 # `--set-at LINE@all` (#265): the change at every stop of LINE, up to MAX_HITS of them.
 ALL = "all"
+# A --set-at's value that writes back what the variable held just before this probe's
+# latest change to it, made at the same hit of its own line, in the same call.
+BEFORE = "@before"
 # An @all's changes the text shows one by one; a line counts the rest.
 _ALL_SHOWN = 3
 MAX_ROWS = 2000
@@ -338,7 +341,8 @@ _SET_AT = re.compile(
 def parse_set_at(where, assignment):
     """`--set-at [<path>:]<line>[@<hit>|@all] <name>=<value>` -> (path or None, line,
     hit, name, value); the hit defaults to 1 and counts that line's own stops, and `all`
-    (ALL) is every stop of the line (#265)."""
+    (ALL) is every stop of the line (#265). A value of `@before` (BEFORE) writes back the
+    value from before an earlier change (#305)."""
     found = _SET_AT.fullmatch(where or "")
     if not found:
         raise ValueError(
@@ -350,6 +354,13 @@ def parse_set_at(where, assignment):
         raise ValueError(f"--set-at {where} expects name=value, got {assignment!r}")
     hit = ALL if found["hit"] == ALL else int(found["hit"] or 1)
     return found["path"], int(found["line"]), hit, name.strip(), value.strip()
+
+
+def restore_key(name):
+    """What a `@before` restore matches earlier changes by: the selector's steps, as
+    parsed (`trend`, `s.lo`, `xs[2]`). Two spellings of one place (`xs[-1]` and `xs[3]`)
+    are not matched."""
+    return tuple(parse_selector(name))
 
 
 @dataclass(frozen=True)
@@ -453,6 +464,25 @@ class Probe:
                     f"Intervention target {change[0]!r}: map and dict entries cannot be changed; "
                     "--set changes a local, or a field or array element (Java, Rust, C, "
                     "C++)",
+                )
+        for name, value in self.set:
+            if value == BEFORE:
+                raise ValueError(
+                    f"--set {name}={BEFORE}: `{BEFORE}` is for --set-at. It writes back the "
+                    "value from before an earlier change, so it needs a later line: "
+                    f"--set-at LINE@HIT {name}={BEFORE}"
+                )
+        changed = {
+            restore_key(name)
+            for name, value in (*self.set, *(point[2:] for point in self.set_at))
+            if value != BEFORE
+        }
+        for line, hit, name, value in self.set_at:
+            if value == BEFORE and restore_key(name) not in changed:
+                raise ValueError(
+                    f"--set-at {line}@{hit} {name}={BEFORE} writes back the value `{name}` had "
+                    f"before an earlier change to it, but no other --set or --set-at changes "
+                    f"`{name}`: add that change too (e.g. --set-at LINE@{hit} {name}=0)"
                 )
         if self.hits != "all" and (type(self.hits) is not int or not 1 <= self.hits <= MAX_HITS):
             raise ValueError(f"Probe hits must be 1..{MAX_HITS} or 'all'")
@@ -2363,7 +2393,10 @@ def _element(worker, stop, snapshot, segments, target, negative):
 def _launch_set(line, name, value):
     """A change as the check before the run judges it (#138): its line and name, whether
     its value is a text (#137: a string's, not an integer's), and the value itself, which
-    a Java local's declared type judges (#183)."""
+    a Java local's declared type judges (#183). A restore's value (`@before`, #305) is
+    known only at its stop: its name alone is judged."""
+    if value == BEFORE:
+        return {"line": line, "name": name}
     return {
         "line": line,
         "name": name,
@@ -2372,11 +2405,16 @@ def _launch_set(line, name, value):
     }
 
 
-def apply_set(worker, stop, name, value):
+def apply_set(worker, stop, name, value, restorable=False, target=None):
     """Apply one `--set name=value` at this stop: a root local, or a field or array
     element a selector names (Java: `current.end`, `this.count`, `xs[0]`, `xs[-1]`; C,
     C++ and Rust: `s.end`, `s.in.lo`, `xs[2]`, `t.__0`, which the worker proves the
-    frame holds itself, #105)."""
+    frame holds itself, #105). ``restorable``: the result's `restore` says how a later
+    `@before` may write back the value read before this write, and to which storage
+    (#305); ``target``: that storage, which a restore writes only where it names it."""
+    asked = {"restorable": True} if restorable else {}
+    if target is not None:
+        asked["target"] = target
     worker = _Coded(worker)
     segments = parse_selector(name)
     snapshot = worker.dispatch("inspect", {**stop, "names": [segments[0]], "previews": False})
@@ -2406,7 +2444,13 @@ def apply_set(worker, stop, name, value):
         try:
             return worker.dispatch(
                 "set_variable",
-                {**stop, "reference": scope["reference"], "name": listed_as, "value": value},
+                {
+                    **stop,
+                    "reference": scope["reference"],
+                    "name": listed_as,
+                    "value": value,
+                    **asked,
+                },
             )
         except Refused as exc:
             # Classified by the debugger's reason, never by the names listed after it.
@@ -2482,7 +2526,13 @@ def apply_set(worker, stop, name, value):
     try:
         changed = worker.dispatch(
             "set_variable",
-            {**stop, "handle": parent["variablesReference"], "name": member, "value": value},
+            {
+                **stop,
+                "handle": parent["variablesReference"],
+                "name": member,
+                "value": value,
+                **asked,
+            },
         )
     except Refused as exc:
         raise Refused(exc.code, f"{target}: {exc}") from None
@@ -3539,6 +3589,230 @@ def _waiting(point):
     return point["capped"] is None if point["hit"] == ALL else point["change"] is None
 
 
+class _Restores:
+    """A probe's `@before` restores (#305). Each writes back the value its variable held
+    just before the probe's latest change to it, and only where that is exactly what the
+    variable held in the same call: the change was made at the same hit of its own line,
+    on the same thread, in the same function at the same stack depth under the same
+    callers, and that call is still the one running.
+
+    A stack does not tell one call from another made from the same place. So the probe
+    also stops at the first line of each function with code on a restore's line, from the
+    start of the run (``watched``, from the worker's ``entry_lines``): each call begins
+    there. A restore is made only where the call that made the change was seen to begin,
+    and no new call of that function began on that thread, at that depth or above, since.
+    The value is the worker's ``restore`` for the change, read at that write: only a
+    value whose text is all of it."""
+
+    def __init__(self, points):
+        self.points = [point for point in points if point["value"] == BEFORE]
+        self.keys = {restore_key(point["name"]) for point in self.points}
+        # {selector: the latest change the probe made to it, where and when}.
+        self.ledger = {}
+        # Each stop at a watched line: (sequence, thread, function, source, depth, the
+        # watched lines it is at).
+        self.entered = []
+        # {watched line: the restore lines it watches for}.
+        self.watched = {}
+        self.sequence = 0
+        # (sequence, why) once the watch ended early.
+        self.ended = None
+
+    def __bool__(self):
+        return bool(self.points)
+
+    def lines(self):
+        """The restores' lines, in the build's numbering, for the worker to watch."""
+        return sorted({point["build_line"] for point in self.points})
+
+    def watch(self, pairs):
+        """Take the worker's ``entry_lines`` ([[restore line, [first lines]], ...])."""
+        if not isinstance(pairs, list):
+            raise ValueError(
+                "This worker does not watch for new calls, so `@before` cannot be used: "
+                "install the same Peeky version on both hosts"
+            )
+        for restore, firsts in pairs:
+            for first in firsts:
+                self.watched.setdefault(first, set()).add(restore)
+
+    def wanted(self, name):
+        """Whether a change to ``name`` may be written back later: its result keeps how."""
+        return restore_key(name) in self.keys
+
+    def awaiting(self, seen):
+        """(restore point, the change it awaits) for each `LINE@all` restore still to be
+        made, at the hit of its name's latest change (a restore's too: a later restore
+        undoes it), which the restore's line has not reached yet (``seen``: each line's
+        stops so far). A restore line that reached that hit already paired its own change
+        there. The same for what an `--until hits` probe waits for (``owed``) and what is
+        left in place at its end."""
+        found = []
+        for point in self.points:
+            record = self.ledger.get(restore_key(point["name"]))
+            if (
+                point["hit"] == ALL
+                and _waiting(point)
+                and record is not None
+                and seen.get(point["build_line"], 0) < record["hit"]
+            ):
+                found.append((point, record))
+        return found
+
+    def owed(self, seen):
+        """The restore lines an `--until hits` probe still waits for (``awaiting``); a
+        restore at one hit is owed as any `--set-at` is."""
+        return [point["build_line"] for point, _ in self.awaiting(seen)]
+
+    def needed(self):
+        """The watched lines while a restore may still be made."""
+        if self.ended is not None or not any(_waiting(point) for point in self.points):
+            return []
+        return list(self.watched)
+
+    def moved(self, placed):
+        """End the watch where the debugger placed a watched line's breakpoint elsewhere:
+        its stops are no longer where each call begins."""
+        for first in self.watched:
+            where = (placed.get(first) or {}).get("line", first)
+            if self.ended is None and type(where) is int and where != first:
+                self.ended = (
+                    self.sequence,
+                    f"the debugger moved the breakpoint on line {first}, where a function "
+                    f"on line {self._restore_lines(first)} begins, to line {where}",
+                )
+
+    def _restore_lines(self, first):
+        return ", ".join(map(str, sorted(self.watched.get(first, ()))))
+
+    def stop(self, matched, here):
+        """Count a stop; where it is at a watched line, it may be a call's beginning."""
+        self.sequence += 1
+        here["sequence"] = self.sequence
+        at = frozenset(number for number in matched if number in self.watched)
+        if self.ended is None and at:
+            self.entered.append(
+                (
+                    self.sequence,
+                    here["thread"],
+                    here["function"],
+                    here["source"],
+                    here["depth"],
+                    at,
+                )
+            )
+            if len(self.entered) >= MAX_SET_AT_HIT:
+                self.ended = (
+                    self.sequence,
+                    f"after {MAX_SET_AT_HIT} stops at the first lines of the functions on "
+                    "the restore lines, the cap",
+                )
+
+    def note(self, name, at, line, hit, here, restore, change):
+        """Keep a change the probe made to ``name`` (at stop ``here``) if a restore may
+        write back the value from before it: what the worker kept to write back, and to
+        which storage (``restore``), and the value the change wrote. A restore is kept
+        too, as the latest change; the change it undid is restored."""
+        if not self.wanted(name):
+            return
+        self.ledger[restore_key(name)] = {
+            "at": at,
+            "line": line,
+            "hit": hit,
+            **here,
+            "restore": restore if isinstance(restore, dict) else {},
+            "wrote": change.get("after"),
+            "undoes": change.get("restores"),
+        }
+
+    def value(self, name, line, hit, here):
+        """(the literal to write back for `name=@before` at hit ``hit`` of ``line`` (the
+        build's numbering), at stop ``here``, the change it undoes), or Refused saying why
+        not."""
+        record = self.ledger.get(restore_key(name))
+        if record is None:
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"`{name}` has no earlier change to undo: this probe made none before this "
+                f"stop. `{BEFORE}` writes back the value from just before a change made at "
+                f"the same hit, so make that change at an earlier line (--set-at "
+                f"LINE@{hit} {name}=VALUE)",
+            )
+        where = f"line {record['at']}"
+        if record["hit"] != hit:
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"`{name}` was last changed at hit {record['hit']} of line {record['line']}, "
+                f"not at hit {hit}: `{BEFORE}` writes back a value only at the hit it was "
+                "changed at, to undo the change made in the same pass. Choose lines that "
+                "stop once each per pass",
+            )
+        if "value" not in record["restore"] or "target" not in record["restore"]:
+            why = record["restore"].get("refused") or "Peeky did not keep it"
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"the value `{name}` had before the change at {where} cannot be written "
+                f"back exactly: {why}. Give the value itself (--set-at LINE@{hit} "
+                f"{name}=VALUE)",
+            )
+        changed = f"`{name}` was changed at {where} in {record['shown']}"
+        call = f"the call of {record['shown']} that changed `{name}` at {where}"
+        if record["thread"] != here["thread"]:
+            other = "on another thread"
+        elif (record["function"], record["source"]) != (here["function"], here["source"]):
+            other = f"in {here['shown']}"
+        elif None in (record["depth"], here["depth"]):
+            other = "where Peeky could not count the stack's frames"
+        elif record["depth"] != here["depth"]:
+            calls = abs(here["depth"] - record["depth"])
+            other = f"{calls} call{'s' if calls > 1 else ''} " + (
+                "deeper (a recursive call)" if here["depth"] > record["depth"] else "higher"
+            )
+        elif record["callers"] != here["callers"]:
+            other = "under other callers"
+        else:
+            other = None
+        if other is not None:
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"{changed}, and this stop is {other}: a value is written back only in the "
+                "frame that was changed",
+            )
+        if self.ended is not None and self.ended[0] <= here["sequence"]:
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"Peeky stopped watching for new calls ({self.ended[1]}), so it cannot tell "
+                f"that this stop is in {call}",
+            )
+        # Its first line's stops on this thread at this depth or above: one at a depth
+        # Peeky could not count may be one too.
+        same = [
+            event
+            for event in self.entered
+            if event[1:4] == (here["thread"], here["function"], here["source"])
+            and (event[4] is None or event[4] <= here["depth"])
+        ]
+        # The call began at the first line of a function on this line.
+        firsts = {first for first, lines in self.watched.items() if line in lines}
+        began = [event for event in same if event[0] <= record["sequence"]]
+        if not began or began[-1][4] != record["depth"] or not began[-1][5] & firsts:
+            firsts = ", ".join(map(str, sorted(firsts))) or "none"
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"Peeky did not see {call} begin, so it cannot tell that call from another. "
+                "It watches the first line of each function on a restore's line (line "
+                f"{firsts}) from the start of the run, where each call begins",
+            )
+        if any(record["sequence"] < event[0] <= here["sequence"] for event in same):
+            raise Refused(
+                "MUTATION_REJECTED",
+                f"{changed}, and the first line of {record['shown']} ran again since, at the "
+                "same stack depth or above: each call begins there, so Peeky cannot tell "
+                "that this stop is in the call that made the change",
+            )
+        return record["restore"]["value"], record
+
+
 # A refusal's advice to change the value in the frame that owns it (#202).
 _OWNER_LINE = re.compile(r"`--set-at ([0-9]+)@N ")
 
@@ -3692,6 +3966,8 @@ def run_probe(
     discard = False
     # Pauses at stops that only apply a --set-at (no capture there).
     set_pauses = []
+    # Pauses at stops only at a function's first line, watched for new calls (#305).
+    watch_pauses = []
     unreported = None
     # How the probe's watch ended: "exit" (the program ended), "hits" (--until hits), else
     # None (a failure or the timeout); and the change being made when one failed: for
@@ -3715,6 +3991,8 @@ def run_probe(
         }
         for at, hit, name, value in probe.set_at
     ]
+    # `@before` restores (#305), and the changes and calls they are judged by.
+    restores = _Restores(points)
     # Stops seen per breakpoint line (the build's numbering): a --set-at's hit counts its
     # own line's stops, in any function.
     seen = {}
@@ -3784,9 +4062,18 @@ def run_probe(
                     if probe.set or points
                     else {}
                 ),
+                # The first line of each function on a restore's line is watched too.
+                **({"entry_lines": restores.lines()} if restores else {}),
             },
         )
         session = {"session_id": launch["session_id"]}
+        # The lines placed only to watch for new calls (`@before`): the worker placed
+        # them after the requested lines, in this order.
+        watching = []
+        if restores:
+            restores.watch(launch.get("entry_lines"))
+            watching = sorted(set(restores.watched) - set(lines))
+            lines += watching
         # Where the debugger placed each line's breakpoint (later `breakpoint` events
         # update it): {build line: DAP breakpoint}.
         placed = dict(zip(lines, [*(launch["breakpoints"] or []), *([{}] * len(lines))]))
@@ -3851,14 +4138,22 @@ def run_probe(
             + ("in the candidate " if probe.edit else "")
             + ("verified" if verified else "pending until its class or module loads")
             + (
-                f", and {len(lines) - 1} more for --set-at"
-                if len(lines) > 1
+                f", and {len(lines) - 1 - len(watching)} more for --set-at"
+                if len(lines) - len(watching) > 1
                 else " (with --set-at)"
                 if points
                 else ""
             )
+            + (
+                f"; watching line{'s' if len(watching) > 1 else ''} "
+                f"{', '.join(map(str, watching))} for new calls, where each function on a "
+                f"{BEFORE} line begins"
+                if watching
+                else ""
+            )
         )
         _set_at_moved(points, placed, probe.program)
+        restores.moved(placed)
         say("waiting for the program to reach it...")
         status, noted = "timeout", time.monotonic()
         while (remaining := deadline - time.monotonic()) > 0:
@@ -3872,6 +4167,7 @@ def run_probe(
                 say("breakpoint verified")
             _moved(placed, state)
             _set_at_moved(points, placed, probe.program)
+            restores.moved(placed)
             if state["state"] == "running":
                 if time.monotonic() - noted >= 10:
                     noted = time.monotonic()
@@ -3969,7 +4265,7 @@ def run_probe(
                     **({"names": roots} if roots else {}),
                     "previews": _roots(selectors) if capturing else False,
                     "extents": _roots(selectors) if capturing else False,
-                    **({"depth": True} if wants_return else {}),
+                    **({"depth": True} if wants_return or restores else {}),
                 },
             )
             frame = snapshot["frames"][0] if snapshot["frames"] else {}
@@ -3992,6 +4288,18 @@ def run_probe(
                 if any(p["build_line"] == number for p in points):
                     named = set_functions.setdefault(number, {})
                     named.setdefault(frame.get("name"), []).append(seen[number])
+            # Where this stop is, which a `@before` restore is judged by (#305).
+            here = {
+                "thread": body.get("threadId"),
+                "function": frame.get("name"),
+                "source": frame.get("source", {}).get("path"),
+                "shown": snapshot.get("instance") or display_function(frame.get("name")) or "?",
+                "depth": snapshot.get("depth") if type(snapshot.get("depth")) is int else None,
+                "callers": [_frame_id(caller) for caller in snapshot["frames"][1:]],
+            }
+            if restores:
+                # A stop at a watched line may be a call's beginning.
+                restores.stop(matched, here)
             # A stop of the capture line is captured until --hits are; later ones (kept
             # for a --set-at on that line) only apply it.
             captured = line in matched and hits < probe.limit
@@ -4052,7 +4360,9 @@ def run_probe(
             for name, value, hit, point in due:
                 if point is not None and not (point["hit"] == ALL and point["changes"]):
                     say(
-                        f"--set-at {probe.program}:{point['line']}@{point['hit']}: setting {name}"
+                        f"--set-at {probe.program}:{point['line']}@{point['hit']}: "
+                        + ("restoring" if value == BEFORE else "setting")
+                        + f" {name}"
                         + (" at every stop of the line" if point["hit"] == ALL else "")
                         + (
                             f" (line {point['build_line']} of the candidate)"
@@ -4061,8 +4371,19 @@ def run_probe(
                         )
                     )
                 attempt = {"point": point, "hit": hit}
+                undone = None
                 try:
-                    applied = apply_set(worker, stop, name, value)
+                    written = value
+                    if value == BEFORE:
+                        written, undone = restores.value(name, point["build_line"], hit, here)
+                    applied = apply_set(
+                        worker,
+                        stop,
+                        name,
+                        written,
+                        restorable=restores.wanted(name),
+                        target=undone["restore"]["target"] if undone else None,
+                    )
                 except Refused as exc:
                     if point is None:
                         raise
@@ -4088,6 +4409,7 @@ def run_probe(
                         ),
                     ) from None
                 attempt = None
+                kept = applied.pop("restore", None)
                 change = {
                     **applied,
                     "line": frame.get("line"),
@@ -4106,6 +4428,14 @@ def run_probe(
                         else {}
                     ),
                 }
+                if undone is not None:
+                    # Which change's value from before it was written back (#305), and
+                    # the value it wrote over, where that is not the one the change
+                    # wrote (the program, or another of the probe's changes through
+                    # another name, wrote it since).
+                    change["restores"] = undone["at"]
+                    if change.get("before") != undone["wrote"]:
+                        change["overwrote"] = change.get("before")
                 if point is not None:
                     change["at"] = f"{point['line']}@{hit}"
                     if point["hit"] == ALL:
@@ -4114,6 +4444,15 @@ def run_probe(
                         point["change"] = change
                     point["changes"].append(change)
                 changes.append(change)
+                restores.note(
+                    name,
+                    f"{point['line'] if point else probe.line}@{hit}",
+                    point["line"] if point else probe.line,
+                    hit,
+                    here,
+                    kept,
+                    change,
+                )
             if captured and due:
                 rows.extend(
                     _capture(
@@ -4140,9 +4479,13 @@ def run_probe(
             # Keep only the breakpoints a later stop still needs.
             needed = [line] if hits < probe.limit else []
             # What the probe still owes: an @all keeps its line's breakpoint, but never
-            # keeps an --until hits probe running (#265).
+            # keeps an --until hits probe running (#265), unless it is a restore that the
+            # latest change to its name awaits.
             owed = [*needed, *(p["build_line"] for p in points if p["hit"] != ALL and _waiting(p))]
+            # A restore awaited by the latest change to its name is owed too (#305).
+            owed += restores.owed(seen)
             needed += [p["build_line"] for p in points if _waiting(p)]
+            needed += restores.needed()
             needed = [number for number in lines if number in needed]
             if needed != active:
                 answer = worker.dispatch(
@@ -4218,7 +4561,12 @@ def run_probe(
                 else:
                     returning.append(call)
             _resume(worker, stop, returning, rows)
-            (pauses if captured else set_pauses).append(
+            watching_only = (
+                not captured
+                and all(number in restores.watched for number in matched)
+                and not any(p["build_line"] in matched for p in points)
+            )
+            (pauses if captured else watch_pauses if watching_only else set_pauses).append(
                 round((time.monotonic() - paused) * 1000, 1)
             )
             if not owed and not returning and probe.until == "hits":
@@ -4615,11 +4963,44 @@ def run_probe(
                     f"{point['build_line']} stopped {stops} time(s) {ended}, so its hit "
                     f"{point['hit']} never came."
                 )
+    # An @all restore whose name's latest change was never undone (#305): the run ended
+    # before the restore line's hit that pairs with it, with that change in place.
+    unrestored = {}
+    if result.get("status") != "failed":
+        for point, record in restores.awaiting(seen):
+            unrestored[id(point)] = record["at"]
+            stops = seen.get(point["build_line"], 0)
+            entry = {
+                "option": "--set-at",
+                "at": f"{point['line']}@{ALL}",
+                "name": point["name"],
+                "value": point["value"],
+                "stops": stops,
+            }
+            # One entry per request: one whose line never stopped is listed already.
+            listed = next((e for e in result.get("unapplied") or () if e == entry), None)
+            if listed is None:
+                result.setdefault("unapplied", []).append(listed := entry)
+            listed["unrestored"] = record["at"]
+            attached = (result.get("target_identity") or {}).get("mode") == "attach"
+            warnings.append(
+                f"--set-at {probe.program}:{point['line']}@{ALL} {point['name']}={BEFORE} "
+                f"did not undo the change at line {record['at']}: line {point['build_line']} "
+                f"stopped {stops} time(s) before the probe "
+                + ("timed out" if result.get("status") == "timeout" else "ended")
+                + f", so its hit {record['hit']} never came. The run ended with that change "
+                "in place"
+                + (", and the attached program goes on running with it." if attached else ".")
+            )
     if not result.get("refused_before_launch") and (
         outcomes := _set_outcomes(
             probe, points, changes, result.get("status"), finished, attempt, unreported
         )
     ):
+        for point, outcome in zip(points, outcomes[len(probe.set) :]):
+            if id(point) in unrestored:
+                # Not carried out in full: a change it should have undone stayed.
+                outcome.update(unrestored=unrestored[id(point)], complete=False)
         result["set_outcomes"] = outcomes
     if result.get("ended") == "hits":
         for point in points:
@@ -4639,6 +5020,7 @@ def run_probe(
         hits=hits,
         pauses_ms=pauses,
         **({"set_pauses_ms": set_pauses} if set_pauses else {}),
+        **({"watch_pauses_ms": watch_pauses} if watch_pauses else {}),
         by_hit=_by_hit(rows),
         rows=rows,
         interventions=changes,
@@ -4764,6 +5146,18 @@ def repeated_visible(rows, where):
     return shortened
 
 
+def _restored(change):
+    """How a probe's text marks a restore (#305): `restored, `, or `restored over the
+    current 2, ` where the value it wrote over was not the one the change undone wrote:
+    the program, or another change of the probe's through another name for it, wrote it
+    since. Peeky does not tell which."""
+    if not change.get("restores"):
+        return ""
+    if "overwrote" in change:
+        return f"restored over the current {change['overwrote']}, "
+    return "restored, "
+
+
 def _table(result, short_names=True):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory."""
@@ -4885,7 +5279,8 @@ def _table(result, short_names=True):
                 _write_kind(change), ""
             )
             + (
-                f"  (--set-at line {at}{hit}{stop}" + (f", in {where})" if where else ")")
+                f"  ({_restored(change)}--set-at line {at}{hit}{stop}"
+                + (f", in {where})" if where else ")")
                 if change.get("at")
                 else f"  ({stop[2:]})"
                 if stop
@@ -4915,11 +5310,16 @@ def _table(result, short_names=True):
             )
             if kind in kinds
         ]
+        # A `@before` request's writes are restores (#305).
+        writes = "restore" if all(change.get("restores") for change in changes) else "write"
         if parts == [(len(changes), "change")]:
-            counted = f"{len(changes)} more change{'s' if len(changes) > 1 else ''} by "
+            noun = "restore" if writes == "restore" else "change"
+            counted = f"{len(changes)} more {noun}{'s' if len(changes) > 1 else ''} by "
             counted += f"--set-at line {at}{span}"
         elif len(parts) == 1:
-            counted = f"{len(changes)} more writes by --set-at line {at}{span}, each {parts[0][1]}"
+            counted = (
+                f"{len(changes)} more {writes}s by --set-at line {at}{span}, each {parts[0][1]}"
+            )
         else:
             listed = [
                 f"{count} {word}{'s' if count > 1 else ''}"
@@ -4928,13 +5328,22 @@ def _table(result, short_names=True):
                 for count, word in parts
             ]
             counted = (
-                f"{len(changes)} more writes by --set-at line {at}{span}: "
+                f"{len(changes)} more {writes}s by --set-at line {at}{span}: "
                 + ", ".join(listed[:-1])
                 + f" and {listed[-1]}"
             )
         lines.append(f"set {name}: {counted} (`--json` lists each)")
-    unmade = [entry for entry in result.get("unapplied") or () if "made" not in entry]
-    capped = len(result.get("unapplied") or ()) - len(unmade)
+    entries = result.get("unapplied") or ()
+    # Not made at all; an `@all` restore (#305) that left a change in place is one where
+    # its line never stopped.
+    unmade = [
+        entry
+        for entry in entries
+        if "made" not in entry and ("unrestored" not in entry or not entry.get("stops"))
+    ]
+    capped = len([entry for entry in entries if "made" in entry])
+    # `@before` restores whose change stayed in place (#305).
+    left = len([entry for entry in entries if "unrestored" in entry])
     lines.append(
         f"status: {result['status']}"
         + (
@@ -4946,11 +5355,14 @@ def _table(result, short_names=True):
                     if unmade
                     else "",
                     f"{capped} --set-at @all cut short at the cap" if capped else "",
+                    f"{left} change{'s' if left > 1 else ''} left in place, not undone"
+                    if left
+                    else "",
                 )
                 if part
             )
             + ")"
-            if (unmade or capped) and result["status"] == "completed"
+            if (unmade or capped or left) and result["status"] == "completed"
             else ""
         )
         + f"  hits: {result['hits']}"
@@ -4965,6 +5377,11 @@ def _table(result, short_names=True):
         + (
             f"  max pause: {max(paused)} ms"
             if (paused := [*result.get("pauses_ms", ()), *result.get("set_pauses_ms", ())])
+            else ""
+        )
+        + (
+            f"  watching for new calls: {len(watched)} stops, max {max(watched)} ms"
+            if (watched := result.get("watch_pauses_ms"))
             else ""
         )
     )
@@ -5058,7 +5475,8 @@ def main(argv=None):
         default=[],
         metavar=("LINE[@HIT|@all]", "NAME=VALUE"),
         help="Intervention at hit HIT (default 1) of LINE of the --at file, or at every stop "
-        f"of it (LINE@all, up to {MAX_HITS}); repeatable",
+        f"of it (LINE@all, up to {MAX_HITS}); repeatable. NAME=@before writes back NAME's "
+        "value from before this probe's change to it at the same hit, in the same call",
     )
     parser.add_argument("--run", help="Python script to run when --at is in an imported module")
     parser.add_argument("--arg", action="append", default=[], help="Python program argument")

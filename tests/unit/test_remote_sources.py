@@ -273,7 +273,7 @@ def test_the_version_says_which_sources_a_client_hashes(served, tmp_path):
     from peeky.java import JavaTarget
 
     version = served.call("version")
-    assert version["protocol"] == PROTOCOL_VERSION == 3
+    assert version["protocol"] == PROTOCOL_VERSION == 4
     assert version["sources"] == {"kind": "python"}
     target = JavaTarget(bundle=tmp_path, sources=("demo/A.java", "demo/B.java"), main_class="A")
     server = make_server(tmp_path, TOKEN, 0, adapter=target)
@@ -360,10 +360,10 @@ def old_worker(protocol):
     return server
 
 
-@pytest.mark.parametrize("protocol", [1, 2])
+@pytest.mark.parametrize("protocol", [1, 2, 3])
 def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, capsys, protocol):
     # Protocol 1 compared only the program; protocol 2 named paths as this client can't
-    # tell from its own (#252).
+    # tell from its own (#252); protocol 3 took a restore's `@before` for a value (#305).
     server = old_worker(protocol)
     try:
         url = f"http://127.0.0.1:{server.server_port}"
@@ -373,7 +373,7 @@ def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, caps
         server.server_close()
     result = json.loads(capsys.readouterr().out)
     assert code == 2 and result["refused_before_launch"] is True, result
-    assert f"protocol {protocol}, this client 3" in result["error"]["message"]
+    assert f"protocol {protocol}, this client 4" in result["error"]["message"]
     assert "install the same Peeky version" in result["error"]["message"]
 
 
@@ -390,7 +390,7 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
         result = json.loads(capsys.readouterr().out)
         assert code == 2 and result["refused_before_launch"] is True, result
         assert (
-            "Worker speaks protocol 3, this client 2: install the same Peeky version"
+            "Worker speaks protocol 4, this client 2: install the same Peeky version"
             in (result["error"]["message"])
         )
         # And the worker refuses what a protocol 2 client sends after its handshake: every
@@ -401,7 +401,7 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
             "probe": {"at": "main.py:2", "capture": ["x"]},
         }
         for (operation, arguments), (declared, spoken) in zip(
-            [*requests.items(), *requests.items()], [({}, 2), ({}, 2), (4, 4), (4, 4)]
+            [*requests.items(), *requests.items()], [({}, 2), ({}, 2), (3, 3), (5, 5)]
         ):
             if declared:
                 arguments = {**arguments, "protocol": declared}
@@ -411,9 +411,73 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
                 )
             assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
             assert (
-                f"Client speaks protocol {spoken}, this worker 3: install the same Peeky version"
+                f"Client speaks protocol {spoken}, this worker 4: install the same Peeky version"
                 in refused.value.payload["message"]
             )
+        assert server.worker.dap is None  # nothing was launched
+    finally:
+        server.worker.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_a_restore_reaches_no_worker_of_another_protocol(app, capsys, monkeypatch):
+    # #305: a protocol 3 worker would take `@before` for a value to write, and knows no
+    # `entry_lines`, `restorable` or `target`. Each side refuses the other before launch.
+    restore = ["--set-at", "2@1", "x=0", "--set-at", "3@1", "x=@before"]
+    asked = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            asked.append(self.path)
+            answer = json.dumps({"protocol": 3}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    old = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=old.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{old.server_port}"
+        argv = ["probe", str(app / "main.py"), "--at", "2", *restore, "--worker", url, "--json"]
+        code = main(argv)
+    finally:
+        old.shutdown()
+        old.server_close()
+    result = json.loads(capsys.readouterr().out)
+    assert code == 2 and result["refused_before_launch"] is True, result
+    assert "Worker speaks protocol 3, this client 4" in result["error"]["message"]
+    assert asked == ["/version"]  # the probe was never sent
+    # A protocol 3 client, against this worker: refused at `version`, and the probe it
+    # would send next (no `protocol` 4) is refused without launching.
+    monkeypatch.setattr("peeky.cli.PROTOCOL_VERSION", 3)
+    server = make_server(app, TOKEN, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        argv = ["probe", str(app / "main.py"), "--at", "2", *restore, "--worker", url, "--json"]
+        code = main(argv)
+        result = json.loads(capsys.readouterr().out)
+        assert code == 2 and result["refused_before_launch"] is True, result
+        assert "Worker speaks protocol 4, this client 3" in result["error"]["message"]
+        with pytest.raises(PeekyError) as refused:
+            Client(url, TOKEN).call(
+                "probe",
+                at="main.py:2",
+                set_at=[[2, 1, "x", "0"], [3, 1, "x", "@before"]],
+                expect_sha256={"program": sha(MAIN)},
+                expect_inputs=dict(sources.python_sources(app)),
+                protocol=3,
+            )
+        assert refused.value.error_code == "INVALID_REQUEST", refused.value.payload
+        assert "Client speaks protocol 3, this worker 4" in refused.value.payload["message"]
         assert server.worker.dap is None  # nothing was launched
     finally:
         server.worker.close()
@@ -603,11 +667,11 @@ def test_a_remote_session_from_another_protocol_is_refused(app, capsys):
     write_record("previous", protocol=2, inputs_checked="0" * 64)
     assert main(["session", "get", "x", "--name", "previous", "--json"]) == 2
     message = json.loads(capsys.readouterr().out)["error"]["message"]
-    assert "was started with protocol 2, this client 3: start the session again" in message
+    assert "was started with protocol 2, this client 4: start the session again" in message
     assert "peeky session close --forget --name previous" in message
 
 
-@pytest.mark.parametrize("protocol", [1, 2])
+@pytest.mark.parametrize("protocol", [1, 2, 3])
 def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, capsys, protocol):
     server = old_worker(protocol)
     try:
@@ -622,7 +686,7 @@ def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, caps
         server.shutdown()
         server.server_close()
     message = json.loads(capsys.readouterr().out)["error"]["message"]
-    assert f"Worker speaks protocol {protocol}, this session 3" in message
+    assert f"Worker speaks protocol {protocol}, this session 4" in message
 
 
 def test_the_program_must_be_among_the_compared_sources(app):

@@ -67,7 +67,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [2.5 A Module Imported by a Script, with Arguments](#25-a-module-imported-by-a-script-with-arguments): `--run` for a module a script imports, and program arguments
    - [2.6 Stop Right After the Last Hit](#26-stop-right-after-the-last-hit): `--until hits`: stop once the values are in
    - [2.7 JSON for Scripts](#27-json-for-scripts): `--json` and `jq`
-   - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another; `LINE@all`: at every stop
+   - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another; `LINE@all`: at every stop; `name=@before`: restore the value from before the change
    - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what a call returned, in C, C++, Rust and Java
 3. [Comparing Runs](#3-comparing-runs): what differs between saved runs
    - [3.1 Two Inputs Side by Side](#31-two-inputs-side-by-side): `queries diff`: what else differed, then the first divergence
@@ -1061,7 +1061,7 @@ Branch on the exit status:
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
 | 2 | An error, or a refusal. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
-| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
+| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. So does a `@before` restore whose change stayed in place, because its hit never came (`unrestored`). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
 
 - Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
   whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
@@ -1086,6 +1086,9 @@ Branch on the exit status:
   variable it changed.
 - `--set-at LINE@all name=value` changes it at every stop of `LINE`, up to 100
   ([below](#change-it-at-every-stop-all)).
+- `--set-at LINE@HIT name=@before` writes back the value `name` held just before the probe's
+  change to it at the same hit. Flip a guard before an `if`, then restore it after, to skip a
+  statement ([below](#skip-a-statement-restore-with-before)).
 - A change that never happened, because its stop never came, makes the probe exit 4.
 - Changes can keep the `--at` line from running, as when they skip the branch it is in. A probe
   that never stops at `--at` ends with `NO_STOP`, which counts the changes the run made, where they
@@ -1242,6 +1245,123 @@ How `@all` works:
 - A write of anything but a text also has `type` in JSON, where the debugger's reply or a read
   after the write gives one. That is the value's type after the write, as the debugger names it
   (LLDB's C name for a Rust value). A text write, or a reply without a type, has none.
+
+#### Skip a statement: restore with `@before`
+
+To test "this statement shouldn't run here", change its guard just before the `if`, and restore
+the guard after the branch. `name=@before` restores it: it writes back the value `name` held just
+before the probe's change to it at the same hit. With `@all` on both lines, two options test
+every pass, whatever the guard held.
+
+`trail.c` (C) finds the tops and bottoms of a trail's height profile, one height every 100 m.
+Where the trail is flat at a top, the top should be the flat's first point. But on a flat, line 16
+moves `turn` along it:
+
+```c
+13      for (const int *p = height + 1; p < end; p++) {
+14          if (*p == p[-1]) {
+15              if (trend != 0) {
+16                  turn = p;
+17              }
+18              *flat += 1;
+19              continue;
+20          }
+```
+
+So the run prints `TRAIL:T@400 455,B@800 400;FLAT=3`, not `T@200` and `B@700`. `turn` is a
+pointer, which Peeky never sets. Instead, flip the guard `trend` to 0 at line 15, so that line 16
+doesn't run, and write its value back at line 18:
+
+```sh
+peeky probe trail.c --at 15 --capture trend --hits all \
+  --set-at 15@all trend=0 --set-at 18@all trend=@before -- 410 430 455 455 455 440 420 400 400 415 430
+```
+
+```
+...
+set trend: 1 -> 0  (--set-at line 15@all, hit 1, in find_turns)
+set trend: 0 -> 1  (restored, --set-at line 18@all, hit 1, in find_turns)
+set trend: 1 -> 0  (--set-at line 15@all, hit 2, in find_turns)
+set trend: 0 -> 1  (restored, --set-at line 18@all, hit 2, in find_turns)
+set trend: -1 -> 0  (--set-at line 15@all, hit 3, in find_turns)
+set trend: 0 -> -1  (restored, --set-at line 18@all, hit 3, in find_turns)
+status: completed  hits: 3 (all)  seconds: 0.981  max pause: 63.6 ms
+output:
+  TRAIL:T@200 455,B@700 400;FLAT=3
+```
+
+Without `@before`, this takes six options: `15@1 trend=0`, `18@1 trend=1`, and so on, with each
+value to restore read from an earlier probe. Restore at a line with code of its own: in Java,
+`continue;` has none.
+
+A restore is made only where Peeky knows the value exactly. Otherwise it is refused, and the
+refusal ends the probe, as any `--set-at` refusal does:
+
+- **The latest change to that name, at the same hit.** `@before` undoes the probe's latest change
+  to the same selector, as written. That change must have been made at the same hit of its own
+  line: hit 3 of line 18 restores hit 3 of line 15. So pick two lines that stop once each per
+  pass, like a guard and a line after its branch.
+- **In the same frame.** The same thread, the same function at the same stack depth, under the
+  same callers. A recursive call is another frame.
+- **In the same call.** A stack does not tell one call from another made from the same place.
+  So Peeky also stops at the first line of each function on the restore's line, from the start
+  of the run. Each call begins there. A restore is refused where Peeky didn't see the change's
+  call begin, or where that first line ran again since, at the same depth or above.
+- **To the same storage.** The name must still name what the change wrote. For a local, that is
+  the same declaration: in C, C++ and Rust, the one the debugger shows at the stop; in Java, the
+  one the local variable table has in scope on the line. For a Java field or element, it is the
+  same object or array, by java-debug's id (`Box@27`). A shadowing `x`, another block's `y`, or
+  a field of a new object is refused before anything is written:
+  ``it is `n` of Swap$Box@56, not `n` of Swap$Box@51, which the change was made to``.
+- **A value whose text is all of it.** Peeky writes back the text it read just before its change,
+  so only where that text is the whole value:
+  - **C, C++ and Rust:** a built-in integer, by the type the debug information gives.
+  - **Java:** an integer, a `boolean` or a `char` (written back as its code point). Never a `float`
+    or `double`, which java-debug may show rounded, or a String or other object.
+  - **Python:** an `int`, a `float`, `True`, `False` or `None`, whose text reads back as the same
+    value. An int past 256 or a float written back is an equal new object, which `is` tells
+    apart.
+
+Some restores are refused before the program runs, with exit 2:
+
+- a `@before` with no other `--set` or `--set-at` of that name, or on a `--set`;
+- a restore line in a Rust async body, or in a Python generator or coroutine. Each resumption
+  runs on part-way through it, so its calls can't be told apart;
+- a restore line in a Python lambda, comprehension or class body;
+- a function on the restore line whose first line Peeky can't place. In Java, that includes a
+  method whose first line the debugger stops at only in another method.
+
+While a restore may still be made, each call of those functions stops once more. Peeky watches
+at most 1000 such stops. After that, a later restore is refused. Those stops are counted apart:
+`watch_pauses_ms` in JSON, and `watching for new calls: 3 stops, max 5.1 ms` in the text. The
+`max pause` and `max_pause_ms` leave them out.
+
+An `@all` restore is owed where the latest change to its name was made at a hit that the
+restore's line hasn't reached yet. That change may be another restore, which a later restore
+undoes. A change made after the restore's line passed that hit, such as a later `x=2` in the same
+pass, owes nothing. So with `--until hits`, the probe runs on past its last hit until each owed
+restore is made. Where its hit never comes before the end, that change stays in place. The probe
+says so in a warning, adds `unrestored` (the change's `LINE@HIT`) to the restore's entry in
+`unapplied`, and exits 4. An attached program goes on running with the change.
+
+Each restore is reported as a change, with `restored`. The line that counts an `@all`'s later
+writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`.
+Where the value it writes over isn't the one the change wrote, the restore says so: `set x: 6 ->
+1  (restored over the current 6, --set-at line 22@1, in main)`. The program wrote it since, or
+another change of the probe's did, through another name for the same storage (Java `c.n`, with
+`c` the same object as `b`). Peeky doesn't say which.
+
+In JSON, a restore's entry in `interventions` has `restores`: the `LINE@HIT` of the change it
+undid. It has `overwrote` too, with the value it wrote over, where that isn't the one the change
+wrote. The evidence
+keeps a restore as any change, with more:
+
+- an `interventions` row, whose `restores_at` (schema 19) is the change it undid;
+- `["trend", "@before", "18@all"]` in `runs.sets`, and its outcome in `runs.set_outcomes`. An
+  outcome whose change stayed in place has `unrestored` and `complete: false`;
+- `set_effect` shows it as `trend: 0 -> 1 (restored from before 15@2)`;
+- the `(sets)` rows of `diff` and `compare` name each restore, which `…` would hide:
+  `2 requests: trend=0 (…), …; restore: trend=@before (requested at 18@all, …)`.
 
 #### Where and when a change is made
 
