@@ -3150,7 +3150,7 @@ class RustSession(NativeSession):
         place = self._place(frame) if pc is not None else None
         if place is None:
             return None
-        columns = set()
+        found = set()
         for block in blocks:
             if not block.inlined or min(low for low, _ in block.ranges) >= pc:
                 continue
@@ -3158,8 +3158,8 @@ class RustSession(NativeSession):
             if called is None:
                 return None
             if called:
-                columns.add(block.call[2:4])
-        return tuple(sorted(columns))
+                found.add(block.call[2:4])
+        return tuple(sorted(found))
 
     def _inlined_read(self, variable, frame, hashed, proofs):
         """``mid_statement``'s reason where code LLVM inlined from a call on the stop's

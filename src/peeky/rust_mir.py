@@ -5450,8 +5450,8 @@ class OwnedLocals:
         """For the frame's local ``variable_name``, at a stop where its line starts but
         code LLVM inlined from calls on ``line`` runs below the stop's address (#324:
         `let y = x.clone();`, whose inlined `clone` reads `x` before the line's first row
-        of its own, where LLDB stops): ([the calls' paths, as the MIR names them], True)
-        if one of those calls may read it, being given it or what may point into it
+        of its own, where LLDB stops): ([the names of the functions called], True) if one
+        of those calls may read it, being given it or what may point into it
         (``Body.lent_from``, which the borrow rules keep sound: a pointer into a local is made
         in its own frame; in unsafe code, any raw pointer; the standard library's `ptr::eq`
         reads none, #300); ([], False) if none can;
