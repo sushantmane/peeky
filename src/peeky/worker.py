@@ -265,6 +265,9 @@ class DebugWorker:
         self.frame_variables = {}
         self.past_bases = None
         self.frame_scans = 0
+        # What each frame of one stop holds (#336), by frame id: a stop's callers are read
+        # once, however often it is inspected.
+        self.held_frames, self.held_stop = {}, None
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -2372,6 +2375,9 @@ class DebugWorker:
             wanted = args.get("extents", False)
             self.extents = wanted if type(wanted) is bool else frozenset(wanted)
             self.frame_variables, self.past_bases, self.frame_scans = {}, None, 0
+            if self.held_stop != self.stop_id:
+                # Another stop: its frames may hold other arrays, at other addresses.
+                self.held_frames, self.held_stop = {}, self.stop_id
             validate_children = getattr(runtime, "validate_children", None)
             # A timed-out view read may still be processed by the adapter; until its
             # reply drains, this inspection is read-only.
@@ -3961,29 +3967,35 @@ class DebugWorker:
         """The arrays and objects the locals of each frame of the program the inspection
         listed hold, where the debugger places them (#336, ``held_extents``), as
         ``probe.past_end`` takes them: ``frame``'s first, then the others' innermost first,
-        with their place ({"frame": index, "function"}). Read once per inspection; a
-        caller's locals are fetched here, and the debugger's scopes then given back to
-        ``frame`` (lldb-dap reads a scope of the frame last asked)."""
+        with their place ({"frame": index, "function"}). Read once per inspection, and
+        each frame's kept for its stop (``held_frames``), so another inspection of that
+        stop reads no caller again; a caller's locals are fetched here, and the debugger's
+        scopes then given back to ``frame`` (lldb-dap reads a scope of the frame last
+        asked). A caller whose locals did not all come is read again next time."""
+        if self.held_stop != self.stop_id:
+            self.held_frames, self.held_stop = {}, self.stop_id
         if self.past_bases is None:
             self.past_bases, scanned = [], False
             for index, listed in enumerate(self.listed_frames or ()):
-                variables = self.frame_variables.get(listed.get("id"))
-                if variables is None:
-                    if not _in_program_sources(self.runtime, listed, self.root):
+                identity = listed.get("id")
+                if identity in self.held_frames:
+                    held = self.held_frames[identity]
+                else:
+                    variables, whole = self.frame_variables.get(identity), True
+                    if variables is None and not _in_program_sources(
+                        self.runtime, listed, self.root
+                    ):
+                        self.held_frames[identity] = None
                         continue
-                    scanned = True
-                    variables = self.frame_locals(listed)
-                held = []
-                for variable in variables[:256]:
-                    if len(held) >= 512:
-                        break
-                    if isinstance(variable, dict) and isinstance(variable.get("name"), str):
-                        try:
-                            held += self.runtime.held_extents(variable, listed, variable["name"])
-                        except (KeyError, TypeError, ValueError):
-                            continue
-                name = str(listed.get("name") or "")[:300]
-                self.past_bases.append((index, listed.get("id"), name, held[:512]))
+                    if variables is None:
+                        scanned = True
+                        variables, whole = self.frame_locals(listed)
+                    held = self.frame_held(variables, listed)
+                    if whole:
+                        self.held_frames[identity] = held
+                if held is not None:
+                    name = str(listed.get("name") or "")[:300]
+                    self.past_bases.append((index, identity, name, held))
             if scanned:
                 self.frame_scans += 1
                 try:
@@ -4001,9 +4013,23 @@ class DebugWorker:
                 bases += [(selector, extent, place) for selector, extent in held]
         return bases
 
+    def frame_held(self, variables, frame):
+        """``held_extents`` of a frame's locals, at most 512."""
+        held = []
+        for variable in variables[:256]:
+            if len(held) >= 512:
+                break
+            if isinstance(variable, dict) and isinstance(variable.get("name"), str):
+                try:
+                    held += self.runtime.held_extents(variable, frame, variable["name"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return held[:512]
+
     def frame_locals(self, frame):
-        """A caller frame's locals as the debugger lists them, or [] where it gives none in
-        time (``stop_bases``); a request that times out leaves the inspection read-only."""
+        """A caller frame's locals as the debugger lists them, and whether they all came
+        (``stop_bases``): none where the debugger refuses or doesn't answer in time; a
+        request that times out leaves the inspection read-only."""
         variables = []
         try:
             scopes = self.dap.request("scopes", {"frameId": frame["id"]}, timeout=5)
@@ -4015,10 +4041,10 @@ class DebugWorker:
         except TimeoutError:
             # Its reply may still come: no change is made until the next inspection.
             self.view_timed_out = True
-            return []
+            return [], False
         except (RuntimeError, OSError, KeyError, TypeError, AttributeError):
-            return []
-        return variables
+            return [], False
+        return variables, True
 
     def named_children(self, reference, indexed, name, runtime):
         """The children named ``name`` of the value ``reference`` names. An element LLDB
@@ -5066,6 +5092,7 @@ class DebugWorker:
         self.deeper_frames = None
         self.thread_count = None
         self.whole_frames = None
+        self.held_frames, self.held_stop, self.past_bases = {}, None, None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()

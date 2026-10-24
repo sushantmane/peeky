@@ -283,15 +283,51 @@ GRAPH = {
 LONG_TYPE, INT_TYPE = "base long DW_ATE_signed 8", "base int DW_ATE_signed 4"
 
 
+def record(name, members, size, kind="struct", declared=False):
+    """A record node of a type graph: members are (name, type offset, byte offset)."""
+    placed = tuple((m, t, at, False, None, None) for m, t, at in members)
+    held = tuple(t for _, t, _ in members)
+    return ("record", name, kind, size, None, placed, held, False, declared, None, (), name, ())
+
+
 def test_a_type_is_told_alike_in_every_source_file():
     # Each compile unit has its own `long`: a pointer in one file, an array in another.
-    graph = {**GRAPH, 30: ("base", "long", "DW_ATE_signed", 8), 31: ("qualifier", "const", 30)}
+    graph = {
+        **GRAPH,
+        30: ("base", "long", "DW_ATE_signed", 8),
+        31: ("qualifier", "const", 30),
+        32: ("base", "double", "DW_ATE_float", 8),
+        # `struct Cell { long x; }` in two files, and `struct Cell { double y; }` in a third.
+        40: record("Cell", [("x", 1, 0)], 8),
+        41: record("Cell", [("x", 30, 0)], 8),
+        42: record("Cell", [("y", 32, 0)], 8),
+        43: record("Cell", [("y", 30, 0)], 8),
+        # `struct Node { long v; struct Node *next; }` in two files: a pointer is never
+        # followed, so a type that points at itself is told too.
+        44: record("Node", [("v", 1, 0), ("next", 45, 8)], 16),
+        45: ("pointer", "", 44, None),
+        46: record("Node", [("v", 30, 0), ("next", 47, 8)], 16),
+        47: ("pointer", "", 46, None),
+        48: record("Pair", [("a", 1, 0), ("b", 1, 8)], 16),
+        49: record("Pair", [("a", 1, 0), ("b", 1, 16)], 24),
+        50: record("Pair", [("a", 1, 0), ("b", 1, 12)], 16),
+        51: record("Hold", [("p", 52, 0)], 8),
+        52: ("pointer", "", 99, None),  # what it points at was not read
+        53: record("Cell", [], 8, declared=True),
+        54: ("enum", "Color", 4),
+    }
     assert Typed(graph, 31).identity() == Typed(graph, 1).identity() == LONG_TYPE
     assert Typed(graph, 2).identity() != LONG_TYPE
-    assert Typed(GRAPH, 5).identity() == "struct ring 40"
-    # An unnamed or incomplete type stays its offset; an array is never an element here.
-    anonymous = {**GRAPH, 32: ("record", "", "struct", 8, None, (), (), False, False, None, (), "")}
-    assert Typed(anonymous, 32).identity() == 32 and Typed(GRAPH, 3).identity() == 3
+    cell = Typed(graph, 40).identity()
+    assert cell.startswith("struct Cell 8 ") and Typed(graph, 41).identity() == cell
+    # One name, two layouts: a member's type, or its name, differs.
+    assert Typed(graph, 42).identity() != cell and Typed(graph, 43).identity() != cell
+    assert Typed(graph, 44).identity() == Typed(graph, 46).identity()
+    assert Typed(graph, 48).identity() != Typed(graph, 50).identity()
+    assert Typed(graph, 48).identity() != Typed(graph, 49).identity()
+    # Unread, incomplete, an enum (whose values the walk does not read), an array: its
+    # offset, the same type only within one file.
+    assert [Typed(graph, n).identity() for n in (51, 53, 54, 3)] == [51, 53, 54, 3]
     assert Typed(GRAPH, 99).identity() is None
 
 
@@ -319,7 +355,7 @@ def test_a_local_holds_its_arrays_and_their_members_where_the_debug_information_
     found = dict(held(4, "two @ 0x1000", "t"))
     assert found["t.a"] == {"address": 0x1000, "length": 4, **long8}
     assert found["t.b"] == {"address": 0x1020, "length": 4, **long8}
-    assert found["t"] == {"address": 0x1000, "element": "struct two 64", "element_size": 64}
+    assert found["t"]["element"].startswith("struct two 64 ") and found["t"]["element_size"] == 64
     # A bitfield or an unnamed member is never placed.
     found = dict(held(5, "ring @ 0x2000", "r"))
     assert found["r.head"] == {"address": 0x2020, "element": INT_TYPE, "element_size": 4}
@@ -382,6 +418,8 @@ class Backend:
             {"id": 3, "name": "start", "line": 0, "source": {"path": "/usr/lib/dyld"}},
         ]
         self.selected = None
+        # Frames whose next `variables` reply doesn't come in time.
+        self.slow = set()
         self.locals = {
             1: [
                 {
@@ -429,6 +467,9 @@ class Backend:
             }
         if operation == "variables":
             assert args["variablesReference"] == 1
+            if self.selected in self.slow:
+                self.slow.discard(self.selected)
+                raise TimeoutError("no answer in time")
             return {"variables": deepcopy(self.locals[self.selected])}
         if operation == "setVariable":
             assert self.selected == 1, "a change is made in the frame it was asked for"
@@ -490,7 +531,18 @@ def stopped(tmp_path):
 
 
 def call(worker, operation, **kwargs):
-    return worker.dispatch(operation, {"session_id": "session", "stop_id": "stop", **kwargs})
+    stop = {"session_id": "session", "stop_id": worker.stop_id}
+    return worker.dispatch(operation, {**stop, **kwargs})
+
+
+def callers_read(worker):
+    """How often the worker asked for the caller's (`main`'s) scopes."""
+    return sum(1 for op, args in worker.dap.calls if op == "scopes" and args["frameId"] == 2)
+
+
+def ends(result):
+    shown = {variable["name"]: variable for variable in result["scopes"][0]["variables"]}
+    return shown["end"].get("past_end")
 
 
 def test_the_worker_reads_nothing_one_past_a_callers_array(stopped):
@@ -585,3 +637,26 @@ def test_a_returned_c_string_one_past_a_character_arrays_end_shows_its_address()
     assert _returned_text(returned) == (
         f"fill returned: char * = {at(0x1008)}  [at the address one past name's end]"
     )
+
+
+def test_a_stops_callers_are_read_once_however_often_it_is_inspected(stopped):
+    assert ends(call(stopped, "inspect", frame_id=1))["selector"] == "queue"
+    assert callers_read(stopped) == 1
+    before = len(stopped.dap.calls)
+    second = call(stopped, "inspect", frame_id=1)
+    assert ends(second)["selector"] == "queue" and callers_read(stopped) == 1
+    # Nothing was read but this frame's own scope: no scopes to give back or bind again.
+    assert [op for op, _ in stopped.dap.calls[before:]] == ["stackTrace", "scopes", "variables"]
+    # Another stop: its callers are read again.
+    stopped.stop_id = "next"
+    assert ends(call(stopped, "inspect", frame_id=1))["selector"] == "queue"
+    assert callers_read(stopped) == 2
+
+
+def test_a_caller_that_did_not_answer_is_read_again(stopped):
+    stopped.dap.slow.add(2)
+    first = call(stopped, "inspect", frame_id=1)
+    # Its locals never came: nothing is said of them, and nothing may be changed.
+    assert ends(first) is None and first["mutation_blocked"]
+    assert ends(call(stopped, "inspect", frame_id=1))["selector"] == "queue"
+    assert callers_read(stopped) == 2

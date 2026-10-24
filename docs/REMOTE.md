@@ -273,14 +273,16 @@ packages, any directory holding a pyvenv.cfg, the standard library, and compiled
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 4.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
-Protocol 4 adds restores (`@before`). Both hosts need the same protocol. A client and a worker
-of different protocols refuse each other:
+**Protocol 5.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
+Protocol 4 adds restores (`@before`). Protocol 5 withholds what a C or C++ pointer one past an
+array's end points at, which a protocol 4 worker reads as a value. Both hosts need the same
+protocol. A client and a worker of different protocols refuse each other:
 
-- A client refuses a worker of another protocol before sending anything: `Worker speaks protocol 3,
-  this client 4: install the same Peeky version on both hosts`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 4: `Client
-  speaks protocol 3, this worker 4: install the same Peeky version on both hosts`.
+- A client refuses a worker of another protocol before sending anything: `Worker speaks protocol 4,
+  this client 5: install the same Peeky version on both hosts`. That holds for a probe and a
+  `session start`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 5: `Client
+  speaks protocol 4, this worker 5: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
   the worker's protocol again. A session started with another protocol is refused: start it again.

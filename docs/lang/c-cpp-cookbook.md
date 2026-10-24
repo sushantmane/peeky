@@ -201,6 +201,10 @@ Peeky looks for the array in the locals of each frame it lists, at most ten:
   an array.
 - The pointer points at the array's element type, of its size, as for an element
   ([above](#which-elements-address-a-pointer-holds)).
+- In another source file, a struct, class or union is that type only with the same layout: its
+  name, size, and each member's name, offset and type. Two files can give one name two layouts.
+
+Peeky reads a caller's locals once per stop, however often you inspect it.
 
 In a function the array was passed to, the row names the caller's frame:
 `[at the address one past queue's end in frame 1]`. Read the array there with
@@ -226,6 +230,8 @@ Peeky can't tell in these cases, so it reads what the pointer points at, as for 
 - An array whose address lldb-dap doesn't give. lldb-dap 18 gives none for a `char` array or a
   `std::array`, and lldb-dap 20 and later give every value's.
 - An address two or more elements past the end, or before the start.
+- An array of an enum, or of a struct whose layout Peeky didn't read whole, in another source
+  file than the pointer's function.
 
 ### How far a pointer is from a pointer parameter
 

@@ -190,6 +190,57 @@ def test_an_array_in_another_source_file_is_known(program, capsys):
     assert rows[1]["error"].startswith(f"end[0] {reason('end', 'queue', frame=1)}"), rows
 
 
+CELLS = """#include <stdio.h>
+struct Cell { long x; };
+void use_same(void *v);
+void use_other(void *v);
+int main(void) {
+  struct Cell cells[2] = {{1}, {2}};
+  use_same(cells + 2);
+  use_other(cells + 2);
+  return 0;
+}
+"""
+SAME = """#include <stdio.h>
+struct Cell { long x; };
+void use_same(void *v) {
+  struct Cell *p = v;
+  printf("%p\\n", (void *)p); /* SAME */
+}
+"""
+OTHER = """#include <stdio.h>
+struct Cell { double y; };
+void use_other(void *v) {
+  struct Cell *p = v;
+  printf("%p\\n", (void *)p); /* OTHER */
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_struct_of_one_name_matches_across_files_only_with_one_layout(program, capsys):
+    # Two files may give `struct Cell` two layouts: the name and size alone prove nothing.
+    for name, text in (("cells.c", CELLS), ("same.c", SAME), ("other.c", OTHER)):
+        (program / name).write_text(text)
+    config = program / "cells.json"
+    tools = {
+        "compiler": os.environ["PEEKY_NATIVE_CC"],
+        "adapter": os.environ["PEEKY_NATIVE_DAP"],
+        "dwarfdump": os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        "dsymutil": os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        "sysroot": os.environ.get("PEEKY_NATIVE_SYSROOT"),
+    }
+    sources = ["cells.c", "same.c", "other.c"]
+    config.write_text(json.dumps({"language": "c", "sources": sources, **tools}))
+    at = f"same.c:{line_of('SAME', SAME)}"
+    same = probed(capsys, program, at, "p,p.x", "--config", str(config))
+    assert placed(same[0]) == {"selector": "cells", "length": 2, "frame": 1, "function": "main"}
+    assert same[1]["error"].startswith(f"p.x {reason('p', 'cells', frame=1)}"), same
+    at = f"other.c:{line_of('OTHER', OTHER)}"
+    (other,) = probed(capsys, program, at, "p", "--config", str(config))
+    assert "past_end" not in other and "one past" not in str(other), other
+
+
 @pytest.mark.timeout(240)
 def test_a_returned_c_string_one_past_an_arrays_end_shows_its_address(program, capsys):
     # `fill` returns `out + 8`: LLDB's text of it is what lies past `buf`.

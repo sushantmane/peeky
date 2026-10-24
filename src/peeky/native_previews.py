@@ -34,6 +34,7 @@ signed. A wide character array (`wchar_t`, `char16_t`, `char32_t`) shows element
 element: LLDB's text of one ends at its first NUL.
 """
 
+import hashlib
 import re
 
 from peeky.cxx_strings import shorten
@@ -335,19 +336,22 @@ class Typed:
 
     def identity(self):
         """The type under typedefs and qualifiers as every compile unit of a build names it
-        alike (#336): a base type by its name, encoding and size, a named enum, struct,
-        class or union by its qualified name and size. Any other is its offset in the debug
-        information, the same type only within one unit. None where it was not read."""
+        alike (#336), so that a pointer in one source file matches an array in another: a
+        base type by its name, encoding and size; a struct, class or union by its layout
+        (``_layout``: its name, size, and each member's name, offset and type, those of
+        its members too), never by its name alone, which two files may give two layouts.
+        Any other type (an enum, whose values the walk does not read), or a record whose
+        layout was not all read, is its offset in the debug information: the same type
+        only within one unit. None where it was not read."""
         offset = self.resolved()
         node = self.graph.get(offset) if offset is not None else None
         if node is None:
             return None
         if node[0] == "base":
             return f"base {node[1]} {node[2]} {node[3]}"
-        if node[0] == "enum" and node[1]:
-            return f"enum {node[1]} {node[2]}"
-        if node[0] == "record" and not node[8] and len(node) > 11 and node[11]:
-            return f"{node[2]} {node[11]} {node[3]}"
+        if node[0] == "record" and (layout := _layout(self.graph, offset)) is not None:
+            digest = hashlib.sha256(layout.encode()).hexdigest()[:16]
+            return f"{node[2]} {node[11] if len(node) > 11 else node[1]} {node[3]} {digest}"
         return offset
 
     def array_member(self):
@@ -386,6 +390,72 @@ class Typed:
             return found[1]
         member = self.array_member()
         return member[1] if member is not None and member[0] == name else None
+
+
+def _layout(graph, offset, depth=0):
+    """A type's layout as text that two compile units write alike (``Typed.identity``),
+    under typedefs and qualifiers: a base type's name, encoding and size; an enum's name
+    and size; a pointer's size and what it points at, by name alone; an array's lengths
+    and element; a record's kind, name and size, then each member's name, offset, bit
+    width and layout, and its base classes'. None where any part was not read, or is
+    deeper than 8 levels."""
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] not in ("typedef", "qualifier"):
+            break
+        offset = node[2]
+    if node is None or depth > 8:
+        return None
+    if node[0] == "base":
+        return f"{node[1]}/{node[2]}/{node[3]}"
+    if node[0] == "enum":
+        return f"enum {node[1]}/{node[2]}"
+    if node[0] == "pointer":
+        aimed = _named(graph, node[2])
+        return None if aimed is None else f"*{aimed}/{node[3]}"
+    if node[0] == "array":
+        inner = _layout(graph, node[2], depth + 1) if node[3] else None
+        return None if inner is None else f"{list(node[3])}{inner}"
+    if node[0] != "record" or node[7] or node[8] or len(node) < 11:
+        return None
+    parts = []
+    for member in node[5]:
+        inner = _layout(graph, member[1], depth + 1)
+        at = 0 if member[2] is None and node[2] == "union" else member[2]
+        if inner is None or at is None:
+            return None
+        bits = member[5] if len(member) > 5 else None
+        parts.append(f"{member[0]}@{at}:{bits}:{inner}")
+    bases = [_layout(graph, base, depth + 1) for base in node[10]]
+    if None in bases:
+        return None
+    name = node[11] if len(node) > 11 else node[1]
+    return f"{node[2]} {name}/{node[3]}{{{';'.join(parts)}}}:{','.join(bases)}"
+
+
+def _named(graph, offset, depth=0):
+    """What a pointer points at, as ``_layout`` names it without following it: a base
+    type's ``_layout``, a record's or enum's kind and name, a pointer's own target so
+    named, `void`; None where unread."""
+    if offset is None:
+        return "void"
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] not in ("typedef", "qualifier"):
+            break
+        offset = node[2]
+    if node is None or depth > 4:
+        return None
+    if node[0] == "base":
+        return _layout(graph, offset)
+    if node[0] == "record":
+        return f"{node[2]} {node[11] if len(node) > 11 else node[1]}"
+    if node[0] == "enum":
+        return f"enum {node[1]}"
+    if node[0] == "pointer":
+        aimed = _named(graph, node[2], depth + 1)
+        return None if aimed is None else f"*{aimed}"
+    return None
 
 
 def _names(shown, base):

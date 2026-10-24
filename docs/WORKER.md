@@ -27,7 +27,7 @@ debug server. It writes memory only to set a text
 ## Compare the sources from another host
 
 A client on another host must show that its sources are the worker's. Protocol 3 added this, and
-protocol 4 keeps it.
+protocols 4 and 5 keep it.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
@@ -35,7 +35,7 @@ protocol 4 keeps it.
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 
    Its `root` is the worker's `--root`.
-2. With `launch` or `probe`, send `protocol`: 3, `expect_sha256` (`program`, and `entry` for a
+2. With `launch` or `probe`, send `protocol`: 5, `expect_sha256` (`program`, and `entry` for a
    `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
    one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
