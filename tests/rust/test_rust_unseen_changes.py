@@ -171,6 +171,25 @@ struct S {
     n: u32,
 }
 
+fn second(n: u32) -> u32 {
+    let d = D(n, n + 1);
+    let z = d.1; // SECOND_COPY
+    let k = other(); // SECOND
+    z + k
+}
+
+struct Holder {
+    d: D,
+    n: u32,
+}
+
+fn held(n: u32) -> u32 {
+    let h = Holder { d: D(n + 2, n), n: n + 1 };
+    let z = h.n; // HELD_COPY
+    let k = other(); // HELD
+    z + k
+}
+
 fn named(n: u32) -> u32 {
     let s = S { name: n.to_string(), n: n + 1 };
     let z = s.n; // NAMED_COPY
@@ -219,22 +238,65 @@ fn spin(n: u32) -> u32 {
     total
 }
 
+#[inline(never)]
+fn record(z: u32) {
+    println!("RECORDED {z}");
+}
+
+#[inline(never)]
+fn may_panic(k: u32) {
+    if k > 100 {
+        panic!("too big");
+    }
+}
+
+fn caught(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // CAUGHT_COPY
+    let k = other(); // CAUGHT
+    record(z);
+    may_panic(k);
+    x
+}
+
+fn checked(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other(); // CHECKED
+    let w = z * 10;
+    w + x + k
+}
+
+fn reset(n: u32) -> u32 {
+    let mut last = n + 1;
+    last = 7; // RESET
+    last
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let n: u32 = args[2].parse().unwrap();
     match args[1].as_str() {
         "drop" => println!(
-            "SCOPED {} TAKEN {} NAMED {}",
+            "SCOPED {} TAKEN {} NAMED {} SECOND {} HELD {}",
             scoped(n),
             taken(D(n + 5, n)),
-            named(n)
+            named(n),
+            second(n),
+            held(n)
         ),
         "async" => {
             let mut fut = pin!(exited(n));
             let _ = fut.as_mut().poll(&mut Context::from_waker(Waker::noop()));
         }
         "pointer" => pointed(n),
-        _ => println!("BRANCH {} SPIN {}", branch(n), spin(n)),
+        "caught" => {
+            let caught = std::panic::catch_unwind(|| caught(n));
+            println!("CAUGHT {} CHECKED {}", caught.unwrap_or(0), checked(n));
+        }
+        _ => println!("BRANCH {} SPIN {} RESET {}", branch(n), spin(n), reset(n)),
     }
 }
 """
@@ -373,21 +435,24 @@ def test_a_value_never_read_again_is_refused_saying_where(crate, capsys):
     total, scope = line_of("TOTAL"), line_of("SCOPE_DEAD") + 1
     for marker in ("BEFORE_TOTAL", "TOTAL"):
         message = refused(capsys, crate, marker, "--set", "total=100")
+        # `other()` and the overflow check of `k + n` may panic first (review 2).
         assert (
             f"the program does not read `total` after any stop of line {line_of(marker)}, so a "
-            f"change there would never be seen: it is overwritten at line {total} first"
+            f"change there would never be seen: it is overwritten at line {total} first, unless "
+            "the program panics or exits before that"
         ) in message, message
         assert (
             "Change it on a later line, after the program overwrites it, or on an earlier line, "
             "before the program's last read of it (`--set-at` there)"
         ) in message, message
     assert row(capsys, crate, "TOTAL", "total")["not_settable"] == (
-        f"not read after the stop (overwritten at line {total})"
+        f"not read after the stop (overwritten at line {total}, or the program panics or exits)"
     )
     message = refused(capsys, crate, "SCOPE_DEAD", "--set", "a=100")
     assert (
         f"the program does not read `a` after any stop of line {scope - 1}, so a change there "
-        f"would never be seen: it goes out of scope at line {scope} first"
+        f"would never be seen: it goes out of scope at line {scope} first, unless the program "
+        "panics or exits before that"
     ) in message, message
     assert "Change it on an earlier line, before the program's last read of it" in message
     # Where the program reads it next, a change works.
@@ -412,11 +477,31 @@ def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
     # `D`'s own `Drop` prints `self.0`. After `let z = d.0;`, a change to `d.0` was refused
     # with "Peeky proves no read of the changed part first", though the drop reads it.
     frames, run = crate.parent / "frames", ("--", "drop", "1")
+    last = "SCOPED 3 TAKEN 7 NAMED 3 SECOND 3 HELD 3"
     lines = changed(capsys, frames, "DROP_SCOPED", "--set", "d.__0=100", run=run)
-    assert lines == ["DROP 100", "DROP 6", "SCOPED 3 TAKEN 7 NAMED 3"], lines
+    assert lines == ["DROP 100", "DROP 6", "DROP 1", "DROP 3", last], lines
     # A by-value argument too: it is dropped where the function returns.
     lines = changed(capsys, frames, "DROP_TAKEN", "--set", "d.__0=100", run=run)
-    assert lines == ["DROP 2", "DROP 100", "SCOPED 3 TAKEN 7 NAMED 3"], lines
+    assert lines == ["DROP 2", "DROP 100", "DROP 1", "DROP 3", last], lines
+    # And through a field: `h.d.0` of `Holder { d: D, n: u32 }`.
+    lines = changed(capsys, frames, "HELD", "--set", "h.d.__0=100", run=run)
+    assert lines == ["DROP 2", "DROP 6", "DROP 1", "DROP 100", last], lines
+    # Review 2: the drop prints `self.0` only. After `let z = d.1;`, it may read `d.1` or
+    # not, which Peeky can't tell: refused, saying so, where a change before the copy works.
+    message = refused(capsys, frames, "SECOND", "--set", "d.__1=100", run=run)
+    assert (
+        "and goes on with that copy, so a change there may never be seen: `d` is dropped at "
+        f"line {line_of('SECOND', FRAMES) + 2}, and a `Drop` it runs may read the changed part, "
+        "which Peeky can't tell"
+    ) in message, message
+    lines = changed(capsys, frames, "SECOND_COPY", "--set", "d.__1=100", run=run)
+    assert lines[-1] == "SCOPED 3 TAKEN 7 NAMED 3 SECOND 101 HELD 3", lines
+    # `D`'s drop can't reach `h.n`: the refusal is the plain one.
+    message = refused(capsys, frames, "HELD", "--set", "h.n=100", run=run)
+    assert (
+        f"the program has already copied `h` into `z` (at line {line_of('HELD_COPY', FRAMES)}) "
+        "and goes on with that copy, so a change there may never be seen: Peeky proves no read"
+    ) in message, message
     # Only the standard library's drops run for `S { name: String, n: u32 }`, and they read
     # no number: after `let z = s.n;`, a change to `s.n` is still refused.
     message = refused(capsys, frames, "NAMED", "--set", "s.n=100", run=run)
@@ -424,7 +509,7 @@ def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
         f"the program has already copied `s` into `z` (at line {line_of('NAMED_COPY', FRAMES)})"
     ) in message, message
     lines = changed(capsys, frames, "NAMED_COPY", "--set", "s.n=100", run=run)
-    assert lines[-1] == "SCOPED 3 TAKEN 7 NAMED 101", lines
+    assert lines[-1] == "SCOPED 3 TAKEN 7 NAMED 101 SECOND 3 HELD 3", lines
 
 
 @pytest.mark.timeout(400)
@@ -463,15 +548,34 @@ def test_where_a_value_ends_is_named_only_where_every_path_ends_there(crate, cap
     frames, run = crate.parent / "frames", ("--", "branch", "1")
     for marker, write, other in (
         ("BRANCH", "BRANCH_WRITE", "panics or exits"),
-        ("SPIN", "SPIN_WRITE", "loops forever"),
+        # Any loop on the way may never end: Peeky doesn't prove it does.
+        ("SPIN", "SPIN_WRITE", "panics, exits or loops forever"),
+        # The write's own line: `k + n`'s overflow check may panic first.
+        ("BRANCH_WRITE", "BRANCH_WRITE", "panics or exits"),
     ):
         message = refused(capsys, frames, marker, "--set", "total=100", run=run)
         assert (
             f"so a change there would never be seen: it is overwritten at line "
             f"{line_of(write, FRAMES)} first, unless the program {other} before that. Refused"
         ) in message, message
-    # From the overwrite's own line, every path reaches it.
-    message = refused(capsys, frames, "BRANCH_WRITE", "--set", "total=100", run=run)
+    # `last = 7;` itself: nothing on the way may panic or loop, and the line is named plainly.
+    message = refused(capsys, frames, "RESET", "--set", "last=100", run=run)
+    assert f"it is overwritten at line {line_of('RESET', FRAMES)} first. Refused" in message
+
+
+@pytest.mark.timeout(400)
+def test_a_panic_a_caller_catches_goes_on_with_what_left_the_frame(crate, capsys):
+    # Review 2: `record(z); may_panic(k); x`. Where `may_panic` panics and the caller's
+    # `catch_unwind` goes on, `record` has taken `z`, and `x` is never read.
+    frames, run = crate.parent / "frames", ("--", "caught", "1")
+    message = refused(capsys, frames, "CAUGHT", "--set", "x=100", run=run)
     assert (
-        f"it is overwritten at line {line_of('BRANCH_WRITE', FRAMES)} first. Refused"
+        f"the program has already copied `x` into `z` (at line {line_of('CAUGHT_COPY', FRAMES)}) "
+        "and goes on with that copy"
     ) in message, message
+    lines = changed(capsys, frames, "CAUGHT_COPY", "--set", "x=100", run=run)
+    assert lines == ["RECORDED 100", "CAUGHT 100 CHECKED 23"], lines
+    # `z * 10`'s overflow check may panic too, but nothing took `z` out of the frame first:
+    # the program reads `x` next, and sees the change.
+    lines = changed(capsys, frames, "CHECKED", "--set", "x=100", run=run)
+    assert lines == ["RECORDED 2", "CAUGHT 2 CHECKED 121"], lines

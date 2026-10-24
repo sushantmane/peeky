@@ -195,7 +195,9 @@ message says `cannot be changed here`.
 - Rust: not where no path reads the value again before it is overwritten or goes out of scope. The
   stop's own line counts, as `total = k + 3;` does for `total`:
   `the program does not read it after this stop, so a change would never be seen: it is overwritten
-  at line 7 first`. The hint says to change it after that line, or before its last read.
+  at line 7 first`. Where a call on the way may panic, it adds `, unless the program panics or exits
+  before that`. Where a drop's `Drop` impl may read it, it says only that the program may not read
+  it. The hint says to change it after that line, or before its last read.
 
 ### Texts
 

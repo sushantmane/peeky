@@ -490,20 +490,28 @@ def _std_tree(key, arguments):
     return ("std", key, tuple(arguments))
 
 
-def _held_types(trees):
-    """The names of the crate's types the canonical type ``trees`` hold by value: as
-    themselves, or in a tuple or an array (#330 review: whose `Drop` a drop of what holds
-    them runs); not through a reference, a pointer or a standard container."""
-    found, pending = [], list(trees)
-    while pending:
-        tree = pending.pop()
-        if tree[0] == "type":
-            found.append(tree[1])
-        elif tree[0] == "tuple":
-            pending.extend(tree[1])
-        elif tree[0] == "array":
-            pending.append(tree[1])
-    return found
+def _mentions_any(text, locals_):
+    """Whether ``text`` names any of ``locals_`` (`move _7`, `&(*_9)`)."""
+    return any(int(n) in locals_ for n in _MENTIONED.findall(_STRING.sub('""', text)))
+
+
+def _cyclic(nodes, start):
+    """Whether the graph ``nodes`` ({node: its successors, or None for an end}) has a
+    cycle reachable from ``start``: a loop the program may never leave (#330 review 2)."""
+    colour, stack = {start: 1}, [(start, iter(nodes.get(start) or ()))]
+    while stack:
+        node, following = stack[-1]
+        child = next(following, None)
+        if child is None:
+            colour[node] = 2
+            stack.pop()
+        elif child in nodes:
+            if colour.get(child) == 1:
+                return True
+            if child not in colour:
+                colour[child] = 1
+                stack.append((child, iter(nodes[child] or ())))
+    return False
 
 
 def _key(tree):
@@ -1499,6 +1507,9 @@ _NOT_SHARED = re.compile(r"&(?:mut |raw |fake )")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _UNWIND_EDGE = re.compile(r"\bunwind: bb([0-9]+)\b")
+_UNWIND_LEAVES = re.compile(r"\bunwind (?:continue|terminate)\b")
+# Standard types whose drop drops nothing they hold (#330 review 2), by ``_std_key``.
+_UNDROPPED = frozenset({"mem::ManuallyDrop", "mem::MaybeUninit", "marker::PhantomData"})
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
 # The function's normal return, where every local of its frame ends (#330).
 _RETURN = re.compile(r"^return;$")
@@ -1520,6 +1531,9 @@ class Block:
     # when a call, a drop or a check panics (#330 review). A call that never returns
     # (`panic!`, `process::exit`) has no other edge, so its unwind edge is its own path.
     unwinds: frozenset = frozenset()
+    # Whether a panic in its terminator leaves the frame with no cleanup block of its own
+    # (`unwind continue`, `unwind terminate(…)`): an exit of the frame (#330 review 2).
+    leaves: bool = False
 
 
 @dataclass
@@ -1572,9 +1586,12 @@ class Body:
     # crate's known (``_layouts``).
     layouts: TypeLayouts | None = None
     _own_layouts: TypeLayouts | None = None
-    # The crate's types with a `Drop` impl of their own, by their last path segment (#330
-    # review: ``OwnedLocals._droppers``), set when matched; None until then (any may).
-    droppers: frozenset | None = None
+    # The crate's types with a `Drop` impl of their own, by their last path segment: {it:
+    # the body of its `drop`, or None where several types are so named} (#330 review:
+    # ``OwnedLocals._droppers``), and ``_format_reads``'s sinks for those bodies; set when
+    # matched. None until then: any drop may run any code.
+    droppers: dict | None = None
+    sinks: tuple = (frozenset(), frozenset())
     _share_edges: dict | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
@@ -1623,6 +1640,8 @@ class Body:
     _exposed_cache: dict | None = None
     # {local: ``_pointers_to``'s locals} (#192).
     _pointer_cache: dict | None = None
+    # {copies: ``_derived_from``'s locals} (#330 review 2).
+    _derived_cache: dict | None = None
     # ``_format_reads``'s calls and the borrows they format (#192 review 3).
     _format_cache: tuple | None = None
     _lent_from: dict | None = None
@@ -2222,17 +2241,22 @@ class Body:
         and then ended, before the Vec is used): the old value is all that is left. The
         frame's exit ends every local and argument of it: a return, and a call that never
         returns, as `panic!` or `process::exit` (``_frame_exit``; #330 review: an argument
-        has no `StorageDead`, nor a local where the program panics). A path a call or a
-        check takes only when it panics ends nothing. A drop of ``root`` that may run a
-        `Drop` impl of the crate's reads it (``_drop_reads``; #330 review)."""
+        has no `StorageDead`, nor a local where the program panics). So does a panic that
+        leaves the frame, through its cleanup or with none (``Block.leaves``; review 2: a
+        caller's `catch_unwind` goes on with the copy). A drop of ``root`` reads it only
+        where a `Drop` impl of the crate's surely reads the part (``_drop_effect``); one
+        that only may is told apart by ``doubtful_drops`` (review 2)."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
+        derived = self._derived_from(copies, root)
+        lent = self._pointers_to(root)
         # (block, index, whether the copy was used on the way here, whether ``root`` was
         # assigned or ended unread on the way here: then any use of the copy is enough,
-        # whether the path is a panic's unwinding from a call that may also return).
-        pending, seen = [(start[0], start[1], False, False, False)], set()
+        # whether the copy may have left the frame: ``_escape``, whether a call given a
+        # pointer to ``root`` may have read it).
+        pending, seen = [(start[0], start[1], False, False, False, False)], set()
         while pending:
             state = pending.pop()
-            number, index, used, gone, unwinding = state
+            number, index, used, gone, escaped, read = state
             if state in seen or number not in self.blocks:
                 continue
             seen.add(state)
@@ -2240,6 +2264,10 @@ class Body:
             stopped = False
             for text, _, _ in block.statements[index:]:
                 used = used or any(_event(text, each) == "use" for each in copies)
+                stored = _STORE_BASE.match(text) and " = " in text
+                if stored and _mentions_any(text.split(" = ", 1)[1], derived):
+                    # Stored through a pointer: it may outlive the frame.
+                    escaped = True
                 if gone:
                     if used:
                         return True
@@ -2249,7 +2277,7 @@ class Body:
                     continue
                 access = (
                     "read"
-                    if self._drop_reads(text, root, projection)
+                    if self._drop_effect(text, root, projection) == "read"
                     else _root_access(text, root, projection, formats)
                 )
                 if access == "read":
@@ -2269,17 +2297,89 @@ class Body:
                     break
             if stopped:
                 continue
-            if not unwinding and self._frame_exit(number):
-                # The frame ends, ``root`` with it, unread.
+            # What may have left the frame by the time it returns, or panics, from here.
+            returned, unwound = self._escape(block.terminator, escaped, derived)
+            # A call given a pointer to it may have read it before a panic (`allow(&mut w)`).
+            read = read or self._escape(block.terminator, False, lent)[1]
+            if _RETURN.match(block.terminator):
+                # The frame ends, ``root`` with it, unread; the caller goes on.
                 if used:
                     return True
                 continue
+            if (self._frame_exit(number) or block.leaves) and used and unwound and not read:
+                # A panic or an exit: the program goes on only with what left the frame.
+                return True
+            if self._frame_exit(number):
+                continue
             resumed = (self.resumes[number],) if number in self.resumes else ()
             pending.extend(
-                (successor, 0, used, gone, unwinding or successor in block.unwinds)
+                (successor, 0, used, gone, returned, read)
                 for successor in (*block.successors, *resumed)
             )
         return False
+
+    def _derived_from(self, copies, root):
+        """The locals assigned anywhere from ``copies`` or from one of these, a pointer to
+        one too (flow-insensitive), but ``root`` and what is made of it: what may carry the
+        copy's value (#330 review 2)."""
+        if self._derived_cache is None:
+            self._derived_cache = {}
+        key = (frozenset(copies), root)
+        if key in self._derived_cache:
+            return self._derived_cache[key]
+        found, changed = set(copies), True
+        assignments = self._assignments()
+        while changed:
+            changed = False
+            for target, values in assignments.items():
+                if target == root or target in found:
+                    continue
+                if any(_mentions_any(each, found) for each in values):
+                    found.add(target)
+                    changed = True
+        self._derived_cache[key] = frozenset(found)
+        return self._derived_cache[key]
+
+    def _escape(self, terminator, escaped, derived):
+        """(whether the copy may have left the frame on the terminator's return edge, on a
+        panic out of it): a panic that leaves the frame ends ``root``, but a caller that
+        catches it (`catch_unwind`) goes on only with what left the frame before (#330
+        review 2: `use_copy(z); may_panic(); use_root(x);`). A call given the copy, or a
+        value ``derived`` from it, may have taken it, even where it panics; a store of one
+        through a pointer too (``copy_undoes``). The standard library's formatting
+        constructors (`Argument::new_display`) only wrap pointers for the print to come,
+        whose call is given what they make; an overflow check or a drop takes nothing."""
+        plain = _STRING.sub('""', terminator)
+        value = plain.split(" = ", 1)[1] if _WHOLE_ASSIGNMENT.match(plain) else plain
+        if not _CALL_ARGUMENTS.match(plain) or _NOT_A_CALL.match(value):
+            return escaped, escaped
+        if _FORMAT_CALL.match(value) and self.std_paths & {"core", "std"}:
+            return escaped, escaped
+        taken = escaped or _mentions_any(value.split(" -> ", 1)[0], derived)
+        return taken, taken
+
+    def doubtful_drops(self, root, start, projection=()):
+        """The places of the drops of ``root`` on some path from ``start`` before it is
+        read, assigned or ended, whose `Drop` impl of the crate's may read the part
+        ``projection``, which Peeky can't tell (``_drop_effect``'s "maybe"; #330 review 2):
+        a refusal that the copy rule makes past one says so."""
+        found, pending, seen = set(), [start], set()
+        while pending:
+            number, index = node = pending.pop()
+            if node in seen or number not in self.blocks:
+                continue
+            seen.add(node)
+            block = self.blocks[number]
+            for offset, (text, _, _) in enumerate(block.statements[index:], index):
+                effect = self._drop_effect(text, root, projection)
+                if effect == "maybe":
+                    found.add((number, offset))
+                if effect == "read" or _root_access(text, root, projection) is not None:
+                    break
+            else:
+                resumed = (self.resumes[number],) if number in self.resumes else ()
+                pending.extend((each, 0) for each in (*block.successors, *resumed))
+        return frozenset(found)
 
     def _frame_exit(self, number):
         """Whether the block ``number`` ends the frame (#330 review): a `return`, a call
@@ -2292,69 +2392,210 @@ class Body:
             and not block.terminator.startswith("unreachable")
         )
 
-    def _drop_reads(self, text, local, projection=()):
-        """Whether ``text`` drops ``local``, or a place of it not surely apart from the
-        part ``projection``, with a drop that may run the program's own code, which may
-        read it (#330 review: `impl Drop for D` printing `self.0`): where a type it holds
-        by value has a `Drop` impl of the crate's (``_runs_drop``). Not where its drop
-        provably runs none (``_quiet_drop``: a number, a String), nor where only the
-        standard library's drops run (a struct of a `String` and a `u32`), which read no
-        number of it."""
+    def _drop_effect(self, text, local, projection=()):
+        """What ``text`` does to the part ``projection`` of ``local`` where it drops it, or
+        a place of it not surely apart from the part (#330 review 2): None where it runs no
+        code of the crate's that can reach the part (not a drop of it, a ``_quiet_drop``
+        type's, the standard library's drops of what it holds, a `Drop` impl only on
+        another field); "read" where a `Drop` impl on its type, or on a type the part is in,
+        surely reads it before anything else (``_drop_proves_read``); else "maybe".
+        Peeky can't see what the drop reads where it is not known which types are on the
+        way to the part: then any `Drop` impl of the crate's it holds by value may."""
         dropped = _DROP_PLACE.match(_STRING.sub('""', text))
         head = re.match(rf"\(*_{local}\b", dropped[1]) if dropped else None
         if head is None:
-            return False
+            return None
         place = _place_steps(dropped[1], head.end() - len(f"_{local}"))
-        if place is not None and _apart(place[0], projection):
-            return False
+        if place is None:
+            return "maybe"
+        steps = place[0]
+        if _apart(steps, projection):
+            return None
         kind = self.types.get(local)
-        return not _quiet_drop(kind, self.generics) and self._runs_drop(kind)
-
-    def _runs_drop(self, kind):
-        """Whether dropping a value of the MIR type ``kind`` may run a `Drop` impl of the
-        crate's on what it holds by value: a type of the crate's with one (``droppers``),
-        or one that holds such a type in a field, a tuple or an array, as the build's debug
-        information tells (``layouts``). True where that is not known: no ``droppers``
-        yet, a type parameter, a trait object, a closure, or a type the debug information
-        doesn't describe while the crate has some `Drop` impl."""
-        if self.droppers is None or kind is None or self.generics is None:
-            return True
+        if _quiet_drop(kind, self.generics):
+            return None
+        if self.droppers is None:
+            return "maybe"
         if not self.droppers:
-            return False
-        if mentions(kind, self.generics) or re.search(r"[{}]|\b(?:dyn|impl)\b", kind):
-            return True
-        layouts = self.layouts
-        pending, seen = list(_TYPE_WORDS.findall(_LIFETIME.sub("", kind))), set()
-        while pending:
-            word = pending.pop()
-            if word in seen or word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS):
+            return None
+        if projection is None or not _overlaps(steps, projection) or len(steps) > len(projection):
+            return "maybe" if self._holds_dropper(_parse_type(kind or "")) else None
+        # The types from the dropped place down to the part, outermost first: their `Drop`
+        # impls run in that order, each given what it holds of the part.
+        types = self._path_types(local, list(projection))
+        if types is None:
+            return "maybe" if self._holds_dropper(_parse_type(kind or "")) else None
+        for depth in range(len(steps), len(projection)):
+            node = _parse_type(types[depth] or "")
+            if node is None:
+                return "maybe"
+            if node[0] in ("tuple", "array"):
                 continue
-            seen.add(word)
-            if word.rsplit("::", 1)[-1] in self.droppers:
+            if node[0] != "path" or node[1].startswith(_STD_PATHS):
+                return "maybe"
+            name = node[1].rsplit("::", 1)[-1]
+            if name in self.droppers:
+                body = self.droppers[name]
+                rest = list(projection[depth:])
+                return (
+                    "read" if body is not None and self._drop_proves_read(body, rest) else "maybe"
+                )
+        return None
+
+    def _holds_dropper(self, node):
+        """Whether a value of the type tree ``node`` (``_parse_type``'s, or a canonical one
+        of the build's debug information) may hold, by value, a type of the crate's with
+        a `Drop` impl (``droppers``): itself, in a field (``layouts``), a tuple, an array
+        or a standard container; not behind a reference or a pointer, nor in
+        `ManuallyDrop`, `MaybeUninit` or `PhantomData`, which drop nothing (#330 review
+        2). True where not known."""
+        pending, seen = [node], set()
+        while pending:
+            node = pending.pop()
+            if node is None or node[0] in ("closure", "opaque", "unknown"):
                 return True
-            entry = layouts.entry(word) if layouts is not None else None
-            if entry is None:
-                return True
-            if _UNKNOWN in entry.parts:
-                return True
-            pending.extend(_held_types(entry.parts))
+            if node[0] in ("tuple",):
+                pending.extend(node[1])
+            elif node[0] in ("array", "slice"):
+                pending.append(node[1])
+            elif node[0] in ("path", "type", "std"):
+                if node[0] == "std" or node[1].startswith(_STD_PATHS):
+                    key = node[1] if node[0] == "std" else _std_key(node[1])
+                    if key not in _UNDROPPED:
+                        pending.extend(node[2])
+                    continue
+                name = node[1]
+                if name in _PRIMITIVE_WORDS or name in seen:
+                    continue
+                seen.add(name)
+                if self.generics is None or name in self.generics:
+                    return True
+                if name.rsplit("::", 1)[-1] in self.droppers:
+                    return True
+                entry = self.layouts.entry(name) if self.layouts is not None else None
+                if entry is None:
+                    return True
+                pending.extend(entry.parts)
         return False
+
+    def _path_types(self, local, projection):
+        """The MIR types of ``local`` and of each place on the way to its part
+        ``projection``, the part's own left out (len(projection) of them: what holds it),
+        from places the body names, a field's
+        from what an aggregate assigned to the local puts there (`_2 = Holder { d: move _3,
+        n: move _5 }`: fields in their order), an array's element type from the array's;
+        None where one is not known."""
+        found = {0: self.types.get(local)}
+        for block in self.blocks.values():
+            for text, _, _ in block.statements:
+                text = _STRING.sub('""', text)
+                built = re.fullmatch(rf"_{local} = (?:[\w:<>, ]+ \{{ (.*) \}}|\((.*)\));", text)
+                if (
+                    built
+                    and projection
+                    and projection[0][0] == "field"
+                    and projection[0][1] is not None
+                ):
+                    items = _top_level_items(built[1] if built[1] is not None else built[2])
+                    if projection[0][1] < len(items):
+                        operand = items[projection[0][1]].split(": ", 1)[-1]
+                        whole = re.fullmatch(r"(?:move|copy) _([0-9]+)", operand)
+                        if whole and self.types.get(int(whole[1])):
+                            found.setdefault(1, self.types[int(whole[1])])
+                for mention in re.finditer(rf"(?<![\w*])_{local}\b", text):
+                    kinds = []
+                    place = _place_steps(text, mention.start(), kinds)
+                    if place is None:
+                        continue
+                    for depth, (step, kind) in enumerate(zip(place[0], kinds), 1):
+                        if list(place[0][:depth]) != projection[:depth] or kind is None:
+                            break
+                        found.setdefault(depth, kind)
+        for depth in range(1, len(projection)):
+            if depth not in found and projection[depth - 1][0] == "index":
+                array = re.fullmatch(r"\[(.+); [^;\]]+\]", found.get(depth - 1) or "")
+                if array:
+                    found[depth] = array[1]
+        if any(found.get(depth) is None for depth in range(len(projection))):
+            return None
+        return [found[depth] for depth in range(len(projection))]
+
+    def _drop_proves_read(self, body, projection):
+        """Whether the `Drop` impl's ``drop`` ``body`` (`_1: &mut T`) surely reads the part
+        ``projection`` of `*_1` on every path it completes on (a panic in it aside),
+        before it writes it or lends `self` to anything that could: a `copy` or `move` of
+        a place that overlaps it, or std's printing of a borrow of it (``_format_reads``).
+        Not for a type with type parameters, whose body Peeky doesn't match (#330 review
+        2: `impl Drop for D` printing `self.0` reads `d.0`, not `d.1`)."""
+        if "<" in body.types.get(1, "<"):
+            return False
+        if body.generics is None:
+            body.generics = ()
+        target = 999_999
+        named = re.compile(r"\(\*_1\)")
+        formats = body._format_reads(*self.sinks)
+        nodes, pending = {}, [(0, 0)]
+        while pending:
+            node = pending.pop()
+            if node in nodes or node[0] not in body.blocks:
+                continue
+            number, index = node
+            block = body.blocks[number]
+            nodes[node] = "fail"
+            for text, _, _ in block.statements[index:]:
+                plain = named.sub(f"_{target}", _STRING.sub('""', text))
+                borrows = [
+                    named.sub(f"_{target}", each)
+                    for each in formats.get(_STRING.sub('""', text), ())
+                ]
+                if any(_reads_part(each, target, projection, True) for each in borrows):
+                    nodes[node] = "read"
+                    break
+                if _root_access(plain, target, projection) == "read":
+                    nodes[node] = "read"
+                    break
+                if not re.search(rf"(?<![\w])_(?:1|{target})\b", plain) or _NOT_A_USE.match(plain):
+                    continue
+                # A shared borrow reads nothing and writes no number; anything else that
+                # names `self` may write the part first.
+                if re.search(rf"(?:^|= )&(?:\(_{target}[.\[]|_{target}\b)", plain) and not (
+                    re.search(r"&(?:mut|raw) ", plain)
+                ):
+                    continue
+                break
+            else:
+                following = [each for each in block.successors if each not in block.unwinds]
+                if following:
+                    nodes[node] = [(each, 0) for each in following]
+                    pending.extend(nodes[node])
+        if any(value == "fail" for value in nodes.values()):
+            return False
+        done = {node for node, value in nodes.items() if value == "read"}
+        grown = True
+        while grown:
+            grown = False
+            for node, value in nodes.items():
+                if node not in done and isinstance(value, list) and all(e in done for e in value):
+                    done.add(node)
+                    grown = True
+        return len(done) == len(nodes)
 
     def unread_ends(self, local, start, projection=()):
         """Where the part ``projection`` of ``local`` (``_root_access``'s) ends, unread,
         on every path from ``start`` ((block, index): before that statement), so a change
         made there is never seen (#330): {(kind, (block, index))}, kind "write" (an
         assignment covering it, `y = t;`), "scope" (the end of its storage), "return"
-        (the function returns), "stop" (the frame ends otherwise: a call that never
-        returns, as `panic!` or `process::exit`, ``_frame_exit``), or "loop" (at
-        ``start``: some path can never leave a loop that has none of these). So each path
-        the program takes ends at one of them (#330 review). A path a call or a check
-        takes only when it panics (``Block.unwinds``) is read through, but ends nothing.
-        None where some path may read it first (``_unread_access``). Pointers made from
-        it before ``start`` are the caller's to judge (``OwnedLocals.unread_after``)."""
+        (the function returns), "stop" (the frame may end otherwise: a call that never
+        returns, as `panic!` or `process::exit`, ``_frame_exit``, or a panic that leaves
+        it, through a cleanup or with none, ``Block.leaves``), "drop" (a drop whose `Drop`
+        impl may read it, which Peeky can't tell: ``_drop_effect``), or "loop" (at
+        ``start``: a loop on the way, which may never end). So each path the program may
+        take ends at one of them, and a refusal names each kind (#330 review 2). None
+        where some path may read it first (``_unread_access``). Pointers made from it
+        before ``start`` are the caller's to judge (``OwnedLocals.unread_after``)."""
         # {place a path enters a block at: the places it goes on to, or None where it
-        # ends there}, and the cleanup paths a panic takes.
-        nodes, ends, unwinding, pending = {}, set(), [], [start]
+        # ends there}.
+        nodes, ends, pending = {}, set(), [start]
         while pending:
             node = pending.pop()
             if node in nodes or node[0] not in self.blocks:
@@ -2376,41 +2617,12 @@ class Body:
                 elif self._frame_exit(number):
                     ends.add(("stop", last))
                 elif block.successors or number in self.resumes:
+                    if block.leaves:
+                        ends.add(("stop", last))
                     resumed = (self.resumes[number],) if number in self.resumes else ()
-                    unwinding.extend((each, 0) for each in block.unwinds)
-                    following = [
-                        (each, 0)
-                        for each in (*block.successors, *resumed)
-                        if each not in block.unwinds
-                    ]
-                    nodes[node] = following
-                    pending.extend(following)
-        seen = set()
-        while unwinding:
-            number, index = node = unwinding.pop()
-            if node in seen or number not in self.blocks:
-                continue
-            seen.add(node)
-            block = self.blocks[number]
-            for text, _, _ in block.statements[index:]:
-                access = self._unread_access(text, local, projection)
-                if access == "read":
-                    return None
-                if access is not None:
-                    break
-            else:
-                unwinding.extend((each, 0) for each in block.successors)
-        # The places from which some path reaches an end: a loop with a way out reaches
-        # what follows it, one with none never does.
-        out = {node for node, following in nodes.items() if following is None}
-        grown = True
-        while grown:
-            grown = False
-            for node, following in nodes.items():
-                if node not in out and any(each in out for each in following):
-                    out.add(node)
-                    grown = True
-        if len(out) < len(nodes):
+                    nodes[node] = [(each, 0) for each in (*block.successors, *resumed)]
+                    pending.extend(nodes[node])
+        if _cyclic(nodes, start):
             ends.add(("loop", start))
         return frozenset(ends)
 
@@ -2420,7 +2632,8 @@ class Body:
         reading none of it), "scope" (its storage ends), None (it leaves the part as it
         was, unread: no mention, a marker, a `copy` or `move` of a place surely apart, a
         write that reads none of it, a drop that runs no code: ``_quiet_drop``), else
-        "read" (it may read it: a borrow, a dereference, a drop that may run code, any
+        "drop" (a drop whose `Drop` impl may read it: ``_drop_effect``), else "read" (it
+        may read it: a borrow, a dereference, a drop whose `Drop` impl surely reads it, any
         other mention)."""
         plain = _STRING.sub('""', text)
         if local not in {int(n) for n in _MENTIONED.findall(plain)}:
@@ -2433,12 +2646,13 @@ class Body:
             return None
         if dropped := _DROP_PLACE.match(plain):
             # A drop of the local or of a place of its own, as ``copy_undoes`` judges it
-            # (#330 review); a drop through it, or of what it is given to, may read it.
+            # (#330 review 2); a drop through it, or of what it is given to, may read it.
             head = re.match(rf"\(*_{local}\b", dropped[1])
             place = _place_steps(dropped[1], head.end() - len(f"_{local}")) if head else None
             if place is None or place[2] != len(dropped[1]):
                 return "read"
-            return "read" if self._drop_reads(plain, local, projection) else None
+            effect = self._drop_effect(plain, local, projection)
+            return "read" if effect == "read" else "drop" if effect == "maybe" else None
         steps, value = None, plain
         if head := re.match(rf"\(*_{local}\b", plain):
             place = _place_steps(plain, head.end() - len(f"_{local}"))
@@ -4954,11 +5168,12 @@ def _type_end(text, start):
     return None
 
 
-def _place_steps(text, start):
+def _place_steps(text, start, types=None):
     """The place whose local's `_N` starts at ``start`` in a MIR statement: (its
     projections, as ``("field", n)``, ``("index", n)`` with None for an index not
     constant, ``("other", None)`` for a variant; where its text starts; where it ends),
-    or None where it is not read as a place (`Len(_1)`, a dereference)."""
+    or None where it is not read as a place (`Len(_1)`, a dereference). ``types``, where
+    given, gets each projection's type as the MIR prints it (None for an element's)."""
     local = re.match(r"_[0-9]+", text[start:])
     if local is None or (start and text[start - 1] == "*"):
         return None
@@ -4973,6 +5188,8 @@ def _place_steps(text, start):
                 return None
             constant = re.fullmatch(r"([0-9]+) of [0-9]+", text[at + 1 : end])
             steps.append(("index", int(constant[1]) if constant else None))
+            if types is not None:
+                types.append(None)
             at = end + 1
             continue
         if not opens:
@@ -4984,6 +5201,8 @@ def _place_steps(text, start):
         if end is None:
             return None
         steps.append(("field", int(field[1])) if field else ("other", None))
+        if types is not None:
+            types.append(text[at + field.end() : end] if field else None)
         at, opens = end + 1, opens - 1
 
 
@@ -5972,6 +6191,7 @@ def _finish(block):
     unwind = _UNWIND_EDGE.search(edges)
     if unwind and any(n != int(unwind[1]) for n in block.successors):
         block.unwinds = frozenset({int(unwind[1])})
+    block.leaves = bool(_UNWIND_LEAVES.search(edges))
     if _ASSIGN.match(text):
         returned = _RETURN_EDGE.search(edges)
         block.returns = int(returned[1]) if returned else None
@@ -6732,6 +6952,10 @@ class OwnedLocals:
             found.std_iterator = self._std_iterator()
             found.layouts = self._layouts()
             found.droppers = self._droppers()
+            found.sinks = (
+                frozenset(self.std_macros),
+                frozenset(each.path for each in self.bodies),
+            )
         self._matched[hashed] = found
         return found
 
@@ -7097,6 +7321,42 @@ class OwnedLocals:
                 return None
             where.add((kind, file, at))
         return sorted(where)
+
+    def drop_doubts(
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        projection=(),
+        coded=False,
+    ):
+        """{(file, line)} of each drop of the frame's local ``variable_name`` on some path
+        from a place the stop can be on ``line`` of ``path``, before the local is read,
+        assigned or ended, whose `Drop` impl of the crate's may read the part
+        ``projection``, which Peeky can't tell (``Body.doubtful_drops``; #330 review 2): a
+        refusal by the program's own copy names them, and says no more than that a change
+        may not be seen. Arguments as for ``unread_after``."""
+        placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
+        if placed is None:
+            return frozenset()
+        body, local, positions = placed
+        if coded:
+            positions = [
+                position
+                for position in positions
+                if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
+            ] or positions
+        found = set()
+        for position in positions:
+            for number, index in body.doubtful_drops(local, position, projection):
+                _, file, at = body.blocks[number].statements[index]
+                if file is not None and at is not None:
+                    found.add((file, at))
+        return frozenset(found)
 
     def copy_lines(self, hashed, temporaries, named_only=False):
         """The source lines where the code assigns any of ``temporaries`` in the body of
@@ -8099,20 +8359,22 @@ class OwnedLocals:
         return self._bare_known
 
     def _droppers(self):
-        """The last path segment of each type the crate gives a `Drop` impl (#330 review):
-        the type of `self` (`_1: &mut D`) of a `drop` method of an impl in the dump
-        (`<impl at src/main.rs:5:1: 5:17>::drop`). An inherent `drop(&mut self)` counts
-        too, as if it were one."""
+        """{the last path segment of each type the crate gives a `Drop` impl: the body of
+        its `drop`, or None where several types are so named} (#330 review): the type of
+        `self` (`_1: &mut D`) of a `drop` method of an impl in the dump (`<impl at
+        src/main.rs:5:1: 5:17>::drop`). An inherent `drop(&mut self)` counts too, as if it
+        were one."""
         if "_droppers_known" not in self.__dict__:
-            found = set()
+            found = {}
             for body in self.bodies:
                 segments = _segments(body.path)
                 if len(segments) < 2 or segments[-1] != "drop" or not segments[-2].startswith("<"):
                     continue
                 kind = re.fullmatch(r"&mut (.+)", body.types.get(1, ""))
                 if kind:
-                    found.add(re.split(r"[<\[(]", kind[1], maxsplit=1)[0].rsplit("::", 1)[-1])
-            self._droppers_known = frozenset(found)
+                    name = re.split(r"[<\[(]", kind[1], maxsplit=1)[0].rsplit("::", 1)[-1]
+                    found[name] = None if name in found else body
+            self._droppers_known = found
         return self._droppers_known
 
     def _layouts(self):

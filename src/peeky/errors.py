@@ -368,7 +368,8 @@ _MUTATION_HINTS = (
     ),
     (
         # Rust (#330): no path from the stop reads it before it is overwritten or ends.
-        r"does not read (?:it|`[^`]+`) after (?:this stop|any stop of line [0-9]+), so a change",
+        r"(?:does|may) not read (?:it|`[^`]+`) after (?:this stop|any stop of line [0-9]+), so a "
+        r"change",
         "Change it where the program still reads it: after the line that overwrites it, or "
         "before its last read (a stop on that line, or `--set-at` there).",
     ),
