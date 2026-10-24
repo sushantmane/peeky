@@ -3640,25 +3640,29 @@ class _Restores:
         """Whether a change to ``name`` may be written back later: its result keeps how."""
         return restore_key(name) in self.keys
 
-    def awaiting(self):
-        """(restore point, the change it awaits) for each `LINE@all` restore whose name's
-        latest change, not itself a restore, is still to be undone at its hit."""
+    def awaiting(self, seen):
+        """(restore point, the change it awaits) for each `LINE@all` restore still to be
+        made, at the hit of its name's latest change (a restore's too: a later restore
+        undoes it), which the restore's line has not reached yet (``seen``: each line's
+        stops so far). A restore line that reached that hit already paired its own change
+        there. The same for what an `--until hits` probe waits for (``owed``) and what is
+        left in place at its end."""
         found = []
         for point in self.points:
             record = self.ledger.get(restore_key(point["name"]))
-            if point["hit"] == ALL and record is not None and record["undoes"] is None:
+            if (
+                point["hit"] == ALL
+                and _waiting(point)
+                and record is not None
+                and seen.get(point["build_line"], 0) < record["hit"]
+            ):
                 found.append((point, record))
         return found
 
     def owed(self, seen):
-        """The restore lines an `--until hits` probe still waits for: an `@all` restore's
-        line, where the change it awaits was made at a hit that line has not reached
-        yet (a restore at one hit is owed as any `--set-at` is)."""
-        return [
-            point["build_line"]
-            for point, record in self.awaiting()
-            if _waiting(point) and seen.get(point["build_line"], 0) < record["hit"]
-        ]
+        """The restore lines an `--until hits` probe still waits for (``awaiting``); a
+        restore at one hit is owed as any `--set-at` is."""
+        return [point["build_line"] for point, _ in self.awaiting(seen)]
 
     def needed(self):
         """The watched lines while a restore may still be made."""
@@ -4426,8 +4430,9 @@ def run_probe(
                 }
                 if undone is not None:
                     # Which change's value from before it was written back (#305), and
-                    # the program's own value it wrote over, where the program had
-                    # written one since that change.
+                    # the value it wrote over, where that is not the one the change
+                    # wrote (the program, or another of the probe's changes through
+                    # another name, wrote it since).
                     change["restores"] = undone["at"]
                     if change.get("before") != undone["wrote"]:
                         change["overwrote"] = change.get("before")
@@ -4962,21 +4967,21 @@ def run_probe(
     # before the restore line's hit that pairs with it, with that change in place.
     unrestored = {}
     if result.get("status") != "failed":
-        for point, record in restores.awaiting():
-            if point["capped"] is not None:
-                continue
+        for point, record in restores.awaiting(seen):
             unrestored[id(point)] = record["at"]
             stops = seen.get(point["build_line"], 0)
-            result.setdefault("unapplied", []).append(
-                {
-                    "option": "--set-at",
-                    "at": f"{point['line']}@{ALL}",
-                    "name": point["name"],
-                    "value": point["value"],
-                    "stops": stops,
-                    "unrestored": record["at"],
-                }
-            )
+            entry = {
+                "option": "--set-at",
+                "at": f"{point['line']}@{ALL}",
+                "name": point["name"],
+                "value": point["value"],
+                "stops": stops,
+            }
+            # One entry per request: one whose line never stopped is listed already.
+            listed = next((e for e in result.get("unapplied") or () if e == entry), None)
+            if listed is None:
+                result.setdefault("unapplied", []).append(listed := entry)
+            listed["unrestored"] = record["at"]
             attached = (result.get("target_identity") or {}).get("mode") == "attach"
             warnings.append(
                 f"--set-at {probe.program}:{point['line']}@{ALL} {point['name']}={BEFORE} "
@@ -5143,11 +5148,13 @@ def repeated_visible(rows, where):
 
 def _restored(change):
     """How a probe's text marks a restore (#305): `restored, `, or `restored over the
-    program's 2, ` where the program had written that value since the change undone."""
+    current 2, ` where the value it wrote over was not the one the change undone wrote:
+    the program, or another change of the probe's through another name for it, wrote it
+    since. Peeky does not tell which."""
     if not change.get("restores"):
         return ""
     if "overwrote" in change:
-        return f"restored over the program's {change['overwrote']}, "
+        return f"restored over the current {change['overwrote']}, "
     return "restored, "
 
 
@@ -5326,14 +5333,17 @@ def _table(result, short_names=True):
                 + f" and {listed[-1]}"
             )
         lines.append(f"set {name}: {counted} (`--json` lists each)")
+    entries = result.get("unapplied") or ()
+    # Not made at all; an `@all` restore (#305) that left a change in place is one where
+    # its line never stopped.
     unmade = [
         entry
-        for entry in result.get("unapplied") or ()
-        if "made" not in entry and "unrestored" not in entry
+        for entry in entries
+        if "made" not in entry and ("unrestored" not in entry or not entry.get("stops"))
     ]
-    capped = len([entry for entry in result.get("unapplied") or () if "made" in entry])
+    capped = len([entry for entry in entries if "made" in entry])
     # `@before` restores whose change stayed in place (#305).
-    left = len(result.get("unapplied") or ()) - len(unmade) - capped
+    left = len([entry for entry in entries if "unrestored" in entry])
     lines.append(
         f"status: {result['status']}"
         + (

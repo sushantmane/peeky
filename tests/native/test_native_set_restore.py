@@ -245,5 +245,5 @@ def test_a_restore_is_made_only_to_the_declaration_its_change_wrote(native, caps
     assert code == 0, result
     restore = result["interventions"][1]
     assert (restore["before"], restore["after"], restore["overwrote"]) == ("6", "1", "6")
-    assert "restored over the program's 6, --set-at line" in _table(result)
+    assert "restored over the current 6, --set-at line" in _table(result)
     assert result["output"].splitlines()[-1] == "OUTER=2", result["output"]

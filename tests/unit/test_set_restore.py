@@ -99,8 +99,10 @@ class Calls:
                     {
                         "name": "Locals",
                         "reference": 1,
+                        # `y` is another name for `x`'s storage (an alias).
                         "variables": [
-                            {"name": "x", "value": self._value(), "variablesReference": 0}
+                            {"name": name, "value": self._value(), "variablesReference": 0}
+                            for name in ("x", "y")
                         ],
                     }
                 ],
@@ -401,16 +403,30 @@ def test_a_restore_to_other_storage_is_refused_before_it_writes(monkeypatch):
     ]
 
 
-def test_a_restore_over_the_program_s_own_value_says_so(monkeypatch):
+def test_a_restore_over_another_value_says_so(monkeypatch):
     # The program wrote `x` (2) after the change (0): the restore writes over it.
     stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}, {"line": FLAT, "set": "2"}]
     result = run(monkeypatch, Passes(stops), flip())
     restore = result["interventions"][1]
     assert (restore["before"], restore["after"], restore["overwrote"]) == ("2", "1", "2")
     text = probe_module._table(result)
-    assert "set x: 2 -> 1  (restored over the program's 2, --set-at line 8@all, hit 1, in f)" in (
+    assert "set x: 2 -> 1  (restored over the current 2, --set-at line 8@all, hit 1, in f)" in (
         text
     )
+    # Round 2 of the review of PR #322: the probe's own write through another name for
+    # the same storage (`y` here; Java `c.n`, `c` being `b`'s Box) is no write of the
+    # program's, so nothing says whose it was.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=((GUARD, ALL, "x", "0"), (7, ALL, "y", "6"), (FLAT, ALL, "x", BEFORE)),
+    )  # fmt: skip
+    stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}, {"line": 7}, {"line": FLAT}]
+    result = run(monkeypatch, Passes(stops), request)
+    restore = result["interventions"][2]
+    assert (restore["before"], restore["after"], restore["overwrote"]) == ("6", "1", "6")
+    text = probe_module._table(result)
+    assert "set x: 6 -> 1  (restored over the current 6, --set-at line 8@all" in text, text
+    assert "program" not in text.split("set x: 6 -> 1")[1].splitlines()[0]
     # Where the value is still the one the change wrote, nothing is said.
     result = run(monkeypatch, Passes(passes("1")), flip())
     assert "overwrote" not in result["interventions"][1]
@@ -460,6 +476,83 @@ def test_a_change_left_in_place_is_reported_and_exits_4(monkeypatch):
     outcome = result["set_outcomes"][1]
     assert (outcome["unrestored"], outcome["complete"]) == (f"{GUARD}@2", False)
     assert "status: completed (1 change left in place, not undone)" in probe_module._table(result)
+
+
+def test_a_later_change_owes_no_restore(monkeypatch):
+    # Round 2 of the review of PR #322: `x=0`, its restore, then a later `x=2` all ran,
+    # yet the restore was said not to undo the change at line 9@1, with exit 4.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE), (9, ALL, "x", "2")),
+    )  # fmt: skip
+    stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}, {"line": FLAT}, {"line": 9}]
+    result = run(monkeypatch, Passes(stops), request)
+    assert result["status"] == "completed" and probe_exit_code(result) == 0, result
+    assert "unapplied" not in result, result.get("unapplied")
+    assert not [w for w in result["warnings"] if "did not undo" in w]
+    assert all(outcome["complete"] for outcome in result["set_outcomes"])
+
+
+def chained(passes_made):
+    """Passes of the guard (`x=0`), a restore at the flat line, and a second restore at
+    line 9, which undoes the first."""
+    stops = [{"line": FIRST}]
+    for _ in range(passes_made):
+        stops += [{"line": GUARD, "set": "1"}, {"line": FLAT}, {"line": 9}]
+    return stops
+
+
+# The first line each restore line's function begins at.
+FIRSTS = {FLAT: [FIRST], 9: [FIRST]}
+CHAINED = Probe(
+    "main.c", GUARD, ("x",), hits=2, until="hits",
+    set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE), (9, ALL, "x", BEFORE)),
+)  # fmt: skip
+
+
+def test_until_hits_waits_for_a_restore_of_a_restore(monkeypatch):
+    # Round 2 of the review of PR #322: with `--hits 2 --until hits`, the probe ended after
+    # line 8 on pass 2, as the latest change was a restore, and line 9's never came.
+    worker = Passes(chained(3), firsts=FIRSTS)
+    result = run(monkeypatch, worker, CHAINED)
+    assert result["status"] == "completed" and result["ended"] == "hits", result
+    assert worker.writes == [(GUARD, "0"), (FLAT, "1"), (9, "0")] * 2
+    assert [(c["at"], c.get("restores")) for c in result["interventions"]][-2:] == [
+        (f"{FLAT}@2", f"{GUARD}@2"),
+        ("9@2", f"{FLAT}@2"),
+    ]
+    assert "unapplied" not in result and probe_exit_code(result) == 0
+    # Where line 9's second stop never comes, its restore is left undone, and said so.
+    stops = chained(2)[:-1]
+    result = run(monkeypatch, Passes(stops, firsts=FIRSTS), CHAINED)
+    assert probe_exit_code(result) == 4, result
+    assert [(e["at"], e["stops"], e["unrestored"]) for e in result["unapplied"]] == [
+        ("9@all", 1, f"{FLAT}@2")
+    ]
+
+
+def test_a_restore_whose_line_never_stopped_is_listed_once(monkeypatch):
+    # Round 2 of the review of PR #322: it was listed as not made, and again as leaving
+    # its change in place.
+    stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}]
+    result = run(monkeypatch, Passes(stops), flip())
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": f"{FLAT}@all",
+            "name": "x",
+            "value": BEFORE,
+            "stops": 0,
+            "unrestored": f"{GUARD}@1",
+        }
+    ]
+    assert probe_exit_code(result) == 4
+    text = probe_module._table(result)
+    assert (
+        "status: completed (1 requested change not made; 1 change left in place, not undone)"
+    ) in text, text
+    outcome = result["set_outcomes"][1]
+    assert (outcome["made"], outcome["unrestored"], outcome["complete"]) == (0, f"{GUARD}@1", False)
 
 
 def test_watch_stops_are_counted_apart(monkeypatch):

@@ -1336,20 +1336,24 @@ at most 1000 such stops. After that, a later restore is refused. Those stops are
 `watch_pauses_ms` in JSON, and `watching for new calls: 3 stops, max 5.1 ms` in the text. The
 `max pause` and `max_pause_ms` leave them out.
 
-The latest change to a name an `@all` restore undoes is owed, as a change at one hit is. So with
-`--until hits`, the probe runs on past its last hit until that restore is made. Where the
-restore's hit never comes before the end, that change stays in place. The probe says so in a
-warning, lists the restore in `unapplied` with `unrestored` (the change's `LINE@HIT`), and exits
-4. An attached program goes on running with the change.
+An `@all` restore is owed where the latest change to its name was made at a hit that the
+restore's line hasn't reached yet. That change may be another restore, which a later restore
+undoes. A change made after the restore's line passed that hit, such as a later `x=2` in the same
+pass, owes nothing. So with `--until hits`, the probe runs on past its last hit until each owed
+restore is made. Where its hit never comes before the end, that change stays in place. The probe
+says so in a warning, adds `unrestored` (the change's `LINE@HIT`) to the restore's entry in
+`unapplied`, and exits 4. An attached program goes on running with the change.
 
 Each restore is reported as a change, with `restored`. The line that counts an `@all`'s later
 writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`.
-Where the program wrote the variable after the change, the restore writes over the program's
-value, and says so: `set x: 6 -> 1  (restored over the program's 6, --set-at line 22@1, in
-main)`.
+Where the value it writes over isn't the one the change wrote, the restore says so: `set x: 6 ->
+1  (restored over the current 6, --set-at line 22@1, in main)`. The program wrote it since, or
+another change of the probe's did, through another name for the same storage (Java `c.n`, with
+`c` the same object as `b`). Peeky doesn't say which.
 
 In JSON, a restore's entry in `interventions` has `restores`: the `LINE@HIT` of the change it
-undid. It has `overwrote` too, with the program's value, where it wrote over one. The evidence
+undid. It has `overwrote` too, with the value it wrote over, where that isn't the one the change
+wrote. The evidence
 keeps a restore as any change, with more:
 
 - an `interventions` row, whose `restores_at` (schema 19) is the change it undid;
