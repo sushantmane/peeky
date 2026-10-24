@@ -311,6 +311,134 @@ fn main() {
 """
 
 
+# A struct holding a `&mut` (or a raw pointer, or a `&Cell`), passed by value, through
+# `&mut`, or through a shared `&` (#311 review round 4).
+HOLDS = """use std::cell::Cell;
+use std::env;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+struct Hold<'a> {
+    p: &'a mut Vec<u32>,
+}
+
+struct RawHold {
+    p: *mut Vec<u32>,
+}
+
+struct CellHold<'a> {
+    c: &'a Cell<u32>,
+}
+
+#[inline(never)]
+fn look(h: &Hold, x: u32) {
+    std::hint::black_box((h.p.len(), x));
+}
+
+#[inline(never)]
+fn keep(h: Hold, x: u32) {
+    h.p.push(x);
+}
+
+#[inline(never)]
+fn poke(h: &mut Hold, x: u32) {
+    h.p.push(x);
+}
+
+#[inline(never)]
+fn peek(r: &&mut Vec<u32>, x: u32) {
+    std::hint::black_box((r.len(), x));
+}
+
+#[inline(never)]
+fn rawput(h: &RawHold, x: u32) {
+    unsafe { (*h.p).push(x) };
+}
+
+#[inline(never)]
+fn cellput(h: &CellHold, x: u32) {
+    h.c.set(x);
+}
+
+fn shared(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let h = Hold { p: &mut v };
+    look(&h, x);
+    let k = other(); // SHARED
+    let t = v[0] + *std::hint::black_box(&x) + k;
+    t
+}
+
+fn byval(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let h = Hold { p: &mut v };
+    keep(h, x);
+    let k = other(); // BYVAL
+    let t = v[1] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn mutref(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let mut h = Hold { p: &mut v };
+    poke(&mut h, x);
+    let k = other(); // MUTREF
+    let t = v[1] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn sharedmut(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let r = &mut v;
+    peek(&r, x);
+    let k = other(); // SHAREDMUT
+    let t = v[0] + *std::hint::black_box(&x) + k;
+    t
+}
+
+fn raw(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let h = RawHold { p: &mut v };
+    rawput(&h, x);
+    let k = other(); // RAW
+    let t = v[1] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn celled(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = Cell::new(0);
+    let h = CellHold { c: &c };
+    cellput(&h, x);
+    let k = other(); // CELLED
+    let t = c.get() + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("SHARED {}", shared(x));
+    println!("BYVAL {}", byval(x));
+    println!("MUTREF {}", mutref(x));
+    println!("SHAREDMUT {}", sharedmut(x));
+    println!("RAW {}", raw(x));
+    println!("CELLED {}", celled(x));
+}
+"""
+
+
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
 
@@ -483,3 +611,24 @@ def test_a_view_that_only_reads_leaves_the_local_settable(crate, capsys):
         assert code == 0, (marker, result.get("error"))
         assert result["interventions"][0]["after"] == "100", (marker, result["interventions"])
         assert printed in result["output"], (marker, result["output"])
+
+
+@pytest.mark.timeout(400)
+def test_a_shared_reference_to_a_struct_holding_a_mut_lends_no_write(crate, capsys):
+    # `look(&h, x)` with `h = Hold { p: &mut v }`: through `&Hold` no safe callee writes
+    # through `h.p`, so `v` holds no copy of `x`: the change is made and the program sees
+    # it (7 + 100 + 1). The same for `peek(&r, x)` with `r = &mut v`.
+    root = crate("holds", HOLDS)
+    for marker in ("SHARED", "SHAREDMUT"):
+        line = line_of(HOLDS, f"// {marker}")
+        code, result = probe(capsys, root, line, "--capture", "x", "--set", "x=100", "--", "5")
+        assert code == 0, (marker, result.get("error"))
+        assert result["interventions"][0]["after"] == "100", (marker, result["interventions"])
+        assert f"{marker} 108" in result["output"], (marker, result["output"])
+    # By value, through `&mut h`, and through `&h` to a raw pointer or a `&Cell`, the
+    # callee may store `x` where the program goes on.
+    for marker, holder in (("BYVAL", "v"), ("MUTREF", "v"), ("RAW", "v"), ("CELLED", "c")):
+        line = line_of(HOLDS, f"// {marker}")
+        message = refused(*probe(capsys, root, line, "--set", "x=100", "--", "5"))
+        assert f"the program's own `{holder}` (at " in message, (marker, message)
+        assert "may hold a copy of `x` that it goes on with" in message, (marker, message)

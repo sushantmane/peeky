@@ -391,6 +391,12 @@ used again. Such a temporary is:
   family, `RefMut`, `Drain`, `ChunksMut`). Or something it was made from shows one
   (`_made_from`: a closure or a crate's struct capturing `&mut v`). A view that only reads, as
   `ChunksExact` or `btree_map::Iter`, writes nothing.
+- What a callee reaches only through a shared `&` it writes only if it is a raw pointer or a
+  cell (review round 4). `_may_write`'s `shared`, and `_unshared` within a type: `&&mut Vec<u32>`
+  writes nothing. `_reached` walks what an argument was made from, noting where it passed a
+  shared borrow or a shared reference type. So `look(&h, x)` with `h = Hold { p: &mut v }`
+  writes nothing, while `keep(h, x)`, `poke(&mut h, x)`, and `&h` with a `*mut` or `&Cell`
+  field may.
 - `_pointers_to` follows what is made from a borrow through any value that may hold a pointer:
   `Option<&mut u32>` of `v.last_mut()`, then `r` of its `unwrap()`. So `copy_undoes` sees a
   later `*r` as a use of `v`.

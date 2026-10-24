@@ -136,11 +136,13 @@ _BOX_TYPE = re.compile(r"^(?:(?:std|alloc)::boxed::)?Box<")
 _COPY_NONOVERLAPPING = re.compile(
     r"^copy_nonoverlapping\(dst = (?:copy|move) _([0-9]+), src = (?:copy|move) _([0-9]+),"
 )
-# A type a callee may write through (#311 review): a `&mut` or raw pointer, `NonNull`, a
-# cell or lock, wherever it is in the type (an aggregate wrapping one).
-_WRITABLE_TYPE = re.compile(
-    r"&mut |\*mut |\*const |NonNull<|Cell<|UnsafeCell<|Atomic|Mutex<|RwLock<|OnceLock<"
+# What a callee may write through even where it reaches it only through a shared `&`
+# (#311 review round 4): a raw pointer, `NonNull`, a cell or lock.
+_SHARED_WRITABLE = re.compile(
+    r"\*mut |\*const |NonNull<|Cell<|UnsafeCell<|Atomic|Mutex<|RwLock<|OnceLock<"
 )
+# A reference in a type: `&`, `&mut `, `&'a `, `&'static mut ` (group 1 for `mut`).
+_REFERENCE = re.compile(r"&(?:'[\w?]+ )?(mut )?")
 # A reference or raw pointer itself (`&mut [u32]`, `*mut u32`, `NonNull<T>`).
 _POINTER_TYPE = re.compile(r"^(?:&|\*const |\*mut |(?:(?:std|core)::ptr::)?NonNull<)")
 # `_23 = copy ((BOX.0: Unique<T>).0: NonNull<T>) as *const T (Transmute)`: BOX is a Box
@@ -241,18 +243,61 @@ _MUTABLE_VIEWS = frozenset(
 )
 
 
-def _may_write(kind, generics):
+def _shared_reference(kind):
+    """Whether ``kind`` is a shared reference (`&Hold<'_>`, `&&mut Vec<u32>`), through
+    which safe code writes only into a cell or through a raw pointer (#311 review round
+    4)."""
+    found = kind is not None and _REFERENCE.match(kind)
+    return bool(found) and not found[1]
+
+
+def _unshared(kind):
+    """``kind`` without what each shared reference in it refers to (#311 review round 4):
+    `&Hold<'_>` is `&`, `(&&mut Vec<u32>, &mut u32)` is `(&, &mut u32)`. A callee writes
+    through no `&mut` or mutable view it reaches only through a `&`."""
+    out, at = [], 0
+    while at < len(kind):
+        found = _REFERENCE.match(kind, at) if kind[at] == "&" else None
+        if not found or found[1]:
+            end = found.end() if found else at + 1
+            out.append(kind[at:end])
+            at = end
+            continue
+        out.append("&")
+        depth, at = 0, found.end()
+        while at < len(kind):
+            if kind.startswith("->", at):
+                at += 2
+                continue
+            if kind[at] in "<([{":
+                depth += 1
+            elif kind[at] in ">)]}" or (kind[at] in ",;" and not depth):
+                if not depth:
+                    break
+                depth -= 1
+            at += 1
+    return "".join(out)
+
+
+def _may_write(kind, generics, shared=False):
     """Whether a value of the MIR type ``kind`` shows that a callee given it may write
-    through a pointer it holds (#311 review): a `&mut` or raw pointer, `NonNull`, a cell
-    or lock, wherever it is in the type (``_WRITABLE_TYPE``: `(&mut Vec<u32>, u32)`
-    too); one of the standard library's mutable views (``_MUTABLE_VIEWS``: `hash_map::
-    Entry<'_, u32, u32>`, `slice::IterMut<'_, u32>`); a type parameter, or a type not
-    known. Not any other type (round 3: `slice::ChunksExact<'_, u32>` only reads); a crate's
-    type, a closure or another view writes only where what it was made from shows it
-    (``Body._may_write_through``)."""
-    if kind is None or _WRITABLE_TYPE.search(kind):
+    through a pointer it holds (#311 review): a raw pointer, `NonNull`, a cell or lock,
+    wherever it is in the type (``_SHARED_WRITABLE``); a `&mut`, or one of the standard
+    library's mutable views (``_MUTABLE_VIEWS``: `hash_map::Entry<'_, u32, u32>`,
+    `slice::IterMut<'_, u32>`), that it does not reach only through a shared `&`
+    (``_unshared``: `(&mut Vec<u32>, u32)`, not `&&mut Vec<u32>`), nor at all where
+    ``shared`` (the value is itself reached only through one, round 4); a type parameter,
+    or a type not known. Not any other type (round 3: `slice::ChunksExact<'_, u32>` only
+    reads); a crate's type, a closure or another view writes only where what it was made
+    from shows it (``Body._may_write_through``)."""
+    if kind is None or generics is None or mentions(kind, generics):
         return True
-    if generics is None or mentions(kind, generics):
+    if _SHARED_WRITABLE.search(kind):
+        return True
+    if shared:
+        return False
+    kind = _unshared(kind)
+    if any(found[1] for found in _REFERENCE.finditer(kind)):
         return True
     return any(
         word.startswith(_STD_PATHS) and word.rsplit("::", 1)[-1] in _MUTABLE_VIEWS
@@ -1495,16 +1540,45 @@ class Body:
         review round 3): its type shows one (``_may_write``), or it may hold a pointer and
         something it was made from shows one (``_made_from``: the `&mut v` an `Entry` or a
         closure was made from). Positive evidence only: `a.chunks_exact(1)`, made from a
-        shared `&[u32]`, writes nothing."""
+        shared `&[u32]`, writes nothing. What it reaches only through a shared `&` counts
+        only for a cell or a raw pointer (round 4, ``_reached``): `&h` of `h = Hold { p:
+        &mut v }` writes nothing, `h` itself and `&mut h` may."""
         kind = self.types.get(local)
         if _may_write(kind, self.generics):
             return True
         if _pointer_free(kind, self.generics):
             return False
         return any(
-            _may_write(self.types.get(made), self.generics)
-            for made in self._made_from(local) - {local}
+            _may_write(self.types.get(made), self.generics, shared)
+            for made, shared in self._reached(local)
+            if made != local
         )
+
+    def _reached(self, local):
+        """What ``local`` may have been made from (``_made_from``), each with whether it
+        reaches it only through a shared `&` (#311 review round 4): it does past a shared
+        borrow (`_12 = &_7;`, `_11 = &(*_12);`), and past a value of a shared reference
+        type (`&Hold<'_>`, a call's result too); not past a `&mut`, a raw borrow, or a
+        value moved or copied (`Hold { p: move _8 }`)."""
+        found, pending = {}, [(local, _shared_reference(self.types.get(local)))]
+        assigned = self._assignments()
+        while pending:
+            local, shared = pending.pop()
+            # Seen already, as reachable at least as freely.
+            if local in found and (shared or not found[local]):
+                continue
+            found[local] = shared
+            for value in assigned.get(local, ()):
+                value = _STRING.sub('""', value)
+                borrow = _REFERENCE.match(value)
+                past = shared or bool(borrow and not borrow[1] and not value.startswith("&raw "))
+                for n in map(int, _DIRECT_BORROW.findall(value)):
+                    pending.append((n, past or _shared_reference(self.types.get(n))))
+                for n in map(int, _MENTIONED.findall(value)):
+                    kind = self.types.get(n)
+                    if kind is None or not _POINTERLESS.fullmatch(kind):
+                        pending.append((n, past or _shared_reference(kind)))
+        return found.items()
 
     def _made_from(self, pointer):
         """The locals ``pointer`` may have been made from, back through every assignment
