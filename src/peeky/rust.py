@@ -1039,17 +1039,21 @@ def _unread_where(ends, home, owner="it"):
         parts.append(f"{owner} goes out of scope at {_line_list(lines['scope'], home)}")
     if "return" in lines:
         parts.append(f"the function returns at {_line_list(lines['return'], home)}")
-    others = _either(
-        [
-            *(["panics or exits"] if "stop" in lines else []),
-            *(["loops forever"] if "loop" in lines else []),
-        ]
-        or [""]
-    )
+    others = _either(_stopped(lines) or [""])
     if not parts:
         return f"the program {others} first" if others else None
     where = f"{parts[0]} first" if len(parts) == 1 else ", or ".join(parts) + ", first"
     return where + (f", unless the program {others} before that" if others else "")
+
+
+def _stopped(kinds):
+    """What a program may do instead of reaching where a local ends (#330 review), for
+    ``_either``: "panics" and "exits" where a path stops the frame, "loops forever" where
+    one never leaves a loop; ``kinds`` holds ``_unread_where``'s kinds."""
+    return [
+        *(["panics", "exits"] if "stop" in kinds else []),
+        *(["loops forever"] if "loop" in kinds else []),
+    ]
 
 
 def _overwritten(ends):
@@ -3352,11 +3356,7 @@ class RustSession(NativeSession):
             for kind in ("write", "scope", "return")
             if kind in lines
         )
-        stops = [
-            *(["panics or exits"] if "stop" in lines else []),
-            *(["loops forever"] if "loop" in lines else []),
-        ]
-        if stops:
+        if stops := _stopped(lines):
             # #330 review: other paths end otherwise, and the row says so.
             row += (", or " if row else "") + f"the program {_either(stops)}"
         where = _unread_where(ends, home, owner)

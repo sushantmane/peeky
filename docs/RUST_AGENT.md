@@ -709,8 +709,12 @@ the local without reading the changed part, and uses the binding before or after
 - A path a call, a drop or a check takes only when it panics (`Block.unwinds`, its cleanup edge
   beside another) ends nothing. Every call may panic, so such an exit is no sign the program
   goes on with the copy.
-- A drop of the local that may run code reads it (`Body._drop_reads`): its type's own `Drop` may
-  print the changed field. A `_quiet_drop` type's, and a drop of a field surely apart, don't.
+- A drop of the local that may run the crate's code reads it (`Body._drop_reads`): a `Drop` impl
+  of the crate's on its type, or on a type it holds by value in a field, a tuple or an array
+  (`_runs_drop`, by `layouts`). `OwnedLocals._droppers` finds them by the `self` of each impl's
+  `drop` in the dump. A `_quiet_drop` type's drop, the standard library's drops, and a drop of a
+  field surely apart don't read it. Where that isn't known, a drop reads it.
+- `_unread_access` judges a drop of the local the same way.
 
 - Only a read that surely covers part of that part counts: `_root_access`, with the selector's MIR
   projection. `fields.member_indexes` maps fields, because rustc's DWARF lists them in declaration

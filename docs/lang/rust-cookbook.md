@@ -1590,8 +1590,10 @@ These bindings copy a value:
 - any copy, where the program then calls `panic!` or `process::exit` before it reads the local
   again. That ends the local too. A panic inside a call, which any call may make, doesn't count.
 
-A drop that runs the type's own code reads the value. So where `impl Drop for D` prints `self.0`,
-a change to `d.0` after `let z = d.0;` is seen, and allowed.
+A drop that runs a `Drop` impl of your crate's, on the local's type or a type it holds, reads the
+value. So where `impl Drop for D` prints `self.0`, a change to `d.0` after `let z = d.0;` is seen,
+and allowed. The standard library's drops read no number: after `let z = s.n;`, the end of
+`s: S { name: String, n: u32 }` doesn't read `s.n`, so the change is refused.
 
 If the program reads the local again, before or after it uses the copy, it sees the change. The
 copy keeps the old value as the program's own: `let a = s.x;`.

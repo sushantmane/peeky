@@ -166,6 +166,18 @@ fn taken(d: D) -> u32 {
     z + k
 }
 
+struct S {
+    name: String,
+    n: u32,
+}
+
+fn named(n: u32) -> u32 {
+    let s = S { name: n.to_string(), n: n + 1 };
+    let z = s.n; // NAMED_COPY
+    let k = other(); // NAMED
+    z + k
+}
+
 async fn exited(n: u32) {
     let mut x = n + 1;
     black_box(&mut x);
@@ -211,7 +223,12 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let n: u32 = args[2].parse().unwrap();
     match args[1].as_str() {
-        "drop" => println!("SCOPED {} TAKEN {}", scoped(n), taken(D(n + 5, n))),
+        "drop" => println!(
+            "SCOPED {} TAKEN {} NAMED {}",
+            scoped(n),
+            taken(D(n + 5, n)),
+            named(n)
+        ),
         "async" => {
             let mut fut = pin!(exited(n));
             let _ = fut.as_mut().poll(&mut Context::from_waker(Waker::noop()));
@@ -396,10 +413,18 @@ def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
     # with "Peeky proves no read of the changed part first", though the drop reads it.
     frames, run = crate.parent / "frames", ("--", "drop", "1")
     lines = changed(capsys, frames, "DROP_SCOPED", "--set", "d.__0=100", run=run)
-    assert lines == ["DROP 100", "DROP 6", "SCOPED 3 TAKEN 7"], lines
+    assert lines == ["DROP 100", "DROP 6", "SCOPED 3 TAKEN 7 NAMED 3"], lines
     # A by-value argument too: it is dropped where the function returns.
     lines = changed(capsys, frames, "DROP_TAKEN", "--set", "d.__0=100", run=run)
-    assert lines == ["DROP 2", "DROP 100", "SCOPED 3 TAKEN 7"], lines
+    assert lines == ["DROP 2", "DROP 100", "SCOPED 3 TAKEN 7 NAMED 3"], lines
+    # Only the standard library's drops run for `S { name: String, n: u32 }`, and they read
+    # no number: after `let z = s.n;`, a change to `s.n` is still refused.
+    message = refused(capsys, frames, "NAMED", "--set", "s.n=100", run=run)
+    assert (
+        f"the program has already copied `s` into `z` (at line {line_of('NAMED_COPY', FRAMES)})"
+    ) in message, message
+    lines = changed(capsys, frames, "NAMED_COPY", "--set", "s.n=100", run=run)
+    assert lines[-1] == "SCOPED 3 TAKEN 7 NAMED 101", lines
 
 
 @pytest.mark.timeout(400)

@@ -490,6 +490,22 @@ def _std_tree(key, arguments):
     return ("std", key, tuple(arguments))
 
 
+def _held_types(trees):
+    """The names of the crate's types the canonical type ``trees`` hold by value: as
+    themselves, or in a tuple or an array (#330 review: whose `Drop` a drop of what holds
+    them runs); not through a reference, a pointer or a standard container."""
+    found, pending = [], list(trees)
+    while pending:
+        tree = pending.pop()
+        if tree[0] == "type":
+            found.append(tree[1])
+        elif tree[0] == "tuple":
+            pending.extend(tree[1])
+        elif tree[0] == "array":
+            pending.append(tree[1])
+    return found
+
+
 def _key(tree):
     """A canonical type tree's name (`std:vec::Vec<u32>`, `a::Id`, `[u32;0]`), or None where
     it has a part that can't be told apart (a closure, a trait object, a type not known)."""
@@ -1556,6 +1572,9 @@ class Body:
     # crate's known (``_layouts``).
     layouts: TypeLayouts | None = None
     _own_layouts: TypeLayouts | None = None
+    # The crate's types with a `Drop` impl of their own, by their last path segment (#330
+    # review: ``OwnedLocals._droppers``), set when matched; None until then (any may).
+    droppers: frozenset | None = None
     _share_edges: dict | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
@@ -2275,9 +2294,12 @@ class Body:
 
     def _drop_reads(self, text, local, projection=()):
         """Whether ``text`` drops ``local``, or a place of it not surely apart from the
-        part ``projection``, with a drop that may run code: the type's own `Drop`, which
-        may read it (#330 review: `impl Drop for D` printing `self.0`). Not where the
-        type's drop provably runs none (``_quiet_drop``: a number, a String)."""
+        part ``projection``, with a drop that may run the program's own code, which may
+        read it (#330 review: `impl Drop for D` printing `self.0`): where a type it holds
+        by value has a `Drop` impl of the crate's (``_runs_drop``). Not where its drop
+        provably runs none (``_quiet_drop``: a number, a String), nor where only the
+        standard library's drops run (a struct of a `String` and a `u32`), which read no
+        number of it."""
         dropped = _DROP_PLACE.match(_STRING.sub('""', text))
         head = re.match(rf"\(*_{local}\b", dropped[1]) if dropped else None
         if head is None:
@@ -2285,7 +2307,38 @@ class Body:
         place = _place_steps(dropped[1], head.end() - len(f"_{local}"))
         if place is not None and _apart(place[0], projection):
             return False
-        return not _quiet_drop(self.types.get(local), self.generics)
+        kind = self.types.get(local)
+        return not _quiet_drop(kind, self.generics) and self._runs_drop(kind)
+
+    def _runs_drop(self, kind):
+        """Whether dropping a value of the MIR type ``kind`` may run a `Drop` impl of the
+        crate's on what it holds by value: a type of the crate's with one (``droppers``),
+        or one that holds such a type in a field, a tuple or an array, as the build's debug
+        information tells (``layouts``). True where that is not known: no ``droppers``
+        yet, a type parameter, a trait object, a closure, or a type the debug information
+        doesn't describe while the crate has some `Drop` impl."""
+        if self.droppers is None or kind is None or self.generics is None:
+            return True
+        if not self.droppers:
+            return False
+        if mentions(kind, self.generics) or re.search(r"[{}]|\b(?:dyn|impl)\b", kind):
+            return True
+        layouts = self.layouts
+        pending, seen = list(_TYPE_WORDS.findall(_LIFETIME.sub("", kind))), set()
+        while pending:
+            word = pending.pop()
+            if word in seen or word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS):
+                continue
+            seen.add(word)
+            if word.rsplit("::", 1)[-1] in self.droppers:
+                return True
+            entry = layouts.entry(word) if layouts is not None else None
+            if entry is None:
+                return True
+            if _UNKNOWN in entry.parts:
+                return True
+            pending.extend(_held_types(entry.parts))
+        return False
 
     def unread_ends(self, local, start, projection=()):
         """Where the part ``projection`` of ``local`` (``_root_access``'s) ends, unread,
@@ -2379,11 +2432,13 @@ class Body:
         if _NOT_A_USE.match(plain):
             return None
         if dropped := _DROP_PLACE.match(plain):
-            # A drop of the local or of a place of its own, whose type's drop runs no code.
+            # A drop of the local or of a place of its own, as ``copy_undoes`` judges it
+            # (#330 review); a drop through it, or of what it is given to, may read it.
             head = re.match(rf"\(*_{local}\b", dropped[1])
             place = _place_steps(dropped[1], head.end() - len(f"_{local}")) if head else None
-            whole = place is not None and place[2] == len(dropped[1])
-            return None if whole and _quiet_drop(self.types.get(local), self.generics) else "read"
+            if place is None or place[2] != len(dropped[1]):
+                return "read"
+            return "read" if self._drop_reads(plain, local, projection) else None
         steps, value = None, plain
         if head := re.match(rf"\(*_{local}\b", plain):
             place = _place_steps(plain, head.end() - len(f"_{local}"))
@@ -6676,6 +6731,7 @@ class OwnedLocals:
             found.std_paths = self._std_crates()
             found.std_iterator = self._std_iterator()
             found.layouts = self._layouts()
+            found.droppers = self._droppers()
         self._matched[hashed] = found
         return found
 
@@ -8041,6 +8097,23 @@ class OwnedLocals:
                 else frozenset()
             )
         return self._bare_known
+
+    def _droppers(self):
+        """The last path segment of each type the crate gives a `Drop` impl (#330 review):
+        the type of `self` (`_1: &mut D`) of a `drop` method of an impl in the dump
+        (`<impl at src/main.rs:5:1: 5:17>::drop`). An inherent `drop(&mut self)` counts
+        too, as if it were one."""
+        if "_droppers_known" not in self.__dict__:
+            found = set()
+            for body in self.bodies:
+                segments = _segments(body.path)
+                if len(segments) < 2 or segments[-1] != "drop" or not segments[-2].startswith("<"):
+                    continue
+                kind = re.fullmatch(r"&mut (.+)", body.types.get(1, ""))
+                if kind:
+                    found.add(re.split(r"[<\[(]", kind[1], maxsplit=1)[0].rsplit("::", 1)[-1])
+            self._droppers_known = frozenset(found)
+        return self._droppers_known
 
     def _layouts(self):
         """What the crate's own types and closures hold (#321, ``TypeLayouts``): its types
