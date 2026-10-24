@@ -1061,7 +1061,7 @@ Branch on the exit status:
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
 | 2 | An error, or a refusal. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
-| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. So does a `@before` restore whose change stayed in place, because its hit never came (`unrestored`). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
+| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. So does a `@before` restore whose changes stayed in place, because its hits never came (`unrestored_all`). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
 
 - Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
   whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
@@ -1336,13 +1336,26 @@ at most 1000 such stops. After that, a later restore is refused. Those stops are
 `watch_pauses_ms` in JSON, and `watching for new calls: 3 stops, max 5.1 ms` in the text. The
 `max pause` and `max_pause_ms` leave them out.
 
-An `@all` restore is owed where the latest change to its name was made at a hit that the
-restore's line hasn't reached yet. That change may be another restore, which a later restore
-undoes. A change made after the restore's line passed that hit, such as a later `x=2` in the same
-pass, owes nothing. So with `--until hits`, the probe runs on past its last hit until each owed
-restore is made. Where its hit never comes before the end, that change stays in place. The probe
-says so in a warning, adds `unrestored` (the change's `LINE@HIT`) to the restore's entry in
-`unapplied`, and exits 4. An attached program goes on running with the change.
+A restore owes the latest change to its name at each hit that its line hasn't reached yet. An
+`@all` restore owes one at every such hit; a restore at one hit owes only the one at its hit. That
+change may be another restore, which a later restore undoes. A change made after the restore's
+line passed that hit, such as a later `x=2` in the same pass, owes nothing. Nor does a change
+that another change at the same hit wrote over before the restore came. So with `--until hits`,
+the probe runs on past its last hit until each owed `@all` restore is made.
+
+Where a restore's hits never come before the end, the changes it owes stay in place. The usual
+case is a guard flipped at every hit and restored on the line it guards, which then never runs.
+The probe names every such change, not only the latest:
+
+```
+status: completed (1 requested change not made; 6 changes left in place, not undone (line 49, hits 1 to 6))
+warning: --set-at rain.py:50@all in_spell=@before did not undo 6 changes (line 49, hits 1 to 6): line 50 stopped 0 time(s) before the probe ended, so its hits 1 to 6 never came. The program ran on from each without its restore. To undo a change, restore it on a line that runs after it in every pass.
+```
+
+In JSON, the restore's entry in `unapplied` has `unrestored_all`: each such change's `LINE@HIT`,
+in the order made. It also has `unrestored`, the latest one's. The probe exits 4. An attached
+program goes on running without those restores. Restore on a line that runs whichever way the
+guard goes, such as the first line after the guarded block.
 
 Each restore is reported as a change, with `restored`. The line that counts an `@all`'s later
 writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`.
@@ -1358,7 +1371,9 @@ keeps a restore as any change, with more:
 
 - an `interventions` row, whose `restores_at` (schema 19) is the change it undid;
 - `["trend", "@before", "18@all"]` in `runs.sets`, and its outcome in `runs.set_outcomes`. An
-  outcome whose change stayed in place has `unrestored` and `complete: false`;
+  outcome whose changes stayed in place has `unrestored`, `unrestored_all` and `complete: false`.
+  The `(sets)` text says `3 changes were left in place, not undone (line 15, hits 1 to 3)`. A run
+  saved before Peeky named them all has `unrestored` alone;
 - `set_effect` shows it as `trend: 0 -> 1 (restored from before 15@2)`;
 - the `(sets)` rows of `diff` and `compare` name each restore, which `…` would hide:
   `2 requests: trend=0 (…), …; restore: trend=@before (requested at 18@all, …)`.
