@@ -1189,7 +1189,11 @@ class PythonAdapter:
         generator or coroutine (each resumption runs on part-way through it), a lambda,
         comprehension or class body."""
         path = Path(program)
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        try:
+            # Bytes: the source's own encoding declaration decides how it reads.
+            tree = ast.parse(path.read_bytes(), str(path))
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise ValueError(f"Peeky could not read {path.name} ({str(exc)[:200]})") from None
         found = {}
         for line in lines:
             holder, inner = tree, None
