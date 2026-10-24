@@ -233,16 +233,24 @@ def _may_write(kind, generics):
     it holds (#311 review): a `&mut` or raw pointer, `NonNull`, a cell or lock, wherever
     it is in the type (``_WRITABLE_TYPE``: `(&mut Vec<u32>, u32)` too); a type of the
     crate's own, a type parameter, a closure, a trait object or a type not known, which may
-    hold one. Not the standard library's types otherwise, by value or by shared reference
-    (`&Vec<u32>`, `&str`, `std::fmt::Arguments<'_>`)."""
+    hold one; and a standard type with a lifetime that is neither an owning container nor
+    a view that only reads (``_FREE_PATHS``, ``_QUIET_PATHS``), since its `&mut` does not
+    show (round 2: `hash_map::Entry<'_, u32, u32>`, `slice::IterMut<'_, u32>`). Not the
+    standard library's other types, by value or by shared reference (`&Vec<u32>`, `&str`,
+    `std::fmt::Arguments<'_>`)."""
     if kind is None or _WRITABLE_TYPE.search(kind):
         return True
     if generics is None or mentions(kind, generics) or re.search(r"[{}]|\b(?:dyn|impl)\b", kind):
         return True
-    return not all(
-        word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS)
-        for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
-    )
+    borrowing = "'" in kind
+    for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind)):
+        if word in _PRIMITIVE_WORDS:
+            continue
+        if not word.startswith(_STD_PATHS):
+            return True
+        if borrowing and word not in _FREE_PATHS and word not in _QUIET_PATHS:
+            return True
+    return False
 
 
 def _quiet_drop(kind, generics):
@@ -1094,8 +1102,10 @@ class Body:
     def _pointers_to(self, local):
         """The locals any borrow of ``local`` (or of a part, or of such a pointer's
         target) is assigned to anywhere in the body (`_6 = &_2`, `_4 = &mut (*_6)`), and
-        the pointers made from one by a cast, a copy or a call (#311: `p` of `let p =
-        slot.as_mut_ptr();`, through which `*p = x;` stored a copy in `slot`)."""
+        what is made from one by a cast, a copy or a call, of a type that may hold a
+        pointer (#311: `p` of `let p = slot.as_mut_ptr();`, through which `*p = x;` stored
+        a copy in `slot`; review: the `Option<&mut u32>` of `v.last_mut()` and `r` of its
+        `unwrap()`, and an iterator `v.iter_mut()`)."""
         if self._pointer_cache is None:
             self._pointer_cache = {}
         if local in self._pointer_cache:
@@ -1112,8 +1122,8 @@ class Body:
                     if whole[2].startswith("&"):
                         made = local in mentioned or mentioned & found
                     else:
-                        kind = self.types.get(int(whole[1]), "")
-                        made = mentioned & found and _POINTER_TYPE.match(kind)
+                        kind = self.types.get(int(whole[1]))
+                        made = mentioned & found and not _pointer_free(kind, self.generics)
                     if made:
                         found.add(int(whole[1]))
                         changed = True
@@ -1486,7 +1496,9 @@ class Body:
             found.add(local)
             for value in assigned.get(local, ()):
                 value = _STRING.sub('""', value)
-                found.update(int(n) for n in _DIRECT_BORROW.findall(value))
+                # What it borrows, and what that was made from in turn (`&mut _10` of an
+                # iterator `_10 = iter_mut(…)` made from `&mut v`).
+                pending.extend(int(n) for n in _DIRECT_BORROW.findall(value))
                 for n in map(int, _MENTIONED.findall(value)):
                     kind = self.types.get(n)
                     if kind is None or not _POINTERLESS.fullmatch(kind):
@@ -1544,7 +1556,7 @@ class Body:
         return None if state is None else state[2]
 
     def _copy_state(self, local, position, formatting, projection=(), compares=False, reads="any"):
-        """(holds, points, direct, own) at ``position``, or None past the budget."""
+        """(holds, points, direct, own, kept) at ``position``, or None past the budget."""
         if self._copy_flows is None:
             self._copy_flows = {}
         key = (local, formatting, projection, compares, reads)
@@ -1564,12 +1576,15 @@ class Body:
     def _copy_step(
         self, local, formatting, number, index, state, projection=(), compares=False, reads="any"
     ):
-        """``copies_at``'s transfer over one statement: (holds, points, direct, own)
+        """``copies_at``'s transfer over one statement: (holds, points, direct, own, kept)
         after it: ``copies_of``'s holds and points, for temporaries; and the locals,
-        named or not, holding a direct copy (``direct_copies_at``), and the pointers made
-        from a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct.
-        Then what the statement writes through a pointer (``_copy_store``), judged by what
-        held a copy before it: a call's arguments are read before it returns."""
+        named or not, holding a direct copy (``direct_copies_at``), the pointers made from
+        a borrow of ``local`` (`&x`, `&mut (*_6)` of such), whose reads are direct, and
+        the locals that hold a direct copy or point at one (#311 review: `&a` of `let a =
+        [x];`, casts and aggregates of it, and a pointer a call returns from one, as
+        `a.iter()`). Then what the statement writes through a
+        pointer (``_copy_store``), judged by what held a copy before it: a call's
+        arguments are read before it returns."""
         block = self.blocks[number]
         text = _STRING.sub('""', block.statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
@@ -1577,7 +1592,7 @@ class Body:
             whole and int(whole[1]) == local
         ):
             # Its value starts again: what was copied before holds an earlier one.
-            return (frozenset(),) * 4
+            return (frozenset(),) * 5
         parts, _, _, at, named, stores = self._copy_parts()
         found = at.get((number, index))
         after = state
@@ -1605,7 +1620,7 @@ class Body:
         self, local, formatting, text, whole, part, named, state, projection, compares, reads
     ):
         """``_copy_step`` over an assignment's own target, ``part``."""
-        holds, points, direct, own = state
+        holds, points, direct, own, kept = state
         target, mentioned, through, borrow, called, _, _, _ = part
         if target == local:
             return state
@@ -1614,20 +1629,29 @@ class Body:
         if borrow:
             mine = touched or bool(mentioned & own)
             taken = False
+            # A pointer to what may hold a copy (`&a` of `let a = [x];`) points at one.
+            keeps = bool(mentioned & kept)
         else:
             # By value: a copy, a move, what is computed from one (a call given one too),
             # an aggregate or closure holding one; or a read through its own pointer.
             mine = not called and bool(mentioned & own) and not through
             taken = touched or bool(mentioned & direct) or (through and bool(mentioned & own))
+            # And a cast, copy or aggregate of a pointer to one, or a pointer a call given
+            # one returns (`a.iter()`); not a value a call computes, as #192 has it for
+            # `x.len()` (`x.to_string()`, `w.push(v)`), nor a pointer into the local itself
+            # (`&s[2..]` holds no copy of `s`).
+            aims = not called or not _pointer_free(self.types.get(target), self.generics)
+            keeps = taken or (aims and bool(mentioned & kept))
         if whole:
             # Reassigned: what it held before is gone (a call's result: on its return
             # edge, which is the only one ``_copy_flow`` gives this state).
             holds, points = holds - {target}, points - {target}
-            direct, own = direct - {target}, own - {target}
+            direct, own, kept = direct - {target}, own - {target}, kept - {target}
         direct = direct | {target} if taken else direct
         own = own | {target} if mine else own
+        kept = kept | {target} if keeps else kept
         if target in named:
-            return holds, points, direct, own
+            return holds, points, direct, own, kept
         hold, point = _copy_verdict(
             part, local, holds, points, formatting, compares, reads, own, touched
         )
@@ -1636,6 +1660,7 @@ class Body:
             points | {target} if point else points,
             direct,
             own,
+            kept,
         )
 
     def _copy_store(
@@ -1651,8 +1676,10 @@ class Body:
         made from it, the pointer); a binding of the program's own holds a direct copy, as
         `slot` of `*p = x;` and `v` of `v.push(x)` do. A pointer binding (`p`) holds none,
         but what is read through it does, as through a pointer made from a borrow; where
-        nothing else stands for what it points at, it does (an argument `p`)."""
-        holds, points, direct, own = state
+        nothing else stands for what it points at, it does (an argument `p`). A source that
+        holds or points at a copy counts (``kept``, #311 review: `&a` given to
+        `v.extend_from_slice`), as does a pointer into the local itself."""
+        holds, points, direct, own, kept = state
         parts, _, _, _, named, _ = self._copy_parts()
         made, targets, pointers, _, pointees, _ = stored
         first = parts[made[0]]
@@ -1660,22 +1687,26 @@ class Body:
         touched = local in mentioned and _touches(text, local, projection)
         # A call given a pointer into the local may copy what it points at.
         taken = not borrow and (
-            touched or bool(mentioned & direct) or ((through or called) and bool(mentioned & own))
+            touched
+            or bool(mentioned & (direct | kept))
+            or ((through or called) and bool(mentioned & own))
         )
         hold, point = _copy_verdict(
             first, local, holds, points, formatting, compares, reads, own, touched
         )
-        holds, points, direct, own = after
+        holds, points, direct, own, kept = after
         targets = targets - {local}
         if taken:
             direct = direct | (targets - pointers) | (pointees - {local})
             own = own | (pointers - pointees - {local})
+            kept = kept | targets
         temporaries = targets - named
         return (
             holds | temporaries if hold else holds,
             points | temporaries if point else points,
             direct,
             own,
+            kept,
         )
 
     def read_copies_at(self, local, position, projection=(), transfers=False):
@@ -2013,10 +2044,10 @@ class Body:
         return entry
 
     def _copy_flow(self, local, formatting, projection=(), compares=False, reads="any"):
-        """{block: (holds, points, direct, own) on entry} for ``copies_at``: its
+        """{block: (holds, points, direct, own, kept) on entry} for ``copies_at``: its
         transfer, merged by union up from nothing (the least fixpoint); None past the
         budget."""
-        empty = (frozenset(),) * 4
+        empty = (frozenset(),) * 5
         entry = dict.fromkeys(self.blocks, empty)
         # Every block the code can reach once, whatever flows into it: a copy made in a
         # block whose entry holds none must still flow on (#192 review: a `while let`'s

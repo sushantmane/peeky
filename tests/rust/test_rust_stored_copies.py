@@ -161,6 +161,113 @@ fn main() {
 }
 """
 
+# Review round 2: what points at a copy, a pointer made through `Option<&mut u32>`, and a
+# standard type whose `&mut` does not show (`Entry`, `IterMut`).
+SHAPES = """use std::collections::HashMap;
+use std::env;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+fn sliced(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [x]; // ARRAY
+    let mut v: Vec<u32> = Vec::new();
+    v.extend_from_slice(&a);
+    let k = other(); // SLICED
+    let t = v[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn literal(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = Vec::new();
+    v.extend_from_slice(&[x]);
+    let k = other(); // LITERAL
+    let t = v[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn last(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v = vec![0u32];
+    let r = v.last_mut().unwrap();
+    *r = x;
+    let k = other(); // LAST
+    let t = *r + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn iterated(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [x];
+    let mut v: Vec<u32> = Vec::new();
+    v.extend(a.iter());
+    let k = other(); // ITERATED
+    let t = v[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn texted(arg: u32) -> usize {
+    let x = std::convert::identity(arg);
+    let mut s = String::new();
+    s.push_str(&x.to_string());
+    let k = other() as usize; // TEXTED
+    let t = s.len() + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn first(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v = vec![0u32];
+    let r = v.iter_mut().next().unwrap();
+    *r = x;
+    let k = other(); // FIRST
+    let t = *r + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn entered(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut m: HashMap<u32, u32> = HashMap::new();
+    m.entry(1).or_insert(x);
+    let k = other(); // ENTERED
+    let t = m[&1] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn each(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v = vec![0u32];
+    v.iter_mut().for_each(|r| *r = x);
+    let k = other(); // EACH
+    let t = v[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("SLICED {}", sliced(x));
+    println!("LITERAL {}", literal(x));
+    println!("LAST {}", last(x));
+    println!("ITERATED {}", iterated(x));
+    println!("TEXTED {}", texted(x));
+    println!("FIRST {}", first(x));
+    println!("ENTERED {}", entered(x));
+    println!("EACH {}", each(x));
+}
+"""
+
 
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
@@ -297,3 +404,27 @@ def test_writes_a_call_or_an_untraced_pointer_makes_withhold_the_local(crate, ca
     code, result = probe(capsys, root, line_of(CALLS, "// PUSH"), "--set", "x=100", "--", "5")
     assert code == 0, result.get("error")
     assert "PUSHED 101" in result["output"], result["output"]
+
+
+@pytest.mark.timeout(400)
+def test_a_copy_that_reaches_a_binding_by_a_call_or_a_pointer_withholds_the_local(crate, capsys):
+    root = crate("shapes", SHAPES)
+    # Not `s.push_str(&x.to_string())`: what a call given a pointer into `x` returns is
+    # no copy (#192, as `x.len()`), nor what it is stored into.
+    for marker, holder in (
+        ("SLICED", "v"),
+        ("LITERAL", "v"),
+        ("ITERATED", "v"),
+        ("LAST", "v"),
+        ("FIRST", "v"),
+        ("ENTERED", "m"),
+        ("EACH", "v"),
+    ):
+        line = line_of(SHAPES, f"// {marker}")
+        message = refused(*probe(capsys, root, line, "--set", "x=100", "--", "5"))
+        assert f"the program's own `{holder}` (at " in message, (marker, message)
+        assert "may hold a copy of `x` that it goes on with" in message, (marker, message)
+    # Before `let a = [x];`, the change reaches the program: 100 + 1.
+    code, result = probe(capsys, root, line_of(SHAPES, "// ARRAY"), "--set", "x=100", "--", "5")
+    assert code == 0, result.get("error")
+    assert "SLICED 101" in result["output"], result["output"]

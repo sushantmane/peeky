@@ -1502,7 +1502,17 @@ A call may store a copy too, through a `&mut` or raw pointer it is given, of ano
 
 - `v.push(x)`: `v` may hold a copy of `x`;
 - `ptr::write(p, x)` with `p = &raw mut slot`: `slot` may hold one;
-- `mem::replace(&mut slot, x)`, and `copy_nonoverlapping`, in the same way.
+- `mem::replace(&mut slot, x)`, and `copy_nonoverlapping`, in the same way;
+- `v.extend_from_slice(&a)` after `let a = [x];`, or `v.extend(a.iter())`: what it is given
+  points at a copy;
+- `m.entry(k).or_insert(x)` and `v.iter_mut().for_each(|r| *r = x)`: an `Entry` or `IterMut`
+  holds a `&mut` its type doesn't show.
+
+A read through a pointer made from the binding is a use of it. So after
+`let r = v.last_mut().unwrap();` and `*r = x;`, a later `*r` uses `v`'s copy.
+
+A value a call computes from a pointer into the local is not counted as a copy, as for `x.len()`.
+So `s.push_str(&x.to_string())`, `let y = x.clone();` and `ptr::read(&x)` leave `x` settable.
 
 Where no local of the function stands for what the pointer points at, the pointer itself does.
 That is so for an argument `p`, or one `Box::into_raw` returned. After `*p = x;`, the refusal says

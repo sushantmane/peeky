@@ -113,8 +113,11 @@ def test_borrowed_moved_or_other_values_take_no_text(crate, capsys):
     code, result = probe(capsys, crate, "--set", "name=5")
     refusal(code, result, "and a String to a text in double quotes (--set 'name=\"apple\"')")
     # A moved String's buffer belongs to another binding, or is freed: never written.
+    # `keep` took it, and `println!` goes on with `keep` (#311 review round 2: a use
+    # through the `Arguments` made of `&keep` is a use of it), so before the run.
     code, result = probe(capsys, crate, "--set", 'moved="x"')
-    refusal(code, result, "the build's MIR does not prove it initialized here")
+    refusal(code, result, "the program has already copied `moved` into `keep` (at line 6)")
+    assert result.get("refused_before_launch") is True, result
     assert "NAME:" not in (result.get("output") or ""), result
 
 
