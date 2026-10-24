@@ -299,11 +299,11 @@ def test_a_copy_a_call_stores_behind_a_cell_or_a_channel_withholds_the_local(cra
             marker,
             message,
         )
-        assert "which Peeky can't change (its type may keep it behind a cell" in message, (
+        assert "which may be out of Peeky's reach (behind a cell, a lock" in message, (
             marker,
             message,
         )
-        # There is no copy Peeky could change instead.
+        # The advice offers no copy to change instead.
         assert "change the copy" not in message + error["hint"], (marker, error)
     # The row says so too, without a `--set`.
     code, result = probe(capsys, crate, "SENT", "--capture", "x")

@@ -494,8 +494,8 @@ used again. Such a temporary is:
   cell moved out by value, which holds what it held then.
 - A call's argument made only of constants carries no value (`f(0)` is `Fn::call(&f, (0,))`).
 - A binding whose type may keep the copy behind a cell, a lock, a channel or a pointer
-  (`OwnedLocals.hidden_holders`) is out of a change's reach. The refusal says "which Peeky can't
-  change", and the advice offers no copy to change.
+  (`OwnedLocals.hidden_holders`) may be out of a change's reach. The refusal says so ("which may
+  be out of Peeky's reach"), and the advice offers no copy to change.
 - `_pointers_to` follows what is made from a borrow through any value that may hold a pointer:
   `Option<&mut u32>` of `v.last_mut()`, then `r` of its `unwrap()`. So `copy_undoes` sees a
   later `*r` as a use of `v`.

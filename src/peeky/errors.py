@@ -343,7 +343,7 @@ _MUTATION_HINTS = (
     ),
     (
         # #321: a binding that may keep the copy behind a cell or a channel, out of reach.
-        r"may hold a copy of (?:it|`[^`]+`) that it goes on with, which Peeky can't change",
+        r"may hold a copy of (?:it|`[^`]+`) that it goes on with, which may be out of Peeky's reach",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
     ),
     (

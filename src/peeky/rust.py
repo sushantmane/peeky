@@ -1023,7 +1023,7 @@ def _either(clauses):
 # (#320 review: ``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
 # And of bindings that may keep the copy where no change Peeky makes reaches (#321).
-_HIDDEN_COPY = ", which Peeky can't change ("
+_HIDDEN_COPY = ", which may be out of Peeky's reach ("
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1137,8 +1137,8 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
         # #321: a cell, a channel's state (`rx`), a struct's cell field, where a callee
         # given a `&` may have stored the copy: no field change Peeky makes reaches it.
         own += (
-            f"{_HIDDEN_COPY}{'its type' if len(bound) == 1 else 'their types'} may keep it "
-            "behind a cell, a lock, a channel or a pointer)"
+            f"{_HIDDEN_COPY}behind a cell, a lock, a channel or a pointer "
+            f"{'its type holds' if len(bound) == 1 else 'their types hold'})"
         )
     if not clauses:
         return "kept", own, at, None

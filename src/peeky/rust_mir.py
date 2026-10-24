@@ -364,6 +364,8 @@ _FLAGS = frozenset({"interior", "owned", "shares"})
 # block's, a trait object, an opaque `impl` type.
 _CLOSURE_TYPE = re.compile(r"\{closure@[^{}]*\}")
 _OPAQUE_TYPE = re.compile(r"\{[^{}]*\}|\b(?:dyn|impl)\b")
+# A function item's type (`fn(&u32) -> u32 {double}`): its signature says all it holds.
+_FN_ITEM = re.compile(r"(\bfn\([^{}]*?\)(?: -> [^{}]+?)?) \{[^{}]*\}")
 _NOT_TYPE_WORDS = frozenset({"fn", "for", "unsafe", "extern", "as"})
 # A closure built (`_0 = {closure@src/main.rs:5:5: 5:13} { c: move _1 };`): its type, and
 # what it captures.
@@ -475,7 +477,7 @@ def _type_flags(kind, trusted, layouts):
     flags = set()
     for found in _CLOSURE_TYPE.finditer(kind):
         flags |= layouts.closure_flags(found[0], trusted)
-    kind = _LIFETIME.sub("", _CLOSURE_TYPE.sub("()", kind))
+    kind = _LIFETIME.sub("", _FN_ITEM.sub(r"\1", _CLOSURE_TYPE.sub("()", kind)))
     if _OPAQUE_TYPE.search(kind) or _RAW_POINTER_SYNTAX.search(kind):
         return _FLAGS | {"handle"}
     for word in _TYPE_WORDS.finditer(kind):

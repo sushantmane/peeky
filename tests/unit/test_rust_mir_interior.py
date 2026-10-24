@@ -888,12 +888,12 @@ def why(text, name, line, statement, interior=INTERIOR):
 
 
 def kept(name, lines):
-    """The refusal of a binding of the program's own that may keep a copy where Peeky can't
-    change it, its row, and its advice."""
+    """The refusal of a binding of the program's own that may keep a copy out of Peeky's
+    reach, its row, and its advice."""
     return (
         f"the program's own `{name}` (at {lines}) may hold a copy of it that it goes on with, "
-        "which Peeky can't change (its type may keep it behind a cell, a lock, a channel or a "
-        "pointer), so a change to `x` may never be seen: Peeky proves no read of the changed "
+        "which may be out of Peeky's reach (behind a cell, a lock, a channel or a pointer its "
+        "type holds), so a change to `x` may never be seen: Peeky proves no read of the changed "
         "part first (a reference lent to a call, or `{:?}`, is not one)",
         f"the program may hold a copy ({lines})",
         "Change it before the program copies it (a stop on an earlier line)",
@@ -975,6 +975,8 @@ def test_each_type_counts_by_what_it_holds():
         # A standard type on no list may: a refusal says so only as a possibility.
         ("&std::fs::File", True),
         ("&std::boxed::Box<dyn std::fmt::Debug>", True),
+        # A function item holds nothing.
+        ("&std::iter::Map<std::slice::Iter<'_, u32>, fn(&u32) -> u32 {double}>", False),
         # The short names a function's signature gives (`fn f(_1: &Cell<u32>)`).
         ("&Cell<u32>", True),
         ("&Atomic<bool>", True),
@@ -1154,14 +1156,14 @@ def test_the_debug_information_tells_what_each_crate_type_holds():
     assert _may_write("&Thing", (), True, layouts=layouts)
 
 
-def test_a_copy_kept_where_peeky_cant_change_it_advises_no_copy_to_change():
+def test_a_copy_that_may_be_out_of_reach_advises_a_change_before_the_call():
     message = (
         "`x` cannot be changed at src/main.rs:56, at any stop of this build: in a::sent, at "
         "every place line 56 can stop at, the program's own `rx` (at lines 54 and 55) may hold "
-        "a copy of `x` that it goes on with, which Peeky can't change (its type may keep it "
-        "behind a cell, a lock, a channel or a pointer), so a change there may never be seen"
+        "a copy of `x` that it goes on with, which may be out of Peeky's reach (behind a cell, "
+        "a lock, a channel or a pointer its type holds), so a change there may never be seen"
     )
     assert mutation_hint(message) == (
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` there)."
     )
-    assert "change the copy" in mutation_hint(message.split(", which Peeky")[0])
+    assert "change the copy" in mutation_hint(message.split(", which may be out")[0])

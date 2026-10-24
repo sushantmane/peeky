@@ -1618,11 +1618,11 @@ Peeky decides whether it can from everything the type holds, however deep:
 - What shares the value the call reaches counts too: `rx` beside `tx` of `mpsc::channel()`, or
   `b` of `let b = Rc::clone(&a);` for `put(&a, x)`.
 
-Peeky can't change such a copy, since it sits in a standard type's fields. So the refusal says so,
-and advises only a change before the call:
+Such a copy sits in a standard type's fields, which Peeky doesn't change. So the refusal says it
+may be out of Peeky's reach, and advises only a change before the call:
 
 ```
-error [MUTATION_REJECTED]: `x` cannot be changed at src/main.rs:56, at any stop of this build: in hidden::sent, at every place line 56 can stop at, the program's own `rx` (at lines 54 and 55) may hold a copy of `x` that it goes on with, which Peeky can't change (its type may keep it behind a cell, a lock, a channel or a pointer), so a change there may never be seen: …
+error [MUTATION_REJECTED]: `x` cannot be changed at src/main.rs:56, at any stop of this build: in hidden::sent, at every place line 56 can stop at, the program's own `rx` (at lines 54 and 55) may hold a copy of `x` that it goes on with, which may be out of Peeky's reach (behind a cell, a lock, a channel or a pointer its type holds), so a change there may never be seen: …
 hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there).
 ```
 
