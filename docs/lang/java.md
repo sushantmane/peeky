@@ -24,8 +24,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([Java 7.3](java-cookbook.md#73-java-launched)).
 - The commands that `describe` prints repeat the `--config`
   ([Java 7.3](java-cookbook.md#73-java-launched)).
-- `verify` edits the config's one source without `--at`. With several, pass `--at` with the file to
-  edit, as `describe`'s `verify` command does ([6.1](../COOKBOOK.md#61-check-one-edit-on-a-fresh-build)).
+- `verify` edits the config's one source without `--at`. With several, pass `--at` with the source
+  that holds the `--old` text ([6.1](../COOKBOOK.md#61-check-one-edit-on-a-fresh-build)).
 - Build the adapter bundle with `scripts/setup_java_adapter.py`. A bundle built before Peeky's
   java-debug patches is refused before anything runs: `UNSUPPORTED`, exit status 2, no table.
   Rebuild it, and point the config's `bundle` at the new one ([ERRORS](../ERRORS.md)).

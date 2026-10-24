@@ -95,6 +95,36 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
     every = _all("free", [("0", "0")] * 5)
     text = _table(_result(interventions=every, language="java"))
     assert "set free: 2 more writes by --set-at line 26@all, at hits 4 to 5, each with no" in text
+    # Review of PR #314: java-debug shows a char bare, so five `+ -> +` writes were "2 more
+    # changes". The change's type decides it, for a root local (`sign`) and a field alike.
+    for name in ("sign", "chars.mark"):
+        chars = [{**change, "type": "char"} for change in _all(name, [("+", "+")] * 5)]
+        text = _table(_result(interventions=chars, language="java"))
+        assert f"set {name}: + -> +, no change  (--set-at line 26@all, hit 3, in main)" in text
+        assert (
+            f"set {name}: 2 more writes by --set-at line 26@all, at hits 4 to 5, each with no "
+            "change (`--json` lists each)"
+        ) in text, text
+        # Without a type (an older worker), a bare text proves nothing.
+        text = _table(_result(interventions=_all(name, [("+", "+")] * 5), language="java"))
+        assert f"set {name}: 2 more changes by --set-at line 26@all, at hits 4 to 5 (" in text
+    for before, language, kind, same in (
+        ("+", "java", "char", True),
+        ("+", "java", None, False),
+        ("0", "java", "int", True),
+        ("true", "java", "boolean", True),
+        ("1.0", "java", "double", False),
+        ("0", "java", "float", False),
+        ("abc", "java", "java.lang.String", False),
+        ("1", "c", "double", False),
+        ("1", "cpp", "const float", False),
+        ("1", "rust", "f64", False),
+        ("1", "c", "int", True),
+        ("'a'", "rust", "char", True),
+        ("1", "python", "int", False),
+    ):
+        change = {"name": "x", "before": before, "after": before, "type": kind}
+        assert probe_module.unchanged(change, language) is same, (before, language, kind)
     # Only an exact value's text shows it unchanged: never a float's (it may be rounded),
     # a text, or a Python object other than True, False and None.
     for before, language, same in (
@@ -115,6 +145,16 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
     # One change, not an @all's, is marked too.
     single = [{"name": "x", "before": "5", "after": "5", "hit": 1, "capture_hit": 1}]
     assert "set x: 5 -> 5, no change" in _table(_result(interventions=single))
+
+
+def test_a_change_carries_its_values_type():
+    # Review of PR #314: what tells a Java char's `+ -> +` from a text's.
+    from peeky.worker import _set_type
+
+    assert _set_type({"name": "sign", "type": "char", "value": "+"}) == {"type": "char"}
+    assert _set_type({"name": "x", "value": "1"}) == {}
+    assert _set_type({"type": ""}) == {} and _set_type(None) == {}
+    assert _set_type({"type": "T" * 400}) == {"type": "T" * 300}
 
 
 def test_a_return_row_names_the_line_it_returned_to():
@@ -406,11 +446,11 @@ def test_a_candidate_says_which_of_its_lines_the_at_line_is_before_its_breakpoin
 
 
 class _Stops:
-    """Stops once at line 9 for each of ``count`` --set-at changes, never at the --at line,
-    then ends with ``exit_code``."""
+    """Stops once at each of ``lines`` (a --set-at line's stops), never at the --at line,
+    then ends with ``exit_code``. `trend` holds "1" until a change."""
 
-    def __init__(self, count, exit_code=0):
-        self.left, self.exit_code, self.value = count, exit_code, "1"
+    def __init__(self, lines, exit_code=0):
+        self.lines, self.exit_code, self.value, self.line = list(lines), exit_code, "1", None
 
     def dispatch(self, operation, args):
         if operation == "launch":
@@ -425,18 +465,19 @@ class _Stops:
                 "source_sha256": "x",
             }
         if operation == "wait":
-            if not self.left:
+            if not self.lines:
                 return {"state": "terminated"}
-            self.left -= 1
+            self.line = self.lines.pop(0)
             return {
                 "state": "stopped",
-                "stop_id": f"t{self.left}",
+                "stop_id": f"t{len(self.lines)}",
                 "event": {"body": {"reason": "breakpoint"}},
-                "location": "tides.c:9",
+                "location": f"tides.c:{self.line}",
             }
         if operation == "inspect":
+            frame = {"name": "find_waters", "source": {"path": "/w/tides.c"}, "line": self.line}
             return {
-                "frames": [{"name": "find_waters", "source": {"path": "/w/tides.c"}, "line": 9}],
+                "frames": [frame],
                 "scopes": [
                     {
                         "name": "Locals",
@@ -449,7 +490,7 @@ class _Stops:
             }
         if operation == "set_variable":
             before, self.value = self.value, args["value"]
-            return {"name": args["name"], "before": before, "after": args["value"]}
+            return {"name": args["name"], "before": before, "after": args["value"], "type": "int"}
         if operation == "report":
             return {"output": "", "output_truncated": False, "exit_code": self.exit_code}
         return {}
@@ -458,46 +499,98 @@ class _Stops:
         pass
 
 
+RAN = "The run made 2 changes by --set-at (at line 9): compare with a run without them"
+
+
 @pytest.mark.parametrize(
     "exit_code, message, hint",
     [
         (
             0,
-            "The program finished without stopping at tides.c:8, after 2 changes by --set-at: "
-            "they may have kept the line from running",
-            "Probe the line without the changes to see whether it runs",
+            f"The program finished without stopping at tides.c:8. {RAN}",
+            "Probe the line without the changes to compare; if it never stops there either, "
+            "pick a line the program executes (`peeky describe`).",
         ),
         (
             3,
-            "The program failed (exit code 3) without stopping at tides.c:8, after 2 changes "
-            "by --set-at, which may have made it fail; its output says why",
-            "Read its output: a change may have made it fail.",
+            f"The program failed (exit code 3) without stopping at tides.c:8; its output says "
+            f"why. {RAN}",
+            "Read its output, and check its arguments and input; probe without the changes to "
+            "compare.",
         ),
         (
             None,
-            "The program ended without stopping at tides.c:8 (exit code unknown), after 2 "
-            "changes by --set-at: they may have kept the line from running, or made it fail",
-            "Read its output for an error",
+            f"The program ended without stopping at tides.c:8 (exit code unknown). {RAN}",
+            "If the output shows an error, the program failed before the line; else probe "
+            "without the changes to compare, or pick a line it executes.",
         ),
     ],
 )
-def test_no_stop_after_changes_says_they_may_have_kept_the_line_from_running(
+def test_no_stop_after_changes_counts_them_and_claims_no_cause(
     monkeypatch, exit_code, message, hint
 ):
     # Prep 14: tides, `--at 33` with six change-and-restore --set-at: every change was made,
-    # and NO_STOP said to pick a line the program executes.
-    worker = _Stops(2, exit_code)
+    # and NO_STOP said to pick a line the program executes. Review of PR #314: nothing proves
+    # a change came before the line's chance to run, so the message claims no cause.
+    worker = _Stops([9, 9], exit_code)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     request = Probe("tides.c", 8, ("trend",), set_at=((9, 1, "trend", "0"), (9, 2, "trend", "1")))
     result = probe_module.run_probe("/w", request)
     assert result["status"] == "no-stop" and len(result["interventions"]) == 2, result
     assert result["error"]["code"] == "NO_STOP"
     assert result["error"]["message"] == message
-    assert result["error"]["hint"].startswith(hint) and len(result["error"]["hint"]) <= 150
+    assert result["error"]["hint"] == hint and len(hint) <= 150
     # Without changes, the line is blamed as before.
-    worker = _Stops(0, 0)
+    worker = _Stops([], 0)
     result = probe_module.run_probe("/w", Probe("tides.c", 8, ("trend",)))
     assert result["error"]["hint"] == "Pick a line the program executes; see `peeky describe`."
+
+
+def _no_stop(monkeypatch, lines, set_at):
+    worker = _Stops(lines)
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("tides.c", 8, ("trend",), set_at=set_at))
+    assert result["status"] == "no-stop", result
+    return result
+
+
+def test_no_stop_after_writes_of_the_value_already_there_blames_the_line(monkeypatch):
+    # Review of PR #314: `trend: 1 -> 1` counted as a change ("after 1 change by --set-at:
+    # they may have kept the line from running"). A write that changed nothing is not one.
+    result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "1")))
+    assert [(c["before"], c["after"]) for c in result["interventions"]] == [("1", "1")] * 2
+    assert result["error"]["message"] == (
+        "The program finished without stopping at tides.c:8; check `peeky describe` for "
+        "executable lines"
+    )
+    assert result["error"]["hint"] == "Pick a line the program executes; see `peeky describe`."
+    # One no-op and one change: the change alone is counted.
+    result = _no_stop(monkeypatch, [9, 9], ((9, 1, "trend", "1"), (9, 2, "trend", "5")))
+    assert (
+        "The run made 1 change by --set-at (at line 9): compare with"
+        in (result["error"]["message"])
+    )
+
+
+def test_no_stop_after_a_change_past_the_line_claims_no_cause(monkeypatch):
+    # Review of PR #314: a --set-at on a line after the --at line got the same causal
+    # wording. Where they were is said; that they kept the line from running is not.
+    result = _no_stop(monkeypatch, [20], ((20, 1, "trend", "0"),))
+    message = result["error"]["message"]
+    assert message == (
+        "The program finished without stopping at tides.c:8. The run made 1 change by "
+        "--set-at (at line 20): compare with a run without them"
+    )
+    result = _no_stop(
+        monkeypatch,
+        [9, 20, 31],
+        ((9, 1, "trend", "0"), (20, 1, "trend", "2"), (31, 1, "trend", "3")),
+    )
+    assert (
+        "The run made 3 changes by --set-at (at lines 9, 20 and 31)" in result["error"]["message"]
+    )
+    for text in (message, result["error"]["message"], result["error"]["hint"]):
+        assert "kept" not in text and "may have" not in text, text
 
 
 def test_verify_takes_a_java_targets_one_source_without_at():
@@ -507,9 +600,10 @@ def test_verify_takes_a_java_targets_one_source_without_at():
     assert cli._default_program("app/A.java", {"sources": ["app/B.java"]}, "verify") == "app/A.java"
     with pytest.raises(ValueError) as refused:
         cli._default_program(None, {"sources": ["a/One.java", "b/Two.java"]}, "verify")
+    # The edited file is the one holding --old, whichever of them that is.
     assert str(refused.value) == (
-        "verify needs --at <source> (one of: a/One.java, b/Two.java) for this target: the file "
-        "the edit changes, as `peeky describe` shows (`--at a/One.java`)"
+        "verify needs --at <source> (one of: a/One.java, b/Two.java) for this target: pass "
+        "`--at <the source containing --old>`, the file the edit changes"
     )
     with pytest.raises(ValueError, match=r"^verify needs --at <source> for this target$"):
         cli._default_program(None, {}, "verify")

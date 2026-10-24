@@ -85,3 +85,68 @@ def test_a_step_onto_the_breakpoint_line_is_not_a_hit_and_its_pass_gets_none(loo
         assert (report["hits"], report["steps"], report["hit"]) == (2, 2, 2), report
     finally:
         main(["session", "close"])
+
+
+CHARS = """package demo;
+
+public class Chars {
+    char mark = '+';
+
+    public static void main(String[] args) {
+        Chars chars = new Chars();
+        char sign = '+';
+        int n = 0;
+        for (int i = 0; i < 5; i++) {
+            n += sign == chars.mark ? 1 : 0; // LOOP
+        }
+        System.out.println("N:" + n + sign + chars.mark);
+    }
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_char_write_of_the_value_already_there_is_no_change(tmp_path, monkeypatch, capsys):
+    # Review of PR #314: java-debug shows a char bare (`+`), so `set sign: + -> +` was
+    # counted as a change. A change carries its value's type, which decides it, for a
+    # root local and for a field alike.
+    from peeky.probe import _table
+
+    bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
+    if not bundle:
+        pytest.skip("set PEEKY_JAVA_ADAPTER to a setup_java_adapter.py output directory")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    root = tmp_path / "chars"
+    (root / "demo").mkdir(parents=True)
+    (root / "demo" / "Chars.java").write_text(CHARS)
+    config = root / "chars.json"
+    config.write_text(
+        json.dumps(
+            {
+                "bundle": str(Path(bundle).resolve()),
+                "sources": ["demo/Chars.java"],
+                "main_class": "demo.Chars",
+            }
+        )
+    )
+    at = next(i for i, text in enumerate(CHARS.splitlines(), 1) if "// LOOP" in text)
+    command = ["probe", str(root), "--config", str(config), "--at", f"demo/Chars.java:{at}"]
+    command += ["--capture", "sign", "--set-at", f"{at}@all", "sign='+'"]
+    command += ["--set-at", f"{at}@all", "chars.mark='+'", "--json", "--quiet", "--no-save"]
+    assert main(command) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["output"].strip() == "N:5++", result
+    changes = result["interventions"]
+    assert {(c["name"], c["before"], c["after"], c["type"]) for c in changes} == {
+        ("sign", "+", "+", "char"),
+        ("chars.mark", "+", "+", "char"),
+    }
+    assert len(changes) == 10, changes
+    text = _table(result)
+    for name in ("sign", "chars.mark"):
+        assert f"set {name}: + -> +, no change  (--set-at line {at}@all, hit 1, in " in text, text
+        assert (
+            f"set {name}: 2 more writes by --set-at line {at}@all, at hits 4 to 5, each with no "
+            "change"
+        ) in text, text
+    assert "more changes" not in text, text

@@ -4125,36 +4125,45 @@ def run_probe(
             where = f"{probe.program}:{line}" + (
                 f" of the candidate (line {probe.line} before the edit)" if probe.edit else ""
             )
-            # Changes made before the program ended may be why the line never ran (eleventh
-            # evaluation: six --set-at changes kept line 33 from running; NO_STOP said to
-            # pick a line the program executes).
-            made = f"{len(changes)} change{'s' if len(changes) > 1 else ''} by --set-at"
-            if code == 0 and changes:
+            # The run's changes (eleventh evaluation: six --set-at changes kept line 33
+            # from running, and NO_STOP said to pick a line the program executes). Only
+            # writes that changed a value's text count, and nothing proves one came before
+            # the line's chance to run: the message names them, and claims no cause.
+            made = [change for change in changes if change.get("before") != change.get("after")]
+            at = [str(n) for n in sorted({c["line"] for c in made if type(c.get("line")) is int})]
+            ran = (
+                f"The run made {len(made)} change{'s' if len(made) > 1 else ''} by --set-at"
+                + (
+                    f" (at line{'s' if len(at) > 1 else ''} "
+                    + (f"{', '.join(at[:-1])} and {at[-1]}" if len(at) > 1 else at[0])
+                    + ")"
+                    if at
+                    else ""
+                )
+                + ": compare with a run without them"
+            )
+            if code == 0 and made:
+                message = f"The program finished without stopping at {where}. {ran}"
+                hint = (
+                    "Probe the line without the changes to compare; if it never stops there "
+                    "either, pick a line the program executes (`peeky describe`)."
+                )
+            elif code is not None and code != 0 and made:
                 message = (
-                    f"The program finished without stopping at {where}, after {made}: they "
-                    "may have kept the line from running"
+                    f"The program failed (exit code {code}) without stopping at {where}; its "
+                    f"output says why. {ran}"
                 )
                 hint = (
-                    "Probe the line without the changes to see whether it runs, or put --at "
-                    "on a line that runs after them."
+                    "Read its output, and check its arguments and input; probe without the "
+                    "changes to compare."
                 )
-            elif code is not None and code != 0 and changes:
+            elif code is None and made:
                 message = (
-                    f"The program failed (exit code {code}) without stopping at {where}, after "
-                    f"{made}, which may have made it fail; its output says why"
+                    f"The program ended without stopping at {where} (exit code unknown). {ran}"
                 )
                 hint = (
-                    "Read its output: a change may have made it fail. Probe without the "
-                    "changes to compare, and check its arguments and input."
-                )
-            elif code is None and changes:
-                message = (
-                    f"The program ended without stopping at {where} (exit code unknown), after "
-                    f"{made}: they may have kept the line from running, or made it fail"
-                )
-                hint = (
-                    "Read its output for an error, and probe the line without the changes to "
-                    "see whether it runs."
+                    "If the output shows an error, the program failed before the line; else "
+                    "probe without the changes to compare, or pick a line it executes."
                 )
             elif code == 0:
                 message = (
@@ -4523,17 +4532,32 @@ _JAVA_PRIMITIVES = frozenset(("byte", "short", "int", "long", "float", "double",
 # float's text may be rounded; a text, or a Python object, may be a new one alike.
 _EXACT = re.compile(r"-?\d+|true|false|True|False|None|null|nullptr|'(?:[^'\\]|\\.)+'")
 _PYTHON_SINGLETONS = frozenset(("True", "False", "None"))
+# Java's primitives whose text is exact: java-debug shows a `char` raw (`+`, no quotes).
+_JAVA_EXACT = frozenset(("byte", "short", "int", "long", "boolean", "char"))
+# A C, C++ or Rust floating-point type, whose text may be rounded.
+_FLOATING = re.compile(r"\b(?:float|double|_Float\d+|__fp16|f16|f32|f64|f128)\b")
 
 
 def unchanged(change, language):
     """Whether an intervention wrote the value its target already held: the values read
-    before and after it are alike and exact (``_EXACT``). In Python, or a language not
-    known (a Python run has no target identity), only True, False and None, the objects
-    that are always the same."""
+    before and after it are alike, and their text is exact for the target's ``type``
+    (as the change's result names it) in its language. Java: a primitive but a `float`
+    or `double` (a `char` shows raw, `+`); without a type, ``_EXACT``. C, C++ and Rust:
+    ``_EXACT``, never a floating-point type. Python, or a language not known (a Python
+    run has no target identity): only True, False and None, the objects that are always
+    the same."""
     before, after = change.get("before"), change.get("after")
-    if not isinstance(before, str) or before != after or not _EXACT.fullmatch(before):
+    if not isinstance(before, str) or before != after:
         return False
-    return (language or "python") != "python" or before in _PYTHON_SINGLETONS
+    kind = change.get("type") if isinstance(change.get("type"), str) else None
+    language = language or "python"
+    if language == "python":
+        return before in _PYTHON_SINGLETONS
+    if language.startswith("java") and kind is not None:
+        return kind in _JAVA_EXACT
+    if kind is not None and _FLOATING.search(kind):
+        return False
+    return bool(_EXACT.fullmatch(before))
 
 
 def _holds(selector, target):

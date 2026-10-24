@@ -1084,9 +1084,12 @@ Branch on the exit status:
 - `--set-at LINE@all name=value` changes it at every stop of `LINE`, up to 100
   ([below](#change-it-at-every-stop-all)).
 - A change that never happened, because its stop never came, makes the probe exit 4.
-- Changes can keep the `--at` line from running, as when they skip the branch it is in. The probe
-  then ends with `NO_STOP`, which says how many changes came first: `after 6 changes by --set-at:
-  they may have kept the line from running`. Put `--at` on a line that still runs.
+- Changes can keep the `--at` line from running, as when they skip the branch it is in. A probe
+  that never stops at `--at` ends with `NO_STOP`, which counts the changes the run made, where they
+  were, and says to compare with a run without them:
+  `The run made 6 changes by --set-at (at lines 32 and 35): compare with a run without them`.
+  Nothing proves that a change came before the line's chance to run, so it claims no cause. A
+  write of the value already there isn't counted.
 
 #### Example: change a value for one line
 
@@ -1219,12 +1222,14 @@ How `@all` works:
 - The text shows the first 3 changes, each with its hit, then one line that counts the rest. A
   fourth is shown too, since a line counting one change says no less. In JSON, each change is in
   `interventions`, with its own `at` (`18@4`) and `"all": true`.
+  `set_outcomes` says how far each request got ([below](#how-the-evidence-records-changes)).
 - A write of the value already there says `0 -> 0, no change`, and the line that counts the rest
   counts those apart: `13 more writes …: 5 changes and 8 with no change`. That holds for an exact
-  value: an integer, a boolean, a character or null. A float's text may be rounded, so it is never
-  marked. In Python, only `True`, `False` and `None` are, since another value may be a new object.
-  Any `set` line in a probe's text is marked so.
-  `set_outcomes` says how far each request got ([below](#how-the-evidence-records-changes)).
+  value, by the changed value's `type`, which each change in JSON carries (a probe's
+  `interventions`, and `session set --json`). Exact are an integer, a
+  boolean, a character or null, and a Java `char`, which java-debug shows bare (`+`). A float's
+  text may be rounded, so it is never marked. In Python, only `True`, `False` and `None` are, since
+  another value may be a new object. Any `set` line in a probe's text is marked so.
 
 #### Where and when a change is made
 
@@ -2847,17 +2852,19 @@ note: the session's breakpoint (hit 2) stopped the step before it ended, and the
 
 #### When a step lands on the breakpoint's line
 
-A step's stop is never a hit, even on the line of the session's breakpoint. Hits, `--hit` and
-`continue --count` count only the stops that the debugger reports as the breakpoint's. What the
-next `continue` does depends on the debugger, and the state's note says it:
+Hits, `--hit` and `continue --count` count only the stops that the debugger reports as the
+breakpoint's. So a step that stops on the line of the session's breakpoint is a hit where the
+debugger reports that stop as the breakpoint's, and isn't one where it reports it as the step's.
+Which it does, and what the next `continue` does, depends on the debugger. The state says it:
 
-- **Python:** debugpy reports such a stop as the breakpoint's. So the state says `hit 2`, as for a
-  step the breakpoint stopped ([above](#when-the-sessions-breakpoint-stops-a-step)).
+- **Python:** debugpy reports such a stop as the breakpoint's. So it is a hit, and the state says
+  `hit 2`, as for a step the breakpoint stopped ([above](#when-the-sessions-breakpoint-stops-a-step)).
 - **Java:** java-debug reports it as the step's, and `continue` runs on to the line's next pass. So
   that pass gets no number, and the session's later hits number lower than a probe's.
-- **C, C++ and Rust:** LLDB reports it as the step's. Where the step stopped at one of the line's
-  breakpoint locations, `continue` stops there again first, as the next hit. So the pass keeps its
-  number.
+- **C, C++ and Rust:** Xcode's LLDB reports it as the step's, so it isn't a hit. Where the step
+  stopped at one of the line's breakpoint locations, `continue` stops there again first, as the
+  next hit. So the pass keeps its number. An LLDB that reports such a stop as the breakpoint's
+  numbers it as a hit at once.
 
 ```
 state: stopped at app/Seats.java:26 in Seats.block(boolean[],int) (paused 0.0 s)
@@ -3006,7 +3013,7 @@ diff:
   ([6.6](#66-see-what-a-fix-does-before-making-it)).
 - `--at` names the file to edit when the target is a directory. A config that declares one source,
   as a Java program's often does, needs no `--at`: the edit goes into that source. With several,
-  the error lists them, and `peeky describe` prints the whole command.
+  the error lists them: pass the one that holds the `--old` text.
 - To keep the edited file, add `--keep`. It stays in the system's temporary directory, with a
   compiled program's build evidence beside it. Build artifacts are always removed.
 - The result prints the file's path after `candidate:`, and JSON names its directory in `kept`.

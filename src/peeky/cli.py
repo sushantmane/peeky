@@ -596,7 +596,7 @@ def _default_program(program, data, command):
     raise ValueError(
         f"{command} needs --at <source>{listed} for this target"
         + (
-            f": the file the edit changes, as `peeky describe` shows (`--at {sources[0]}`)"
+            ": pass `--at <the source containing --old>`, the file the edit changes"
             if command == "verify" and sources
             else ""
         )

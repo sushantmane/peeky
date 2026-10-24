@@ -2693,6 +2693,7 @@ class DebugWorker:
                 "name": args["name"],
                 "before": before,
                 "after": after,
+                **_set_type(variable),
                 **({"note": unread_note} if unread_note else {}),
             }
         if operation == "breakpoints":
@@ -4260,7 +4261,7 @@ class DebugWorker:
             )
         if confirm := getattr(runtime, "confirm_mutation", None):
             confirm(selector, value, before, after, variable=variable)
-        return {"name": name, "before": before, "after": after}
+        return {"name": name, "before": before, "after": after, **_set_type(variable)}
 
     def _set_scalar_member(
         self, record, runtime, frame, ancestry, trail, reference, variable, args, previewed=False
@@ -4336,7 +4337,7 @@ class DebugWorker:
         runtime.confirm_mutation(name, value, before, after, variable=variable)
         if previewed:
             self._confirm_preview(record, runtime, name, after)
-        return {"name": name, "before": before, "after": after}
+        return {"name": name, "before": before, "after": after, **_set_type(variable)}
 
     def text_stop(self):
         """The stop's reason as a text change judges where in its line the stop is
@@ -4459,7 +4460,12 @@ class DebugWorker:
         )
         changed = change_text(variable, text, memory, relist, kind, shape)
         runtime.assert_current()
-        result = {"name": name, "before": changed["before"], "after": changed["after"]}
+        result = {
+            "name": name,
+            "before": changed["before"],
+            "after": changed["after"],
+            **_set_type(variable),
+        }
         if kind == "std":
             # What the program took from it before cannot be seen, nor changed (#164).
             result["note"] = STRING_VIEW_NOTE
@@ -4670,6 +4676,14 @@ class DebugWorker:
                 if pycache is not None:
                     shutil.rmtree(pycache, ignore_errors=True)
         return self.last_cleanup if adapter else None
+
+
+def _set_type(variable):
+    """{"type": the changed value's type, as the debugger lists it}, or {}: a change's
+    result carries it, so that a write of the value already there is told by its type
+    (a Java `char` shows raw, `+`; a float's text may be rounded)."""
+    kind = variable.get("type") if isinstance(variable, dict) else None
+    return {"type": kind[:300]} if isinstance(kind, str) and kind else {}
 
 
 def _frame_identity(frame):
