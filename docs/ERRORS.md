@@ -39,7 +39,7 @@ The last column is the `retryable` field.
 | `UNSUPPORTED` | An operation or capability isn't offered, or the setup can't be used ([details](#unsupported)). | Do what the message names instead, or fix the setup it names. | no |
 | `UNAUTHORIZED` | The bearer token is missing or wrong. | Use the worker's `DEBUG_TOKEN`. | no |
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
-| `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing `--param`, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables, columns and canned queries. | no |
+| `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
 | `UNREACHABLE` | No connection reached the worker: the tunnel or the worker is down. Nothing was applied, and the session is kept. | Restore the tunnel or the worker, and retry. | yes |
 | `TRANSPORT_LOST` | The connection broke mid-request. The outcome is unknown. | Reconnect, then `inspect` or `wait`. Never repeat a change blindly. | no |

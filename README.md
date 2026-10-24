@@ -114,9 +114,9 @@ heap dumps.
 ```sh
 peeky probe app/ --at lib/parse.py:42 --run main.py --capture n,acc --hits 50 --label input=a
 peeky sql "SELECT hit, value FROM last_run WHERE selector = 'acc' AND num > 100"
-peeky queries                       # canned questions: runs, run, hits, compare, diff, outputs, set_effect, values, ...
+peeky queries --help                # canned questions and their --param names: diff [a] [b], set_effect [run], ...
 peeky queries diff --param a=3 --param b=4   # first rows = first divergence between two runs
-peeky sql --schema                  # tables, columns, views, canned queries, examples
+peeky sql --schema                  # a line per table and view; --schema captures (or all) in full
 ```
 
 - The store is optional: a probe's output is already the answer.

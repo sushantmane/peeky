@@ -13,7 +13,7 @@ Follow docs/AGENT_GUIDE.md in the peeky repository. Short form:
 4. Edit the source generally, then `peeky verify <target> --check <checker> --old '<text>' --new '<text>'`.
 5. Report the commands, the observed values, the intervention's effect and the verify result. Never claim a fix without `passed: True` from `verify`.
 
-Every probe is saved with a `run_id`. SQL is optional; use it for large captures, for comparing runs, or when rerunning is slow. Ask follow-up questions without rerunning: `peeky sql "SELECT hit, selector, value FROM last_run"`, or a canned query (`peeky queries` lists them; `peeky queries diff` compares the last two runs). `peeky sql --schema` lists the tables.
+Every probe is saved with a `run_id`. SQL is optional; use it for large captures, for comparing runs, or when rerunning is slow. Ask follow-up questions without rerunning: `peeky sql "SELECT hit, selector, value FROM last_run"`, or a canned query (`peeky queries --help` lists them with their parameters; `peeky queries diff` compares the last two runs). `peeky sql --schema` lists the tables; `--schema captures` shows one in full.
 
 For a breakpoint in an imported Python module, pass the project directory, `--at module.py:<line>` and `--run <entry script>`.
 
