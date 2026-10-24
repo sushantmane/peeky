@@ -1431,6 +1431,50 @@ def _connect(path, timeout=10):
     return sqlite3.connect(path, timeout=timeout, isolation_level=None)
 
 
+# The store's SQL needs an aggregate's FILTER (SQLite 3.30). Each feature below is tried,
+# with the SQL Peeky uses, on an in-memory connection before a store is opened: a build
+# can leave out the JSON functions, or the virtual tables json_each and json_tree are.
+MIN_SQLITE = (3, 30, 0)
+_SQLITE_FEATURES = (
+    (
+        "the JSON functions",
+        "SELECT json_valid('[]'), json_extract('[1]', '$[0]'), json_type('[]'), "
+        "json_array_length(json_array(1)), json_group_array(1) FILTER (WHERE 1), "
+        "json_group_object('a', 1)",
+    ),
+    ("json_each", "SELECT 1 FROM json_each('[]') LIMIT 0"),
+    ("json_tree", "SELECT 1 FROM json_tree('[]') LIMIT 0"),
+    (
+        "window functions",
+        "SELECT LAG(1) OVER w, COUNT(*) OVER (PARTITION BY 1) FROM (SELECT 1) "
+        "WINDOW w AS (ORDER BY 1)",
+    ),
+)
+
+
+def _require_sqlite():
+    """Refuses, before a store is opened, an SQLite its SQL would fail on."""
+    found = f"SQLite {sqlite3.sqlite_version}"
+    if sqlite3.sqlite_version_info >= MIN_SQLITE:
+        connection = sqlite3.connect(":memory:")
+        try:
+            for feature, sql in _SQLITE_FEATURES:
+                try:
+                    connection.execute(sql).fetchall()
+                except sqlite3.OperationalError as exc:
+                    found += f" without {feature} ({exc})"
+                    break
+            else:
+                return
+        finally:
+            connection.close()
+    raise ValueError(
+        f"Evidence store needs SQLite {'.'.join(map(str, MIN_SQLITE[:2]))} or newer with "
+        f"the JSON functions, json_each, json_tree and window functions, but this Python's "
+        f"sqlite3 module has {found}; run Peeky with a Python built with a newer SQLite"
+    )
+
+
 def _check_version(connection, path, version):
     if version == SCHEMA_VERSION or version in _MIGRATIONS:
         return
@@ -1452,6 +1496,7 @@ def _check_version(connection, path, version):
 
 def _ensure(path):
     """A writable connection to a store with the current schema, created if absent."""
+    _require_sqlite()
     path = Path(path)
     if path.is_symlink():
         raise ValueError(f"Evidence store must not be a symlink: {path}")
@@ -1706,6 +1751,65 @@ def _authorize(action, first, second, database, trigger):
     return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
 
 
+# Before SQLite 3.41, a connection's first use of a table-valued function (json_each,
+# json_tree, pragma_table_info, ...) also compiles, but never runs, an UPDATE of
+# sqlite_master, and the authorizer denies it. Each is used once before the authorizer
+# is set, so SQLite never asks it that: it allows the same reads on every SQLite.
+_TABLE_FUNCTIONS = ("json_each", "json_tree", *(f"pragma_{name}" for name in sorted(_READ_PRAGMAS)))
+# Other table-valued functions (eponymous virtual tables) a build of SQLite may have.
+# Before 3.41 their first use fails as above; 3.41 or newer reads them.
+_OTHER_TABLE_FUNCTIONS = {
+    "bytecode",
+    "dbstat",
+    "fts3tokenize",
+    "generate_series",
+    "sqlite_dbpage",
+    "sqlite_stmt",
+    "tables_used",
+}
+
+
+def _connect_table_functions(connection):
+    if sqlite3.sqlite_version_info >= (3, 41, 0):
+        return
+    for name in _TABLE_FUNCTIONS:
+        try:
+            connection.execute(f"SELECT 1 FROM {name}('[]') LIMIT 0").fetchall()
+        except sqlite3.OperationalError:
+            # pragma_table_list is SQLite 3.37+: a query naming it fails as before.
+            pass
+
+
+def _old_table_function(message):
+    """Before SQLite 3.41, the table-valued function outside ``_TABLE_FUNCTIONS`` that an
+    error names, refused on its first use as above; else None. 3.37 to 3.40 say `vtable
+    constructor failed`, which only such a function gives. Earlier ones say `no such table`,
+    as for any missing table: there the name must be a pragma (``pragma_pragma_list``) or
+    one of ``_OTHER_TABLE_FUNCTIONS`` this SQLite has (``pragma_module_list``)."""
+    found = re.fullmatch(r"(vtable constructor failed|no such table): (\w+)", message)
+    if sqlite3.sqlite_version_info >= (3, 41, 0) or not found:
+        return None
+    name = found[2].lower()
+    pragma = name.startswith("pragma_")
+    if name in _TABLE_FUNCTIONS or not (
+        found[1] == "vtable constructor failed" or pragma or name in _OTHER_TABLE_FUNCTIONS
+    ):
+        return None
+    if found[1] == "vtable constructor failed":
+        return name
+    listed = "pragma_pragma_list" if pragma else "pragma_module_list"
+    connection = sqlite3.connect(":memory:")
+    try:
+        known = connection.execute(
+            f"SELECT 1 FROM {listed} WHERE name = ?", (name[7:] if pragma else name,)
+        ).fetchone()
+        return name if known else None
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+
 def parse_params(items):
     """['run=3', 'selector=a.b'] -> {'run': 3, 'selector': 'a.b'}."""
     params = {}
@@ -1743,6 +1847,7 @@ def _open_read_only(path):
     A store with an older schema is upgraded first (as the next save would), so canned
     queries can rely on the current columns.
     """
+    _require_sqlite()
     path = Path(path).absolute()
     try:
         if path.is_symlink():
@@ -1859,6 +1964,11 @@ def _reader(path, *, snapshot=False):
         except BaseException:
             connection.close()
             raise
+    try:
+        _connect_table_functions(connection)
+    except BaseException:
+        connection.close()
+        raise
     connection.set_authorizer(_authorize)
     connection.set_progress_handler(lambda: time.monotonic() > clock["deadline"], 10000)
     return connection, clock
@@ -1940,6 +2050,16 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         message = str(exc)
         if "not authorized" in message or "denied" in message:
             message += " (queries are read-only: one SELECT; no writes, ATTACH or settings)"
+        elif name := _old_table_function(message):
+            # Another pragma is refused on every SQLite: a newer one would not help.
+            message += (
+                " (peeky sql reads only the pragma functions "
+                f"{', '.join(n for n in _TABLE_FUNCTIONS if n.startswith('pragma_'))})"
+                if name.startswith("pragma_")
+                else f" (before SQLite 3.41, peeky sql can use only the table-valued functions "
+                f"{', '.join(_TABLE_FUNCTIONS)}; this Python's sqlite3 module has SQLite "
+                f"{sqlite3.sqlite_version}, so use those, or a Python with SQLite 3.41 or newer)"
+            )
         elif "ambiguous column name" in message:
             message += (
                 " (the evidence and last_run views already carry their run's columns: "

@@ -38,7 +38,7 @@ _RULES = (
         False,
     ),
     (
-        r"^Evidence store ",
+        r"^Evidence store (?!needs SQLite )",
         "INVALID_REQUEST",
         "Run a probe first, or check --store. Move an unusable store aside (a new one is "
         "made), or pass --store PATH.",
@@ -220,6 +220,13 @@ _RULES = (
         r"Unknown operation|Unknown .*field|unsupported command",
         "UNSUPPORTED",
         "Call `version` for supported operations.",
+        False,
+    ),
+    (
+        r"^Evidence store needs SQLite ",
+        "UNSUPPORTED",
+        "Use a Python whose sqlite3 module has SQLite 3.30 or newer with JSON; "
+        "python3 -c 'import sqlite3; print(sqlite3.sqlite_version)' shows it.",
         False,
     ),
     (

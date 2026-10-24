@@ -116,6 +116,8 @@ python -m build
 
 - Each test has a 45-second timeout.
 - Unit and integration paths can run separately, matching the parallel CI lanes.
+- The unit tests need SQLite 3.35 or later: some build an older store with `ALTER TABLE … DROP
+  COLUMN`, and one uses a `MATERIALIZED` CTE. Peeky itself needs SQLite 3.30 or later.
 
 C conformance on macOS uses the Command Line Tools. Without `PEEKY_NATIVE_DAP`, the native
 integration tests skip, and say so:
