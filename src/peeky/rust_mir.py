@@ -137,9 +137,14 @@ _COPY_NONOVERLAPPING = re.compile(
     r"^copy_nonoverlapping\(dst = (?:copy|move) _([0-9]+), src = (?:copy|move) _([0-9]+),"
 )
 # What a callee may write through even where it reaches it only through a shared `&`
-# (#311 review round 4): a raw pointer, `NonNull`, a cell or lock.
-_SHARED_WRITABLE = re.compile(
-    r"\*mut |\*const |NonNull<|Cell<|UnsafeCell<|Atomic|Mutex<|RwLock<|OnceLock<"
+# (#311 review rounds 4 and 5): a raw pointer, and the standard library's `NonNull`, cells,
+# locks and atomics, by the exact last segment of a `std::`/`core::`/`alloc::` path
+# (`std::cell::Cell<u32>`, `std::sync::atomic::Atomic<u32>` as rustc 1.96 prints
+# `AtomicU32`, `AtomicU32` itself). Not a crate's `NotCell<'_>` or `Atomicity<'_>`.
+_RAW_POINTER_SYNTAX = re.compile(r"\*mut |\*const ")
+_SHARED_WRITABLE_SEGMENT = re.compile(
+    r"Cell|RefCell|UnsafeCell|SyncUnsafeCell|OnceCell|OnceLock|Mutex|RwLock|NonNull"
+    r"|Atomic(?:Bool|[IU](?:8|16|32|64|128|size)|Ptr)?"
 )
 # A reference in a type: `&`, `&mut `, `&'a `, `&'static mut ` (group 1 for `mut`).
 _REFERENCE = re.compile(r"&(?:'[\w?]+ )?(mut )?")
@@ -279,10 +284,21 @@ def _unshared(kind):
     return "".join(out)
 
 
+def _shared_writable(kind):
+    """Whether ``kind`` holds anything a callee may write through even where it reaches
+    it only through a shared `&` (#311 review rounds 4 and 5): a raw pointer, or a
+    standard `NonNull`, cell, lock or atomic, by the exact last segment of a standard
+    path (``_SHARED_WRITABLE_SEGMENT``)."""
+    return bool(_RAW_POINTER_SYNTAX.search(kind)) or any(
+        word.startswith(_STD_PATHS) and _SHARED_WRITABLE_SEGMENT.fullmatch(word.rsplit("::", 1)[-1])
+        for word in _TYPE_WORDS.findall(kind)
+    )
+
+
 def _may_write(kind, generics, shared=False):
     """Whether a value of the MIR type ``kind`` shows that a callee given it may write
-    through a pointer it holds (#311 review): a raw pointer, `NonNull`, a cell or lock,
-    wherever it is in the type (``_SHARED_WRITABLE``); a `&mut`, or one of the standard
+    through a pointer it holds (#311 review): a raw pointer, `NonNull`, a cell, lock or
+    atomic, wherever it is in the type (``_shared_writable``); a `&mut`, or one of the standard
     library's mutable views (``_MUTABLE_VIEWS``: `hash_map::Entry<'_, u32, u32>`,
     `slice::IterMut<'_, u32>`), that it does not reach only through a shared `&`
     (``_unshared``: `(&mut Vec<u32>, u32)`, not `&&mut Vec<u32>`), nor at all where
@@ -292,7 +308,7 @@ def _may_write(kind, generics, shared=False):
     from shows it (``Body._may_write_through``)."""
     if kind is None or generics is None or mentions(kind, generics):
         return True
-    if _SHARED_WRITABLE.search(kind):
+    if _shared_writable(kind):
         return True
     if shared:
         return False

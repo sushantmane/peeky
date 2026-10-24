@@ -397,6 +397,11 @@ used again. Such a temporary is:
   shared borrow or a shared reference type. So `look(&h, x)` with `h = Hold { p: &mut v }`
   writes nothing, while `keep(h, x)`, `poke(&mut h, x)`, and `&h` with a `*mut` or `&Cell`
   field may.
+- A cell, lock or atomic is known by the exact last segment of a standard path
+  (`_shared_writable`, review round 5): `std::cell::Cell`, `RefCell`, `UnsafeCell`, `OnceCell`,
+  `OnceLock`, `Mutex`, `RwLock`, `NonNull`, and `Atomic` or `AtomicU32` and the like. rustc 1.96
+  prints `AtomicU32` as `std::sync::atomic::Atomic<u32>`. A crate's `NotCell` or `Atomicity` is
+  none of these.
 - `_pointers_to` follows what is made from a borrow through any value that may hold a pointer:
   `Option<&mut u32>` of `v.last_mut()`, then `r` of its `unwrap()`. So `copy_undoes` sees a
   later `*r` as a use of `v`.

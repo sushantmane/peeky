@@ -3665,3 +3665,501 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
     for kind in ("*mut std::vec::Vec<u32>", "&std::cell::Cell<std::vec::Vec<u32>>"):
         held = SHARED_HOLD.replace("let mut _6: &mut std::vec::Vec<u32>;", f"let mut _6: {kind};")
         assert body_of(held)._may_write_through(9), kind
+
+
+# Review round 5 of PR #316: crate types named like a cell or an atomic, and a standard
+# `Cell`, each passed through a shared `&`; rustc 1.96.0's MIR (round10u).
+ROUND10 = """use std::cell::Cell;
+use std::env;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+struct NotCell<'a> {
+    p: &'a mut Vec<u32>,
+}
+
+struct Atomicity<'a> {
+    p: &'a mut Vec<u32>,
+}
+
+#[inline(never)]
+fn look(h: &NotCell, x: u32) {
+    std::hint::black_box((h.p.len(), x));
+}
+
+#[inline(never)]
+fn glance(h: &Atomicity, x: u32) {
+    std::hint::black_box((h.p.len(), x));
+}
+
+#[inline(never)]
+fn put(c: &Cell<u32>, x: u32) {
+    c.set(x);
+}
+
+fn notcell(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = Vec::new();
+    let h = NotCell { p: &mut v };
+    look(&h, x);
+    let k = other(); // NOTCELL
+    v.len() as u32 + *std::hint::black_box(&x) + k
+}
+
+fn atomicity(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = Vec::new();
+    let h = Atomicity { p: &mut v };
+    glance(&h, x);
+    let k = other(); // ATOMICITY
+    v.len() as u32 + *std::hint::black_box(&x) + k
+}
+
+fn celled(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = Cell::new(0);
+    put(&c, x);
+    let k = other(); // CELLED
+    std::hint::black_box(&x);
+    c.get() + k
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("NOTCELL {}", notcell(x));
+    println!("ATOMICITY {}", atomicity(x));
+    println!("CELLED {}", celled(x));
+}
+"""
+
+NOT_CELL = """// MIR for `notcell` after PreCodegen
+
+fn notcell(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:32:12: 32:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:32:25: 32:28
+    let _2: u32;                         // in scope 0 at src/main.rs:33:9: 33:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:33:36: 33:39
+    let mut _6: &mut std::vec::Vec<u32>; // in scope 0 at src/main.rs:35:26: 35:32
+    let mut _7: &mut std::vec::Vec<u32>; // in scope 0 at src/main.rs:35:26: 35:32
+    let _8: ();                          // in scope 0 at src/main.rs:36:5: 36:16
+    let mut _9: &NotCell<'_>;            // in scope 0 at src/main.rs:36:10: 36:12
+    let _10: &NotCell<'_>;               // in scope 0 at src/main.rs:36:10: 36:12
+    let mut _11: u32;                    // in scope 0 at src/main.rs:36:14: 36:15
+    let mut _13: u32;                    // in scope 0 at src/main.rs:38:5: 38:47
+    let mut _14: u32;                    // in scope 0 at src/main.rs:38:5: 38:19
+    let mut _15: usize;                  // in scope 0 at src/main.rs:38:5: 38:12
+    let mut _16: &std::vec::Vec<u32>;    // in scope 0 at src/main.rs:38:5: 38:6
+    let mut _17: u32;                    // in scope 0 at src/main.rs:38:22: 38:47
+    let mut _18: &u32;                   // in scope 0 at src/main.rs:38:23: 38:47
+    let mut _19: &u32;                   // in scope 0 at src/main.rs:38:44: 38:46
+    let mut _20: (u32, bool);            // in scope 0 at src/main.rs:38:5: 38:47
+    let mut _21: u32;                    // in scope 0 at src/main.rs:38:50: 38:51
+    let mut _22: (u32, bool);            // in scope 0 at src/main.rs:38:5: 38:51
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:33:9: 33:10
+        let mut _4: std::vec::Vec<u32>;  // in scope 1 at src/main.rs:34:9: 34:14
+        scope 2 {
+            debug v => _4;               // in scope 2 at src/main.rs:34:9: 34:14
+            let _5: NotCell<'_>;         // in scope 2 at src/main.rs:35:9: 35:10
+            scope 3 {
+                debug h => _5;           // in scope 3 at src/main.rs:35:9: 35:10
+                let _12: u32;            // in scope 3 at src/main.rs:37:9: 37:10
+                scope 4 {
+                    debug k => _12;      // in scope 4 at src/main.rs:37:9: 37:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:33:9: 33:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:33:36: 33:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:33:36: 33:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:33:13: 33:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:33:39: 33:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:34:9: 34:14
+        _4 = Vec::<u32>::new() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:34:27: 34:37
+    }
+
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:35:9: 35:10
+        StorageLive(_6);                 // scope 2 at src/main.rs:35:26: 35:32
+        StorageLive(_7);                 // scope 2 at src/main.rs:35:26: 35:32
+        _7 = &mut _4;                    // scope 2 at src/main.rs:35:26: 35:32
+        _6 = &mut (*_7);                 // scope 2 at src/main.rs:35:26: 35:32
+        _5 = NotCell::<'_> { p: move _6 }; // scope 2 at src/main.rs:35:13: 35:34
+        StorageDead(_6);                 // scope 2 at src/main.rs:35:33: 35:34
+        StorageDead(_7);                 // scope 2 at src/main.rs:35:34: 35:35
+        StorageLive(_8);                 // scope 3 at src/main.rs:36:5: 36:16
+        StorageLive(_9);                 // scope 3 at src/main.rs:36:10: 36:12
+        StorageLive(_10);                // scope 3 at src/main.rs:36:10: 36:12
+        _10 = &_5;                       // scope 3 at src/main.rs:36:10: 36:12
+        _9 = &(*_10);                    // scope 3 at src/main.rs:36:10: 36:12
+        StorageLive(_11);                // scope 3 at src/main.rs:36:14: 36:15
+        _11 = copy _2;                   // scope 3 at src/main.rs:36:14: 36:15
+        _8 = look(move _9, move _11) -> [return: bb3, unwind: bb10]; // scope 3 at src/main.rs:36:5: 36:16
+    }
+
+    bb3: {
+        StorageDead(_11);                // scope 3 at src/main.rs:36:15: 36:16
+        StorageDead(_9);                 // scope 3 at src/main.rs:36:15: 36:16
+        StorageDead(_10);                // scope 3 at src/main.rs:36:16: 36:17
+        StorageDead(_8);                 // scope 3 at src/main.rs:36:16: 36:17
+        StorageLive(_12);                // scope 3 at src/main.rs:37:9: 37:10
+        _12 = other() -> [return: bb4, unwind: bb10]; // scope 3 at src/main.rs:37:13: 37:20
+    }
+
+    bb4: {
+        StorageLive(_13);                // scope 4 at src/main.rs:38:5: 38:47
+        StorageLive(_14);                // scope 4 at src/main.rs:38:5: 38:19
+        StorageLive(_15);                // scope 4 at src/main.rs:38:5: 38:12
+        StorageLive(_16);                // scope 4 at src/main.rs:38:5: 38:6
+        _16 = &_4;                       // scope 4 at src/main.rs:38:5: 38:6
+        _15 = Vec::<u32>::len(move _16) -> [return: bb5, unwind: bb10]; // scope 4 at src/main.rs:38:5: 38:12
+    }
+
+    bb5: {
+        StorageDead(_16);                // scope 4 at src/main.rs:38:11: 38:12
+        _14 = move _15 as u32 (IntToInt); // scope 4 at src/main.rs:38:5: 38:19
+        StorageDead(_15);                // scope 4 at src/main.rs:38:18: 38:19
+        StorageLive(_17);                // scope 4 at src/main.rs:38:22: 38:47
+        StorageLive(_18);                // scope 4 at src/main.rs:38:23: 38:47
+        StorageLive(_19);                // scope 4 at src/main.rs:38:44: 38:46
+        _19 = &_2;                       // scope 4 at src/main.rs:38:44: 38:46
+        _18 = std::hint::black_box::<&u32>(move _19) -> [return: bb6, unwind: bb10]; // scope 4 at src/main.rs:38:23: 38:47
+    }
+
+    bb6: {
+        StorageDead(_19);                // scope 4 at src/main.rs:38:46: 38:47
+        _17 = copy (*_18);               // scope 4 at src/main.rs:38:22: 38:47
+        _20 = AddWithOverflow(copy _14, copy _17); // scope 4 at src/main.rs:38:5: 38:47
+        assert(!move (_20.1: bool), "attempt to compute `{} + {}`, which would overflow", move _14, move _17) -> [success: bb7, unwind: bb10]; // scope 4 at src/main.rs:38:5: 38:47
+    }
+
+    bb7: {
+        _13 = move (_20.0: u32);         // scope 4 at src/main.rs:38:5: 38:47
+        StorageDead(_17);                // scope 4 at src/main.rs:38:46: 38:47
+        StorageDead(_14);                // scope 4 at src/main.rs:38:46: 38:47
+        StorageLive(_21);                // scope 4 at src/main.rs:38:50: 38:51
+        _21 = copy _12;                  // scope 4 at src/main.rs:38:50: 38:51
+        _22 = AddWithOverflow(copy _13, copy _21); // scope 4 at src/main.rs:38:5: 38:51
+        assert(!move (_22.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _21) -> [success: bb8, unwind: bb10]; // scope 4 at src/main.rs:38:5: 38:51
+    }
+
+    bb8: {
+        _0 = move (_22.0: u32);          // scope 4 at src/main.rs:38:5: 38:51
+        StorageDead(_21);                // scope 4 at src/main.rs:38:50: 38:51
+        StorageDead(_18);                // scope 4 at src/main.rs:38:50: 38:51
+        StorageDead(_13);                // scope 4 at src/main.rs:38:50: 38:51
+        StorageDead(_12);                // scope 3 at src/main.rs:39:1: 39:2
+        StorageDead(_5);                 // scope 2 at src/main.rs:39:1: 39:2
+        drop(_4) -> [return: bb9, unwind: bb11]; // scope 1 at src/main.rs:39:1: 39:2
+    }
+
+    bb9: {
+        StorageDead(_4);                 // scope 1 at src/main.rs:39:1: 39:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:39:1: 39:2
+        return;                          // scope 0 at src/main.rs:39:2: 39:2
+    }
+
+    bb10 (cleanup): {
+        drop(_4) -> [return: bb11, unwind terminate(cleanup)]; // scope 1 at src/main.rs:39:1: 39:2
+    }
+
+    bb11 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:32:1: 39:2
+    }
+}
+"""
+
+ATOMICITY = """// MIR for `atomicity` after PreCodegen
+
+fn atomicity(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:41:14: 41:17
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:41:27: 41:30
+    let _2: u32;                         // in scope 0 at src/main.rs:42:9: 42:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:42:36: 42:39
+    let mut _6: &mut std::vec::Vec<u32>; // in scope 0 at src/main.rs:44:28: 44:34
+    let mut _7: &mut std::vec::Vec<u32>; // in scope 0 at src/main.rs:44:28: 44:34
+    let _8: ();                          // in scope 0 at src/main.rs:45:5: 45:18
+    let mut _9: &Atomicity<'_>;          // in scope 0 at src/main.rs:45:12: 45:14
+    let _10: &Atomicity<'_>;             // in scope 0 at src/main.rs:45:12: 45:14
+    let mut _11: u32;                    // in scope 0 at src/main.rs:45:16: 45:17
+    let mut _13: u32;                    // in scope 0 at src/main.rs:47:5: 47:47
+    let mut _14: u32;                    // in scope 0 at src/main.rs:47:5: 47:19
+    let mut _15: usize;                  // in scope 0 at src/main.rs:47:5: 47:12
+    let mut _16: &std::vec::Vec<u32>;    // in scope 0 at src/main.rs:47:5: 47:6
+    let mut _17: u32;                    // in scope 0 at src/main.rs:47:22: 47:47
+    let mut _18: &u32;                   // in scope 0 at src/main.rs:47:23: 47:47
+    let mut _19: &u32;                   // in scope 0 at src/main.rs:47:44: 47:46
+    let mut _20: (u32, bool);            // in scope 0 at src/main.rs:47:5: 47:47
+    let mut _21: u32;                    // in scope 0 at src/main.rs:47:50: 47:51
+    let mut _22: (u32, bool);            // in scope 0 at src/main.rs:47:5: 47:51
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:42:9: 42:10
+        let mut _4: std::vec::Vec<u32>;  // in scope 1 at src/main.rs:43:9: 43:14
+        scope 2 {
+            debug v => _4;               // in scope 2 at src/main.rs:43:9: 43:14
+            let _5: Atomicity<'_>;       // in scope 2 at src/main.rs:44:9: 44:10
+            scope 3 {
+                debug h => _5;           // in scope 3 at src/main.rs:44:9: 44:10
+                let _12: u32;            // in scope 3 at src/main.rs:46:9: 46:10
+                scope 4 {
+                    debug k => _12;      // in scope 4 at src/main.rs:46:9: 46:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:42:9: 42:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:42:36: 42:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:42:36: 42:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:42:13: 42:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:42:39: 42:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:43:9: 43:14
+        _4 = Vec::<u32>::new() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:43:27: 43:37
+    }
+
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:44:9: 44:10
+        StorageLive(_6);                 // scope 2 at src/main.rs:44:28: 44:34
+        StorageLive(_7);                 // scope 2 at src/main.rs:44:28: 44:34
+        _7 = &mut _4;                    // scope 2 at src/main.rs:44:28: 44:34
+        _6 = &mut (*_7);                 // scope 2 at src/main.rs:44:28: 44:34
+        _5 = Atomicity::<'_> { p: move _6 }; // scope 2 at src/main.rs:44:13: 44:36
+        StorageDead(_6);                 // scope 2 at src/main.rs:44:35: 44:36
+        StorageDead(_7);                 // scope 2 at src/main.rs:44:36: 44:37
+        StorageLive(_8);                 // scope 3 at src/main.rs:45:5: 45:18
+        StorageLive(_9);                 // scope 3 at src/main.rs:45:12: 45:14
+        StorageLive(_10);                // scope 3 at src/main.rs:45:12: 45:14
+        _10 = &_5;                       // scope 3 at src/main.rs:45:12: 45:14
+        _9 = &(*_10);                    // scope 3 at src/main.rs:45:12: 45:14
+        StorageLive(_11);                // scope 3 at src/main.rs:45:16: 45:17
+        _11 = copy _2;                   // scope 3 at src/main.rs:45:16: 45:17
+        _8 = glance(move _9, move _11) -> [return: bb3, unwind: bb10]; // scope 3 at src/main.rs:45:5: 45:18
+    }
+
+    bb3: {
+        StorageDead(_11);                // scope 3 at src/main.rs:45:17: 45:18
+        StorageDead(_9);                 // scope 3 at src/main.rs:45:17: 45:18
+        StorageDead(_10);                // scope 3 at src/main.rs:45:18: 45:19
+        StorageDead(_8);                 // scope 3 at src/main.rs:45:18: 45:19
+        StorageLive(_12);                // scope 3 at src/main.rs:46:9: 46:10
+        _12 = other() -> [return: bb4, unwind: bb10]; // scope 3 at src/main.rs:46:13: 46:20
+    }
+
+    bb4: {
+        StorageLive(_13);                // scope 4 at src/main.rs:47:5: 47:47
+        StorageLive(_14);                // scope 4 at src/main.rs:47:5: 47:19
+        StorageLive(_15);                // scope 4 at src/main.rs:47:5: 47:12
+        StorageLive(_16);                // scope 4 at src/main.rs:47:5: 47:6
+        _16 = &_4;                       // scope 4 at src/main.rs:47:5: 47:6
+        _15 = Vec::<u32>::len(move _16) -> [return: bb5, unwind: bb10]; // scope 4 at src/main.rs:47:5: 47:12
+    }
+
+    bb5: {
+        StorageDead(_16);                // scope 4 at src/main.rs:47:11: 47:12
+        _14 = move _15 as u32 (IntToInt); // scope 4 at src/main.rs:47:5: 47:19
+        StorageDead(_15);                // scope 4 at src/main.rs:47:18: 47:19
+        StorageLive(_17);                // scope 4 at src/main.rs:47:22: 47:47
+        StorageLive(_18);                // scope 4 at src/main.rs:47:23: 47:47
+        StorageLive(_19);                // scope 4 at src/main.rs:47:44: 47:46
+        _19 = &_2;                       // scope 4 at src/main.rs:47:44: 47:46
+        _18 = std::hint::black_box::<&u32>(move _19) -> [return: bb6, unwind: bb10]; // scope 4 at src/main.rs:47:23: 47:47
+    }
+
+    bb6: {
+        StorageDead(_19);                // scope 4 at src/main.rs:47:46: 47:47
+        _17 = copy (*_18);               // scope 4 at src/main.rs:47:22: 47:47
+        _20 = AddWithOverflow(copy _14, copy _17); // scope 4 at src/main.rs:47:5: 47:47
+        assert(!move (_20.1: bool), "attempt to compute `{} + {}`, which would overflow", move _14, move _17) -> [success: bb7, unwind: bb10]; // scope 4 at src/main.rs:47:5: 47:47
+    }
+
+    bb7: {
+        _13 = move (_20.0: u32);         // scope 4 at src/main.rs:47:5: 47:47
+        StorageDead(_17);                // scope 4 at src/main.rs:47:46: 47:47
+        StorageDead(_14);                // scope 4 at src/main.rs:47:46: 47:47
+        StorageLive(_21);                // scope 4 at src/main.rs:47:50: 47:51
+        _21 = copy _12;                  // scope 4 at src/main.rs:47:50: 47:51
+        _22 = AddWithOverflow(copy _13, copy _21); // scope 4 at src/main.rs:47:5: 47:51
+        assert(!move (_22.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _21) -> [success: bb8, unwind: bb10]; // scope 4 at src/main.rs:47:5: 47:51
+    }
+
+    bb8: {
+        _0 = move (_22.0: u32);          // scope 4 at src/main.rs:47:5: 47:51
+        StorageDead(_21);                // scope 4 at src/main.rs:47:50: 47:51
+        StorageDead(_18);                // scope 4 at src/main.rs:47:50: 47:51
+        StorageDead(_13);                // scope 4 at src/main.rs:47:50: 47:51
+        StorageDead(_12);                // scope 3 at src/main.rs:48:1: 48:2
+        StorageDead(_5);                 // scope 2 at src/main.rs:48:1: 48:2
+        drop(_4) -> [return: bb9, unwind: bb11]; // scope 1 at src/main.rs:48:1: 48:2
+    }
+
+    bb9: {
+        StorageDead(_4);                 // scope 1 at src/main.rs:48:1: 48:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:48:1: 48:2
+        return;                          // scope 0 at src/main.rs:48:2: 48:2
+    }
+
+    bb10 (cleanup): {
+        drop(_4) -> [return: bb11, unwind terminate(cleanup)]; // scope 1 at src/main.rs:48:1: 48:2
+    }
+
+    bb11 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:41:1: 48:2
+    }
+}
+"""
+
+CELL_LENT = """// MIR for `celled` after PreCodegen
+
+fn celled(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:50:11: 50:14
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:50:24: 50:27
+    let _2: u32;                         // in scope 0 at src/main.rs:51:9: 51:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:51:36: 51:39
+    let _5: ();                          // in scope 0 at src/main.rs:53:5: 53:15
+    let mut _6: &std::cell::Cell<u32>;   // in scope 0 at src/main.rs:53:9: 53:11
+    let _7: &std::cell::Cell<u32>;       // in scope 0 at src/main.rs:53:9: 53:11
+    let mut _8: u32;                     // in scope 0 at src/main.rs:53:13: 53:14
+    let _10: &u32;                       // in scope 0 at src/main.rs:55:5: 55:29
+    let mut _11: &u32;                   // in scope 0 at src/main.rs:55:26: 55:28
+    let mut _12: u32;                    // in scope 0 at src/main.rs:56:5: 56:12
+    let mut _13: &std::cell::Cell<u32>;  // in scope 0 at src/main.rs:56:5: 56:6
+    let mut _14: u32;                    // in scope 0 at src/main.rs:56:15: 56:16
+    let mut _15: (u32, bool);            // in scope 0 at src/main.rs:56:5: 56:16
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:51:9: 51:10
+        let _4: std::cell::Cell<u32>;    // in scope 1 at src/main.rs:52:9: 52:10
+        scope 2 {
+            debug c => _4;               // in scope 2 at src/main.rs:52:9: 52:10
+            let _9: u32;                 // in scope 2 at src/main.rs:54:9: 54:10
+            scope 3 {
+                debug k => _9;           // in scope 3 at src/main.rs:54:9: 54:10
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:51:9: 51:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:51:36: 51:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:51:36: 51:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:51:13: 51:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:51:39: 51:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:52:9: 52:10
+        _4 = Cell::<u32>::new(const 0_u32) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:52:13: 52:25
+    }
+
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:53:5: 53:15
+        StorageLive(_6);                 // scope 2 at src/main.rs:53:9: 53:11
+        StorageLive(_7);                 // scope 2 at src/main.rs:53:9: 53:11
+        _7 = &_4;                        // scope 2 at src/main.rs:53:9: 53:11
+        _6 = &(*_7);                     // scope 2 at src/main.rs:53:9: 53:11
+        StorageLive(_8);                 // scope 2 at src/main.rs:53:13: 53:14
+        _8 = copy _2;                    // scope 2 at src/main.rs:53:13: 53:14
+        _5 = put(move _6, move _8) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:53:5: 53:15
+    }
+
+    bb3: {
+        StorageDead(_8);                 // scope 2 at src/main.rs:53:14: 53:15
+        StorageDead(_6);                 // scope 2 at src/main.rs:53:14: 53:15
+        StorageDead(_7);                 // scope 2 at src/main.rs:53:15: 53:16
+        StorageDead(_5);                 // scope 2 at src/main.rs:53:15: 53:16
+        StorageLive(_9);                 // scope 2 at src/main.rs:54:9: 54:10
+        _9 = other() -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:54:13: 54:20
+    }
+
+    bb4: {
+        StorageLive(_10);                // scope 3 at src/main.rs:55:5: 55:29
+        StorageLive(_11);                // scope 3 at src/main.rs:55:26: 55:28
+        _11 = &_2;                       // scope 3 at src/main.rs:55:26: 55:28
+        _10 = std::hint::black_box::<&u32>(move _11) -> [return: bb5, unwind continue]; // scope 3 at src/main.rs:55:5: 55:29
+    }
+
+    bb5: {
+        StorageDead(_11);                // scope 3 at src/main.rs:55:28: 55:29
+        StorageDead(_10);                // scope 3 at src/main.rs:55:29: 55:30
+        StorageLive(_12);                // scope 3 at src/main.rs:56:5: 56:12
+        StorageLive(_13);                // scope 3 at src/main.rs:56:5: 56:6
+        _13 = &_4;                       // scope 3 at src/main.rs:56:5: 56:6
+        _12 = Cell::<u32>::get(move _13) -> [return: bb6, unwind continue]; // scope 3 at src/main.rs:56:5: 56:12
+    }
+
+    bb6: {
+        StorageDead(_13);                // scope 3 at src/main.rs:56:11: 56:12
+        StorageLive(_14);                // scope 3 at src/main.rs:56:15: 56:16
+        _14 = copy _9;                   // scope 3 at src/main.rs:56:15: 56:16
+        _15 = AddWithOverflow(copy _12, copy _14); // scope 3 at src/main.rs:56:5: 56:16
+        assert(!move (_15.1: bool), "attempt to compute `{} + {}`, which would overflow", move _12, move _14) -> [success: bb7, unwind continue]; // scope 3 at src/main.rs:56:5: 56:16
+    }
+
+    bb7: {
+        _0 = move (_15.0: u32);          // scope 3 at src/main.rs:56:5: 56:16
+        StorageDead(_14);                // scope 3 at src/main.rs:56:15: 56:16
+        StorageDead(_12);                // scope 3 at src/main.rs:56:15: 56:16
+        StorageDead(_9);                 // scope 2 at src/main.rs:57:1: 57:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:57:1: 57:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:57:1: 57:2
+        return;                          // scope 0 at src/main.rs:57:2: 57:2
+    }
+}
+"""
+
+
+def test_a_crate_type_named_like_a_cell_or_an_atomic_is_neither():
+    # `look(&h, x)` with `h = NotCell { p: &mut v }`, and `glance(&h, x)` with an
+    # `Atomicity`: neither is a standard cell or atomic, so through `&h` no callee writes
+    # into `v`. A match on `Cell<` or `Atomic` in the type's text said "the program's own
+    # `v` … may hold a copy of `x`".
+    from peeky.rust_mir import _may_write
+
+    for kind, writes in (
+        ("&NotCell<'_>", False),
+        ("&Atomicity<'_>", False),
+        ("&AtomicCounter", False),
+        ("&shapes::Cell<u32>", False),
+        ("&std::cell::LazyCell<u32>", False),
+        ("&std::sync::atomic::Ordering", False),
+        ("&std::cell::Cell<u32>", True),
+        ("&core::cell::RefCell<u32>", True),
+        ("&std::cell::UnsafeCell<u32>", True),
+        ("&std::cell::OnceCell<u32>", True),
+        ("&std::sync::OnceLock<u32>", True),
+        ("&std::sync::Mutex<u32>", True),
+        ("&std::sync::RwLock<u32>", True),
+        ("&std::sync::atomic::Atomic<u32>", True),
+        ("&std::sync::atomic::AtomicU32", True),
+        ("&core::sync::atomic::AtomicBool", True),
+        ("&std::sync::atomic::AtomicPtr<u32>", True),
+        ("&std::ptr::NonNull<u32>", True),
+        ("&*const u32", True),
+    ):
+        assert _may_write(kind, (), True) is writes, kind
+    for text, name, line in ((NOT_CELL, "notcell", 37), (ATOMICITY, "atomicity", 46)):
+        body = body_of(text)
+        stop = place(body, "_12 = other()")
+        assert not body._may_write_through(9), name
+        assert 4 not in body.direct_copies_at(2, stop), name
+        assert why(text, ROUND10, name, line, "_12 = other()") == (None, None), name
+    # `put(&c, x)` with `c = Cell::new(0)`: through `&Cell<u32>`, `c.set(x)` stores it.
+    body = body_of(CELL_LENT)
+    stop = place(body, "_9 = other()")
+    assert body._may_write_through(6)
+    assert 4 in body.direct_copies_at(2, stop)
+    reason, _ = why(CELL_LENT, ROUND10, "celled", 54, "_9 = other()")
+    assert "the program's own `c` (at " in reason, reason
+    assert "may hold a copy of it that it goes on with" in reason, reason

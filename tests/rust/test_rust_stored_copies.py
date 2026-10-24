@@ -439,6 +439,91 @@ fn main() {
 """
 
 
+# Crate types named like a cell or an atomic, and a standard `Cell` and `AtomicU32`, each
+# passed through a shared `&` (#311 review round 5).
+NAMES = """use std::cell::Cell;
+use std::env;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+struct NotCell<'a> {
+    p: &'a mut Vec<u32>,
+}
+
+struct Atomicity<'a> {
+    p: &'a mut Vec<u32>,
+}
+
+#[inline(never)]
+fn look(h: &NotCell, x: u32) {
+    std::hint::black_box((h.p.len(), x));
+}
+
+#[inline(never)]
+fn glance(h: &Atomicity, x: u32) {
+    std::hint::black_box((h.p.len(), x));
+}
+
+#[inline(never)]
+fn put(c: &Cell<u32>, x: u32) {
+    c.set(x);
+}
+
+#[inline(never)]
+fn store(a: &AtomicU32, x: u32) {
+    a.store(x, Ordering::Relaxed);
+}
+
+fn notcell(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let h = NotCell { p: &mut v };
+    look(&h, x);
+    let k = other(); // NOTCELL
+    v[0] + *std::hint::black_box(&x) + k
+}
+
+fn atomicity(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut v: Vec<u32> = vec![7];
+    let h = Atomicity { p: &mut v };
+    glance(&h, x);
+    let k = other(); // ATOMICITY
+    v[0] + *std::hint::black_box(&x) + k
+}
+
+fn celled(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let c = Cell::new(0);
+    put(&c, x);
+    let k = other(); // CELLED
+    std::hint::black_box(&x);
+    c.get() + k
+}
+
+fn atomic(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = AtomicU32::new(0);
+    store(&a, x);
+    let k = other(); // ATOMIC_U32
+    std::hint::black_box(&x);
+    a.load(Ordering::Relaxed) + k
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("NOTCELL {}", notcell(x));
+    println!("ATOMICITY {}", atomicity(x));
+    println!("CELLED {}", celled(x));
+    println!("ATOMIC {}", atomic(x));
+}
+"""
+
+
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
 
@@ -629,6 +714,26 @@ def test_a_shared_reference_to_a_struct_holding_a_mut_lends_no_write(crate, caps
     # callee may store `x` where the program goes on.
     for marker, holder in (("BYVAL", "v"), ("MUTREF", "v"), ("RAW", "v"), ("CELLED", "c")):
         line = line_of(HOLDS, f"// {marker}")
+        message = refused(*probe(capsys, root, line, "--set", "x=100", "--", "5"))
+        assert f"the program's own `{holder}` (at " in message, (marker, message)
+        assert "may hold a copy of `x` that it goes on with" in message, (marker, message)
+
+
+@pytest.mark.timeout(400)
+def test_a_crate_type_named_like_a_cell_or_an_atomic_lends_no_write(crate, capsys):
+    # `look(&h, x)` with `h = NotCell { p: &mut v }`, and `glance(&h, x)` with an
+    # `Atomicity`: neither is a standard cell or atomic, so `v` holds no copy of `x`. The
+    # change is made and the program sees it (7 + 100 + 1).
+    root = crate("names", NAMES)
+    for marker in ("NOTCELL", "ATOMICITY"):
+        line = line_of(NAMES, f"// {marker}")
+        code, result = probe(capsys, root, line, "--capture", "x", "--set", "x=100", "--", "5")
+        assert code == 0, (marker, result.get("error"))
+        assert result["interventions"][0]["after"] == "100", (marker, result["interventions"])
+        assert f"{marker} 108" in result["output"], (marker, result["output"])
+    # Through `&Cell<u32>` and `&AtomicU32`, the callee stores `x` where the program goes on.
+    for marker, holder in (("CELLED", "c"), ("ATOMIC_U32", "a")):
+        line = line_of(NAMES, f"// {marker}")
         message = refused(*probe(capsys, root, line, "--set", "x=100", "--", "5"))
         assert f"the program's own `{holder}` (at " in message, (marker, message)
         assert "may hold a copy of `x` that it goes on with" in message, (marker, message)

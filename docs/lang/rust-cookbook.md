@@ -1510,7 +1510,8 @@ A call may store a copy too, through a `&mut` or raw pointer it is given, of ano
   `m.iter()`, writes nothing, so it leaves `a` and `m` out;
 - a struct holding `&mut v`, passed by value or as `&mut h`: `v` may hold a copy. Passed as `&h`,
   it writes nothing through that `&mut`, so it leaves `v` out. Through `&h`, a raw pointer or a
-  `Cell` it holds may still be written.
+  `Cell` it holds may still be written. Only the standard library's cells, locks and atomics
+  count, not a type of your own named `NotCell` or `Atomicity`.
 
 A read through a pointer made from the binding is a use of it. So after
 `let r = v.last_mut().unwrap();` and `*r = x;`, a later `*r` uses `v`'s copy.
