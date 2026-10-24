@@ -146,7 +146,7 @@ def probe(args):
             )
             # Production path: application units only, unchanged 2 MiB line parser.
             symbols_started = time.monotonic()
-            lines, layouts, units, blocks = application_symbols(
+            lines, layouts, units, blocks, interior = application_symbols(
                 str(paths["dwarfdump"]),
                 symbols,
                 root,
@@ -163,6 +163,8 @@ def probe(args):
                 "layouts": layouts,
                 # Functions whose DWARF lexical blocks tell a line's stops apart (#115).
                 "functions_with_blocks": sum(1 for found in blocks.values() if found),
+                # The crate's own types whose holdings the debug information gives (#321).
+                "interior_types": None if interior is None else sorted(interior),
             }
             assert line in lines["src/main.rs"], lines
             assert any(blocks.values()), blocks

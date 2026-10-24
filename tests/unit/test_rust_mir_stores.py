@@ -11,7 +11,7 @@ import json
 from types import SimpleNamespace
 
 from peeky.rust import RustSession
-from peeky.rust_mir import IrFunction, OwnedLocals, parse_body
+from peeky.rust_mir import IrFunction, OwnedLocals, TypeLayouts, parse_body
 
 ALLOC = "/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/alloc/src/macros.rs"
 # The crate the fixtures below are rustc 1.96.0's MIR of (`-Zmir-opt-level=0
@@ -650,10 +650,14 @@ SHALLOW = SHALLOW[: SHALLOW.index("    bb7: {")].rstrip() + "\n}\n"
 HASH = "h0123456789abcdef"
 
 
-def body_of(text):
-    """The body of ``text``, as matched to its IR: a function with no type parameters."""
+def body_of(text, interior=None):
+    """The body of ``text``, as matched to its IR: a function with no type parameters, in a
+    crate that names no `std`, `core` or `alloc` of its own, whose own types hold what
+    ``interior`` says (rust_symbols.interior_types; None: not read)."""
     body = parse_body(text)
     body.generics = ()
+    body.std_paths = frozenset({"std", "core", "alloc"})
+    body.layouts = TypeLayouts(interior, body.closure_captures())
     return body
 
 
@@ -691,10 +695,12 @@ def read(body, local, position, transfers=True):
     return set(body.read_copies_at(local, position, (), transfers)[0])
 
 
-def why(text, source, name, line, statement, variable="x"):
+def why(text, source, name, line, statement, variable="x", interior=None):
     """Why a change to ``variable`` is refused at a stop on ``line`` of the function
     ``name`` of ``text``, at its statement starting ``statement`` (``mid_statement``'s
-    reason), with Peeky's own proofs over the MIR: (the reason, its row's short form)."""
+    reason), with Peeky's own proofs over the MIR, and the crate's own types holding what
+    ``interior`` says (as the build's debug information does; None: not read): (the
+    reason, its row's short form)."""
     body = parse_body(text)
     blocks = {}
     for number, block in body.blocks.items():
@@ -704,6 +710,7 @@ def why(text, source, name, line, statement, variable="x"):
     function = IrFunction(name, "crate", "src/main.rs", blocks, {}, declared - 1)
     texts = {"src/main.rs": source}
     owned = OwnedLocals([body], {HASH: function}, ("src/main.rs",), texts=texts)
+    owned.interior = interior
     position = place(body, statement)
     owned._positions = lambda site, line, facts, block=None: [position]
     judge = owned.copy_hazards
@@ -3628,12 +3635,18 @@ fn mutref(_1: u32) -> u32 {
 """
 
 
+# What the debug information shows `Hold` holds (#321): a `&mut`, written through only by
+# value or through a `&mut` (rust_symbols.interior_types).
+HOLD = {"Hold": (frozenset({"owned"}), ())}
+
+
 def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
     # `let h = Hold { p: &mut v }; look(&h, x);`: through `&Hold`, safe code cannot write
     # through `h.p`, so `v` holds no copy of `x`. The refusal said "the program's own `v`
     # … may hold a copy of `x` that it goes on with".
     from peeky.rust_mir import _may_write
 
+    held = TypeLayouts(HOLD)
     for kind, writes in (
         ("&Hold<'_>", False),
         ("&&mut std::vec::Vec<u32>", False),
@@ -3647,7 +3660,9 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
         ("&std::cell::RefCell<std::vec::Vec<u32>>", True),
         ("&*mut u32", True),
     ):
-        assert _may_write(kind, ()) is writes, kind
+        assert _may_write(kind, (), layouts=held) is writes, kind
+    # #321: where the debug information wasn't read, `Hold` may hold a cell.
+    assert _may_write("&Hold<'_>", ()) is True
     # Reached only through a `&`, a `&mut` or a mutable view writes nothing; a raw
     # pointer or a cell still may.
     for kind, writes in (
@@ -3657,11 +3672,11 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
         ("std::cell::Cell<u32>", True),
     ):
         assert _may_write(kind, (), True) is writes, kind
-    body = body_of(SHARED_HOLD)
+    body = body_of(SHARED_HOLD, HOLD)
     stop = place(body, "_12 = other()")
     assert not body._may_write_through(9)
     assert 4 not in body.direct_copies_at(2, stop)
-    assert why(SHARED_HOLD, ROUND8, "shared", 32, "_12 = other()") == (None, None)
+    assert why(SHARED_HOLD, ROUND8, "shared", 32, "_12 = other()", interior=HOLD) == (None, None)
     # By value (`keep(h, x)`) and through `&mut h` (`poke`), the callee may push `x`.
     for text, name, line, given, statement in (
         (BYVAL_HOLD, "byval", 41, 9, "_11 = other()"),
@@ -3676,8 +3691,8 @@ def test_a_shared_reference_lends_no_write_through_the_mut_it_reaches():
         assert "may hold a copy of it that it goes on with" in reason, (name, reason)
     # Through `&h`, a raw pointer or a cell `h` holds still may be written through.
     for kind in ("*mut std::vec::Vec<u32>", "&std::cell::Cell<std::vec::Vec<u32>>"):
-        held = SHARED_HOLD.replace("let mut _6: &mut std::vec::Vec<u32>;", f"let mut _6: {kind};")
-        assert body_of(held)._may_write_through(9), kind
+        text = SHARED_HOLD.replace("let mut _6: &mut std::vec::Vec<u32>;", f"let mut _6: {kind};")
+        assert body_of(text, HOLD)._may_write_through(9), kind
 
 
 # Review round 5 of PR #316: crate types named like a cell or an atomic, and a standard
@@ -4140,6 +4155,13 @@ def test_a_crate_type_named_like_a_cell_or_an_atomic_is_neither():
     # `v` … may hold a copy of `x`".
     from peeky.rust_mir import _may_write
 
+    # #321: each crate type by what the debug information shows it holds.
+    named = {
+        "NotCell": (frozenset({"owned"}), ()),
+        "Atomicity": (frozenset({"owned"}), ()),
+        "AtomicCounter": (frozenset(), ()),
+        "shapes::Cell": (frozenset(), ()),
+    }
     for kind, writes in (
         ("&NotCell<'_>", False),
         ("&Atomicity<'_>", False),
@@ -4161,13 +4183,16 @@ def test_a_crate_type_named_like_a_cell_or_an_atomic_is_neither():
         ("&std::ptr::NonNull<u32>", True),
         ("&*const u32", True),
     ):
-        assert _may_write(kind, (), True) is writes, kind
+        assert _may_write(kind, (), True, layouts=TypeLayouts(named)) is writes, kind
+    # One that holds an atomic, as the debug information shows, may be written through.
+    holds = {"AtomicCounter": (frozenset({"interior", "owned"}), ())}
+    assert _may_write("&AtomicCounter", (), True, layouts=TypeLayouts(holds)) is True
     for text, name, line in ((NOT_CELL, "notcell", 37), (ATOMICITY, "atomicity", 46)):
-        body = body_of(text)
+        body = body_of(text, named)
         stop = place(body, "_12 = other()")
         assert not body._may_write_through(9), name
         assert 4 not in body.direct_copies_at(2, stop), name
-        assert why(text, ROUND10, name, line, "_12 = other()") == (None, None), name
+        assert why(text, ROUND10, name, line, "_12 = other()", interior=named) == (None, None)
     # `put(&c, x)` with `c = Cell::new(0)`: through `&Cell<u32>`, `c.set(x)` stores it.
     body = body_of(CELL_LENT)
     stop = place(body, "_9 = other()")

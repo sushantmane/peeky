@@ -679,7 +679,7 @@ class RustTarget:
                     self.sources,
                 )
             env = dict(prepared.manifest.effective_environment)
-            lines, layouts, units, blocks = application_symbols(
+            lines, layouts, units, blocks, interior = application_symbols(
                 dwarfdump,
                 symbols,
                 prepared.workspace,
@@ -732,6 +732,9 @@ class RustTarget:
             session.unsafe_code = unsafe_source(texts, rust)
             if owned is not None:
                 owned.unsafe_code = session.unsafe_code
+                # What the crate's own types hold, to judge what a callee may change
+                # through them (#321).
+                owned.interior = interior
                 # Where std's printing is written, to trust a read it makes (#192 review).
                 owned.std_macros = std_macro_files(
                     rustc, prepared.manifest.probes, (prepared.workspace, root)
@@ -1020,6 +1023,10 @@ def _either(clauses):
 # What a refusal says of a binding that may hold a copy or only point into the local
 # (#320 review: ``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
+# And of bindings that may keep the copy where no change Peeky makes reaches (#321), and
+# what such a binding's type can't hold a copy in, only what was computed from it.
+_HIDDEN_COPY = ", which may be out of Peeky's reach ("
+_DERIVED = " state derived from "
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1034,7 +1041,7 @@ _READINGS = (
 )
 
 
-def _copy_reason(proofs, hashed, found, home, target="it"):
+def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
     """How sure a refusal may be of what a statement under way holds (#300), from
     ``copy_hazards`` at the same places for each of ``_READINGS`` (``found``: {reads:
     [(place, hazards)], or None where not understood}):
@@ -1127,6 +1134,27 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
     pointing = frozenset().union(*(dict(found.get("pointing") or ()).values())) & bound
     if names := proofs.copy_names(hashed, pointing):
         own += f", unless {_names(names)} only point{'s' if len(names) == 1 else ''} into it"
+    elif not aiming and bound == getattr(proofs, "hidden_holders", lambda *args: None)(
+        hashed, bound
+    ):
+        # #321: a cell, a channel's state (`rx`), a struct's cell field, where a callee
+        # given a `&` may have stored the copy: no field change Peeky makes reaches it.
+        levels, unsure = (
+            proofs.holder_kinds(hashed, bound, kind)
+            if hasattr(proofs, "holder_kinds")
+            else (dict.fromkeys(bound, "copy"), ())
+        )
+        # #321 review rounds 1 to 3: a copy only where each may hold one of its very type, a
+        # `Cell<bool>` none of a `u32`: only what was computed from it.
+        if kind is None or "derived" in levels.values():
+            own = own.replace(f" may hold a copy of {target} ", f" may hold{_DERIVED}{target} ")
+        types = "its type" if len(bound) == 1 else "their types"
+        own += f"{_HIDDEN_COPY}behind a cell, a lock, a channel or a pointer {types} " + (
+            f"may hold: which instance of {types} {'it is' if len(bound) == 1 else 'they are'} "
+            "can't be told)"
+            if unsure
+            else "hold" + ("s)" if len(bound) == 1 else ")")
+        )
     if not clauses:
         return "kept", own, at, None
     return "may", _either(clauses), places | at, own
@@ -2804,7 +2832,10 @@ class RustSession(NativeSession):
             reads: proofs.coded_hazards(hashed, plain, line, path, projection, reads)
             for reads in (*_READINGS, "pointing")
         }
-        kind, detail, places, kept = _copy_reason(proofs, hashed, found, source, f"`{plain}`")
+        local_kind = getattr(proofs, "declared_type", lambda *args: None)(hashed, plain, line, path)
+        kind, detail, places, kept = _copy_reason(
+            proofs, hashed, found, source, f"`{plain}`", local_kind
+        )
         made = _line_list(places, source)
         unseen = (
             "so a change there may never be seen: Peeky proves no read of the changed part "
@@ -2880,9 +2911,16 @@ class RustSession(NativeSession):
             elif kind == "statement":
                 kept = "that it goes on with" in detail
                 statements = (
-                    "copied"
+                    "derived"
+                    if kept and _DERIVED in detail and "statement under way" not in detail
+                    else "copied"
                     if "has already copied" in detail
-                    or (kept and "statement under way" not in detail and _ONLY_POINTS not in detail)
+                    or (
+                        kept
+                        and "statement under way" not in detail
+                        and _ONLY_POINTS not in detail
+                        and _HIDDEN_COPY not in detail
+                    )
                     else "holds"
                     if kept or "already holds a copy" in detail
                     else "untraced"
@@ -2923,6 +2961,8 @@ class RustSession(NativeSession):
             )
         elif statements == "holds":
             text += ". Change it before the program copies it (`--set-at` an earlier line)"
+        elif statements == "derived":
+            text += ". Change it before the program uses it (`--set-at` an earlier line)"
         elif statements:
             text += (
                 ". Change it at the first line of that statement (`--set-at` it), before it "
@@ -3112,7 +3152,12 @@ class RustSession(NativeSession):
                 reads: proofs.copy_hazards(**asked, reads=reads)
                 for reads in (*_READINGS[1:], "pointing")
             }
-            kind, detail, places, kept = _copy_reason(proofs, hashed[1], found, home)
+            local_kind = getattr(proofs, "declared_type", lambda *args: None)(
+                hashed[1], variable.get("name"), place.get("line"), home
+            )
+            kind, detail, places, kept = _copy_reason(
+                proofs, hashed[1], found, home, kind=local_kind
+            )
             made = _line_list(places, home)
             unseen = (
                 f"so a change to `{variable.get('name')}` may never be seen: Peeky proves no "
@@ -3138,9 +3183,20 @@ class RustSession(NativeSession):
                     f"{detail}, {unseen}",
                     "Change it before the program copies or borrows it (a stop on an earlier line)"
                     if _ONLY_POINTS in detail
+                    # #321 review: what was computed from it, not a copy.
+                    else "Change it before the program uses it (a stop on an earlier line)"
+                    if _DERIVED in detail
+                    # #321: a copy no change reaches has nothing to change instead.
+                    else "Change it before the program copies it (a stop on an earlier line)"
+                    if _HIDDEN_COPY in detail
                     else "Change it before the program copies it (a stop on an earlier line), "
                     "or change the copy instead",
-                    "the program may hold a copy" + (f" ({made})" if made else ""),
+                    (
+                        "the program may hold state derived from it"
+                        if _DERIVED in detail
+                        else "the program may hold a copy"
+                    )
+                    + (f" ({made})" if made else ""),
                 )
             if kind == "may" and kept:
                 return _Copied(

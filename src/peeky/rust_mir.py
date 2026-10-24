@@ -39,6 +39,7 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 from peeky.rust_ir import ir_string
 from peeky.textlines import split_lines
@@ -136,16 +137,9 @@ _BOX_TYPE = re.compile(r"^(?:(?:std|alloc)::boxed::)?Box<")
 _COPY_NONOVERLAPPING = re.compile(
     r"^copy_nonoverlapping\(dst = (?:copy|move) _([0-9]+), src = (?:copy|move) _([0-9]+),"
 )
-# What a callee may write through even where it reaches it only through a shared `&`
-# (#311 review rounds 4 and 5): a raw pointer, and the standard library's `NonNull`, cells,
-# locks and atomics, by the exact last segment of a `std::`/`core::`/`alloc::` path
-# (`std::cell::Cell<u32>`, `std::sync::atomic::Atomic<u32>` as rustc 1.96 prints
-# `AtomicU32`, `AtomicU32` itself). Not a crate's `NotCell<'_>` or `Atomicity<'_>`.
+# A raw pointer, which a callee may write through even where it reaches it only through a
+# shared `&` (#311 review round 4).
 _RAW_POINTER_SYNTAX = re.compile(r"\*mut |\*const ")
-_SHARED_WRITABLE_SEGMENT = re.compile(
-    r"Cell|RefCell|UnsafeCell|SyncUnsafeCell|OnceCell|OnceLock|Mutex|RwLock|NonNull"
-    r"|Atomic(?:Bool|[IU](?:8|16|32|64|128|size)|Ptr)?"
-)
 # A reference in a type: `&`, `&mut `, `&'a `, `&'static mut ` (group 1 for `mut`).
 _REFERENCE = re.compile(r"&(?:'[\w?]+ )?(mut )?")
 # A reference or raw pointer itself (`&mut [u32]`, `*mut u32`, `NonNull<T>`).
@@ -287,41 +281,951 @@ def _unshared(kind):
     return "".join(out)
 
 
-def _shared_writable(kind):
-    """Whether ``kind`` holds anything a callee may write through even where it reaches
-    it only through a shared `&` (#311 review rounds 4 and 5): a raw pointer, or a
-    standard `NonNull`, cell, lock or atomic, by the exact last segment of a standard
-    path (``_SHARED_WRITABLE_SEGMENT``)."""
-    return bool(_RAW_POINTER_SYNTAX.search(kind)) or any(
-        word.startswith(_STD_PATHS) and _SHARED_WRITABLE_SEGMENT.fullmatch(word.rsplit("::", 1)[-1])
-        for word in _TYPE_WORDS.findall(kind)
+# What each standard type holds of the program's values, and how a callee given it may
+# change them (#321), by the module its path names after the root and its last segment.
+# Both the dump's paths (`std::sync::mpsc::Sender`, `std::sync::atomic::Atomic`) and the
+# debug information's (`std::sync::poison::mutex::Mutex`, `core::cell::once::OnceCell`)
+# name the module second. The classes:
+# - "cell": a cell, lock, atomic or once-cell. Through a shared `&`, a callee may store a
+#   value in it, and reach what it holds mutably (`RefCell::borrow_mut`, `Mutex::lock`).
+# - "channel": a sending end, `Sender` or `SyncSender`. Through a `&`, a callee may store a
+#   value where every end of the channel reads it.
+# - "pointer": `NonNull` and `Unique`: unsafe code may write through them.
+# - "receiving": a receiving end (`Receiver`, its `Iter`, `TryIter`, `IntoIter`). It reads
+#   what a sending end stored, and gives what it receives by value.
+# - "shared": `Rc`, `Arc`, `Weak` and `LocalKey`. They give only a `&` to what they hold,
+#   which other handles may reach too.
+# - "lazy": `LazyCell` and `LazyLock`. They run their own initializer, and give a `&`.
+# - "inert": a type that holds no value the program gives it, whatever its type arguments:
+#   `Condvar`, `Barrier`, `Once`, `atomic::Ordering`, a thread's handles, `PhantomData`.
+# - "plain": the rest of ``_PLAIN_MODULES`` and those named "plain" below. It holds what
+#   its type arguments hold, and changes through no `&`.
+# A standard type in none of these is "unknown": a callee may write through it, which a
+# refusal says only as a possibility (the may-analysis's hedges).
+_STD_NAMED = {
+    "cell": {
+        **dict.fromkeys("Cell RefCell UnsafeCell SyncUnsafeCell OnceCell".split(), "cell"),
+        "LazyCell": "lazy",
+        **dict.fromkeys("Ref RefMut BorrowError BorrowMutError".split(), "plain"),
+    },
+    "sync": {
+        **dict.fromkeys("Mutex RwLock ReentrantLock OnceLock".split(), "cell"),
+        **dict.fromkeys("Sender SyncSender".split(), "channel"),
+        **dict.fromkeys("Receiver Iter TryIter IntoIter".split(), "receiving"),
+        **dict.fromkeys("Arc Weak".split(), "shared"),
+        "LazyLock": "lazy",
+        **dict.fromkeys(
+            "Condvar Barrier BarrierWaitResult WaitTimeoutResult Once OnceState Ordering".split(),
+            "inert",
+        ),
+        **dict.fromkeys(
+            "MutexGuard MappedMutexGuard RwLockReadGuard RwLockWriteGuard MappedRwLockReadGuard "
+            "MappedRwLockWriteGuard ReentrantLockGuard PoisonError TryLockError Exclusive "
+            "SendError TrySendError RecvError RecvTimeoutError TryRecvError".split(),
+            "plain",
+        ),
+    },
+    "rc": {"Rc": "shared", "Weak": "shared", "UniqueRc": "plain"},
+    "ptr": {"NonNull": "pointer", "Unique": "pointer", "Alignment": "plain"},
+    "marker": {"PhantomData": "inert", "PhantomPinned": "inert"},
+    "thread": {
+        "LocalKey": "shared",
+        **dict.fromkeys("Thread ThreadId JoinHandle Builder AccessError".split(), "inert"),
+    },
+}
+_STD_ATOMIC = re.compile(r"Atomic(?:Bool|[IU](?:8|16|32|64|128|size)|Ptr)?")
+_PLAIN_MODULES = frozenset(
+    "alloc any array ascii borrow boxed char cmp collections convert env ffi fmt hash iter "
+    "marker mem num ops option path pin result slice str string time vec".split()
+)
+# The standard types a function's signature in the dump may name by their short name
+# alone (`fn f(_1: &Cell<u32>, _2: &Vec<u32>)`: rustc trims a path whose last segment is
+# unique), each with its class. They count only where the crate gives that name no item
+# of its own (``OwnedLocals._trusted_bare``).
+_STD_BARE = {
+    **dict.fromkeys(
+        "Cell RefCell UnsafeCell SyncUnsafeCell OnceCell OnceLock Atomic".split(), "cell"
+    ),
+    "SyncSender": "channel",
+    "NonNull": "pointer",
+    **dict.fromkeys("Rc Arc LocalKey".split(), "shared"),
+    **dict.fromkeys("LazyCell LazyLock".split(), "lazy"),
+    **dict.fromkeys("Barrier ThreadId JoinHandle PhantomData".split(), "inert"),
+    **dict.fromkeys(
+        "Vec VecDeque String Box Option Result HashMap HashSet BTreeMap BTreeSet BinaryHeap "
+        "LinkedList PathBuf Path OsString OsStr CString CStr Instant Duration SystemTime Cow "
+        "ManuallyDrop MaybeUninit Pin Reverse Wrapping Saturating NonZero "
+        "Formatter Arguments Chars CharIndices SplitWhitespace Peekable Enumerate Rev Zip "
+        "Chain Cloned Copied Fuse Skip Take StepBy Cycle RangeInclusive RandomState "
+        "DefaultHasher Global".split(),
+        "plain",
+    ),
+}
+_FLAGS = frozenset({"interior", "owned", "shares"})
+# The standard atomics named by what they hold (`AtomicU32`; rustc 1.96 prints it
+# `Atomic<u32>`).
+_ATOMIC_VALUES = {
+    "AtomicBool": "bool",
+    **{
+        f"Atomic{kind.upper()}{bits}": f"{kind}{bits}"
+        for kind in "iu"
+        for bits in (8, 16, 32, 64, 128)
+    },
+    "AtomicIsize": "isize",
+    "AtomicUsize": "usize",
+}
+# The cells that keep nothing but their value (#321 review round 2): of a value with a
+# single state (`()`, `PhantomData<T>`), none. A `RefCell` keeps its borrow flag (a
+# `RefMut` leaked by `mem::forget`, round 3), a lock may be poisoned, a `OnceCell` set.
+_PLAIN_CELLS = frozenset("Cell UnsafeCell SyncUnsafeCell".split())
+# The module of each standard short name of ``_STD_BARE`` (`Cell` is `cell::Cell`), for
+# ``_Judge.canon``.
+_STD_BARE_MODULES = {
+    **dict.fromkeys("Cell RefCell UnsafeCell SyncUnsafeCell OnceCell LazyCell".split(), "cell"),
+    **dict.fromkeys("OnceLock LazyLock Atomic SyncSender Arc Barrier".split(), "sync"),
+    **dict.fromkeys("LocalKey ThreadId JoinHandle".split(), "thread"),
+    **dict.fromkeys(
+        "VecDeque HashMap HashSet BTreeMap BTreeSet BinaryHeap LinkedList".split(), "collections"
+    ),
+    **dict.fromkeys("PathBuf Path".split(), "path"),
+    **dict.fromkeys("OsString OsStr CString CStr".split(), "ffi"),
+    **dict.fromkeys("Instant Duration SystemTime".split(), "time"),
+    **dict.fromkeys("ManuallyDrop MaybeUninit".split(), "mem"),
+    **dict.fromkeys("Wrapping Saturating NonZero".split(), "num"),
+    **dict.fromkeys("Formatter Arguments".split(), "fmt"),
+    **dict.fromkeys("Chars CharIndices SplitWhitespace".split(), "str"),
+    **dict.fromkeys(
+        "Peekable Enumerate Rev Zip Chain Cloned Copied Fuse Skip Take StepBy Cycle".split(), "iter"
+    ),
+    **dict.fromkeys("RandomState DefaultHasher".split(), "hash"),
+    "NonNull": "ptr",
+    "Rc": "rc",
+    "PhantomData": "marker",
+    "Vec": "vec",
+    "String": "string",
+    "Box": "boxed",
+    "Option": "option",
+    "Result": "result",
+    "Cow": "borrow",
+    "Pin": "pin",
+    "Reverse": "cmp",
+    "RangeInclusive": "ops",
+    "Global": "alloc",
+}
+# The standard types whose module and last segment (``_std_key``) name them alone, which a
+# canonical tree (``_key``) names so: those classed (``_STD_NAMED``), the short names rustc
+# prints for a unique last segment (``_STD_BARE``), and the atomics. Another (`Iter` of
+# `collections`, which `hash_map` and `btree_map` each give) is named by no key.
+# The standard types that hold their type arguments' values by value (`Vec<u32>` a `u32`,
+# not `slice::Iter<'_, u32>`), for ``_Judge.components``.
+_STD_OWNING = frozenset(
+    "vec::Vec collections::VecDeque collections::HashMap collections::HashSet "
+    "collections::BTreeMap collections::BTreeSet collections::BinaryHeap collections::LinkedList "
+    "boxed::Box option::Option result::Result rc::Rc sync::Arc cell::Cell cell::RefCell "
+    "cell::UnsafeCell cell::SyncUnsafeCell cell::OnceCell sync::OnceLock sync::Mutex sync::RwLock "
+    "sync::ReentrantLock sync::Atomic mem::ManuallyDrop cmp::Reverse num::Wrapping "
+    "num::Saturating pin::Pin".split()
+)
+_STD_KEYS = frozenset(
+    {f"{module}::{last}" for module, named in _STD_NAMED.items() for last in named}
+    | {f"{_STD_BARE_MODULES[name]}::{name}" for name in _STD_BARE if name in _STD_BARE_MODULES}
+    | {"sync::Atomic"}
+)
+# A function pointer's or item's type begins (`for<'a> fn(`, `unsafe extern "C" fn(`).
+_FN_START = re.compile(r"(?:for<[^<>]*> )?(?:unsafe )?(?:extern \"[^\"]*\" )?fn\(")
+_PATH_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
+_NUMERIC_PRIMITIVES = frozenset(
+    "bool char str i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f16 f32 f64 f128".split()
+)
+# A struct, enum or union declared with generic parameters (`struct Gen<`).
+_DECLARED = re.compile(r"\b(?:struct|enum|union)\s+([A-Za-z_][A-Za-z0-9_]*)\s*<")
+# A closure built (`_0 = {closure@src/main.rs:5:5: 5:13} { c: move _1 };`): its type, and
+# what it captures.
+_CLOSURE_BUILT = re.compile(r"^_[0-9]+ = (\{closure@[^{}]*\})(?: \{ (.*) \})?;$")
+# A local moved or copied, whole or a part of it, into another (`_5 = move (_6.1: T);`,
+# `_7 = copy ((*_6).0: &T);`): not a cast, a borrow or a call.
+_PART_MOVE = re.compile(r"^_([0-9]+) = (?:move|copy) [(*]*_([0-9]+)\b(?:\)*[.:][^;]*\))?;$")
+# A field of a local's own moved or copied out whole (`move (_6.1: T)`, `copy ((_6.0:
+# A).1: B)`), no pointer followed: the place, and the local.
+_FIELD_MOVE = re.compile(r"(?:move|copy) (\(+_([0-9]+)\.[^*]*\))")
+# The standard library's default allocator and hasher arguments, which the dump leaves out
+# of a type's name and the debug information doesn't.
+_DROPPED_DEFAULTS = frozenset({"alloc::Global", "hash::RandomState"})
+_UNKNOWN = ("unknown",)
+
+
+def _std_class(path):
+    """The class (``_STD_NAMED``) of the standard type at ``path``, whose root is the
+    standard library's, without its type arguments."""
+    parts = path.split("::")
+    if len(parts) < 3:
+        return "unknown"
+    module, last = parts[1], parts[-1]
+    if module == "sync" and _STD_ATOMIC.fullmatch(last):
+        return "cell"
+    if module in _STD_NAMED:
+        return _STD_NAMED[module].get(last, "unknown")
+    return "plain" if module in _PLAIN_MODULES else "unknown"
+
+
+def _std_key(path):
+    """A standard type's name as both the dump and the debug information give it: the
+    module its path names second and its last segment (`collections::HashMap` of
+    `std::collections::hash::map::HashMap`)."""
+    parts = path.split("::")
+    return f"{parts[1]}::{parts[-1]}" if len(parts) >= 3 else path
+
+
+def _std_tree(key, arguments):
+    """A standard type's canonical tree: an atomic as `sync::Atomic` of what it holds, and
+    without a trailing default allocator or hasher argument."""
+    last = key.rsplit("::", 1)[-1]
+    if last in _ATOMIC_VALUES:
+        return ("std", "sync::Atomic", (("prim", _ATOMIC_VALUES[last]),))
+    if _STD_ATOMIC.fullmatch(last):
+        key = "sync::Atomic"
+    arguments = list(arguments)
+    while arguments and arguments[-1][0] == "std" and arguments[-1][1] in _DROPPED_DEFAULTS:
+        arguments.pop()
+    return ("std", key, tuple(arguments))
+
+
+def _key(tree):
+    """A canonical type tree's name (`std:vec::Vec<u32>`, `a::Id`, `[u32;0]`), or None where
+    it has a part that can't be told apart (a closure, a trait object, a type not known)."""
+    kind = tree[0]
+    if kind == "prim":
+        return tree[1]
+    if kind in ("std", "type"):
+        inner = [_key(each) for each in tree[2]]
+        if None in inner or (kind == "std" and tree[1] not in _STD_KEYS):
+            return None
+        name = f"std:{tree[1]}" if kind == "std" else tree[1]
+        return f"{name}<{','.join(inner)}>" if inner else name
+    if kind == "ref":
+        inner = _key(tree[2])
+        return None if inner is None else ("&mut " if tree[1] else "&") + inner
+    if kind == "tuple":
+        inner = [_key(each) for each in tree[1]]
+        return None if None in inner else f"({','.join(inner)})"
+    if kind in ("array", "slice"):
+        inner = _key(tree[1])
+        if inner is None:
+            return None
+        if kind == "slice":
+            return f"[{inner}]"
+        return f"[{inner};{'?' if tree[2] is None else tree[2]}]"
+    return {"fn": "fn", "never": "!", "raw": "*"}.get(kind)
+
+
+def _bracket_end(text, at, close):
+    """The index just past the bracket closing the one opened before ``at``, skipping
+    `->`, or None."""
+    depth = 1
+    while at < len(text):
+        if text.startswith("->", at):
+            at += 2
+            continue
+        if text[at] in "<([{":
+            depth += 1
+        elif text[at] in ">)]}":
+            depth -= 1
+            if not depth:
+                return at + 1 if text[at] == close else None
+        at += 1
+    return None
+
+
+def _run_end(text, at):
+    """Where an item that runs to the next top-level `,` or closing bracket ends (`dyn
+    Fn(u32) -> u32`, a const argument)."""
+    depth = 0
+    while at < len(text):
+        if text.startswith("->", at):
+            at += 2
+            continue
+        if text[at] in "<([{":
+            depth += 1
+        elif text[at] in ">)]}":
+            if not depth:
+                return at
+            depth -= 1
+        elif text[at] in ",;" and not depth:
+            return at
+        at += 1
+    return at
+
+
+def _type_list(text, at, close):
+    """The types separated by `, ` from ``at`` up to ``close``: (them, past ``close``)."""
+    items = []
+    while True:
+        while text.startswith(" ", at):
+            at += 1
+        if text.startswith(close, at):
+            return items, at + 1
+        item, at = _type_at(text, at)
+        items.append(item)
+        while text.startswith(" ", at):
+            at += 1
+        if text.startswith(",", at):
+            at += 1
+        elif not text.startswith(close, at):
+            raise ValueError(text)
+
+
+def _type_at(text, at):
+    """The type written at ``at`` in ``text`` (a type as the dump or the debug information
+    names it), as a tree: ("path", name, [arguments]), ("ref", mutable, type), ("raw",),
+    ("tuple", [types]), ("array", type, its length or None where not a number), ("slice",
+    type), ("closure", text), ("fn",), ("opaque",) (a trait object, an `impl` type, a
+    coroutine, a projection), ("lifetime",), ("const",) or ("never",); and where it ends."""
+    while text.startswith(" ", at):
+        at += 1
+    if text.startswith("&", at):
+        at += 1
+        if lifetime := re.match(r"'\w+ ", text[at:]):
+            at += lifetime.end()
+        mutable = text.startswith("mut ", at)
+        inner, at = _type_at(text, at + 4 if mutable else at)
+        return ("ref", mutable, inner), at
+    if text.startswith(("*const ", "*mut "), at):
+        _, at = _type_at(text, text.index(" ", at) + 1)
+        return ("raw",), at
+    if found := _FN_START.match(text, at):
+        end = _bracket_end(text, found.end(), ")")
+        if end is None:
+            raise ValueError(text)
+        if text.startswith(" -> ", end):
+            _, end = _type_at(text, end + 4)
+        if text.startswith(" {", end):
+            close = _bracket_end(text, end + 2, "}")
+            if close is None:
+                raise ValueError(text)
+            end = close
+        return ("fn",), end
+    char = text[at]
+    if char == "(":
+        items, at = _type_list(text, at + 1, ")")
+        return ("tuple", items), at
+    if char == "[":
+        inner, at = _type_at(text, at + 1)
+        if text.startswith(";", at):
+            # An array, and its length where it is a number (`[u32; 3]`, `[u8; 4_usize]`).
+            end = _run_end(text, at + 1)
+            length = re.fullmatch(r"\s*([0-9]+)(?:_?usize)?\s*", text[at + 1 : end])
+            if not text.startswith("]", end):
+                raise ValueError(text)
+            return ("array", inner, int(length[1]) if length else None), end + 1
+        if not text.startswith("]", at):
+            raise ValueError(text)
+        return ("slice", inner), at + 1
+    if char == "!":
+        return ("never",), at + 1
+    if char == "{":
+        end = _bracket_end(text, at + 1, "}")
+        if end is None:
+            raise ValueError(text)
+        kind = ("closure", text[at:end]) if text.startswith("{closure@", at) else ("opaque",)
+        return kind, end
+    if char == "'":
+        return ("lifetime",), re.match(r"'\w+", text[at:]).end() + at
+    if char == "<":
+        # A projection (`<T as Iterator>::Item`).
+        end = _bracket_end(text, at + 1, ">")
+        if end is None:
+            raise ValueError(text)
+        rest = _PATH_WORD.match(text, end + 2) if text.startswith("::", end) else None
+        return ("opaque",), rest.end() if rest else end
+    if (
+        text.startswith(("dyn ", "impl "), at)
+        or char in "-0123456789"
+        or text.startswith("const ", at)
+    ):
+        end = _run_end(text, at)
+        return (("const",) if char in "-0123456789" else ("opaque",)), end
+    found = _PATH_WORD.match(text, at)
+    if not found:
+        raise ValueError(text)
+    at, arguments = found.end(), []
+    if text.startswith("<", at):
+        arguments, at = _type_list(text, at + 1, ">")
+    return ("path", found[0], [each for each in arguments if each[0] != "lifetime"]), at
+
+
+@functools.lru_cache(maxsize=4096)
+def _parse_type(text):
+    """``_type_at``'s tree of the whole of ``text``, or None where it doesn't parse."""
+    try:
+        node, at = _type_at(text, 0)
+    except (IndexError, ValueError, AttributeError):
+        return None
+    return node if not text[at:].strip() else None
+
+
+def _type_names(node):
+    """Every path a type tree names outside function types, which hold nothing."""
+    if node[0] == "path":
+        yield node[1]
+        for each in node[2]:
+            yield from _type_names(each)
+    elif node[0] == "ref":
+        yield from _type_names(node[2])
+    elif node[0] in ("array", "slice"):
+        yield from _type_names(node[1])
+    elif node[0] == "tuple":
+        for each in node[1]:
+            yield from _type_names(each)
+
+
+def _substituted(node, formals, given):
+    """``node`` (a type tree of a declared default) with each of ``formals`` (a type's
+    parameters, in order) it names replaced by the argument of ``given`` at its position
+    (`T` of `U = Vec<T>`); None where it names one ``given`` has no tree for, or a type it
+    can't name (`T::Item`, `<T as Tr>::Out`) (#321 review round 2)."""
+    kind = node[0]
+    if kind == "path":
+        if node[1] in formals:
+            at = formals.index(node[1])
+            return given[at] if at < len(given) and not node[2] else None
+        if node[1].split("::", 1)[0] in formals:
+            return None
+        inner = [_substituted(each, formals, given) for each in node[2]]
+        return None if None in inner else ("path", node[1], inner)
+    if kind == "ref":
+        inner = _substituted(node[2], formals, given)
+        return None if inner is None else ("ref", node[1], inner)
+    if kind == "tuple":
+        inner = [_substituted(each, formals, given) for each in node[1]]
+        return None if None in inner else ("tuple", inner)
+    if kind in ("array", "slice"):
+        inner = _substituted(node[1], formals, given)
+        return None if inner is None else (kind, inner, *node[2:])
+    return None if kind in ("opaque", "closure") else node
+
+
+class CrateType(NamedTuple):
+    """What a type of the crate's (or another crate's) holds, from the debug information
+    (rust_symbols.interior_types), for ``TypeLayouts``. Each set of flags is as at the
+    type's own value: "interior", "owned", "shares" (``TypeLayouts``).
+
+    - ``own``: the flags of what it holds besides its type arguments, every instance's;
+    - ``arguments``: each type argument's flags, in order, every instance's;
+    - ``uses``: for each type argument, how the type holds it: the states (reached through
+      a shared `&`, behind a pointer others may hold) its fields reach it in. None where not
+      known: then each as a value of its own;
+    - ``payloads``: the canonical trees (``_Judge.canon``) of what a callee given a `&` to it
+      may store in a cell, a lock, an atomic or a channel it holds; ("arg", n) for argument
+      `n`, ("payloads", n) for what may be stored in it, ("unknown",) for anything;
+    - ``parts``: the trees of the types of its fields, its variants' too, ("arg", n) as above;
+    - ``instances``: {each instance's name (``_key``): (the flags of what it holds, its
+      arguments too; its ``payloads``, its ``parts`` and its ``single``, of its own types)};
+    - ``single``: whether a value of it has a single state (no fields, or only such): of
+      every instance."""
+
+    own: frozenset = frozenset()
+    arguments: tuple = ()
+    uses: tuple | None = None
+    payloads: frozenset = frozenset({_UNKNOWN})
+    parts: frozenset = frozenset({_UNKNOWN})
+    instances: dict | None = None
+    single: bool = False
+
+
+def merge_layout(found, name, entry):
+    """Add ``entry`` (a ``CrateType``) for ``name`` to ``found``: what every type so named
+    holds, each argument's by its position, each instance's by its name."""
+    entry = CrateType(*entry)
+    before = found.get(name)
+    if before is None:
+        found[name] = entry
+        return
+    before = CrateType(*before)
+
+    def positions(a, b):
+        return tuple(
+            (a[at] if at < len(a) else frozenset()) | (b[at] if at < len(b) else frozenset())
+            for at in range(max(len(a), len(b)))
+        )
+
+    instances = dict(before.instances or {})
+    for key, value in (entry.instances or {}).items():
+        if key in instances:
+            old = instances[key]
+            value = (old[0] | value[0], old[1] | value[1], old[2] | value[2], old[3] and value[3])
+        instances[key] = value
+    found[name] = CrateType(
+        before.own | entry.own,
+        positions(before.arguments, entry.arguments),
+        None if before.uses is None or entry.uses is None else positions(before.uses, entry.uses),
+        before.payloads | entry.payloads,
+        before.parts | entry.parts,
+        instances,
+        before.single and entry.single,
     )
 
 
-def _may_write(kind, generics, shared=False):
-    """Whether a value of the MIR type ``kind`` shows that a callee given it may write
-    through a pointer it holds (#311 review): a raw pointer, `NonNull`, a cell, lock or
-    atomic, wherever it is in the type (``_shared_writable``); a `&mut`, or one of the standard
-    library's mutable views (``_MUTABLE_VIEWS``: `hash_map::Entry<'_, u32, u32>`,
-    `slice::IterMut<'_, u32>`), that it does not reach only through a shared `&`
-    (``_unshared``: `(&mut Vec<u32>, u32)`, not `&&mut Vec<u32>`), nor at all where
-    ``shared`` (the value is itself reached only through one, round 4); a type parameter,
-    or a type not known. Not any other type (round 3: `slice::ChunksExact<'_, u32>` only
-    reads); a crate's type, a closure or another view writes only where what it was made
-    from shows it (``Body._may_write_through``)."""
-    if kind is None or generics is None or mentions(kind, generics):
+@dataclass
+class TypeLayouts:
+    """What the program's own types hold (#321), for ``_may_write``:
+
+    - ``crate``: {a type's path from the crate's root (`Counter`, `m::Inner`, `Gen`), another
+      crate's type's path (`mylib::Pool`), and each last segment after `::` (`::Inner`), for a
+      signature in the dump that names a type by it alone: its ``CrateType``}, from the debug
+      information (rust_symbols.interior_types). None where it was not read: then every type
+      of the crate's may hold anything.
+    - ``closures``: {a closure's type (`{closure@src/main.rs:5:5: 5:13}`): the types of
+      what it captures, or None where not known}, from the aggregates that build them.
+    - ``bare``: the short names of ``_STD_BARE`` the crate gives no item of its own.
+    - ``defaults``: {a type's name: (each parameter's name and declared default, None for
+      none), in order, a lifetime left out}, from the crate's sources
+      (``OwnedLocals._declared_defaults``): rustc leaves an argument that is its default out
+      of the type's name (`&Gen` for `Gen<u32>` of `struct Gen<T = u32>`, `&Pair<u32>` for
+      `Pair<u32, u32>` of `struct Pair<T, U = T>`).
+
+    The flags: "interior", a callee given a `&` to it may store a value in what it holds;
+    "owned", given it by value or through a `&mut`, it may; "shares", what it holds may be
+    reached through another value too (an `Rc` of a cell, a channel's end, a raw pointer);
+    and "unsure", which instance of a type of the crate's it is can't be told (a default
+    argument its declaration doesn't show)."""
+
+    crate: dict | None = None
+    closures: dict = field(default_factory=dict)
+    bare: frozenset = frozenset(_STD_BARE)
+    defaults: dict = field(default_factory=dict)
+    _closure_cache: dict = field(default_factory=dict)
+
+    def entry(self, name):
+        """The ``CrateType`` of the crate's type ``name``, or None."""
+        found = None if self.crate is None else self.crate.get(name)
+        if found is None and self.crate is not None and "::" not in name:
+            # A signature's short name (`Inner` of `m::Inner`): every type so named.
+            found = self.crate.get(f"::{name}")
+        return None if found is None else CrateType(*found)
+
+    def path(self, name):
+        """The path the crate's type ``name`` has in the debug information's entries (a
+        signature's `Inner` is `m::Inner` where only that type is so named), or None."""
+        if self.crate is None:
+            return None
+        if "::" in name or name in self.crate:
+            return name
+        found = [
+            key
+            for key in self.crate
+            if not key.startswith("::") and key.rsplit("::", 1)[-1] == name
+        ]
+        return found[0] if len(found) == 1 else None
+
+    def closure(self, kind, trusted):
+        """(flags, payloads) of the closure type ``kind``, by what it captures."""
+        key = (kind, trusted)
+        if key not in self._closure_cache:
+            self._closure_cache[key] = (_FLAGS, frozenset({_UNKNOWN}))
+            captured = self.closures.get(kind)
+            nodes = None if captured is None else [_parse_type(each) for each in captured]
+            if nodes is None or None in nodes:
+                return self._closure_cache[key]
+            judge = _Judge(trusted, self)
+            flags, payloads = set(), set()
+            for node in nodes:
+                judge.flags(node, False, False, flags)
+                payloads |= judge.payloads(node)
+            self._closure_cache[key] = (frozenset(flags), frozenset(payloads))
+        return self._closure_cache[key]
+
+
+_ALL_KNOWN = TypeLayouts()
+
+
+def _in_state(flags, shared, handle):
+    """``flags`` (as at a type's own value) of a value reached through a shared `&` where
+    ``shared``, behind a pointer others may hold where ``handle``."""
+    out = set()
+    if "interior" in flags:
+        out |= {"interior", "owned"} | ({"shares"} if handle else set())
+    if "owned" in flags and not shared:
+        out.add("owned")
+    return out | (flags & {"shares", "unsure"})
+
+
+class _Judge:
+    """What a value of a type (a ``_parse_type`` tree) holds, with the standard library's
+    paths under the roots of ``trusted`` and the crate's types and closures by ``layouts``
+    (#321)."""
+
+    def __init__(self, trusted, layouts):
+        self.trusted, self.layouts = trusted, layouts
+
+    def kind(self, name):
+        """A path's standard class (``_std_class``), or None for a type of a crate's."""
+        root = name.split("::", 1)[0]
+        if "::" in name and root in _STD_CRATES and root in self.trusted:
+            return _std_class(name)
+        if "::" not in name and name in self.layouts.bare:
+            return "cell" if _STD_ATOMIC.fullmatch(name) else _STD_BARE.get(name)
+        return None
+
+    def arguments(self, name, given):
+        """The crate's type ``name``'s arguments: those ``given``, then the default it
+        declares for each other, each earlier parameter it names replaced by its argument
+        (None where one can't be told)."""
+        entry = self.layouts.entry(name)
+        declared = self.layouts.defaults.get(name.rsplit("::", 1)[-1]) or ()
+        count = max(
+            len(given),
+            len(declared),
+            0 if entry is None else max(len(entry.arguments), len(entry.uses or ())),
+        )
+        formals = [formal for formal, _ in declared]
+        found = list(given)
+        for at in range(len(given), count):
+            default = declared[at][1] if at < len(declared) else None
+            node = None if default is None else _parse_type(default)
+            found.append(None if node is None else _substituted(node, formals, found))
+        return found
+
+    def canon(self, node):
+        """A canonical tree of the type ``node``, the same for the dump's spelling and the
+        debug information's (rust_symbols.interior_types): ("prim", name), ("std", module
+        and last segment, arguments), ("type", the crate's path, arguments), ("ref",
+        mutable, type), ("tuple", types), ("array", type, length), ("slice", type), ("raw",),
+        ("fn",), ("never",), ("closure", text), or ("unknown",)."""
+        kind = node[0]
+        if kind == "path":
+            name = node[1]
+            if name in _NUMERIC_PRIMITIVES:
+                return ("prim", name)
+            if self.kind(name) is not None:
+                key = _std_key(name) if "::" in name else f"{_STD_BARE_MODULES.get(name)}::{name}"
+                return _std_tree(key, (self.canon(each) for each in node[2]))
+            path = self.layouts.path(name)
+            arguments = self.arguments(name, node[2])
+            if path is None or None in arguments:
+                return _UNKNOWN
+            return ("type", path, tuple(self.canon(each) for each in arguments))
+        if kind == "ref":
+            return ("ref", node[1], self.canon(node[2]))
+        if kind == "tuple":
+            return ("tuple", tuple(self.canon(each) for each in node[1]))
+        if kind == "array":
+            return ("array", self.canon(node[1]), node[2])
+        if kind == "slice":
+            return ("slice", self.canon(node[1]))
+        if kind in ("raw", "fn", "never", "closure"):
+            return node if kind == "closure" else (kind,)
+        return _UNKNOWN
+
+    def single(self, node):
+        """Whether a value of ``node`` has a single state, so nothing to keep (#321 review
+        rounds 2 and 3): `()`, `PhantomData<T>`, an empty array, a plain cell of such
+        (`Cell<Cell<()>>`), a crate's struct of such only, or its enum of one such variant."""
+        kind = node[0]
+        if kind == "tuple":
+            return all(self.single(each) for each in node[1])
+        if kind == "array":
+            return node[2] == 0 or (node[2] is not None and self.single(node[1]))
+        if kind != "path" or node[1] in _NUMERIC_PRIMITIVES:
+            return False
+        if self.kind(node[1]) is not None:
+            last = node[1].rsplit("::", 1)[-1]
+            if last in _PLAIN_CELLS and self.kind(node[1]) == "cell":
+                return self.keeps_nothing(node[2])
+            return last in ("PhantomData", "PhantomPinned")
+        exact = self.exact(node[1], node[2])
+        if exact is not None:
+            return exact[3]
+        entry = self.layouts.entry(node[1])
+        return entry is not None and entry.single
+
+    def keeps_nothing(self, given):
+        """Whether a plain cell (``_PLAIN_CELLS``) of the arguments ``given`` keeps nothing:
+        each has a single state (`Cell<()>`)."""
+        return bool(given) and all(self.single(each) for each in given)
+
+    def exact(self, name, given):
+        """What the instance of the crate's type ``name`` with arguments ``given`` holds, by
+        the debug information (``CrateType.instances``), or None where not known."""
+        entry = self.layouts.entry(name)
+        if entry is None or not entry.instances:
+            return None
+        return entry.instances.get(self.instance(name, given))
+
+    def flags(self, node, shared, handle, out):
+        """Add the flags of a value of ``node`` to ``out``, reached through a shared `&`
+        where ``shared``, behind a pointer others may hold where ``handle``."""
+        kind = node[0]
+        if kind in ("raw", "opaque"):
+            out |= _FLAGS
+        elif kind == "ref":
+            if node[1] and not shared:
+                out.add("owned")
+            self.flags(node[2], shared or not node[1], True, out)
+        elif kind == "tuple":
+            for each in node[1]:
+                self.flags(each, shared, handle, out)
+        elif kind == "slice" or (kind == "array" and node[2] != 0):
+            # An empty array holds nothing; one of a length not known may hold some.
+            self.flags(node[1], shared, handle, out)
+        elif kind == "closure":
+            out |= _in_state(self.layouts.closure(node[1], self.trusted)[0], shared, handle)
+        elif kind == "path":
+            self.path_flags(node, shared, handle, out)
+
+    def path_flags(self, node, shared, handle, out):
+        _, name, given = node
+        if name in _NUMERIC_PRIMITIVES:
+            return
+        kind = self.kind(name)
+        last = name.rsplit("::", 1)[-1]
+        if kind is None:
+            self.crate_flags(name, given, shared, handle, out)
+        elif kind == "cell":
+            if last in _PLAIN_CELLS and self.keeps_nothing(given):
+                # `Cell<()>`: whatever is stored, the same value.
+                return
+            out |= {"interior", "owned"} | ({"shares"} if handle else set())
+            for each in given:
+                self.flags(each, False, handle, out)
+        elif kind in ("channel", "pointer", "unknown"):
+            out |= _FLAGS
+        elif kind == "receiving":
+            # What it receives is the callee's to change, by value.
+            received = set()
+            for each in given:
+                self.flags(each, False, True, received)
+            out |= received | {"shares"}
+            if received & {"interior", "owned"}:
+                out |= {"interior", "owned"}
+        elif kind in ("shared", "lazy"):
+            for each in given:
+                self.flags(each, True, handle or kind == "shared", out)
+        elif kind == "plain":
+            if not shared and last in _MUTABLE_VIEWS:
+                out.add("owned")
+            for each in given:
+                self.flags(each, shared, handle, out)
+
+    def instance(self, name, given):
+        """The ``_key`` of the instance of the crate's type ``name`` with arguments ``given``
+        and the defaults it declares, or None where it can't be told."""
+        arguments = self.arguments(name, given)
+        if None in arguments:
+            return None
+        return _key(self.canon(("path", name, arguments)))
+
+    def crate_flags(self, name, given, shared, handle, out):
+        entry = self.layouts.entry(name)
+        if entry is None:
+            out |= _FLAGS
+            return
+        exact = self.exact(name, given)
+        if exact is not None:
+            # The instance itself: what each of its fields holds.
+            out |= _in_state(exact[0], shared, handle)
+            return
+        out |= _in_state(entry.own, shared, handle)
+        for at, argument in enumerate(self.arguments(name, given)):
+            if argument is None:
+                # An argument the dump leaves out, whose default can't be told: which
+                # instance this is can't be told.
+                if at < len(entry.arguments) and entry.arguments[at]:
+                    out |= _FLAGS | {"unsure"}
+                continue
+            states = (
+                entry.uses[at]
+                if entry.uses is not None and at < len(entry.uses)
+                else {(False, False)}
+            )
+            for inner_shared, inner_handle in states:
+                self.flags(argument, shared or inner_shared, handle or inner_handle, out)
+
+    def substitute(self, trees, name, given):
+        """``trees`` of the crate's type ``name`` (``CrateType.payloads``), each ("arg", n) in
+        them its argument's canonical tree, ("payloads", n) what may be stored in it."""
+        arguments = self.arguments(name, given)
+        canonical = tuple(_UNKNOWN if each is None else self.canon(each) for each in arguments)
+        found = set()
+        for tree in trees:
+            if tree[0] == "payloads":
+                argument = arguments[tree[1]] if tree[1] < len(arguments) else None
+                found |= {_UNKNOWN} if argument is None else self.payloads(argument)
+            else:
+                found.add(self._placed(tree, canonical))
+        return found
+
+    def payloads(self, node):
+        """The canonical trees (``canon``) of what a callee given a `&` to a value of ``node``
+        may store in what it holds: in a cell, a lock, an atomic or a channel; ("unknown",)
+        for anything."""
+        kind = node[0]
+        if kind in ("fn", "never", "const", "lifetime"):
+            return set()
+        if kind in ("raw", "opaque"):
+            return {_UNKNOWN}
+        if kind == "ref":
+            return self.payloads(node[2])
+        if kind == "tuple":
+            return set().union(*(self.payloads(each) for each in node[1]))
+        if kind == "array" and node[2] == 0:
+            return set()
+        if kind in ("array", "slice"):
+            return self.payloads(node[1])
+        if kind == "closure":
+            return set(self.layouts.closure(node[1], self.trusted)[1])
+        _, name, given = node
+        last = name.rsplit("::", 1)[-1]
+        if name in _NUMERIC_PRIMITIVES:
+            return set()
+        kind = self.kind(name)
+        if kind is None:
+            entry, exact = self.layouts.entry(name), self.exact(name, given)
+            if exact is not None:
+                return set(exact[1])
+            return {_UNKNOWN} if entry is None else self.substitute(entry.payloads, name, given)
+        if kind in ("pointer", "unknown") or last == "AtomicPtr":
+            return {_UNKNOWN}
+        if kind in ("cell", "channel", "receiving"):
+            if last in _ATOMIC_VALUES:
+                return {("prim", _ATOMIC_VALUES[last])}
+            if kind == "cell" and last in _PLAIN_CELLS and self.keeps_nothing(given):
+                return set()
+            return {self.canon(each) for each in given}
+        if kind == "inert":
+            return set()
+        return set().union(*(self.payloads(each) for each in given))
+
+    def components(self, tree, seen=None):
+        """``tree`` and the canonical trees of every value it holds by value, however deep:
+        a tuple's items, an array's elements, the arguments of a standard type that owns
+        them (``_STD_OWNING``), a crate type's fields, its variants' too (``CrateType.parts``).
+        Only for what may be stored (``_copy_level``): a value of any of them may be."""
+        seen = set() if seen is None else seen
+        if tree in seen:
+            return set()
+        seen.add(tree)
+        found, kind = {tree}, tree[0]
+        if kind == "tuple":
+            inner = list(tree[1])
+        elif kind == "array":
+            inner = [] if tree[2] == 0 else [tree[1]]
+        elif kind == "std":
+            inner = list(tree[2]) if tree[1] in _STD_OWNING else []
+        elif kind == "type":
+            entry = self.layouts.entry(tree[1])
+            exact = None if entry is None else (entry.instances or {}).get(_key(tree))
+            if exact is not None:
+                inner = list(exact[2])
+            else:
+                parts = (_UNKNOWN,) if entry is None else entry.parts
+                inner = [self._placed(part, tree[2]) for part in parts]
+        else:
+            # A reference or a pointer holds no copy, but where it points.
+            inner = []
+        for each in inner:
+            found |= self.components(each, seen)
+        return found
+
+    def _placed(self, tree, arguments):
+        """A ``CrateType.parts`` tree, each ("arg", n) the canonical tree ``arguments`` has at
+        `n`."""
+        kind = tree[0]
+        if kind == "arg":
+            return arguments[tree[1]] if tree[1] < len(arguments) else _UNKNOWN
+        if kind in ("std", "type"):
+            return (kind, tree[1], tuple(self._placed(each, arguments) for each in tree[2]))
+        if kind == "ref":
+            return ("ref", tree[1], self._placed(tree[2], arguments))
+        if kind == "tuple":
+            return ("tuple", tuple(self._placed(each, arguments) for each in tree[1]))
+        if kind in ("array", "slice"):
+            return (kind, self._placed(tree[1], arguments), *tree[2:])
+        return tree
+
+
+def _judged(kind, generics, trusted, layouts):
+    """The tree of ``kind`` and its ``_Judge``, or None where it may hold anything: not known,
+    not parsed, or naming a type parameter of ``generics`` (outside a function type)."""
+    if kind is None or generics is None:
+        return None
+    node = _parse_type(kind)
+    if node is None or any(name in generics for name in _type_names(node)):
+        return None
+    return node, _Judge(trusted, _ALL_KNOWN if layouts is None else layouts)
+
+
+def _type_flags(kind, trusted, layouts, generics=()):
+    """The flags (``TypeLayouts``) of a value of the MIR type ``kind`` at its own place:
+    every type it names counts, however deep, a function type for nothing. A standard type
+    counts by its class (``_std_class``) under a root of ``trusted``, or a short name of
+    ``layouts.bare``; a type of the crate's by ``layouts`` (each type argument as the type
+    holds it, one the dump leaves out by its declared default); anything else (a raw
+    pointer, a trait object, a dependency's type, a standard path under a root the crate
+    names itself) may hold anything. A plain cell of a value with one state keeps
+    nothing."""
+    judged = _judged(kind, generics, trusted, layouts)
+    if judged is None:
+        return _FLAGS
+    out = set()
+    judged[1].flags(judged[0], False, False, out)
+    return frozenset(out)
+
+
+def _may_write(kind, generics, shared=False, trusted=_STD_CRATES, layouts=None):
+    """Whether a callee given a value of the MIR type ``kind`` may store a value through
+    what it holds (#311 review; #321: from its whole layout), with the standard library's
+    paths proven under the roots of ``trusted`` (``Body.std_paths``) and the crate's own
+    types and closures by ``layouts`` (``TypeLayouts``; every one of them may, without):
+
+    - anything it holds that may be written through a shared `&` ("interior"): a raw
+      pointer, a standard cell, lock, atomic, `NonNull` or channel's sending end, a crate
+      type or closure holding one (`Counter { c: Cell<u32> }`, a `Sender` keeping its
+      channel in cells its type doesn't show), a trait object, a type parameter, or a type
+      not known;
+    - unless ``shared`` (the value is itself reached only through a `&`, round 4): a `&mut`,
+      one of the standard library's mutable views (``_MUTABLE_VIEWS``), or a crate type or
+      closure holding one, that it does not reach only through a shared `&` (`(&mut
+      Vec<u32>, u32)`, not `&&mut Vec<u32>` or `&Hold<'_>` with `Hold { p: &mut v }`).
+
+    Not any other type: `slice::ChunksExact<'_, u32>` only reads (round 3), neither a
+    crate's `NotCell<'_>` nor its `Atomicity<'_>` is a cell or an atomic (round 5), and a
+    function type, `PhantomData<Cell<u32>>`, `[Cell<u32>; 0]`, `Cell<()>` or a struct holding
+    only such stores nothing."""
+    judged = _judged(kind, generics, trusted, layouts)
+    if judged is None:
         return True
-    if _shared_writable(kind):
-        return True
-    if shared:
-        return False
-    kind = _unshared(kind)
-    if any(found[1] for found in _REFERENCE.finditer(kind)):
-        return True
-    return any(
-        word.startswith(_STD_PATHS) and word.rsplit("::", 1)[-1] in _MUTABLE_VIEWS
-        for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
-    )
+    out = set()
+    judged[1].flags(judged[0], shared, False, out)
+    return bool(out & {"interior", "owned"})
+
+
+def _may_share(kind, generics, trusted=_STD_CRATES, layouts=None):
+    """Whether a value of the MIR type ``kind`` may reach what another value reaches, and
+    see what a callee stores there through that other one (#321): a channel's end, a raw
+    pointer, a reference, `Rc`, `Arc`, `Weak` or `LocalKey` to what may be written through a
+    `&`, a crate type or closure holding one, or a type not known. Not a cell held by value:
+    `let d = c;` before a callee changes `c` holds what `c` held then."""
+    return "shares" in _type_flags(kind, trusted, layouts, generics)
+
+
+def _copy_level(kind, local_kind, generics, trusted=_STD_CRATES, layouts=None):
+    """What a callee given a `&` to a value of the MIR type ``kind`` may store in it of a
+    value of ``local_kind`` (#321 review rounds 1 to 3): "copy" only where what may be
+    stored there (``_Judge.payloads``), or a value that holds by value (``_Judge.components``:
+    `u32` of a `Cell<Vec<u32>>`), is of the very type ``local_kind`` is, whole; else
+    "derived", which is always true: what is stored may be computed from it.
+    `Cell<Vec<u32>>` takes no copy of a `Vec<bool>`, `Cell<a::Id>` none of a `b::Id`, and
+    `Cell<u32>` none of a `Box<u32>` or of a struct with a `u32` field."""
+    judged = _judged(kind, generics, trusted, layouts)
+    local = _judged(local_kind, generics, trusted, layouts)
+    if judged is None or local is None:
+        return "derived"
+    judge = judged[1]
+    slots = set()
+    for payload in judge.payloads(judged[0]):
+        slots |= judge.components(payload)
+    whole = judge.canon(local[0])
+    return "copy" if _key(whole) is not None and whole in slots else "derived"
 
 
 def _quiet_drop(kind, generics):
@@ -640,6 +1544,12 @@ class Body:
     std_traits: bool = False
     std_iterator: bool = False
     trusted_names: frozenset = frozenset()
+    # What the crate's own types and closures hold (#321), set when matched
+    # (OwnedLocals._layouts); until then, the closures this body builds, and no type of the
+    # crate's known (``_layouts``).
+    layouts: TypeLayouts | None = None
+    _own_layouts: TypeLayouts | None = None
+    _share_edges: dict | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -1689,9 +2599,16 @@ class Body:
                         seeds.append(len(parts) - 1)
                 return tuple(made)
 
-            def through(bases, value, text, carried=True, mentioned=None):
+            def through(bases, value, text, carried=True, mentioned=None, called=False):
                 targets = frozenset().union(*(self._stored_into(n) for n in bases)) - {0}
                 owners = frozenset().union(*(self._made_from(n) for n in bases))
+                # A call may store into what what it is given shares (#321: `rx` of `let
+                # (tx, rx) = mpsc::channel();`, given `&tx`).
+                sharers = (
+                    frozenset().union(*(self._sharers(n) for n in bases)) & targets
+                    if called
+                    else frozenset()
+                )
                 aiming = frozenset(
                     n for n in targets if n in named and _POINTER_TYPE.match(self.types.get(n, ""))
                 )
@@ -1699,7 +2616,8 @@ class Body:
                 pointees = self._pointees(owners, aiming)
                 # A call given only the pointers it may write through brings no new value
                 # (`slot.as_mut_ptr()`): never named where a copy was made.
-                return made, targets, aiming, owners, pointees, owners if carried else frozenset()
+                reported = owners | sharers if carried else frozenset()
+                return made, targets, aiming, owners, pointees, reported, sharers
 
             for number, block in self.blocks.items():
                 for index, (text, _, _) in enumerate(block.statements):
@@ -1728,11 +2646,27 @@ class Body:
                             {int(n) for n in _MENTIONED.findall(arguments[1])} if arguments else ()
                         )
                         bases = {n for n in given if self._may_write_through(n)}
-                        # Through each, what else it is given; `()` carries nothing.
+                        # Through each, what else it is given; `()` carries nothing, nor
+                        # does a tuple of constants (#321: `f(0)` calls `Fn::call(&f, (0,))`).
+                        assigned = self._assignments()
                         writes = tuple(
-                            through({base}, value, text, True, frozenset(others))
+                            through({base}, value, text, True, frozenset(others), True)
                             for base in sorted(bases)
-                            if (others := {n for n in given - {base} if self.types.get(n) != "()"})
+                            if (
+                                others := {
+                                    n
+                                    for n in given - {base}
+                                    if self.types.get(n) != "()"
+                                    and not (
+                                        assigned.get(n)
+                                        and n not in self.arguments
+                                        and not any(
+                                            _MENTIONED.search(_STRING.sub('""', each))
+                                            for each in assigned[n]
+                                        )
+                                    )
+                                }
+                            )
                         )
                         if writes:
                             stores[number, index] = writes
@@ -1763,7 +2697,7 @@ class Body:
             *(
                 (place, part)
                 for place, writes in stores.items()
-                for made, _, _, _, _, reported in writes
+                for made, _, _, _, _, reported, _ in writes
                 for part in made
                 if parts[part][0] in reported
             ),
@@ -1771,48 +2705,161 @@ class Body:
 
     def _may_write_through(self, local):
         """Whether a callee given ``local`` may write through a pointer it holds (#311
-        review round 3): its type shows one (``_may_write``), or it may hold a pointer and
-        something it was made from shows one (``_made_from``: the `&mut v` an `Entry` or a
-        closure was made from). Positive evidence only: `a.chunks_exact(1)`, made from a
-        shared `&[u32]`, writes nothing. What it reaches only through a shared `&` counts
-        only for a cell or a raw pointer (round 4, ``_reached``): `&h` of `h = Hold { p:
+        review round 3): its type shows one (``_may_write``, by its whole layout since
+        #321: `&Counter` with `Counter { c: Cell<u32> }`, `&mpsc::Sender<u32>`), or it may
+        hold a pointer and something it was made from shows one (``_made_from``: the `&mut
+        v` an `Entry` or a closure was made from). `a.chunks_exact(1)`, made from a shared
+        `&[u32]`, writes nothing. What it reaches only through a shared `&` counts only for
+        what may be written through one (round 4, ``_reached``): `&h` of `h = Hold { p:
         &mut v }` writes nothing, `h` itself and `&mut h` may."""
-        kind = self.types.get(local)
-        if _may_write(kind, self.generics):
+        kind, layouts = self.types.get(local), self._layouts()
+        if _may_write(kind, self.generics, False, self.std_paths, layouts):
             return True
         if _pointer_free(kind, self.generics):
             return False
         return any(
-            _may_write(self.types.get(made), self.generics, shared)
-            for made, shared in self._reached(local)
+            _may_write(kind, self.generics, shared, self.std_paths, layouts)
+            for (made, kind), shared in self._reached(local).items()
             if made != local
         )
 
+    def hides(self, local):
+        """Whether what is stored in ``local`` may be kept behind a cell, a lock, a channel
+        or a pointer its type holds (#321, ``OwnedLocals.hidden_holders``)."""
+        return bool(self.type_flags(local) & {"interior", "shares"})
+
+    def type_flags(self, local):
+        """``_type_flags`` of ``local``'s type (#321)."""
+        return _type_flags(self.types.get(local), self.std_paths, self._layouts(), self.generics)
+
+    def copy_level(self, local, kind):
+        """What a callee given a `&` to ``local`` may store in it of a value of the MIR type
+        ``kind``: "copy" or "derived" (#321 review rounds 1 to 3, ``_copy_level``)."""
+        return _copy_level(
+            self.types.get(local), kind, self.generics, self.std_paths, self._layouts()
+        )
+
+    def _layouts(self):
+        """``layouts``, or, until the body is matched, the closures it builds itself."""
+        if self.layouts is not None:
+            return self.layouts
+        if self._own_layouts is None:
+            self._own_layouts = TypeLayouts(closures=self.closure_captures())
+        return self._own_layouts
+
+    def closure_captures(self):
+        """{the type of each closure this body builds (`{closure@src/main.rs:5:5: 5:13}`):
+        the types of what it captures, or None where one is not known} (#321)."""
+        found = {}
+        for block in self.blocks.values():
+            for text, _, _ in block.statements:
+                built = _CLOSURE_BUILT.match(_STRING.sub('""', text))
+                if not built:
+                    continue
+                kinds = []
+                for item in _top_level_items(built[2] or ""):
+                    operand = item.split(": ", 1)[-1]
+                    whole = re.fullmatch(r"(?:move|copy) _([0-9]+)", operand)
+                    place = re.fullmatch(r"(?:move|copy) (\(.*\))", operand)
+                    kind = (
+                        self.types.get(int(whole[1]))
+                        if whole
+                        else _projected_type(place[1])
+                        if place
+                        else None
+                    )
+                    kinds = None if kind is None or kinds is None else [*kinds, kind]
+                previous = found.get(built[1], kinds)
+                found[built[1]] = None if previous is None or kinds is None else kinds
+        return found
+
+    def _sharers(self, local):
+        """The locals that may reach what a callee given ``local`` may write through a
+        shared `&` (#321), besides what ``local`` was made from, where their type may reach
+        what another value does (``_may_share``): one moved or copied, before or after, out
+        of what it was made from (`rx` of `let (tx, rx) = mpsc::channel();`, for `send(&tx,
+        x)`), returned by a call given one or a pointer to one (`b` of `let b =
+        Rc::clone(&a);`, for `rc_set(&a, x)`), or an aggregate, closure or cast built of one
+        (#321 review: `h` of `let h = Hold { c: Rc::clone(&a) };`), and so on from those. Not a
+        `Cell` moved out by value, nor a pointer into one of them, whose uses are its uses
+        already (``_pointers_to``)."""
+        trusted, layouts = self.std_paths, self._layouts()
+        roots = {
+            made
+            for made, kind in self._reached(local)
+            if _may_write(kind, self.generics, True, trusted, layouts)
+        }
+        if not roots:
+            return frozenset()
+        if self._share_edges is None:
+            # {local: [(a local made from it, whether as a pointer to it)]}
+            edges = {}
+            for block in self.blocks.values():
+                for text, _, _ in block.statements:
+                    text = _STRING.sub('""', text)
+                    whole = _WHOLE_ASSIGNMENT.match(text)
+                    if not whole:
+                        continue
+                    target, value = int(whole[1]), whole[2]
+                    borrow = value.startswith("&")
+                    if moved := _PART_MOVE.match(text):
+                        sources = {int(moved[2])}
+                    else:
+                        # A borrow, a call, a cast, or an aggregate or closure built of it
+                        # (#321 review: `Hold { c: move _7 }` of `Rc::clone(&a)`).
+                        sources = {int(n) for n in _MENTIONED.findall(value)}
+                    for source in sources - {target}:
+                        edges.setdefault(source, []).append((target, borrow))
+            self._share_edges = edges
+        found, seen, pending = set(), set(roots), list(roots)
+        while pending:
+            for each, pointer in self._share_edges.get(pending.pop(), ()):
+                if each in seen:
+                    continue
+                seen.add(each)
+                if pointer:
+                    # A pointer to it: its uses are its uses; what a call makes of it may
+                    # share it.
+                    pending.append(each)
+                elif _may_share(self.types.get(each), self.generics, trusted, layouts):
+                    found.add(each)
+                    pending.append(each)
+        return frozenset(found)
+
     def _reached(self, local):
-        """What ``local`` may have been made from (``_made_from``), each with whether it
-        reaches it only through a shared `&` (#311 review round 4): it does past a shared
-        borrow (`_12 = &_7;`, `_11 = &(*_12);`), and past a value of a shared reference
-        type (`&Hold<'_>`, a call's result too); not past a `&mut`, a raw borrow, or a
-        value moved or copied (`Hold { p: move _8 }`)."""
-        found, pending = {}, [(local, _shared_reference(self.types.get(local)))]
+        """What ``local`` may have been made from (``_made_from``): {(each local, the type
+        its part reached has): whether it reaches it only through a shared `&`} (#311 review
+        round 4). It does past a shared borrow (`_12 = &_7;`, `_11 = &(*_12);`), and past a
+        value of a shared reference type (`&Hold<'_>`, a call's result too); not past a
+        `&mut`, a raw borrow, or a value moved or copied (`Hold { p: move _8 }`). A field
+        moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of
+        ``_6`` only (#321: `rx`, not the `Sender` beside it in `mpsc::channel()`'s tuple),
+        and what ``_6`` was made from."""
+        start = self.types.get(local)
+        found, pending = {}, [(local, start, _shared_reference(start))]
         assigned = self._assignments()
         while pending:
-            local, shared = pending.pop()
+            local, kind, shared = pending.pop()
             # Seen already, as reachable at least as freely.
-            if local in found and (shared or not found[local]):
+            if (local, kind) in found and (shared or not found[local, kind]):
                 continue
-            found[local] = shared
+            found[local, kind] = shared
             for value in assigned.get(local, ()):
                 value = _STRING.sub('""', value)
+                if field := _FIELD_MOVE.fullmatch(value):
+                    part = _projected_type(field[1])
+                    pending.append((int(field[2]), part, shared or _shared_reference(part)))
+                    continue
                 borrow = _REFERENCE.match(value)
                 past = shared or bool(borrow and not borrow[1] and not value.startswith("&raw "))
                 for n in map(int, _DIRECT_BORROW.findall(value)):
-                    pending.append((n, past or _shared_reference(self.types.get(n))))
+                    kind = self.types.get(n)
+                    pending.append((n, kind, past or _shared_reference(kind)))
                 for n in map(int, _MENTIONED.findall(value)):
                     kind = self.types.get(n)
                     if kind is None or not _POINTERLESS.fullmatch(kind):
-                        pending.append((n, past or _shared_reference(kind)))
-        return found.items()
+                        pending.append((n, kind, past or _shared_reference(kind)))
+        return found
 
     def _made_from(self, pointer):
         """The locals ``pointer`` may have been made from, back through every assignment
@@ -2201,7 +3248,9 @@ class Body:
         among them holds a copy the statement uses where it is used again (the Box, the Vec
         made from it, the pointer); a binding of the program's own holds a direct copy, as
         `slot` of `*p = x;` and `v` of `v.push(x)` do; a call, only into what its pointers
-        were made from (#320: `v` of `&mut v`). A pointer binding (`p`) holds none,
+        were made from (#320: `v` of `&mut v`), and what shares what those hold (#321,
+        ``_sharers``: `rx` of `let (tx, rx) = mpsc::channel();`, given `&tx`). A pointer
+        binding (`p`) holds none,
         but what is read through it does, as through a pointer made from a borrow; where
         nothing else stands for what it points at, it does (an argument `p`). A source that
         holds or points at a copy counts (``kept``, #311 review: `&a` given to
@@ -2212,7 +3261,7 @@ class Body:
         pointer itself (#164: `v.push(&s[2..])`)."""
         holds, points, direct, own, kept, aims = state
         parts, _, _, _, named, _ = self._copy_parts()
-        made, targets, pointers, owners, pointees, _ = stored
+        made, targets, pointers, owners, pointees, _, sharers = stored
         first = parts[made[0]]
         _, mentioned, through, borrow, called, _, _, _ = first
         touched = local in mentioned and _touches(text, local, projection)
@@ -2233,8 +3282,9 @@ class Body:
             # A call writes where the pointers it is given were made from (`v` of `&mut v`),
             # not into every alias the flow-insensitive ``_stored_into`` links to them, as
             # a pointer `format_args!` puts in the same tuple (#320: what a call returns
-            # is a copy now, and more calls store one).
-            targets = targets & owners
+            # is a copy now, and more calls store one); and into what shares what those
+            # hold (#321: the channel's `rx`, given `&tx`).
+            targets = targets & (owners | sharers)
         if taken:
             direct = direct | (targets - pointers) | (pointees - {local})
             own = own | (pointers - pointees - {local})
@@ -5335,6 +6385,10 @@ class OwnedLocals:
     # The exact files std's printing macros are written in (rust.std_macro_files; set by
     # `prepare`): a call there that formats reads what it is given (#192 review 4).
     std_macros = frozenset()
+    # What the crate's own types hold, read from the build's debug information
+    # (rust_symbols.interior_types; set by `prepare`), or None where not read: then every
+    # type of the crate's may hold anything (#321, ``TypeLayouts.crate``).
+    interior = None
 
     def __init__(self, bodies, functions, sources=(), *, precise=True, texts=None, defined=()):
         self.bodies = list(bodies)
@@ -5432,6 +6486,7 @@ class OwnedLocals:
             found.trusted_names = self._trusted_names()
             found.std_paths = self._std_crates()
             found.std_iterator = self._std_iterator()
+            found.layouts = self._layouts()
         self._matched[hashed] = found
         return found
 
@@ -5821,6 +6876,29 @@ class OwnedLocals:
             for local in locals_
             if local in body.named_locals() and _POINTER_TYPE.match(body.types.get(local, ""))
         )
+
+    def holder_kinds(self, hashed, locals_, kind):
+        """Of ``locals_``: ({each: what a callee given a `&` to it may store in it of a value
+        of the MIR type ``kind``, ``_copy_level``'s "copy" or "derived"}, those whose
+        type is a crate's of which instance it is can't be told) (#321 review rounds 1 and
+        2): a `Cell<bool>` takes no copy of a `u32`, only what was computed from one."""
+        body = self.body(hashed)
+        if body is None:
+            return dict.fromkeys(locals_, "derived"), frozenset()
+        return (
+            {local: body.copy_level(local, kind) for local in locals_},
+            frozenset(local for local in locals_ if "unsure" in body.type_flags(local)),
+        )
+
+    def hidden_holders(self, hashed, locals_):
+        """Those of ``locals_`` whose type may keep what a callee stores in them behind a
+        cell, a lock, a channel or a pointer in the body of ``hashed`` (#321: `c` of
+        `Counter { c: Cell<u32> }`, a channel's `rx`), where no change Peeky makes reaches
+        it (a field of a standard type is the library's)."""
+        body = self.body(hashed)
+        if body is None:
+            return frozenset()
+        return frozenset(local for local in locals_ if body.hides(local))
 
     def copy_names(self, hashed, locals_):
         """The program's own names (sorted) of those of ``locals_`` a binding names in the
@@ -6688,6 +7766,77 @@ class OwnedLocals:
                 else frozenset()
             )
         return self._trusted_known
+
+    def _trusted_bare(self):
+        """The short names of ``_STD_BARE`` the crate gives no item of its own (#321), as
+        ``_trusted_names``: a signature's `Cell<u32>` is the standard library's `Cell`.
+        None where a source doesn't lex."""
+        if "_bare_known" not in self.__dict__:
+            names, codes = frozenset(_STD_BARE), self._crate_codes()
+            self._bare_known = (
+                names.difference(*(_named_own(code, names, bare=names) for code in codes))
+                if codes and None not in codes
+                else frozenset()
+            )
+        return self._bare_known
+
+    def _layouts(self):
+        """What the crate's own types and closures hold (#321, ``TypeLayouts``): its types
+        by the debug information (``interior``), its closures by what each body that builds
+        one captures, and the standard short names it gives nothing of its own."""
+        if "_layouts_known" not in self.__dict__:
+            closures = {}
+            for body in self.bodies:
+                for kind, captured in body.closure_captures().items():
+                    previous = closures.get(kind, captured)
+                    closures[kind] = None if previous is None or captured is None else captured
+            self._layouts_known = TypeLayouts(
+                self.interior, closures, self._trusted_bare(), self._declared_defaults()
+            )
+        return self._layouts_known
+
+    def _declared_defaults(self):
+        """{the name of each struct, enum or union the crate declares with type arguments:
+        each parameter's name and the default it declares, in order, a lifetime left out
+        (`("T", "u32")` of `struct Gen<T = u32>`, `("U", "T")` of `struct Pair<T, U = T>`, None
+        for none)}, from its sources (#321 review rounds 1 and 2). A name declared twice
+        with different ones gives None for those; a source that doesn't lex, nothing."""
+        if "_defaults_known" not in self.__dict__:
+            found = {}
+            for code in self._crate_codes():
+                for declared in _DECLARED.finditer(code or ""):
+                    end = _bracket_end(code, declared.end(), ">")
+                    if end is None:
+                        continue
+                    defaults = []
+                    for item in _top_level_items(code[declared.end() : end - 1]):
+                        if item.startswith("'"):
+                            continue
+                        # The default follows the `=` outside the bounds' brackets
+                        # (`T: Iterator<Item = u32> = Empty`).
+                        depth, split = 0, None
+                        for at, char in enumerate(item):
+                            if char in "<([":
+                                depth += 1
+                            elif char in ">)]" and item[at - 1 : at] != "-":
+                                depth -= 1
+                            elif char == "=" and not depth:
+                                split = at
+                                break
+                        default = None if split is None else " ".join(item[split + 1 :].split())
+                        constant = item.startswith("const ")
+                        formal = re.match(r"(?:const\s+)?([A-Za-z_][A-Za-z0-9_]*)", item)
+                        defaults.append(
+                            (formal and formal[1], None if constant else default or None)
+                        )
+                    before = found.setdefault(declared[1], tuple(defaults))
+                    if before != tuple(defaults):
+                        found[declared[1]] = tuple(
+                            a if a == b else (a[0] if a[0] == b[0] else None, None)
+                            for a, b in zip(before, defaults)
+                        )
+            self._defaults_known = found
+        return self._defaults_known
 
     def _std_transfers(self):
         """The roots under which the calls the dump names as the Box-to-Vec conversion

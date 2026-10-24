@@ -377,7 +377,7 @@ used again. Such a temporary is:
   (`p` of `*p = x;`) only points at one. `_pointers_to` follows `p = slot.as_mut_ptr()` too.
 - what a call may write through a pointer it is given, of what else it is given (#311 review). An
   argument counts where a callee may write through it (`_may_write`): a `&mut` or raw pointer,
-  `NonNull`, a cell, an aggregate holding one, a crate's type or a type not known. So
+  `NonNull`, a cell, an aggregate holding one, or a type not known. So
   `Vec::push(move _6, move _7)` with `_6 = &mut v` makes `v` hold `_7`'s copy, as do `ptr::write`,
   `mem::replace`, `mem::swap` and a `copy_nonoverlapping` statement. `Box::new` given a closure
   holding `&s` stores no copy of `s`: nothing else is given.
@@ -440,23 +440,106 @@ used again. Such a temporary is:
 - A call stores only into what the pointers it is given were made from (`_made_from`: `v` of
   `&mut v`), since #320. It no longer stores into every alias `_stored_into` links to them, such as
   a pointer `format_args!` puts in the same tuple. A store statement still writes into them all.
-- A callee may write through an argument only on positive evidence (`Body._may_write_through`,
-  review round 3). Its type may show a writable pointer (`_may_write`): a `&mut` or raw pointer,
-  a cell, a type parameter, or a mutable standard view (`_MUTABLE_VIEWS`: `Entry`, the `IterMut`
-  family, `RefMut`, `Drain`, `ChunksMut`). Or something it was made from shows one
-  (`_made_from`: a closure or a crate's struct capturing `&mut v`). A view that only reads, as
-  `ChunksExact` or `btree_map::Iter`, writes nothing.
-- What a callee reaches only through a shared `&` it writes only if it is a raw pointer or a
-  cell (review round 4). `_may_write`'s `shared`, and `_unshared` within a type: `&&mut Vec<u32>`
+- A callee may write through an argument where its type may (`Body._may_write_through`, review
+  round 3). That is a `&mut` or raw pointer, a cell, a type parameter, or a mutable standard view
+  (`_MUTABLE_VIEWS`: `Entry`, the `IterMut` family, `RefMut`, `Drain`, `ChunksMut`). Or something
+  it was made from shows one (`_made_from`: a closure or a crate's struct capturing `&mut v`). A
+  view that only reads, as `ChunksExact` or `btree_map::Iter`, writes nothing.
+- What a callee reaches only through a shared `&` it writes only if it may take a value through
+  one: a raw pointer, a cell, or what holds one (review round 4, and #321 below). `_may_write`'s `shared`, and `_unshared` within a type: `&&mut Vec<u32>`
   writes nothing. `_reached` walks what an argument was made from, noting where it passed a
   shared borrow or a shared reference type. So `look(&h, x)` with `h = Hold { p: &mut v }`
   writes nothing, while `keep(h, x)`, `poke(&mut h, x)`, and `&h` with a `*mut` or `&Cell`
   field may.
-- A cell, lock or atomic is known by the exact last segment of a standard path
-  (`_shared_writable`, review round 5): `std::cell::Cell`, `RefCell`, `UnsafeCell`, `OnceCell`,
-  `OnceLock`, `Mutex`, `RwLock`, `NonNull`, and `Atomic` or `AtomicU32` and the like. rustc 1.96
-  prints `AtomicU32` as `std::sync::atomic::Atomic<u32>`. A crate's `NotCell` or `Atomicity` is
-  none of these.
+- A type counts by everything it holds, however deep (#321, `_may_write`, `_type_flags`). Each
+  type it names gives flags: "interior" (a `&` to it may take a value), "owned" (by value or
+  through a `&mut`, it may) and "shares" (another value may reach what it holds).
+- A type's name is parsed into a tree (`_parse_type`), which `_Judge` walks, noting where it is
+  reached through a shared `&` and behind a pointer others may hold (review). A function
+  pointer or item (`for<'a> fn(&'a Cell<u32>) -> u32 {read}`) holds nothing, its signature's
+  types and `&mut`s included.
+- A standard type counts by its class (`_std_class`, `_STD_NAMED`), by the module its path names
+  second and its last segment. That reads the dump's paths (`std::sync::Mutex`) and the debug
+  information's (`std::sync::poison::mutex::Mutex`) alike. Its root must be trusted
+  (`Body.std_paths`).
+- The classes: "cell" (`Cell`, `RefCell`, `UnsafeCell`, `OnceCell`, `OnceLock`, `Mutex`, `RwLock`,
+  the atomics), "channel" (`Sender`, `SyncSender`), "pointer" (`NonNull`), "receiving"
+  (`Receiver`, which reads what a sender stored), "shared" (`Rc`, `Arc`, `Weak`, `LocalKey`),
+  "lazy" (`LazyCell`, `LazyLock`), "inert" and "plain".
+- "inert" types hold no value of the program's, and their type arguments aren't held: `Condvar`,
+  `Barrier`, `Once`, `PhantomData`.
+- A plain cell (`_PLAIN_CELLS`: `Cell`, `UnsafeCell`, `SyncUnsafeCell`) of values with a single
+  state (`_Judge.single`, `Walk.single`) keeps nothing: `Cell<()>`, `Cell<PhantomData<u32>>`, a
+  cell of a struct with no fields (review round 2).
+- Such a cell has a single state itself (`Cell<Cell<()>>`), and so does an enum of one variant
+  whose fields have one, without a discriminant (review round 3).
+- A `RefCell` keeps its borrow flag, which a leaked `RefMut` leaves set (review round 3). A lock,
+  a once-cell and a channel keep state of their own too: a poisoned `Mutex<()>`, a set
+  `OnceCell<()>`, a `Sender<()>`'s message count.
+- The parser tells a slice (`("slice", T)`) from an array (`("array", T, length)`). An array of
+  length 0 holds nothing; a length that isn't a number counts as its element (review round 2).
+  The debug information gives the length as a subrange's count.
+- "plain" is every other type of `_PLAIN_MODULES` (`vec`, `collections`, `slice`, `iter`, `fmt`,
+  `path`, `time` and the like): it holds what its arguments hold, which the word scan reads as
+  types of their own. `ChunksExact` and `btree_map::Iter` are plain (review round 3).
+- A standard type in no class, a trait object, an `impl` type, a coroutine, a raw pointer, or a
+  dependency's type may hold anything. The may-analysis only ever says "may hold" of it.
+- rustc 1.96 trims a signature's unique paths (`fn f(_1: &Cell<u32>, _2: &Vec<u32>)`).
+  `_STD_BARE` gives those short names' classes. Each counts only where the crate gives that name no
+  item of its own (`OwnedLocals._trusted_bare`, by `_named_own`).
+- The crate's own structs, enums and unions count by what the build's debug information shows
+  they hold (`rust_symbols.interior_types`, read with the application units' symbols). It walks
+  every field, variant and element, and gives `OwnedLocals.interior` per type path and last
+  segment.
+- Each type's entry is a `CrateType`. A field whose type is one of the instance's own type
+  arguments is left to the argument: `uses` notes how the type holds each (by value, through a
+  `&`, not at all as in `PhantomData<T>`).
+- `instances` keeps each instance by its name (`_key`): its flags, what may be stored in it, its
+  fields' types, and whether it has a single state.
+- `_key` names a canonical tree (`_Judge.canon`, `Walk.tree`). It keeps a crate type's path from
+  the crate's root, its type arguments and an array's length. A standard type is named by
+  module and last segment, only where those name one type (`_STD_KEYS`). The default allocator
+  and hasher are left out.
+- At a use, `_Judge.crate_flags` takes the instance by name where it can, else what it holds
+  besides its arguments, and each argument as the type holds it.
+- rustc leaves an argument that is its default out of the type's name (`&Gen` for `Gen<u32>` of
+  `struct Gen<T = u32>`). Its default comes from the crate's sources
+  (`OwnedLocals._declared_defaults`, set as `TypeLayouts.defaults`).
+- Each parameter's name is kept with its default. A default naming an earlier parameter gets that
+  argument (`_substituted`): `Pair<u32>` of `struct Pair<T, U = T>` is `Pair<u32, u32>` (review
+  round 2). A projection (`T::Item`) can't be resolved, so it gives no argument.
+- Where a default can't be found, and the instances' arguments differ, the type may hold
+  anything ("unsure"). The refusal says which instance it is can't be told.
+- `payloads` gives the trees of what a callee given a `&` may store, and `parts` the types of
+  the fields (`("arg", n)` for argument `n`, `("payloads", n)` for what may be stored in it).
+- `_copy_level` compares whole trees (review round 2). It says "copy" only where a payload, or a
+  value it holds by value (`_Judge.components`), is the local's very type, whole. Anything else
+  gives "derived", which is always true (review round 3: no "a copy of part of").
+- `components` follows tuples, arrays, crate fields, and the standard types that own their
+  arguments (`_STD_OWNING`). It doesn't follow references or iterators. It is used only on what
+  may be stored, never on the local's own type.
+- `OwnedLocals.holder_kinds` gives each holder's level. The refusal says "a copy" only where each
+  holder's is "copy"; else "may hold state derived from", advising a change before it's used. A
+  type not known gives "derived".
+- A closure counts by what it captures, from the aggregate that builds it
+  (`Body.closure_captures`). Where the debug information wasn't read, every type of the crate's may
+  hold anything. These make `TypeLayouts`, set as `Body.layouts` when the body is matched.
+- So a crate's `NotCell<'_>` or `Atomicity<'_>` holding `&mut v` takes nothing through a `&`
+  (review round 5), while `Counter { c: Cell<u32> }` does.
+- A field moved or copied out (`_5 = move (_6.1: Receiver<u32>)`) reaches that field of `_6`
+  only (`_reached`). So `look(&rx, x)` writes nothing, though `mpsc::channel()`'s tuple holds a
+  `Sender` beside `rx`.
+- A call given a `&` to what may take a value also stores into what shares it (`Body._sharers`).
+  That is a local moved or copied out of what the argument was made from, returned by a call
+  given one or a pointer to one, or an aggregate, closure or cast built of one, whose type
+  `_may_share`. So `send(&tx, x)` stores into `rx`, and `put(&a, x)` into `b` of
+  `let b = Rc::clone(&a);` and `h` of `let h = Hold { c: a.clone() };`.
+- A pointer to such a value is no sharer: its uses are the value's (`_pointers_to`). Nor is a
+  cell moved out by value, which holds what it held then.
+- A call's argument made only of constants carries no value (`f(0)` is `Fn::call(&f, (0,))`).
+- A binding whose type may keep the copy behind a cell, a lock, a channel or a pointer
+  (`OwnedLocals.hidden_holders`) may be out of a change's reach. The refusal says so ("which may
+  be out of Peeky's reach"), and the advice offers no copy to change.
 - `_pointers_to` follows what is made from a borrow through any value that may hold a pointer:
   `Option<&mut u32>` of `v.last_mut()`, then `r` of its `unwrap()`. So `copy_undoes` sees a
   later `*r` as a use of `v`.
