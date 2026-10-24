@@ -1101,6 +1101,18 @@ class PythonAdapter:
     def validate_value(self, value):
         validate_python_literal(value)
 
+    @staticmethod
+    def exact_text(variable, **where):
+        """Whether the value a change wrote is one that is always the same object: True,
+        False or None, as it was before (``variable``, read before the write; a literal
+        that reads the same is that object too). Any other value may be a new object
+        alike (`1000`, a text)."""
+        return isinstance(variable, dict) and (variable.get("type"), variable.get("value")) in (
+            ("bool", "True"),
+            ("bool", "False"),
+            ("NoneType", "None"),
+        )
+
     def close(self):
         pass
 

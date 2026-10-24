@@ -456,7 +456,7 @@ hit  phase      line  function  selector  type  value
 1    observed   25    main      page      int   1  [settable]
 1    observed   25    main      items[1]  int   20  [settable]
 1    after-set  25    main      start     int   0  [settable]
-after-set: 2 rows equal to the hit's observed value left out (`--json` has every row)
+after-set: 2 scalar rows equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.745
 output:

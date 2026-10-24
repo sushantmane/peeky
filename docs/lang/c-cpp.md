@@ -159,6 +159,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   an exception or `longjmp` ended ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 - It shows nothing when another stop interrupted the step first, or when the program ended.
   `session get return` reads the value again ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
+- A `void` function returns no value: `(return): void (no value: the function returns nothing)`.
+  A probe's row has the type `void` ([2.9](../COOKBOOK.md#29-what-a-function-returned)).
 
 ## Builds
 

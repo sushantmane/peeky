@@ -16,6 +16,7 @@ import json
 import re
 import sys
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from unicodedata import is_normalized
@@ -2248,6 +2249,14 @@ def _returned_row(row, snapshot):
         # Where it returned to: the caller's line, maybe in a library.
         row["location"] = location
     if returned.get("unavailable"):
+        if returned.get("type") == "void":
+            # Nothing was withheld: the function returns no value (C, C++).
+            return {
+                **row,
+                "type": "void",
+                "unavailable": True,
+                "error": f"no value: {returned.get('reason')}",
+            }
         return {**row, "unavailable": True, "error": f"withheld: {returned.get('reason')}"}
     return {**row, "value": returned.get("value"), "type": returned.get("type")}
 
@@ -3819,7 +3828,15 @@ def run_probe(
         point = result["breakpoint"]
         verified = point.get("verified") is True
         say(
-            f"started; breakpoint {probe.program}:{point.get('line', line)} "
+            "started; "
+            # Which line of the candidate `--at` names, before the breakpoint's line in it
+            # (eleventh evaluation: `breakpoint tides.c:37 in the candidate` for `--at 40`).
+            + (
+                f"line {probe.line} is line {line} of the candidate; "
+                if probe.edit and line != probe.line
+                else ""
+            )
+            + f"breakpoint {probe.program}:{point.get('line', line)} "
             + ("in the candidate " if probe.edit else "")
             + ("verified" if verified else "pending until its class or module loads")
             + (
@@ -4268,7 +4285,61 @@ def run_probe(
             where = f"{probe.program}:{line}" + (
                 f" of the candidate (line {probe.line} before the edit)" if probe.edit else ""
             )
-            if code == 0:
+            # The run's writes (eleventh evaluation: six --set-at changes kept line 33
+            # from running, and NO_STOP said to pick a line the program executes): each a
+            # change its text shows, one proven to change nothing (``unchanged``), or one
+            # whose text stayed but which may still be a change (a new String, a Python
+            # `1000`). Nothing proves that one came before the line's chance to run: the
+            # message names them, and claims no cause. Only where every write is a proven
+            # no-op is the line blamed, as with none.
+            made = [change for change in changes if _write_kind(change) == "change"]
+            alike = [change for change in changes if _write_kind(change) == "alike"]
+
+            def lines_of(found):
+                lines = sorted(
+                    {str(c["line"]) for c in found if type(c.get("line")) is int}, key=int
+                )
+                if not lines:
+                    return ""
+                listed = f"{', '.join(lines[:-1])} and {lines[-1]}" if len(lines) > 1 else lines[0]
+                return f" (at line{'s' if len(lines) > 1 else ''} {listed})"
+
+            ran = [
+                f"{len(made)} change{'s' if len(made) > 1 else ''} by --set-at{lines_of(made)}"
+                if made
+                else "",
+                f"{len(alike)} write{'s' if len(alike) > 1 else ''} by --set-at with the same "
+                f"text, not proven unchanged{lines_of(alike)}"
+                if alike
+                else "",
+            ]
+            wrote = bool(made or alike)
+            ran = "The run made " + ", and ".join(part for part in ran if part)
+            ran += ": compare with a run without them"
+            if code == 0 and wrote:
+                message = f"The program finished without stopping at {where}. {ran}"
+                hint = (
+                    "Probe the line without the changes to compare; if it never stops there "
+                    "either, pick a line the program executes (`peeky describe`)."
+                )
+            elif code is not None and code != 0 and wrote:
+                message = (
+                    f"The program failed (exit code {code}) without stopping at {where}; its "
+                    f"output says why. {ran}"
+                )
+                hint = (
+                    "Read its output, and check its arguments and input; probe without the "
+                    "changes to compare."
+                )
+            elif code is None and wrote:
+                message = (
+                    f"The program ended without stopping at {where} (exit code unknown). {ran}"
+                )
+                hint = (
+                    "If the output shows an error, the program failed before the line; else "
+                    "probe without the changes to compare, or pick a line it executes."
+                )
+            elif code == 0:
                 message = (
                     f"The program finished without stopping at {where}; check `peeky "
                     "describe` for executable lines"
@@ -4360,7 +4431,8 @@ def run_probe(
             f"Optimized build ({level}): values that are shown can still be stale or wrong "
             "(the debugger cannot tell). Confirm with an unoptimized build before trusting them."
         )
-    if any(row.get("unavailable") for row in rows):
+    # A void function's `(return)` row has nothing to read: it is not one the debugger failed.
+    if any(row.get("unavailable") and row.get("type") != "void" for row in rows):
         warnings.append(
             "Some locals have no value at this line (optimized out or not live)."
             if result.get("optimized")
@@ -4631,6 +4703,24 @@ _WHOLE_SCALAR = re.compile(
 _JAVA_PRIMITIVES = frozenset(("byte", "short", "int", "long", "float", "double", "boolean", "char"))
 
 
+def _write_kind(change):
+    """How a write left its value, as a probe's text and NO_STOP count it: "change" where
+    the text differs, "unchanged" where the worker proved it changed nothing, "alike"
+    where the text is the same but nothing proves the value is (a new String alike, a
+    Python `1000`, a float's rounded text, or an older worker's result)."""
+    if change.get("before") != change.get("after"):
+        return "change"
+    return "unchanged" if unchanged(change) else "alike"
+
+
+def unchanged(change):
+    """Whether an intervention wrote the value its target already held, as the worker
+    proved it (``unchanged`` in its result: the same text before and after, and a type
+    whose text is exact; see worker._written). Never from the text alone: a Java String
+    or a Python `1000` written alike is a new object, and a float's text may be rounded."""
+    return change.get("unchanged") is True and change.get("before") == change.get("after")
+
+
 def _holds(selector, target):
     """Whether ``selector`` names ``target`` or a value that holds it (`s` for `s.ninth`,
     `d` for `d['k']`, `this` for `this.count`)."""
@@ -4719,7 +4809,11 @@ def _table(result, short_names=True):
             str(row["hit"]),
             *((f"{row['stop']}/{row['stops']}" if "stops" in row else "",) if stops else ()),
             row["phase"],
-            str(row.get("line", "")),
+            # A return's line is where it returned to, in the caller, not in its function
+            # (eleventh evaluation: `returned 49 Seats.block(...)`, line 49 in `book`).
+            f"to {row['line']}"
+            if row["phase"] == "returned" and row.get("line") is not None
+            else str(row.get("line", "")),
             short_instance(row) or functions.get(row.get("function"), ""),
             row["selector"],
             row.get("type") or "",
@@ -4741,24 +4835,32 @@ def _table(result, short_names=True):
             "  ".join(text.ljust(width) for text, width in zip(item, widths)) + "  " + item[-1]
         )
     if left_out:
+        # Only whole scalars are left out (eleventh evaluation: an aggregate's equal row
+        # stayed under a line that said every equal row was left out).
         lines.append(
-            f"after-set: {left_out} row{'s' if left_out > 1 else ''} equal to the hit's "
-            "observed value left out "
-            "(`--json` has every row)"
+            f"after-set: {left_out} scalar row{'s' if left_out > 1 else ''} equal to the hit's "
+            "observed value left out (a number, flag or whole text; pointer, object and "
+            "preview rows stay, as they may hide a change; `--json` has every row)"
         )
     if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
-    # An @all's changes (#265): the first few, then how many more at which hits.
+
+    def key_of(change):
+        return (f"{str(change.get('at')).partition('@')[0]}@{ALL}", change.get("name"))
+
+    # An @all's changes (#265): the first few, then how many more at which hits. One more
+    # than the few is shown too: a line counting one change says no less.
+    totals = Counter(key_of(change) for change in result["interventions"] if change.get("all"))
     every, more = {}, {}
     for change in result["interventions"]:
         at = str(change.get("at"))
         if change.get("all"):
-            at = f"{at.partition('@')[0]}@{ALL}"
-            key = (at, change.get("name"))
+            key = key_of(change)
+            at = key[0]
             every[key] = every.get(key, 0) + 1
-            if every[key] > _ALL_SHOWN:
-                more.setdefault(key, []).append(change.get("hit"))
+            if every[key] > _ALL_SHOWN and totals[key] > _ALL_SHOWN + 1:
+                more.setdefault(key, []).append(change)
                 continue
         where = change.get("instance") or named.get(change.get("function"), change.get("function"))
         if change.get("alike"):
@@ -4768,6 +4870,9 @@ def _table(result, short_names=True):
         hit = f", hit {change.get('hit')}" if change.get("all") else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
+            + {"unchanged": ", no change", "alike": ", same text, not proven unchanged"}.get(
+                _write_kind(change), ""
+            )
             + (
                 f"  (--set-at line {at}{hit}{stop}" + (f", in {where})" if where else ")")
                 if change.get("at")
@@ -4776,13 +4881,47 @@ def _table(result, short_names=True):
                 else ""
             )
         )
-    for (at, name), numbers in more.items():
+    for (at, name), changes in more.items():
+        numbers = [change.get("hit") for change in changes]
         known = [number for number in numbers if type(number) is int]
-        span = f", at hits {min(known)} to {max(known)}" if len(known) == len(numbers) else ""
-        lines.append(
-            f"set {name}: {len(numbers)} more change{'s' if len(numbers) > 1 else ''} by "
-            f"--set-at line {at}{span} (`--json` lists each)"
+        span = (
+            ""
+            if len(known) != len(numbers)
+            else f", at hit {known[0]}"
+            if min(known) == max(known)
+            else f", at hits {min(known)} to {max(known)}"
         )
+        # Changes, writes proven to change nothing, and writes of the same text not proven
+        # unchanged, counted apart, as NO_STOP counts them (eleventh evaluation: 35 of 42
+        # `set free: 0 -> 0` writes were counted as changes).
+        kinds = [_write_kind(change) for change in changes]
+        parts = [
+            (kinds.count(kind), word)
+            for kind, word in (
+                ("change", "change"),
+                ("unchanged", "with no change"),
+                ("alike", "with the same text, not proven unchanged"),
+            )
+            if kind in kinds
+        ]
+        if parts == [(len(changes), "change")]:
+            counted = f"{len(changes)} more change{'s' if len(changes) > 1 else ''} by "
+            counted += f"--set-at line {at}{span}"
+        elif len(parts) == 1:
+            counted = f"{len(changes)} more writes by --set-at line {at}{span}, each {parts[0][1]}"
+        else:
+            listed = [
+                f"{count} {word}{'s' if count > 1 else ''}"
+                if word == "change"
+                else f"{count} {word}"
+                for count, word in parts
+            ]
+            counted = (
+                f"{len(changes)} more writes by --set-at line {at}{span}: "
+                + ", ".join(listed[:-1])
+                + f" and {listed[-1]}"
+            )
+        lines.append(f"set {name}: {counted} (`--json` lists each)")
     unmade = [entry for entry in result.get("unapplied") or () if "made" not in entry]
     capped = len(result.get("unapplied") or ()) - len(unmade)
     lines.append(

@@ -738,7 +738,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  items[1]  int   20
 1    after-set  8     get_page  start     int   0
-after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.004  max pause: 10.0 ms
 output:
@@ -850,7 +850,8 @@ After a change, Peeky reads each selector again, in an `after-set` row. The tabl
   no `…` or `...` cut.
 - Its selector is neither a change's target nor holds one, as `s` holds `s.ninth`.
 
-`items[1]` above is such a row. A footer counts the rows left out, and `--json` has every row.
+`items[1]` above is such a row. A footer counts the rows left out, as scalar rows, and `--json` has
+every row.
 
 These rows stay, since they may hide a change:
 
@@ -1084,6 +1085,13 @@ Branch on the exit status:
 - `--set-at LINE@all name=value` changes it at every stop of `LINE`, up to 100
   ([below](#change-it-at-every-stop-all)).
 - A change that never happened, because its stop never came, makes the probe exit 4.
+- Changes can keep the `--at` line from running, as when they skip the branch it is in. A probe
+  that never stops at `--at` ends with `NO_STOP`, which counts the changes the run made, where they
+  were, and says to compare with a run without them:
+  `The run made 6 changes by --set-at (at lines 32 and 35): compare with a run without them`.
+  Nothing proves that a change came before the line's chance to run, so it claims no cause. A
+  write with the same text, not proven unchanged, is named too. Only where
+  every write is proven to change nothing is the line blamed, as without changes.
 
 #### Example: change a value for one line
 
@@ -1109,7 +1117,7 @@ hit  phase      line  function  selector  type         value
 4    observed   22    main      colon     size_t       5  [settable]
 4    observed   22    main      entry     std::string  "pear :1"  [settable]
 4    after-set  22    main      colon     size_t       4  [settable]
-after-set: 2 rows equal to the hit's observed value left out (`--json` has every row)
+after-set: 2 scalar rows equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
 set colon: 7 -> 6  (--set-at line 22@3, in main)
 set colon: 6 -> 7  (--set-at line 23@3, in main)
 set colon: 5 -> 4  (--set-at line 22@4, in main)
@@ -1180,10 +1188,10 @@ peeky probe debounce_main.c --at 18 --capture ms,db.count --hits all \
 
 ```
 ...
-set db.count: 0 -> 0  (--set-at line 18@all, hit 1, in main)
-set db.count: 0 -> 0  (--set-at line 18@all, hit 2, in main)
+set db.count: 0 -> 0, no change  (--set-at line 18@all, hit 1, in main)
+set db.count: 0 -> 0, no change  (--set-at line 18@all, hit 2, in main)
 set db.count: 1 -> 0  (--set-at line 18@all, hit 3, in main)
-set db.count: 13 more changes by --set-at line 18@all, at hits 4 to 16 (`--json` lists each)
+set db.count: 13 more writes by --set-at line 18@all, at hits 4 to 16: 5 changes and 8 with no change (`--json` lists each)
 status: completed  hits: 16 (all)  seconds: 1.498  max pause: 63.7 ms
 output:
   DEBOUNCE:P@9,R@20, quiet 16
@@ -1213,9 +1221,25 @@ How `@all` works:
 - One `@all` counts as one of the 8 changes a probe may make.
 - With `--until hits`, the probe ends after its last hit, and its `@all` with it. A warning says
   that any later execution of the line ran without the change.
-- The text shows the first 3 changes, each with its hit, then one line that counts the rest. In
-  JSON, each change is in `interventions`, with its own `at` (`18@4`) and `"all": true`.
+- The text shows the first 3 changes, each with its hit, then one line that counts the rest. A
+  fourth is shown too, since a line counting one change says no less. In JSON, each change is in
+  `interventions`, with its own `at` (`18@4`) and `"all": true`.
   `set_outcomes` says how far each request got ([below](#how-the-evidence-records-changes)).
+- A write of the value already there says `0 -> 0, no change`, and the line that counts the rest
+  counts those apart: `13 more writes …: 5 changes and 8 with no change`. The same text alone
+  never proves it. The worker must also prove that the value's type shows its whole value as text:
+  - **C, C++ and Rust:** a built-in integer, bool or character, by the type the debug information
+    gives, through typedefs. So `typedef float int64_t;` is a float, whose text may be rounded.
+  - **Java:** a primitive other than `float` and `double`. java-debug shows a `char` bare: `+`.
+  - **Python:** only `True`, `False` and `None`, since another value may be a new object.
+- Any `set` line in a probe's text is marked so. In JSON, such a change (in a probe's
+  `interventions`, or `session set --json`) has `"unchanged": true`.
+- A write with the same text, but not proven to change nothing, says `1000 -> 1000, same text,
+  not proven unchanged`. The line for the rest counts the three kinds apart:
+  `5 more writes …: 2 changes, 2 with no change and 1 with the same text, not proven unchanged`.
+- A write of anything but a text also has `type` in JSON, where the debugger's reply or a read
+  after the write gives one. That is the value's type after the write, as the debugger names it
+  (LLDB's C name for a Rust value). A text write, or a reply without a type, has none.
 
 #### Where and when a change is made
 
@@ -1328,7 +1352,8 @@ This works for C, C++, Rust and Java.
 - A struct, a string, or any return in an optimized build is withheld, with the reason.
 - After `session step --out`, the state shows what the function returned: `(return): int = 42`,
   or `returned` in JSON. Or it shows a withheld row with the reason, following the rules below.
-  That includes a call that an exception, a `longjmp` or a panic ended.
+  That includes a call that an exception, a `longjmp` or a panic ended. A C or C++ function that
+  returns nothing shows `(return): void (no value: the function returns nothing)`.
 - It shows nothing where another stop interrupted the step first, or where the program ended.
   `session inspect` lists the value under `[Returned]`, and `session get return` reads it.
 - Python's returns can't be captured. Capture what the caller stores, on the caller's next line:
@@ -1339,17 +1364,18 @@ peeky probe sched.cpp --at 16 --capture "a.name,b.name,return" --hits all -- "bu
 ```
 
 ```
-hit  phase     line  function  selector  type         value
-1    observed  16    before    a.name    std::string  "test"
-1    observed  16    before    b.name    std::string  "build"
-1    returned  115   before    (return)  bool         false
+hit  phase     line    function  selector  type         value
+1    observed  16      before    a.name    std::string  "test"
+1    observed  16      before    b.name    std::string  "build"
+1    returned  to 115  before    (return)  bool         false
 ...
 ```
 
 `return`, or `(return)`, captures what the function holding the `--at` line returns. After each
 hit, Peeky steps out of that call, one frame, and records a `(return)` row whose `phase` is
 `returned`. Its `function` is the function that returned. Its `line` and `location` are where the
-function returned to, often in the library that called it.
+function returned to, often in the library that called it. So the table shows its line as `to 115`:
+a line of the caller, not of `before`.
 
 #### One row per hit
 
@@ -1470,7 +1496,7 @@ These are withheld, with the reason:
 - a struct, a class, a `std::string`, a reference, a Rust enum or `Option`;
 - a value the debugger can't read;
 - any return in an optimized build;
-- the return of a function that returns nothing.
+- the return of a function that returns nothing, in Java and Rust.
 
 Otherwise, LLDB would step out past libc++'s hidden frames and code without debug information,
 and then list another value as that function's. So Peeky keeps each step out to one frame, and
@@ -1478,6 +1504,11 @@ checks that it stopped where the call returns.
 
 lldb-dap before LLVM 21 lists no `(Return Value)`; the Linux lanes use 18 and 20. Peeky then reads
 what LLDB itself recorded for that step out (`thread info`), under the same checks.
+
+In C and C++, a `void` function returns no value: its debug information gives it no return type.
+Its row has the type `void`, and says `no value: the function returns nothing`. After a step out, a
+session shows `(return): void (no value: the function returns nothing)`. A constructor or a
+destructor, or a function Peeky can't place, is withheld as `the debugger reported no value`.
 
 Python's returns are not available. debugpy shows one only by writing it into the program's
 globals (`__pydevd_ret_val_dict`), which the program could see. So Peeky refuses
@@ -1555,7 +1586,8 @@ The first two rows say how the runs differed: their output and their arguments. 
 values that differ at hit 1.
 
 Comparing needs two saved runs. With fewer, the query says so. `peeky queries runs` lists the saved
-runs.
+runs. Its `output_start` is each output's first 60 characters. For a longer output, `output_end`
+has the last 40, since outputs often differ at their end: `…Sato=D2-7;FREE=39`.
 
 #### The rows `diff` shows, in order
 
@@ -2523,7 +2555,7 @@ private worker keeps the program paused in between.
 | `session get NAME …` | Reads values, and lists their children. |
 | `session set NAME=VALUE` | Changes one value. |
 | `session continue --to-exit` | Runs the program to its end. |
-| `session report` | Shows the state and the program's output. |
+| `session report` | Shows the state, where the program is stopped, the hits and steps so far, and the program's output. |
 | `session close` | Ends the session. |
 
 ```sh
@@ -2559,6 +2591,7 @@ items: list = [10, 20, 30, 40, 50, 60]  [id 6]
 set start: 3 -> 0
 state: terminated (program exited; `peeky session report` shows output)
 state: terminated
+so far: 1 hit (stops at the session's breakpoint), 0 steps
 output:
 PAGE: [10, 20, 30]
 closed default
@@ -2611,6 +2644,11 @@ A probe's table does the same: `visible: as listed at hit 1`. JSON keeps every l
   ([5.2](#52-stepping-and-running-to-a-line)).
 - A session that isn't `default` needs `--name` on every later command
   ([5.3](#53-several-sessions-at-once)).
+- A session's commands name a file as `session start` did, from the directory it ran in. So a
+  `step` run from another directory still says `grades.cpp:26`. A file outside that directory is
+  named by its whole path.
+- `session report` says where the program is stopped, and how many hits and steps the session has
+  had so far. JSON has them as `location`, `function`, `hit`, `hits` and `steps`.
 
 #### Read a caller's frame
 
@@ -2848,6 +2886,30 @@ note: the session's breakpoint (hit 2) stopped the step before it ended, and the
 
 `step --out` then shows no return, because the function hasn't returned.
 
+#### When a step lands on the breakpoint's line
+
+Hits, `--hit` and `continue --count` count only the stops that the debugger reports as the
+breakpoint's. So a step that stops on the line of the session's breakpoint is a hit where the
+debugger reports that stop as the breakpoint's, and isn't one where it reports it as the step's.
+Which it does, and what the next `continue` does, depends on the debugger. The state says it:
+
+- **Python:** debugpy reports such a stop as the breakpoint's. So it is a hit, and the state says
+  `hit 2`, as for a step the breakpoint stopped ([above](#when-the-sessions-breakpoint-stops-a-step)).
+- **Java:** java-debug reports it as the step's, and `continue` runs on to the line's next pass. So
+  that pass gets no number, and the session's later hits number lower than a probe's.
+- **C, C++ and Rust:** Xcode's LLDB reports it as the step's, so it isn't a hit. Where the step
+  stopped at one of the line's breakpoint locations, `continue` stops there again first, as the
+  next hit. So the pass keeps its number. An LLDB that reports such a stop as the breakpoint's
+  numbers it as a hit at once.
+
+```
+state: stopped at app/Seats.java:26 in Seats.block(boolean[],int) (paused 0.0 s)
+note: not a hit: java-debug reports this stop as the step's, and `session continue` runs on to the line's next pass, so this pass gets no hit number and later hits number lower than a probe's
+```
+
+A `step --out` that returns into the breakpoint's line gets no note. It stops part-way through the
+line, past its breakpoint.
+
 #### Steps with several threads
 
 - Other threads may be stopped at the breakpoint too. LLDB stops them together; Java stops each one
@@ -2985,6 +3047,9 @@ diff:
 
 - To see what an edit does before you verify it, a candidate probe is simpler
   ([6.6](#66-see-what-a-fix-does-before-making-it)).
+- `--at` names the file to edit when the target is a directory. A config that declares one source,
+  as a Java program's often does, needs no `--at`: the edit goes into that source. With several,
+  the error lists them: pass the one that holds the `--old` text.
 - To keep the edited file, add `--keep`. It stays in the system's temporary directory, with a
   compiled program's build evidence beside it. Build artifacts are always removed.
 - The result prints the file's path after `candidate:`, and JSON names its directory in `kept`.
@@ -3251,7 +3316,14 @@ This is evidence about one run, not a verification. Only `peeky verify` checks a
 #### Which line a candidate stops at
 
 `--at` uses the original file's numbering, so the same command works before and after the edit. A
-line after an edit that adds or removes lines is moved to match:
+line after an edit that adds or removes lines is moved to match. The first progress line and the
+result's `candidate:` line both say so. Here an edit removed three lines above line 40:
+
+```
+peeky: started; line 40 is line 37 of the candidate; breakpoint tides.c:37 in the candidate verified
+```
+
+And here an edit added one line above line 8:
 
 ```
 candidate: values are from a copy of your tree with this edit; your files are unchanged (line 8 is line 9 of the candidate)

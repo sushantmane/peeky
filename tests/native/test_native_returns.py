@@ -125,13 +125,15 @@ def test_returns_are_shown_only_where_exact(c_program, capsys):
     loop = returns(probe(capsys, c_program, "LOOP"))
     assert loop[3]["value"] == "6" and loop[3]["line"] == line_of("int s = sum_to(3)")
     assert [loop[hit].get("value") for hit in (1, 2)] == ["6", "6"], loop
-    # A struct returned in registers, and a function returning nothing: withheld.
+    # A struct returned in registers: withheld.
     made = returns(probe(capsys, c_program, "MAKE"))[1]
     assert "value" not in made, made
     # LLDB lists the struct (Apple's), or cannot read it at all (LLDB 18/20 on Linux).
     assert "pair is not a number" in made["error"] or "reported no value" in made["error"]
+    # A function returning nothing: no value, of type `void` (eleventh evaluation).
     noted = returns(probe(capsys, c_program, "NOTE"))[1]
-    assert "value" not in noted and "reported no value" in noted["error"]
+    assert "value" not in noted and noted["type"] == "void", noted
+    assert noted["error"] == "no value: the function returns nothing", noted
     halved = returns(probe(capsys, c_program, "HALF"))[1]
     assert (halved["value"], halved["type"]) == ("3.5", "double")
 

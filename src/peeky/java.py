@@ -640,6 +640,10 @@ def _method_shown(name):
     return name
 
 
+# The primitives whose text java-debug shows whole (JavaSession.exact_text).
+_EXACT_PRIMITIVES = frozenset(("byte", "short", "int", "long", "boolean", "char"))
+
+
 class JavaSession:
     # java-debug accepts variables start/count only for arrays.
     ranges_only_for_indexed = True
@@ -872,6 +876,15 @@ class JavaSession:
             return f"'{java_char(value)}'"
         text = parse_text(value)
         return value if text is None else f'"{text}"'
+
+    @staticmethod
+    def exact_text(variable, **where):
+        """Whether the value a change wrote shows its whole value as text (a `char` bare,
+        `+`), so that the same text before and after it proves the write changed nothing:
+        a primitive but a float or a double, whose text may be rounded. A primitive's name
+        is a keyword, so no class has it. A String or other object never does: a write
+        makes a new one."""
+        return isinstance(variable, dict) and variable.get("type") in _EXACT_PRIMITIVES
 
     def confirm_mutation(self, name, value, before, after, variable=None):
         """A String (#137) must read back as the text asked, as java-debug shows one

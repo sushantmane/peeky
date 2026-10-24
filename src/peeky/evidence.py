@@ -1036,6 +1036,10 @@ def _address(value):
     return None
 
 
+# A run's output without its final line ends (`queries runs`' output_end; eleventh
+# evaluation: output_start cut `…;FREE=39` and `…;FREE=32` alike, at `…;FREE`).
+_OUTPUT_BODY = "rtrim(output, char(13, 10))"
+
 _RUN_PARAM = {"run": "Run id (default: the newest run)"}
 _PAIR_PARAMS = {
     "a": "First run id (default: the run before b)",
@@ -1045,11 +1049,14 @@ _PAIR_PARAMS = {
 # name -> (description, SQL, {param: description}, required params)
 QUERIES = {
     "runs": (
-        "Recent runs, newest first: where, inputs, outcome",
+        "Recent runs, newest first: where, inputs, outcome; output_start is the output's first "
+        "60 characters, and output_end its last 40 where it is longer (NULL where it is not; "
+        "a final newline left out), since outputs often differ at their end",
         "SELECT run_id, started_at, label, program || ':' || line || "
         "CASE WHEN edit IS NULL THEN '' ELSE ' (candidate)' END AS at, args, sets, status, "
-        "hits, seconds, error_code, substr(output, 1, 60) AS output_start FROM runs "
-        "ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
+        "hits, seconds, error_code, substr(output, 1, 60) AS output_start, "
+        f"CASE WHEN length({_OUTPUT_BODY}) > 60 THEN '…' || substr({_OUTPUT_BODY}, -40) END "
+        "AS output_end FROM runs ORDER BY run_id DESC LIMIT COALESCE(:count, 20)",
         {"count": "How many runs (default 20)"},
         (),
     ),
