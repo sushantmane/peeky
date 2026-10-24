@@ -18,7 +18,12 @@ your checks.
 
 ## Install
 
-Python 3.11 or later is required. Run these, and every example, from the repository root:
+Python 3.11 or later is required. Its `sqlite3` module must have SQLite 3.30 or later, with the
+JSON functions, `json_each`, `json_tree` and window functions, for the evidence store.
+`python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version. Before SQLite
+3.41, `peeky sql` can use only the JSON and pragma table-valued functions
+([COOKBOOK 4](docs/COOKBOOK.md#4-sql-over-saved-runs)). Run these, and every example, from the
+repository root:
 
 ```sh
 pip install -e .
