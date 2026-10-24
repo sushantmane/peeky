@@ -1128,6 +1128,7 @@ def test_the_debug_information_tells_what_each_crate_type_holds():
     dies.struct(crate, "Uses", ("t", other))
     dies.struct(crate, "Boxed", ("f", boxed_dyn))
     dies.struct(module, "Calm", ("n", u32))
+    dies.add(crate, "DW_TAG_enumeration_type", "Mode")
     all_ = frozenset({"interior", "owned", "shares"})
     named = {
         "Counter": (frozenset({"interior", "owned"}), ()),
@@ -1142,6 +1143,7 @@ def test_the_debug_information_tells_what_each_crate_type_holds():
         "Boxed": (all_, ()),
         "m::Calm": (frozenset(), ()),
         "other::Thing": (frozenset({"interior", "owned"}), ()),
+        "Mode": (frozenset(), ()),
     }
     # Each by its path, and its last segment for a signature's short name.
     found = interior_types(root, "hidden")

@@ -1184,6 +1184,18 @@ def interior_types(root, crate):
     index(root, None)
     names = _qualified_names(root)
     prefix = crate + "::"
+    # A C-like enum (`DW_TAG_enumeration_type`) holds only its discriminant.
+    plain = {}
+
+    def enumerations(die, path):
+        for child in die.children:
+            raw = child.attributes.get("DW_AT_name")
+            if child.tag == "DW_TAG_namespace" and raw is not None:
+                enumerations(child, (*path, _string(raw)))
+            elif child.tag == "DW_TAG_enumeration_type" and raw is not None:
+                plain[child.offset] = "::".join((*path, _string(raw)))
+
+    enumerations(root, ())
 
     def target(die):
         raw = die.attributes.get("DW_AT_type")
@@ -1321,6 +1333,11 @@ def interior_types(root, crate):
             arguments(shared, handle, out)
 
     found = {}
+    for name in plain.values():
+        if not name.startswith(_STD_ROOTS):
+            path = name.removeprefix(prefix)
+            for key in (path, "::" + path.rsplit("::", 1)[-1]):
+                merge_interior(found, key, (frozenset(), ()))
     for offset, name in names.items():
         die = by_offset[offset]
         parent = parents.get(offset)
