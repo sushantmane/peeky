@@ -1431,8 +1431,25 @@ def _connect(path, timeout=10):
     return sqlite3.connect(path, timeout=timeout, isolation_level=None)
 
 
-# The store's SQL needs an aggregate's FILTER (SQLite 3.30) and SQLite's JSON functions.
+# The store's SQL needs an aggregate's FILTER (SQLite 3.30). Each feature below is tried,
+# with the SQL Peeky uses, on an in-memory connection before a store is opened: a build
+# can leave out the JSON functions, or the virtual tables json_each and json_tree are.
 MIN_SQLITE = (3, 30, 0)
+_SQLITE_FEATURES = (
+    (
+        "the JSON functions",
+        "SELECT json_valid('[]'), json_extract('[1]', '$[0]'), json_type('[]'), "
+        "json_array_length(json_array(1)), json_group_array(1) FILTER (WHERE 1), "
+        "json_group_object('a', 1)",
+    ),
+    ("json_each", "SELECT 1 FROM json_each('[]') LIMIT 0"),
+    ("json_tree", "SELECT 1 FROM json_tree('[]') LIMIT 0"),
+    (
+        "window functions",
+        "SELECT LAG(1) OVER w, COUNT(*) OVER (PARTITION BY 1) FROM (SELECT 1) "
+        "WINDOW w AS (ORDER BY 1)",
+    ),
+)
 
 
 def _require_sqlite():
@@ -1441,16 +1458,20 @@ def _require_sqlite():
     if sqlite3.sqlite_version_info >= MIN_SQLITE:
         connection = sqlite3.connect(":memory:")
         try:
-            connection.execute("SELECT json_valid('[]')")
-            return
-        except sqlite3.OperationalError:
-            found += " without them"
+            for feature, sql in _SQLITE_FEATURES:
+                try:
+                    connection.execute(sql).fetchall()
+                except sqlite3.OperationalError as exc:
+                    found += f" without {feature} ({exc})"
+                    break
+            else:
+                return
         finally:
             connection.close()
     raise ValueError(
-        f"Evidence store needs SQLite {'.'.join(map(str, MIN_SQLITE[:2]))} or newer with its "
-        f"JSON functions, but this Python's sqlite3 module has {found}; run Peeky with a Python "
-        "built with a newer SQLite"
+        f"Evidence store needs SQLite {'.'.join(map(str, MIN_SQLITE[:2]))} or newer with "
+        f"the JSON functions, json_each, json_tree and window functions, but this Python's "
+        f"sqlite3 module has {found}; run Peeky with a Python built with a newer SQLite"
     )
 
 
@@ -1748,6 +1769,25 @@ def _connect_table_functions(connection):
             pass
 
 
+def _old_table_function(message):
+    """Before SQLite 3.41, the table-valued function outside ``_TABLE_FUNCTIONS`` that an
+    error names, refused on its first use as above (3.37 to 3.40 say `vtable constructor
+    failed`, earlier ones `no such table`); else None."""
+    found = re.fullmatch(r"(vtable constructor failed|no such table): (\w+)", message)
+    if sqlite3.sqlite_version_info >= (3, 41, 0) or not found or found[2] in _TABLE_FUNCTIONS:
+        return None
+    if found[1] == "vtable constructor failed" or found[2].startswith("pragma_"):
+        return found[2]
+    connection = sqlite3.connect(":memory:")
+    try:
+        module = "SELECT 1 FROM pragma_module_list WHERE name = ?"
+        return found[2] if connection.execute(module, (found[2],)).fetchone() else None
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+
 def parse_params(items):
     """['run=3', 'selector=a.b'] -> {'run': 3, 'selector': 'a.b'}."""
     params = {}
@@ -1988,6 +2028,12 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
         message = str(exc)
         if "not authorized" in message or "denied" in message:
             message += " (queries are read-only: one SELECT; no writes, ATTACH or settings)"
+        elif _old_table_function(message):
+            message += (
+                f" (before SQLite 3.41, peeky sql can use only the table-valued functions "
+                f"{', '.join(_TABLE_FUNCTIONS)}; this Python's sqlite3 module has SQLite "
+                f"{sqlite3.sqlite_version}, so use those, or a Python with SQLite 3.41 or newer)"
+            )
         elif "ambiguous column name" in message:
             message += (
                 " (the evidence and last_run views already carry their run's columns: "

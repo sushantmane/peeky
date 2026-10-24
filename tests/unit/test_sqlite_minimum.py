@@ -19,7 +19,10 @@ _DECLARE_VTAB = [
 
 
 class OldSQLite(sqlite3.Connection):
-    """A connection that asks its authorizer what SQLite before 3.41 asks."""
+    """A connection that asks its authorizer what SQLite before 3.41 asks. A denied one
+    fails as 3.37 to 3.40 say (`failed`); 3.30 to 3.36 say `no such table`."""
+
+    failed = "vtable constructor failed"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -30,10 +33,10 @@ class OldSQLite(sqlite3.Connection):
         super().set_authorizer(callback)
 
     def execute(self, sql, *args):
-        for name in re.findall(r"\b(json_each|json_tree|pragma_\w+)\s*\(", sql):
+        for name in re.findall(r"\b(json_each|json_tree|pragma_\w+|fts3tokenize)\b", sql):
             if name not in self.connected and self.authorizer is not None:
                 if any(self.authorizer(*asked) != sqlite3.SQLITE_OK for asked in _DECLARE_VTAB):
-                    raise sqlite3.OperationalError(f"vtable constructor failed: {name}")
+                    raise sqlite3.OperationalError(f"{self.failed}: {name}")
             self.connected.add(name)
         return super().execute(sql, *args)
 
@@ -56,6 +59,8 @@ def store(tmp_path):
 def old_sqlite(monkeypatch, version):
     monkeypatch.setattr(sqlite3, "sqlite_version", ".".join(map(str, version)))
     monkeypatch.setattr(sqlite3, "sqlite_version_info", version)
+    if version < (3, 37):
+        monkeypatch.setattr(OldSQLite, "failed", "no such table")
     connect = sqlite3.connect
     monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, **k, factory=OldSQLite))
 
@@ -107,8 +112,9 @@ def test_an_sqlite_before_3_30_is_refused_where_the_store_opens(store, monkeypat
         else:
             evidence.query(store, "SELECT 1")
     assert str(caught.value) == (
-        "Evidence store needs SQLite 3.30 or newer with its JSON functions, but this Python's "
-        "sqlite3 module has SQLite 3.29.0; run Peeky with a Python built with a newer SQLite"
+        "Evidence store needs SQLite 3.30 or newer with the JSON functions, json_each, json_tree "
+        "and window functions, but this Python's sqlite3 module has SQLite 3.29.0; run Peeky "
+        "with a Python built with a newer SQLite"
     )
     assert not store.parent.exists()
     payload = classify(caught.value, session_closed=False)
@@ -116,16 +122,61 @@ def test_an_sqlite_before_3_30_is_refused_where_the_store_opens(store, monkeypat
     assert len(payload["hint"]) <= 150
 
 
-def test_an_sqlite_without_json_functions_is_refused(store, monkeypatch):
-    evidence.record(store, run("1"), language="c")
+def without(monkeypatch, *names, error):
+    """SQLite with no table or function by those names, as a build can leave them out."""
 
-    class NoJSON(sqlite3.Connection):
+    class Without(sqlite3.Connection):
         def execute(self, sql, *args):
-            if "json_" in sql:
-                raise sqlite3.OperationalError("no such function: json_valid")
+            for name in names:
+                if re.search(rf"\b{name}\b", sql):
+                    raise sqlite3.OperationalError(f"{error}: {name}")
             return super().execute(sql, *args)
 
     connect = sqlite3.connect
-    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, **k, factory=NoJSON))
-    with pytest.raises(ValueError, match=r"has SQLite [0-9.]+ without them; run Peeky"):
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: connect(*a, **k, factory=Without))
+
+
+def test_an_sqlite_without_json_functions_is_refused(store, monkeypatch):
+    # As a real build of 3.31.1 without JSON1 says.
+    evidence.record(store, run("1"), language="c")
+    without(monkeypatch, "json_valid", "json_each", "json_tree", error="no such function")
+    with pytest.raises(ValueError) as caught:
         evidence.query(store, "SELECT 1")
+    assert str(caught.value).endswith(
+        f"has SQLite {sqlite3.sqlite_version} without the JSON functions (no such function: "
+        "json_valid); run Peeky with a Python built with a newer SQLite"
+    )
+
+
+@pytest.mark.parametrize("missing", ["json_each", "json_tree"])
+def test_scalar_json_without_its_table_functions_is_refused(store, monkeypatch, missing):
+    # SQLITE_OMIT_VIRTUALTABLE keeps json_valid() but has no json_each: every canned query
+    # would fail with `no such table: json_each`.
+    for value in ("1", "2"):
+        evidence.record(store, run(value), language="c")
+    without(monkeypatch, missing, error="no such table")
+    with pytest.raises(ValueError) as caught:
+        evidence.run_query(store, "diff")
+    assert f"without {missing} (no such table: {missing}); run Peeky" in str(caught.value)
+    assert classify(caught.value, session_closed=False)["code"] == "UNSUPPORTED"
+
+
+@pytest.mark.parametrize("version", [(3, 31, 1), (3, 40, 1)])
+def test_before_3_41_another_table_function_says_which_peeky_sql_can_use(
+    store, monkeypatch, version
+):
+    old_sqlite(monkeypatch, version)
+    evidence.record(store, run("1"), language="c")
+    with pytest.raises(ValueError) as caught:
+        evidence.query(store, "SELECT * FROM fts3tokenize LIMIT 0")
+    assert str(caught.value) == (
+        f"Evidence query failed: {OldSQLite.failed}: fts3tokenize (before SQLite 3.41, peeky sql "
+        "can use only the table-valued functions json_each, json_tree, pragma_index_info, "
+        "pragma_index_list, pragma_table_info, pragma_table_list, pragma_table_xinfo; this "
+        f"Python's sqlite3 module has SQLite {sqlite3.sqlite_version}, so use those, or a "
+        "Python with SQLite 3.41 or newer)"
+    )
+    # A table that is not there is only that, on every SQLite.
+    with pytest.raises(ValueError) as caught:
+        evidence.query(store, "SELECT * FROM nosuch")
+    assert str(caught.value) == "Evidence query failed: no such table: nosuch"

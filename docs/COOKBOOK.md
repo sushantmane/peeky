@@ -2260,7 +2260,10 @@ in a `note:` line (`notes` in JSON).
 ## 4. SQL over Saved Runs
 
 Peeky keeps saved runs in a SQLite database, the store. Your queries on it are read-only and
-bounded. They need no rerun.
+bounded. They need no rerun. Before SQLite 3.41, they can use only these table-valued functions:
+`json_each`, `json_tree`, `pragma_table_info`, `pragma_table_xinfo`, `pragma_table_list`,
+`pragma_index_list` and `pragma_index_info`. Others compiled into that SQLite fail there, and the
+message says so.
 
 ### 4.1 What Is in the Store?
 
