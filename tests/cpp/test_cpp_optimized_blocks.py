@@ -568,17 +568,15 @@ def test_an_if_constexpr_blocks_static_withholds_the_outer_local(
 
 # #293: lines that name the outer `t` outside the scope of a block's `static` `t`. Review
 # of PR #319: `and` and `not` before it, after the block; and an `if`'s binding, in scope
-# in its `else` (on the line, or below it).
+# in its `else` (on the line, or below it), and up to the end of a `do` loop it controls.
 SAME_LINE_SOURCE = """#include <cstdio>
 #include <utility>
 __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
 __attribute__((noinline)) std::pair<long, long> make(long v) { return {v + 40, v}; }
-__attribute__((noinline)) long both(long v, bool ok) {
-    long t = v;
+__attribute__((noinline)) long both(long t, bool ok) {
     { static long t = 8; use(t); } return ok and t; // AND
 }
-__attribute__((noinline)) long negated(long v) {
-    long t = v;
+__attribute__((noinline)) long negated(long t) {
     { static long t = 9; use(t); } return not t; // NOT
 }
 int main(int argc, char **argv) {
@@ -593,6 +591,10 @@ int main(int argc, char **argv) {
     } else {
         use(t); // ELSE_BODY
     }
+    if (auto [t, u] = make(argc); u > 5) do { use(u); } while (false); use(t); // DO_IF
+    if (auto [t, u] = make(argc); u > 5) do { // DO_HEAD
+        use(u);
+    } while (false); use(t); // DO_TAIL
     return 0;
 }
 """
@@ -620,7 +622,7 @@ def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
     line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marker}"))
     outer = next(i for i, row in enumerate(lines, 1) if row.endswith("// OUTER"))
     if marker in ("AND", "NOT"):
-        # The function's own `t`, on the line above.
+        # The function's parameter, on the line above (`t @ blocks.cpp:N` at -O1).
         outer = line - 1
     (tmp_path / "blocks.cpp").write_text(SAME_LINE_SOURCE)
     selectors = ("t", f"t @ blocks.cpp:{outer}")
@@ -671,6 +673,9 @@ def test_an_if_headers_binding_is_what_its_else_names(tmp_path, cxx, optimizatio
     found = [row for row in result["rows"] if row["selector"] in selectors]
     # The outer `t` holds 1 here; the binding 41.
     assert not [row for row in found if row.get("value") == "1"], found
+    # Optimized, a stop may be placed on another line with the same code (clang merges
+    # the calls `use(t)`): only this line's notes are about it.
+    found = [row for row in found if row.get("line") == line]
     assert not [row for row in found if "scope ends" in row.get("error", "")], found
     rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
     # Optimized, the outer `t` may be gone there ("no value here").
@@ -679,4 +684,39 @@ def test_an_if_headers_binding_is_what_its_else_names(tmp_path, cxx, optimizatio
         assert row["error"].startswith(
             "not what the code reads: the code here names the structured binding "
             f"`t` (line {header})"
+        ), row
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("optimization", ["O0", "O1"])
+@pytest.mark.parametrize("marker", ["DO_IF", "DO_TAIL"])
+def test_a_do_loop_an_if_controls_ends_at_its_while(tmp_path, cxx, optimization, marker):
+    # Review round 2 of PR #319: where the `do` loop an `if` controls ends was unknown,
+    # and the `if`'s binding was taken to be in scope past it: on `if (auto [t, u] =
+    # make(argc); u > 5) do { use(u); } while (false); use(t);` the last `use(t)` reads
+    # the outer `t`, but the note said the code names the binding. Also on a loop over
+    # several lines, on its last.
+    lines = SAME_LINE_SOURCE.splitlines()
+    line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marker}"))
+    outer = next(i for i, row in enumerate(lines, 1) if row.endswith("// OUTER"))
+    marked = "DO_IF" if marker == "DO_IF" else "DO_HEAD"
+    header = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marked}"))
+    (tmp_path / "blocks.cpp").write_text(SAME_LINE_SOURCE)
+    selectors = ("t", f"t @ blocks.cpp:{outer}")
+    result = run_probe(
+        tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
+    )
+    assert result["status"] == "completed", result.get("error")
+    found = [row for row in result["rows"] if row["selector"] in selectors]
+    assert not [row for row in found if row.get("value") == "1"], found
+    found = [row for row in found if row.get("line") == line]
+    rows = [row for row in found if "this row is the outer local" in row.get("error", "")]
+    # Optimized, the outer `t` may be gone there ("no value here").
+    assert rows or optimization != "O0", found
+    for row in rows:
+        assert row["error"] == (
+            "may not be what the code reads: the code here may name the structured binding "
+            f"`t` (line {header}), but the line also names `t` after that declaration's "
+            "scope ends, and Peeky cannot tell whether that code reads this local: this row "
+            "is the outer local of that name"
         ), row

@@ -1872,6 +1872,7 @@ SAME_LINE_OPERANDS = """long f(long x) {
     { static long t = 8; use(t); } return x ? 1 : t;
     long a = 1, *p = &t; { static long t = 9; use(t); }
     long b = 2, c = t; { static long t = 10; use(t); }
+    { static long t = 11; use(t); } a < side() > t;
     return t;
 }
 """
@@ -1880,6 +1881,10 @@ SAME_LINE_OPERANDS_CPP = """long f(long x, bool ok) {
     { static long t = 5; use(t); } return ok and t;
     { static long t = 6; use(t); } return not t;
     { static long t = 7; use(t); } return x > t;
+    { static long t = 8; use(t); } a < side() > t;
+    { { static long t = 9; use(t); } A<B> t; }
+    { { static long t = 10; use(t); } std::vector<long> t; }
+    { { static long t = 11; use(t); } const A<B> t; }
     return t;
 }
 """
@@ -1895,7 +1900,12 @@ def test_a_name_counts_as_a_declarator_only_where_it_surely_is_one():
         lines = range(3, len(source.splitlines()) - 1)
         found = {line: statements.named_outside(line, "t", 2) for line in lines}
         before = {7, 8} if not raw_strings else set()
-        assert found == {line: "before" if line in before else "after" for line in lines}, found
+        # Round 2: `A<B> t` may compare (`(A < B) > t`) with no keyword or `::` beside it.
+        declared = set() if not raw_strings else {8, 9}
+        assert found == {
+            line: None if line in declared else "before" if line in before else "after"
+            for line in lines
+        }, found
     text = """void f(void) {
     long t = 3;
     struct S *t;
@@ -1913,17 +1923,86 @@ def test_a_name_counts_as_a_declarator_only_where_it_surely_is_one():
     x = 1, t;
     long(x), t;
     for (long t = 0;;) {}
+    A<B> t;
+    a < side() > t;
+}
+"""
+
+    def declaring(text, raw_strings):
+        statements = Statements(text, raw_strings=raw_strings)
+        code = statements._code()[0]
+        found = {}
+        for line in range(2, len(statements.starts)):
+            begin = statements.starts[line - 1]
+            name = re.search(r"\bt\b", code[begin : statements.starts[line]])
+            if name:
+                found[line] = statements._declaring(begin, begin + name.start())
+        return found
+
+    found = declaring(text, True)
+    # Surely declarations; then a lone name's `*` (may be a product), expressions, and
+    # template arguments with no keyword or `::` beside them (`(A < B) > t` may compare).
+    assert found == {line: line < 11 for line in range(2, 20)}, found
+    # C has no templates: any `<` may compare.
+    found = declaring("void f(void) {\n    struct S *t;\n    a<b> t;\n    a < b > t;\n}\n", False)
+    assert found == {2: True, 3: False, 4: False}, found
+
+
+IF_DO_SCOPES = """long f(long x, bool ok) {
+    long t = x;
+    if (auto [t, u] = make(); ok) do { use(u); } while (false); use(t);
+    if (auto [t, u] = make(); ok) do {
+        use(u);
+    } while (false); use(t);
+    if (auto [t, u] = make(); ok) do { use(u); } while (false); else use(t);
+    if (auto [t, u] = make(); ok) try { use(u); } catch (...) {} use(t);
+    if (auto [t, u] = make(); ok) do use(t); while (false); use(t);
+    return t;
+}
+"""
+
+
+def test_a_do_loop_an_if_controls_ends_at_its_while():
+    # Review round 2 of PR #319: where an `if` controls a `do` loop, where it ends was
+    # unknown, and the binding was taken to be in scope after it: on `if (auto [t, u] =
+    # make(); ok) do { use(u); } while (false); use(t);` the last `use(t)` reads the outer
+    # `t`, but the note named the binding. A `do` loop ends at its `while (...);`, and a
+    # `try` block at its last handler.
+    statements = Statements(IF_DO_SCOPES, raw_strings=True)
+    found = {line: statements.named_outside(line, "t", 2) for line in range(3, 10)}
+    assert found == {
+        3: "after",
+        4: None,
+        5: None,
+        # Across lines: on the loop's last line, after it.
+        6: "after",
+        # Its `else` is the `if`'s.
+        7: None,
+        8: "after",
+        9: "after",
+    }, found
+    assert {line: statements.block_storage(line, "t", 2, True) for line in (5, 6, 10)} == {
+        5: ("binding", 4),
+        6: ("binding", 4),
+        10: False,
+    }
+
+
+def test_where_a_headers_statement_ends_is_unknown_its_scope_is_too():
+    # Review round 2 of PR #319: where Peeky cannot tell where the statement a header
+    # controls ends, its declaration was taken to be in scope there. Now that is unknown:
+    # on the line, the code may name the outer local ("unsure"); below it, nothing can be
+    # told (None). Here a `try` with no handler, which no compiler takes.
+    text = """long f(long x, bool ok) {
+    long t = x;
+    if (auto [t, u] = make(); ok) try { use(u); } use(t);
+    return t;
 }
 """
     statements = Statements(text, raw_strings=True)
-    code = statements._code()[0]
-    found = {}
-    for line in range(2, 18):
-        begin = statements.starts[line - 1]
-        name = re.search(r"\bt\b", code[begin : statements.starts[line]])
-        found[line] = statements._declaring(begin, begin + name.start())
-    # Surely declarations; then a lone name's `*` (may be a product), and expressions.
-    assert found == {line: line < 11 for line in range(2, 18)}, found
+    assert statements.block_storage(3, "t", 2, True) == ("binding", 3)
+    assert statements.named_outside(3, "t", 2) == "unsure"
+    assert statements.block_storage(4, "t", 2, True) is None
 
 
 IF_INIT_SCOPES = """long f(long x, bool ok) {

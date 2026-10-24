@@ -279,12 +279,10 @@ def test_a_stop_back_inside_a_header_hedges_its_note(tmp_path, cc, monkeypatch, 
 SAME_LINE_SOURCE = """#include <stdio.h>
 __attribute__((noinline)) long use(long v) { printf("U=%ld\\n", v); return v; }
 #define PAIR use(0), t
-__attribute__((noinline)) long last(long v) {
-    long t = v;
+__attribute__((noinline)) long last(long t) {
     { static long t = 8; use(t); } return use(0), t; /* COMMA */
 }
-__attribute__((noinline)) long paired(long v) {
-    long t = v;
+__attribute__((noinline)) long paired(long t) {
     { static long t = 9; use(t); } return PAIR; /* MACRO */
 }
 int main(int argc, char **argv) {
@@ -316,12 +314,13 @@ def test_a_line_naming_the_outer_local_outside_the_blocks_scope_hedges_its_note(
     # `while` condition runs after that `static` leaves scope and reads the outer `t`;
     # and so on `use(t); { static long t = 6; use(t); }`, whose first call reads it before
     # the block. Withheld still, the note now says where the line names `t` outside. In
-    # `last` and `paired`, their own `t` (1) is the outer one.
+    # `last` and `paired`, the parameter `t` (1) is the outer one.
     lines = SAME_LINE_SOURCE.splitlines()
     line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"/* {marker} */"))
     outer = next(i for i, row in enumerate(lines, 1) if row.endswith("/* OUTER */"))
     if marker in ("COMMA", "MACRO"):
-        # The function's own `t`, on the line above.
+        # The function's parameter, on the line above: at -O1 LLDB lists it as `t @
+        # blocks.c:N` beside the block's `static` kept as a constant (review round 2).
         outer = line - 1
     (tmp_path / "blocks.c").write_text(SAME_LINE_SOURCE)
     selectors = ("t", f"t @ blocks.c:{outer}")

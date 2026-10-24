@@ -2728,6 +2728,105 @@ def test_an_operand_or_an_else_is_read_as_the_code_reads_it(tmp_path):
         assert (found.label, str(found)) == want, (line, found)
 
 
+CONTROLLED_UNIT = b"""# 1 "a.c"
+long f(bool ok) {
+    long q = 1;
+    if (auto [q, u] = make(); ok) do { use(u); } while (false); use(q);
+    if (auto [q, u] = make(); ok) try { use(u); } use(q);
+    return q;
+}
+"""
+
+
+def test_where_a_headers_statement_ends_decides_its_bindings_scope(tmp_path):
+    # Review round 2 of PR #319: a `do` loop an `if` controls had no known end, and the
+    # binding was taken to be in scope after it: the last `use(q)` reads the outer `q`.
+    # Where the end is unknown (a `try` with no handler), Peeky says it cannot tell.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": CONTROLLED_UNIT})
+    session.target.language = "cpp"
+
+    def hedged(line, where):
+        return (
+            "may not be what the code reads",
+            f"the code here may name the structured binding `q` (line {line}), but the line "
+            f"also names `q` {where}, and Peeky cannot tell whether that code reads this "
+            "local: this row is the outer local of that name",
+        )
+
+    expected = {
+        3: hedged(3, "after that declaration's scope ends"),
+        4: hedged(4, "where that declaration may be out of scope"),
+    }
+    for line, want in expected.items():
+        found = session._block_storage("q", frame, "a.c", line)
+        assert (found.label, str(found)) == want, (line, found)
+    # Below it, whether the binding is in scope cannot be told: withheld.
+    found = session._block_storage("q", frame, "a.c", 5)
+    assert found.label == "may not be what the code reads", found
+
+
+PARAMETER_UNIT = b"""# 1 "a.c"
+long f(long q) {
+    { static long q = 5; use(q); } return use(0), q;
+}
+"""
+
+
+def located_parameter_table():
+    """A function whose parameter `q` (line 1) has a block's `static` `q` (line 2) beside
+    it, which an optimized build keeps as a constant: LLDB lists both by their lines."""
+    return [
+        {
+            "ranges": [(0x100, 0x200)],
+            "locals": {"q": {(None, None, False), ("a.c", 2, False)}},
+            "visible": {
+                ("q", None, None, False): [(0x100, 0x200)],
+                ("q", "a.c", 2, False): [(0x100, 0x200)],
+            },
+            "parameters": {"q": {("a.c", 1)}},
+            "unstored": frozenset({("q", "a.c", 2)}),
+        }
+    ]
+
+
+def test_a_parameter_lldb_names_by_its_line_is_judged(tmp_path):
+    # Review round 2 of PR #319 (on main too): at -O1, LLDB lists a parameter beside a
+    # block's `static` kept as a constant as `q @ a.c:1`, which no local matched, so
+    # `shown_declaration` gave None and the row was never judged: it showed its value,
+    # though `use(q)` in the block reads the `static`. It is the parameter now; a line
+    # the function declares nothing on cannot be told.
+    from peeky.native import shown_declaration
+
+    table = located_parameter_table()
+    assert shown_declaration(table, "q @ a.c:1", 0x150, unstored=True) == (
+        table[0],
+        (None, None, False),
+    )
+    assert shown_declaration(table, "q @ a.c:2", 0x150, unstored=True) == (
+        table[0],
+        ("a.c", 2, False),
+    )
+    assert shown_declaration(table, "q @ a.c:9", 0x150, unstored=True) is False
+    # A `static` with an address is no frame local (as before); nor is another name.
+    assert shown_declaration(table, "q @ a.c:2", 0x150) is None
+    assert shown_declaration(table, "r @ a.c:1", 0x150) is None
+
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": PARAMETER_UNIT})
+    session.declarations = table
+    session._function_at = lambda frame: None
+    siblings = [{"name": "q @ a.c:1"}, {"name": "q @ a.c:2"}]
+    found = session._block_storage("q @ a.c:1", frame, "a.c", 2, siblings=siblings)
+    assert (found.label, str(found)) == (
+        "may not be what the code reads",
+        "the code here may name the block's `static` `q` (line 2), listed separately as "
+        "`q @ a.c:2`, but the line also names `q` after that declaration's scope ends, and "
+        "Peeky cannot tell whether that code reads this local: this row is the outer local "
+        "of that name",
+    )
+
+
 LAMBDAS_UNIT = b"""# 1 "a.c"
 long f(void) {
     long q = 1;

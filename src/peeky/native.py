@@ -2442,7 +2442,19 @@ def shown_declaration(table, name, pc, unstored=False):
         and (base, *where[:2]) in function.get("unstored", ())
     }
     if shown:
-        places = {where for where in places if where[1] == shown[2]}
+        located = {where for where in places if where[1] == shown[2]}
+        declared = function["locals"].get(base, ())
+        if not located and any(
+            line == shown[2] for _, line in function.get("parameters", {}).get(base, ())
+        ):
+            # A parameter LLDB names by where it is declared, beside another of its name
+            # it lists (a block's `static` an optimized build keeps as a constant, #173).
+            located = {where for where in places if where[:2] == (None, None)}
+        if not located and declared and not any(where[1] == shown[2] for where in declared):
+            # The function declares the name, but none where LLDB says: which one the row
+            # is, Peeky cannot tell.
+            return False
+        places = located
     if not places:
         return None
     visible = function.get("visible")
@@ -6941,6 +6953,7 @@ class NativeSession:
                 "before": "before that declaration",
                 "after": "after that declaration's scope ends",
                 "both": "before that declaration and after its scope ends",
+                "unsure": "where that declaration may be out of scope",
             }[outside]
             what += (
                 f", but the line also names `{base}` {where}, and Peeky cannot tell whether "

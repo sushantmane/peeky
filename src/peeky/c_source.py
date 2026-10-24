@@ -767,8 +767,8 @@ class Statements:
         `catch`'s), to the end of that statement: its body, and an `if`'s `else`; for
         one that is a control statement's whole body, without braces (`while (c) long t
         = 8;`, `do long t = 9; while (0);`, `switch (c) case 1: long t = 4;`), its own
-        statement. None if unknown (see ``declaration``; a body Peeky does not read: a
-        `do` loop's; what a labelled statement follows)."""
+        statement. None if unknown (see ``declaration``; what a labelled statement
+        follows)."""
         found = self.declaration(line, name, declaring=True)
         code, pairs = self._code()
         if found is None or pairs is None:
@@ -883,7 +883,8 @@ class Statements:
 
     def _controlled(self, start, keyword=None):
         """Where the statement a header controls, from ``start``, ends (its `;` or `}`),
-        an `if`'s `else` included (``keyword`` "if"); None if Peeky cannot tell."""
+        an `if`'s `else` included (``keyword`` "if"), a `do` loop's `while (...);` and a
+        `try` block's handlers too; None if Peeky cannot tell."""
         code, pairs = self._code()
         token = _WORDS.search(code, start)
         if token is None:
@@ -897,7 +898,11 @@ class Statements:
                 opening = _WORDS.search(code, opening.end())
             closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
             end = None if closing is None else self._controlled(closing + 1, word)
-        elif word in ("do", "try", "else") or word in ("}", "%>"):
+        elif word == "do":
+            end = self._do_end(token.end())
+        elif word == "try":
+            end = self._try_end(token.end())
+        elif word == "else" or word in ("}", "%>"):
             return None
         elif word == ";":
             end = token.start()
@@ -910,6 +915,43 @@ class Statements:
             return end
         # `else if (...)` is read as an `if`, with its own `else`.
         return self._controlled(following.end())
+
+    def _do_end(self, start):
+        """Where a `do` loop whose body starts at ``start`` ends: the `;` after its
+        `while (...)`; None if Peeky cannot tell."""
+        code, pairs = self._code()
+        body = self._controlled(start)
+        if body is None:
+            return None
+        word = _WORDS.search(code, body + 1)
+        if word is None or word[0] != "while":
+            return None
+        opening = _WORDS.search(code, word.end())
+        closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
+        if closing is None:
+            return None
+        semicolon = _WORDS.search(code, closing + 1)
+        return semicolon.start() if semicolon and semicolon[0] == ";" else None
+
+    def _try_end(self, start):
+        """Where a `try` block that starts at ``start`` ends: the `}` of its last
+        `catch (...) { … }`; None if Peeky cannot tell."""
+        code, pairs = self._code()
+        block = _WORDS.search(code, start)
+        if block is None or block[0] not in ("{", "<%"):
+            return None
+        end, handlers = pairs.get(block.start()), 0
+        while end is not None:
+            word = _WORDS.search(code, end + 1)
+            if word is None or word[0] != "catch":
+                break
+            opening = _WORDS.search(code, word.end())
+            closing = pairs.get(opening.start()) if opening and opening[0] == "(" else None
+            body = _WORDS.search(code, closing + 1) if closing is not None else None
+            if body is None or body[0] not in ("{", "<%"):
+                return None
+            end, handlers = pairs.get(body.start()), handlers + 1
+        return end if handlers else None
 
     def _statement(self, start):
         """Where the plain statement at ``start`` ends (its `;`), or None."""
@@ -1090,7 +1132,8 @@ class Statements:
         with a type's keyword (`long a = 1, *t;`). Unlike ``_declarator``, never where an
         expression may hold it: in brackets (an argument, a parameter, a header's), after
         a comma that may be an operator (`return use(0), t;`), an operator word (`ok and
-        t`), or a `*` or `&` after a lone name (`a * t`). Else False."""
+        t`), a `*` or `&` after a lone name (`a * t`), or a template's arguments with no
+        keyword or `::` beside them (`a < side() > t`; any `<` in C). Else False."""
         code = self._code()[0]
         at, depth = position - 1, 0
         while at >= low:
@@ -1137,10 +1180,13 @@ class Statements:
     def _typed(self, tokens):
         """Whether ``tokens``, a statement's from its start up to a name, are surely a
         declaration's type for it (see ``_declaring``)."""
-        typed, names, last, index = False, 0, None, 0
+        typed, angled, names, last, index = False, False, 0, None, 0
         while index < len(tokens):
             token = tokens[index]
             if token in ("<", "[", "("):
+                if token == "<" and not self.raw_strings:
+                    # C has no templates: `a < side() > t` compares.
+                    return False
                 if token == "(" and last not in _TYPE_GROUPS:
                     return False
                 if token == "[" and tokens[index + 1 : index + 2] != ["["]:
@@ -1154,7 +1200,8 @@ class Statements:
                         break
                 else:
                     return False
-                typed = typed or token == "<" or (token == "(" and last not in _ATTRIBUTES)
+                angled = angled or token == "<"
+                typed = typed or (token == "(" and last not in _ATTRIBUTES)
                 last, index = closer, index + 1
                 continue
             if token == "::":
@@ -1168,6 +1215,10 @@ class Statements:
                     names += 1
             last, index = token, index + 1
         if last is None or last == "::" or not (names or typed):
+            return False
+        if angled and not typed:
+            # A template's arguments only beside other proof of a type (`std::vector<long>
+            # t`, `const A<B> t`): `a < b > t` may compare.
             return False
         # A pointer's or a reference's declarator only after a type that is surely one
         # (`long *t`, `S::T &t`, `const P *t`, `P Q *t`); `a * t` may be an expression.
@@ -1965,9 +2016,10 @@ class Statements:
         hides the local of that name there (``block_storage``, read with ``after``,
         ``entering``, ``own``, ``others`` and ``body`` as it is): "before" that
         declaration (`use(t); { static long t = 5; use(t); }`), "after" the block (or
-        statement) holding it ends (`do { static long t = 5; use(t); } while (t--);`), or
-        "both". There the code may read the outer local, or another variable. None if
-        nowhere, or Peeky cannot tell.
+        statement) holding it ends (`do { static long t = 5; use(t); } while (t--);`),
+        "both", or "unsure": where Peeky cannot tell whether that declaration is in scope
+        (where a statement a header controls ends is unknown: unbalanced code). There the
+        code may read the outer local, or another variable. None if nowhere.
 
         A member's or a qualified name does not count, nor a name a declaration there
         surely declares (``_declaring``: `long t = 3;`, the local's own; not `return
@@ -2009,21 +2061,29 @@ class Statements:
             if self._declaring(low, word.start()):
                 continue
             # Whatever is declared up to the name, and what of it is in scope there.
-            earlier = read(word.end())
+            earlier, hidden = read(word.end()), False
             if earlier is False:
                 if any(opening < word.start() < closing for _, _, opening, closing in headers):
                     # A header's, before the declaration: ``header_before``'s.
                     continue
-            elif read(word.end(), word.start()) is not False:
-                continue
+            else:
+                hidden = read(word.end(), word.start())
+                if hidden:
+                    continue
             # A declarator read to its end: a function's (`long t(long);`), or a C++
             # enumerator's, declared once its enum's body closes (`enum { t = 5 };`).
             later = read(self._statement_end(word.end(), high), word.start())
             if later and later[0] in ("function", "enumerator"):
                 continue
-            places.add("before" if earlier is False else "after")
+            if hidden is None or earlier is None:
+                # Whether the declaration is in scope there, Peeky cannot tell.
+                places.add("unsure")
+            else:
+                places.add("before" if earlier is False else "after")
         if not places:
             return None
+        if "unsure" in places:
+            return "unsure"
         return places.pop() if len(places) == 1 else "both"
 
     def _statement_end(self, position, end):
@@ -2213,11 +2273,18 @@ class Statements:
             # header of a block around it, or of what holds the stop past its `)` (an
             # `if`'s `else` too: `if (auto [t, u] = f(); ok) { ... } else use(t);`).
             last = last or bool(statement and within is not None and statement[-1][1] >= within)
+            unsure = False
             if not last and statement and within is not None:
-                last = self._controls(statement, within)
+                controls = self._controls(statement, within)
+                unsure, last = controls is None, bool(controls)
             if statement and statement[0][1] in fresh:
-                last = False
+                last = unsure = False
             found = self._storage_of(statement, name, after, code, nested, last, own)
+            if not found and unsure:
+                # What the header declares may be in scope there or not: Peeky cannot
+                # tell where the statement it controls ends.
+                if self._storage_of(statement, name, after, code, nested, True, own):
+                    return None
             if found:
                 state = conditions.get(found[1])
                 if state == "maybe":
@@ -2323,7 +2390,7 @@ class Statements:
         """Whether ``position`` is in what the statement header among a statement's
         tokens (as ``_storage_declaration`` reads them) controls, past its `)`: its body,
         and an `if`'s `else` (``_controlled``), where what the header declares is in
-        scope. True where Peeky cannot tell."""
+        scope. None where Peeky cannot tell."""
         pairs = self._code()[1] or {}
         for index, (text, _, depth) in enumerate(statement):
             if depth != 0 or text not in _HEADERS:
@@ -2335,11 +2402,11 @@ class Statements:
                 return False
             closing = pairs.get(following[0][1])
             if closing is None:
-                return True
+                return None
             if position <= closing:
                 return False
             end = self._controlled(closing + 1, text)
-            return end is None or position <= end
+            return None if end is None else position <= end
         return False
 
     def _storage_of(
