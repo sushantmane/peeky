@@ -912,6 +912,12 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
         return pages[handle]
 
     for segment in segments[1:]:
+        if isinstance(variable.get("past_end"), dict):
+            # Nothing past an array's end is read through a pointer (#336), whatever the
+            # selector reads there (`end[0]`, `pend.x`).
+            step = segment if segment.startswith("[") else f".{segment}"
+            reason = past_end_text(path, variable["past_end"])
+            raise ValueError(f"{path}{step} not read: {reason}")
         handle = variable.get("variablesReference", 0)
         entry = segment.startswith("[#")
         if entry and not pointers:
@@ -1790,6 +1796,9 @@ def _capture(
                 row.update(value=variable["value"], type=variable.get("type"))
                 # What its address can tell (C, C++: #302), for `_pointed` below.
                 extent = variable.get("extent")
+                if isinstance(variable.get("past_end"), dict):
+                    # One past an array's end (#336): nothing it points at is read.
+                    row["past_end"] = variable["past_end"]
                 if preview:
                     # Only this value's own expansions, never its siblings', so the same
                     # value always shows the same way; a preview cut short by the shared
@@ -1905,6 +1914,8 @@ def _capture(
                 # Its fields exist, but are not read here (outline 5, tenth evaluation:
                 # `self.history[-1][2]` listed none, beside `self.items[2]`, the same dict).
                 row["children_error"] = DEPTH_LIMITED_CHILDREN
+            elif children and isinstance(row.get("past_end"), dict):
+                row["children_error"] = "none read: " + past_end_text(selector, row["past_end"])
         rows.append(row)
         if isinstance(extent, dict):
             extents[len(rows) - 1] = extent
@@ -1943,6 +1954,69 @@ def pointed_element(value, pointer, base):
     if offset < 0 or offset % size or offset // size > length:
         return None
     return offset // size
+
+
+def past_end(value, pointer, bases):
+    """Where the C or C++ pointer whose row's value is ``value`` holds the address one
+    past the end of an array the stop shows (#336), which C lets a pointer hold but never
+    read: what it points at is then not read, as nothing there belongs to the array.
+    ``pointer`` is what its address can tell (``NativeSession.value_extent``); ``bases``
+    are the arrays and objects the stop's frames hold, [(selector, extent, place)]
+    (``NativeSession.held_extents``; ``place``: {"frame": index, "function": name}
+    where another frame holds it), the pointer's own frame first. Proven as
+    ``pointed_element`` proves an element's address: the pointer points at the array's
+    element type, of its size. {"selector", "length", **place, "also": up to 3
+    selectors of what of that type starts at the address too, in the array's frame
+    (`after`, `b[0]`), which nothing shows the pointer points at} for the first array
+    that ends there, or None.
+    A single object (a struct, a scalar) is no array here: one of its type often sits
+    right after another, and `&x + 1` would read as that one."""
+    ends, starts = [], []
+    for selector, base, place in bases:
+        index = pointed_element(value, pointer, base)
+        if index is None:
+            continue
+        if "length" not in base:
+            if index == 0:
+                starts.append((selector, place))
+        elif index == base["length"]:
+            ends.append((selector, base, place))
+        else:
+            starts.append((f"{selector}[{index}]", place))
+    if not ends:
+        return None
+    selector, base, place = ends[0]
+    found = {"selector": selector, "length": base["length"], **place}
+    if also := [start for start, at in starts if at == place]:
+        found["also"] = also[:3]
+    return found
+
+
+def past_end_text(pointer, past):
+    """Why nothing a C or C++ pointer named ``pointer`` points at is read, from its
+    ``past_end`` (#336), whose `frame` is there only where another frame than the
+    pointer's holds the array: why, then what to read instead."""
+    base = past.get("selector")
+    where, how = "", "by name"
+    if type(past.get("frame")) is int:
+        from peeky.names import short_function
+
+        function = short_function(str(past.get("function") or "")) or "a caller"
+        where = f" in {function} (frame {past['frame']})"
+        how = f"in {function} (`session get --frame {past['frame']}`)"
+    text = (
+        f"`{pointer}` holds the address one past the end of `{base}`{where}, and nothing "
+        f"there belongs to `{base}`"
+    )
+    also = [str(each) for each in past.get("also") or () if isinstance(each, str)]
+    if not also:
+        return f"{text}; read `{base}` {how}"
+    named = ", ".join(f"`{each}`" for each in also)
+    one = len(also) == 1
+    return (
+        f"{text}; {named} {'starts' if one else 'start'} there too, but nothing shows "
+        f"`{pointer}` points at {'it' if one else 'them'}: read {named} or `{base}` {how}"
+    )
 
 
 # How many elements apart two pointers may be for their offset to be said (#302): past
@@ -2046,7 +2120,27 @@ def pointed_text(row):
     """A row's `at_element_of` as tables show it, an address fact: `at level[6]'s
     address`, `at x's address`, or `at the address one past level's end`, which is never
     read. Or its `offset_from`, which names no element: `level + 6 by address; same array
-    not proven` (`level - 2` before it)."""
+    not proven` (`level - 2` before it). Then its `past_end`, where that says more
+    (#336): `at the address one past queue's end`, `in frame 1` where another frame holds
+    the array."""
+    shown = _element_text(row)
+    past, into = row.get("past_end"), row.get("at_element_of")
+    if not isinstance(past, dict) or not isinstance(past.get("selector"), str):
+        return shown
+    if (
+        isinstance(into, dict)
+        and into.get("selector") == past["selector"]
+        and into.get("index") == past.get("length")
+    ):
+        return shown
+    end = f"at the address one past {past['selector']}'s end"
+    if type(past.get("frame")) is int:
+        end += f" in frame {past['frame']}"
+    return f"{shown}; {end}" if shown else end
+
+
+def _element_text(row):
+    """``pointed_text`` of a row's `at_element_of` or `offset_from` alone."""
     into = row.get("at_element_of")
     apart = row.get("offset_from")
     if not isinstance(into, dict) and isinstance(apart, dict):
@@ -3460,6 +3554,9 @@ def _children(worker, stop, selector, variable, pointers=False, whole_strings=Fa
         if isinstance(child.get("raw_reason"), str):
             # Why a Rust Vec or String field stays raw (#156).
             entry["raw_reason"] = child["raw_reason"]
+        if isinstance(child.get("past_end"), dict):
+            # One past an array's end (#336): nothing it points at is read.
+            entry["past_end"] = child["past_end"]
         path = _child_selector(selector, child["name"])
         if pointers and path is None and _pointee(variable, page["variables"]) is child:
             path = f"{selector}[0]"

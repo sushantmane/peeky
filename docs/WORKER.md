@@ -264,3 +264,4 @@ Both operations are read-only.
 | `text: true` | a variable | A standard string shown as its text, or as Peeky's reason it has none. It gets no handle, as Rust's text views get none |
 | `aliased_type` | a variable | The class behind a typedef's name, such as a map under another name |
 | `pointee_aliased_type` | a variable | The same, for what a pointer points at: `IntSet *` |
+| `past_end` | a variable | A pointer that holds the address one past the end of an array a listed frame holds: `{"selector": "queue", "length": 4}`, with `frame` and `function` where another frame holds it, and `also`, what of its type starts there too. Its value is its address alone, and it gets no handle: nothing there belongs to the array |

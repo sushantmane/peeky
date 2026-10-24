@@ -192,6 +192,22 @@ class Typed:
             bases.append((inner[1] if inner is not None else None, Typed(self.graph, base)))
         return members, bases
 
+    def placed_members(self):
+        """[(name, Typed, byte offset)] of a record's or union's named members that the
+        debug information places (#336): never a bitfield, nor a struct member it gives
+        no offset (a union's are at 0)."""
+        node = self.node()
+        if node is None or node[0] != "record":
+            return []
+        found = []
+        for member in node[5]:
+            offset = member[2]
+            if offset is None and node[2] == "union":
+                offset = 0
+            if member[0] and not member[3] and type(offset) is int and offset >= 0:
+                found.append((member[0], Typed(self.graph, member[1]), offset))
+        return found
+
     def byte_size(self):
         """How many bytes one value of the type takes, from the debug information, or
         None where it does not say (#302): a base type's, an enum's, a complete
@@ -316,6 +332,23 @@ class Typed:
                 return offset
             offset = node[2]
         return None
+
+    def identity(self):
+        """The type under typedefs and qualifiers as every compile unit of a build names it
+        alike (#336): a base type by its name, encoding and size, a named enum, struct,
+        class or union by its qualified name and size. Any other is its offset in the debug
+        information, the same type only within one unit. None where it was not read."""
+        offset = self.resolved()
+        node = self.graph.get(offset) if offset is not None else None
+        if node is None:
+            return None
+        if node[0] == "base":
+            return f"base {node[1]} {node[2]} {node[3]}"
+        if node[0] == "enum" and node[1]:
+            return f"enum {node[1]} {node[2]}"
+        if node[0] == "record" and not node[8] and len(node) > 11 and node[11]:
+            return f"{node[2]} {node[11]} {node[3]}"
+        return offset
 
     def array_member(self):
         """(name, Typed) of a `std::array`'s one member, the C array of its elements
