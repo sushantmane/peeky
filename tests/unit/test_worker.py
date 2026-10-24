@@ -1227,6 +1227,44 @@ def test_a_row_no_stop_can_change_says_why(tmp_path):
     assert "not_settable" not in other
 
 
+def test_a_row_a_statement_under_way_withholds_says_why_where_the_runtime_gives_it(tmp_path):
+    # #300: `session inspect` explained why `week` was not [settable] at a stop part-way
+    # through a statement, while its probe row showed no mark and no reason.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    class Reason(str):
+        row = "a statement under way read it"
+
+    reasons = {"week": Reason("a statement under way at the stop …"), "plain": "no short form"}
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        settable=lambda variable, frame: True,
+        mid_statement=lambda variable, frame, stop: reasons.get(variable["name"]),
+        never_settable_row=lambda variable, frame, member=False: None,
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.capabilities["supports_set_variable"] = True
+    worker.innermost_frame = 1
+    rows = worker.expose_variables(
+        [
+            {"name": name, "type": "unsigned int", "value": "1"}
+            for name in ("week", "plain", "pick")
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    week, plain, pick = rows
+    assert week["settable"] is False and week["not_settable"] == "a statement under way read it"
+    assert plain["settable"] is False and "not_settable" not in plain
+    assert pick["settable"] is True and "not_settable" not in pick
+    assert dict(worker.unsettable_reasons) == {"week": reasons["week"], "plain": reasons["plain"]}
+
+
 class ThreadsDap:
     """`threads` replies in turn; evaluate replies LLDB's `thread list`."""
 
