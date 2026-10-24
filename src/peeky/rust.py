@@ -58,6 +58,7 @@ from peeky.rust_mir import (
     frame_shape,
     ir_functions,
     load_bodies,
+    macro_definitions,
     macro_lines,
     stop_block,
 )
@@ -3214,7 +3215,10 @@ class RustSession(NativeSession):
         that is the line's (``_line_inlined``: LLVM's inlined calls made from the line,
         and those just before it that Peeky can't place), where a step stops when that
         code comes first. At the first, ``_inlined_below`` tells what such code ran before
-        it. False where it is neither, or that is not known."""
+        it. A line with no row of its own (#326: `bump(&mut x);` of an
+        `#[inline(always)] fn bump`), outside macro definitions, starts at the lowest of
+        the calls inlined from it, where LLDB shows a step's stop on the line. False where
+        it is neither, or that is not known."""
         hashed, pc, place = _frame_hash(frame), self._unslid(frame), self._place(frame)
         blocks = self.code_blocks.get(hashed[1]) if hashed else None
         if not blocks or pc is None or place is None:
@@ -3225,10 +3229,153 @@ class RustSession(NativeSession):
                 memo.clear()
             addresses = self._own_rows(blocks, place)
             start = min(addresses, default=None)
-            found = self._line_inlined(blocks, place, start) if addresses else None
+            if start is None and self._address_rows():
+                defined = self._macro_lines(place[0])
+                if defined is not None and place[1] not in defined:
+                    start = min(self._site_lows(blocks, place), default=None)
+            found = self._line_inlined(blocks, place, start) if start is not None else None
             lows = [min(low for low, _ in block.ranges) for block, _ in found or ()]
-            memo[hashed[1], place] = (start, min([start, *lows]) if addresses else None)
+            memo[hashed[1], place] = (start, min([start, *lows]) if start is not None else None)
         return memo[hashed[1], place][0] is not None and pc in memo[hashed[1], place]
+
+    def _site_lows(self, blocks, place):
+        """The lowest address of each call LLVM inlined into the function whose ``blocks``
+        are given from ``place`` (source, line)."""
+        return [
+            min(low for low, _ in block.ranges)
+            for block in blocks
+            if block.inlined and self._called_from(block, place)
+        ]
+
+    def _source_as_built(self, source):
+        """The text of the declared ``source`` (relative to the workspace) as built, or
+        None."""
+        texts = getattr(getattr(self, "owned", None), "texts", None) or {}
+        if source in texts:
+            return texts[source]
+        return self._source_text(source) if source in self.lines else None
+
+    def _macro_lines(self, source):
+        """``macro_lines`` of the declared ``source``; None where it is not known."""
+        return macro_lines(self._source_as_built(source))
+
+    def _macros_at(self, place):
+        """The names of the macros whose definitions span ``place`` (source, line), in the
+        source's order; None where the source isn't read as rustc reads it."""
+        spans = macro_definitions(self._source_as_built(place[0]))
+        if spans is None:
+            return None
+        return tuple(dict.fromkeys(name for name, low, high in spans if low <= place[1] <= high))
+
+    def validate_stop(self, frame):
+        """NativeSession's check, and (#326) a stop LLDB shows on a line with no row of its
+        own in the build: at a call the build inlined, LLDB shows the line the call is
+        made from. That line is the build's too where its debug information names it as
+        such a call's site in the frame's function, or where it is in a macro's definition
+        (`$v.clone()` of `macro_rules! mclone`)."""
+        try:
+            super().validate_stop(frame)
+        except RuntimeError:
+            place, hashed = self._place(frame), _frame_hash(frame)
+            if place is None or place[0] not in self.lines:
+                raise
+            blocks = self.code_blocks.get(hashed[1]) if hashed else None
+            if not self._site_lows(blocks or (), place) and not self._macros_at(place):
+                raise
+
+    def macro_stop(self, frame):
+        """(#326) The macros whose definition ``frame`` is stopped in, on a line with no row
+        of its own in its function; () where the source isn't read as rustc reads it, so
+        such a line may be a macro's; None for any other stop. LLDB shows a stop in a call
+        the build inlined (`$v.clone()` of `mclone!(x)`) on the line it is made from: here
+        the macro's definition, not the invocation's line, which the debug information
+        doesn't give. Rules keyed by the line would judge the definition as the function's."""
+        place = self._place(frame)
+        if place is None or place[0] not in self.lines:
+            return None
+        names = self._macros_at(place)
+        if names == ():
+            return None
+        hashed = _frame_hash(frame)
+        blocks = self.code_blocks.get(hashed[1]) if hashed else None
+        if blocks:
+            if self._own_rows(blocks, place):
+                return None
+        elif place[1] in self.lines[place[0]]:
+            # Its function's blocks are not known: the line has rows of its own somewhere.
+            return None
+        return names or ()
+
+    def macro_stop_note(self, frame, index=0):
+        """Why ``session inspect`` reads no value of frame ``index`` stopped as
+        ``macro_stop`` says, and what to do; None for any other stop."""
+        names = self.macro_stop(frame)
+        if names is None:
+            return None
+        source, line = self._place(frame)
+        function = display_function(str(frame.get("name") or "")) or "this function"
+        if names:
+            where = (
+                f"inside the definition of macro {' or '.join(f'`{n}!`' for n in names)}. "
+                "That is the site of a call the macro makes, which the build inlined, and the "
+                "debug information doesn't say which invocation of the macro it is"
+            )
+        else:
+            where = (
+                f"which has no code of its own in {function}. That is the site of a call the "
+                "build inlined, and Peeky can't read the source as rustc does to tell whether "
+                "the line is in a macro's definition"
+            )
+        return (
+            f"Peeky reads no value of frame {index} ({function}) here: the debugger shows the "
+            f"stop on line {line} of {source}, {where}, so Peeky can't tell where in "
+            f"{function} the stop is. `session step` goes on to your code's next line, or "
+            "`session continue`"
+        )
+
+    def unplaceable_line(self, program, line):
+        """(#326) Why a breakpoint on ``line`` of ``program`` can't stop where it is asked,
+        or None: the line has no row of its own in the build, and the build inlined a call
+        made from it. LLDB places such a breakpoint on the call's code, and reports the
+        called function's line (`clone.rs:615` for `$v.clone()` of `macro_rules! mclone`
+        on line 1). In a macro's definition, that code may be any invocation's."""
+        try:
+            source = Path(program).resolve().relative_to(self.prepared.source_root).as_posix()
+        except (AttributeError, OSError, ValueError):
+            return None
+        if source not in self.lines or line in self.lines[source]:
+            return None
+        place = (source, line)
+        called = sorted(
+            {
+                block.call[3]
+                for blocks in self.code_blocks.values()
+                for block in blocks or ()
+                if block.inlined and self._called_from(block, place)
+            }
+        )
+        if not called:
+            return None
+        calls = f"the call of {_names(called)}" if all(called) else "a call"
+        names = self._macros_at(place)
+        if names == ():
+            return (
+                f"Line {line} has no code to stop at of its own: the build inlined {calls} "
+                "made there, and the debugger reports that code on the called function's own "
+                f"lines. Stop on an earlier line and `session step` onto line {line}, or choose "
+                "a line from `peeky describe`"
+            )
+        what = (
+            f"is in the definition of macro {' or '.join(f'`{n}!`' for n in names)}"
+            if names
+            else "may be in a macro's definition (Peeky can't read the source as rustc does)"
+        )
+        return (
+            f"Line {line} has no code to stop at of its own: it {what}. The build inlined "
+            f"{calls} made there into the code that invokes the macro, and the debug "
+            "information doesn't say which invocation a stop there is in. Put the breakpoint "
+            "on the line that invokes the macro, or choose a line from `peeky describe`"
+        )
 
     def _own_rows(self, blocks, place):
         """The addresses of the rows of ``place`` (source, line) in the function whose

@@ -555,7 +555,28 @@ the breakpoint stops (#324).
   understood.
 - A step that ends at the line's lowest address, the inlined code included, stops before that
   code (`_line_start`). LLDB stops there after a step from the line before, except before a
-  macro's code, which it shows on the macro's definition.
+  macro's code, which it shows on the macro's definition (below).
+
+### Stops LLDB shows at an inlined call's site
+
+At a call the build inlined, LLDB shows the caller's frame on the line the call is made from, the
+DWARF's `DW_AT_call_line`. That line may have no row of its own in the line table, which
+`RustSession.lines` is read from (#326).
+
+- `validate_stop` accepts such a line where the DWARF names it as the site of an inlined call in
+  the frame's function (`CodeBlock.call`), or where it is in a macro's definition
+  (`macro_definitions`). Any other line with no row still fails closed.
+- In a macro's definition (`$v.clone()` of `macro_rules! mclone`), the debug information names
+  no invocation. So rules keyed by the line would judge the definition as a line of the function.
+  `macro_stop` finds such a stop: no row of the line in the frame's function (`_own_rows`).
+- The worker then reads no value of that frame: `inspect` raises `macro_stop_note`, a request
+  error, and the state carries it as `macro_stop`. A step or continue goes on.
+- A macro statement's own rows on the definition's lines are judged by their line, as before.
+- A line of the function's own with no row, as `bump(&mut x);` of an `#[inline(always)] fn bump`,
+  starts at the lowest inlined call made from it (`_line_start`, `_site_lows`).
+- `unplaceable_line` refuses a breakpoint on a line with no row where an inlined call is made.
+  LLDB would place it on the call's code, and report the callee's line (`clone.rs:615`). The
+  worker asks before it places a breakpoint (`refuse_unplaceable`).
 
 ### The order the code runs
 

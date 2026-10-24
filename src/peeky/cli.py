@@ -1846,6 +1846,8 @@ def _state_text(state, name="default", base=None):
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
     if isinstance(state.get("call_change"), dict) and (call := _call_text(state["call_change"])):
         text += f"\nnote: {call}"
+    if isinstance(state.get("macro_stop"), str):
+        text += f"\nnote: {state['macro_stop']}"
     if state.get("optimized"):
         text += f"\n{_OPTIMIZED_NOTE.format(state['optimized'])}"
     if state.get("exit_inferred"):

@@ -181,6 +181,13 @@ _RULES = (
         False,
     ),
     (
+        r"^Peeky reads no value of frame \d+ .* the debugger shows the stop on line",
+        "INVALID_REQUEST",
+        "Nothing in that frame is read or changed here: `session step` goes on to your code's "
+        "next line, and `--frame N` reads a caller.",
+        False,
+    ),
+    (
         r"adapter bundle at .* predates Peeky's java-debug fixes",
         "UNSUPPORTED",
         "Rebuild it with scripts/setup_java_adapter.py, and point the target's bundle or "

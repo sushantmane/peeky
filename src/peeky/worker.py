@@ -274,6 +274,8 @@ class DebugWorker:
         # adapter ids, and every one-shot `--to` line the session has used.
         self.own_lines, self.own_ids, self.temporary_lines = set(), set(), set()
         self.stop_outside = self.stop_returns = self.co_served = False
+        # Why the stop's frame is not read: the debugger shows it in a macro's definition.
+        self.stop_macro = None
         # Where the last step started (#155): the function it may leave, and the stack
         # its return must come back to, to tell whose value a debugger lists after it;
         # and, while a step out runs, what watches its caller (NativeSession.watch_return).
@@ -730,6 +732,10 @@ class DebugWorker:
             self.stop_returns = self.stop_outside and any(
                 _in_program_sources(self.runtime, caller, self.root) for caller in frames[1:]
             )
+            self.stop_macro = None
+            if not self.stop_outside and (note := getattr(self.runtime, "macro_stop_note", None)):
+                # A stop the debugger shows in a macro's definition (#326): never read.
+                self.stop_macro = note(frame)
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")
@@ -1103,6 +1109,9 @@ class DebugWorker:
             # A step that left the program (into a library, past main): nothing to read.
             where["outside_program"] = True
             where["returns_to_program"] = self.stop_returns
+        if self.stop_id and self.stop_macro:
+            # Why `inspect` reads no value of the stop's frame (#326).
+            where["macro_stop"] = self.stop_macro
         if self.stop_id and self.call_change:
             # Another function or depth than where the session's step started (#262).
             where["call_change"] = dict(self.call_change)
@@ -1496,6 +1505,7 @@ class DebugWorker:
         """Replace the session program's breakpoints (deduplicated by line)."""
         unique = list({point["line"]: point for point in points}.values())
         runtime.validate_breakpoints(unique)
+        self.refuse_unplaceable(runtime, self.program, unique)
         if check_lines := getattr(runtime, "check_breakpoint_lines", None):
             check_lines(self.program, unique)
         placed = self.dap.request(
@@ -1562,6 +1572,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
+        self.stop_macro = None
         self.step_origin = self.step_held = None
         self.forget_calls()
         self.stop_hit = self.stop_line = self.stop_place = None
@@ -1983,6 +1994,7 @@ class DebugWorker:
             self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
+            self.stop_macro = None
             self.step_origin = self.return_watch = self.step_held = None
             self.reset_calls()
             self.stop_all_threads = False
@@ -2026,6 +2038,7 @@ class DebugWorker:
                     raise RuntimeError(
                         "Provenance: the staged candidate differs from the requested edit; the debugger's launch request was not sent"
                     )
+                self.refuse_unplaceable(runtime, program, args.get("breakpoints", []))
                 if args.get("sets"):
                     self.refuse_never_settable(runtime, program, args["sets"])
                 watched = None
@@ -2401,6 +2414,12 @@ class DebugWorker:
                 ) from exc
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 validate_debugger(self.dap, selected_frame)
+            if (note := getattr(runtime, "macro_stop_note", None)) and (
+                why := note(selected_frame, index)
+            ):
+                # The debugger shows the frame in a macro's definition, not on a line of its
+                # function (#326): nothing there is read, and the session is kept.
+                raise ValueError(why)
             # Adapters may reuse raw scope IDs for different selected frames.
             # A new inspection revokes all earlier client scope handles.
             self.references.clear()
@@ -2778,6 +2797,7 @@ class DebugWorker:
             }
         if operation == "breakpoints":
             runtime.validate_breakpoints(args["breakpoints"])
+            self.refuse_unplaceable(runtime, self.path(args["program"]), args["breakpoints"])
             self.breakpoint_counts[str(self.path(args["program"]))] = len(args["breakpoints"])
             if check_lines := getattr(runtime, "check_breakpoint_lines", None):
                 check_lines(self.path(args["program"]), args["breakpoints"])
@@ -4732,6 +4752,16 @@ class DebugWorker:
             refused.before_launch = True
             raise refused
         return [[line, sorted(set(found.get(line, ())))] for line in lines]
+
+    @staticmethod
+    def refuse_unplaceable(runtime, program, points):
+        """Refuse, before it is placed, a breakpoint on a line the runtime says a stop
+        can't be on as asked (#326: a Rust line whose only code is a call the build
+        inlined, which the debugger reports on the called function's lines)."""
+        if check := getattr(runtime, "unplaceable_line", None):
+            for point in points:
+                if why := check(program, point["line"]):
+                    raise ValueError(why)
 
     def refuse_never_settable(self, runtime, program, changes):
         """Refuse, before the program runs, a probe's change ({line, name}: a `--set` at
