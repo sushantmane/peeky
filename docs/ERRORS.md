@@ -64,6 +64,14 @@ The last column is the `retryable` field.
 - The line never runs, or the program failed first. `exit_code` is set when the debugger reports
   it.
 - After a failure, read the output and check the program's arguments.
+- After `--set-at` changes, the message counts those that changed a value, and where they were:
+  `The program finished without stopping at tides.c:33. The run made 6 changes by --set-at (at
+  lines 32 and 35): compare with a run without them`. Nothing proves that a change came first, so
+  it doesn't say that one kept the line from running. Probe the line without the changes to see
+  whether it runs.
+- A write with the same text, not proven to change nothing, is named too: `1 write by --set-at
+  with the same text, not proven unchanged`. A Java String or a Python `1000`
+  written alike may be a new object. Only writes proven to change nothing are left out.
 
 ### BUILD_FAILED
 
@@ -107,6 +115,10 @@ file lists what it reads.
 
 - Malformed arguments, such as a `--frame` past the stack. The message says how many frames there
   are.
+- A `verify` of a directory whose config declares several sources, without `--at`. The message
+  lists them, and says which one to pass: `verify needs --at <source> (one of: a/One.java,
+  b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
+  `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
 - A client and a remote worker of different protocols: `Worker speaks protocol 2, this client 3`,
   or, from the worker, `Client speaks protocol 2, this worker 3`. Install the same Peeky version
@@ -173,7 +185,9 @@ message says `cannot be changed here`.
 - Rust: at a breakpoint, or after a step to its line's start, where the MIR proves that no
   statement is under way. The MIR is the compiler's mid-level representation of the function.
 - Rust: not where a binding of the program's own holds a copy that it goes on with. That binding
-  replaces or drops the local unread: ``the program has already copied `x` into `n` ``.
+  replaces or drops the local unread: ``the program has already copied `x` into `n` ``. Where a call
+  given `&mut x` since may have changed `x`: ``the program's own `n` (at line 34) may hold a copy
+  of `x` that it goes on with``.
 
 ### Texts
 

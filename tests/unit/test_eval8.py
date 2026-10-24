@@ -304,7 +304,7 @@ def test_unchanged_after_set_rows_are_left_out_of_the_table():
     text = _table(result)
     assert "after-set  24    Calc.parseExpr()  path" in text, text
     assert "after-set  24    Calc.parseExpr()  i" not in text, text
-    assert "after-set: 1 row equal to the hit's observed value left out" in text, text
+    assert "after-set: 1 scalar row equal to the hit's observed value left out" in text, text
 
 
 def test_after_set_rows_that_may_hide_a_change_stay():
@@ -334,7 +334,7 @@ def test_after_set_rows_that_may_hide_a_change_stay():
         assert f"after-set  24    Calc.parseExpr()  {selector} " in text, text
     for selector in ("n", "word"):
         assert f"after-set  24    Calc.parseExpr()  {selector} " not in text, text
-    assert "after-set: 2 rows equal to the hit's observed value left out" in text, text
+    assert "after-set: 2 scalar rows equal to the hit's observed value left out" in text, text
 
 
 def test_after_set_objects_stay_where_their_text_cannot_show_them_unchanged():

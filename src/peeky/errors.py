@@ -319,7 +319,9 @@ _MUTATION_HINTS = (
         "itself refused this write, which no [settable] mark can promise.",
     ),
     (
-        r"has already copied (?:its value|`[^`]+`) into",
+        # #300 review: or a binding's copy that a call since may have changed.
+        r"has already copied (?:its value|`[^`]+`) into"
+        r"|^(?:(?!statement under way).)*may hold a copy of (?:it|`[^`]+`) that it goes on with",
         "Change it before the program copies it (a stop on an earlier line, or `--set-at` "
         "there), or change the copy the message names instead.",
     ),

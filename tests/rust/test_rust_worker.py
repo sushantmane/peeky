@@ -137,7 +137,7 @@ def test_rust_http_inspection_active_variants_and_scalar_intervention(rust_worke
         name="start",
         value="0",
     )
-    assert changed == {"name": "start", "before": "3", "after": "0"}
+    assert changed == {"name": "start", "before": "3", "after": "0", "type": "int"}
     client.call("continue", **session, stop_id=stop["stop_id"])
     assert stopped(client, session)["state"] == "terminated"
     report = client.call("report", **session)

@@ -1970,6 +1970,8 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
     _local_classes.
     ``types``: fields.local_types, the type and storage of each local (#105);
     ``referred``: fields.referred_locals, those the frame reaches through a pointer.
+    ``returns_nothing``: whether it is a `void` function (no return type, and no
+    constructor or destructor).
     ``prologues``, when given, gets _prologue_windows: every function's, placed or not;
     ``code``, _function_entries's code."""
     from peeky.fields import local_types, referred_locals
@@ -2084,6 +2086,14 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 "unstored": frozenset(unstored),
                 # Rows at or after this address run only as an exception unwinds (#158).
                 "returned": returned,
+                # Whether it is a `void` function: its debug information gives it no
+                # return type, and it is no constructor or destructor (which have none).
+                "returns_nothing": not constructor
+                and not (_text(_first(dies, entry["chain"], "DW_AT_name")) or "").startswith("~")
+                and not any(
+                    _first(dies, _chain(dies, body), "DW_AT_type") is not None
+                    for body in (*entry["bodies"], root)
+                ),
                 # The names a GCC lambda reads through `__closure` (_gcc_captures).
                 "captures": _gcc_captures(dies, entry),
             }
@@ -4384,6 +4394,20 @@ _UNJUDGED = {
         "the build's debug information ({}), so it may hold leftovers"
     ),
 }
+
+
+# The base types whose text LLDB shows whole and exact (NativeSession.exact_text): an
+# integer, a bool, a character. Never a float's, which may be rounded.
+EXACT_ENCODINGS = frozenset(
+    (
+        "DW_ATE_signed",
+        "DW_ATE_unsigned",
+        "DW_ATE_boolean",
+        "DW_ATE_signed_char",
+        "DW_ATE_unsigned_char",
+        "DW_ATE_UTF",
+    )
+)
 
 
 class NativeSession:
@@ -8245,6 +8269,41 @@ class NativeSession:
             "debugger may read a struct, class or reference from the wrong place, so "
             "Peeky shows only scalar returns"
         )
+
+    def exact_text(self, variable, frame=None, root=None, steps=()):
+        """Whether the value a change wrote shows its whole value as text, so that the same
+        text before and after it proves the write changed nothing: a built-in integer,
+        bool or character, by the type the debug information gives the root local
+        ``root`` of ``frame`` (or the field or element ``steps`` reach from it), through
+        typedefs and qualifiers. Never by the name the debugger shows (`typedef float
+        int64_t;` is a float). False where Peeky cannot read that type."""
+        from peeky.fields import _strip, settable_member
+
+        if frame is None or not isinstance(root, dict):
+            return False
+        try:
+            kind, _, graph = self._root_type(frame, root)
+            name = str(root.get("name"))
+            if steps:
+                # Only a 16- to 64-bit integer gets past (fields.settable_member).
+                settable_member(graph, kind, name, list(steps))
+                return True
+            _, node, _ = _strip(graph, kind, name)
+        except Exception:
+            return False
+        return node[0] == "base" and node[2] in EXACT_ENCODINGS
+
+    def returns_nothing(self, frame):
+        """Whether the C or C++ function ``frame`` runs (a step's origin, as listed before
+        the step) has no return type in its debug information, so a step out of it has no
+        value to show; False where Peeky cannot place the frame's function."""
+        if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
+            return False
+        try:
+            function = self._function_at(frame)
+        except Exception:
+            return False
+        return bool(function and function.get("returns_nothing") is True)
 
     @staticmethod
     def listed_threads(dap):

@@ -734,6 +734,29 @@ def test_local_declarations_record_where_and_how_each_local_is_declared(tmp_path
     }
 
 
+def test_local_declarations_say_whether_a_function_returns_nothing(tmp_path):
+    from peeky.native import local_declarations
+
+    # Eleventh evaluation (grades 4): a `void` function's step out showed a withheld
+    # return, with no type. Its debug information gives it no DW_AT_type.
+    (tmp_path / "bucket.c").write_text("\n" * 20)
+    info, line = declaration_dumps(tmp_path)
+    [take] = local_declarations(info, line, tmp_path, ("bucket.c",))
+    assert take["returns_nothing"] is True
+    typed = info.replace(
+        'DW_AT_name\t("take")\n',
+        'DW_AT_name\t("take")\n                DW_AT_type\t(0x00000070 "int")\n',
+        1,
+    )
+    assert typed != info
+    [take] = local_declarations(typed, line, tmp_path, ("bucket.c",))
+    assert take["returns_nothing"] is False
+    # A destructor has no return type either, but is no `void` function.
+    destructor = info.replace('DW_AT_name\t("take")', 'DW_AT_name\t("~take")', 1)
+    [take] = local_declarations(destructor, line, tmp_path, ("bucket.c",))
+    assert take["returns_nothing"] is False
+
+
 def test_a_declaration_lines_first_row_after_another_lines_code_is_only_preceded(tmp_path):
     from peeky.native import local_declarations
 

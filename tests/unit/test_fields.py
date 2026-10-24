@@ -482,7 +482,7 @@ def test_a_field_is_written_then_read_back_from_a_fresh_walk(tmp_path):
     changed = worker.dispatch(
         "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "+10"}
     )
-    assert changed == {"name": "end", "before": "2", "after": "10"}
+    assert changed == {"name": "end", "before": "2", "after": "10", "type": "long"}
     assert worker.runtime.seen == [(1, "s", ["end"], "end", "+10")]
     # The canonical decimal is sent; the read-back walks the frame's scopes again.
     write = next(i for i, (op, _) in enumerate(worker.dap.calls) if op == "setVariable")
@@ -586,7 +586,7 @@ def test_a_field_of_a_struct_preview_is_changed_as_the_debugger_lists_it(tmp_pat
     changed = worker.dispatch(
         "set_variable", {**STOP, "handle": handle_of(worker), "name": "end", "value": "10"}
     )
-    assert changed == {"name": "end", "before": "2", "after": "10"}
+    assert changed == {"name": "end", "before": "2", "after": "10", "type": "long"}
     assert worker.runtime.seen == [(1, "s", ["end"], "end", "10")]
     write = next(args for op, args in worker.dap.calls if op == "setVariable")
     assert write["variablesReference"] == 7  # the debugger's own `s`

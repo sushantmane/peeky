@@ -397,7 +397,7 @@ def test_a_java_bundle_without_the_field_guard_changes_only_locals(member_worker
 def test_a_field_is_set_through_its_parents_handle_and_read_back(member_worker):
     _, child = inspected(member_worker)
     changed = call(member_worker, "set_variable", handle=child, name="page", value="2")
-    assert changed == {"name": "page", "before": "1", "after": "2"}
+    assert changed == {"name": "page", "before": "1", "after": "2", "type": "int"}
     writes = [args for op, args in member_worker.dap.calls if op == "setVariable"]
     # The parent's own adapter reference, found again from the frame, never the handle.
     assert writes == [{"variablesReference": 100, "name": "page", "value": "2"}]

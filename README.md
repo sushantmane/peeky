@@ -47,7 +47,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  items[1]  int   20
 1    after-set  8     get_page  start     int   0
-after-set: 1 row equal to the hit's observed value left out (`--json` has every row)
+after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.11  max pause: 18.4 ms
 output:

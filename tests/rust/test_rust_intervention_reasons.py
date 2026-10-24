@@ -326,6 +326,14 @@ fn printed() -> i32 {
     x
 }
 
+fn plain_copy() -> i32 {
+    let mut x = 5;
+    let y = x;
+    pause(); // PLAIN
+    x = y + 1;
+    x
+}
+
 fn read_later() -> i32 {
     let mut x = 4;
     let y = x;
@@ -360,7 +368,7 @@ fn main() {
     let mut wide = Wide { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8, i: 9, j: 10 };
     grid.count += 1;
     wide.a += 1;
-    println!("ARM:{} WHILE:{} NAMED:{} CLOSURE:{} PARTIAL:{} FIELD:{} BORROWED:{} BUILT:{} DROPPED:{} PRINTED:{} READ:{} LATER:{} GRID:{} WIDE:{}", arm(), while_let(), named(), closure(), partial(), field_read(), borrowed(), built_only(), dropped_args(), printed(), read_first(), read_later(), grid.cells[0].n + grid.count as i32 + grid.inner.w as i32 + grid.inner.deep[1][1] as i32, wide.a + wide.j);
+    println!("ARM:{} WHILE:{} NAMED:{} CLOSURE:{} PARTIAL:{} FIELD:{} BORROWED:{} BUILT:{} DROPPED:{} PRINTED:{} READ:{} LATER:{} GRID:{} WIDE:{} PLAIN:{}", arm(), while_let(), named(), closure(), partial(), field_read(), borrowed(), built_only(), dropped_args(), printed(), read_first(), read_later(), grid.cells[0].n + grid.count as i32 + grid.inner.w as i32 + grid.inner.deep[1][1] as i32, wide.a + wide.j, plain_copy());
 }
 """
 
@@ -374,23 +382,36 @@ def test_a_copy_in_the_programs_own_binding_blocks_the_change(crate, capsys):
     # Round 2: reading another field (`x.a` for a change to `x.b`) or lending `&x` to a
     # call that may never read it does not show the program saw the change either.
     # Round 3: nor does a `format_args!` that is built and never formatted.
+    # #300 review round 3: `keep(&mut x)` after the copy may have changed `x`, so the
+    # binding is said only to maybe hold a copy of it; with no such call, it has one.
     (crate / "src/main.rs").write_text(COPIES)
 
     def line(marker):
         return next(i for i, text in enumerate(COPIES.splitlines(), 1) if f"// {marker}" in text)
 
+    def copied_at(copy, before):
+        made = (f"let {copy} =", f"{copy} =>", f"Some({copy})")
+        lines = enumerate(COPIES.splitlines()[: line(before)], 1)
+        return max(i for i, text in lines if any(m in text for m in made))
+
     cases = (("ARM", "x", "n"), ("WHILE", "x", "v"), ("NAMED", "x", "y"), ("CLOSURE", "x", "f"))
     parts = (("PARTIAL", "s.b", "o"), ("FIELD", "x.b", "y"), ("BORROWED", "x", "y"))
     parts += (("BUILT", "x", "y"), ("DROPPED", "x", "y"))
-    for marker, root, copy in (*cases, *parts):
+    for marker, root, copy in (*cases, *parts, ("PLAIN", "x", "y")):
         at = ["probe", str(crate), "--at", f"src/main.rs:{line(marker)}", "--capture", "x"]
         code = main([*at, "--set", f"{root}=50", "--json", "--quiet"])
         result = json.loads(capsys.readouterr().out)
         assert code == 2 and result.get("refused_before_launch") is True, (marker, result)
         message = result["error"]["message"]
-        plain = root.split(".")[0]
-        assert f"has already copied `{plain}` into `{copy}`" in message, (marker, message)
-        assert "Peeky proves no read of the changed part first" in message, message
+        plain, made = root.split(".")[0], copied_at(copy, marker)
+        if marker == "PLAIN":
+            sure = f"has already copied `{plain}` into `{copy}` (at line {made})"
+            assert sure in message, (marker, message)
+            assert "Peeky proves no read of the changed part first" in message, message
+        else:
+            assert "has already copied" not in message, (marker, message)
+            maybe = f"the program's own `{copy}` (at line {made}) may hold a copy of `{plain}`"
+            assert f"{maybe} that it goes on with" in message, (marker, message)
         assert "Change it before the program copies it" in message, message
     # Where the program reads `x` again, before or after it uses its copy, it sees the
     # change, and its copy keeps the old value as the program's own (`let a = s.x;`), as
@@ -495,7 +516,9 @@ def test_only_std_s_own_printing_counts_as_reading_a_value(crate, capsys):
     code = main([*at, "--set", "x=50", "--json", "--quiet"])
     result = json.loads(capsys.readouterr().out)
     assert code == 2 and result.get("refused_before_launch") is True, result
-    assert "has already copied `x` into `y`" in result["error"]["message"], result
+    # `keep(&mut x)` since `let y = x;` may have changed `x` (#300 review round 3).
+    maybe = "the program's own `y` (at line 19) may hold a copy of `x` that it goes on with"
+    assert maybe in result["error"]["message"], result
     # std's own `println!` and `format!` (`std::fmt::format`, beside the crate's
     # `format`) print the change before `x = y`.
     for marker, printed in (("PRINTED", "P:50"), ("FORMATTED", "F:50")):
