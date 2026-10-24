@@ -68,12 +68,15 @@ def test_a_void_step_out_paths_and_the_report(program, cxx, capsys, monkeypatch)
         out = text_of(capsys, "session", "step", "--into")
         assert out.startswith(f"state: stopped at stats.cpp:{reset} in "), out
         out = text_of(capsys, "session", "step", "--out")
-        assert out.startswith(f"state: stopped at stats.cpp:{loop} in main "), out
+        # Where the call returns: on its line (clang), or the next (GCC's return address).
+        where = out.split()[3]
+        assert where in (f"stats.cpp:{loop}", f"stats.cpp:{loop + 1}"), out
+        assert out.startswith(f"state: stopped at {where} in main "), out
         assert "(return): void (no value: the function returns nothing)" in out, out
         state = json.loads(text_of(capsys, "session", "inspect", "--json"))
         assert state["returned"]["type"] == "void" and state["returned"]["unavailable"], state
         out = text_of(capsys, "session", "report")
-        assert out.startswith(f"state: stopped at stats.cpp:{loop} in main\n"), out
+        assert out.startswith(f"state: stopped at {where} in main\n"), out
         assert "\nso far: 1 hit (stops at the session's breakpoint), 2 steps\n" in out, out
     finally:
         main(["session", "close"])
