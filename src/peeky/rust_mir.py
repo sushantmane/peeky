@@ -175,6 +175,9 @@ _PRIMITIVE_WORDS = frozenset(
     "dyn".split()
 )
 _STD_PATHS = ("std::", "core::", "alloc::")
+# The roots of those paths (``OwnedLocals._std_crates``: which the crate gives nothing of
+# its own).
+_STD_CRATES = frozenset({"std", "core", "alloc"})
 # Standard-library types that hold no pointer but what their type arguments hold
 # (#164): with such arguments only, a value of them holds no borrow.
 _FREE_PATHS = frozenset(
@@ -362,14 +365,14 @@ _COMPARISONS = {
     "Ord": frozenset({"cmp"}),
 }
 _COMPARISON_METHOD = re.compile(
-    r"^<.+ as (?:(?:std|core)::cmp::)?(PartialEq|PartialOrd|Ord)(?:<.+>)?>::(\w+)$"
+    r"^<.+ as (?:(std|core)::cmp::)?(PartialEq|PartialOrd|Ord)(?:<.+>)?>::(\w+)$"
 )
-_SLICE_METHOD = re.compile(r"^(?:core|alloc|std)::(?:slice|str)::<impl (?:\[.+\]|str)>::(\w+)$")
+_SLICE_METHOD = re.compile(r"^(core|alloc|std)::(?:slice|str)::<impl (?:\[.+\]|str)>::(\w+)$")
 _INHERENT_METHOD = re.compile(r"^([A-Za-z_]\w*)(?:::<.+>)?::(\w+)$")
 # A proven standard `mem::take` or `mem::replace` (#320): what its first argument surely
 # points at holds the new value after it, and the call returns the old one.
 _STD_REPLACE = re.compile(
-    r"^_[0-9]+ = (?:std|core)::mem::(?:take|replace)::<.+?>\((?:move|copy) _([0-9]+)[,)]"
+    r"^_[0-9]+ = (std|core)::mem::(?:take|replace)::<.+?>\((?:move|copy) _([0-9]+)[,)]"
 )
 # The standard library's views that hold nothing but pointers into what they were made
 # from (#320 review), by their path past `std::`, `core::` or `alloc::`: their type
@@ -508,28 +511,29 @@ def _without_turbofish(path):
     return path
 
 
-def _standard_only(kind, generics):
+def _standard_only(kind, generics, trusted=_STD_CRATES):
     """Whether every type the MIR type ``kind`` names is a primitive or the standard
     library's (#320): no type of the crate's own, type parameter, closure or trait
     object, so a method of the standard library's traits for it is the standard
-    library's own."""
+    library's own. A path counts only under a root of ``trusted`` (``Body.std_paths``,
+    #320 review round 3: `std::string::String` where the crate has no `mod std`)."""
     if kind is None or generics is None or mentions(kind, generics):
         return False
     if re.search(r"[{}]|\b(?:dyn|impl|fn)\b", kind):
         return False
     return all(
-        word in _PRIMITIVE_WORDS or word.startswith(_STD_PATHS)
+        word in _PRIMITIVE_WORDS or word.split("::", 1)[0] in trusted
         for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
     )
 
 
-def _may_hold_type(kind, generics, word):
+def _may_hold_type(kind, generics, word, trusted=_STD_CRATES):
     """Whether a value of the MIR type ``kind`` may hold a value of the type ``word``
     (`bool`, `usize`, `Ordering`) among its parts (#320): it names that type, or a type
     of the crate's own, a type parameter, a closure, a trait object, or it is not known.
     A standard type counts by its type arguments only: a `String` holds no `usize`, a
-    `Vec<usize>` may."""
-    if not _standard_only(kind, generics):
+    `Vec<usize>` may. Standard paths count under the roots of ``trusted`` only."""
+    if not _standard_only(kind, generics, trusted):
         return True
     return any(
         found == word or found.endswith(f"::{word}")
@@ -624,20 +628,17 @@ class Body:
     # is matched to it): a type named like a primitive (`i8`) may be one of them. None
     # until then (a twin a macro generates): any may be.
     generics: tuple | None = None
-    # Whether the dump's standard paths and comparison traits are the standard library's
-    # (OwnedLocals._std_calls, set when an IR function is matched to it), so its measures
-    # and comparisons, and `mem::take`, are known (#320). False until then.
-    std_calls: bool = False
-    # The short names of ``_STD_TYPES`` the crate gives no item of its own
-    # (OwnedLocals._trusted_names, set with ``std_calls``), so a dump's `String::len` or
-    # `Box::<T>::new` is the standard library's (#320 review). Empty until then.
-    trusted_names: frozenset = frozenset()
-    # Which of the dump's `std::`, `core::` and `alloc::` path roots are the standard
-    # library's (OwnedLocals._std_crates), and whether its `<T as Iterator>` is the
-    # standard trait (OwnedLocals._std_iterator), set with ``std_calls`` (#320 review).
-    # None, and False, until then.
+    # Set when an IR function is matched to it (#320 and its review), each proof by the
+    # root it uses: which of the dump's `std::`, `core::` and `alloc::` path roots are the
+    # standard library's (OwnedLocals._std_crates); whether its bare `PartialEq`,
+    # `PartialOrd` and `Ord` are the standard traits (OwnedLocals._std_traits), and its
+    # `<T as Iterator>` (OwnedLocals._std_iterator); and the short names of
+    # ``_STD_TYPES`` the crate gives no item of its own (OwnedLocals._trusted_names), so
+    # a dump's `String::len` or `Box::<T>::new` is a standard type's. Nothing until then.
     std_paths: frozenset = frozenset()
+    std_traits: bool = False
     std_iterator: bool = False
+    trusted_names: frozenset = frozenset()
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
     _lent_cache: frozenset | None = None
@@ -1677,7 +1678,7 @@ class Body:
                                 and _FORMAT_TYPE.fullmatch(self.types.get(target, ""))
                             ),
                             pointers,
-                            bool(_ADDRESS_COMPARISON.match(text)),
+                            _comparison_root(text),
                         )
                     )
                     made.append(len(parts) - 1)
@@ -1901,7 +1902,7 @@ class Body:
         budget."""
         if self._copy_flows is None:
             self._copy_flows = {}
-        proofs = (self.std_calls, self.trusted_names, self.std_paths, self.std_iterator)
+        proofs = (self.std_traits, self.trusted_names, self.std_paths, self.std_iterator)
         key = (local, formatting, projection, compares, reads, proofs)
         if key not in self._copy_flows:
             self._copy_flows[key] = self._copy_flow(local, formatting, projection, compares, reads)
@@ -1955,9 +1956,10 @@ class Body:
                 compares,
                 reads,
             )
-        if self.std_calls and whole and (replaced := _STD_REPLACE.match(text)):
+        replaced = _STD_REPLACE.match(text) if whole else None
+        if replaced and replaced[1] in self.std_paths:
             # `mem::take(&mut a)`: `a` holds its default now, the call's result what it held.
-            pointee = self._sure_pointee(int(replaced[1]))
+            pointee = self._sure_pointee(int(replaced[2]))
             if pointee is not None and pointee not in (local, int(whole[1])):
                 after = tuple(each - {pointee} for each in after)
         for stored in stores.get((number, index), ()):
@@ -2057,12 +2059,12 @@ class Body:
         `Ordering` (``_ANSWERS``). Every argument points at a primitive or a standard type
         (``_standard_only``), so the method is the standard library's own (a crate can't
         add one to its types, nor implement its traits between them), the inherent one's
-        type is the one its first argument points at, and ``std_calls`` proves the dump's
-        standard paths and trait names are the standard library's. Never by name alone;
-        and a `usize` local, a `Vec<bool>` or a type of the crate's own may hold what it
-        returns, so then it may be a copy."""
-        if not self.std_calls:
-            return False
+        type is the one its first argument points at. Each proof is by the root it uses
+        (#320 review round 3, ``std_paths``): `core::slice::<impl [u32]>::len` needs
+        `core` only, a short `Vec::<u32>::len` the root of the type it is given and
+        ``trusted_names``, a comparison its trait's root, if named, and ``std_traits``.
+        Never by name alone; and a `usize` local, a `Vec<bool>` or a type of the crate's
+        own may hold what it returns, so then it may be a copy."""
         if self._measure_cache is None:
             self._measure_cache = {}
         key = (text, local, self.generics)
@@ -2072,9 +2074,12 @@ class Body:
 
     def _measuring(self, text, local):
         """``_only_measures``, found."""
-        whole = _WHOLE_ASSIGNMENT.match(text)
-        answer = _ANSWERS.get(self.types.get(int(whole[1]), "")) if whole else None
-        if answer is None or _may_hold_type(self.types.get(local), self.generics, answer):
+        whole, trusted = _WHOLE_ASSIGNMENT.match(text), self.std_paths
+        kind = self.types.get(int(whole[1]), "") if whole else ""
+        answer = _ANSWERS.get(kind)
+        if answer is None or not _standard_only(kind, (), trusted):
+            return False
+        if _may_hold_type(self.types.get(local), self.generics, answer, trusted):
             return False
         found = _callee(whole[2])
         if found is None:
@@ -2084,15 +2089,23 @@ class Body:
         for number in map(int, _MENTIONED.findall(arguments)):
             pointer = _REFERENCE.match(self.types.get(number) or "")
             pointee = self.types[number][pointer.end() :] if pointer else None
-            if pointee is None or not _standard_only(pointee, self.generics):
+            if pointee is None or not _standard_only(pointee, self.generics, trusted):
                 return False
             pointees.append(pointee)
         if not pointees:
             return False
         if compared := _COMPARISON_METHOD.match(path):
-            return compared[2] in _COMPARISONS[compared[1]]
+            return (
+                self.std_traits
+                and compared[1] in (None, *trusted)
+                and compared[3] in _COMPARISONS[compared[2]]
+            )
         if sliced := _SLICE_METHOD.match(path):
-            return sliced[1] in _MEASURES and pointees[0].startswith(("[", "str"))
+            return (
+                sliced[1] in trusted
+                and sliced[2] in _MEASURES
+                and pointees[0].startswith(("[", "str"))
+            )
         # A short name (`String::len`) is the standard library's type only where the crate
         # gives that name nothing of its own (#320 review: `struct String;` with `fn
         # len(s: &std::string::String)`).
@@ -2101,7 +2114,7 @@ class Body:
             inherent is not None
             and inherent[1] in self.trusted_names
             and inherent[2] in _MEASURES
-            and pointees[0].startswith(_STD_PATHS)
+            and pointees[0].split("::", 1)[0] in trusted
             and pointees[0].split("<", 1)[0].rsplit("::", 1)[-1] == inherent[1]
         )
 
@@ -2110,7 +2123,8 @@ class Body:
         is given, by value: what it returns holds a copy only where what it was given did
         (#320 review). That is `Box::<T>::new(move _7)`, `Box::pin`, `Rc::new` and
         `Arc::new` (``_WRAPPERS``), whose short name must be one the crate gives nothing
-        of its own (``trusted_names``), returning the standard type. It is also an
+        of its own (``trusted_names``), returning the standard type under a trusted root
+        (``std_paths``). It is also an
         iterator adapter of ``_ADAPTERS`` (`<std::str::Chars<'_> as Iterator>::rev`,
         `…::map::<u32, {closure@…}>(move _6, move _9)`): `Iterator` the standard trait
         (``std_iterator``), on a standard type (its root in ``std_paths``: its impl is the
@@ -2139,12 +2153,13 @@ class Body:
                 and outer.split("::", 1)[0] in self.std_paths
             )
         inherent = _INHERENT_METHOD.match(_without_turbofish(found[0]))
-        if not self.std_calls or inherent is None or inherent[1] not in self.trusted_names:
+        if inherent is None or inherent[1] not in self.trusted_names:
             return False
-        returned = _WRAPPERS.get((inherent[1], inherent[2]))
+        returned, kind = _WRAPPERS.get((inherent[1], inherent[2])), self.types.get(int(whole[1]))
         return (
             returned is not None
-            and self.types.get(int(whole[1]), "").startswith(returned)
+            and (kind or "").startswith(returned)
+            and kind.split("::", 1)[0] in self.std_paths
             and re.fullmatch(r"(?:move|copy) _[0-9]+", found[1].strip()) is not None
         )
 
@@ -2347,9 +2362,9 @@ class Body:
             # A call's result holds no sure copy: the callee may return anything (#311
             # review: `discard(vec![x, 1])` returns `vec![7, 1]`). Only the standard
             # library's Box-to-Vec conversion `vec!` makes gives the Vec what its Box held.
-            transfer = _STD_TRANSFER.match(value) if transfers else None
-            if transfer:
-                box, (was_read, was_taken, _, was_origins, _, _) = int(transfer[1]), before
+            transfer = _STD_TRANSFER.match(value)
+            if transfer and _trusts(transfers, transfer[1]):
+                box, (was_read, was_taken, _, was_origins, _, _) = int(transfer[2]), before
                 if box in was_taken:
                     gave = {binding for made, binding in was_origins if made == box}
                     gave |= {box} & named
@@ -2655,7 +2670,7 @@ class Body:
                     stopped = True
                     break
                 if event == "end" or not _harmless(
-                    text, borrowed, self.types if compares else None
+                    text, borrowed, self.types if compares else None, compares
                 ):
                     found.add((number, back))
                     if not every or len(found) >= limit:
@@ -3712,10 +3727,10 @@ def _copy_verdict(
     target hold a value read from ``local``, or point into it, given the temporaries that
     may already (``holds``, ``points``; ``own``: the pointers made from a borrow of it).
 
-    With ``compares`` (the dump's `std::ptr::eq` and `addr_eq` are the standard
-    library's: ``OwnedLocals._std_compares``), such a call reads the two addresses it is
-    given and nothing they point at (#300): what it returns holds a copy only where they
-    do. Any other call given a pointer may read through it.
+    With ``compares`` (the roots under which the dump's `std::ptr::eq` and `addr_eq` are
+    the standard library's: ``OwnedLocals._std_compares``), such a call under one of them
+    reads the two addresses it is given and nothing they point at (#300): what it returns
+    holds a copy only where they do. Any other call given a pointer may read through it.
 
     ``reads`` says which pointers count (#300: what a refusal may say): "any", also one
     Peeky does not follow (read through, or a reference variable a call is given), which
@@ -3724,7 +3739,7 @@ def _copy_verdict(
     place that may overlap the part a change makes, where given), or of what holds one.
     What surely read it is ``Body.read_copies_at``'s."""
     _, mentioned, through, borrow, call, formats, pointers, compare = part
-    if compares and compare:
+    if compare and _trusts(compares, compare):
         return local in mentioned or bool(mentioned & holds), False
     if reads == "value":
         mine = local in mentioned if touched is None else touched
@@ -4282,16 +4297,33 @@ def _scope(block, index):
 # alone: many items are), and `addr_eq` alone where no other item is so named
 # (``OwnedLocals._std_compares`` says when those names are the standard library's).
 _ADDRESS_COMPARISON = re.compile(
-    r"^_([0-9]+) = (?:(?:std|core)::ptr::eq|(?:(?:std|core)::ptr::)?addr_eq)::<.+>\((.*)\)"
+    r"^_([0-9]+) = (?:(std|core)::ptr::eq|(?:(std|core)::ptr::)?addr_eq)::<.+>\((.*)\)"
     r" -> \[return: bb[0-9]+(?:, unwind(?:: bb[0-9]+| \w+(?:\(\w+\))?))?\];$"
 )
+
+
+def _comparison_root(text):
+    """The root of the address comparison ``text`` calls (``_ADDRESS_COMPARISON``):
+    `std` or `core` as the dump names it, `core` for a bare `addr_eq` (where the dump
+    names the standard library's `core::ptr::addr_eq`); None for any other statement
+    (#320 review round 3: each proof by the root it uses)."""
+    found = _ADDRESS_COMPARISON.match(text)
+    return None if found is None else found[2] or found[3] or "core"
+
+
+def _trusts(roots, root):
+    """Whether ``root`` is among the proven ``roots`` (``OwnedLocals._std_compares``,
+    ``_std_transfers``), where True, as older callers pass, trusts every root."""
+    return roots is True or (bool(roots) and root in roots)
+
+
 # A function of the crate's own that a call could be dumped under one of those names
 # (`fn std::ptr::eq`, `fn inner::addr_eq`): its header's path, any prefix.
 _COMPARISON_NAME = re.compile(r"(?:^|::)(?:ptr::eq|addr_eq)$")
 # The standard library's conversion of the Box `vec!` fills into the Vec it gives (#311):
 # what the Box holds, the Vec holds. Only where ``OwnedLocals._std_transfers`` proves it.
 _STD_TRANSFER = re.compile(
-    r"^(?:std|alloc)::boxed::box_assume_init_into_vec_unsafe::<.+>\(move _([0-9]+)\) -> "
+    r"^(std|alloc)::boxed::box_assume_init_into_vec_unsafe::<.+>\(move _([0-9]+)\) -> "
 )
 _TRANSFER_NAME = re.compile(r"(?:^|::)box_assume_init_into_vec_unsafe$")
 # An invocation's opening, as ``_MACRO_CALL``, and a `std`, `core` or `alloc` in its
@@ -4301,7 +4333,6 @@ _MACRO_OPENING = re.compile(r"(?<![\w:])(?:(?:::)?(?:\w+::)*\w+)\s*!\s*([(\[{])"
 _BARE_STD = re.compile(r"\b(std|core|alloc)\b(?!\s*::)")
 # Either name may be a raw identifier (`extern crate evil as r#std;`).
 _EXTERN_AS_STD = re.compile(r"\bextern\s+crate\s+(?:r#)?\w+\s+as\s+(?:r#)?(std|core|alloc)\b")
-_STD_CRATES = frozenset({"std", "core", "alloc"})
 
 
 def _false(why, reason):
@@ -4328,21 +4359,23 @@ def _gap(body, function, number, index):
     return ("write", line)
 
 
-def _harmless(text, borrowed, types=None):
+def _harmless(text, borrowed, types=None, roots=True):
     """True if the statement cannot move, drop, free or write what a reference points
     into: a branch, an assertion, a storage marker of a local never borrowed itself, a
     whole assignment (not a call) to a local never borrowed itself; with ``types`` (the
     body's {local: type}, given where the dump's `std::ptr::eq` and `addr_eq` are the
-    standard library's), a call of one of them on two raw pointer locals whose result
-    goes to such a local (#259: `ptr::eq(f, e.payer)` only compares two addresses)."""
+    standard library's, under ``roots``), a call of one of them on two raw pointer locals
+    whose result goes to such a local (#259: `ptr::eq(f, e.payer)` only compares two
+    addresses)."""
     if _BRANCHES.match(text) or text.startswith("goto ") or _NOT_A_USE.match(text):
         return True
     if storage := re.match(r"^StorageDead\(_([0-9]+)\);$", text):
         return int(storage[1]) not in borrowed
     if text == "nop;":
         return True
-    if types is not None and (found := _ADDRESS_COMPARISON.match(text)):
-        operands = [re.fullmatch(r"(?:move|copy) _([0-9]+)", o) for o in _top_level(found[2])]
+    found = _ADDRESS_COMPARISON.match(text) if types is not None else None
+    if found and _trusts(roots, _comparison_root(text)):
+        operands = [re.fullmatch(r"(?:move|copy) _([0-9]+)", o) for o in _top_level(found[4])]
         return (
             len(operands) == 2
             and all(
@@ -5344,7 +5377,7 @@ class OwnedLocals:
                 self._unanalyzed[hashed] = list({id(body): body for body in candidates}.values())
         if found is not None:
             found.generics = function.generics
-            found.std_calls = self._std_calls()
+            found.std_traits = self._std_traits()
             found.trusted_names = self._trusted_names()
             found.std_paths = self._std_crates()
             found.std_iterator = self._std_iterator()
@@ -6411,30 +6444,31 @@ class OwnedLocals:
         return self._std_iterator_known
 
     def _std_compares(self):
-        """Whether the calls the dump names `std::ptr::eq`, `core::ptr::eq` and `addr_eq`
-        (``_ADDRESS_COMPARISON``) are the standard library's (#259). A `mod std` of the
-        crate's own, a macro's too (`make_mod!(std)`), is dumped `std::ptr::eq` as well,
-        so all of these must hold:
+        """The roots under which the calls the dump names `std::ptr::eq`, `core::ptr::eq`
+        and `addr_eq` (``_ADDRESS_COMPARISON``; `core` for the bare one) are the standard
+        library's (#259; a frozenset, per root since #320 review round 3). A `mod std` of
+        the crate's own, a macro's too (`make_mod!(std)`), is dumped `std::ptr::eq` as
+        well, so all of these must hold:
 
         - no function the crate's MIR dump holds is named so, with any prefix
           (`fn std::ptr::eq`, `fn inner::addr_eq`): the standard library's bodies are
           never among them, and a function called has a body there;
-        - its sources lex, and none names an item or import `std` or `core` of its own
-          (`_named_own`: `mod std`, `use x as core`, a `macro_rules!` body naming it),
-          renames an `extern crate` so, or passes `std` or `core` to a macro other than
-          as a path's start (`println!("{}", std::process::id())` is fine);
+        - its sources lex, and none names an item or import of that root of its own
+          (``_std_crates``: `mod std`, `use x as core`, a `macro_rules!` body naming it),
+          renames an `extern crate` so, or passes it to a macro other than as a path's
+          start (`println!("{}", std::process::id())` is fine); a `mod alloc` leaves both;
         - its code names `addr_eq` only after `ptr::`, so it declares none."""
         if "_std_compares_known" not in self.__dict__:
             names = {body.path for body in self.bodies} | self.defined
             codes = self._crate_codes()
+            proven = not any(_COMPARISON_NAME.search(name) for name in names) and all(
+                len(re.findall(r"\baddr_eq\b", code))
+                == len(re.findall(r"\bptr\s*::\s*addr_eq\b", code))
+                for code in codes
+                if code is not None
+            )
             self._std_compares_known = (
-                self._std_own()
-                and not any(_COMPARISON_NAME.search(name) for name in names)
-                and all(
-                    len(re.findall(r"\baddr_eq\b", code))
-                    == len(re.findall(r"\bptr\s*::\s*addr_eq\b", code))
-                    for code in codes
-                )
+                self._std_crates() & {"std", "core"} if proven else frozenset()
             )
         return self._std_compares_known
 
@@ -6449,11 +6483,6 @@ class OwnedLocals:
                 for source in self.sources
             ]
         return self._crate_codes_known
-
-    def _std_own(self):
-        """Whether every path the dump starts `std::`, `core::` or `alloc::` is the
-        standard library's (``_std_crates``: all three) (#259, #311, #320 review)."""
-        return self._std_crates() == _STD_CRATES
 
     def _std_crates(self):
         """Which of `std`, `core` and `alloc` a path the dump starts with is the standard
@@ -6473,47 +6502,47 @@ class OwnedLocals:
             self._std_crates_known = _STD_CRATES - own if codes else frozenset()
         return self._std_crates_known
 
-    def _std_calls(self):
-        """Whether the standard library's measures, comparisons and `mem::take` are
-        known in the dump (#320, ``Body.std_calls``): its paths that start `std::` or
-        `core::` are the standard library's (``_std_own``), and the crate names no item
-        or import `PartialEq`, `PartialOrd` or `Ord` of its own (``_named_own``), so the
-        dump's `<u32 as PartialEq>::eq` is the standard library's trait. A method of a
-        standard type (`Vec::<u32>::len`) or primitive (`core::slice::<impl [u32]>::len`)
-        is its own: a crate can't add one."""
-        if "_std_calls_known" not in self.__dict__:
-            self._std_calls_known = self._std_own() and not any(
-                _named_own(code, set(_COMPARISONS)) for code in self._crate_codes()
+    def _std_traits(self):
+        """Whether the dump's bare `PartialEq`, `PartialOrd` and `Ord` (`<u32 as
+        PartialEq>::eq`) are the standard traits (#320, ``Body.std_traits``): the crate's
+        sources lex, and none names an item or import of those names of its own
+        (``_named_own``). A trait the dump names with its root (`std::cmp::PartialEq`) also
+        needs that root (``_std_crates``, review round 3)."""
+        if "_std_traits_known" not in self.__dict__:
+            codes = self._crate_codes()
+            self._std_traits_known = bool(codes) and all(
+                code is not None and not _named_own(code, set(_COMPARISONS)) for code in codes
             )
-        return self._std_calls_known
+        return self._std_traits_known
 
     def _trusted_names(self):
         """The short names of ``_STD_TYPES`` the crate gives no item of its own, so a call
         the dump names by one (`String::len`, `Box::<T>::new`) is a method of the standard
         library's type (#320 review): none it declares (`struct String;`), imports under
         that name (`use x::Vec`, `as String`), passes bare to a macro (`mk!(Vec)`), or
-        names in a `macro_rules!` body (``_named_own``). None where ``_std_calls`` isn't
-        proven."""
+        names in a `macro_rules!` body (``_named_own``). None where a source doesn't lex.
+        The type's root is proven where it is used (``Body.std_paths``)."""
         if "_trusted_known" not in self.__dict__:
-            names = frozenset(_STD_TYPES)
+            names, codes = frozenset(_STD_TYPES), self._crate_codes()
             self._trusted_known = (
-                names.difference(
-                    *(_named_own(code, names, bare=names) for code in self._crate_codes())
-                )
-                if self._std_calls()
+                names.difference(*(_named_own(code, names, bare=names) for code in codes))
+                if codes and None not in codes
                 else frozenset()
             )
         return self._trusted_known
 
     def _std_transfers(self):
-        """Whether the calls the dump names as the Box-to-Vec conversion `vec!` makes
-        (``_STD_TRANSFER``: `std::boxed::box_assume_init_into_vec_unsafe`) are the standard
-        library's (#311), as ``_std_compares`` proves `ptr::eq`: its paths are std's
-        (``_std_own``), and no function the crate's MIR dump holds is so named."""
+        """The roots under which the calls the dump names as the Box-to-Vec conversion
+        `vec!` makes (``_STD_TRANSFER``: `std::boxed::box_assume_init_into_vec_unsafe`) are
+        the standard library's (#311; per root since #320 review round 3), as
+        ``_std_compares`` proves `ptr::eq`: `std` or `alloc` where the crate gives that
+        name nothing of its own (``_std_crates``), and no function the crate's MIR dump
+        holds is so named."""
         if "_std_transfers_known" not in self.__dict__:
             names = {body.path for body in self.bodies} | self.defined
-            self._std_transfers_known = self._std_own() and not any(
-                _TRANSFER_NAME.search(name) for name in names
+            own = any(_TRANSFER_NAME.search(name) for name in names)
+            self._std_transfers_known = (
+                frozenset() if own else self._std_crates() & {"std", "alloc"}
             )
         return self._std_transfers_known
 

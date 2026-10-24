@@ -2404,7 +2404,7 @@ def body_of(text, proven=True):
     whose standard paths are the standard library's where ``proven``."""
     body = parse_body(text)
     body.generics = ()
-    body.std_calls = proven
+    body.std_traits = proven
     body.trusted_names = frozenset(_STD_TYPES) if proven else frozenset()
     body.std_paths = _STD_CRATES if proven else frozenset()
     body.std_iterator = proven
@@ -2552,9 +2552,9 @@ def test_the_standard_librarys_measures_and_comparisons_return_no_copy():
     for name in ("PartialEq", "PartialOrd", "Ord"):
         source = SOURCE.replace("use std::env;", f"use std::env;\ntrait {name} {{}}")
         _, owned = owned_for(MEASURED, "measured", source)
-        assert not owned._std_calls(), name
+        assert not owned._std_traits(), name
     _, owned = owned_for(MEASURED, "measured")
-    assert owned._std_calls()
+    assert owned._std_traits()
 
 
 def test_a_measure_may_return_a_copy_where_the_locals_type_holds_what_it_returns():
@@ -2710,7 +2710,7 @@ def test_a_crate_module_named_like_a_standard_crate_proves_no_view():
     # the standard library's view, holding only pointers, so `x` stayed settable after it.
     assert why(SHADOWED, "shadowed", 35, "_7 = other()", ADAPTERS) == kept("c", "line 34", True)
     _, owned = owned_for(SHADOWED, "shadowed", ADAPTERS)
-    assert owned._std_crates() == {"std", "core"} and not owned._std_own()
+    assert owned._std_crates() == {"std", "core"}
     assert not _pointer_only("alloc::str::Chars<'_>", (), owned._std_crates())
     assert _pointer_only("std::str::Chars<'_>", (), owned._std_crates())
     # Renamed, passed bare to a macro, or imported as one.
@@ -2772,3 +2772,68 @@ def test_a_refusal_that_may_only_point_advises_no_copy_to_change():
     assert "change the copy" in mutation_hint(
         message.replace(", unless `c` only points into it", "")
     )
+
+
+def test_each_standard_proof_needs_only_the_root_it_uses():
+    # #320 review round 3: `mod alloc {}` made every standard proof unproven, so `n` of `let n
+    # = a.len() + a.contains(&5) as usize;` (`core::slice::<impl [u32]>::len`) was said to
+    # "may hold a copy of `x`". It needs `core` only; a `mod core {}` leaves it unproven.
+    alloc = SOURCE.replace("use std::env;", "use std::env;\nmod alloc {}")
+    assert why(MEASURED, "measured", 73, "_33 = other()", alloc) == (None, None)
+    core = SOURCE.replace("use std::env;", "use std::env;\nmod core {}")
+    assert why(MEASURED, "measured", 73, "_33 = other()", core) == kept("n", "line 69")
+    # `std::mem::take` needs `std`: under a `mod std {}`, `a` may still hold the copy.
+    for module, holders in (("mod core {}", {5}), ("mod std {}", {4, 5})):
+        source = SOURCE.replace("use std::env;", f"use std::env;\n{module}")
+        body, owned = owned_for(TAKEN, "taken", source)
+        owned.body(HASH)
+        assert body.direct_copies_at(2, place(body, "_8 = other()")) == holders, module
+    # A short name's type, a wrapper's result and a named trait, each by its own root.
+    body = body_of(MEASURED)
+    call = "_7 = Vec::<u32>::len(move _9) -> [return: bb4];"
+    body.types[9] = "&alloc::vec::Vec<u32>"
+    body.std_paths = frozenset({"std", "core"})
+    assert not body._only_measures(call, 2)
+    body = body_of(MEASURED)
+    body.types[9] = "&alloc::vec::Vec<u32>"
+    body.std_paths = frozenset({"alloc"})
+    assert body._only_measures(call, 2)
+    named = "_18 = <u32 as std::cmp::PartialEq>::eq(move _19, move _20) -> [return: bb6];"
+    for trusted, measures in (({"core"}, False), ({"std"}, True)):
+        body = body_of(MEASURED)
+        body.std_paths = frozenset(trusted)
+        assert body._only_measures(named, 2) is measures, trusted
+    boxed = "_9 = Box::<{closure@src/main.rs:25:51: 25:58}>::new(move _10) -> [return: bb3];"
+    for trusted, wraps in (({"core", "alloc"}, False), ({"std"}, True)):
+        body = body_of(CLONED)
+        body.types[9] = "std::boxed::Box<{closure@src/main.rs:25:51: 25:58}>"
+        body.std_paths = frozenset(trusted)
+        assert body._only_wraps(boxed) is wraps, trusted
+
+
+def test_a_slice_element_needs_the_std_root_its_iterator_is_named_under():
+    # `_SLICE_NEXT` names `std::slice::Iter`: a crate's `mod std` may be what it names,
+    # whatever other root stays the standard library's (#320 review round 3).
+    from peeky.rust import _slice_element
+
+    class Proofs:
+        def __init__(self, roots):
+            self.roots = roots
+
+        def _std_compares(self):
+            return self.roots
+
+        def _std_iterator(self):
+            return True
+
+    class Assigned:
+        def _assignments(self):
+            return {
+                9: ["<std::slice::Iter<'_, Pair> as Iterator>::next(move _10) -> [return: bb3]"]
+            }
+
+    item = ["copy ((_9 as Some).0: &Pair)"]
+    assert _slice_element(Proofs(frozenset({"std", "core"})), Assigned(), item)
+    assert _slice_element(Proofs(frozenset({"std"})), Assigned(), item)
+    assert not _slice_element(Proofs(frozenset({"core"})), Assigned(), item)
+    assert not _slice_element(Proofs(frozenset()), Assigned(), item)

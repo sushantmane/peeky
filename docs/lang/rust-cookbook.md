@@ -1425,7 +1425,8 @@ bring unsafe code that reads through one.
 - The standard library's `ptr::eq` and `ptr::addr_eq` read only the two addresses. So a call of
   one holds a copy only of what its pointers hold, never of what they point at.
 - That is so only where Peeky proves the call is the standard library's. The crate must have no
-  `std` or `core` of its own (`mod std`, `use x as core`), nor its own function of that name.
+  item of its own named like the root the call is under (`mod std`, `use x as core`), nor its own
+  function of that name.
 - A breakpoint on `if ptr::eq(e, l) {` stops inside the inlined `ptr::eq`. There, `week` and
   `pick` are `[settable]`.
 
@@ -1544,7 +1545,8 @@ refusal says ``the program's own `y` (at line 11) may hold a copy of `x` that it
 - Where Peeky can't tell whether a result holds a copy or only points into the local, the refusal
   says both: ``may hold a copy of `x` that it goes on with, unless `c` only points into it``.
 - A crate module named `std`, `core` or `alloc` makes paths under it the crate's own, not the
-  standard library's.
+  standard library's. It leaves the other roots the standard library's: beside a `mod alloc {}`,
+  `a.len()` (`core::slice`) still measures.
 - The standard library's measures and comparisons return none: `x.len()`, `x.eq(&5)`,
   `x.cmp(&5)`. That is so only where Peeky proves they are the standard library's own, and the
   local can't hold what they return.

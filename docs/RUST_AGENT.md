@@ -396,7 +396,9 @@ used again. Such a temporary is:
 - A standard path counts only under a root the crate gives nothing of its own
   (`OwnedLocals._std_crates`, set as `Body.std_paths`, review round 2). A `mod alloc` of the
   crate's makes `alloc::str::Chars` its own, and leaves `std::` paths the standard library's.
-  `_std_own` needs all three of `std`, `core` and `alloc`.
+- Each proof needs only the root its path is under (review round 3). `core::slice::<impl
+  [u32]>::len` needs `core`, `std::mem::take` needs `std`, and an inherent `Vec::len` needs the
+  root of the type its argument points at. So a `mod alloc {}` leaves `a.len()` a measure.
 - A result whose type shows a pointer (a reference, a lifetime, a closure, a trait object) may
   also point into the local (the flow's `aims`), as a cast, copy or aggregate of one does. A read
   through it may be a copy. A call given one may store a copy into what holds no pointer
@@ -426,10 +428,12 @@ used again. Such a temporary is:
   the crate's own of that name. So the name must be one the crate gives no item of its own
   (`OwnedLocals._trusted_names`, set as `Body.trusted_names`): none it declares, imports under
   that name, passes bare to a macro, or names in a `macro_rules!` body (`_named_own`).
-- `OwnedLocals._std_calls` proves the dump's standard paths and trait names (`_std_own`, and no
-  `PartialEq`, `PartialOrd` or `Ord` of the crate's own), set as `Body.std_calls`. What it returns
-  must be a `bool`, `usize` or `Ordering` the local's type can't hold (`_may_hold_type`): a
-  `Vec<usize>`'s `len()` may be a copy of a `usize`.
+- A comparison needs its trait's root trusted, where the dump names one, and no `PartialEq`,
+  `PartialOrd` or `Ord` of the crate's own (`OwnedLocals._std_traits`, set as
+  `Body.std_traits`). `_std_compares` (`ptr::eq`) and `_std_transfers` (`vec!`'s Box) return
+  the roots they trust.
+- What a measure or comparison returns must be a `bool`, `usize` or `Ordering` the local's type
+  can't hold (`_may_hold_type`): a `Vec<usize>`'s `len()` may be a copy of a `usize`.
 - Where the proven standard `mem::take` or `mem::replace` is given a pointer surely to a local
   (`_sure_pointee`: `&mut a`, reborrowed, each assigned once and never borrowed), that local holds
   no copy after it. Its result holds what it held.

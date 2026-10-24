@@ -291,6 +291,34 @@ fn main() {
 }
 """
 
+# #320 review round 3: a crate module named `alloc` or `core`, beside `a.len()`, the
+# standard library's `core::slice::<impl [u32]>::len`.
+ROOTS = """use std::env;
+
+// A module of the crate's own named like a standard library crate.
+mod {root} {{}}
+
+#[inline(never)]
+fn other() -> u32 {{
+    1
+}}
+
+fn measured(arg: u32) -> u32 {{
+    let x = std::convert::identity(arg);
+    let a = [x, 2];
+    let n = a.len(); // LEN
+    let k = other(); // MEASURED
+    let t = n as u32 + k;
+    std::hint::black_box(&x);
+    t
+}}
+
+fn main() {{
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("MEASURED {{}}", measured(x));
+}}
+"""
+
 
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if f"// {marker}" in line)
@@ -442,3 +470,20 @@ def test_a_shadowed_view_or_an_adapter_is_said_to_hold_what_it_holds(crate, caps
         code, result = at(marker, "--set", "x=100")
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
+
+
+@pytest.mark.timeout(400)
+def test_a_standard_measure_needs_only_the_root_it_is_named_under(crate, capsys):
+    # A `mod alloc {}` leaves `core::slice::<impl [u32]>::len` the standard library's: `n`
+    # holds no copy of `x`, and the change is made. A `mod core {}` may be what it names.
+    text = ROOTS.format(root="alloc")
+    root = crate("roots", text)
+    code, result = probe(capsys, root, "MEASURED", "--capture", "x", "--set", "x=100", text=text)
+    assert code == 0, result.get("error")
+    assert result["interventions"][0]["after"] == "100", result["interventions"]
+    assert "MEASURED 3" in result["output"].splitlines(), result["output"]
+    text = ROOTS.format(root="core")
+    root = crate("shadowed", text)
+    message = refused(*probe(capsys, root, "MEASURED", "--set", "x=100", text=text), "core")
+    held = f"the program's own `n` (at line {line_of(text, 'LEN')}) may hold a copy of `x`"
+    assert held in message, message

@@ -1186,7 +1186,8 @@ def _binding_at(proofs, body, root, line, path):
 def _slice_element(proofs, body, assigned):
     """Whether the values ``assigned`` to a reference local (``body._assignments()``'s)
     are all a standard slice iterator's items, in a crate whose `std` paths are the
-    standard library's (OwnedLocals._std_compares)."""
+    standard library's (OwnedLocals._std_compares: under the `std` root ``_SLICE_NEXT``
+    names, #320 review round 3, as a `mod core` of the crate's leaves them)."""
     found = [_FOR_ITEM.fullmatch(value) for value in assigned]
     if not found or not all(found):
         return False
@@ -1197,7 +1198,7 @@ def _slice_element(proofs, body, assigned):
             return False
     # A crate's own `trait Iterator` (`impl Iterator for std::slice::Iter<…>`) is dumped
     # `<std::slice::Iter<…> as Iterator>::next` too (review of #276).
-    return bool(proofs._std_compares()) and bool(proofs._std_iterator())
+    return "std" in proofs._std_compares() and bool(proofs._std_iterator())
 
 
 def _spans_and_text(session, bodies, source, name, line, texts):
