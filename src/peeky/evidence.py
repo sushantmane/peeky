@@ -92,9 +92,11 @@ TABLES = {
             "until_hits (the probe ended after its last hit), cap (a LINE@all's 100 "
             "stops), refused or failed (at hit: its own change there), timeout or failed "
             "(the probe's, first), or lost_stop (the debugger lost a stop, which may have "
-            "run without it), complete: carried out in full, and unrestored for a LINE@all "
-            "restore (name=@before) whose name's latest change stayed in place: that change's "
-            "LINE@HIT}; NULL for a run saved before "
+            "run without it), complete: carried out in full, and, for a restore "
+            "(name=@before) that never made some it owed, unrestored: the LINE@HIT of the "
+            "latest write it never restored, with unrestored_all: each one's, in the order "
+            "made (no restore was made; the program may have written the value since)}; "
+            "NULL for a run saved before "
             "schema 16, or with no interventions. Queries read it only where every entry "
             "matches its request (option, at, name, value, each key of its type); else "
             "they read the run's warnings",
@@ -589,7 +591,11 @@ def _checked_outcome(text, entry, line, set_hit):
         return None
     if not isinstance(outcome, dict) or not isinstance(request, list):
         return None
-    if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {"hit", "unrestored"}:
+    if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {
+        "hit",
+        "unrestored",
+        "unrestored_all",
+    }:
         return None
     made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
     # `ended` is checked as text first: a list or an object is no set member.
@@ -623,15 +629,27 @@ def _checked_outcome(text, entry, line, set_hit):
             return None
     elif ended in ("cap", "lost_stop") or made not in (0, 1) or (made == 1) != (ended == "made"):
         return None
-    # A `LINE@all` restore (#305) that left its name's latest change in place: that
-    # change's LINE@HIT; it was not carried out in full.
+    # A restore (#305) that never made some of the restores it owed: the latest such
+    # write's LINE@HIT, and each one's in the order made (#331), at most one per hit, of
+    # its own hit for a restore at one hit, which was never made; it was not carried out
+    # in full. A run saved before has `unrestored` alone.
     unrestored = outcome.get("unrestored")
+    left = outcome.get("unrestored_all", [unrestored])
+    hits = [str(item).partition("@")[2] for item in left] if isinstance(left, list) else None
     if "unrestored" in outcome and not (
-        every
+        option == "--set-at"
         and request[1] == "@before"
-        and isinstance(unrestored, str)
-        and re.fullmatch(r"[1-9][0-9]{0,6}@[1-9][0-9]{0,6}", unrestored)
+        and hits
+        and left[-1] == unrestored
+        and all(
+            isinstance(item, str) and re.fullmatch(r"[1-9][0-9]{0,6}@[1-9][0-9]{0,6}", item)
+            for item in left
+        )
+        and len(set(hits)) == len(hits)
+        and (every or (made == 0 and hits == [at.rpartition("@")[2]]))
     ):
+        return None
+    if "unrestored_all" in outcome and "unrestored" not in outcome:
         return None
     full = ended == "made" or (ended == "exit" and every and made > 0)
     if outcome["complete"] != (full and unrestored is None):
@@ -650,7 +668,16 @@ def _set_outcome(text, entry, line, set_hit):
         return None
     text = _outcome_text(outcome)
     if text is not None and outcome.get("unrestored"):
-        text += f"; the change at {outcome['unrestored']} was left in place, not undone"
+        from peeky.names import changes_named
+
+        left = outcome.get("unrestored_all") or [outcome["unrestored"]]
+        # A write with no matching restore, which may have changed nothing; the program
+        # may have written the value since (#331).
+        text += (
+            f"; the write at {left[0]} had no matching restore"
+            if len(left) == 1
+            else f"; {len(left)} writes had no matching restore ({changes_named(left)})"
+        )
     return text
 
 

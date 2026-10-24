@@ -277,3 +277,41 @@ def shortened_note(labels, instance=None):
         + f"instance = '{shown}' for a closure or generic instance as shown (short_function "
         "merges a function's closures and a generic's instances)"
     )
+
+
+def hits_named(hits):
+    """Hit numbers as people read them: `hit 4`, `hits 4 and 6`, `hits 1 to 3, 5 and 7`
+    (a run of three or more as `1 to 3`)."""
+    numbers = sorted(set(hits))
+    parts, start = [], 0
+    for index, number in enumerate(numbers):
+        if index + 1 < len(numbers) and numbers[index + 1] == number + 1:
+            continue
+        run = numbers[start : index + 1]
+        parts += [f"{run[0]} to {run[-1]}"] if len(run) > 2 else [str(item) for item in run]
+        start = index + 1
+    listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    return f"hit{'s' if len(numbers) > 1 else ''} {listed}"
+
+
+def changes_named(ats, selectors=None):
+    """Writes' `LINE@HIT`s as people read them, each line's hits together, in the order of
+    each line's first: `line 49, hits 1 to 6; line 52, hit 2`. With ``selectors`` (each
+    write's, in the same order) where they are several, each place names its own: `line 5,
+    hit 1: x and y; line 5, hits 2 and 3: x`."""
+    named = {}
+    for at, selector in zip(ats, selectors or [None] * len(ats)):
+        line, _, hit = str(at).partition("@")
+        named.setdefault(selector, {}).setdefault(line, []).append(int(hit))
+    if len(named) == 1:
+        [lines] = named.values()
+        return "; ".join(f"line {line}, {hits_named(hits)}" for line, hits in lines.items())
+    places = {}
+    for selector, lines in named.items():
+        for line, hits in lines.items():
+            places.setdefault((line, hits_named(hits)), []).append(str(selector))
+    return "; ".join(
+        f"line {line}, {hits}: "
+        + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])
+        for (line, hits), names in places.items()
+    )
