@@ -187,11 +187,15 @@ message says `cannot be changed here`.
 - C and C++: at a statement's first instruction.
 - Rust: at a breakpoint, or after a step to its line's start, where the MIR proves that no
   statement is under way. The MIR is the compiler's mid-level representation of the function.
+- Rust: a mark of `[settable]` covers the paths that don't panic. On a path where the program
+  panics, a change may not be seen.
 - Rust: not where the program goes on with a copy of the old value. It copied the local into a
   binding of its own, or into a Vec by `push`. Then it replaces the local, or the local goes out of
   scope, before reading it. The copy may be used before or after that:
   ``the program has already copied `x` into `n` ``. Where a call given `&mut x` since may have
   changed `x`: ``the program's own `n` (at line 34) may hold a copy of `x` that it goes on with``.
+  Where every path then panics or exits first: ``every path from here panics or exits before
+  reading `x` ``.
 - Rust: not where no path reads the value again before it is overwritten or goes out of scope. The
   stop's own line counts, as `total = k + 3;` does for `total`:
   `the program does not read it after this stop, so a change would never be seen: it is overwritten

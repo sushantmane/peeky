@@ -269,6 +269,38 @@ fn checked(n: u32) -> u32 {
     w + x + k
 }
 
+fn bailed(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other(); // BAILED
+    if z == 0 {
+        panic!("zero");
+    }
+    x + k
+}
+
+struct Guard(u32);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            println!("GUARD {}", self.0);
+        }
+    }
+}
+
+fn guarded(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other(); // GUARDED
+    let g = Guard(z);
+    may_panic(k);
+    black_box(&g);
+    x + k
+}
+
 fn reset(n: u32) -> u32 {
     let mut last = n + 1;
     last = 7; // RESET
@@ -294,7 +326,13 @@ fn main() {
         "pointer" => pointed(n),
         "caught" => {
             let caught = std::panic::catch_unwind(|| caught(n));
-            println!("CAUGHT {} CHECKED {}", caught.unwrap_or(0), checked(n));
+            println!(
+                "CAUGHT {} CHECKED {} BAILED {} GUARDED {}",
+                caught.unwrap_or(0),
+                checked(n),
+                bailed(n),
+                guarded(n)
+            );
         }
         _ => println!("BRANCH {} SPIN {} RESET {}", branch(n), spin(n), reset(n)),
     }
@@ -326,13 +364,28 @@ fn local(n: u32) -> ! {
     std::process::exit(0);
 }
 
+fn diverged(mut x: u32) -> ! {
+    black_box(&mut x);
+    let z = x; // DIVERGED_COPY
+    let k = other(); // DIVERGED
+    println!("DIVERGED {}", z + k);
+    panic!("stop");
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let n: u32 = args[2].parse().unwrap();
     let read = [n];
     // Unsafe code of its own, unrelated to `x`.
     let first = unsafe { *read.as_ptr() };
-    if args[1] == "arg" { argument(first) } else { local(first) }
+    match args[1].as_str() {
+        "arg" => argument(first),
+        "diverged" => {
+            std::panic::set_hook(Box::new(|_| {}));
+            let _ = std::panic::catch_unwind(|| -> u32 { diverged(first) });
+        }
+        _ => local(first),
+    }
 }
 """
 TEXTS = {"unseen": UNSEEN, "frames": FRAMES, "exits": EXITS}
@@ -516,12 +569,19 @@ def test_a_drop_that_reads_the_field_sees_the_change(crate, capsys):
 def test_a_panic_an_exit_or_a_coroutines_end_ends_the_local(crate, capsys):
     # `let z = x;`, the stop, `println!` of `z`, then `process::exit(0)`: `x` is never read
     # again. In a crate with unsafe code, the never-read rule is off: the copy's is the one.
+    # Review 3: and `panic!` in a function that returns `!`. Every path from the stop panics
+    # or exits before reading `x`, and the refusal says so.
     exits = crate.parent / "exits"
-    for marker, run, copy in (("ARG", "arg", "ARG_COPY"), ("LOCAL", "local", "LOCAL_COPY")):
+    for marker, run, copy in (
+        ("ARG", "arg", "ARG_COPY"),
+        ("LOCAL", "local", "LOCAL_COPY"),
+        ("DIVERGED", "diverged", "DIVERGED_COPY"),
+    ):
         message = refused(capsys, exits, marker, "--set", "x=100", run=("--", run, "1"))
         assert (
             f"the program has already copied `x` into `z` (at line {line_of(copy, EXITS)}) and "
-            "goes on with that copy"
+            "goes on with that copy, so a change there may never be seen: every path from here "
+            "panics or exits before reading `x`"
         ) in message, message
         lines = changed(capsys, exits, copy, "--set", "x=100", run=("--", run, "1"))
         assert lines == [f"{run.upper()} 101"], lines
@@ -564,18 +624,20 @@ def test_where_a_value_ends_is_named_only_where_every_path_ends_there(crate, cap
 
 
 @pytest.mark.timeout(400)
-def test_a_panic_a_caller_catches_goes_on_with_what_left_the_frame(crate, capsys):
-    # Review 2: `record(z); may_panic(k); x`. Where `may_panic` panics and the caller's
-    # `catch_unwind` goes on, `record` has taken `z`, and `x` is never read.
+def test_a_mark_of_settable_covers_the_paths_that_dont_panic(crate, capsys):
+    # Review 3: settable where every path from the stop that doesn't panic reads the value
+    # first. Review 2 refused `record(z); may_panic(k); x`, as a caller's `catch_unwind`
+    # may go on with `z`: that path panics, and the mark leaves it out.
     frames, run = crate.parent / "frames", ("--", "caught", "1")
-    message = refused(capsys, frames, "CAUGHT", "--set", "x=100", run=run)
-    assert (
-        f"the program has already copied `x` into `z` (at line {line_of('CAUGHT_COPY', FRAMES)}) "
-        "and goes on with that copy"
-    ) in message, message
-    lines = changed(capsys, frames, "CAUGHT_COPY", "--set", "x=100", run=run)
-    assert lines == ["RECORDED 100", "CAUGHT 100 CHECKED 23"], lines
-    # `z * 10`'s overflow check may panic too, but nothing took `z` out of the frame first:
-    # the program reads `x` next, and sees the change.
-    lines = changed(capsys, frames, "CHECKED", "--set", "x=100", run=run)
-    assert lines == ["RECORDED 2", "CAUGHT 2 CHECKED 121"], lines
+    lines = changed(capsys, frames, "CAUGHT", "--set", "x=100", run=run)
+    assert lines == ["RECORDED 2", "CAUGHT 100 CHECKED 23 BAILED 3 GUARDED 3"], lines
+    # `z * 10`'s overflow check; `if z == 0 { panic!("zero"); }`, then `x + k`; and a
+    # `Guard(z)` whose `Drop` prints `z` where the program panics: each reads `x` next on
+    # the path that doesn't panic, and sees the change.
+    for marker, seen in (
+        ("CHECKED", "CHECKED 121 BAILED 3 GUARDED 3"),
+        ("BAILED", "CHECKED 23 BAILED 101 GUARDED 3"),
+        ("GUARDED", "CHECKED 23 BAILED 3 GUARDED 101"),
+    ):
+        lines = changed(capsys, frames, marker, "--set", "x=100", run=run)
+        assert lines == ["RECORDED 2", f"CAUGHT 2 {seen}"], (marker, lines)

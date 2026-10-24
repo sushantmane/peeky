@@ -1432,6 +1432,10 @@ A change is allowed only at a line breakpoint, or after a step that lands on a l
 There, the MIR must show that no statement under way has read the value into a temporary. This
 holds for integer locals too.
 
+On a path where the program panics, a change may not be seen; Peeky's marks are about the paths
+that don't panic. A value is `[settable]` where each such path reads it before overwriting or
+ending it, and some such path exists.
+
 - So a change is never allowed back from a call, after `step --out`. For example, it is refused
   back from `f` in `let t = s.a + f();`.
 - Nor after a step back onto `let arr = [s.a,` from its later lines.
@@ -1587,16 +1591,16 @@ These bindings copy a value:
 - a Vec a struct is pushed into: after `laps.push(lap);`, `lap.start = finish;` overwrites a field
   that `laps` holds a copy of;
 - a copy of an argument, `let z = x;`: the argument goes out of scope when the function returns;
-- any copy, where the program then calls `panic!` or `process::exit` before it reads the local
-  again. That ends the local too.
-- any copy given to a call, or made into what a call is given, before a panic that leaves the
-  function ahead of the local's next read: `record(z); may_panic(k); x`. A caller's
-  `catch_unwind` may go on with it, and the local is never read. A panic counts only where the
-  copy may have left the function first, and where no call was given the local itself before. So
-  `let w = z * 10; w + x` and `println!("{z} {x}")` leave `x` settable.
+- any copy, where every path then panics or exits before it reads the local again:
+  `let z = x; black_box(z); panic!()`. The refusal says
+  ``every path from here panics or exits before reading `x` ``.
+
+A panic on some paths only doesn't count. After `let z = x;`, `if z == 0 { panic!() }` and then
+`x + k` leave `x` settable, because the path that doesn't panic reads it. So does
+`record(z); may_panic(k); x`, though a caller's `catch_unwind` may go on with `z`.
 
 A drop reads the value only where Peeky proves that the `Drop` impl it runs reads that part on
-every path. So where `impl Drop for D` prints `self.0`, a change to `d.0` after `let z = d.0;` is
+every path that doesn't panic. So where `impl Drop for D` prints `self.0`, a change to `d.0` after `let z = d.0;` is
 seen, and allowed. So is `h.d.0` of `h: Holder { d: D, n: u32 }`.
 
 Where the drop may read it or not, the refusal stays, and says so instead of proving no read:
@@ -1778,7 +1782,7 @@ error [MUTATION_REJECTED]: `total` cannot be changed at src/main.rs:67, at any s
   `s = Tri { a: 9, ..s };` for a change to `s.a`, though it reads `s.b`.
 - Anything that may read the changed part counts as a read: a `copy` or `move` of it, a borrow, a
   call it is given, or a drop whose `Drop` impl surely reads it. Reading another field doesn't
-  count.
+  count, nor does a read only where the program panics.
 - Where a drop's `Drop` impl may read it, which Peeky can't tell, the refusal says only that the
   program may not read it: ``it is dropped at line 45 first; a `Drop` that drop runs may read the
   changed part, which Peeky can't tell``.

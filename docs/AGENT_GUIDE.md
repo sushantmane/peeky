@@ -46,8 +46,8 @@ the commands.
    (`--set-at LINE@N`) only where it says `settable`. Otherwise follow the refusal: read
    `describe`'s `mutable:` line, or use a candidate edit (7.1, 7.2).
 3. **Change only where nothing is under way:** C/C++ at a statement's first line, Rust where the
-   MIR proves it, and never after `step --out`. Rows mark what can change `[settable]`. A probe
-   whose change its build rules out is refused before it runs, with exit 2 (2.3, 7.1 to 7.3).
+   MIR proves it, and never after `step --out`. Rows mark what can change `[settable]`, on paths
+   that don't panic. A change the build rules out is refused before the run (exit 2; 2.3, 7.1-7.3).
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another; other hits only observe.
    `--set-at LINE@HIT` changes at any line's hit, `--at`'s too; `@all`: each stop while the probe
    runs, at most 100; `x=@before` undoes an earlier change (2.8).

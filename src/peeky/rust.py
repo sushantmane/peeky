@@ -1076,6 +1076,16 @@ def _drop_doubt(doubts, home, name):
     )
 
 
+def _exits_first(kinds, name, projection=()):
+    """The clause a refusal by a copy ends with where every path from the stop panics,
+    exits or never leaves a loop before reading the local ``name`` (#330 review 3:
+    ``OwnedLocals.exits_first``), in place of saying that Peeky proves no read first:
+    "every path from here panics or exits before reading `x`", or "panics, exits or
+    loops forever" (a loop may also panic)."""
+    what = name if projection == () else "the changed part"
+    return f"every path from here {_either(_stopped({'stop', *kinds}))} before reading {what}"
+
+
 def _stopped(kinds):
     """What a program may do instead of reaching where a local ends (#330 review), for
     ``_either``: "panics" and "exits" where a path stops the frame, "loops forever" where
@@ -2944,10 +2954,18 @@ class RustSession(NativeSession):
         doubts = getattr(proofs, "drop_doubts", lambda *args, **asked: ())(
             hashed, plain, line, path, projection=projection, coded=True
         )
+        exits = getattr(proofs, "exits_first", lambda *args, **asked: ())(
+            hashed, plain, line, path, projection=projection, coded=True
+        )
         if doubts:
             # #330 review 2: a drop may read it, which Peeky can't tell.
             unseen = "so a change there may never be seen: " + _drop_doubt(
                 doubts, source, f"`{plain}`"
+            )
+        elif exits:
+            # #330 review 3: no path that doesn't panic goes on to read it.
+            unseen = "so a change there may never be seen: " + _exits_first(
+                exits, f"`{plain}`", projection
             )
         if kind == "named":
             # #192: a binding of the program's own holds the old value it goes on with.
@@ -3291,14 +3309,19 @@ class RustSession(NativeSession):
                 "read of the changed part first (a reference lent to a call, or `{:?}`, is "
                 "not one)"
             )
-            doubts = getattr(proofs, "drop_doubts", lambda **asked: ())(
-                **{key: value for key, value in asked.items() if key != "named"}
-            )
+            where = {key: value for key, value in asked.items() if key != "named"}
+            doubts = getattr(proofs, "drop_doubts", lambda **asked: ())(**where)
+            exits = getattr(proofs, "exits_first", lambda **asked: ())(**where)
+            name = f"`{variable.get('name')}`"
             if doubts:
                 # #330 review 2: a drop may read it, which Peeky can't tell.
-                name = f"`{variable.get('name')}`"
                 unseen = f"so a change to {name} may never be seen: " + _drop_doubt(
                     doubts, home, name
+                )
+            elif exits:
+                # #330 review 3: no path that doesn't panic goes on to read it.
+                unseen = f"so a change to {name} may never be seen: " + _exits_first(
+                    exits, name, asked["projection"]
                 )
             if kind == "named":
                 # #192: the program's own binding goes on with the old value.

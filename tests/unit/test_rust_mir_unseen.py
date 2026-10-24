@@ -1143,10 +1143,75 @@ fn cleaned(n: u32) -> u32 {
     label.len() as u32 + total
 }
 
+struct Guard(u32);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            println!("G {}", self.0);
+        }
+    }
+}
+
+fn guarded(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other();
+    let g = Guard(z);
+    may_panic(k);
+    black_box(&g);
+    x
+}
+
+fn bailed(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other();
+    if z == 0 {
+        panic!("zero");
+    }
+    x + k
+}
+
+fn diverged(x: u32) -> ! {
+    let z = x;
+    let k = other();
+    black_box(z + k);
+    panic!("stop");
+}
+
+fn looped(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x;
+    let k = other();
+    loop {
+        black_box(z + k);
+    }
+}
+
+struct P(u32, u32);
+
+impl Drop for P {
+    fn drop(&mut self) {
+        if other() == 0 {
+            panic!("zero");
+        }
+        println!("P {}", self.0);
+    }
+}
+
 fn main() {
     let n = std::env::args().count() as u32;
     let fut = exited(n);
     black_box(fut);
+    if n > 100 {
+        black_box(looped(n));
+        diverged(n);
+    }
+    black_box((guarded(n), bailed(n), P(n, n)));
     println!(
         "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         scoped(n),
@@ -2749,6 +2814,447 @@ fn cleaned(_1: u32) -> u32 {
 }
 """
 
+GUARDED = """// MIR for `guarded` after PreCodegen
+
+fn guarded(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:206:12: 206:13
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:206:23: 206:26
+    let mut _2: u32;                     // in scope 0 at src/main.rs:207:9: 207:14
+    let mut _3: u32;                     // in scope 0 at src/main.rs:207:17: 207:18
+    let mut _4: (u32, bool);             // in scope 0 at src/main.rs:207:17: 207:22
+    let _5: &mut u32;                    // in scope 0 at src/main.rs:208:5: 208:22
+    let mut _6: &mut u32;                // in scope 0 at src/main.rs:208:15: 208:21
+    let mut _10: u32;                    // in scope 0 at src/main.rs:211:19: 211:20
+    let _11: ();                         // in scope 0 at src/main.rs:212:5: 212:17
+    let mut _12: u32;                    // in scope 0 at src/main.rs:212:15: 212:16
+    let _13: &Guard;                     // in scope 0 at src/main.rs:213:5: 213:18
+    let mut _14: &Guard;                 // in scope 0 at src/main.rs:213:15: 213:17
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:207:9: 207:14
+        let _7: u32;                     // in scope 1 at src/main.rs:209:9: 209:10
+        scope 2 {
+            debug z => _7;               // in scope 2 at src/main.rs:209:9: 209:10
+            let _8: u32;                 // in scope 2 at src/main.rs:210:9: 210:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:210:9: 210:10
+                let _9: Guard;           // in scope 3 at src/main.rs:211:9: 211:10
+                scope 4 {
+                    debug g => _9;       // in scope 4 at src/main.rs:211:9: 211:10
+                }
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:207:9: 207:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:207:17: 207:18
+        _3 = copy _1;                    // scope 0 at src/main.rs:207:17: 207:18
+        _4 = AddWithOverflow(copy _3, const 1_u32); // scope 0 at src/main.rs:207:17: 207:22
+        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", move _3, const 1_u32) -> [success: bb1, unwind continue]; // scope 0 at src/main.rs:207:17: 207:22
+    }
+    bb1: {
+        _2 = move (_4.0: u32);           // scope 0 at src/main.rs:207:17: 207:22
+        StorageDead(_3);                 // scope 0 at src/main.rs:207:21: 207:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:208:5: 208:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:208:15: 208:21
+        _6 = &mut _2;                    // scope 1 at src/main.rs:208:15: 208:21
+        _5 = std::hint::black_box::<&mut u32>(move _6) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:208:5: 208:22
+    }
+    bb2: {
+        StorageDead(_6);                 // scope 1 at src/main.rs:208:21: 208:22
+        StorageDead(_5);                 // scope 1 at src/main.rs:208:22: 208:23
+        StorageLive(_7);                 // scope 1 at src/main.rs:209:9: 209:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:209:13: 209:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:210:9: 210:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:210:13: 210:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:211:9: 211:10
+        StorageLive(_10);                // scope 3 at src/main.rs:211:19: 211:20
+        _10 = copy _7;                   // scope 3 at src/main.rs:211:19: 211:20
+        _9 = Guard(move _10);            // scope 3 at src/main.rs:211:13: 211:21
+        StorageDead(_10);                // scope 3 at src/main.rs:211:20: 211:21
+        StorageLive(_11);                // scope 4 at src/main.rs:212:5: 212:17
+        StorageLive(_12);                // scope 4 at src/main.rs:212:15: 212:16
+        _12 = copy _8;                   // scope 4 at src/main.rs:212:15: 212:16
+        _11 = may_panic(move _12) -> [return: bb4, unwind: bb7]; // scope 4 at src/main.rs:212:5: 212:17
+    }
+    bb4: {
+        StorageDead(_12);                // scope 4 at src/main.rs:212:16: 212:17
+        StorageDead(_11);                // scope 4 at src/main.rs:212:17: 212:18
+        StorageLive(_13);                // scope 4 at src/main.rs:213:5: 213:18
+        StorageLive(_14);                // scope 4 at src/main.rs:213:15: 213:17
+        _14 = &_9;                       // scope 4 at src/main.rs:213:15: 213:17
+        _13 = std::hint::black_box::<&Guard>(move _14) -> [return: bb5, unwind: bb7]; // scope 4 at src/main.rs:213:5: 213:18
+    }
+    bb5: {
+        StorageDead(_14);                // scope 4 at src/main.rs:213:17: 213:18
+        StorageDead(_13);                // scope 4 at src/main.rs:213:18: 213:19
+        _0 = copy _2;                    // scope 4 at src/main.rs:214:5: 214:6
+        drop(_9) -> [return: bb6, unwind: bb8]; // scope 3 at src/main.rs:215:1: 215:2
+    }
+    bb6: {
+        StorageDead(_9);                 // scope 3 at src/main.rs:215:1: 215:2
+        StorageDead(_8);                 // scope 2 at src/main.rs:215:1: 215:2
+        StorageDead(_7);                 // scope 1 at src/main.rs:215:1: 215:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:215:1: 215:2
+        return;                          // scope 0 at src/main.rs:215:2: 215:2
+    }
+    bb7 (cleanup): {
+        drop(_9) -> [return: bb8, unwind terminate(cleanup)]; // scope 3 at src/main.rs:215:1: 215:2
+    }
+    bb8 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:206:1: 215:2
+    }
+}
+"""
+
+BAILED = """// MIR for `bailed` after PreCodegen
+
+fn bailed(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:217:11: 217:12
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:217:22: 217:25
+    let mut _2: u32;                     // in scope 0 at src/main.rs:218:9: 218:14
+    let mut _3: u32;                     // in scope 0 at src/main.rs:218:17: 218:18
+    let mut _4: (u32, bool);             // in scope 0 at src/main.rs:218:17: 218:22
+    let _5: &mut u32;                    // in scope 0 at src/main.rs:219:5: 219:22
+    let mut _6: &mut u32;                // in scope 0 at src/main.rs:219:15: 219:21
+    let _9: ();                          // in scope 0 at src/main.rs:222:5: 224:6
+    let mut _10: bool;                   // in scope 0 at src/main.rs:222:8: 222:14
+    let mut _11: u32;                    // in scope 0 at src/main.rs:222:8: 222:9
+    let mut _12: !;                      // in scope 0 at src/main.rs:222:15: 224:6
+    let _13: !;                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:59:21: 63:6
+    let _14: !;                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    let mut _15: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    let mut _16: u32;                    // in scope 0 at src/main.rs:225:5: 225:6
+    let mut _17: u32;                    // in scope 0 at src/main.rs:225:9: 225:10
+    let mut _18: (u32, bool);            // in scope 0 at src/main.rs:225:5: 225:10
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:218:9: 218:14
+        let _7: u32;                     // in scope 1 at src/main.rs:220:9: 220:10
+        scope 2 {
+            debug z => _7;               // in scope 2 at src/main.rs:220:9: 220:10
+            let _8: u32;                 // in scope 2 at src/main.rs:221:9: 221:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:221:9: 221:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:218:9: 218:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:218:17: 218:18
+        _3 = copy _1;                    // scope 0 at src/main.rs:218:17: 218:18
+        _4 = AddWithOverflow(copy _3, const 1_u32); // scope 0 at src/main.rs:218:17: 218:22
+        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", move _3, const 1_u32) -> [success: bb1, unwind continue]; // scope 0 at src/main.rs:218:17: 218:22
+    }
+    bb1: {
+        _2 = move (_4.0: u32);           // scope 0 at src/main.rs:218:17: 218:22
+        StorageDead(_3);                 // scope 0 at src/main.rs:218:21: 218:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:219:5: 219:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:219:15: 219:21
+        _6 = &mut _2;                    // scope 1 at src/main.rs:219:15: 219:21
+        _5 = std::hint::black_box::<&mut u32>(move _6) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:219:5: 219:22
+    }
+    bb2: {
+        StorageDead(_6);                 // scope 1 at src/main.rs:219:21: 219:22
+        StorageDead(_5);                 // scope 1 at src/main.rs:219:22: 219:23
+        StorageLive(_7);                 // scope 1 at src/main.rs:220:9: 220:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:220:13: 220:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:221:9: 221:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:221:13: 221:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:222:5: 224:6
+        StorageLive(_10);                // scope 3 at src/main.rs:222:8: 222:14
+        StorageLive(_11);                // scope 3 at src/main.rs:222:8: 222:9
+        _11 = copy _7;                   // scope 3 at src/main.rs:222:8: 222:9
+        _10 = Eq(move _11, const 0_u32); // scope 3 at src/main.rs:222:8: 222:14
+        switchInt(move _10) -> [0: bb6, otherwise: bb4]; // scope 3 at src/main.rs:222:8: 222:14
+    }
+    bb4: {
+        StorageDead(_11);                // scope 3 at src/main.rs:222:13: 222:14
+        StorageLive(_14);                // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+        StorageLive(_15);                // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+        _15 = Arguments::<'_>::from_str(const "zero") -> [return: bb5, unwind continue]; // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    }
+    bb5: {
+        _14 = std::rt::panic_fmt(move _15) -> unwind continue; // scope 3 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    }
+    bb6: {
+        StorageDead(_11);                // scope 3 at src/main.rs:222:13: 222:14
+        _9 = const ();                   // scope 3 at src/main.rs:224:6: 224:6
+        StorageDead(_10);                // scope 3 at src/main.rs:224:5: 224:6
+        StorageDead(_9);                 // scope 3 at src/main.rs:224:5: 224:6
+        StorageLive(_16);                // scope 3 at src/main.rs:225:5: 225:6
+        _16 = copy _2;                   // scope 3 at src/main.rs:225:5: 225:6
+        StorageLive(_17);                // scope 3 at src/main.rs:225:9: 225:10
+        _17 = copy _8;                   // scope 3 at src/main.rs:225:9: 225:10
+        _18 = AddWithOverflow(copy _16, copy _17); // scope 3 at src/main.rs:225:5: 225:10
+        assert(!move (_18.1: bool), "attempt to compute `{} + {}`, which would overflow", move _16, move _17) -> [success: bb7, unwind continue]; // scope 3 at src/main.rs:225:5: 225:10
+    }
+    bb7: {
+        _0 = move (_18.0: u32);          // scope 3 at src/main.rs:225:5: 225:10
+        StorageDead(_17);                // scope 3 at src/main.rs:225:9: 225:10
+        StorageDead(_16);                // scope 3 at src/main.rs:225:9: 225:10
+        StorageDead(_8);                 // scope 2 at src/main.rs:226:1: 226:2
+        StorageDead(_7);                 // scope 1 at src/main.rs:226:1: 226:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:226:1: 226:2
+        return;                          // scope 0 at src/main.rs:226:2: 226:2
+    }
+}
+alloc10 (size: 4, align: 1) {
+    7a 65 72 6f                                     │ zero
+}
+"""
+
+DIVERGED = """// MIR for `diverged` after PreCodegen
+
+fn diverged(_1: u32) -> ! {
+    debug x => _1;                       // in scope 0 at src/main.rs:228:13: 228:14
+    let mut _0: !;                       // return place in scope 0 at src/main.rs:228:24: 228:25
+    let _2: u32;                         // in scope 0 at src/main.rs:229:9: 229:10
+    let _4: u32;                         // in scope 0 at src/main.rs:231:5: 231:21
+    let mut _5: u32;                     // in scope 0 at src/main.rs:231:15: 231:20
+    let mut _6: u32;                     // in scope 0 at src/main.rs:231:15: 231:16
+    let mut _7: u32;                     // in scope 0 at src/main.rs:231:19: 231:20
+    let mut _8: (u32, bool);             // in scope 0 at src/main.rs:231:15: 231:20
+    let _9: !;                           // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:59:21: 63:6
+    let _10: !;                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    let mut _11: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    scope 1 {
+        debug z => _2;                   // in scope 1 at src/main.rs:229:9: 229:10
+        let _3: u32;                     // in scope 1 at src/main.rs:230:9: 230:10
+        scope 2 {
+            debug k => _3;               // in scope 2 at src/main.rs:230:9: 230:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:229:9: 229:10
+        _2 = copy _1;                    // scope 0 at src/main.rs:229:13: 229:14
+        StorageLive(_3);                 // scope 1 at src/main.rs:230:9: 230:10
+        _3 = other() -> [return: bb1, unwind continue]; // scope 1 at src/main.rs:230:13: 230:20
+    }
+    bb1: {
+        StorageLive(_4);                 // scope 2 at src/main.rs:231:5: 231:21
+        StorageLive(_5);                 // scope 2 at src/main.rs:231:15: 231:20
+        StorageLive(_6);                 // scope 2 at src/main.rs:231:15: 231:16
+        _6 = copy _2;                    // scope 2 at src/main.rs:231:15: 231:16
+        StorageLive(_7);                 // scope 2 at src/main.rs:231:19: 231:20
+        _7 = copy _3;                    // scope 2 at src/main.rs:231:19: 231:20
+        _8 = AddWithOverflow(copy _6, copy _7); // scope 2 at src/main.rs:231:15: 231:20
+        assert(!move (_8.1: bool), "attempt to compute `{} + {}`, which would overflow", move _6, move _7) -> [success: bb2, unwind continue]; // scope 2 at src/main.rs:231:15: 231:20
+    }
+    bb2: {
+        _5 = move (_8.0: u32);           // scope 2 at src/main.rs:231:15: 231:20
+        StorageDead(_7);                 // scope 2 at src/main.rs:231:19: 231:20
+        StorageDead(_6);                 // scope 2 at src/main.rs:231:19: 231:20
+        _4 = std::hint::black_box::<u32>(move _5) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:231:5: 231:21
+    }
+    bb3: {
+        StorageDead(_5);                 // scope 2 at src/main.rs:231:20: 231:21
+        StorageDead(_4);                 // scope 2 at src/main.rs:231:21: 231:22
+        StorageLive(_10);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+        StorageLive(_11);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+        _11 = Arguments::<'_>::from_str(const "stop") -> [return: bb4, unwind continue]; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    }
+    bb4: {
+        _10 = std::rt::panic_fmt(move _11) -> unwind continue; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    }
+}
+alloc5 (size: 4, align: 1) {
+    73 74 6f 70                                     │ stop
+}
+"""
+
+LOOPED = """// MIR for `looped` after PreCodegen
+
+fn looped(_1: u32) -> u32 {
+    debug n => _1;                       // in scope 0 at src/main.rs:235:11: 235:12
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:235:22: 235:25
+    let mut _2: u32;                     // in scope 0 at src/main.rs:236:9: 236:14
+    let mut _3: u32;                     // in scope 0 at src/main.rs:236:17: 236:18
+    let mut _4: (u32, bool);             // in scope 0 at src/main.rs:236:17: 236:22
+    let _5: &mut u32;                    // in scope 0 at src/main.rs:237:5: 237:22
+    let mut _6: &mut u32;                // in scope 0 at src/main.rs:237:15: 237:21
+    let mut _9: !;                       // in scope 0 at src/main.rs:240:5: 242:6
+    let mut _10: ();                     // in scope 0 at src/main.rs:235:1: 243:2
+    let _11: u32;                        // in scope 0 at src/main.rs:241:9: 241:25
+    let mut _12: u32;                    // in scope 0 at src/main.rs:241:19: 241:24
+    let mut _13: u32;                    // in scope 0 at src/main.rs:241:19: 241:20
+    let mut _14: u32;                    // in scope 0 at src/main.rs:241:23: 241:24
+    let mut _15: (u32, bool);            // in scope 0 at src/main.rs:241:19: 241:24
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:236:9: 236:14
+        let _7: u32;                     // in scope 1 at src/main.rs:238:9: 238:10
+        scope 2 {
+            debug z => _7;               // in scope 2 at src/main.rs:238:9: 238:10
+            let _8: u32;                 // in scope 2 at src/main.rs:239:9: 239:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:239:9: 239:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:236:9: 236:14
+        StorageLive(_3);                 // scope 0 at src/main.rs:236:17: 236:18
+        _3 = copy _1;                    // scope 0 at src/main.rs:236:17: 236:18
+        _4 = AddWithOverflow(copy _3, const 1_u32); // scope 0 at src/main.rs:236:17: 236:22
+        assert(!move (_4.1: bool), "attempt to compute `{} + {}`, which would overflow", move _3, const 1_u32) -> [success: bb1, unwind continue]; // scope 0 at src/main.rs:236:17: 236:22
+    }
+    bb1: {
+        _2 = move (_4.0: u32);           // scope 0 at src/main.rs:236:17: 236:22
+        StorageDead(_3);                 // scope 0 at src/main.rs:236:21: 236:22
+        StorageLive(_5);                 // scope 1 at src/main.rs:237:5: 237:22
+        StorageLive(_6);                 // scope 1 at src/main.rs:237:15: 237:21
+        _6 = &mut _2;                    // scope 1 at src/main.rs:237:15: 237:21
+        _5 = std::hint::black_box::<&mut u32>(move _6) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:237:5: 237:22
+    }
+    bb2: {
+        StorageDead(_6);                 // scope 1 at src/main.rs:237:21: 237:22
+        StorageDead(_5);                 // scope 1 at src/main.rs:237:22: 237:23
+        StorageLive(_7);                 // scope 1 at src/main.rs:238:9: 238:10
+        _7 = copy _2;                    // scope 1 at src/main.rs:238:13: 238:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:239:9: 239:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:239:13: 239:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:240:5: 242:6
+        goto -> bb4;                     // scope 3 at src/main.rs:240:5: 242:6
+    }
+    bb4: {
+        StorageLive(_11);                // scope 3 at src/main.rs:241:9: 241:25
+        StorageLive(_12);                // scope 3 at src/main.rs:241:19: 241:24
+        StorageLive(_13);                // scope 3 at src/main.rs:241:19: 241:20
+        _13 = copy _7;                   // scope 3 at src/main.rs:241:19: 241:20
+        StorageLive(_14);                // scope 3 at src/main.rs:241:23: 241:24
+        _14 = copy _8;                   // scope 3 at src/main.rs:241:23: 241:24
+        _15 = AddWithOverflow(copy _13, copy _14); // scope 3 at src/main.rs:241:19: 241:24
+        assert(!move (_15.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _14) -> [success: bb5, unwind continue]; // scope 3 at src/main.rs:241:19: 241:24
+    }
+    bb5: {
+        _12 = move (_15.0: u32);         // scope 3 at src/main.rs:241:19: 241:24
+        StorageDead(_14);                // scope 3 at src/main.rs:241:23: 241:24
+        StorageDead(_13);                // scope 3 at src/main.rs:241:23: 241:24
+        _11 = std::hint::black_box::<u32>(move _12) -> [return: bb6, unwind continue]; // scope 3 at src/main.rs:241:9: 241:25
+    }
+    bb6: {
+        StorageDead(_12);                // scope 3 at src/main.rs:241:24: 241:25
+        StorageDead(_11);                // scope 3 at src/main.rs:241:25: 241:26
+        _10 = const ();                  // scope 3 at src/main.rs:240:10: 242:6
+        goto -> bb4;                     // scope 3 at src/main.rs:240:5: 242:6
+    }
+}
+"""
+
+PANICKY = """// MIR for `<impl at src/main.rs:247:1: 247:16>::drop` after PreCodegen
+
+fn <impl at src/main.rs:247:1: 247:16>::drop(_1: &mut P) -> () {
+    debug self => _1;                    // in scope 0 at src/main.rs:248:13: 248:22
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:248:23: 248:23
+    let _2: ();                          // in scope 0 at src/main.rs:249:9: 251:10
+    let mut _3: bool;                    // in scope 0 at src/main.rs:249:12: 249:24
+    let mut _4: u32;                     // in scope 0 at src/main.rs:249:12: 249:19
+    let mut _5: !;                       // in scope 0 at src/main.rs:249:25: 251:10
+    let _6: !;                           // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:59:21: 63:6
+    let _7: !;                           // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    let mut _8: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    let _9: ();                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+    let _10: ();                         // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+    let mut _11: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _12: (&u32,);                    // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _13: &u32;                   // in scope 0 at src/main.rs:252:26: 252:32
+    let mut _15: core::fmt::rt::Argument<'_>; // in scope 0 at src/main.rs:252:21: 252:23
+    let mut _16: &u32;                   // in scope 0 at src/main.rs:252:26: 252:32
+    let mut _17: &[u8; 7];               // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _18: &[u8; 7];                   // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _19: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _20: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _21: &u32;                   // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    scope 1 {
+        debug args => _12;               // in scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        let _14: [core::fmt::rt::Argument<'_>; 1]; // in scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        scope 2 {
+            debug args => _14;           // in scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:249:9: 251:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:249:12: 249:24
+        StorageLive(_4);                 // scope 0 at src/main.rs:249:12: 249:19
+        _4 = other() -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:249:12: 249:19
+    }
+    bb1: {
+        _3 = Eq(move _4, const 0_u32);   // scope 0 at src/main.rs:249:12: 249:24
+        switchInt(move _3) -> [0: bb4, otherwise: bb2]; // scope 0 at src/main.rs:249:12: 249:24
+    }
+    bb2: {
+        StorageDead(_4);                 // scope 0 at src/main.rs:249:23: 249:24
+        StorageLive(_7);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+        StorageLive(_8);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+        _8 = Arguments::<'_>::from_str(const "zero") -> [return: bb3, unwind continue]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:38: 62:72
+    }
+    bb3: {
+        _7 = std::rt::panic_fmt(move _8) -> unwind continue; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/core/src/panic.rs:62:9: 62:73
+    }
+    bb4: {
+        StorageDead(_4);                 // scope 0 at src/main.rs:249:23: 249:24
+        _2 = const ();                   // scope 0 at src/main.rs:251:10: 251:10
+        StorageDead(_3);                 // scope 0 at src/main.rs:251:9: 251:10
+        StorageDead(_2);                 // scope 0 at src/main.rs:251:9: 251:10
+        StorageLive(_9);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+        StorageLive(_10);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+        StorageLive(_11);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_12);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_13);                // scope 0 at src/main.rs:252:26: 252:32
+        _13 = &((*_1).0: u32);           // scope 0 at src/main.rs:252:26: 252:32
+        _12 = (move _13,);               // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_13);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_14);                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_15);                // scope 1 at src/main.rs:252:21: 252:23
+        StorageLive(_16);                // scope 1 at src/main.rs:252:26: 252:32
+        _21 = copy (_12.0: &u32);        // scope 1 at src/main.rs:252:26: 252:32
+        _16 = &(*_21);                   // scope 1 at src/main.rs:252:26: 252:32
+        _15 = core::fmt::rt::Argument::<'_>::new_display::<u32>(move _16) -> [return: bb5, unwind continue]; // scope 1 at src/main.rs:252:21: 252:23
+    }
+    bb5: {
+        StorageDead(_16);                // scope 1 at src/main.rs:252:22: 252:23
+        _14 = [move _15];                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_15);                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_17);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_18);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _18 = const b""; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _17 = &(*_18);                   // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_19);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_20);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _20 = &_14;                      // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _19 = &(*_20);                   // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _11 = Arguments::<'_>::new::<7, 1>(move _17, move _19) -> [return: bb6, unwind continue]; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    }
+    bb6: {
+        StorageDead(_20);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_19);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_18);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_17);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        _10 = std::io::_print(move _11) -> [return: bb7, unwind continue]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+    }
+    bb7: {
+        StorageDead(_11);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:61: 146:62
+        StorageDead(_14);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_12);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_10);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        _9 = const ();                   // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+        StorageDead(_9);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:147:5: 147:6
+        _0 = const ();                   // scope 0 at src/main.rs:248:24: 253:6
+        return;                          // scope 0 at src/main.rs:253:6: 253:6
+    }
+}
+alloc11 (size: 7, align: 1) {
+    02 50 20 c0 01 0a 00                            │ .P ....
+}
+alloc10 (size: 4, align: 1) {
+    7a 65 72 6f                                     │ zero
+}
+"""
+
 DROPPER = """// MIR for `<impl at src/main.rs:5:1: 5:16>::drop` after PreCodegen
 
 fn <impl at src/main.rs:5:1: 5:16>::drop(_1: &mut D) -> () {
@@ -2943,13 +3449,16 @@ def test_a_drop_on_another_field_or_none_keeps_the_refusal_as_it_was():
     reason, row = review_why(
         HELD, "held", line, stop_text(HELD, line), "h", (("field", 0), ("field", 1))
     )
-    # `other()` may panic, but its cleanup drops `h` too: every path ends at a drop.
+    # `other()` may panic: a path a mark of settable leaves out, said so (review 3).
     assert reason == (
         "the program may not read it after this stop, so a change may never be seen: `h` is "
-        f"dropped at line {dropped_at(HELD, local)} first; a `Drop` that drop runs may read the "
-        "changed part, which Peeky can't tell"
+        f"dropped at line {dropped_at(HELD, local)} first, unless the program panics or exits "
+        "before that; a `Drop` that drop runs may read the changed part, which Peeky can't tell"
     ), reason
-    assert row == f"maybe not read after the stop (dropped at line {dropped_at(HELD, local)})"
+    assert row == (
+        f"maybe not read after the stop (dropped at line {dropped_at(HELD, local)}, or the "
+        "program panics or exits)"
+    )
 
 
 def test_wrappers_that_drop_nothing_hold_no_drop():
@@ -2994,16 +3503,29 @@ def _parse(text):
     return _parse_type(text)
 
 
+def exits_first(name, line):
+    """The refusal by the copy `z` of `x` where every path panics or exits first."""
+    return (
+        f"the program has already copied its value into `z` (at line {line - 1}) and goes on "
+        f"with that copy, so a change to `x` may never be seen: every path from here {name} "
+        "before reading `x`",
+        f"copied into `z` (line {line - 1})",
+    )
+
+
 def test_every_exit_of_the_frame_ends_its_locals_and_arguments():
     # `let z = x;`, the stop, `black_box(z + k);`, then `panic!` or `process::exit`: `x` is
     # never read again, and the program goes on with `z`. Only a `return;` ended an
     # argument, and a local only its `StorageDead`, which a panic's path has none of.
+    # Review 3: every path panics or exits there, and the refusal says so.
     for text, name, unsafe in (
         (PANICKED, "panicked", None),
         # A `String` beside it: the panic goes through a cleanup block to `resume;`.
         (UNWOUND, "unwound", None),
         # Where the crate has unsafe code, the never-read rule says nothing.
         (PANICKED, "panicked", "the crate has unsafe code"),
+        # A function that returns `!`: `fn diverged(x: u32) -> !`.
+        (DIVERGED, "diverged", "the crate has unsafe code"),
         # And where a pointer into it may still be used (`black_box(r);`).
         (POINTED, "pointed", None),
     ):
@@ -3014,9 +3536,7 @@ def test_every_exit_of_the_frame_ends_its_locals_and_arguments():
         (copy,) = body.direct_copies_at(local, at)
         assert body.copy_undoes(copy, local, at), name
         assert review_why(text, name, line, stop_text(text, line), "x", unsafe=unsafe) == (
-            f"the program has already copied its value into `z` (at line {line - 1}) and goes "
-            "on with that copy, " + SEEN.format("x"),
-            f"copied into `z` (line {line - 1})",
+            exits_first("panics or exits", line)
         ), name
     line = review_line("pointed", "let k")
     owned = owned_of(POINTED, "pointed", stop_text(POINTED, line), source=REVIEW_SOURCE)
@@ -3029,23 +3549,50 @@ def test_every_exit_of_the_frame_ends_its_locals_and_arguments():
     assert body.copy_undoes(copy, local, at)
 
 
-def test_a_panic_that_leaves_the_frame_ends_the_local():
-    # Review 2: `let z = x;`, the stop, `use_copy(z); may_panic(); use_root(x);`. Where
-    # `may_panic` panics and a caller's `catch_unwind` goes on, the program has used `z`
-    # and never reads `x`: the panic ends `x` too, with no cleanup of its own (`unwind
-    # continue`) or through one. Here `y + u[0]`'s overflow check comes after `u` is read.
-    body = review_body(PUSHED)
-    at_11 = place(body, "_9 = copy _1;")
-    assert body.copy_undoes(5, 2, at_11)
-    assert any(block.leaves for block in body.blocks.values())
-    # `w.push(x)`, then `x + k` reads `x` before `w` is used: no panic between uses `w`.
-    body = review_body(LATER)
-    at = place(body, stop(LATER, 28, "_"))
-    assert not body.copy_undoes(5, 2, at)
-    # A panic before the copy is used ends nothing that matters.
-    body = review_body(REPLACED)
-    at = place(body, stop(REPLACED, 19, "StorageLive("))
-    assert body.copy_undoes(body.bindings["z"][0][0], 2, at)
+def test_a_panic_is_neither_an_end_nor_a_read():
+    # Review 3: a mark of settable covers the paths that don't panic. An edge only a panic
+    # takes (`unwind: bb5`, or `unwind continue` beside a return edge) is not followed, and
+    # std's panic (`std::rt::panic_fmt`) ends nothing; a return, `process::exit` and a
+    # function of the crate's that returns `!` end the frame.
+    line = review_line("bailed", "let k")
+    body = review_body(BAILED)
+    at = place(body, stop_text(BAILED, line))
+    local = body.bindings["x"][0][0]
+    (copy,) = body.direct_copies_at(local, at)
+    assert not body.copy_undoes(copy, local, at)
+    # Where std's paths aren't proven std's, `panic_fmt` is any call that never returns.
+    body.std_paths = frozenset()
+    assert body.copy_undoes(copy, local, at)
+    body = review_body(BAILED)
+    (panic,) = [number for number in body.blocks if body._panics(number)]
+    assert "std::rt::panic_fmt" in body.blocks[panic].terminator
+    body = review_body(POINTED)
+    exits = [number for number in body.blocks if body._diverges(number)]
+    assert exits and not any(body._panics(number) for number in exits)
+    assert body._frame_exit(exits[0])
+    # Where every path panics, exits or loops before a read, which Peeky tells apart.
+    for text, name, kinds in (
+        (BAILED, "bailed", None),
+        (DIVERGED, "diverged", {"stop"}),
+        # Through the cleanup block, where `label` is dropped.
+        (UNWOUND, "unwound", {"stop"}),
+        (POINTED, "pointed", {"stop"}),
+        (LOOPED, "looped", {"loop"}),
+    ):
+        body = review_body(text)
+        at = place(body, stop_text(text, review_line(name, "let k")))
+        local = body.bindings["x"][0][0]
+        found = body.exits_unread(local, at, (), body._format_reads(*body.sinks))
+        assert found == (None if kinds is None else frozenset(kinds)), name
+    # `P`'s `Drop` panics where `other() == 0`, and prints `self.0` otherwise: it reads
+    # `self.0` on every path that doesn't panic, which is enough; `self.1`, on none.
+    body = review_body(SCOPED)
+    drop = parse_body(PANICKY)
+    assert body._drop_proves_read(drop, [("field", 0)])
+    assert not body._drop_proves_read(drop, [("field", 1)])
+    # Where no path but a panic is left, nothing is proven.
+    drop.blocks[0].successors = (2,)
+    assert not body._drop_proves_read(drop, [("field", 0)])
 
 
 def test_where_a_value_ends_is_named_only_where_every_path_reaches_it():
@@ -3087,18 +3634,22 @@ def test_where_a_value_ends_is_named_only_where_every_path_reaches_it():
     )
 
 
-def test_a_caught_panic_goes_on_only_with_what_left_the_frame():
-    # Review 2: `let z = x;`, the stop, `record(z); may_panic(k); x`. Where `may_panic`
-    # panics and a caller's `catch_unwind` goes on, `record` has taken `z`, and `x` is never
-    # read: refused. A panic that leaves the frame ended nothing before.
-    for text, name, settable in (
-        (CAUGHT, "caught", False),
-        # `z * 10`'s overflow check may panic, but nothing took `z` out of the frame first.
-        (CHECKED, "checked", True),
+def test_a_mark_of_settable_covers_the_paths_that_dont_panic():
+    # Review 3: settable where, on every path from the stop that doesn't panic, the program
+    # reads the value before it overwrites or ends it, and some such path exists. Review 2
+    # refused `record(z); may_panic(k); x`, as a caller's `catch_unwind` may go on with `z`:
+    # that path panics, and is outside the mark.
+    for text, name in (
+        (CAUGHT, "caught"),
+        # `z * 10`'s overflow check may panic.
+        (CHECKED, "checked"),
         # `println!("{z} {x}")` reads `x` at the print, its formatting calls aside.
-        (PRINTED, "printed", True),
-        # `look(&x)` was given `x` before the panic, and may have read it.
-        (LENT, "lent", True),
+        (PRINTED, "printed"),
+        (LENT, "lent"),
+        # A `Guard(z)` whose `Drop` prints `z` where the program panics.
+        (GUARDED, "guarded"),
+        # `if z == 0 { panic!("zero"); }`, then `x + k`.
+        (BAILED, "bailed"),
     ):
         line = review_line(name, "let k")
         body = review_body(text)
@@ -3106,15 +3657,17 @@ def test_a_caught_panic_goes_on_only_with_what_left_the_frame():
         local = body.bindings["x"][0][0]
         (copy,) = body.direct_copies_at(local, at)
         # With std's printing known for what it reads (`_format_reads`'s sinks).
-        assert body.copy_undoes(copy, local, at, (), body.sinks) is not settable, name
-        reason = review_why(text, name, line, stop_text(text, line), "x")
-        if settable:
+        assert not body.copy_undoes(copy, local, at, (), body.sinks), name
+        for unsafe in (None, "the crate has unsafe code"):
+            reason = review_why(text, name, line, stop_text(text, line), "x", unsafe=unsafe)
             assert reason == (None, None), (name, reason)
-        else:
-            assert reason == (
-                f"the program has already copied its value into `z` (at line {line - 1}) and "
-                "goes on with that copy, " + SEEN.format("x"),
-                f"copied into `z` (line {line - 1})",
-            ), name
-    # Which panics leave the frame: `unwind continue`, and a cleanup block's `resume`.
-    assert any(block.leaves for block in review_body(CAUGHT).blocks.values())
+    # Where every path panics, exits or never leaves a loop first, no path that doesn't
+    # panic reads it: refused, where the crate has unsafe code too.
+    for text, name, stops in (
+        (DIVERGED, "diverged", "panics or exits"),
+        (LOOPED, "looped", "panics, exits or loops forever"),
+    ):
+        line = review_line(name, "let k")
+        for unsafe in (None, "the crate has unsafe code"):
+            reason = review_why(text, name, line, stop_text(text, line), "x", unsafe=unsafe)
+            assert reason == exits_first(stops, line), (name, unsafe)

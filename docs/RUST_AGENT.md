@@ -703,22 +703,22 @@ the local without reading the changed part, and uses the binding before or after
 - A use after the local is assigned or ends counts too (#330): `u.push(y);`, then `y = t;`, then
   `u` printed. So does a Vec a struct was pushed into, used after the struct ends. The copy is all
   that is left of the old value.
-- The frame's exit ends every local and argument (`Body._frame_exit`): a `return`, a call that
-  never returns (`panic!`'s, `process::exit`), or `resume`, `abort` or `terminate` after one. An
-  argument has no `StorageDead`, nor has a local on a panic's path.
-- A panic that leaves the frame ends them too, through its cleanup block or with none
-  (`Block.leaves`: `unwind continue`, `unwind terminate`). A caller's `catch_unwind` may go on
-  with the copy (#330 review 2). A cleanup drop that surely reads the part comes first.
-- Such an exit, and a call that never returns, count only where the copy may have left the frame
-  first (`Body._escape`): a call was given it or what was made of it (`_derived_from`), or it was
-  stored through a pointer. Std's formatting constructors take nothing. Where a call was given a
-  pointer to the local before (`allow(&mut w)`), it may have read it, and the exit counts not.
+- The frame's exit ends every local and argument (`Body._frame_exit`, `_diverges`): a `return`,
+  or a call that never returns other than std's panic (`process::exit`, `abort`, a function of the
+  crate's that returns `!`). An argument has no `StorageDead`.
+- A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
+  (`Block.unwinds`) is not followed. Std's panic (`Body._panics`: `_PANIC_CALL` under a root
+  `std_paths` proves) is neither a read nor an end. Where std isn't proven, it is any exit.
+- Where every path panics, exits or never leaves a loop before a read, assignment or end
+  (`Body.exits_unread`, which follows the cleanup of std's panic), a use of the copy on the way is
+  enough: `let z = x; black_box(z); panic!()`. The refusal says so (`OwnedLocals.exits_first`):
+  "every path from here panics or exits before reading `x`".
 - A drop reads the part only where Peeky proves it (`Body._drop_effect`, "read"). It finds the
   types from the dropped place down to the part (`_path_types`: from places the body names, and
   aggregates assigned to the local), outermost first. The first with a `Drop` impl of the crate's
   (`OwnedLocals._droppers`, by the `self` of each impl's `drop`) must read the rest of the part on
-  every path its `drop` completes on (`_drop_proves_read`): a `copy`, a `move`, or std's printing
-  of a borrow of it, before anything that could write it.
+  every path its `drop` takes that doesn't panic, and some path must (`_drop_proves_read`): a
+  `copy`, a `move`, or std's printing of a borrow of it, before anything that could write it.
 - Where such an impl only may read it, the drop is "maybe": it reads nothing for the copy rule, and
   the refusal names it (`Body.doubtful_drops`, `OwnedLocals.drop_doubts`) instead of saying that
   Peeky proves no read. Where no type on the way has one, nothing runs that can reach the part.
@@ -755,8 +755,9 @@ never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
 
 - `Body.unread_ends` walks every path from each place, as `copy_undoes` does. It returns where the
   part ends: "write", "scope" (`StorageDead`), "return", "drop" (a drop that may read it), or
-  "stop", where the frame may exit otherwise (a panic, an exit, `Block.leaves`). It returns None
-  where a statement may read it first.
+  "stop", where the frame may exit otherwise or panic (an exit, `Block.leaves`, `Block.unwinds`).
+  It returns None where a statement may read it first. It doesn't follow an edge only a panic
+  takes (#330 review 3).
 - Each path the program may take must reach one of them. Where a loop lies on the way (`_cyclic`),
   it adds "loop": Peeky doesn't prove that a loop ends (#330 review 2).
 - `Body._unread_access` judges each statement strictly, unlike `_root_access`. A borrow, a
