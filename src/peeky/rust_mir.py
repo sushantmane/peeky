@@ -6905,9 +6905,9 @@ class OwnedLocals:
         program may read it, or that is not understood: a pointer into it may still be
         used (``Body.lent_from``, or a borrow ``_pointers_to`` follows), a coroutine's body
         (its state outlives a suspension), or a crate with unsafe code (a pointer may be
-        kept where Peeky can't see); and where it may hold no value yet. ``breakpoint``, ``column`` and ``block`` as for
-        ``copied_in_progress``; with ``coded``, only the places before a statement that
-        emits code, as ``coded_hazards``."""
+        kept where Peeky can't see); and where it may hold no value yet. ``breakpoint``,
+        ``column`` and ``block`` as for ``copied_in_progress``; with ``coded``, only the
+        places before a statement that emits code, as ``coded_hazards``."""
         if self.unsafe_code:
             return None
         placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
