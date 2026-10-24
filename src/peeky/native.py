@@ -4432,6 +4432,54 @@ EXACT_ENCODINGS = frozenset(
     )
 )
 
+# A Rust coroutine's body, as rustc names it in the debug information: `{async_fn#0}`,
+# `{async_block#0}`, `{coroutine#0}`, or `{generator#0}` before Rust 1.75.
+_RUST_COROUTINE = re.compile(r"\{(?:async|coroutine|generator|gen)[a-z_]*#[0-9]+\}")
+
+
+def _function_starts(functions, windows, source, line):
+    """The first line of each of ``functions`` (declarations entries with code on
+    ``line`` of ``source``): the row each of its bodies' prologue ends at (``windows``:
+    _prologue_windows), where a call first stops and LLDB puts a breakpoint on its name;
+    at its entry where the prologue is empty (#305). ValueError where a call cannot be
+    told from another this way: a coroutine's body, which each resumption enters part-way
+    through, or a function whose first line is not a row of ``source``."""
+    windows = {window.entry: window for window in windows}
+    starts = set()
+    for function in functions:
+        name = function.get("name") or "a function"
+        if _coroutine(function):
+            raise ValueError(
+                f"line {line} is in `{name}`, a coroutine or async body: each resumption "
+                "runs on part-way through it, so Peeky cannot tell its calls apart"
+            )
+        order = function.get("order") or ()
+        addresses = [row[0] for row in order]
+        for low, _ in function.get("ranges") or ():
+            window = windows.get(low)
+            start = window.end if window is not None else low
+            # The last row at that address: the one LLDB shows.
+            at = bisect.bisect_right(addresses, start) - 1
+            if at < 0 or order[at][0] != start:
+                raise ValueError(
+                    f"Peeky cannot place the first line of `{name}`, which has code on line {line}"
+                )
+            where, number = order[at][1:]
+            if where != source:
+                raise ValueError(
+                    f"`{name}`, which has code on line {line}, begins in {where}, where Peeky "
+                    "does not watch for its calls"
+                )
+            starts.add(number)
+    return sorted(starts)
+
+
+def _coroutine(function):
+    """Whether a declarations entry is a Rust coroutine's body (an async fn's, an async
+    block's), which each resumption enters part-way through (#305), by its name. Peeky
+    builds C++ as C++17, which has no coroutines."""
+    return bool(_RUST_COROUTINE.search(str(function.get("name") or "")))
+
 
 class NativeSession:
     # lldb-dap reports optimized-out/not-live locals as `<error: ...>` text.
@@ -8350,6 +8398,68 @@ class NativeSession:
         except Exception:
             return False
         return node[0] == "base" and node[2] in EXACT_ENCODINGS
+
+    def restore_literal(self, variable, before, frame=None, root=None, steps=()):
+        """The literal a probe's `@before` writes back (#305): ``before``, the text read
+        just before a change, where the debug information proves it is the whole value
+        (``exact_text``: a built-in integer) and it is a decimal integer `set` takes.
+        Else ValueError, saying why."""
+        if not self.exact_text(variable, frame=frame, root=root, steps=steps):
+            raise ValueError(
+                "Peeky cannot prove its text is all of its value (only a built-in integer's "
+                "is, by the type the debug information gives)"
+            )
+        if not re.fullmatch(r"[+-]?(?:0|[1-9][0-9]{0,19})", before):
+            raise ValueError(f"it read {before[:80]!r}, not a decimal integer Peeky can write back")
+        return before
+
+    def storage_identity(self, variable, frame=None, root=None, steps=(), parent=None):
+        """Which storage a change writes, as a `@before` restore compares it (#305): the
+        declaration of the root local the debugger shows at the stop (`s` declared at
+        a.c:5), and the fields and elements ``steps`` reach inside it, which a change
+        reaches only in the frame's own memory. With the call proven the same, the same
+        declaration is the same storage. ValueError where the declaration cannot be
+        singled out."""
+        root = root if isinstance(root, dict) else variable
+        name = str((root or {}).get("name"))
+        located = split_located(name)
+        if located:
+            base, where = located[0], located[1:]
+        else:
+            base, where = name, self._declaration_at(frame, root)
+        if where is None:
+            raise ValueError(
+                f"Peeky cannot tell which declaration of `{base}` the debugger shows here"
+            )
+        path = "".join(str(step) if str(step).startswith("[") else f".{step}" for step in steps)
+        return f"`{base}{path}` (`{base}` declared at {Path(str(where[0])).name}:{where[1]})"
+
+    def _declaration_at(self, frame, root):
+        """(source, line) of the declaration of the root local ``root`` the debugger shows
+        at the stop ``frame``, or None (_shown_where)."""
+        where = self._shown_where(str(root.get("name")), self._unslid(frame))
+        return where[:2] if where else None
+
+    def entry_lines(self, program, lines):
+        """{line: the first line of each function with code on it} (#305): where each
+        call of the function first stops (_function_starts), in ``program``. A probe
+        watches them, so a value is restored only in the call that changed it.
+        ValueError where Peeky cannot place them."""
+        source = self._relative(program)
+        if source is None or not self.declarations or self.prologues is None:
+            raise ValueError(
+                "Peeky has not read where this build's functions begin"
+                + (f" ({self.unjudged[1]})" if getattr(self, "unjudged", None) else "")
+            )
+        return {
+            line: _function_starts(
+                [function for function, _ in self._line_places(source, line)],
+                self.prologues,
+                source,
+                line,
+            )
+            for line in lines
+        }
 
     def returns_nothing(self, frame):
         """Whether the C or C++ function ``frame`` runs (a step's origin, as listed before

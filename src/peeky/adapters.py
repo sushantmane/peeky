@@ -874,6 +874,10 @@ class PythonCandidate:
     def __getattr__(self, name):
         return getattr(self.adapter, name)
 
+    def entry_lines(self, program, lines):
+        """As PythonAdapter.entry_lines, of the edited copy that runs (#305)."""
+        return self.adapter.entry_lines(self.source_path(program), lines)
+
     def source_path(self, original):
         return self.staged if Path(original).resolve() == self.original else original
 
@@ -1054,6 +1058,36 @@ def locals_only(scopes):
     ]
 
 
+# Code that runs in a frame of its own inside a function (a comprehension before Python
+# 3.12): PythonAdapter.entry_lines does not watch its calls.
+_PYTHON_INNER_SCOPES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
+def _docstring(statement):
+    """Whether a function's first statement is its docstring, which runs no code."""
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
+
+
+def _resumed(function):
+    """Whether a function's calls are resumed part-way through: an `async def`, or one
+    whose own code (not a nested function's, lambda's or class's) yields or awaits."""
+    if isinstance(function, ast.AsyncFunctionDef):
+        return True
+    pending = list(function.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Yield, ast.YieldFrom, ast.Await)):
+            return True
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
 @dataclass(frozen=True)
 class PythonAdapter:
     interpreter: str = sys.executable
@@ -1112,6 +1146,98 @@ class PythonAdapter:
             ("bool", "False"),
             ("NoneType", "None"),
         )
+
+    @staticmethod
+    def restore_literal(variable, before, **where):
+        """The literal a probe's `@before` writes back (#305): the text read just before
+        a change, where it is all of the value: an int, a float, True, False or None
+        whose text reads back as that very value (`repr` of what it parses to). Writing
+        it makes an equal value; an int past 256 or a float is a new object, which `is`
+        tells apart. A text, a container or another object: ValueError."""
+        kind = variable.get("type") if isinstance(variable, dict) else None
+        if kind not in ("int", "float", "bool", "NoneType"):
+            raise ValueError(
+                f"it holds {('a ' + kind) if kind else 'a value'}: Peeky writes back only an "
+                "int, a float, True, False or None, whose text is all of its value"
+            )
+        try:
+            value = ast.literal_eval(before)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            value = None
+            parsed = False
+        else:
+            parsed = True
+        if (
+            not parsed
+            or type(value).__name__ != kind
+            or repr(value) != before
+            or (kind == "float" and value != value)
+            or (kind == "float" and value in (float("inf"), float("-inf")))
+        ):
+            raise ValueError(
+                f"it read {before[:80]!r}, which is not the whole {kind} as a literal Peeky "
+                "can write back"
+            )
+        return before
+
+    @staticmethod
+    def storage_identity(variable, **where):
+        """Which storage a change writes, as a `@before` restore compares it (#305): a
+        Python function has one local of each name, so its name, in the call proven the
+        same. Only locals change in Python."""
+        return f"the local `{(variable or {}).get('name')}`"
+
+    @staticmethod
+    def entry_lines(program, lines):
+        """{line: the first line of the function that holds it} (#305): its first
+        statement after any docstring, which each call runs first; the module's first
+        statement at module level. A probe watches it, so a value is restored only in
+        the call that changed it. ValueError where calls cannot be seen begin there: a
+        generator or coroutine (each resumption runs on part-way through it), a lambda,
+        comprehension or class body."""
+        path = Path(program)
+        try:
+            # Bytes: the source's own encoding declaration decides how it reads.
+            tree = ast.parse(path.read_bytes(), str(path))
+        except (OSError, SyntaxError, ValueError) as exc:
+            raise ValueError(f"Peeky could not read {path.name} ({str(exc)[:200]})") from None
+        found = {}
+        for line in lines:
+            holder, inner = tree, None
+            for node in ast.walk(tree):
+                start, end = getattr(node, "lineno", None), getattr(node, "end_lineno", None)
+                if start is None or end is None or not start <= line <= end:
+                    continue
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # The body's lines, not a decorator's or the signature's.
+                    if (
+                        node.body
+                        and node.body[0].lineno <= line
+                        and (holder is tree or node.lineno > holder.lineno)
+                    ):
+                        holder = node
+                elif isinstance(node, _PYTHON_INNER_SCOPES) and inner is None:
+                    inner = node
+            if inner is not None:
+                raise ValueError(
+                    f"line {line} is in a {type(inner).__name__.lower()} (line {inner.lineno}), "
+                    "whose calls Peeky does not watch"
+                )
+            if isinstance(holder, ast.ClassDef):
+                raise ValueError(f"line {line} is in the body of class `{holder.name}`")
+            if holder is not tree and _resumed(holder):
+                raise ValueError(
+                    f"line {line} is in `{holder.name}`, a generator or coroutine: each "
+                    "resumption runs on part-way through it, so Peeky cannot tell its calls apart"
+                )
+            body = list(holder.body)
+            if holder is not tree and body and _docstring(body[0]):
+                body = body[1:]
+            body = [s for s in body if not isinstance(s, (ast.Global, ast.Nonlocal))]
+            if not body:
+                raise ValueError(f"Peeky cannot place the first line of the code holding {line}")
+            found[line] = [body[0].lineno]
+        return found
 
     def close(self):
         pass

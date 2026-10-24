@@ -237,7 +237,7 @@ def test_an_older_store_gains_stops(tmp_path, version):
     assert evidence.query(store, "SELECT COUNT(stop) AS n FROM interventions")["rows"] == [{"n": 0}]
     connection = sqlite3.connect(store)
     assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
-    assert evidence.SCHEMA_VERSION == 18
+    assert evidence.SCHEMA_VERSION == 19
 
 
 def test_return_rows_keep_their_hits_stop_and_older_ones_gain_it(tmp_path):
