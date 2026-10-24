@@ -19,18 +19,21 @@ from peeky.probe import ALL, BEFORE, Probe, _launch_set, parse_set_at, probe_exi
 from peeky.worker import DebugWorker, _written
 
 FIRST, GUARD, FLAT = 2, 5, 8
+# What a warning says to do about a change with no matching restore.
+ADVICE = " To undo a change, restore it on a line that runs after it in every pass."
 
 
 class Calls:
     """Stops of main.c, each {line, function, depth, thread, call, callers}: a call is a
     frame instance, whose `x` keeps its own value. Only lines with a breakpoint stop; a
     stop's `call` names the frame its `x` lives in. ``firsts``: the worker's first lines
-    for each restore line; ``exact``: whether a write's `before` is kept to restore."""
+    for each restore line; ``exact``: whether a write's `before` is kept to restore;
+    ``proven``: whether a write of the value already there is proven to change nothing."""
 
-    def __init__(self, stops, firsts=None, exact=True, values=None, moved=None):
+    def __init__(self, stops, firsts=None, exact=True, values=None, moved=None, proven=False):
         self.order = [dict(stop) for stop in stops]
         self.firsts = firsts if firsts is not None else {FLAT: [FIRST]}
-        self.exact, self.moved = exact, moved or {}
+        self.exact, self.moved, self.proven = exact, moved or {}, proven
         self.values = dict(values or {})
         self.placed, self.calls, self.writes, self.stop, self.launch = [], [], [], None, None
         self.asked = []
@@ -122,6 +125,8 @@ class Calls:
             self.values[self._frame()] = args["value"]
             self.writes.append((self.stop["line"], args["value"]))
             result = {"name": args["name"], "before": before, "after": args["value"]}
+            if self.proven and before == args["value"]:
+                result["unchanged"] = True
             if args.get("restorable"):
                 result["restore"] = (
                     {"value": before, "target": identity}
@@ -448,7 +453,7 @@ def test_until_hits_waits_for_the_restore_its_last_change_awaits(monkeypatch):
     assert [stop["line"] for stop in worker.order] == [GUARD, FLAT]
 
 
-def test_a_change_left_in_place_is_reported_and_exits_4(monkeypatch):
+def test_a_change_never_restored_is_reported_and_exits_4(monkeypatch):
     # The restore line's second stop never comes: the guard's second change stays.
     request = Probe(
         "main.c", GUARD, ("x",), hits=2, until="hits",
@@ -465,17 +470,21 @@ def test_a_change_left_in_place_is_reported_and_exits_4(monkeypatch):
             "value": BEFORE,
             "stops": 1,
             "unrestored": f"{GUARD}@2",
+            "unrestored_all": [f"{GUARD}@2"],
+            "unrestored_kinds": ["change"],
         }
     ]
-    warning = next(w for w in result["warnings"] if "did not undo" in w)
+    warning = next(w for w in result["warnings"] if "made no restore" in w)
     assert warning == (
-        f"--set-at main.c:{FLAT}@all x=@before did not undo the change at line {GUARD}@2: line "
-        f"{FLAT} stopped 1 time(s) before the probe ended, so its hit 2 never came. The run "
-        "ended with that change in place."
+        f"--set-at main.c:{FLAT}@all x=@before made no restore for the change at line "
+        f"{GUARD}@2. Line {FLAT} stopped 1 time(s) before the probe ended, so its hit 2 never "
+        "came." + ADVICE
     )
     outcome = result["set_outcomes"][1]
     assert (outcome["unrestored"], outcome["complete"]) == (f"{GUARD}@2", False)
-    assert "status: completed (1 change left in place, not undone)" in probe_module._table(result)
+    assert (
+        f"status: completed (1 change had no matching restore (line {GUARD}, hit 2))"
+    ) in probe_module._table(result)
 
 
 def test_a_later_change_owes_no_restore(monkeypatch):
@@ -489,7 +498,7 @@ def test_a_later_change_owes_no_restore(monkeypatch):
     result = run(monkeypatch, Passes(stops), request)
     assert result["status"] == "completed" and probe_exit_code(result) == 0, result
     assert "unapplied" not in result, result.get("unapplied")
-    assert not [w for w in result["warnings"] if "did not undo" in w]
+    assert not [w for w in result["warnings"] if "made no restore" in w]
     assert all(outcome["complete"] for outcome in result["set_outcomes"])
 
 
@@ -544,15 +553,266 @@ def test_a_restore_whose_line_never_stopped_is_listed_once(monkeypatch):
             "value": BEFORE,
             "stops": 0,
             "unrestored": f"{GUARD}@1",
+            "unrestored_all": [f"{GUARD}@1"],
+            "unrestored_kinds": ["change"],
         }
     ]
     assert probe_exit_code(result) == 4
     text = probe_module._table(result)
     assert (
-        "status: completed (1 requested change not made; 1 change left in place, not undone)"
+        "status: completed (1 requested change not made; 1 change had no matching restore "
+        f"(line {GUARD}, hit 1))"
     ) in text, text
     outcome = result["set_outcomes"][1]
     assert (outcome["made"], outcome["unrestored"], outcome["complete"]) == (0, f"{GUARD}@1", False)
+
+
+def flips(count):
+    """One call of `f`, then `count` passes of the guard alone: once `x` is 0, the restore's
+    line no longer runs."""
+    return [{"line": FIRST}] + [{"line": GUARD, "set": "1"}] * count
+
+
+def test_every_change_a_restore_owed_is_named_not_only_the_latest(monkeypatch):
+    # Twelfth evaluation, rainfall: the guard was flipped at each of 6 hits, and the
+    # restore's line never ran once it was. None of the 6 was restored, yet the run said
+    # "1 change left in place" and named only the one at hit 6.
+    result = run(monkeypatch, Passes(flips(6)), flip())
+    ats = [f"{GUARD}@{hit}" for hit in range(1, 7)]
+    assert result["status"] == "completed" and probe_exit_code(result) == 4, result
+    text = probe_module._table(result)
+    assert (
+        "status: completed (1 requested change not made; 6 changes had no matching restore "
+        f"(line {GUARD}, hits 1 to 6))"
+    ) in text, text
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": f"{FLAT}@all",
+            "name": "x",
+            "value": BEFORE,
+            "stops": 0,
+            "unrestored": f"{GUARD}@6",
+            "unrestored_all": ats,
+            "unrestored_kinds": ["change"] * 6,
+        }
+    ]
+    warning = next(w for w in result["warnings"] if "made no restore" in w)
+    assert warning == (
+        f"--set-at main.c:{FLAT}@all x=@before made no restore for 6 changes (line {GUARD}, "
+        f"hits 1 to 6). Line {FLAT} stopped 0 time(s) before the probe ended, so its hits 1 to "
+        "6 never came." + ADVICE
+    )
+    outcome = result["set_outcomes"][1]
+    assert (outcome["unrestored"], outcome["unrestored_all"]) == (f"{GUARD}@6", ats)
+    assert outcome["complete"] is False
+
+
+def test_writes_that_changed_nothing_are_not_called_changes(monkeypatch):
+    # Review of PR #333: the guard changes `x` at hit 1 only. At hits 2 to 6 it writes the
+    # 0 already there, which the worker proves changed nothing, yet each was called a
+    # change left in place.
+    stops = flips(1) + [{"line": GUARD}] * 5
+    result = run(monkeypatch, Passes(stops, proven=True), flip())
+    assert [change["unchanged"] for change in result["interventions"][1:]] == [True] * 5
+    text = probe_module._table(result)
+    assert (
+        "6 writes had no matching restore: 1 change and 5 with no change "
+        f"(line {GUARD}, hits 1 to 6))"
+    ) in text, text
+    [entry] = result["unapplied"]
+    assert entry["unrestored_all"] == [f"{GUARD}@{hit}" for hit in range(1, 7)]
+    assert entry["unrestored_kinds"] == ["change"] + ["unchanged"] * 5
+    assert (
+        f"made no restore for 6 writes (line {GUARD}, hits 1 to 6): 1 change and 5 with no "
+        f"change. Line {FLAT} stopped 0 time(s)"
+    ) in next(w for w in result["warnings"] if "made no restore" in w)
+    # The same text, not proven to change nothing, is said so.
+    text = probe_module._table(run(monkeypatch, Passes(stops), flip()))
+    assert (
+        "6 writes had no matching restore: 1 change and 5 with the same text, not proven "
+        f"unchanged (line {GUARD}, hits 1 to 6))"
+    ) in text, text
+    # Writes of one kind, or one write, say it once.
+    stops = [{"line": FIRST}] + [{"line": GUARD, "set": "0"}] * 3
+    result = run(monkeypatch, Passes(stops, proven=True), flip())
+    text = probe_module._table(result)
+    assert (
+        f"3 writes had no matching restore, each with no change (line {GUARD}, hits 1 to 3))"
+    ) in text, text
+    result = run(monkeypatch, Passes(stops[:2], proven=True), flip())
+    assert (
+        f"1 write had no matching restore, with no change (line {GUARD}, hit 1))"
+    ) in probe_module._table(result)
+    assert (
+        f"made no restore for the write at line {GUARD}@1, with no change. Line {FLAT}"
+    ) in next(w for w in result["warnings"] if "made no restore" in w)
+
+
+def test_writes_to_several_names_at_one_place_are_each_counted(monkeypatch):
+    # Review of PR #333: the status counted writes by LINE@HIT alone, so `x` and `y`, both
+    # written at 5@1 and never restored, were "1 change".
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=(
+            (GUARD, ALL, "x", "0"), (GUARD, ALL, "y", "2"),
+            (FLAT, ALL, "x", BEFORE), (FLAT, ALL, "y", BEFORE),
+        ),
+    )  # fmt: skip
+    result = run(monkeypatch, Passes(flips(1)), request)
+    assert [(e["name"], e["unrestored_all"]) for e in result["unapplied"]] == [
+        ("x", [f"{GUARD}@1"]),
+        ("y", [f"{GUARD}@1"]),
+    ]
+    text = probe_module._table(result)
+    assert (
+        "status: completed (2 requested changes not made; 2 changes had no matching restore "
+        f"(line {GUARD}, hit 1: x and y))"
+    ) in text, text
+    # A write two restores of one name owed is counted once.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE), (9, ALL, "x", BEFORE)),
+    )  # fmt: skip
+    result = run(monkeypatch, Passes(flips(2), firsts=FIRSTS), request)
+    assert [e["unrestored_all"] for e in result["unapplied"]] == [[f"{GUARD}@1", f"{GUARD}@2"]] * 2
+    assert (
+        f"2 changes had no matching restore (line {GUARD}, hits 1 and 2))"
+    ) in probe_module._table(result)
+
+
+def test_changes_restored_or_replaced_at_their_hit_are_not_counted(monkeypatch):
+    # Hits 1 and 2 are restored; then the restore's line stops no more. What a restore
+    # owes is kept: only hits 3 to 5 have no matching restore.
+    result = run(monkeypatch, Passes(passes("1", "1") + flips(3)[1:]), flip())
+    [entry] = result["unapplied"]
+    assert (entry["stops"], entry["unrestored"], entry["unrestored_all"]) == (
+        2,
+        f"{GUARD}@5",
+        [f"{GUARD}@3", f"{GUARD}@4", f"{GUARD}@5"],
+    )
+    assert [w for w in result["warnings"] if "made no restore" in w] == [
+        f"--set-at main.c:{FLAT}@all x=@before made no restore for 3 changes (line {GUARD}, "
+        f"hits 3 to 5). Line {FLAT} stopped 2 time(s) before the probe ended, so its hits 3 to "
+        "5 never came." + ADVICE
+    ]
+    text = probe_module._table(result)
+    # Each restore made counts as made: none is a change not made.
+    assert (
+        f"status: completed (3 changes had no matching restore (line {GUARD}, hits 3 to 5))"
+    ) in text, text
+    # A restore undoes the latest change at its hit: a change at that hit before it, which
+    # the change it undoes overwrote, is not its to undo.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=((GUARD, ALL, "x", "0"), (6, ALL, "x", "2"), (FLAT, ALL, "x", BEFORE)),
+    )  # fmt: skip
+    stops = [{"line": FIRST}] + [{"line": GUARD, "set": "1"}, {"line": 6}] * 2
+    result = run(monkeypatch, Passes(stops), request)
+    assert result["unapplied"][0]["unrestored_all"] == ["6@1", "6@2"], result["unapplied"]
+    assert "2 changes had no matching restore (line 6, hits 1 and 2)" in probe_module._table(result)
+
+
+def test_a_restore_at_one_hit_names_the_change_it_never_restored(monkeypatch):
+    # The flat line stops twice, and its hit 3, the restore's, never comes: the guard's
+    # change at hit 3 has no matching restore. Those at hits 1 and 2 were never this
+    # restore's to undo.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits="all",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, 3, "x", BEFORE)),
+    )  # fmt: skip
+    stops = passes("1", "1") + flips(1)[1:]
+    result = run(monkeypatch, Passes(stops), request)
+    assert probe_exit_code(result) == 4, result
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": f"{FLAT}@3",
+            "name": "x",
+            "value": BEFORE,
+            "stops": 2,
+            "unrestored": f"{GUARD}@3",
+            "unrestored_all": [f"{GUARD}@3"],
+            "unrestored_kinds": ["change"],
+        }
+    ]
+    assert [w for w in result["warnings"] if f"{FLAT}@3" in w] == [
+        f"--set-at main.c:{FLAT}@3 x=@before was not applied: line {FLAT} stopped 2 time(s) "
+        "before the probe ended, so its hit 3 never came.",
+        f"--set-at main.c:{FLAT}@3 x=@before made no restore for the change at line {GUARD}@3. "
+        f"Line {FLAT} stopped 2 time(s) before the probe ended, so its hit 3 never came." + ADVICE,
+    ]
+    text = probe_module._table(result)
+    assert (
+        "status: completed (1 requested change not made; 1 change had no matching restore "
+        f"(line {GUARD}, hit 3))"
+    ) in text, text
+    outcome = result["set_outcomes"][1]
+    assert (outcome["made"], outcome["unrestored"], outcome["complete"]) == (0, f"{GUARD}@3", False)
+
+
+# A line before the loop, whose stops run ahead of the guard's.
+EARLY = 3
+DIVERGED = Probe(
+    "main.c", GUARD, ("x",), hits=1, until="hits",
+    set_at=((EARLY, ALL, "x", "7"), (GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE)),
+)  # fmt: skip
+
+
+def diverged(*after):
+    """One call of `f`, three stops of EARLY (each a change of `x` at hits 1 to 3), then
+    ``after``'s stops."""
+    return [{"line": FIRST}] + [{"line": EARLY, "set": "2"}] * 3 + list(after)
+
+
+def test_until_hits_waits_for_an_earlier_hit_still_owed(monkeypatch):
+    # Review of PR #333: where the lines' hit counts differ, the latest change (the flat
+    # line's restore at hit 1) is owed nothing, but EARLY's at hits 2 and 3 are, and the
+    # probe waits for the flat line to reach them. What happens then:
+    pass_ = [{"line": GUARD, "set": "1"}, {"line": FLAT}]
+    # 1. The guard changes `x` at hit 2, then hit 3, each before the flat line's stop: the
+    # restore undoes that latest change at its hit, which EARLY's was written over by, and
+    # the probe ends after the last owed one (--until hits). EARLY's are not restored, and
+    # no longer owed.
+    worker = Passes(diverged(*pass_ * 4))
+    result = run(monkeypatch, worker, DIVERGED)
+    assert result["status"] == "completed" and result["ended"] == "hits", result
+    assert worker.writes == [(EARLY, "7")] * 3 + [(GUARD, "0"), (FLAT, "1")] * 3
+    assert "unapplied" not in result and probe_exit_code(result) == 0
+    assert [stop["line"] for stop in worker.order] == [GUARD, FLAT]
+    # 2. The program ends first, after the flat line's hit 2: EARLY's change at hit 3 had
+    # no matching restore, and is reported as such (exit 4).
+    result = run(monkeypatch, Passes(diverged(*pass_ * 2)), DIVERGED)
+    assert result["status"] == "completed" and probe_exit_code(result) == 4, result
+    assert [(e["at"], e["stops"], e["unrestored_all"]) for e in result["unapplied"]] == [
+        (f"{FLAT}@all", 2, [f"{EARLY}@3"])
+    ]
+    assert (
+        f"status: completed (1 change had no matching restore (line {EARLY}, hit 3))"
+    ) in probe_module._table(result)
+    # 3. The flat line's hit 2 comes with no change at hit 2 since: the latest is at hit 1,
+    # so the restore is refused, as any restore at another hit's change is (exit 1).
+    result = run(monkeypatch, Passes(diverged(*pass_, {"line": FLAT})), DIVERGED)
+    assert f"`x` was last changed at hit 1 of line {FLAT}, not at hit 2" in refusal(result), result
+    assert probe_exit_code(result) == 1
+
+
+def test_hits_and_changes_are_named_as_people_read_them():
+    from peeky.names import changes_named, hits_named
+
+    assert hits_named([4]) == "hit 4"
+    assert hits_named([1, 2]) == "hits 1 and 2"
+    assert hits_named([7, 1, 2, 3, 5]) == "hits 1 to 3, 5 and 7"
+    assert changes_named(["49@1", "49@2", "49@3", "52@2", "49@6"]) == (
+        "line 49, hits 1 to 3 and 6; line 52, hit 2"
+    )
+    # Several selectors: each place names its own.
+    assert changes_named(["5@1", "5@2", "5@3", "5@1"], ["x", "x", "x", "y"]) == (
+        "line 5, hits 1 to 3: x; line 5, hit 1: y"
+    )
+    assert changes_named(["5@1", "5@1", "7@2"], ["x", "y", "y"]) == (
+        "line 5, hit 1: x and y; line 7, hit 2: y"
+    )
 
 
 def test_watch_stops_are_counted_apart(monkeypatch):
@@ -818,7 +1078,7 @@ def test_the_evidence_links_each_restore_to_the_change_it_undid(monkeypatch, tmp
     )
 
 
-def test_the_evidence_keeps_a_change_left_in_place(monkeypatch, tmp_path):
+def test_the_evidence_keeps_a_write_with_no_matching_restore(monkeypatch, tmp_path):
     store = tmp_path / "evidence" / "evidence.db"
     request = Probe(
         "main.c", GUARD, ("x",), hits=2, until="hits",
@@ -835,8 +1095,8 @@ def test_the_evidence_keeps_a_change_left_in_place(monkeypatch, tmp_path):
         "x",
         BEFORE,
         # The probe waited for the restore, and the program ended first.
-        f"requested at {FLAT}@all, made at 1 stop, to the program's end; the change at "
-        f"{GUARD}@2 was left in place, not undone",
+        f"requested at {FLAT}@all, made at 1 stop, to the program's end; the write at "
+        f"{GUARD}@2 had no matching restore",
     ]
     # An outcome is read only where it fits its request: `unrestored` only on a restore.
     entry = json.dumps(["x", "0", "5@all"])
@@ -851,6 +1111,43 @@ def test_the_evidence_keeps_a_change_left_in_place(monkeypatch, tmp_path):
     assert (
         evidence._checked_outcome(json.dumps({**restore, "complete": True}), entry, 5, None) is None
     )
+
+
+def test_the_evidence_names_every_write_with_no_matching_restore(monkeypatch, tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    evidence.record(store, run(monkeypatch, Passes(flips(3)), flip()))
+    evidence.record(store, run(monkeypatch, Passes(passes("1")), flip()))
+    sets = {
+        row["run_id"]: json.loads(row["sets"])
+        for row in evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+    }
+    assert sets[1][1] == [
+        "x",
+        BEFORE,
+        # Whether each write changed the value is not kept: they are writes.
+        f"requested at {FLAT}@all, not made: its line never stopped; 3 writes had no matching "
+        f"restore (line {GUARD}, hits 1 to 3)",
+    ]
+
+    def checked(outcome, at="8@all"):
+        entry = json.dumps(["x", BEFORE, at])
+        return evidence._checked_outcome(json.dumps(outcome), entry, 5, None)
+
+    outcome = {
+        "option": "--set-at", "at": "8@all", "name": "x", "value": BEFORE, "made": 0,
+        "ended": "exit", "complete": False, "unrestored": "5@3",
+        "unrestored_all": ["5@1", "5@2", "5@3"],
+    }  # fmt: skip
+    assert checked(outcome) == outcome
+    # The latest is `unrestored`; one per hit, each a LINE@HIT; never without `unrestored`.
+    for wrong in (["5@1", "5@2"], ["6@3", "5@3"], "5@3", [], [3, "5@3"], ["5@0", "5@3"]):
+        assert checked({**outcome, "unrestored_all": wrong}) is None, wrong
+    assert checked({k: v for k, v in outcome.items() if k != "unrestored"}) is None
+    # A restore at one hit, never made, leaves only the change at its own hit.
+    one = {**outcome, "at": "8@3", "unrestored_all": ["5@3"]}
+    assert checked(one, "8@3") == one
+    assert checked({**one, "unrestored": "5@2", "unrestored_all": ["5@2"]}, "8@3") is None
+    assert checked({**one, "made": 1, "ended": "made"}, "8@3") is None
 
 
 def test_a_schema_18_store_gains_the_restore_column(monkeypatch, tmp_path):

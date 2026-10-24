@@ -20,7 +20,7 @@ def find_turns(height):
     for i in range(1, len(height)):
         if height[i] == height[i - 1]:
             if trend != 0:  # GUARD
-                turn = i
+                turn = i  # MOVE
             flat += 1  # FLAT
             continue
         now = 1 if height[i] > height[i - 1] else -1
@@ -159,3 +159,51 @@ def test_until_hits_waits_for_the_restore_of_its_last_change(state, capsys):
         (f"{flat}@2", f"{guard}@2"),
     ]
     assert "unapplied" not in result
+
+
+@pytest.mark.timeout(240)
+def test_a_restore_line_that_never_runs_names_each_write_it_never_restored(state, capsys):
+    # Twelfth evaluation, rainfall: the guard was flipped at each hit and restored at the
+    # line it guards, which then never ran. None of the writes was restored, but the run
+    # said one change was left in place, and named only the latest. Hit 2's wrote the 0
+    # already there, a write of the same text (Python doesn't prove an int unchanged).
+    (state / "trail.py").write_text(TRAIL)
+    guard, move = line_of(TRAIL, "GUARD"), line_of(TRAIL, "MOVE")
+    code, result = probe(
+        capsys, state, "trail.py", "--at", f"trail.py:{guard}", "--capture", "trend",
+        "--hits", "all", "--set-at", f"{guard}@all", "trend=0", "--set-at", f"{move}@all",
+        "trend=@before", args=HEIGHTS,
+    )  # fmt: skip
+    assert code == 4 and result["status"] == "completed", result
+    text = _table(result)
+    assert (
+        "status: completed (1 requested change not made; 3 writes had no matching restore: 2 "
+        "changes and 1 with the same text, not proven unchanged "
+        f"(line {guard}, hits 1 to 3))"
+    ) in text, text
+    # trend stays 0 from the first flat point on, so no top or bottom is found.
+    assert result["output"].strip() == "TRAIL:;FLAT=3", result["output"]
+    assert [(c["at"], c["before"], c["after"]) for c in result["interventions"]] == [
+        (f"{guard}@1", "1", "0"),
+        (f"{guard}@2", "0", "0"),
+        (f"{guard}@3", "-1", "0"),
+    ]
+    ats = [f"{guard}@1", f"{guard}@2", f"{guard}@3"]
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": f"{move}@all",
+            "name": "trend",
+            "value": "@before",
+            "stops": 0,
+            "unrestored": f"{guard}@3",
+            "unrestored_all": ats,
+            "unrestored_kinds": ["change", "alike", "change"],
+        }
+    ]
+    assert result["set_outcomes"][1]["unrestored_all"] == ats
+    assert any(
+        f"made no restore for 3 writes (line {guard}, hits 1 to 3): 2 changes and 1 with the "
+        f"same text, not proven unchanged. Line {move} stopped 0 time(s)" in w
+        for w in result["warnings"]
+    ), result["warnings"]
