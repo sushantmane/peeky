@@ -352,6 +352,8 @@ class Body:
     # ``read_copies_at``), and the locals a writable borrow is taken of.
     _read_flows: dict | None = None
     _writable_borrows: frozenset | None = None
+    # {(local, projection): ``_exposed``} (#300).
+    _exposed_cache: dict | None = None
     # {local: ``_pointers_to``'s locals} (#192).
     _pointer_cache: dict | None = None
     # ``_format_reads``'s calls and the borrows they format (#192 review 3).
@@ -1452,7 +1454,10 @@ class Body:
         it (the whole local only), or a value computed from what holds one; a temporary
         computed from a binding's copy took it, but the statement did not read it (#192).
         A pointer a call returns or an aggregate holds, a local a writable borrow is ever
-        taken of, and a coroutine's body are not followed."""
+        taken of, and a coroutine's body are not followed. Where a writable borrow of a
+        place that may overlap the part is taken anywhere in the body (``_exposed``), a
+        call or drop, or a write through a pointer not surely elsewhere, may change it: what
+        was read before may hold an earlier value, so it is known no more (#300)."""
         if self.coroutine is not None:
             return None
         if self._read_flows is None:
@@ -1472,30 +1477,38 @@ class Body:
         return state[0], state[1], state[3]
 
     def _read_step(self, local, projection, number, index, state):
-        """``read_copies_at``'s transfer over one statement: (read, taken, own, origins)
-        after it: its two sets, the pointers surely made from a borrow of the local
-        (``projection`` () only), and (a local taken through a binding's copy, that
-        binding) for every binding it was surely computed from, which stays true after
-        the binding is assigned again."""
-        empty = frozenset()
+        """``read_copies_at``'s transfer over one statement: (read, taken, own, origins,
+        apart) after it: its two sets, the pointers surely made from a borrow of the local
+        (``projection`` () only), (a local taken through a binding's copy, that binding)
+        for every binding it was surely computed from, which stays true after the binding
+        is assigned again, and the pointers surely to a place apart from the part (into
+        another local, a part of it apart from ``projection``, or the caller's)."""
+        empty = (frozenset(),) * 5
         text = _STRING.sub('""', self.blocks[number].statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
         if re.match(rf"Storage(?:Live|Dead)\(_{local}\);$", text) or (
             whole and int(whole[1]) == local
         ):
-            return empty, empty, empty, empty
-        read, taken, own, origins = state
+            return empty
+        if self._read_ends(local, projection, text):
+            return empty
+        read, taken, own, origins, apart = state
         if ended := _STORAGE.match(text) or _DROP.match(text):
             gone = int(ended[1])
             kept = frozenset(pair for pair in origins if pair[0] != gone)
-            return read - {gone}, taken - {gone}, own - {gone}, kept
-        # A write to a part of it that may overlap the part a change makes (or through a
-        # pointer surely into it): what was read before holds an earlier value (#300).
+            return read - {gone}, taken - {gone}, own - {gone}, kept, apart - {gone}
+        # A write to a part of it that may overlap the part a change makes, or through a
+        # pointer that may point there: what was read before holds an earlier value (#300).
         steps = _written_place(text, local)
         if steps is not None and not _apart(steps, projection):
-            return empty, empty, empty, empty
-        if (through := _WRITE_THROUGH.match(text)) and int(through[1]) in own:
-            return empty, empty, empty, empty
+            return empty
+        # Through a pointer loaded from memory (`(*((*_6).0: &mut u32))`) as well: only one
+        # surely apart, written through directly, keeps what is known.
+        written = text.split(" = ", 1)[0] if " = " in text else ""
+        if "(*" in written and self._exposed(local, projection):
+            through = _WRITE_THROUGH.match(text)
+            if not (through and written.count("(*") == 1 and int(through[1]) in apart):
+                return empty
         parts, _, _, at, named = self._copy_parts()
         found = at.get((number, index))
         if found is None:
@@ -1503,7 +1516,7 @@ class Body:
         target, mentioned, _, borrow, _, _, _, _ = parts[found]
         if target == local:
             return state
-        read, taken, own = read - {target}, taken - {target}, own - {target}
+        read, taken, own, apart = (each - {target} for each in (read, taken, own, apart))
         given = {binding for made, binding in origins if made in mentioned}
         given |= mentioned & taken & named
         origins = frozenset(pair for pair in origins if pair[0] != target)
@@ -1515,15 +1528,24 @@ class Body:
                 for n in _WRITABLE_BORROW.findall(_STRING.sub('""', statement))
             )
         if not whole or target in self._writable_borrows:
-            return read, taken, own, origins
+            return read, taken, own, origins, apart
         value, whole_local = whole[2], projection == ()
         plain = [int(n) for n in re.findall(r"\(\*_([0-9]+)\)", value)]
-        through = bool(plain) and len(plain) == value.count("(*") and set(plain) <= own
+        only = bool(plain) and len(plain) == value.count("(*")
+        through = only and set(plain) <= own
         if borrow:
             rooted = _DIRECT_BORROW.match(value)
             if whole_local and ((rooted and int(rooted[1]) == local) or through):
                 own = own | {target}
-            return read, taken, own, origins
+            if rooted and int(rooted[1]) != local:
+                apart = apart | {target}
+            elif rooted:
+                place = _place_steps(value, rooted.start(1) - 1)
+                if place is not None and _apart(place[0], projection):
+                    apart = apart | {target}
+            elif only and set(plain) <= apart:
+                apart = apart | {target}
+            return read, taken, own, origins, apart
         reads = _reads_part(value, local, projection) or (whole_local and through)
         if reads or mentioned & taken:
             taken = taken | {target}
@@ -1533,13 +1555,50 @@ class Body:
         copied = re.fullmatch(r"(?:copy|move) _([0-9]+)", value)
         if whole_local and copied and int(copied[1]) in own:
             own = own | {target}
-        return read, taken, own, origins
+        pointer = re.fullmatch(r"(?:copy|move) _([0-9]+)(?: as .*)?", value)
+        if pointer and int(pointer[1]) in apart:
+            apart = apart | {target}
+        return read, taken, own, origins, apart
+
+    def _read_ends(self, local, projection, text):
+        """Whether the statement ``text`` is a call, a drop or a `copy_nonoverlapping` that
+        may change the part ``projection`` of ``local``, where a writable borrow of a place
+        overlapping it is taken anywhere in the body (``_exposed``): `keep(&mut x)` (#300)."""
+        if not re.match(r"(?:drop|copy_nonoverlapping)\(", text) and (
+            "->" not in text or text.startswith("goto") or _NOT_A_CALL.match(text)
+        ):
+            return False
+        return self._exposed(local, projection)
+
+    def _exposed(self, local, projection):
+        """Whether the body takes a writable borrow (`&mut`, `&raw`) of a place of
+        ``local`` anywhere that may overlap its part ``projection``: then a call, a drop,
+        or a write through a pointer not surely elsewhere may change that part (#300)."""
+        if self._exposed_cache is None:
+            self._exposed_cache = {}
+        key = (local, projection)
+        if key not in self._exposed_cache:
+            found = False
+            for block in self.blocks.values():
+                for statement, _, _ in block.statements:
+                    text = _STRING.sub('""', statement)
+                    for borrowed in _WRITABLE_BORROW.finditer(text):
+                        if int(borrowed[1]) != local:
+                            continue
+                        place = _place_steps(text, borrowed.start(1) - 1)
+                        if place is None or not _apart(place[0], projection):
+                            found = True
+            self._exposed_cache[key] = found
+        return self._exposed_cache[key]
 
     def _read_flow(self, local, projection):
-        """{block: (read, taken, own, origins) on entry} for ``read_copies_at``: its transfer, met
-        by intersection over every way in (the greatest fixpoint from bb0); None past the
-        budget. A call sets its result on its return edge only."""
-        entry = {0: (frozenset(),) * 4}
+        """{block: (read, taken, own, origins, apart) on entry} for ``read_copies_at``: its
+        transfer, met by intersection over every way in (the greatest fixpoint from bb0);
+        None past the budget. A call sets its result on its return edge only; one that may
+        change the part (``_read_ends``) ends what is known on every edge. The caller's
+        pointers, the arguments, point elsewhere than any local of this frame."""
+        empty = frozenset()
+        entry = {0: (empty, empty, empty, empty, frozenset(self.arguments) - {local})}
         work, queued, steps = [0], {0}, 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
         while work:
@@ -1556,10 +1615,13 @@ class Body:
             for index in range(last):
                 state = self._read_step(local, projection, number, index, state)
             after = self._read_step(local, projection, number, last, state) if last >= 0 else state
+            ends = last >= 0 and self._read_ends(
+                local, projection, _STRING.sub('""', block.statements[last][0])
+            )
             for target in self._flows(number):
                 if target not in self.blocks:
                     continue
-                out = after if block.returns is None or target == block.returns else state
+                out = after if ends or block.returns is None or target == block.returns else state
                 old = entry.get(target)
                 met = out if old is None else tuple(a & b for a, b in zip(old, out))
                 if met != old:

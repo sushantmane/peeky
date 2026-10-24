@@ -1380,11 +1380,15 @@ bring unsafe code that reads through one.
 A refusal says that the statement has read the local only where the MIR shows that read on every
 path to every place the stop can be. A read through an aggregate that also holds other pointers
 doesn't count, nor a read of another field than the one a change makes. Nor does a read the
-program has overwritten since, as `s.a = 3;` does for `s.a`.
+program has overwritten since, as `s.a = 3;` does for `s.a`, or written through a pointer that may
+point into it. Where the function lends the local with `&mut` or a raw pointer, a later call or
+drop may change it, so nothing read before counts either.
 
 - It names your binding, as in ``has already copied its value into `n` ``, only where `n` gave
   the copy at every such place.
 - Where each place holds a copy another way, it says only `the program already holds a copy of it`.
+- Where your binding only may hold a copy, it says so, apart from the statement, which may not use
+  it: ``the program's own `y` (at line 34) may hold a copy of it that it goes on with``.
 - Otherwise it says what the statement does, and that it may hold a copy:
   - ``reads it into a temporary (at line 12)``: the read may be on another path, or past the stop;
   - ``reads another part of it into a temporary (at line 12)``, for a change to one field;
@@ -1405,6 +1409,7 @@ Rows withheld at such a stop say why, as `session inspect` does:
 - `[not settable: a statement under way may hold a copy (line 23)]`;
 - `[not settable: a statement under way read it (line 17)]`;
 - ``[not settable: copied into `n` (line 35)]``;
+- `[not settable: the program may hold a copy (line 34)]`, for your binding's copy;
 - `[not settable: part-way through line 12]`, after a step back from a call.
 
 To get a stop where values can change, use `session continue --to LINE`, or a `session step` that
@@ -1437,6 +1442,10 @@ These bindings copy a value:
 
 If the program reads the local again, before or after it uses the copy, it sees the change. The
 copy keeps the old value as the program's own: `let a = s.x;`.
+
+A call given `&mut x` after the copy, as `let y = x; keep(&mut x);`, may change `x`. Then `y` may
+no longer hold a copy of its value, and the refusal says only that it may:
+``the program's own `y` (at line 34) may hold a copy of `x` that it goes on with``.
 
 To change the value, change it before the copy is made, or change the copy.
 

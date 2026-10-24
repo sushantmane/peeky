@@ -383,14 +383,21 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
   That is `Body.read_copies_at`, a must-analysis met by intersection over every way into a block.
   It counts a `copy` or `move` of an overlapping place (`_reads_part`), and a read through a pointer
   surely made from a borrow of the whole local. A temporary computed from either counts too.
-- A write that may overlap the changed part ends what it knows: `_written_place` and `_apart`, or a
-  write through a pointer surely into the local. Only a write surely apart keeps it.
+- A write that may overlap the changed part ends what it knows: `_written_place` and `_apart`. A
+  write through a pointer ends it too, unless the pointer surely points apart from the part: a
+  borrow of another local, or of a part `_apart` from it, a copy of one, or an argument. A pointer
+  loaded from memory (`(*((*_8).0: &mut u32))`) is never known to point apart.
+- Where a writable borrow of a place that may overlap the part is taken anywhere in the body
+  (`Body._exposed`), a call, a drop or a `copy_nonoverlapping` ends what it knows, on every edge.
+  `keep(&mut x)` may change `x`, so `let y = x;` before it no longer surely holds a copy of `x`.
 - A temporary computed from a binding's copy doesn't count as read: the statement read the copy.
   It counts only as the binding's (#192), through `copy_undoes` (`reads="taken"`, or `"copied"`
   where it may). A refusal names the bindings it was surely computed from (`reads="sources"`),
   which stays true after the binding is assigned again. Where it may be, `copy_sources` walks back.
 - It names them only where every place has such a copy, from bindings common to all. Where each
   place holds a sure copy, some another way, it says "the program already holds a copy of it".
+- A binding that may hold a copy is named apart from the statement under way, which may not use
+  it: "the program's own `y` (at line 34) may hold a copy of it that it goes on with".
 - It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
   a coroutine's body. `rust._copy_reason` decides the wording.
 - Otherwise it hedges, by what each other reading finds:

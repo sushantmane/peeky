@@ -2942,14 +2942,16 @@ def copy_reason(any_, explicit=(), value=None, traced=None, **others):
 
     proofs = SimpleNamespace(
         copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", min(held))},
-        copy_names=lambda hashed, held: ["n"],
+        copy_names=lambda hashed, held: ["n"] if 20 in held else [],
         copy_sources=lambda hashed, held, among: frozenset({20}) & among if held else held,
         untraced_reads=lambda hashed, held: ({("src/main.rs", 9)}, [("e", "reference")]),
     )
+    full = others.pop("full", False)
     found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
     found |= {"taken": [], "sources": [], "copied": [], "bindings": [], "whole": value}
     found |= others
-    return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
+    reason = _copy_reason(proofs, "h", found, "/w/src/main.rs")
+    return reason if full else reason[:2]
 
 
 def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be_did():
@@ -3000,12 +3002,15 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
         "may",
         "uses what may be the program's own copy of it (at line 5)",
     )
+    # The binding itself: the program goes on with it, whether or not the statement under
+    # way at the stop uses it (review round 3: `pause();` before `x = y;`).
     named_at_a = [(a, {20}), (b, set())]
     sure = {"taken": named_at_a, "sources": named_at_a, "copied": named_at_a}
-    assert reason([(a, {20}), (b, {7})], none, none, none, **sure) == (
+    assert reason([(a, {20}), (b, {7})], none, none, none, **sure, full=True) == (
         "may",
-        "uses `n` (at line 20), which may hold the program's own copy of it or uses `e` (at "
-        "line 9), a reference Peeky can't trace that may point at it",
+        "uses `e` (at line 9), a reference Peeky can't trace that may point at it",
+        {("src/main.rs", 9), ("src/main.rs", 20)},
+        "the program's own `n` (at line 20) may hold a copy of it that it goes on with",
     )
 
 
@@ -3031,7 +3036,7 @@ def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monk
     # binding's copy, what is true at each: the program already holds a copy.
     import peeky.rust
 
-    holds = ("holds", None, {("src/main.rs", 12), ("src/main.rs", 32)})
+    holds = ("holds", None, {("src/main.rs", 12), ("src/main.rs", 32)}, None)
     monkeypatch.setattr(peeky.rust, "_copy_reason", lambda *args, **kwargs: holds)
     owned = raw_eq_owned(source=SHADOWED_SOURCE)
     judge = raw_eq_session(owned)
@@ -3051,6 +3056,80 @@ def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monk
     failures = [("f", (kind, text))]
     refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
     assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
+
+
+def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_copy(
+    monkeypatch,
+):
+    # Review round 3 of #300: `let y = x; keep(&mut x);` may change `x`, so `y` no longer
+    # surely holds a copy of it: no binding is named as having copied it, and the
+    # statement under way is not said to use `y` (it may be `pause();`).
+    import peeky.rust
+    from peeky.errors import _mutation_hint
+
+    copied = [(A, {20}), (B, {20})]
+    others = {"copied": copied, "bindings": copied}
+    assert copy_reason(copied, NONE, NONE, NONE, **others, full=True) == (
+        "kept",
+        "the program's own `n` (at line 20) may hold a copy of it that it goes on with",
+        {("src/main.rs", 20)},
+        None,
+    )
+    kept = "the program's own `n` (at line 32) may hold a copy of {} that it goes on with"
+    lines = {("src/main.rs", 32)}
+
+    def reason(proofs, hashed, found, home, target="it"):
+        return "kept", kept.format(target), lines, None
+
+    monkeypatch.setattr(peeky.rust, "_copy_reason", reason)
+    owned = raw_eq_owned(source=SHADOWED_SOURCE)
+    judge = raw_eq_session(owned)
+    why = judge("week")
+    assert why == (
+        "the program's own `n` (at line 32) may hold a copy of it that it goes on with, so a "
+        "change to `week` may never be seen: Peeky proves no read of the changed part first "
+        "(a reference lent to a call, or `{:?}`, is not one)"
+    )
+    assert why.row == "the program may hold a copy (line 32)"
+    assert why.advice.startswith("Change it before the program copies it (a stop on an")
+    owned.copied_everywhere = lambda *args, **kwargs: frozenset({9})
+    kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert kind == "statement" and text == (
+        "at every place line 39 can stop at, the program's own `n` (at line 32) may hold a "
+        "copy of `week` that it goes on with, so a change there may never be seen: Peeky "
+        "proves no read of the changed part first (a reference lent to a call, or `{:?}`, is "
+        "not one)"
+    )
+    failures = [("f", (kind, text))]
+    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    assert ". Change it before the program copies it (`--set-at` an earlier line), or " in (refusal)
+    assert _mutation_hint(refusal).startswith("Change it before the program copies it")
+
+    # With a statement under way that may hold a copy at another place: both, hedged.
+    def mixed(proofs, hashed, found, home, target="it"):
+        said = f"reads {target} into a temporary (at line 12)"
+        return "may", said, lines | {("src/main.rs", 12)}, kept.format(target)
+
+    monkeypatch.setattr(peeky.rust, "_copy_reason", mixed)
+    why = judge("week")
+    assert why == (
+        "a statement under way at the stop reads it into a temporary (at line 12), so it may "
+        "hold a copy of it, which it uses after the stop, or the program's own `n` (at line "
+        "32) may hold a copy of it that it goes on with"
+    )
+    assert why.row == "a statement under way or the program may hold a copy (lines 12 and 32)"
+    assert why.advice.startswith("Change it before the program copies it: at a stop on an")
+    kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert text == (
+        "at every place line 39 can stop at, a statement under way reads `week` into a "
+        "temporary (at line 12), so it may hold a copy, which it uses after the stop, or the "
+        "program's own `n` (at line 32) may hold a copy of `week` that it goes on with, so a "
+        "change there may not reach it"
+    )
+    failures = [("f", (kind, text))]
+    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
+    assert not _mutation_hint(refusal).startswith("Change it before the program copies it")
 
 
 def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
@@ -3084,6 +3163,102 @@ def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
     )
     assert through.read_copies_at(1, (0, 2), ())[0] == {2}
     assert through.read_copies_at(1, (0, 3), ())[0] == set()
+
+
+def test_a_write_through_a_pointer_that_may_point_into_the_changed_part_ends_a_read():
+    # Review round 3 of #300: a pointer was followed only for the whole local, so
+    # `_2 = copy (_1.0: u32); _6 = &mut (_1.0: u32); (*_6) = const 3_u32;` left `_2` read
+    # for a change to `s.0`, though it holds the old field.
+    s = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+
+    def read(first, borrow, projection):
+        body = mir({0: [first, borrow, "(*_6) = const 3_u32;", "return;"]}, bindings=s)
+        return body.read_copies_at(1, (0, 3), projection)[0]
+
+    field, first = "_2 = copy (_1.0: u32);", (("field", 0),)
+    assert read(field, "_6 = &mut (_1.0: u32);", first) == set()
+    assert read(field, "_6 = &raw mut (_1.0: u32);", first) == set()
+    # Into another field, another constant element, or another local: apart.
+    assert read(field, "_6 = &mut (_1.1: u32);", first) == {2}
+    assert read(field, "_6 = &mut _7;", first) == {2}
+    element, second = "_2 = copy _1[1 of 3];", (("index", 1),)
+    assert read(element, "_6 = &mut _1[0 of 3];", second) == {2}
+    assert read(element, "_6 = &mut _1[1 of 3];", second) == set()
+    assert read(element, "_6 = &mut _1[_5];", second) == set()
+    # Through a pointer loaded from memory, though the outer one points elsewhere: `_7` holds
+    # `&mut s.0`.
+    body = mir(
+        {
+            0: [
+                field,
+                "_6 = &mut (_1.0: u32);",
+                "_7 = (move _6,);",
+                "_8 = &mut _7;",
+                "(*((*_8).0: &mut u32)) = const 3_u32;",
+                "return;",
+            ]
+        },
+        bindings=s,
+    )
+    assert body.read_copies_at(1, (0, 5), first)[0] == set()
+    assert body.read_copies_at(1, (0, 4), first)[0] == {2}
+    # An intrinsic's copy through a pointer.
+    copies = "copy_nonoverlapping(dst = move _6, src = move _9, count = const 1_usize);"
+    body = mir({0: [field, "_6 = &raw mut (_1.0: u32);", copies, "return;"]}, bindings=s)
+    assert body.read_copies_at(1, (0, 3), first)[0] == set()
+    # A pointer of no known origin, where the part is lent writably somewhere.
+    body = mir(
+        {
+            0: [
+                field,
+                "_7 = &mut (_1.0: u32);",
+                "_6 = get(move _7) -> [return: bb1, unwind continue];",
+            ],
+            1: ["(*_6) = const 3_u32;", "return;"],
+        },
+        bindings=s,
+    )
+    assert body.read_copies_at(1, (1, 0), first)[0] == set()
+
+
+def test_a_call_that_may_change_the_changed_part_ends_a_read():
+    # Review round 3 of #300 (ruling): `let y = x; keep(&mut x);` may change `x`, so `y`
+    # no longer surely holds a copy of its current value; nor does anything read before.
+    s = "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    s += "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+
+    def sure(*between, projection=()):
+        body = mir(
+            {
+                0: ["_2 = copy _1;", "_3 = copy _1;", *between, "goto -> bb1;"],
+                1: ["return;"],
+            },
+            bindings=s,
+        )
+        read, taken, _ = body.read_copies_at(1, (1, 0), projection)
+        return read, taken
+
+    assert sure() == ({3}, {2, 3})
+    calls = ("_5 = &mut _1;", "_4 = keep(move _5) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy _1;", "_3 = copy _1;", *calls], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0))[:2] == (set(), set())
+    # A drop may run code that writes through a pointer it holds, too.
+    dropped = ("_5 = &mut _1;", "drop(_6) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy _1;", "_3 = copy _1;", *dropped], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0))[:2] == (set(), set())
+    # Where nothing lends it writably, a call cannot change it.
+    lent = ("_5 = &_1;", "_4 = look(move _5) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy _1;", "_3 = copy _1;", *lent], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0))[:2] == ({3}, {2, 3})
+    # Nor a call where only another field is lent writably, for a change to the first.
+    other = ("_5 = &mut (_1.1: u32);", "_4 = keep(move _5) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy (_1.0: u32);", *other], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0), (("field", 0),))[0] == set()  # `_2` is a binding
+    assert body.read_copies_at(1, (1, 0), (("field", 0),))[1] == {2}
+    # Its unwind edge, too: the call may have changed it before it unwound.
+    unwinds = ("_5 = &mut _1;", "_4 = keep(move _5) -> [return: bb1, unwind: bb2];")
+    body = mir({0: ["_3 = copy _1;", *unwinds], 1: ["return;"], 2: ["resume;"]}, bindings=s)
+    assert body.read_copies_at(1, (2, 0))[0] == set()
 
 
 def line_39(*statements):
