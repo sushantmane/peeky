@@ -2442,19 +2442,30 @@ def shown_declaration(table, name, pc, unstored=False):
         and (base, *where[:2]) in function.get("unstored", ())
     }
     if shown:
-        located = {where for where in places if where[1] == shown[2]}
+
+        def there(source, line):
+            # Declared where LLDB says: on its line, in a file of its name (or one unknown).
+            return line == shown[2] and (
+                source is None or Path(str(source)).name == Path(shown[1]).name
+            )
+
         declared = function["locals"].get(base, ())
-        if not located and any(
-            line == shown[2] for _, line in function.get("parameters", {}).get(base, ())
-        ):
+        others = [where for where in declared if where[:2] != (None, None) and there(*where[:2])]
+        parameter = any(there(*place) for place in function.get("parameters", {}).get(base, ()))
+        if parameter and others:
+            # A parameter and another declaration of the name where LLDB says (`long f(long
+            # q) { { static long q = 5; } }`): which one the row is, Peeky cannot tell.
+            return False
+        if parameter:
             # A parameter LLDB names by where it is declared, beside another of its name
             # it lists (a block's `static` an optimized build keeps as a constant, #173).
-            located = {where for where in places if where[:2] == (None, None)}
-        if not located and declared and not any(where[1] == shown[2] for where in declared):
+            places = {where for where in places if where[:2] == (None, None)}
+        elif declared and not others:
             # The function declares the name, but none where LLDB says: which one the row
             # is, Peeky cannot tell.
             return False
-        places = located
+        else:
+            places = {where for where in places if there(*where[:2])}
     if not places:
         return None
     visible = function.get("visible")
@@ -6785,6 +6796,10 @@ class NativeSession:
         found = shown_declaration(self.declarations, name, self._block_pc(frame), unstored=True)
         if found is None:
             return None
+        # LLDB names the row by where it is declared, but which of the function's
+        # declarations there it is cannot be told (a parameter and a block's `static` on
+        # one line): so neither can whether it is the outer local.
+        unplaced = found is False and split_located(name) is not None
         function = self._function_at(frame)
         base = (split_located(name) or (name,))[0]
         declared = found[1] if found else (None, None, False)
@@ -6893,13 +6908,16 @@ class NativeSession:
         # A frame wholly on a line holding several functions' bodies (lambdas): which one
         # it runs cannot be told, so neither can whose declaration hides it (#299 review).
         several = any(verdict and verdict[0] == "bodies" for verdict in verdicts)
-        if failure is not None or len(verdicts) != 1 or None in verdicts or several:
+        if failure is not None or len(verdicts) != 1 or None in verdicts or several or unplaced:
             why = (
                 f"Peeky could not preprocess the source to read it ({failure})"
                 if failure is not None
                 else "the line holds several functions' bodies (lambdas), and Peeky cannot "
                 "tell which one this frame runs"
                 if several
+                else f"this row is LLDB's `{name}`, and Peeky cannot tell which of this "
+                f"function's declarations of `{base}` that is"
+                if unplaced
                 else "Peeky cannot read that from the source as the compiler preprocessed it"
             )
             return Withholding(

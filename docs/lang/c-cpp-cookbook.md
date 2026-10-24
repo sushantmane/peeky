@@ -1092,8 +1092,9 @@ counts every `t` the line spells, except a member's name and a name a declaratio
 declares, as in `long t = 3;`. A name an expression may hold counts, as in `return use(0), t;`,
 `ok and t` or `a < b > t`. In C++, `A<B> t` counts as a declaration only beside a keyword or a
 `::`, as in `std::vector<long> t`. What an `if`'s header declares, as in
-`if (auto [t, u] = make(); ok)`, is in scope in its `else` too, and up to the end of a `do` loop it
-controls. Where Peeky can't tell where that statement ends, the note says the declaration may be
+`if (auto [t, u] = make(); ok)`, is in scope in its `else` too. It is in scope up to the end of
+the statement the header controls, past any label: a `do` loop's `while (…);`, or a labelled
+block's `}`. Where Peeky can't tell where that statement ends, the note says the declaration may be
 out of scope there. In a lambda's own frame, only the lambda's body counts.
 
 Peeky reads the source as the build's compiler preprocesses it (`-E`, with the same flags). So
@@ -1112,7 +1113,9 @@ though the outer local lives in a register or as a constant, not in the frame:
 - A block's `static` that never changes is kept as a constant, and lldb-dap lists it among the
   frame's locals as `t @ file:line`. That row is the static the code names, so it is shown. The
   outer local's row says the static is `listed separately as` it. That holds for a parameter too,
-  which lldb-dap then lists as `t @ file:line` as well.
+  which lldb-dap then lists as `t @ file:line` as well. Where the parameter and the static are
+  declared on one line, Peeky can't tell which one the row is. The row says
+  `may not be what the code reads`.
 
 #### Declared in another file, or outside the function's own lines
 

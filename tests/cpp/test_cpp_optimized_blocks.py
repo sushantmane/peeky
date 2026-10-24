@@ -568,7 +568,8 @@ def test_an_if_constexpr_blocks_static_withholds_the_outer_local(
 
 # #293: lines that name the outer `t` outside the scope of a block's `static` `t`. Review
 # of PR #319: `and` and `not` before it, after the block; and an `if`'s binding, in scope
-# in its `else` (on the line, or below it), and up to the end of a `do` loop it controls.
+# in its `else` (on the line, or below it), and up to the end of a `do` loop it controls,
+# or of a labelled block (review round 3).
 SAME_LINE_SOURCE = """#include <cstdio>
 #include <utility>
 __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
@@ -595,6 +596,10 @@ int main(int argc, char **argv) {
     if (auto [t, u] = make(argc); u > 5) do { // DO_HEAD
         use(u);
     } while (false); use(t); // DO_TAIL
+    if (auto [t, u] = make(argc); u > 5) again: { use(u); } use(t); // LABEL
+    if (auto [t, u] = make(argc); u > 5) later: { // LABEL_HEAD
+        use(u);
+    } use(t); // LABEL_TAIL
     return 0;
 }
 """
@@ -689,23 +694,35 @@ def test_an_if_headers_binding_is_what_its_else_names(tmp_path, cxx, optimizatio
 
 @pytest.mark.timeout(180)
 @pytest.mark.parametrize("optimization", ["O0", "O1"])
-@pytest.mark.parametrize("marker", ["DO_IF", "DO_TAIL"])
-def test_a_do_loop_an_if_controls_ends_at_its_while(tmp_path, cxx, optimization, marker):
+@pytest.mark.parametrize(
+    "marker, marked",
+    [
+        ("DO_IF", "DO_IF"),
+        ("DO_TAIL", "DO_HEAD"),
+        ("LABEL", "LABEL"),
+        ("LABEL_TAIL", "LABEL_HEAD"),
+    ],
+)
+def test_a_statement_an_if_controls_ends_where_it_ends(tmp_path, cxx, optimization, marker, marked):
     # Review round 2 of PR #319: where the `do` loop an `if` controls ends was unknown,
     # and the `if`'s binding was taken to be in scope past it: on `if (auto [t, u] =
     # make(argc); u > 5) do { use(u); } while (false); use(t);` the last `use(t)` reads
     # the outer `t`, but the note said the code names the binding. Also on a loop over
-    # several lines, on its last.
+    # several lines, on its last. Round 3: so did a labelled block (`again: { … }`), read
+    # as a plain statement to the `;` after it.
     lines = SAME_LINE_SOURCE.splitlines()
     line = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marker}"))
     outer = next(i for i, row in enumerate(lines, 1) if row.endswith("// OUTER"))
-    marked = "DO_IF" if marker == "DO_IF" else "DO_HEAD"
     header = next(i for i, row in enumerate(lines, 1) if row.endswith(f"// {marked}"))
     (tmp_path / "blocks.cpp").write_text(SAME_LINE_SOURCE)
     selectors = ("t", f"t @ blocks.cpp:{outer}")
     result = run_probe(
         tmp_path, Probe("blocks.cpp", line, selectors, hits="all"), adapter=target(optimization)
     )
+    if optimization != "O0" and result["status"] == "no-stop":
+        # Optimized, clang may merge the line's `use(t)` with another line's: no code of
+        # its own to stop at.
+        return
     assert result["status"] == "completed", result.get("error")
     found = [row for row in result["rows"] if row["selector"] in selectors]
     assert not [row for row in found if row.get("value") == "1"], found

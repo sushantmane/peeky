@@ -2766,6 +2766,35 @@ def test_where_a_headers_statement_ends_decides_its_bindings_scope(tmp_path):
     assert found.label == "may not be what the code reads", found
 
 
+LABELLED_UNIT = b"""# 1 "a.c"
+long f(bool ok) {
+    long q = 1;
+    if (auto [q, u] = make(); ok) label: { use(u); } use(q);
+    if (auto [q, u] = make(); ok) again: {
+        use(u);
+    } use(q);
+    return q;
+}
+"""
+
+
+def test_a_labelled_statement_ends_the_bindings_scope_where_it_ends(tmp_path):
+    # Review round 3 of PR #319: a label before the statement an `if` controls was read as
+    # a plain statement's start, run on to the `;` after the block, so the last `use(q)`,
+    # which reads the outer `q`, was taken to name the binding: the plain note stayed.
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": LABELLED_UNIT})
+    session.target.language = "cpp"
+    for line, header in ((3, 3), (6, 4)):
+        found = session._block_storage("q", frame, "a.c", line)
+        assert (found.label, str(found)) == (
+            "may not be what the code reads",
+            f"the code here may name the structured binding `q` (line {header}), but the line "
+            "also names `q` after that declaration's scope ends, and Peeky cannot tell "
+            "whether that code reads this local: this row is the outer local of that name",
+        ), (line, found)
+
+
 PARAMETER_UNIT = b"""# 1 "a.c"
 long f(long q) {
     { static long q = 5; use(q); } return use(0), q;
@@ -2812,6 +2841,9 @@ def test_a_parameter_lldb_names_by_its_line_is_judged(tmp_path):
     assert shown_declaration(table, "q @ a.c:2", 0x150) is None
     assert shown_declaration(table, "r @ a.c:1", 0x150) is None
 
+    # A file of another name: not the parameter's line (review round 3).
+    assert shown_declaration(table, "q @ b.c:1", 0x150, unstored=True) is False
+
     frame = {"instructionPointerReference": "0x150"}
     session = preprocessing_session(tmp_path, {"a.c": PARAMETER_UNIT})
     session.declarations = table
@@ -2825,6 +2857,47 @@ def test_a_parameter_lldb_names_by_its_line_is_judged(tmp_path):
         "Peeky cannot tell whether that code reads this local: this row is the outer local "
         "of that name",
     )
+
+
+ONE_LINE_PARAMETER_UNIT = b"""# 1 "a.c"
+long f(long q) { { static long q = 5; use(q); } return q; }
+"""
+
+
+@pytest.mark.parametrize("constant", [False, True])
+def test_a_parameter_and_a_static_on_its_line_cannot_be_told_apart(tmp_path, constant):
+    # Review round 3 of PR #319: `q @ a.c:1` was taken for the parameter whenever one was
+    # declared on line 1, though the block's `static` is declared there too (with an
+    # address, or kept as a constant): which one the row is cannot be told, so it is
+    # withheld with no claim that it is the outer local.
+    from peeky.native import shown_declaration
+
+    table = [
+        {
+            "ranges": [(0x100, 0x200)],
+            "locals": {"q": {(None, None, False), ("a.c", 1, False)}},
+            "visible": {
+                ("q", None, None, False): [(0x100, 0x200)],
+                ("q", "a.c", 1, False): [(0x100, 0x200)],
+            },
+            "parameters": {"q": {("a.c", 1)}},
+            "unstored": frozenset({("q", "a.c", 1)} if constant else ()),
+        }
+    ]
+    assert shown_declaration(table, "q @ a.c:1", 0x150, unstored=True) is False
+    frame = {"instructionPointerReference": "0x150"}
+    session = preprocessing_session(tmp_path, {"a.c": ONE_LINE_PARAMETER_UNIT})
+    session.declarations = table
+    session._function_at = lambda frame: None
+    found = session._block_storage("q @ a.c:1", frame, "a.c", 1)
+    assert (found.label, str(found)) == (
+        "may not be what the code reads",
+        "a block around line 1 may declare `q` (a `static`, an `extern`, an enumerator, a "
+        "function or a type), which the code would name instead of this local: this row is "
+        "LLDB's `q @ a.c:1`, and Peeky cannot tell which of this function's declarations of "
+        "`q` that is",
+    )
+    assert "outer local" not in found and "cannot be changed" in found.refusal
 
 
 LAMBDAS_UNIT = b"""# 1 "a.c"

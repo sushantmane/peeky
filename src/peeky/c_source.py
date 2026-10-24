@@ -216,6 +216,8 @@ _STORAGE = frozenset(
 )
 # Of those, what a declaration's specifiers say: a block's name the code reads instead.
 _HIDERS = frozenset(("static", "extern", "thread_local", "_Thread_local", "__thread", "typedef"))
+# Statements a header's body may begin with whose end Peeky does not read (``_controlled``).
+_UNREAD = frozenset(("else", "__try", "__except", "__finally", "__leave"))
 # A body that belongs to the statement it is in, not a block of statements.
 _TYPE_BODIES = frozenset(("struct", "union", "enum", "class"))
 # What names a C++ class or enumeration (`enum` too); and what may come between that and
@@ -884,7 +886,10 @@ class Statements:
     def _controlled(self, start, keyword=None):
         """Where the statement a header controls, from ``start``, ends (its `;` or `}`),
         an `if`'s `else` included (``keyword`` "if"), a `do` loop's `while (...);` and a
-        `try` block's handlers too; None if Peeky cannot tell."""
+        `try` block's handlers too, and past any label (`again:`, `case 1:`, `default:`)
+        or attribute (`[[likely]]`) before it; None if Peeky cannot tell: a statement it
+        does not read (`else`, `__try`), or one that begins with no word, nor a bracket
+        or `-`, `--` or `::` that can begin an expression."""
         code, pairs = self._code()
         token = _WORDS.search(code, start)
         if token is None:
@@ -902,12 +907,18 @@ class Statements:
             end = self._do_end(token.end())
         elif word == "try":
             end = self._try_end(token.end())
-        elif word == "else" or word in ("}", "%>"):
-            return None
         elif word == ";":
             end = token.start()
-        else:
+        elif word in ("case", "default") or self._labelled(token):
+            colon = self._label_colon(token)
+            end = None if colon is None else self._controlled(colon + 1)
+        elif code.startswith("[[", token.start()):
+            closing = pairs.get(token.start())
+            end = None if closing is None else self._controlled(closing + 1)
+        elif (_WORD.fullmatch(word) and word not in _UNREAD) or word in ("(", "[", "-", "--", "::"):
             end = self._statement(token.start())
+        else:
+            return None
         if end is None or keyword != "if":
             return end
         following = _WORDS.search(code, end + 1)
@@ -915,6 +926,52 @@ class Statements:
             return end
         # `else if (...)` is read as an `if`, with its own `else`.
         return self._controlled(following.end())
+
+    def _labelled(self, token):
+        """Whether the word ``token`` (a match in ``_code``) is a label's: a `:` follows
+        it, not `::`."""
+        code = self._code()[0]
+        following = _WORDS.search(code, token.end())
+        return bool(
+            _WORD.fullmatch(token[0])
+            and following is not None
+            and following[0] == ":"
+            and not code[token.end() : following.start()].strip()
+        )
+
+    def _label_colon(self, token):
+        """Where the `:` of the label that starts with the word ``token`` is (`again:`,
+        `default:`, `case N::k ? 1 : 2:`); None if Peeky cannot tell."""
+        code = self._code()[0]
+        if token[0] != "case":
+            following = _WORDS.search(code, token.end())
+            if following is None or following[0] != ":":
+                return None
+            return following.start() if not code[token.end() : following.start()].strip() else None
+        # A `case`'s expression, to its `:`: past brackets, `::`, and each `?`'s own `:`.
+        depth, asked, at = 0, 0, token.end()
+        while at < min(len(code), token.end() + 4096):
+            char = code[at]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                depth -= 1
+                if depth < 0:
+                    return None
+            elif depth == 0 and char == ";":
+                return None
+            elif char == "?":
+                asked += 1
+            elif char == ":":
+                if code.startswith("::", at):
+                    at += 2
+                    continue
+                if depth == 0 and not code.startswith(":>", at):
+                    if not asked:
+                        return at
+                    asked -= 1
+            at += 1
+        return None
 
     def _do_end(self, start):
         """Where a `do` loop whose body starts at ``start`` ends: the `;` after its

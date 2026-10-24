@@ -1988,6 +1988,61 @@ def test_a_do_loop_an_if_controls_ends_at_its_while():
     }
 
 
+LABELLED_SCOPES = """long f(long x, bool ok) {
+    long t = x;
+    if (auto [t, u] = make(); ok) label: { use(u); } use(t);
+    if (auto [t, u] = make(); ok) again: {
+        use(u);
+    } use(t);
+    if (auto [t, u] = make(); ok) a: b: use(u); use(t);
+    if (auto [t, u] = make(); ok) [[likely]] { use(u); } use(t);
+    switch (auto [t, u] = make(); u) case 1: use(t); use(t);
+    switch (auto [t, u] = make(); u) case N::k ? 1 : 2: { use(t); } use(t);
+    switch (auto [t, u] = make(); u) default: { use(t); } use(t);
+    if (auto [t, u] = make(); ok) label: { use(u); } else use(t);
+    if (auto [t, u] = make(); ok) std::use(u); use(t);
+    return t;
+}
+"""
+
+
+def test_a_labelled_statement_a_header_controls_ends_where_its_statement_does():
+    # Review round 3 of PR #319: a label before the statement a header controls was read
+    # as the start of a plain statement, run on to the next `;` past the block: on `if
+    # (auto [t, u] = make(); ok) label: { use(u); } use(t);` the last `use(t)` reads the
+    # outer `t`, but the binding was taken to be in scope there. A label (`case N::k ? 1 :
+    # 2:` and `default:` too) or an attribute is read past, to the statement after it.
+    statements = Statements(LABELLED_SCOPES, raw_strings=True)
+    found = {line: statements.named_outside(line, "t", 2) for line in range(3, 14)}
+    assert found == {
+        3: "after",
+        # Across lines: on the block's last line, after it.
+        4: None,
+        5: None,
+        6: "after",
+        7: "after",
+        8: "after",
+        9: "after",
+        10: "after",
+        11: "after",
+        # The `if`'s `else`, past the label's block.
+        12: None,
+        13: "after",
+    }, found
+    assert {line: statements.block_storage(line, "t", 2, True) for line in (5, 6, 14)} == {
+        5: ("binding", 4),
+        6: ("binding", 4),
+        14: False,
+    }
+    # A statement Peeky does not read (`__try`), or one that begins with no word or
+    # bracket, has no known end: not handed on as a plain statement.
+    code = statements._code()[0]
+    for text in ("__try { use(u); } use(t);", "else use(t);", ": use(t);"):
+        unread = Statements(f"void f(void) {{\n    {text}\n}}\n", raw_strings=True)
+        assert unread._controlled(unread.starts[1]) is None, text
+    assert statements._controlled(code.index("label:")) == code.index("} use(t);")
+
+
 def test_where_a_headers_statement_ends_is_unknown_its_scope_is_too():
     # Review round 2 of PR #319: where Peeky cannot tell where the statement a header
     # controls ends, its declaration was taken to be in scope there. Now that is unknown:
