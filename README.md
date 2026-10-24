@@ -18,7 +18,10 @@ your checks.
 
 ## Install
 
-Python 3.11 or later is required. Run these, and every example, from the repository root:
+Python 3.11 or later is required. Its `sqlite3` module must have SQLite 3.30 or later, with its
+JSON functions, for the evidence store.
+`python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version. Run these, and
+every example, from the repository root:
 
 ```sh
 pip install -e .

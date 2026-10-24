@@ -1431,6 +1431,29 @@ def _connect(path, timeout=10):
     return sqlite3.connect(path, timeout=timeout, isolation_level=None)
 
 
+# The store's SQL needs an aggregate's FILTER (SQLite 3.30) and SQLite's JSON functions.
+MIN_SQLITE = (3, 30, 0)
+
+
+def _require_sqlite():
+    """Refuses, before a store is opened, an SQLite its SQL would fail on."""
+    found = f"SQLite {sqlite3.sqlite_version}"
+    if sqlite3.sqlite_version_info >= MIN_SQLITE:
+        connection = sqlite3.connect(":memory:")
+        try:
+            connection.execute("SELECT json_valid('[]')")
+            return
+        except sqlite3.OperationalError:
+            found += " without them"
+        finally:
+            connection.close()
+    raise ValueError(
+        f"Evidence store needs SQLite {'.'.join(map(str, MIN_SQLITE[:2]))} or newer with its "
+        f"JSON functions, but this Python's sqlite3 module has {found}; run Peeky with a Python "
+        "built with a newer SQLite"
+    )
+
+
 def _check_version(connection, path, version):
     if version == SCHEMA_VERSION or version in _MIGRATIONS:
         return
@@ -1452,6 +1475,7 @@ def _check_version(connection, path, version):
 
 def _ensure(path):
     """A writable connection to a store with the current schema, created if absent."""
+    _require_sqlite()
     path = Path(path)
     if path.is_symlink():
         raise ValueError(f"Evidence store must not be a symlink: {path}")
@@ -1706,6 +1730,24 @@ def _authorize(action, first, second, database, trigger):
     return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
 
 
+# Before SQLite 3.41, a connection's first use of a table-valued function (json_each,
+# json_tree, pragma_table_info, ...) also compiles, but never runs, an UPDATE of
+# sqlite_master, and the authorizer denies it. Each is used once before the authorizer
+# is set, so SQLite never asks it that: it allows the same reads on every SQLite.
+_TABLE_FUNCTIONS = ("json_each", "json_tree", *(f"pragma_{name}" for name in sorted(_READ_PRAGMAS)))
+
+
+def _connect_table_functions(connection):
+    if sqlite3.sqlite_version_info >= (3, 41, 0):
+        return
+    for name in _TABLE_FUNCTIONS:
+        try:
+            connection.execute(f"SELECT 1 FROM {name}('[]') LIMIT 0").fetchall()
+        except sqlite3.OperationalError:
+            # pragma_table_list is SQLite 3.37+: a query naming it fails as before.
+            pass
+
+
 def parse_params(items):
     """['run=3', 'selector=a.b'] -> {'run': 3, 'selector': 'a.b'}."""
     params = {}
@@ -1743,6 +1785,7 @@ def _open_read_only(path):
     A store with an older schema is upgraded first (as the next save would), so canned
     queries can rely on the current columns.
     """
+    _require_sqlite()
     path = Path(path).absolute()
     try:
         if path.is_symlink():
@@ -1859,6 +1902,11 @@ def _reader(path, *, snapshot=False):
         except BaseException:
             connection.close()
             raise
+    try:
+        _connect_table_functions(connection)
+    except BaseException:
+        connection.close()
+        raise
     connection.set_authorizer(_authorize)
     connection.set_progress_handler(lambda: time.monotonic() > clock["deadline"], 10000)
     return connection, clock
