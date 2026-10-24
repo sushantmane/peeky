@@ -785,13 +785,14 @@ def holds_pointer(graph, offset, limit=4096):
     return False
 
 
-def root_never_integer(graph, root, name):
+def root_never_integer(graph, root, name, accepted=frozenset()):
     """Why the root local ``name`` of type ``root`` is never an integer `set` changes,
     where the stop refuses it too (its debugger type is none of the native integers):
     a const, volatile or atomic type, a character, boolean or floating-point value, an
     integer not 16, 32 or 64 bits, an enum, a pointer or a reference. None for a
     writable integer, a record or an array (a text may change those), and a type the
-    debug information does not give."""
+    debug information does not give; and for one named as the stop takes an integer
+    by its name (``accepted``: `typedef float int64_t;`), which the stop judges."""
     qualifiers, offset = [], root
     for _ in range(64):
         node = graph.get(offset)
@@ -812,6 +813,8 @@ def root_never_integer(graph, root, name):
     if plain and node[3] in (2, 4, 8) and node[1] not in _CHARACTERS and not qualifiers:
         return None
     label = type_label(graph, root)
+    if label in accepted:
+        return None
     if label:
         return f"`{name}` has type `{label}`"
     if kind in ("pointer", "reference", "enum"):

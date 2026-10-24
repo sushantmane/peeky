@@ -252,6 +252,30 @@ def test_a_root_that_is_never_a_writable_integer_is_named_with_its_type(root, wo
     assert root_never_integer(GRAPH, root, "n") == words
 
 
+def test_a_root_named_as_an_integer_is_left_to_the_stop():
+    # The stop takes a type by its name (`typedef float int64_t;`): so is it here.
+    graph = type_graph(
+        _parse_dies(
+            dump(
+                (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"t.c"'}),
+                (0x10, 1, "DW_TAG_base_type", base("float", "DW_ATE_float", "0x04")),
+                (
+                    0x14,
+                    1,
+                    "DW_TAG_typedef",
+                    {"DW_AT_type": "0x00000010", "DW_AT_name": '"int64_t"'},
+                ),
+                (0x18, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000014"}),
+            )
+        ),
+        (0x14, 0x18),
+        CPP_LIBRARIES,
+    )
+    assert root_never_integer(graph, 0x14, "lossy", {"int64_t"}) is None
+    assert root_never_integer(graph, 0x14, "lossy") == "`lossy` has type `int64_t`"
+    assert root_never_integer(graph, 0x18, "c", {"int64_t"}) == "`c` has type `const int64_t`"
+
+
 DECLARED = dump(
     (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"a.cpp"'}),
     (0x10, 1, "DW_TAG_base_type", base("int", "DW_ATE_signed", "0x04")),

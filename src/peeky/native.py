@@ -6671,17 +6671,14 @@ class NativeSession:
                 for entry, shown in places:
                     if not steps:
                         # A root is judged at the stop (its declaration's progress), but
-                        # one whose type is no writable integer (`const long`), or that
-                        # the frame reaches through a pointer or reference, never changes.
-                        if not text and (why := self._root_never_integer(entry, root, shown)):
-                            failures.append((entry.get("name") or "this function", why))
-                            continue
+                        # one the frame reaches through a pointer or reference, or whose
+                        # type is no writable integer (`const long`), never changes.
                         storages = self._declared_storages(entry.get("types") or {}, root, shown)
-                        if "through" not in storages:
+                        if "through" in storages:
+                            why = _not_framed(root, storages)
+                        elif text or not (why := self._root_never_integer(entry, root, shown)):
                             break
-                        failures.append(
-                            (entry.get("name") or "this function", _not_framed(root, storages))
-                        )
+                        failures.append((entry.get("name") or "this function", why))
                         continue
                     try:
                         if entry.get("types") is None:
@@ -6738,7 +6735,7 @@ class NativeSession:
             kind, _ = self._declared_type(entry.get("types") or {}, root, shown)
         except Unsettable:
             return None
-        why = root_never_integer(self.fields, kind, root)
+        why = root_never_integer(self.fields, kind, root, INTEGER_RANGES)
         return f"{NATIVE_INTEGERS[0].lower()}{NATIVE_INTEGERS[1:]}; {why}" if why else None
 
     def storage_note(self, program, lines, name):
