@@ -2223,8 +2223,8 @@ class Body:
         frame's exit ends every local and argument of it: a return, and a call that never
         returns, as `panic!` or `process::exit` (``_frame_exit``; #330 review: an argument
         has no `StorageDead`, nor a local where the program panics). A path a call or a
-        check takes only when it panics ends nothing. A drop of ``root`` that may run code
-        (its type's own `Drop`, ``_drop_reads``) reads it (#330 review)."""
+        check takes only when it panics ends nothing. A drop of ``root`` that may run a
+        `Drop` impl of the crate's reads it (``_drop_reads``; #330 review)."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
         # (block, index, whether the copy was used on the way here, whether ``root`` was
         # assigned or ended unread on the way here: then any use of the copy is enough,
