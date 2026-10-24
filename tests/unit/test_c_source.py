@@ -1452,8 +1452,9 @@ def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
     assert statements.block_storage(6, "t", None, True, body=True) is False
     # Read as the enclosing function's line, the binding is named there.
     assert statements.block_storage(3, "t", 2, True) == ("binding", 3)
-    # Two bodies open on the line: it is read as any other.
-    assert statements.block_storage(7, "t", 2, True, body=True) == ("binding", 7)
+    # Two bodies open on the line: it is read as any other, but which one the frame runs,
+    # and so whether what is found is its own, cannot be told (review of PR #299).
+    assert statements.block_storage(7, "t", 2, True, body=True) == ("bodies", 7)
     # The binding's own row, declared on a line where a lambda declares a `t` too.
     assert statements.block_storage(4, "t", 3, True) is False
     # At the line's first instruction, the range's expression runs first: the binding
@@ -1610,6 +1611,118 @@ def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_
     assert statements.block_storage(12, "t", 2, True, entering=True) == ("static", 12)
     assert statements.range_header(12, "t") == (12, 12)
     assert statements.header_before(3, "u", 2) is None
+
+
+LAMBDA_BLOCK_SOURCE = """long f(long x) {
+    long t = x;
+    auto g = [&](long t) { { static long t = 5; use(t); } return t; };
+    auto h = [&] { { static long t = 6; use(t); } return t; };
+    for (const auto &[t, u] : make2(t, [] { long r; { static long t = 7; r = t; } return r; })) {
+        use(t * u);
+    }
+    { static long t = 8; use(t); } auto k = [] { return 1; };
+    auto m = [&] { { static long t = 9; use(t); }
+        return t; };
+    auto n = [&](long t) { { static long t = 10; } auto p = [] { return 1; }; return t; };
+    return g(t) + h() + m() + n(t);
+}
+"""
+
+
+def test_a_lambdas_block_is_scoped_to_the_lambda():
+    # #290: a block in a lambda wholly on the line counted for the function holding the
+    # lambda (`others`: that function goes on past the line), and in the lambda's own
+    # frame (``body``) it was skipped, as though its statements were the lambda's only.
+    statements = Statements(LAMBDA_BLOCK_SOURCE, raw_strings=True)
+
+    def storage(line, after, **flags):
+        return statements.block_storage(line, "t", after, True, **flags)
+
+    # The lambda's own frame (its parameter `t`): its block's `static` hides it.
+    assert storage(3, None, body=True) == ("static", 3)
+    # The function holding a lambda: nothing the lambda declares hides its `t`, unless
+    # Peeky cannot tell which function the frame runs.
+    assert storage(4, 2, others=True) is False
+    assert storage(4, 2) == ("static", 4)
+    # A loop's binding is its own row's, never hidden by the lambda's `static`; the outer
+    # `t` is hidden by the binding, and by nothing before it exists.
+    assert storage(5, 5, others=True) is False
+    assert storage(5, 2, others=True) == ("binding", 5)
+    assert storage(5, 2, others=True, entering=True) is False
+    assert statements.header_before(5, "t", 2, entering=True, others=True) is None
+    assert statements.header_before(5, "t", 2, entering=True) == ("for", 5, 5, True)
+    # The function's own block on the line still counts; and a lambda going on past the
+    # line may be the frame's, so its block still counts too.
+    assert storage(8, 2, others=True) == ("static", 8)
+    assert storage(9, 2, others=True) == ("static", 9)
+    # A lambda's frame on a line holding another lambda: which one it runs, and so whose
+    # `static` that is, cannot be told (review of PR #299).
+    assert storage(11, None, body=True) == ("bodies", 11)
+
+
+SPECIFIED_LAMBDAS = """long f(long x) {
+    long t = x;
+    long v = [](long t) constexpr { long r = t; { enum { t = 9 }; r += t; } return r + t; }(t);
+    long w = []<class T>(T t) constexpr { T r = t; { enum { t = 8 }; r += t; } return r + t; }(t);
+    long y = [&]() mutable noexcept(true) -> long { long r = 1; { enum { t = 7 }; r += t; } return r; }();
+    auto a = [](long t) -> decltype(t) { { enum { t = 6 }; } return t; };
+    auto b = [](long t) __attribute__((noinline)) { { enum { t = 5 }; } return t; };
+    auto c = [](long t) [[nodiscard]] consteval { { enum { t = 4 }; } return t; };
+    auto d = [](long t) static requires (sizeof(t) > 1) { { enum { t = 3 }; } return t; };
+    long z = decltype(W{}){1}; if (x) { enum { t = 2 }; use(t); }
+    return v + w + y + t;
+}
+"""
+
+
+def test_a_lambdas_specifiers_keep_its_body_a_lambdas():
+    # Review of PR #299: `[](long t) constexpr {` was no lambda's body (`_QUALIFIED`
+    # lacked `constexpr`), nor was `-> decltype(t) {` or `noexcept(true) {` (the last `)`
+    # before the brace was taken for the parameters'), nor a generic lambda's (read as a
+    # template function's): their blocks still counted for the function holding them.
+    statements = Statements(SPECIFIED_LAMBDAS, raw_strings=True)
+    code = statements._code()[0]
+    for line in range(3, 10):
+        begin, end = statements.starts[line - 1], statements.starts[line]
+        body = code.index("{", begin)
+        assert statements._brace(body) == "lambda", line
+        # Its block is its own: in the frame of the function holding it, it names
+        # nothing; in its own frame (its parameter `t`), its enumerator hides `t`.
+        assert statements.block_storage(line, "t", 2, True, others=True) is False, line
+        found = statements.block_storage(line, "t", None, True, body=True)
+        assert found == ("enumerator", line), line
+        assert code.index("{", body + 1) < end
+    # An initializer after `decltype(...)` is none; a statement's block on the line is
+    # the function's own.
+    assert statements.block_storage(10, "t", 2, True, others=True) == ("enumerator", 10)
+
+
+NESTED_SPECIFIERS = """long f(long x) {
+    long t = x;
+    auto a = [](long t) noexcept((((((true)))))) { { enum { t = 9 }; } return t; };
+    auto b = [](long t) __attribute__((section(("x")), noinline)) { { enum { t = 8 }; } return t; };
+    auto c = [](long t) [[deprecated(("y"))]] noexcept(noexcept(f(g((1))))) { { enum { t = 7 }; } return t; };
+    auto d = [](long t) -> decltype((((t)))) { { enum { t = 6 }; } return t; };
+    auto e = [](long t) unknown { { enum { t = 5 }; } return t; };
+    return t;
+}
+"""
+
+
+def test_a_lambdas_specifiers_are_read_to_their_paired_brackets():
+    # Review round 2 of PR #299: `noexcept(...)` and `__attribute__((...))` were read by a
+    # regular expression three parentheses deep, so a deeper group left the brace `other`
+    # (and the lambda's blocks counted for `f`). Each group is read to its paired bracket
+    # now, however deep; a word that is no specifier still makes no lambda's head.
+    statements = Statements(NESTED_SPECIFIERS, raw_strings=True)
+    code = statements._code()[0]
+    kinds = {
+        line: statements._brace(code.index("{", statements.starts[line - 1]))
+        for line in range(3, 8)
+    }
+    assert kinds == {**{line: "lambda" for line in range(3, 7)}, 7: "other"}, kinds
+    found = {line: statements.block_storage(line, "t", 2, True, others=True) for line in kinds}
+    assert found == {**{line: False for line in range(3, 7)}, 7: ("enumerator", 7)}, found
 
 
 IF_CONSTEXPR_SOURCE = """long f(long x) {

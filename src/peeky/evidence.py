@@ -1018,9 +1018,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     ),
     "outputs": (
         'Inputs, requested interventions (sets: each [name, value, "requested at '
-        'LINE@HIT"], a --set\'s too, with how it went: ", not made: that hit never came", '
-        '", made at 6 stops; refused at hit 7", ", made at 1 stop before --until hits ended '
-        'the probe"), outcome and program output of two runs',
+        'LINE@HIT"], a --set\'s too, with how it went where recorded: ", not made: that hit '
+        'never came", ", made at 6 stops; refused at hit 7", ", made at 1 stop before --until '
+        'hits ended the probe"), outcome and program output of two runs',
         f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
         f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
         _PAIR_PARAMS,
@@ -1141,6 +1141,51 @@ EXAMPLES = (
     "peeky queries wide --param run=3",
     "peeky queries join --param a=3 --param b=4 --param key=v",
 )
+# Each canned query in a few words, for `peeky queries --help` (eleventh evaluation: an
+# agent passed set_effect a and b, since only the 20 KB schema said which takes which).
+QUERY_SUMMARIES = {
+    "runs": "the latest runs (20 unless count), newest first",
+    "run": "every captured value of one run, in capture order",
+    "hits": "each selector's observed and returned values by hit, with changed (NULL where "
+    "unknown)",
+    "compare": "every value of two runs side by side, paired by hit; first the status of a run "
+    "that did not complete, and any requested interventions",
+    "diff": "how two runs compare: outcome, then what differs (or may) in output, edit, source, "
+    "line, arguments, interventions and captured values",
+    "outputs": "arguments, requested interventions (with how they went, where recorded), "
+    "outcome and output of two runs",
+    "set_effect": "values before and after one run's interventions",
+    "values": "one selector's distinct observed and returned values per program and line, "
+    "across non-candidate runs",
+    "wide": "one run, a row per hit and phase, a column per selector",
+    "join": "two runs' hits paired by the values of one or more key selectors, then the "
+    "unpaired hits",
+    "unreadable": "the captures of one run that have no value, with unavailable and error",
+    "failures": "the latest runs that did not complete (20 unless count), newest first",
+}
+
+
+def query_usage(name):
+    """Canned query ``name`` with the parameters it takes: `diff [a] [b]`, `values selector`."""
+    _, _, accepted, required = QUERIES[name]
+    return " ".join([name, *(p if p in required else f"[{p}]" for p in accepted)])
+
+
+def queries_help():
+    """`peeky queries --help`'s list: each canned query, its parameters and what it answers."""
+    usages = {name: query_usage(name) for name in QUERIES}
+    width = max(map(len, usages.values())) + 2
+    return "\n".join(
+        [
+            "canned queries, each with the --param names it takes ([optional]):",
+            *(f"  {usages[name].ljust(width)}{QUERY_SUMMARIES[name]}" for name in QUERIES),
+            "",
+            "a and b pick two runs (default: the last two); run picks one (default: the newest).",
+            "e.g. peeky queries set_effect --param run=3; peeky queries diff --param a=3 "
+            "--param b=4",
+            "`peeky queries` with no name describes each query and parameter in full.",
+        ]
+    )
 
 
 def _number(value):
@@ -3010,8 +3055,10 @@ def schema(path):
             for name, (description, columns) in TABLES.items()
         },
         "views": VIEWS,
-        "joins": "captures, interventions and pauses join runs on run_id; or use the "
-        "evidence view, which already has the run's columns",
+        "joins": "captures, interventions and pauses join runs on run_id. The evidence view "
+        "has some of the run's columns (label, program, status, args, sets, language and a "
+        "few more); the others, such as output, error_code, seconds and warnings, need a "
+        "join with runs",
         "queries": {
             name: {"description": description, "params": params}
             for name, (description, _, params, _) in QUERIES.items()
@@ -3291,25 +3338,128 @@ def query_table(path, result, params=None):
     return table(result, changes=changes)
 
 
+# What `peeky sql --schema NAME` takes besides a table or view, in the whole text's order.
+SCHEMA_PARTS = ("joins", "queries", "functions", "examples", "rules")
+# Each view in a few words, for `peeky sql --schema`'s index.
+_VIEW_SUMMARIES = {
+    "evidence": "captures with some of their run's columns (label, program, status, args, ...; "
+    "not output)",
+    "last_run": "The evidence rows of the newest run",
+}
+
+
+def _schema_lines(manifest, name):
+    """The text of one table, view or other part (``SCHEMA_PARTS``) of ``manifest``."""
+    if name in manifest.get("tables", {}):
+        info = manifest["tables"][name]
+        return [
+            f"table {name}: {info['description']}",
+            *(f"  {column}: {meaning}" for column, meaning in info["columns"].items()),
+        ]
+    if name in manifest.get("views", {}):
+        return [f"view {name}: {manifest['views'][name]}"]
+    if name == "joins":
+        return [f"joins: {manifest['joins']}"]
+    if name == "queries":
+        lines = ["canned queries (peeky queries <name> [--param k=v]):"]
+        for query_name, info in manifest["queries"].items():
+            params = ", ".join(f"{p}: {d}" for p, d in info["params"].items())
+            lines.append(
+                f"  {query_name}: {info['description']}" + (f" [{params}]" if params else "")
+            )
+        return lines
+    if name == "functions":
+        return [
+            "functions:",
+            *(f"  {f}: {meaning}" for f, meaning in manifest["functions"].items()),
+        ]
+    if name == "examples":
+        return ["examples:", *(f"  {example}" for example in manifest["examples"])]
+    return ["rules:", *(f"  - {rule}" for rule in manifest["rules"])]
+
+
 def schema_text(manifest):
+    """The whole schema as text: `peeky sql --schema all`."""
     lines = [f"store: {manifest['store']} ({manifest['engine']})", ""]
-    for name, info in manifest["tables"].items():
-        lines.append(f"table {name}: {info['description']}")
-        lines.extend(f"  {column}: {meaning}" for column, meaning in info["columns"].items())
-        lines.append("")
-    lines.extend(f"view {name}: {meaning}" for name, meaning in manifest["views"].items())
-    lines.append(f"joins: {manifest['joins']}")
+    for name in manifest["tables"]:
+        lines.extend([*_schema_lines(manifest, name), ""])
+    for name in [*manifest["views"], "joins"]:
+        lines.extend(_schema_lines(manifest, name))
     lines.append("")
-    lines.append("canned queries (peeky queries <name> [--param k=v]):")
-    for name, info in manifest["queries"].items():
-        params = ", ".join(f"{p}: {d}" for p, d in info["params"].items())
-        lines.append(f"  {name}: {info['description']}" + (f" [{params}]" if params else ""))
-    lines.append("")
-    lines.append("functions:")
-    lines.extend(f"  {name}: {meaning}" for name, meaning in manifest["functions"].items())
-    lines.append("")
-    lines.append("examples:")
-    lines.extend(f"  {example}" for example in manifest["examples"])
-    lines.append("rules:")
-    lines.extend(f"  - {rule}" for rule in manifest["rules"])
+    for name in ("queries", "functions"):
+        lines.extend([*_schema_lines(manifest, name), ""])
+    lines.extend(_schema_lines(manifest, "examples"))
+    lines.extend(_schema_lines(manifest, "rules"))
     return "\n".join(lines)
+
+
+def schema_index(manifest):
+    """`peeky sql --schema`'s short form: a line for each table, view and other part, and
+    how to see them in full (eleventh evaluation: the whole is 20 KB, and two agents'
+    tools cut it off)."""
+    tables, views = manifest["tables"], manifest["views"]
+    width = max(map(len, [*tables, *views, *SCHEMA_PARTS])) + 2
+    functions = ", ".join(name.split("(")[0] for name in manifest["functions"])
+    parts = {
+        "joins": manifest["joins"],
+        "queries": f"{len(manifest['queries'])} canned queries, each described in full; "
+        "`peeky queries --help` lists their parameters",
+        "functions": f"SQL functions Peeky adds: {functions}",
+        "examples": f"{len(manifest['examples'])} example commands",
+        "rules": f"Read-only, one SELECT (or WITH ... SELECT) per call; at most {DEFAULT_ROWS} "
+        f"rows unless --limit (up to {MAX_ROWS}), {QUERY_SECONDS} s per query, and other bounds; "
+        ":name takes --param name=value",
+    }
+    return "\n".join(
+        [
+            f"store: {manifest['store']} ({manifest['engine']})",
+            "",
+            "tables:",
+            *(
+                f"  {name.ljust(width)}{info['description'].rstrip('.')} "
+                f"({len(info['columns'])} columns)"
+                for name, info in tables.items()
+            ),
+            "views:",
+            *(f"  {name.ljust(width)}{_VIEW_SUMMARIES[name]}" for name in views),
+            "other parts:",
+            *(f"  {name.ljust(width)}{text}" for name, text in parts.items()),
+            "",
+            "`peeky sql --schema NAME [NAME ...]` shows those in full (e.g. --schema captures "
+            "functions); --schema all shows everything.",
+        ]
+    )
+
+
+def schema_part(manifest, names):
+    """The tables, views and other parts of ``manifest`` that ``names`` name, in its
+    shape (with its store and engine), for `peeky sql --schema NAME ...`; the whole
+    manifest for `all`. An unknown name is refused, with the names there are."""
+    tables, views = manifest["tables"], manifest["views"]
+    wanted = list(dict.fromkeys(name.strip().lower() for name in names))
+    if unknown := [n for n in wanted if n != "all" and n not in [*tables, *views, *SCHEMA_PARTS]]:
+        raise ValueError(
+            f"Evidence query failed: --schema has no {_quoted(unknown)}: name a table "
+            f"({', '.join(tables)}), a view ({', '.join(views)}), "
+            f"{', '.join(SCHEMA_PARTS)}, or all"
+        )
+    if "all" in wanted:
+        return manifest
+    part = {"store": manifest["store"], "engine": manifest["engine"]}
+    for name in wanted:
+        if name in tables:
+            part.setdefault("tables", {})[name] = tables[name]
+        elif name in views:
+            part.setdefault("views", {})[name] = views[name]
+        else:
+            part[name] = manifest[name]
+    return part
+
+
+def schema_part_text(part):
+    """``schema_part``'s text: each table, view or other part in full, a blank line apart."""
+    names = [*part.get("tables", {}), *part.get("views", {})]
+    names += [name for name in SCHEMA_PARTS if name in part]
+    blocks = [[f"store: {part['store']} ({part['engine']})"]]
+    blocks += [_schema_lines(part, name) for name in names]
+    return "\n\n".join("\n".join(block) for block in blocks)
