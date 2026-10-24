@@ -3221,6 +3221,112 @@ def test_a_write_through_a_pointer_that_may_point_into_the_changed_part_ends_a_r
     assert body.read_copies_at(1, (1, 0), first)[0] == set()
 
 
+# rustc 1.96.0's `-Zdump-mir=PreCodegen -Zmir-include-spans=yes` for (review round 4 of
+# #300; it prints 4 with `f(1, &raw mut z)`):
+#
+#     fn f(mut x: u32, mut p: *mut u32) -> u32 {
+#         let y = x;
+#         let q = &mut p;
+#         let r = &raw mut x;
+#         *q = r;
+#         unsafe {
+#             *p = 3;
+#         }
+#         y + x
+#     }
+RETARGETED = """// MIR for `f` after PreCodegen
+
+fn f(_1: u32, _2: *mut u32) -> u32 {
+    debug x => _1;                       // in scope 0 at src/main.rs:2:6: 2:11
+    debug p => _2;                       // in scope 0 at src/main.rs:2:18: 2:23
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:2:38: 2:41
+    let _3: u32;                         // in scope 0 at src/main.rs:3:9: 3:10
+    let mut _6: u32;                     // in scope 0 at src/main.rs:10:9: 10:10
+    let mut _7: (u32, bool);             // in scope 0 at src/main.rs:10:5: 10:10
+    scope 1 {
+        debug y => _3;                   // in scope 1 at src/main.rs:3:9: 3:10
+        let _4: &mut *mut u32;           // in scope 1 at src/main.rs:4:9: 4:10
+        scope 2 {
+            debug q => _4;               // in scope 2 at src/main.rs:4:9: 4:10
+            let _5: *mut u32;            // in scope 2 at src/main.rs:5:9: 5:10
+            scope 3 {
+                debug r => _5;           // in scope 3 at src/main.rs:5:9: 5:10
+                let mut _8: *const ();   // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _9: usize;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _10: usize;      // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _11: usize;      // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _12: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _13: *const ();  // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _14: usize;      // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _15: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _16: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _17: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _18: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+            }
+        }
+    }
+
+    bb0: {
+        _3 = copy _1;                    // scope 0 at src/main.rs:3:13: 3:14
+        _4 = &mut _2;                    // scope 1 at src/main.rs:4:13: 4:19
+        _5 = &raw mut _1;                // scope 2 at src/main.rs:5:13: 5:23
+        (*_4) = copy _5;                 // scope 3 at src/main.rs:6:5: 6:11
+        _8 = copy _2 as *const () (PtrToPtr); // scope 3 at src/main.rs:8:9: 8:15
+        _9 = copy _8 as usize (Transmute); // scope 3 at src/main.rs:8:9: 8:15
+        _10 = Sub(const <u32 as std::mem::SizedTypeProperties>::ALIGN, const 1_usize); // scope 3 at src/main.rs:8:9: 8:15
+        _11 = BitAnd(copy _9, copy _10); // scope 3 at src/main.rs:8:9: 8:15
+        _12 = Eq(copy _11, const 0_usize); // scope 3 at src/main.rs:8:9: 8:15
+        assert(copy _12, "misaligned pointer dereference: address must be a multiple of {} but is {}", const <u32 as std::mem::SizedTypeProperties>::ALIGN, copy _9) -> [success: bb2, unwind unreachable]; // scope 3 at src/main.rs:8:9: 8:15
+    }
+
+    bb1: {
+        _0 = move (_7.0: u32);           // scope 3 at src/main.rs:10:5: 10:10
+        return;                          // scope 0 at src/main.rs:11:2: 11:2
+    }
+
+    bb2: {
+        _13 = copy _2 as *const () (PtrToPtr); // scope 3 at src/main.rs:8:9: 8:15
+        _14 = copy _13 as usize (Transmute); // scope 3 at src/main.rs:8:9: 8:15
+        _15 = Ne(const <u32 as std::mem::SizedTypeProperties>::SIZE, const 0_usize); // scope 3 at src/main.rs:8:9: 8:15
+        _16 = Eq(copy _14, const 0_usize); // scope 3 at src/main.rs:8:9: 8:15
+        _17 = BitAnd(copy _16, copy _15); // scope 3 at src/main.rs:8:9: 8:15
+        _18 = Not(copy _17);             // scope 3 at src/main.rs:8:9: 8:15
+        assert(copy _18, "null pointer dereference occurred") -> [success: bb3, unwind unreachable]; // scope 3 at src/main.rs:8:9: 8:15
+    }
+
+    bb3: {
+        (*_2) = const 3_u32;             // scope 3 at src/main.rs:8:9: 8:15
+        _6 = copy _1;                    // scope 3 at src/main.rs:10:9: 10:10
+        _7 = AddWithOverflow(copy _3, copy _6); // scope 3 at src/main.rs:10:5: 10:10
+        assert(!move (_7.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _3, move _6) -> [success: bb1, unwind continue]; // scope 3 at src/main.rs:10:5: 10:10
+    }
+}
+"""
+
+
+def test_a_pointer_argument_retargeted_through_a_loan_may_point_into_the_local():
+    # Review round 4 of #300: an argument pointer was apart from every local of the frame,
+    # and `_4 = &mut _2` (`q = &mut p`) apart too, so `(*_4) = copy _5` (`*q = r`) kept `p`
+    # apart, and `(*_2) = const 3_u32` (`*p = 3`, which writes `x`) left `y` holding a copy.
+    body = parse_body(RETARGETED)
+    assert body.arguments == {1, 2}
+    assert body.read_copies_at(1, (3, 0))[1] == {3}
+    assert body.read_copies_at(1, (3, 1))[1] == set()
+    # Where `p` is never lent, it still points elsewhere: `*p = 3` keeps `y`'s copy.
+    lent = RETARGETED.replace("_4 = &mut _2;", "_4 = &mut _9;")
+    lent = lent.replace("(*_4) = copy _5;", "(*_4) = copy _9;")
+    body = parse_body(lent)
+    assert body.read_copies_at(1, (3, 1))[1] == {3}
+    # Nor is a pointer copied from a lent one, nor a pointer local lent only `&` (a `Cell`).
+    copied = RETARGETED.replace("_8 = copy _2 as *const () (PtrToPtr);", "_16 = copy _2;")
+    copied = copied.replace("(*_2) = const 3_u32;", "(*_16) = const 3_u32;")
+    body = parse_body(copied)
+    assert body.read_copies_at(1, (3, 1))[1] == set()
+    shared = lent.replace("_4 = &mut _9;", "_4 = &_2;")
+    body = parse_body(shared)
+    assert body.read_copies_at(1, (3, 1))[1] == set()
+
+
 def test_a_call_that_may_change_the_changed_part_ends_a_read():
     # Review round 3 of #300 (ruling): `let y = x; keep(&mut x);` may change `x`, so `y`
     # no longer surely holds a copy of its current value; nor does anything read before.

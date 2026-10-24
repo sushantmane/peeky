@@ -386,7 +386,9 @@ code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
 - A write that may overlap the changed part ends what it knows: `_written_place` and `_apart`. A
   write through a pointer ends it too, unless the pointer surely points apart from the part: a
   borrow of another local, or of a part `_apart` from it, a copy of one, or an argument. A pointer
-  loaded from memory (`(*((*_8).0: &mut u32))`) is never known to point apart.
+  loaded from memory (`(*((*_8).0: &mut u32))`) is never known to point apart. Nor is a pointer
+  local that is itself borrowed anywhere (`Body._borrowed`): `q = &mut p; *q = &raw mut x;`
+  retargets `p`, and `&p` may do so through a `Cell`.
 - Where a writable borrow of a place that may overlap the part is taken anywhere in the body
   (`Body._exposed`), a call, a drop or a `copy_nonoverlapping` ends what it knows, on every edge.
   `keep(&mut x)` may change `x`, so `let y = x;` before it no longer surely holds a copy of `x`.

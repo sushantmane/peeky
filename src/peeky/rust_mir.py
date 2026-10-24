@@ -1529,6 +1529,9 @@ class Body:
             )
         if not whole or target in self._writable_borrows:
             return read, taken, own, origins, apart
+        # A pointer whose own storage is lent may be retargeted through the loan (`*q = r;`
+        # for `q = &mut p`), or through a `Cell` it is in: never known to point apart.
+        aimed = target not in self._borrowed()
         value, whole_local = whole[2], projection == ()
         plain = [int(n) for n in re.findall(r"\(\*_([0-9]+)\)", value)]
         only = bool(plain) and len(plain) == value.count("(*")
@@ -1538,12 +1541,13 @@ class Body:
             if whole_local and ((rooted and int(rooted[1]) == local) or through):
                 own = own | {target}
             if rooted and int(rooted[1]) != local:
-                apart = apart | {target}
+                elsewhere = True
             elif rooted:
                 place = _place_steps(value, rooted.start(1) - 1)
-                if place is not None and _apart(place[0], projection):
-                    apart = apart | {target}
-            elif only and set(plain) <= apart:
+                elsewhere = place is not None and _apart(place[0], projection)
+            else:
+                elsewhere = only and set(plain) <= apart
+            if aimed and elsewhere:
                 apart = apart | {target}
             return read, taken, own, origins, apart
         reads = _reads_part(value, local, projection) or (whole_local and through)
@@ -1556,7 +1560,7 @@ class Body:
         if whole_local and copied and int(copied[1]) in own:
             own = own | {target}
         pointer = re.fullmatch(r"(?:copy|move) _([0-9]+)(?: as .*)?", value)
-        if pointer and int(pointer[1]) in apart:
+        if aimed and pointer and int(pointer[1]) in apart:
             apart = apart | {target}
         return read, taken, own, origins, apart
 
@@ -1596,9 +1600,11 @@ class Body:
         transfer, met by intersection over every way in (the greatest fixpoint from bb0);
         None past the budget. A call sets its result on its return edge only; one that may
         change the part (``_read_ends``) ends what is known on every edge. The caller's
-        pointers, the arguments, point elsewhere than any local of this frame."""
+        pointers, the arguments, point elsewhere than any local of this frame, while no
+        borrow of them can retarget them (``_borrowed``)."""
         empty = frozenset()
-        entry = {0: (empty, empty, empty, empty, frozenset(self.arguments) - {local})}
+        given = frozenset(self.arguments - self._borrowed()) - {local}
+        entry = {0: (empty, empty, empty, empty, given)}
         work, queued, steps = [0], {0}, 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
         while work:
