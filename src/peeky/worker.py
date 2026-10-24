@@ -106,6 +106,9 @@ _UNAVAILABLE = re.compile(
     r"value optimized out)>$",
     re.IGNORECASE | re.DOTALL,
 )
+# The debugger's type of a pointer or an array (`const int *`, `char *const`, `int[96]`):
+# a field or an element of these alone says what its address can tell (#302).
+_POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
 
 
 def optimization_level(identity):
@@ -230,6 +233,9 @@ class DebugWorker:
         self.preview_fetches = 0
         self.preview_deadline = 0.0
         self.previewing = False
+        # Which roots' values say what their addresses can tell (#302): every root's, none,
+        # or the roots named; fields and elements follow their root.
+        self.extents = False
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -1823,6 +1829,9 @@ class DebugWorker:
         if operation == "inspect" and type(args.get("previews", True)) is not bool:
             if not _name_list(args["previews"]):
                 raise ValueError("previews must be true, false or a list of at most 32 names")
+        if operation == "inspect" and type(args.get("extents", False)) is not bool:
+            if not _name_list(args["extents"]):
+                raise ValueError("extents must be true, false or a list of at most 32 names")
         if operation == "expand" and type(args.get("previews", False)) is not bool:
             raise ValueError("previews must be true or false")
         if operation == "preview" and (type(args.get("handle")) is not int or args["handle"] < 1):
@@ -2278,6 +2287,10 @@ class DebugWorker:
             # C and C++ previews (#136): of every root, none, or the roots named.
             wanted = args.get("previews", True)
             self.previewing = wanted if type(wanted) is bool else frozenset(wanted)
+            # What a C or C++ value's address can tell (#302), for the roots a probe or
+            # `session get` reads, and what is read through them until the next inspection.
+            wanted = args.get("extents", False)
+            self.extents = wanted if type(wanted) is bool else frozenset(wanted)
             validate_children = getattr(runtime, "validate_children", None)
             # A timed-out view read may still be processed by the adapter; until its
             # reply drains, this inspection is read-only.
@@ -3715,9 +3728,33 @@ class DebugWorker:
                 output["stale"] = True
             if isinstance(raw_reason, str) and not output.get("unavailable"):
                 output["raw_reason"] = raw_reason[:500]
+            if (
+                reference_kind is None
+                and not output.get("unavailable")
+                and "note" not in output
+                and (extent := self.value_extent(variable, frame, ancestry, name, kind))
+            ):
+                output["extent"] = extent
             result.append(output)
             self.inspection_nodes += 1
         return result
+
+    def value_extent(self, variable, frame, ancestry, name, kind):
+        """The runtime's ``value_extent`` of a value a probe or `session get` reads
+        (#302): a root it names, or a pointer or an array read through one, which alone
+        an offset can be proven into or from. None otherwise."""
+        hook = getattr(self.runtime, "value_extent", None)
+        root = ancestry[0][0] if ancestry else name
+        wanted = self.extents
+        if not hook or not (wanted is True or (isinstance(wanted, frozenset) and root in wanted)):
+            return None
+        if ancestry and not _POINTER_OR_ARRAY.search(str(kind or "")):
+            return None
+        try:
+            found = hook(variable, frame, [step for step, _ in ancestry] + [name])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return found if isinstance(found, dict) else None
 
     def named_children(self, reference, indexed, name, runtime):
         """The children named ``name`` of the value ``reference`` names. An element LLDB
