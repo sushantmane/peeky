@@ -520,11 +520,13 @@ def test_diff_says_which_element_a_pointer_holds_in_each_run(store):
     )
     assert [(r["hit"], r["selector"], r["note"]) for r in rows] == [
         (None, "(output)", "output differs at line 1, column 4"),
-        # Another element is a real difference, in hit and capture order.
-        (1, "turn", "the address of `level[6]` in run a, of `level[4]` in run b"),
+        # The real differences: `count`, in hit order.
         (1, "count", None),
-        (2, "turn", "the address of `level[17]` in run a, of `level[16]` in run b"),
         (2, "count", None),
+        # Review 2 of PR #312: another element's address may come from layout alone (the
+        # array moved), so it ranks with the addresses that differ, first among them.
+        (1, "turn", f"the address of `level[6]` in run a, of `level[4]` in run b{MOVED}"),
+        (2, "turn", f"the address of `level[17]` in run a, of `level[16]` in run b{MOVED}"),
         # Proven nothing of: it may still point at another element.
         (1, "p", POINTS),
         (1, "left", qualified),
@@ -541,7 +543,7 @@ def test_diff_says_which_element_a_pointer_holds_in_each_run(store):
     assert not any(r["selector"] == "level" for r in rows)
     compared = evidence.run_query(store, "compare")["rows"]
     assert {(r["hit"], r["selector"], r["note"]) for r in compared} >= {
-        (1, "turn", "the address of `level[6]` in run a, of `level[4]` in run b"),
+        (1, "turn", f"the address of `level[6]` in run a, of `level[4]` in run b{MOVED}"),
         (2, "first", "addresses only: the address of the same element of `level` in both runs"),
     }
     sql = "SELECT run_id, hit, element_size, at_element_of, element_index FROM evidence WHERE "
@@ -554,17 +556,39 @@ def test_diff_says_which_element_a_pointer_holds_in_each_run(store):
     ]
 
 
-def test_another_element_at_the_same_address_is_still_a_difference(store):
-    # The array moved and the pointer did not: the same text, another element.
+MOVED = "; by address alone: the pointer or the array may have moved"
+
+
+def test_another_elements_address_where_only_the_array_moved_is_no_difference(store):
+    # Review 2 of PR #312: the pointer holds 0x1018 in both runs, and `level` moved from
+    # 0x1000 to 0x1008, so the index went from 6 to 4 with no change to the pointer. It was
+    # a real difference (`differs` 1); it is said where the runs are compared side by side,
+    # and `diff`, which keeps the values that differ, leaves it out.
     for index in (6, 4):
         rows = [
             (1, "turn", "const int *", "0x0000000000001018", into(index)),
             (1, "level", "int[96]", "[1, 2]"),
+            (1, "n", "int", str(index)),
         ]
         evidence.record(store, captured(rows), language="c")
-    [found] = evidence.run_query(store, "diff")["rows"]
-    assert found["note"] == "the address of `level[6]` in run a, of `level[4]` in run b"
-    assert found["differs"] == 1
+    assert [r["selector"] for r in evidence.run_query(store, "diff")["rows"]] == ["n"]
+    compared = {r["selector"]: r for r in evidence.run_query(store, "compare")["rows"]}
+    assert compared["turn"]["differs"] == 0
+    assert compared["turn"]["note"] == (
+        f"the address of `level[6]` in run a, of `level[4]` in run b{MOVED}"
+    )
+    # With other addresses too, it ranks after the real differences, never among them.
+    for address, index in (("0x000000016b42b040", 6), ("0x000000016f527048", 4)):
+        rows = [
+            (1, "turn", "const int *", address, into(index)),
+            (1, "level", "int[96]", "[1, 2]"),
+            (1, "n", "int", str(index)),
+        ]
+        evidence.record(store, captured(rows), language="c")
+    shown = evidence.run_query(store, "diff", {"a": 3, "b": 4})["rows"]
+    assert [(r["selector"], r["differs"]) for r in shown] == [("n", 1), ("turn", 1)]
+    ranks = evidence.query(store, evidence._DIFF_RANKS, {"a": 3, "b": 4})["rows"]
+    assert sorted(r["rank"] for r in ranks) == [evidence._REAL_RANK, 11]
 
 
 def test_a_pointer_proven_in_one_run_only_may_point_elsewhere(store):
@@ -579,10 +603,10 @@ def test_a_pointer_proven_in_one_run_only_may_point_elsewhere(store):
 
 
 @pytest.mark.parametrize("key", ["at_element_of", "offset_from"])
-def test_the_alignment_note_counts_proven_elements_but_not_offsets(store, key):
-    # `word` reads "a", "b", "c" in both runs, at other elements' addresses of `text`: the
-    # note said it agreed between the runs at each hit, under rows that said another
-    # element. An offset by address alone may be layout, so it agrees or not as before.
+def test_the_alignment_note_reads_element_addresses_and_offsets_masked(store, key):
+    # `word` reads "a", "b", "c" in both runs, at other elements' addresses of `text`, or
+    # other offsets from it. Both may be layout alone, so the rows rank with the
+    # addresses that differ, and the note reads the values with addresses masked.
     def at(index):
         number = "index" if key == "at_element_of" else "offset"
         return {"element_size": 1, key: {"selector": "text", number: index}}
@@ -603,9 +627,9 @@ def test_the_alignment_note_counts_proven_elements_but_not_offsets(store, key):
     if key == "at_element_of":
         assert said == [
             f"the address of `text[{8 + 4 * hit}]` in run a, of `text[{20 + 4 * hit}]` in run b"
+            f"{MOVED}"
             for hit in (0, 1, 2)
         ]
-        assert "`quiz`" in notes and "`word` agrees" not in notes, notes
     else:
         assert said == [
             f"addresses differ: by address, `text + {8 + 4 * hit}` in run a and "
@@ -613,7 +637,9 @@ def test_the_alignment_note_counts_proven_elements_but_not_offsets(store, key):
             "it may or may not be another element"
             for hit in (0, 1, 2)
         ]
-        assert "`word` agrees" in notes, notes
+    # An address fact either way (review 2 of PR #312): the note reads `word` with its
+    # addresses masked, as it reads any pointer.
+    assert "`word` agrees" in notes, notes
 
 
 def test_diff_shows_offsets_by_address_but_ranks_them_with_addresses(store):

@@ -110,8 +110,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
 - `queries diff` compares which element's address a pointer holds where both runs captured the
-  array. ``the address of `level[6]` in run a, of `level[4]` in run b`` is a real difference. The
-  same element's is `addresses only` ([C and C++ 4.8](c-cpp-cookbook.md#which-element-in-each-run)).
+  array. ``the address of `level[6]` in run a, of `level[4]` in run b`` ranks first among the
+  addresses that differ: the pointer, or only the array, may have moved. The same element's is
+  `addresses only` ([C and C++ 4.8](c-cpp-cookbook.md#which-element-in-each-run)).
 - Offsets from a base pointer are shown too, but rank with the addresses that differ: two
   pointers can point into separate blocks.
 - Otherwise `diff` never calls a pointer's other address `addresses only`. It says

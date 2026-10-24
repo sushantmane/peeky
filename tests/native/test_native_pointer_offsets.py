@@ -166,8 +166,11 @@ def test_diff_compares_the_elements_a_pointer_holds(program, capsys):
     assert main(["queries", "diff", "--param", "a=1", "--param", "b=2", "--json"]) == 0
     rows = json.loads(capsys.readouterr().out)["rows"]
     notes = {row["selector"]: row["note"] for row in rows}
-    assert notes["top"] == "the address of `level[2]` in run a, of `level[1]` in run b", rows
-    # A real difference: right after the run-level rows, before any address-only row.
+    assert notes["top"] == (
+        "the address of `level[2]` in run a, of `level[1]` in run b; by address alone: the "
+        "pointer or the array may have moved"
+    ), rows
+    # First among the addresses that differ, ranked after any real difference (none here).
     assert [row["selector"] for row in rows][:3] == ["(output)", "(edit)", "top"], rows
     # `first` holds element 0's address in both: where the stack moved, addresses only.
     same = "addresses only: the address of the same element of `level` in both runs"

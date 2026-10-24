@@ -274,15 +274,17 @@ A candidate edit makes it take the first, `--old '*p >= *top' --new '*p > *top'`
 
 ```
 run_a  run_b  hit  phase     selector  value_a             value_b             differs  note
-1      2      1    observed  top       0x000000016aee72d8  0x000000016f29b2c4  1        the address of `level[2]` in run a, of `level[1]` in run b
+1      2      1    observed  top       0x000000016aee72d8  0x000000016f29b2c4  1        the address of `level[2]` in run a, of `level[1]` in run b; by address alone: the pointer or the array may have moved
 1      2      1    observed  end       0x000000016aee72e8  0x000000016f29b2d8  1        addresses only: the address of the same element of `level` in both runs
 ```
 
-- Another element's address is a real difference. It ranks with the values that differ, even
-  where the two addresses read the same, as when only the array moved.
-- That holds for an address fact because the offset lies inside the array's own storage. Where
-  the stack or the allocator put other objects can't change it. The program put the pointer
-  elsewhere in that storage.
+- Another element's address ranks first among the addresses that differ, after the real
+  differences. It is an address fact. The program may have moved the pointer, or only the array
+  moved under it: a stale pointer, storage reused, another layout.
+- So read it with the program. Here `top` is computed from `level` (`level + peak(level, n)`), so
+  `level[2]` against `level[1]` is the change.
+- Where the pointer's address reads the same in both runs and only the array moved, `diff` leaves
+  it out, as it does any value that reads the same. `queries compare` still says it.
 - The same element's address says
   ``addresses only: the address of the same element of `level` in both runs``. It ranks with the
   address-only values.

@@ -728,11 +728,13 @@ _ADDRESS_KIND = f"""CASE
 
 # A C or C++ pointer at an element's address of the same captured array in both runs
 # (captures.at_element_of, #302), each element's by its index. Another element's address is
-# a real difference, even where the addresses read the same: an offset within one array of
-# the frame lies inside that array's own storage, so where the allocator or the stack put
-# other objects cannot change it; the program put the pointer elsewhere in that storage.
-# The same element's address, with addresses that differ, is no more than that.
+# an address fact, ranked first among the addresses that differ, never a real difference
+# (review 2 of PR #312): the pointer may not have changed while the array moved (a stale
+# pointer, storage reused, the allocator's layout), so the index can change by layout
+# alone. The same element's address, with addresses that differ, is no more than that.
 _ELSEWHERE = "a.pi IS NOT NULL AND a.pi IS b.pi AND a.ei IS NOT b.ei"
+_AT_ELEMENTS = """'the address of `' || a.pi || '[' || a.ei || ']` in run a, of `' || b.pi || '['
+        || b.ei || ']` in run b; by address alone: the pointer or the array may have moved'"""
 
 
 def _from(run):
@@ -764,7 +766,7 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
-    a.v IS NOT b.v OR ({_ELSEWHERE}) AS differs, COALESCE(a.pos, b.pos) AS pos,
+    a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
     CASE
       WHEN k.selector NOT IN {_ASKED.format(_B)} THEN 'only in run a'
       WHEN k.selector NOT IN {_ASKED.format(_A)} THEN 'only in run b'
@@ -776,15 +778,17 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
       WHEN a.pos IS NULL THEN 'missing in run a' || COALESCE(' (run b: stop ' || k.st || ')', '')
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
-      WHEN {_ELSEWHERE} THEN 'the address of `' || a.pi || '[' || a.ei || ']` in run a, of `'
-        || b.pi || '[' || b.ei || ']` in run b'
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})
         IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN CASE
+          WHEN {_ELSEWHERE} THEN {_AT_ELEMENTS}
           WHEN a.pi IS NOT NULL AND a.pi IS b.pi
             THEN 'addresses only: the address of the same element of `' || a.pi
               || '` in both runs'
           WHEN a.ofs IS NOT NULL AND a.ofs IS b.ofs THEN {_OFFSETS}
           ELSE {_ADDRESS_KIND} END
+      -- The same address in both runs, at another element's of an array that moved: said
+      -- (`compare`), but no difference (`diff` leaves it out).
+      WHEN a.v IS b.v AND {_ELSEWHERE} THEN {_AT_ELEMENTS}
     END AS kind,
     CASE WHEN a.c IS NOT NULL OR b.c IS NOT NULL THEN 'qualified (' || CASE
       WHEN a.c IS NOT NULL AND b.c IS NOT NULL THEN 'run a: ' || a.c || ', run b: ' || b.c
@@ -810,10 +814,11 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # for selectors only one run captured). Then values changed by an intervention only one
 # run made, before what may follow from them (tenth evaluation: they came after 70 rows
 # of its effects); then real divergences, in hit and capture order (a hit only one run
-# reached is one, and so is a C or C++ pointer at another element's address of an array
-# both runs captured, #302); then pointers whose addresses differ, which may point at another
-# element (`_ADDRESS_KIND`, and `_OFFSETS`, by address from another pointer): not with the
-# real divergences, since the stack and heap move
+# reached is one); then pointers whose addresses differ: first a C or C++ pointer at
+# another element's address of an array both runs captured, in hit order (`_AT_ELEMENTS`,
+# #302), then those that may point at another element (`_ADDRESS_KIND`, and `_OFFSETS`,
+# by address from another pointer): not with the real divergences, since the stack and
+# heap move
 # between runs, so most pointers differ whether or not they point at another element,
 # and the first real difference stays the first divergence; then values a view or a note
 # qualifies in either run (a C local's leftovers
@@ -831,13 +836,12 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # The tiers' ranks that code reads too: the real divergences (`_after_first` finds the
 # first among them, never an address or a qualified value: review of PR #294), and the
 # selectors only one run captured, which are at no hit of their own.
-_REAL_RANK, _ONLY_IN_RANK = 10, 14
+_REAL_RANK, _ONLY_IN_RANK = 10, 15
 # Every row of `diff` with its rank (the tier it is in) and pos (its capture order).
 _RANKED = f"""(
   SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
-    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %'
-      OR kind LIKE 'the address of %')
+    AND (kind IS NULL OR kind LIKE 'missing%' OR kind LIKE 'type %')
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -846,21 +850,26 @@ _RANKED = f"""(
     FROM (SELECT *, COUNT(*) OVER (PARTITION BY selector, note, value_a, value_b) AS alike
       FROM pair WHERE qualified IS NULL AND kind LIKE 'intervention only%' AND NOT unchanged)
     GROUP BY selector, note, value_a, value_b, CASE WHEN alike > 3 THEN NULL ELSE pos END
-  -- As rank 13 below, but the count goes after `addresses differ`, before what to do. With
+  -- First among the addresses that differ, each at its own hit: another element's address
+  -- of the same captured array, which an address alone may explain (#302). With no
+  -- qualified value, note is kind.
+  UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, kind, pos FROM pair
+    WHERE differs AND qualified IS NULL AND NOT unchanged AND kind LIKE 'the address of %'
+  -- As rank 14 below, but the count goes after `addresses differ`, before what to do. With
   -- no qualified value, note is kind: named once, the GROUP BY's terms stay well within
   -- SQLite's limit, the column limit Peeky sets (#302).
-  UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs,
+  UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses differ at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
       || 'selector') || ': its first hit)' || substr(kind, length('addresses differ') + 1)
       ELSE kind END, MIN(pos) FROM pair
     WHERE qualified IS NULL AND kind LIKE 'addresses differ:%' AND NOT unchanged
     GROUP BY selector, phase, st, kind
-  UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
     AND NOT unchanged
   -- hit and the values are those of the MIN(pos) row (SQLite's bare columns).
-  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs,
+  UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses only, at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
       || 'selector') || ': its first hit)' || substr(kind, length('addresses only') + 1)
@@ -1096,9 +1105,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "where either run did not complete; (sets) says how each change went, as `outputs` does); "
         "then values only one run's intervention changed (an after-set value equal to its hit's "
         "observed one is left out; more than 3 alike are one row, its first hit's); then real "
-        "differences in hit and capture order (the first is the first divergence; a C or C++ "
-        "pointer at another element's address of an array both runs captured is one: `the "
-        "address of ...`); then values "
+        "differences in hit and capture order (the first is the first divergence); then C or C++ "
+        "pointers at another element's address of an array both runs captured (`the address "
+        "of ...`, by address alone: the pointer or the array may have moved), in hit order; "
+        "then other values "
         "whose addresses differ where an address may be another element's (a pointer or a "
         "reference, or any C, C++ or Rust value: note `addresses differ: ...`, which says to "
         "compare offsets with address(), or shows a C or C++ pointer's offsets by address from "
@@ -2590,9 +2600,8 @@ def _structure_apart(path, run):
     rows = query(
         path,
         "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
-        f"c.value, {_caveat('c')} AS caveat, r.language, c.at_element_of, c.element_index FROM "
-        "captures c JOIN runs r ON r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY "
-        "c.run_id, c.hit, c.rowid",
+        f"c.value, {_caveat('c')} AS caveat, r.language FROM captures c JOIN runs r ON "
+        "r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY c.run_id, c.hit, c.rowid",
         {"a": run["a"], "b": run["b"]},
         limit=MAX_ROWS,
     )["rows"]
@@ -2608,10 +2617,6 @@ def _structure_apart(path, run):
     for row in rows:
         here = row["run_id"]
         masked = None if row["value"] is None else _no_addresses(row["value"], row["language"])
-        if masked is not None and row["at_element_of"] is not None:
-            # At which element's address of a captured array a C or C++ pointer is (#302):
-            # another is another value. An offset by address alone is not (layout).
-            masked = f"{masked} [{row['at_element_of']} + {row['element_index']}]"
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue

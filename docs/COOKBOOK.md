@@ -1565,7 +1565,7 @@ runs.
 | 1 | `(status)`, `(output)`, `(edit)`, `(source)`, `(line)`, `(args)`, `(sets)` | How the runs differed |
 | 2 | `intervention only in run a` or `run b` | Values that only one run's `--set` changed |
 | 3 | values that differ | Real differences, in hit order |
-| 4 | `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
+| 4 | `the address of …`, `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
 | 5 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
 | 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr, or a C pointer to the same element |
 | 7 | `only in run a` | Selectors only one run captured |
@@ -1604,10 +1604,6 @@ only `r.tail` was set. The `observed` row shows any difference.
 divergence.
 
 - A hit that one run never reached says `missing in run b`.
-- A C or C++ pointer at another element's address of an array both runs captured says which, in
-  each run: ``the address of `level[6]` in run a, of `level[4]` in run b``. It is a real
-  difference even where its address reads the same in both
-  ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
 - A value whose type changed says so, for example after an edit to `long long`:
   `type unsigned int -> long long`.
 
@@ -1620,6 +1616,11 @@ The table never cuts a note, so a note always shows what to do.
 in the other run, so such a row may be a real difference. A pointer into an array may point at
 element 6 in one run and at element 4 in the other.
 
+- First come C and C++ pointers at another element's address of an array both runs captured, in
+  hit order. Each says which, in each run: ``the address of `level[6]` in run a, of `level[4]` in
+  run b``. That is an address fact: the pointer may have changed, or only the array moved
+  ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
+
 - Most are a pointer or a reference, by their type, such as `const int *` or
   `const std::string &`. They say `it may point at another element too`.
 - Any other value of a C, C++ or Rust run is here too, as a struct's preview shows its pointers as
@@ -1629,8 +1630,8 @@ element 6 in one run and at element 4 in the other.
   among them: the first real difference stays the first divergence.
 - To tell, compare each address's offset from a base with `address()`
   ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element.
-- C and C++ do that for you where both runs captured the array a pointer points into. Such a
-  pointer is a real difference (3) or the same element (6), never here.
+- C and C++ do that for you where both runs captured the array a pointer points into: another
+  element's address (first in this tier), or the same element's (6).
 - Where that array is a pointer, such as a parameter, the note shows each run's offset from it,
   by address: ``by address, `level + 6` in run a and `level + 4` in run b``. It stays here, as two
   pointers can point into separate blocks whose distance the allocator chose.
