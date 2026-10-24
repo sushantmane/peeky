@@ -138,3 +138,24 @@ def test_another_call_or_a_generator_is_refused(state, capsys):
     # Refused before the run: nothing ran.
     assert code == 2 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert f"line {give} is in `walk`, a generator or coroutine" in result["error"]["message"]
+
+
+@pytest.mark.timeout(240)
+def test_until_hits_waits_for_the_restore_of_its_last_change(state, capsys):
+    # Review of PR #322: with `--hits 2 --until hits`, the probe ended after the guard's
+    # second change, before the restore that undoes it.
+    (state / "trail.py").write_text(TRAIL)
+    guard, flat = line_of(TRAIL, "GUARD"), line_of(TRAIL, "FLAT")
+    code, result = probe(
+        capsys, state, "trail.py", "--at", f"trail.py:{guard}", "--hits", "2", "--until", "hits",
+        "--set-at", f"{guard}@all", "trend=0", "--set-at", f"{flat}@all", "trend=@before",
+        args=HEIGHTS,
+    )  # fmt: skip
+    assert code == 0 and result["ended"] == "hits", result
+    assert [(c["at"], c.get("restores")) for c in result["interventions"]] == [
+        (f"{guard}@1", None),
+        (f"{flat}@1", f"{guard}@1"),
+        (f"{guard}@2", None),
+        (f"{flat}@2", f"{guard}@2"),
+    ]
+    assert "unapplied" not in result

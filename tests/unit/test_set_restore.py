@@ -33,6 +33,7 @@ class Calls:
         self.exact, self.moved = exact, moved or {}
         self.values = dict(values or {})
         self.placed, self.calls, self.writes, self.stop, self.launch = [], [], [], None, None
+        self.asked = []
 
     def _keep(self, points):
         self.placed.append([point["line"] for point in points])
@@ -105,13 +106,23 @@ class Calls:
                 ],
             }
         if operation == "set_variable":
+            self.asked.append(args)
+            # Which storage `x` is here: its declaration, unless a stop names another.
+            identity = self.stop.get("storage", "the local `x`")
+            if "target" in args and args["target"] != identity:
+                raise Refused(
+                    "MUTATION_REJECTED",
+                    f"`x` cannot be changed back here: it is {identity}, not {args['target']}, "
+                    "which the change was made to. The value from before that change is not "
+                    "this one's",
+                )
             before = self._value()
             self.values[self._frame()] = args["value"]
             self.writes.append((self.stop["line"], args["value"]))
             result = {"name": args["name"], "before": before, "after": args["value"]}
             if args.get("restorable"):
                 result["restore"] = (
-                    {"value": before}
+                    {"value": before, "target": identity}
                     if self.exact
                     else {"refused": "it is a double, shown rounded"}
                 )
@@ -372,6 +383,92 @@ def test_the_watch_ends_with_the_last_restore(monkeypatch):
     assert worker.placed == [[GUARD, FLAT, FIRST], [GUARD]]
 
 
+def test_a_restore_to_other_storage_is_refused_before_it_writes(monkeypatch):
+    # Review of PR #322: Java `b.n=0`, then `b = new Box(9)`, then `b.n=@before` wrote 1
+    # into the new Box. The worker compares the storage the change wrote with this one's.
+    stops = [{"line": FIRST}, {"line": GUARD}, {"line": FLAT, "storage": "`n` of Box@31"}]
+    worker = Calls(stops)
+    message = refusal(run(monkeypatch, worker, flip()))
+    assert "x=@before was refused at hit 1 of line 8 (in f): `x` cannot be changed back here:" in (
+        message
+    )
+    assert "it is `n` of Box@31, not the local `x`, which the change was made to" in message
+    assert worker.writes == [(GUARD, "0")]
+    # The restore named the storage its change wrote; the change asked for it.
+    assert [(args.get("restorable"), args.get("target")) for args in worker.asked] == [
+        (True, None),
+        (True, "the local `x`"),
+    ]
+
+
+def test_a_restore_over_the_program_s_own_value_says_so(monkeypatch):
+    # The program wrote `x` (2) after the change (0): the restore writes over it.
+    stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}, {"line": FLAT, "set": "2"}]
+    result = run(monkeypatch, Passes(stops), flip())
+    restore = result["interventions"][1]
+    assert (restore["before"], restore["after"], restore["overwrote"]) == ("2", "1", "2")
+    text = probe_module._table(result)
+    assert "set x: 2 -> 1  (restored over the program's 2, --set-at line 8@all, hit 1, in f)" in (
+        text
+    )
+    # Where the value is still the one the change wrote, nothing is said.
+    result = run(monkeypatch, Passes(passes("1")), flip())
+    assert "overwrote" not in result["interventions"][1]
+
+
+def test_until_hits_waits_for_the_restore_its_last_change_awaits(monkeypatch):
+    # Review of PR #322: `--hits 2 --until hits` ended after the guard's second change,
+    # before the restore that undoes it, with the guard left at 0.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits=2, until="hits",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE)),
+    )  # fmt: skip
+    worker = Passes(passes("1", "1", "1"))
+    result = run(monkeypatch, worker, request)
+    assert result["status"] == "completed" and result["ended"] == "hits", result
+    assert worker.writes == [(GUARD, "0"), (FLAT, "1"), (GUARD, "0"), (FLAT, "1")]
+    assert "unapplied" not in result and probe_exit_code(result) == 0
+    # The third pass ran without the probe: it ended after the restore.
+    assert [stop["line"] for stop in worker.order] == [GUARD, FLAT]
+
+
+def test_a_change_left_in_place_is_reported_and_exits_4(monkeypatch):
+    # The restore line's second stop never comes: the guard's second change stays.
+    request = Probe(
+        "main.c", GUARD, ("x",), hits=2, until="hits",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE)),
+    )  # fmt: skip
+    stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}, {"line": FLAT}, {"line": GUARD}]
+    result = run(monkeypatch, Passes(stops), request)
+    assert result["status"] == "completed" and probe_exit_code(result) == 4, result
+    assert result["unapplied"] == [
+        {
+            "option": "--set-at",
+            "at": f"{FLAT}@all",
+            "name": "x",
+            "value": BEFORE,
+            "stops": 1,
+            "unrestored": f"{GUARD}@2",
+        }
+    ]
+    warning = next(w for w in result["warnings"] if "did not undo" in w)
+    assert warning == (
+        f"--set-at main.c:{FLAT}@all x=@before did not undo the change at line {GUARD}@2: line "
+        f"{FLAT} stopped 1 time(s) before the probe ended, so its hit 2 never came. The run "
+        "ended with that change in place."
+    )
+    outcome = result["set_outcomes"][1]
+    assert (outcome["unrestored"], outcome["complete"]) == (f"{GUARD}@2", False)
+    assert "status: completed (1 change left in place, not undone)" in probe_module._table(result)
+
+
+def test_watch_stops_are_counted_apart(monkeypatch):
+    result = run(monkeypatch, Passes(passes("1", "1")), flip())
+    # The first line's one stop; the flat line's two (a --set-at's) stay set pauses.
+    assert len(result["watch_pauses_ms"]) == 1 and len(result["set_pauses_ms"]) == 2
+    assert "watching for new calls: 1 stops, max" in probe_module._table(result)
+
+
 def test_a_probe_without_a_restore_asks_the_worker_for_nothing_new(monkeypatch):
     worker = Calls([{"line": GUARD}, {"line": FLAT}])
     request = Probe("main.c", GUARD, ("x",), set_at=((FLAT, 1, "x", "0"),))
@@ -528,13 +625,20 @@ def test_a_change_keeps_what_a_restore_may_write_back_only_when_asked():
             before if before != "0.1" else (_ for _ in ()).throw(ValueError("it is a double"))
         )
     )
-    assert "restore" not in _written(runtime, {}, {}, "1", "0")
-    assert _written(runtime, {}, {}, "1", "0", restorable=True)["restore"] == {"value": "1"}
-    assert _written(runtime, {}, {}, "0.1", "0", restorable=True)["restore"] == {
+    kept = ("the local `x`", None)
+    assert "restore" not in _written(runtime, {}, {}, "1", "0", target=kept)
+    assert _written(runtime, {}, {}, "1", "0", restorable=True, target=kept)["restore"] == {
+        "value": "1",
+        "target": "the local `x`",
+    }
+    assert _written(runtime, {}, {}, "0.1", "0", restorable=True, target=kept)["restore"] == {
         "refused": "it is a double"
     }
-    plain = _written(SimpleNamespace(), {}, {}, "1", "0", restorable=True)
+    plain = _written(SimpleNamespace(), {}, {}, "1", "0", restorable=True, target=kept)
     assert plain["restore"] == {"refused": "Peeky restores no value of this language's"}
+    # A value Peeky can write back, but to a storage it can't name, is not kept either.
+    unnamed = _written(runtime, {}, {}, "1", "0", restorable=True, target=(None, "no table"))
+    assert unnamed["restore"] == {"refused": "Peeky cannot tell which storage it wrote (no table)"}
 
 
 def test_a_restore_line_whose_calls_cannot_be_watched_is_refused_before_the_run(tmp_path):
@@ -596,3 +700,147 @@ def test_restores_are_saved_and_queried_as_changes(monkeypatch, tmp_path):
         ["x", "0", f"requested at {GUARD}@all, made at 2 stops, to the program's end"],
         ["x", BEFORE, f"requested at {FLAT}@all, made at 2 stops, to the program's end"],
     ]
+
+
+def test_the_evidence_links_each_restore_to_the_change_it_undid(monkeypatch, tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    evidence.record(store, run(monkeypatch, Passes(passes("1", "-1")), flip()))
+    rows = evidence.query(store, "SELECT restores_at FROM interventions ORDER BY rowid", {})
+    assert [row["restores_at"] for row in rows["rows"]] == [None, "5@1", None, "5@2"]
+    effect = evidence.run_query(store, "set_effect", {"run": 1})["rows"]
+    texts = [row["interventions"] for row in effect]
+    assert "x: 0 -> 1 (restored from before 5@1)" in texts, texts
+    table = evidence.query_table(store, evidence.run_query(store, "set_effect", {"run": 1}), {})
+    assert "x: 0 -> -1 (restored from before 5@2)" in table, table
+    # diff's and compare's (sets) row name the restore, which `…` would hide.
+    sets = json.dumps(
+        [
+            ["x", "0", "requested at 5@all, made at 2 stops, to the program's end"],
+            ["x", BEFORE, "requested at 8@all, made at 2 stops, to the program's end"],
+        ]
+    )
+    assert evidence._sets_text(sets) == (
+        "2 requests: x=0 (requested at 5@all, made at 2 stops, to the program's end), …; "
+        "restore: x=@before (requested at 8@all, made at 2 stops, to the program's end)"
+    )
+
+
+def test_the_evidence_keeps_a_change_left_in_place(monkeypatch, tmp_path):
+    store = tmp_path / "evidence" / "evidence.db"
+    request = Probe(
+        "main.c", GUARD, ("x",), hits=2, until="hits",
+        set_at=((GUARD, ALL, "x", "0"), (FLAT, ALL, "x", BEFORE)),
+    )  # fmt: skip
+    stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}, {"line": FLAT}, {"line": GUARD}]
+    evidence.record(store, run(monkeypatch, Passes(stops), request))
+    evidence.record(store, run(monkeypatch, Passes(passes("1")), flip()))
+    sets = {
+        row["run_id"]: json.loads(row["sets"])
+        for row in evidence.run_query(store, "outputs", {"a": 1, "b": 2})["rows"]
+    }
+    assert sets[1][1] == [
+        "x",
+        BEFORE,
+        # The probe waited for the restore, and the program ended first.
+        f"requested at {FLAT}@all, made at 1 stop, to the program's end; the change at "
+        f"{GUARD}@2 was left in place, not undone",
+    ]
+    # An outcome is read only where it fits its request: `unrestored` only on a restore.
+    entry = json.dumps(["x", "0", "5@all"])
+    outcome = {
+        "option": "--set-at", "at": "5@all", "name": "x", "value": "0", "made": 2,
+        "ended": "exit", "complete": False, "unrestored": "5@2",
+    }  # fmt: skip
+    assert evidence._checked_outcome(json.dumps(outcome), entry, 5, None) is None
+    restore = {**outcome, "value": BEFORE}
+    entry = json.dumps(["x", BEFORE, "5@all"])
+    assert evidence._checked_outcome(json.dumps(restore), entry, 5, None) == restore
+    assert (
+        evidence._checked_outcome(json.dumps({**restore, "complete": True}), entry, 5, None) is None
+    )
+
+
+def test_a_schema_18_store_gains_the_restore_column(monkeypatch, tmp_path):
+    import sqlite3
+
+    store = tmp_path / "evidence" / "evidence.db"
+    evidence.record(store, run(monkeypatch, Passes(passes("1")), flip()))
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "ALTER TABLE interventions DROP COLUMN restores_at; PRAGMA user_version = 18;"
+    )
+    connection.close()
+    evidence.record(store, run(monkeypatch, Passes(passes("1")), flip()))
+    rows = evidence.query(store, "SELECT run_id, restores_at FROM interventions ORDER BY rowid", {})
+    assert [(row["run_id"], row["restores_at"]) for row in rows["rows"]] == [
+        (1, None), (1, None), (2, None), (2, "5@1"),
+    ]  # fmt: skip
+    connection = sqlite3.connect(store)
+    assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+    connection.close()
+
+
+def test_each_language_names_the_storage_a_change_writes():
+    # Python: one local of each name in a call.
+    assert PythonAdapter.storage_identity({"name": "trend"}) == "the local `trend`"
+    # Native: the declaration the debugger shows, and the steps inside it.
+    native = SimpleNamespace(_declaration_at=lambda frame, root: ("/w/a.c", 12))
+    identity = NativeSession.storage_identity
+    assert identity(native, {"name": "x"}) == "`x` (`x` declared at a.c:12)"
+    assert identity(native, {"name": "lo"}, root={"name": "s"}, steps=("in", "lo")) == (
+        "`s.in.lo` (`s` declared at a.c:12)"
+    )
+    assert identity(native, {"name": "[2]"}, root={"name": "xs"}, steps=("[2]",)) == (
+        "`xs[2]` (`xs` declared at a.c:12)"
+    )
+    # A name LLDB gives with its declaration says it itself.
+    assert identity(native, {"name": "x @ a.c:5"}) == "`x` (`x` declared at a.c:5)"
+    unplaced = SimpleNamespace(_declaration_at=lambda frame, root: None)
+    with pytest.raises(ValueError, match="which declaration of `x` the debugger shows"):
+        identity(unplaced, {"name": "x"})
+    # Java: a field or element by the object holding it; a local by its declaration.
+    java = JavaSession.storage_identity
+    method = {
+        "name": "find",
+        "line_pcs": {12: (20,), 30: (35, 90)},
+        "slots": [("i", 3, 10, 30), ("i", 3, 70, 40), ("n", 4, 0, 100)],
+    }
+    session = SimpleNamespace(_frame_method=lambda frame: (method, frame["line"]))
+    assert java(session, {"name": "n"}, parent={"value": "Box@27"}) == "`n` of Box@27"
+    assert java(session, {"name": "2"}, parent={"value": "int[5]@33"}) == "`2` of int[5]@33"
+    with pytest.raises(ValueError, match="which object holds `n`"):
+        java(session, {"name": "n"}, parent={"value": "null"})
+    assert java(session, {"name": "i"}, frame={"line": 12}) == (
+        "`i` (declared in find: slot 3, bytecode 10 to 40)"
+    )
+    # Line 30 runs where each of the two `i`s is in scope: not singled out.
+    with pytest.raises(ValueError, match="which declaration of `i` the debugger shows on line 30"):
+        java(session, {"name": "i"}, frame={"line": 30})
+
+
+def test_the_worker_writes_a_restore_only_to_the_storage_its_change_wrote(tmp_path):
+    worker = DebugWorker(tmp_path)
+    runtime = SimpleNamespace(storage_identity=lambda variable, **where: f"`{variable['name']}`")
+    assert worker.storage_target(runtime, {}, {"name": "x"}, "x") == (None, None)
+    assert worker.storage_target(runtime, {"restorable": True}, {"name": "x"}, "x") == ("`x`", None)
+    assert worker.storage_target(runtime, {"target": "`x`"}, {"name": "x"}, "x") == ("`x`", None)
+    with pytest.raises(ValueError, match="`y` cannot be changed back here: it is `y`, not `x`"):
+        worker.storage_target(runtime, {"target": "`x`"}, {"name": "y"}, "y")
+
+    def unknown(variable, **where):
+        raise ValueError("Peeky cannot tell which declaration of `x` the debugger shows here")
+
+    with pytest.raises(ValueError, match="cannot be changed back here: Peeky cannot tell which"):
+        worker.storage_target(SimpleNamespace(storage_identity=unknown), {"target": "`x`"}, {}, "x")
+    with pytest.raises(ValueError, match="target must be a nonempty string"):
+        worker.validate(
+            "set_variable",
+            {
+                "session_id": "s",
+                "stop_id": "t",
+                "reference": 1,
+                "name": "x",
+                "value": "1",
+                "target": "",
+            },
+        )

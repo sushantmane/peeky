@@ -121,11 +121,11 @@ the commands.
   its first line. Not in Python. Deep recursion is slow: limit `--hits`.
 - **`--json`** works on every command. stdout is then one JSON value; progress goes to stderr, and
   `--quiet` silences it.
-- **Sessions:** pass `--name` to every session command (default `default`). Starting a name in use
-  fails with "exists". Each command waits up to `--timeout S` (default 30) for a stop, leaving the
-  program running (`session wait`). A session's worker ends on `close`, when its start fails or is
-  interrupted, or after 5 idle minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`):
-  set it per task to keep sessions apart.
+- **Sessions:** pass `--name` to every session command (default `default`). Each command waits up
+  to `--timeout S` (default 30) for a stop, leaving the program running (`session wait`). A
+  session's worker ends on `close`, when its start fails or is interrupted, or after 5 idle
+  minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`): set it per task to keep
+  sessions apart.
 - **In a session:** `get` also lists a value's children, each with the selector that reads it. It
   exits 1 if any selector failed. `--frame N` reads caller frame N.
 - **Stepping:** `step` runs to the next line; `--into` enters a call; `--out` leaves the function
@@ -178,8 +178,9 @@ the commands.
 - Each row's `function` tells a function from a generator or lambda on the same line. Session
   states and `inspect` name the stopped function. A line shared by a function and a closure or
   lambda can stop in each (Java: in one; 7.3).
-- `output_complete: false`: `output` isn't proven whole (2.6). `--until hits` (for slow exits)
-  adds `output_after_last_hit: true`: the program ran on past its last hit.
+- `output_complete: false`: `output` isn't proven whole (2.6). `program_ended: true`: the program
+  ended. `--until hits` (for slow exits) adds `output_after_last_hit: true`: the program ran on
+  past its last hit.
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A
   failed selector shows `{"error": ...}`. `rows` holds the same, one entry per hit, phase and
   selector. `phase` is `observed`, `after-set` (after your intervention) or `returned`. `line` is

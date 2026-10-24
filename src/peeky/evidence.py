@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -92,7 +92,9 @@ TABLES = {
             "until_hits (the probe ended after its last hit), cap (a LINE@all's 100 "
             "stops), refused or failed (at hit: its own change there), timeout or failed "
             "(the probe's, first), or lost_stop (the debugger lost a stop, which may have "
-            "run without it), complete: carried out in full}; NULL for a run saved before "
+            "run without it), complete: carried out in full, and unrestored for a LINE@all "
+            "restore (name=@before) whose name's latest change stayed in place: that change's "
+            "LINE@HIT}; NULL for a run saved before "
             "schema 16, or with no interventions. Queries read it only where every entry "
             "matches its request (option, at, name, value, each key of its type); else "
             "they read the run's warnings",
@@ -216,6 +218,9 @@ TABLES = {
             "at, 1 to N in address order, where the line has several there: hit counts "
             "every one, so @HIT names a stop, not a pass. NULL for a line with one (and for "
             "runs saved before schema 14)",
+            "restores_at": "For a restore (--set-at LINE@HIT name=@before), the LINE@HIT of "
+            "the change whose value from before it wrote back (in the original's numbering); "
+            "NULL for any other change, and for runs saved before schema 19",
         },
     ),
     "pauses": (
@@ -273,7 +278,7 @@ _DDL = (
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
     "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT, "
-    "stop INTEGER)",
+    "stop INTEGER, restores_at TEXT)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -303,7 +308,9 @@ _DDL = (
 # a C or C++ pointer is, and offset_from and element_offset, how far it is from another
 # pointer by address alone (NULL for earlier runs); version 18 adds captures.debugger_type,
 # the debugger's own name for the type (NULL for earlier runs, whose type spelled a Rust
-# reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315).
+# reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315);
+# version 19 adds interventions.restores_at (#305), the change a restore undid (NULL
+# for earlier runs, which made none).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -428,7 +435,13 @@ _MIGRATIONS = {
             ("element_offset", "INTEGER"),
         ),
     ),
-    17: (*_DROP_VIEWS, _add_columns(("debugger_type", "TEXT")), _EVIDENCE_VIEW, _LAST_RUN_VIEW),
+    17: (*_DROP_VIEWS, _add_columns(("debugger_type", "TEXT"))),
+    18: (
+        *_DROP_VIEWS,
+        _add_columns(("restores_at", "TEXT"), table="interventions"),
+        _EVIDENCE_VIEW,
+        _LAST_RUN_VIEW,
+    ),
 }
 
 _LATEST = "(SELECT MAX(run_id) FROM runs)"
@@ -437,6 +450,8 @@ _B = f"COALESCE(:b, {_LATEST})"
 _A = f"COALESCE(:a, (SELECT MAX(run_id) FROM runs WHERE run_id < {_B}))"
 
 
+# What set_effect adds to a restore's change (#305): the change it undid.
+_RESTORED = "COALESCE(' (restored from before ' || restores_at || ')', '')"
 # An intervention (`i`) made at a captured stop: that stop has after-set captures.
 _AT_CAPTURE = (
     "EXISTS (SELECT 1 FROM captures c WHERE c.run_id = i.run_id AND c.phase = 'after-set' "
@@ -574,7 +589,7 @@ def _checked_outcome(text, entry, line, set_hit):
         return None
     if not isinstance(outcome, dict) or not isinstance(request, list):
         return None
-    if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {"hit"}:
+    if not _OUTCOME_KEYS <= set(outcome) or set(outcome) - _OUTCOME_KEYS - {"hit", "unrestored"}:
         return None
     made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
     # `ended` is checked as text first: a list or an object is no set member.
@@ -608,7 +623,18 @@ def _checked_outcome(text, entry, line, set_hit):
             return None
     elif ended in ("cap", "lost_stop") or made not in (0, 1) or (made == 1) != (ended == "made"):
         return None
-    if outcome["complete"] != (ended == "made" or (ended == "exit" and every and made > 0)):
+    # A `LINE@all` restore (#305) that left its name's latest change in place: that
+    # change's LINE@HIT; it was not carried out in full.
+    unrestored = outcome.get("unrestored")
+    if "unrestored" in outcome and not (
+        every
+        and request[1] == "@before"
+        and isinstance(unrestored, str)
+        and re.fullmatch(r"[1-9][0-9]{0,6}@[1-9][0-9]{0,6}", unrestored)
+    ):
+        return None
+    full = ended == "made" or (ended == "exit" and every and made > 0)
+    if outcome["complete"] != (full and unrestored is None):
         return None
     return outcome
 
@@ -622,6 +648,15 @@ def _set_outcome(text, entry, line, set_hit):
     outcome = _checked_outcome(text, entry, line, set_hit)
     if outcome is None:
         return None
+    text = _outcome_text(outcome)
+    if text is not None and outcome.get("unrestored"):
+        text += f"; the change at {outcome['unrestored']} was left in place, not undone"
+    return text
+
+
+def _outcome_text(outcome):
+    """_set_outcome's text for a checked outcome, but for a restore's change left in
+    place."""
     made, ended, hit = outcome["made"], outcome["ended"], outcome.get("hit")
     every = outcome["at"].endswith("@all") and outcome["option"] == "--set-at"
     stops = f"{made} stop{'' if made == 1 else 's'}"
@@ -1238,7 +1273,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
   SELECT o.hit, o.stop, o.line, o.function, o.selector, {_shown("o")} AS observed,
     {_shown("s")} AS after_set,
     {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
-    (SELECT group_concat(name || ': ' || before || ' -> ' || after, '; ') FROM interventions i
+    (SELECT group_concat(name || ': ' || before || ' -> ' || after || {_RESTORED}, '; ')
+      FROM interventions i
       WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS interventions,
     (SELECT MIN(rowid) FROM interventions i
       WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS seq, o.rowid AS pos
@@ -1247,7 +1283,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
   UNION ALL
   SELECT i.hit, i.stop, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
-    i.name || ': ' || i.before || ' -> ' || i.after, i.rowid, 0
+    i.name || ': ' || i.before || ' -> ' || i.after || {_RESTORED}, i.rowid, 0
   FROM interventions i WHERE i.run_id = {_RUN} AND NOT {_AT_CAPTURE})
 ORDER BY seq, pos""",
         _RUN_PARAM,
@@ -1673,7 +1709,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         )
         connection.executemany(
             "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
-            "function, instance, stop) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "function, instance, stop, restores_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1689,6 +1725,7 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     _text(change.get("function")),
                     _text(change.get("instance")),
                     change["stop"] if type(change.get("stop")) is int else None,
+                    _text(change.get("restores")),
                 )
                 for change in result.get("interventions") or []
             ],
@@ -2247,7 +2284,8 @@ def _wide(path, params):
     sets = (
         "(SELECT NULLIF(json_group_array(name || ': ' || COALESCE(before, '?') || ' -> ' || "
         "COALESCE(after, '?') || ' (line ' || COALESCE(line, '?') || ', hit ' || hit || "
-        "COALESCE(', stop ' || stop, '') || "
+        "COALESCE(', stop ' || stop, '') || COALESCE(', restored from before ' || "
+        "restores_at, '') || "
         "COALESCE(', in ' || COALESCE(instance, short_function(function)), '') || ')'), "
         f"'[]') FROM (SELECT * FROM interventions i WHERE i.run_id = {run} AND CASE WHEN "
         f"{_AT_CAPTURE} THEN w.phase = 'after-set' AND i.hit = w.hit ELSE w.phase = "
@@ -3515,11 +3553,23 @@ def _sets_text(value, other=None):
         set_value = set_value[: _CHANGE_WIDTH - 1] + "…"
     many = len(sets) > 1
     noun = "request" if any(re.search(r"@all\b", str(item[2])) for item in sets) else "change"
+    # A restore (#305) is named even where `…` stands for it: a run with one and a run
+    # without it differ in what they asked.
+    restores = [
+        f"{item[0]}=@before ({item[2]})"
+        for i, item in enumerate(sets)
+        if i != index and item[1] == "@before"
+    ]
     return (
         f"{len(sets)} {noun}{'s' if many else ''}: "
         + ("…, " if index else "")
         + f"{name}={set_value} ({where})"
         + (", …" if index < len(sets) - 1 else "")
+        + (
+            f"; restore{'s' if len(restores) > 1 else ''}: {', '.join(restores)}"
+            if restores
+            else ""
+        )
     )
 
 
@@ -3528,8 +3578,14 @@ def _change_text(change, shown):
     before, after = shown(change["before"]), shown(change["after"])
     return (
         f"{change['name']}: {_window(before, after, _CHANGE_WIDTH, _CHANGE_LEAD)} -> "
-        f"{_window(after, before, _CHANGE_WIDTH, _CHANGE_LEAD)}"
+        f"{_window(after, before, _CHANGE_WIDTH, _CHANGE_LEAD)}{_restored(change)}"
     )
+
+
+def _restored(change):
+    """` (restored from before 15@2)` for a restore (#305), as set_effect's SQL says it."""
+    at = change.get("restores_at")
+    return f" (restored from before {at})" if isinstance(at, str) else ""
 
 
 def _changes_text(row, changes, shown):
@@ -3547,7 +3603,7 @@ def _changes_text(row, changes, shown):
         and change["line"] == row.get("line")
         and None not in (change["name"], change["before"], change["after"])
     ]
-    pieces = [f"{c['name']}: {c['before']} -> {c['after']}" for c in here]
+    pieces = [f"{c['name']}: {c['before']} -> {c['after']}{_restored(c)}" for c in here]
     if cell == "; ".join(pieces):
         made = here
     else:
@@ -3665,7 +3721,8 @@ def query_table(path, result, params=None):
     if result.get("query") == "set_effect" and "interventions" in result["columns"]:
         changes = query(
             path,
-            "SELECT hit, line, name, before, after FROM interventions WHERE run_id = :run "
+            "SELECT hit, line, name, before, after, restores_at FROM interventions WHERE "
+            "run_id = :run "
             "ORDER BY rowid",
             {"run": params.get("run")},
             limit=MAX_ROWS,

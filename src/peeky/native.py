@@ -8413,6 +8413,33 @@ class NativeSession:
             raise ValueError(f"it read {before[:80]!r}, not a decimal integer Peeky can write back")
         return before
 
+    def storage_identity(self, variable, frame=None, root=None, steps=(), parent=None):
+        """Which storage a change writes, as a `@before` restore compares it (#305): the
+        declaration of the root local the debugger shows at the stop (`s` declared at
+        a.c:5), and the fields and elements ``steps`` reach inside it, which a change
+        reaches only in the frame's own memory. With the call proven the same, the same
+        declaration is the same storage. ValueError where the declaration cannot be
+        singled out."""
+        root = root if isinstance(root, dict) else variable
+        name = str((root or {}).get("name"))
+        located = split_located(name)
+        if located:
+            base, where = located[0], located[1:]
+        else:
+            base, where = name, self._declaration_at(frame, root)
+        if where is None:
+            raise ValueError(
+                f"Peeky cannot tell which declaration of `{base}` the debugger shows here"
+            )
+        path = "".join(str(step) if str(step).startswith("[") else f".{step}" for step in steps)
+        return f"`{base}{path}` (`{base}` declared at {Path(str(where[0])).name}:{where[1]})"
+
+    def _declaration_at(self, frame, root):
+        """(source, line) of the declaration of the root local ``root`` the debugger shows
+        at the stop ``frame``, or None (_shown_where)."""
+        where = self._shown_where(str(root.get("name")), self._unslid(frame))
+        return where[:2] if where else None
+
     def entry_lines(self, program, lines):
         """{line: the first line of each function with code on it} (#305): where each
         call of the function first stops (_function_starts), in ``program``. A probe

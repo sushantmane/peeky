@@ -329,7 +329,9 @@ for `end`.
   `char` as it was before the probe's change at the same hit
   ([COOKBOOK 2.8](../COOKBOOK.md#skip-a-statement-restore-with-before)). Never a `float` or
   `double`, which java-debug may show rounded, or a String or other object. `continue;` has no
-  code of its own: restore at the next line that has.
+  code of its own: restore at the next line that has. A field or element is written back only
+  in the object or array its change wrote, by java-debug's id (`Box@27`), and a local only to
+  the declaration its change wrote.
 - In a session, `session set current.end=10` changes a field.
 - Peeky reads the value back from the object after the change.
 - A field is refused unless its name means exactly one instance field. It is refused if a static

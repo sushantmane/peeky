@@ -1870,6 +1870,10 @@ class DebugWorker:
                 raise ValueError("name and value must be strings")
             if type(args.get("restorable", False)) is not bool:
                 raise ValueError("restorable must be true or false")
+            if "target" in args and (
+                not isinstance(args["target"], str) or not 0 < len(args["target"]) <= 500
+            ):
+                raise ValueError("target must be a nonempty string of at most 500 characters")
             # Only what a selector can name (#195): a change never reaches a variable the
             # CLI could not select, such as one whose name holds an invisible character.
             name = args["name"]
@@ -2721,6 +2725,9 @@ class DebugWorker:
             self.refuse_mid_statement(
                 runtime, variable, self.reference_frames.get(ref), args["name"]
             )
+            target, untargeted = self.storage_target(
+                runtime, args, variable, args["name"], frame=self.reference_frames.get(ref)
+            )
             if text is not None:
                 written = self.set_text(runtime, variable, adapter_ref, kind, text, shape)
                 if args.get("restorable"):
@@ -2765,6 +2772,7 @@ class DebugWorker:
                     frame=self.reference_frames.get(ref),
                     root=variable,
                     restorable=args.get("restorable", False),
+                    target=(target, untargeted),
                 ),
                 **({"note": unread_note} if unread_note else {}),
             }
@@ -4345,6 +4353,14 @@ class DebugWorker:
         if reason := check(variable, parent=parent):
             raise ValueError(f"`{selector}` cannot be changed: {reason}")
         runtime.validate_variable(variable, value)
+        target, untargeted = self.storage_target(
+            # The value holding it, as read again from the frame just now (`walk`).
+            runtime,
+            args,
+            variable,
+            selector,
+            parent=trail[-1] if trail else {},
+        )
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         request = {
@@ -4385,6 +4401,7 @@ class DebugWorker:
                 before,
                 after,
                 restorable=args.get("restorable", False),
+                target=(target, untargeted),
             ),
         }
 
@@ -4424,6 +4441,9 @@ class DebugWorker:
             step if step.startswith("[") else f".{step}" for step in steps
         )
         self.refuse_mid_statement(runtime, root, frame, selector, steps)
+        target, untargeted = self.storage_target(
+            runtime, args, variable, selector, frame=frame, root=root, steps=steps
+        )
         before = variable.get("value")
         literal = getattr(runtime, "mutation_literal", None)
         try:
@@ -4476,6 +4496,7 @@ class DebugWorker:
                 root,
                 steps,
                 restorable=args.get("restorable", False),
+                target=(target, untargeted),
             ),
         }
 
@@ -4653,6 +4674,36 @@ class DebugWorker:
         if not ancestry:
             return {"top": True}
         return {"top": False, "path": [step for step, _ in ancestry] + [name]}
+
+    def storage_target(self, runtime, args, variable, shown, **where):
+        """(identity, why not): which storage a change writes (the runtime's
+        ``storage_identity``: a local's declaration, or the object holding a field), only
+        where a probe asks (`restorable`, `target`; #305), else (None, None). A restore
+        names the storage its change wrote (``target``): it is refused, before anything is
+        written, where this one is another, or Peeky cannot tell which it is."""
+        if not args.get("restorable") and "target" not in args:
+            return None, None
+        hook = getattr(runtime, "storage_identity", None)
+        identity, why = None, "Peeky cannot tell which storage this language's names hold"
+        if hook is not None:
+            try:
+                identity, why = str(hook(variable, **where))[:500], None
+            except ValueError as exc:
+                why = str(exc)[:300]
+            except Exception:
+                why = "Peeky could not tell which storage it is"
+        expected = args.get("target")
+        if expected is not None and identity != expected:
+            raise ValueError(
+                f"`{shown}` cannot be changed back here: "
+                + (
+                    f"it is {identity}, not {expected}, which the change was made to"
+                    if identity is not None
+                    else why
+                )
+                + ". The value from before that change is not this one's"
+            )
+        return identity, why
 
     def watch_entries(self, runtime, program, lines):
         """[[line, [first lines]], ...]: for each line a probe restores a value at
@@ -4848,7 +4899,16 @@ class DebugWorker:
 
 
 def _written(
-    runtime, variable, reply, before, after, frame=None, root=None, steps=(), restorable=False
+    runtime,
+    variable,
+    reply,
+    before,
+    after,
+    frame=None,
+    root=None,
+    steps=(),
+    restorable=False,
+    target=(None, None),
 ):
     """What a change's result says of the value it wrote, besides its text: ``type``, the
     value's type after the write, as the debugger's reply to it or a read after it names
@@ -4860,7 +4920,8 @@ def _written(
     Python's True, False or None). ``variable`` is the value as read before the write,
     and ``frame``, ``root`` and ``steps`` where it is (a root local, or a field or
     element ``steps`` reach from it). With ``restorable``, ``restore``: what a later
-    `@before` may write back (_restorable)."""
+    `@before` may write back, and to which storage (``target``: (identity, why not),
+    storage_target; _restorable)."""
     kind = reply.get("type") if isinstance(reply, dict) else None
     written = {"type": kind[:300]} if isinstance(kind, str) and kind else {}
     exact = getattr(runtime, "exact_text", None)
@@ -4873,6 +4934,15 @@ def _written(
             written["unchanged"] = True
     if restorable:
         written["restore"] = _restorable(runtime, variable, before, frame, root, steps)
+        identity, why = target
+        if identity is None:
+            written["restore"] = {
+                "refused": f"Peeky cannot tell which storage it wrote ({why})"
+                if why
+                else "Peeky cannot tell which storage it wrote"
+            }
+        elif "value" in written["restore"]:
+            written["restore"]["target"] = identity
     return written
 
 

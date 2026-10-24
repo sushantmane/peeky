@@ -101,6 +101,34 @@ int main(void)
 }
 """
 
+# Two locals named `x` (one shadows the other), and two `y`s in sibling blocks.
+SHADOW = r"""#include <stdio.h>
+
+int main(void)
+{
+    int x = 1;
+    x += 1; /* OUTER */
+    {
+        int x = 10;
+        x += 1; /* INNER */
+        printf("INNER=%d\n", x);
+    }
+    {
+        int y = 1;
+        y += 1; /* FIRST_Y */
+        printf("FIRST=%d\n", y);
+    }
+    {
+        int y = 2;
+        y += 1; /* SECOND_Y */
+        printf("SECOND=%d\n", y);
+    }
+    x += 1; /* AGAIN */
+    printf("OUTER=%d\n", x);
+    return 0;
+}
+"""
+
 
 @pytest.fixture
 def native(tmp_path, monkeypatch):
@@ -187,3 +215,35 @@ def test_a_restore_in_another_call_or_frame_is_refused(native, capsys):
     )  # fmt: skip
     assert code == 1, result
     assert "this stop is 2 calls deeper (a recursive call)" in result["error"]["message"], result
+
+
+@pytest.mark.timeout(300)
+def test_a_restore_is_made_only_to_the_declaration_its_change_wrote(native, capsys):
+    # Review of PR #322: a restore wrote whatever its name named at its stop, such as a
+    # shadowing `x`, or another block's `y`.
+    path = write(native, "shadow.c", SHADOW)
+    outer, inner = line_of(SHADOW, "/* OUTER */"), line_of(SHADOW, "/* INNER */")
+    first, second = line_of(SHADOW, "/* FIRST_Y */"), line_of(SHADOW, "/* SECOND_Y */")
+    again = line_of(SHADOW, "/* AGAIN */")
+    for change, restore, name in ((outer, inner, "x"), (first, second, "y")):
+        code, result = probe(
+            capsys, path, change, "--set-at", f"{change}@1", f"{name}=5",
+            "--set-at", f"{restore}@1", f"{name}=@before",
+        )  # fmt: skip
+        assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+        assert (
+            f"cannot be changed back here: it is `{name}` (`{name}` declared at shadow.c:"
+            f"{restore - 1}), not `{name}` (`{name}` declared at shadow.c:{change - 1}), which "
+            "the change was made to"
+        ) in result["error"]["message"], result["error"]
+        assert [c["after"] for c in result["interventions"]] == ["5"]
+    # The outer `x` again: written back, over the 6 the program made of the 5.
+    code, result = probe(
+        capsys, path, outer, "--set-at", f"{outer}@1", "x=5", "--set-at", f"{again}@1",
+        "x=@before",
+    )  # fmt: skip
+    assert code == 0, result
+    restore = result["interventions"][1]
+    assert (restore["before"], restore["after"], restore["overwrote"]) == ("6", "1", "6")
+    assert "restored over the program's 6, --set-at line" in _table(result)
+    assert result["output"].splitlines()[-1] == "OUTER=2", result["output"]

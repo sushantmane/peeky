@@ -2412,6 +2412,11 @@ class RustSession(NativeSession):
         path = (place.get("source") or {}).get("path")
         return self._in_scope(hashed[1], root.get("name"), place.get("line"), path)
 
+    def _declaration_at(self, frame, root):
+        """(source, line) of the binding of the root local ``root`` in scope at the stop
+        ``frame`` (the MIR's scopes: _frame_scope), for a `@before` restore (#305)."""
+        return self._frame_scope(frame, root)
+
     def compiler_binding(self, variable, frame):
         """Whether a root local lldb-dap lists in ``frame`` is a binding rustc makes, not
         the program: a `for` loop's `iter` or a `?`'s `residual` or `val`, told as

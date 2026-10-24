@@ -1181,6 +1181,13 @@ class PythonAdapter:
         return before
 
     @staticmethod
+    def storage_identity(variable, **where):
+        """Which storage a change writes, as a `@before` restore compares it (#305): a
+        Python function has one local of each name, so its name, in the call proven the
+        same. Only locals change in Python."""
+        return f"the local `{(variable or {}).get('name')}`"
+
+    @staticmethod
     def entry_lines(program, lines):
         """{line: the first line of the function that holds it} (#305): its first
         statement after any docstring, which each call runs first; the module's first

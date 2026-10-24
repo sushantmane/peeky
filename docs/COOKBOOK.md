@@ -1061,7 +1061,7 @@ Branch on the exit status:
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass, a failed build included; a `session get` with a failed selector. |
 | 2 | An error, or a refusal. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `session continue --count` or `session continue --to` stopped before the stop asked for. |
-| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
+| 4 | A probe completed, but a change it was asked to make (`--set`, `--set-at`) never happened, because its stop never came ([2.8](#28-change-a-value-then-restore-it)). It also means a `--set-at LINE@all` stopped at its cap of 100 stops while the line still ran: the values and output are then from a partially intervened run. So does a `@before` restore whose change stayed in place, because its hit never came (`unrestored`). This holds for `peeky probe` and for the `peeky-probe` script. The values are evidence, but the experiment didn't happen. |
 
 - Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
   whatever its code. JSON says `refused_before_launch`. The cause can be a refusal, a file outside
@@ -1307,6 +1307,12 @@ refusal ends the probe, as any `--set-at` refusal does:
   So Peeky also stops at the first line of each function on the restore's line, from the start
   of the run. Each call begins there. A restore is refused where Peeky didn't see the change's
   call begin, or where that first line ran again since, at the same depth or above.
+- **To the same storage.** The name must still name what the change wrote. For a local, that is
+  the same declaration: in C, C++ and Rust, the one the debugger shows at the stop; in Java, the
+  one the local variable table has in scope on the line. For a Java field or element, it is the
+  same object or array, by java-debug's id (`Box@27`). A shadowing `x`, another block's `y`, or
+  a field of a new object is refused before anything is written:
+  ``it is `n` of Swap$Box@56, not `n` of Swap$Box@51, which the change was made to``.
 - **A value whose text is all of it.** Peeky writes back the text it read just before its change,
   so only where that text is the whole value:
   - **C, C++ and Rust:** a built-in integer, by the type the debug information gives.
@@ -1326,13 +1332,32 @@ Some restores are refused before the program runs, with exit 2:
   method whose first line the debugger stops at only in another method.
 
 While a restore may still be made, each call of those functions stops once more. Peeky watches
-at most 1000 such stops. After that, a later restore is refused.
+at most 1000 such stops. After that, a later restore is refused. Those stops are counted apart:
+`watch_pauses_ms` in JSON, and `watching for new calls: 3 stops, max 5.1 ms` in the text. The
+`max pause` and `max_pause_ms` leave them out.
+
+The latest change to a name an `@all` restore undoes is owed, as a change at one hit is. So with
+`--until hits`, the probe runs on past its last hit until that restore is made. Where the
+restore's hit never comes before the end, that change stays in place. The probe says so in a
+warning, lists the restore in `unapplied` with `unrestored` (the change's `LINE@HIT`), and exits
+4. An attached program goes on running with the change.
 
 Each restore is reported as a change, with `restored`. The line that counts an `@all`'s later
-writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`. In
-JSON, a restore's entry in `interventions` has `restores`: the `LINE@HIT` of the change it undid.
-The evidence keeps it as any change: an `interventions` row, `["trend", "@before", "18@all"]` in
-`runs.sets`, and its outcome in `runs.set_outcomes`.
+writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`.
+Where the program wrote the variable after the change, the restore writes over the program's
+value, and says so: `set x: 6 -> 1  (restored over the program's 6, --set-at line 22@1, in
+main)`.
+
+In JSON, a restore's entry in `interventions` has `restores`: the `LINE@HIT` of the change it
+undid. It has `overwrote` too, with the program's value, where it wrote over one. The evidence
+keeps a restore as any change, with more:
+
+- an `interventions` row, whose `restores_at` (schema 19) is the change it undid;
+- `["trend", "@before", "18@all"]` in `runs.sets`, and its outcome in `runs.set_outcomes`. An
+  outcome whose change stayed in place has `unrestored` and `complete: false`;
+- `set_effect` shows it as `trend: 0 -> 1 (restored from before 15@2)`;
+- the `(sets)` rows of `diff` and `compare` name each restore, which `…` would hide:
+  `2 requests: trend=0 (…), …; restore: trend=@before (requested at 18@all, …)`.
 
 #### Where and when a change is made
 

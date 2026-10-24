@@ -55,6 +55,32 @@ public class Trail {
     }
 }
 """
+# `b` refers to another Box after line RENEW: its `n` is another field.
+SWAP = """package demo;
+
+public class Swap {
+    static class Box {
+        int n;
+
+        Box(int n) {
+            this.n = n;
+        }
+    }
+
+    static int swap() {
+        Box b = new Box(1);
+        b.n += 1; // CHANGE
+        b.n += 10; // SAME
+        b = new Box(9); // RENEW
+        b.n += 1; // RESTORE
+        return b.n;
+    }
+
+    public static void main(String[] args) {
+        System.out.println("SWAP:" + swap());
+    }
+}
+"""
 HEIGHTS = ("410", "430", "455", "455", "455", "440", "420", "400", "400", "415", "430")
 
 
@@ -125,3 +151,39 @@ def test_a_double_is_not_written_back(trail, capsys):
     )  # fmt: skip
     assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert "it is a double, which java-debug may show rounded" in result["error"]["message"]
+
+
+@pytest.mark.timeout(300)
+def test_a_field_is_restored_only_in_the_object_its_change_wrote(trail, capsys):
+    # Review of PR #322: `b.n=0`, then `b = new Box(9)`, then `b.n=@before` wrote 1 into
+    # the new Box.
+    root, config = trail
+    (root / "demo" / "Swap.java").write_text(SWAP)
+    config.write_text(
+        json.dumps(
+            {
+                **json.loads(config.read_text()),
+                "sources": ["demo/Swap.java"],
+                "main_class": "demo.Swap",
+            }
+        )
+    )
+    lines = {
+        marker: next(i for i, text in enumerate(SWAP.splitlines(), 1) if f"// {marker}" in text)
+        for marker in ("CHANGE", "SAME", "RESTORE")
+    }
+    change = lines["CHANGE"]
+    at = ["--at", f"demo/Swap.java:{change}", "--set-at", f"{change}@1", "b.n=0"]
+    code, result = probe(
+        capsys, root, config, *at, "--set-at", f"{lines['RESTORE']}@1", "b.n=@before"
+    )
+    assert code == 1 and result["error"]["code"] == "MUTATION_REJECTED", result
+    message = result["error"]["message"]
+    assert "`b.n` cannot be changed back here: it is `n` of Swap$Box@" in message, message
+    assert ", which the change was made to" in message
+    # The same Box: written back, over the 1 the program made of the 0.
+    code, result = probe(capsys, root, config, *at, "--set-at", f"{lines['SAME']}@1", "b.n=@before")
+    assert code == 0, result
+    restore = result["interventions"][1]
+    assert (restore["before"], restore["after"], restore["overwrote"]) == ("1", "1", "1")
+    assert result["output"].strip() == "SWAP:10", result["output"]

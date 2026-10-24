@@ -911,6 +911,38 @@ class JavaSession:
             raise ValueError(f"it read {before[:80]!r}, not a {kind} Peeky can write back")
         return before
 
+    def storage_identity(self, variable, frame=None, root=None, steps=(), parent=None):
+        """Which storage a change writes, as a `@before` restore compares it (#305): for a
+        field or element, the object or array holding it (``parent``, by java-debug's
+        object id, `Box@27`, which no other object takes while the program runs); for a
+        local, its declaration in the stopped method's local variable table, the one in
+        scope on the stop's line. ValueError where it cannot be singled out."""
+        name = str((variable or {}).get("name"))
+        if parent is not None:
+            held = str(parent.get("value") or "")
+            if not (_JAVA_OBJECT.fullmatch(held) or JAVA_ARRAY.fullmatch(held)):
+                raise ValueError(f"Peeky cannot tell which object holds `{name}` ({held[:80]})")
+            return f"`{name}` of {held}"
+        found = self._frame_method(frame)
+        if found is None:
+            raise ValueError("Peeky cannot find the stopped method in the class files")
+        method, line = found
+        pcs = method.get("line_pcs", {}).get(line, ())
+        held = {
+            (slot, start, length)
+            for local, slot, start, length in method.get("slots", ())
+            if local == name and any(start <= pc < start + length for pc in pcs)
+        }
+        if len(held) != 1:
+            raise ValueError(
+                f"Peeky cannot tell which declaration of `{name}` the debugger shows on line {line}"
+            )
+        slot, start, length = held.pop()
+        return (
+            f"`{name}` (declared in {_method_shown(method['name'])}: slot {slot}, bytecode "
+            f"{start} to {start + length})"
+        )
+
     def entry_lines(self, program, lines):
         """{line: the first line of each method with code on it} (#305): the line its
         code starts at (pc 0), where each call first stops. A probe watches them, so a

@@ -12,7 +12,10 @@ from urllib.error import HTTPError
 
 from peeky.textlines import split_lines
 
-PROTOCOL_VERSION = 3
+# 4 (#305): a probe's `--set-at` value `@before` restores the value from before a change;
+# the worker's `launch` takes `entry_lines` and its `set_variable` `restorable` and
+# `target`, and returns `restore`. A protocol 3 worker would take `@before` for a value.
+PROTOCOL_VERSION = 4
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (

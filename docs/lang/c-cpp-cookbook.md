@@ -1473,7 +1473,8 @@ has such a line itself, `@all` on it works.
 A pointer can't be set, but the statement that moves it can be skipped: flip its guard, then
 restore it with `@before` ([COOKBOOK 2.8](../COOKBOOK.md#skip-a-statement-restore-with-before)).
 `--set-at 15@all trend=0 --set-at 18@all trend=@before` keeps `turn = p;` from running on a flat.
-In C and C++, Peeky writes back only an integer, whose type the debug information gives. A
+In C and C++, Peeky writes back only an integer, whose type the debug information gives, and
+only to the declaration its change wrote: a shadowing `x` or another block's `y` is refused. A
 `continue;` has code of its own in a clang build, so it can be the restore line.
 
 #### What counts as behind a pointer

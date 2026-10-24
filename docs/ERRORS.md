@@ -1,4 +1,4 @@
-# Error codes (protocol 3)
+# Error codes (protocol 4)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -121,8 +121,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 2, this client 3`,
-  or, from the worker, `Client speaks protocol 2, this worker 3`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 3, this client 4`,
+  or, from the worker, `Client speaks protocol 3, this worker 4`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -254,6 +254,8 @@ for any `--set-at` refusal. The hint says to give the value itself, or to try a 
 | The latest change was at another hit of its line | `` `trend` was last changed at hit 2 of line 15, not at hit 3 `` |
 | A text, an object, or a Java `float` or `double` | `cannot be written back exactly: …` |
 | Another thread, function, depth or callers | `` `trend` was changed at line 15@2 in find_turns, and this stop is 1 call deeper (a recursive call) `` |
+| The name names other storage now: a shadowing local, another block's, a field of another object | `` `b.n` cannot be changed back here: it is `n` of Swap$Box@56, not `n` of Swap$Box@51, which the change was made to `` |
+| Peeky can't tell which storage the change wrote | `cannot be written back exactly: Peeky cannot tell which storage it wrote (…)` |
 | The call that made the change wasn't seen to begin | `Peeky did not see the call of … begin` |
 | The function's first line ran again since the change | `and the first line of find_turns ran again since, at the same stack depth or above` |
 | The watch on first lines ended: the debugger moved one, or 1000 stops | `Peeky stopped watching for new calls (…)` |
@@ -410,7 +412,7 @@ The CLI's exit status is the same for `peeky probe` and the `peeky-probe` script
 | 1 | A completed command with a negative result: a probe that failed after the debugger's launch or attach request was sent, timed out, or never stopped; a verify that didn't pass; a `session get` with a failed selector. |
 | 2 | An error, or a refusal: anything Peeky turned down. See below. |
 | 3 | Not there yet: a background job is still running, or `session start --hit`, `continue --count` or `continue --to` stopped before the stop asked for. |
-| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. |
+| 4 | A probe that completed, but didn't make a change it was asked for (`--set`, `--set-at`), because its stop never came. JSON lists the change in `unapplied`. The values are evidence of a run without that change. A `--set-at LINE@all` that reached its cap of 100 stops while the line still ran exits 4 too, and its `unapplied` entry has `made`. The values and output are then from a partially intervened run: the first `made` stops were changed; later executions were not. A `@before` restore whose hit never came, so that the change it should have undone stayed in place, exits 4 too; its `unapplied` entry has `unrestored`, that change's `LINE@HIT`. |
 
 Status 2 includes any probe that ended before the debugger's launch or attach request was sent,
 whatever its code. Its JSON says `refused_before_launch`. The causes include:
@@ -429,11 +431,15 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 3`.
+HTTP response carries `X-Peeky-Protocol: 4`.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
 - **Protocol 3** marks the paths in a remote result. A compared source is `source:NAME`, which the
   client shows as its own copy ([REMOTE.md](REMOTE.md#paths-in-results)). A client sends
   `protocol` with `expect_inputs`, and `version` returns the worker's `root`.
+- **Protocol 4** adds restores: a `--set-at` value `@before`, which a protocol 3 worker would
+  take as a value to write. The worker's `launch` takes `entry_lines`, and its `set_variable`
+  takes `restorable` and `target` and returns `restore`
+  ([COOKBOOK 2.8](COOKBOOK.md#skip-a-statement-restore-with-before)).
 - A client and a worker of different protocols refuse each other before anything runs.
