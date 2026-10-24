@@ -363,7 +363,10 @@ def test_threads_a_thread_event_says_started_are_kept():
 # once Peeky ended its input, as debugpy can while it still handles the disconnect;
 # `provoked-bare` exits so with nothing on stderr, `provoked-other` with another failure
 # there (not debugpy's known one, whose signature `provoked` prints); `open`: its stream
-# stays open after the end; `running`: the program never ends.
+# stays open after the end; `running`: the program never ends. `lldb` reports the end as
+# lldb-dap does (`exited`, then `terminated`), and `lldb-terminated` with `terminated`
+# alone; both then print a crash on `stderr` once they answered the disconnect, and abort,
+# as lldb-dap 18 does on Linux.
 ENDING_ADAPTER = r"""
 import json, sys, time
 mode = sys.argv[1]
@@ -392,6 +395,9 @@ if mode == "late":
     event("terminated")
     time.sleep(0.3)
     output("late\n")
+elif mode == "lldb":
+    event("exited", exitCode=0)
+    event("terminated")
 elif mode != "running":
     event("terminated")
 if mode in ("crash", "crash1"):
@@ -409,6 +415,10 @@ while (request := read()) is not None:
             event("exited", exitCode=7)
         elif mode == "noisy":
             output("free(): invalid pointer\n", "stderr")
+        elif mode.startswith("lldb"):
+            output("free(): invalid pointer\n", "stderr")
+            import os
+            os.abort()
 if mode == "open":
     time.sleep(60)
 if mode.startswith("provoked"):
@@ -473,6 +483,11 @@ DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Clien
         ("provoked-bare", True, True, False, "early\n", None, "", 1),
         ("provoked-other", True, True, False, "early\n", None, "", 1),
         ("open", False, True, False, "early\n", None, "", None),
+        # lldb-dap sends none of the program's output after `exited`: what came before it
+        # is whole, whatever it sends or how it exits next (twelfth evaluation's
+        # preparation: lldb-dap 18's crash as it shuts down).
+        ("lldb", False, True, True, "early\n", 0, "free(): invalid pointer\n", None),
+        ("lldb-terminated", False, True, False, "early\n", None, "free(): invalid pointer\n", None),
         ("running", False, False, False, "early\n", None, "", None),
     ],
 )
@@ -506,7 +521,10 @@ def test_close_reads_the_output_to_the_adapters_end(
         return popen([sys.executable, "-c", ENDING_ADAPTER, mode, str(said)], **kwargs)
 
     monkeypatch.setattr("peeky.dap.subprocess.Popen", spawn)
-    dap = DAP(provoked_exit=PythonAdapter.provoked_exit if debugpy else None)
+    dap = DAP(
+        provoked_exit=PythonAdapter.provoked_exit if debugpy else None,
+        output_ends_at_exit=mode.startswith("lldb"),
+    )
     try:
         dap.wait_event({"terminated"} if ended else {"never"}, 0, 5)
     except TimeoutError:

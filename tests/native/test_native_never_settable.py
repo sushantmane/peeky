@@ -172,3 +172,37 @@ def test_a_previews_fields_are_marked_as_set_treats_them(tmp_path, language):
     changed = run_probe(tmp_path, Probe(name, call, (), (("s.end", "9"),)), adapter=debug)
     assert changed["status"] == "completed", changed.get("error")
     assert "Y 15 3" in changed["output"], changed["output"]
+
+
+CONSTS = """#include <stdio.h>
+
+int main(int argc, char **argv) {
+    const long tracks = 3 + argc;
+    int played = 0;
+    for (int a = 0; a < 3; a++) {
+        played += a;  /* LOOP */
+    }
+    printf("P %d %ld\\n", played, tracks);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("language", ["c", "cpp"])
+def test_a_root_of_no_writable_integer_type_is_refused_before_the_run(tmp_path, language):
+    # Twelfth evaluation's preparation: `--set-at LINE@2 tracks=2` of a `const long` ran to
+    # its stop, then was refused there, though the debug information gives its type.
+    name = f"reg.{'cpp' if language == 'cpp' else 'c'}"
+    (tmp_path / name).write_text(CONSTS)
+    at = next(i for i, text in enumerate(CONSTS.splitlines(), 1) if "LOOP" in text)
+    debug = target(language, "O0")
+    probe = Probe(name, at, ("played",), set_at=((at, 2, "tracks", "2"),))
+    message = refused_before_launch(run_probe(tmp_path, probe, adapter=debug))
+    assert "only writable integer locals of these types support native mutation" in message
+    assert "`tracks` has type `const long" in message, message
+    # A writable integer is still changed at its stop.
+    probe = Probe(name, at, ("played",), set_at=((at, 2, "played", "10"),))
+    changed = run_probe(tmp_path, probe, adapter=debug)
+    assert changed["status"] == "completed", changed.get("error")
+    assert "P 13 4" in changed["output"], changed["output"]

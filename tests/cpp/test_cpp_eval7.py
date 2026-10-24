@@ -89,9 +89,10 @@ def test_get_names_the_stop_a_selector_did_not_resolve_at(sched, cxx, capsys):
             code, out = run(capsys, "session", "continue", "--to", "17")
         code, out = run(capsys, "session", "get", "a.name", "b.nope")
         assert code == 1 and "cannot expand 'a'" not in out, out
-        # GCC's name for a static function, from its declaration (#167).
+        # GCC's name for a static function, from its declaration (#167), shown without
+        # the global scope's `::`.
         before = (
-            "::before(const Task &, const Task &)"
+            "before(const Task &, const Task &)"
             if cxx == "gcc"
             else "before(Task const&, Task const&)"
         )

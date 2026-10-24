@@ -759,6 +759,90 @@ def settable_member(graph, root, name, steps, owner=None):
     raise Unsettable(f"`{path}` is not a single integer; select one of its fields or elements")
 
 
+def holds_pointer(graph, offset, limit=4096):
+    """Whether a value of the type at ``offset`` holds a pointer or a reference in its own
+    bytes, in a field or element at any depth: True; False where the debug information
+    shows none (`struct Lap { number: u32, secs: u32 }`); None where it cannot tell (a
+    type the walk did not read, an incomplete record, or a Rust enum, whose variants'
+    fields the graph does not list)."""
+    pending, seen = [offset], set()
+    while pending:
+        offset = pending.pop()
+        if offset in seen:
+            continue
+        seen.add(offset)
+        node = graph.get(offset)
+        if node is None or len(seen) > limit or node[0] in ("unknown", "other"):
+            return None
+        if node[0] in ("pointer", "reference"):
+            return True
+        if node[0] in ("typedef", "qualifier", "array"):
+            pending.append(node[2])
+        elif node[0] == "record":
+            if node[7] or node[8]:
+                return None
+            pending.extend(node[6])
+    return False
+
+
+def root_never_integer(graph, root, name):
+    """Why the root local ``name`` of type ``root`` is never an integer `set` changes,
+    where the stop refuses it too (its debugger type is none of the native integers):
+    a const, volatile or atomic type, a character, boolean or floating-point value, an
+    integer not 16, 32 or 64 bits, an enum, a pointer or a reference. None for a
+    writable integer, a record or an array (a text may change those), and a type the
+    debug information does not give."""
+    qualifiers, offset = [], root
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] in ("unknown", "other", "record", "array"):
+            return None
+        if node[0] == "typedef":
+            offset = node[2]
+            continue
+        if node[0] == "qualifier":
+            qualifiers.append(node[1])
+            offset = node[2]
+            continue
+        break
+    else:
+        return None
+    kind = node[0]
+    plain = kind == "base" and node[2] in ("DW_ATE_signed", "DW_ATE_unsigned")
+    if plain and node[3] in (2, 4, 8) and node[1] not in _CHARACTERS and not qualifiers:
+        return None
+    label = type_label(graph, root)
+    if label:
+        return f"`{name}` has type `{label}`"
+    if kind in ("pointer", "reference", "enum"):
+        return f"`{name}` is {'an' if kind == 'enum' else 'a'} {kind}"
+    return f"`{name}` is {qualifiers[0]}" if qualifiers else None
+
+
+def type_label(graph, offset):
+    """A type's name as a debugger writes it: its qualifiers, then the name of the first
+    named type under them (`const long`, `volatile size_t`); None where none is named,
+    or an atomic one (`_Atomic(int)`)."""
+    words = []
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None:
+            return None
+        if node[0] == "qualifier":
+            if node[1] not in ("const", "volatile"):
+                return None
+            words.append(node[1])
+            offset = node[2]
+            continue
+        if node[0] in ("typedef", "base", "enum") and node[1]:
+            return " ".join([*words, node[1]])
+        if node[0] == "typedef":
+            offset = node[2]
+            continue
+        return None
+    return None
+
+
 def settable_parts(graph, root, name, limit=64, visits=4096):
     """The paths (`board.entries`, `bins[*].hi`, `board.cells[*].n`, `xs[*]`; `[*]`: any
     element) of the integer fields and elements of the struct, class, tuple or array

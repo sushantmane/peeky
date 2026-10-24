@@ -1714,6 +1714,16 @@ def _caller_reason(name, held, changed="it"):
     )
 
 
+class _Taint(str):
+    """aggregate_taint's "stale" for a value whose type holds no pointer: it compares as
+    "stale" everywhere, and its rows say it owns nothing through one."""
+
+    pointer_free = True
+
+
+_STALE_NO_POINTER = _Taint("stale")
+
+
 def _raw_container(why, taint=None):
     """A container left raw, saying ``why`` (view_variable). Where a call under way may be
     changing it (a caller frame's, owned or `&mut`), its own fields (`friends.len`) are not
@@ -4609,7 +4619,27 @@ class RustSession(NativeSession):
         if proven:
             # Unsafe code may have freed what its pointers reach (#156).
             return None if innermost and not getattr(self, "unsafe_code", None) else "pointers"
-        return "stale"
+        return _STALE_NO_POINTER if self._pointer_free(variable, frame) else "stale"
+
+    def _pointer_free(self, variable, frame):
+        """Whether the build's debug information shows that the top-level local
+        ``variable`` of ``frame`` holds no pointer or reference at any depth (three
+        `u32` fields): its leftover bytes may still be wrong, but it owns nothing."""
+        from peeky.fields import Unsettable, holds_pointer
+
+        hashed = _frame_hash(frame)
+        if not hashed:
+            return False
+        try:
+            functions, graph = self._field_types()
+            root, _ = self._declared_type(
+                functions.get(hashed[1]) or {},
+                variable.get("name"),
+                self._frame_scope(frame, variable),
+            )
+        except Unsettable:
+            return False
+        return holds_pointer(graph, root) is False
 
     def display_type(self, variable, frame, top=True, path=None):
         """A value's Rust type where LLDB shows a C-style name: a root local's primitive

@@ -16,6 +16,7 @@ from peeky.fields import (
     element_reference,
     local_types,
     referred_locals,
+    root_never_integer,
     settable_member,
     type_graph,
 )
@@ -220,6 +221,35 @@ def test_everything_else_is_refused_with_its_reason(root, steps, words):
     with pytest.raises(Unsettable) as caught:
         settable_member(GRAPH, root, "s", steps)
     assert words in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "root, words",
+    [
+        # A probe's number for such a root is refused before the run, as the stop would.
+        (0x34, "`n` has type `const int`"),
+        (0x38, "`n` has type `volatile int`"),
+        (0x18, "`n` has type `char`"),
+        (0x1C, "`n` has type `_Bool`"),
+        (0x20, "`n` has type `double`"),
+        (0x28, "`n` has type `__int128`"),
+        (0x2C, "`n` has type `wchar_t`"),
+        (0x48, "`n` has type `color`"),
+        (0x3C, "`n` is a pointer"),
+        (0x40, "`n` has type `PairPtr`"),
+        (0x44, "`n` is a reference"),
+        # A writable integer, and what a text may change, are judged at the stop.
+        (0x10, None),
+        (0x30, None),
+        (0x24, None),
+        (0x60, None),
+        (0x50, None),
+        (0x160, None),
+        (0x999, None),
+    ],
+)
+def test_a_root_that_is_never_a_writable_integer_is_named_with_its_type(root, words):
+    assert root_never_integer(GRAPH, root, "n") == words
 
 
 DECLARED = dump(

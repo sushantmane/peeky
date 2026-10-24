@@ -270,6 +270,12 @@ wouldn't reach the program.
 Rows mark such a local `[not settable: register]`. In a struct's preview, its fields are marked
 too. `describe`'s `mutable:` line lists them per function.
 
+A struct or tuple of one or two plain fields, such as `P { a: i32, b: i32 }`, can be kept in
+registers too. Its preview still reads `[memory]`: the debugger keeps its own copy in memory,
+written when the `let` runs, so the value is right. The struct's row and each field are marked
+`[not settable: register]`, because a change to that copy wouldn't reach the program:
+`p  P { a: 4, b: 11 }  [memory]  [not settable: register]`.
+
 For example, this `limiter` crate's `src/main.rs` accepts at most `limit` events per window:
 
 ```rust
@@ -1047,6 +1053,11 @@ The details:
 - A local that may own memory through a pointer inside it is judged by the MIR's proof. That is a
   struct, tuple, array or enum that holds a `Box`, `Vec`, `String` or `Rc`. Any struct counts, but
   a tuple or array of only primitives and references doesn't.
+- A struct whose fields hold no pointer at any depth, by the build's debug information, is judged
+  the same way, but its note doesn't say it may own memory. A closure's capture of
+  `struct Lap { number: u32, secs: u32, pit: u32 }` reads `[stale]`, with
+  `Its type holds no pointer, but its fields may show leftover bytes`. Probe rows show `[stale]` too,
+  as `session inspect` does.
 - Where the MIR doesn't prove it initialized at the stop, it is `[stale]`. That happens after
   `drop(h)`, `consume(h)`, `let g = h;` or a partial move, `let d = h.b;`. It happens wherever
   nothing is proven too: in an optimized build, a closure's or async block's capture, or a macro's

@@ -15,7 +15,7 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 | innermost frame | The function the program is stopped in. Its callers are caller frames. |
 | unoptimized build | Peeky's default build. Reading a `Vec`'s, `String`'s or reference's contents needs it, and so does every change. |
 | raw | LLDB's own summary of a value: its type, address and fields, such as a `Vec`'s `len`. Not its contents. |
-| `[memory]` | Peeky read the value from the program's memory itself, at offsets checked against the debug information. |
+| `[memory]` | Peeky read the value from the program's memory itself, at offsets checked against the debug information. Where the program keeps the local in registers, that is the debugger's copy, and the row also says `[not settable: register]`. |
 | `[stale]` | Bytes that aren't a trustworthy value. Either a moved, dropped, partly moved, unassigned or unproven local's leftovers, or a caller's container that may be mid-change. The note says which. |
 | `[unproven]` | Peeky shows only a pointer, because it can't prove that what it points at is still there. |
 | `[settable]` | `--set` can change this value at this stop. |

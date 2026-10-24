@@ -179,8 +179,8 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     # std::__1::char_traits<char>, std::__1::allocator<char>> const&)`, so the table was
     # about 200 columns wide. JSON and the evidence store keep the whole name. GCC gives
     # a static function no linkage name, so LLDB names it from its declaration, from the
-    # global scope: `::trim_left`, `::twice(int)` (#167). The hints name what is stored.
-    scope = "::" if cxx == "gcc" else ""
+    # global scope: `::trim_left`, `::twice(int)` (#167), which tables show as clang's
+    # (twelfth evaluation's preparation). The hints name what is stored.
     source = cpp("stock.cpp", STOCK)
     assert main(["probe", str(source), "--at", "9", *ARGS, "--capture", "i", "--hits", "2"]) == 0
     text = capsys.readouterr().out
@@ -189,7 +189,7 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     # Review of the eval-6 fixes: SQL compares the stored name, which `WHERE function =
     # 'trim_left'` does not match; the probe's table says how to match it.
     assert "note: function shows short frame names" in text, text
-    assert f"short_function(function) = '{scope}trim_left'" in text, text
+    assert "short_function(function) = 'trim_left'" in text, text
     assert main(["sql", "SELECT count(*) AS n FROM last_run WHERE function = 'trim_left'"]) == 0
     assert "\n0" in capsys.readouterr().out
     assert main(["sql", "SELECT DISTINCT function FROM last_run", "--json"]) == 0
@@ -202,9 +202,7 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
     assert "note: function shows short frame names" in text, text
-    query = (
-        f"SELECT count(*) AS n FROM last_run WHERE short_function(function) = '{scope}trim_left'"
-    )
+    query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'trim_left'"
     assert main(["sql", query, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
     # Two overloads in one table keep their parameters, so they stay apart.
@@ -220,17 +218,14 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     assert "note: function shows short frame names" not in text, text
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out
-    if cxx == "gcc":
-        # GCC's names are what the column shows, unshortened: nothing to say.
-        assert "note: function shows short frame names" not in text, text
-    else:
-        assert "short_function(function) = 'twice'" in text, text
-    query = f"SELECT count(*) AS n FROM last_run WHERE short_function(function) = '{scope}twice'"
+    # GCC's `::twice(int)` shows as `twice(int)`, as clang's does: the note says so.
+    assert "short_function(function) = 'twice'" in text, text
+    query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'twice'"
     assert main(["sql", query, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
     # A session names the frame with its parameters, as code writes their types.
     with session(source, 3, capsys, "--hit", "2") as (_, started):
-        assert f" in {scope}{by_text}, hit 2" in started, started
+        assert f" in {by_text}, hit 2" in started, started
 
 
 @pytest.mark.timeout(120)

@@ -3865,6 +3865,12 @@ def _integer_ranges():
 
 
 INTEGER_RANGES = _integer_ranges()
+# Which root locals `set` changes to a number: at the stop, and before the run (#332).
+NATIVE_INTEGERS = (
+    "Only writable integer locals of these types support native mutation: short, int, long, "
+    "long long (signed or unsigned), int16_t to uint64_t, size_t, ssize_t, ptrdiff_t, "
+    "intptr_t, uintptr_t"
+)
 # What a function may return that Peeky shows (#155): LLDB reads it from the return
 # register, exactly. Structs, classes, references and arrays are withheld.
 RETURN_SCALARS = frozenset(INTEGER_RANGES) | {
@@ -4498,6 +4504,12 @@ class NativeSession:
     # So a `stderr` line of exactly this shape is moved out of the output, and the
     # warning says a program line like it would be moved too.
     debugger_diagnostics = r"error: \S(?:.*\S)? 0x[0-9a-fA-F]{8}: DW_TAG_\w+ \S.*"
+    # lldb-dap sends the program's output only from its event thread, which stops once it
+    # has sent `exited`, and LLDB reads all the program wrote before it reports the end
+    # (Process::ShouldBroadcastEvent waits for its stdio read thread). So what came before
+    # `exited` is all of it, whatever lldb-dap sends as it shuts down (lldb-dap 18 on
+    # Linux: its own crash, on `stderr`).
+    output_ends_at_exit = True
 
     @property
     def implicit_receiver(self):
@@ -6658,9 +6670,12 @@ class NativeSession:
                 failures = []
                 for entry, shown in places:
                     if not steps:
-                        # A root is judged at the stop (its type as the debugger names it,
-                        # its declaration's progress), but one the frame reaches through a
-                        # pointer or reference never changes.
+                        # A root is judged at the stop (its declaration's progress), but
+                        # one whose type is no writable integer (`const long`), or that
+                        # the frame reaches through a pointer or reference, never changes.
+                        if not text and (why := self._root_never_integer(entry, root, shown)):
+                            failures.append((entry.get("name") or "this function", why))
+                            continue
                         storages = self._declared_storages(entry.get("types") or {}, root, shown)
                         if "through" not in storages:
                             break
@@ -6712,6 +6727,19 @@ class NativeSession:
                         f"build: {reasons}{later}. Refused before the program runs: nothing ran"
                     )
         return None
+
+    def _root_never_integer(self, entry, root, shown):
+        """The stop's refusal of a number for the root local ``root`` of the function
+        ``entry`` (``shown``: its declaration there), from the debug information's type,
+        where it is never a writable integer (fields.root_never_integer); else None."""
+        from peeky.fields import Unsettable, root_never_integer
+
+        try:
+            kind, _ = self._declared_type(entry.get("types") or {}, root, shown)
+        except Unsettable:
+            return None
+        why = root_never_integer(self.fields, kind, root)
+        return f"{NATIVE_INTEGERS[0].lower()}{NATIVE_INTEGERS[1:]}; {why}" if why else None
 
     def storage_note(self, program, lines, name):
         """For an optimized build's refusal (#138): that the debug information gives the
@@ -8853,10 +8881,7 @@ class NativeSession:
             )
         if not _writable_integer(variable):
             raise ValueError(
-                f"Only writable integer locals of these types support native mutation: "
-                f"short, int, long, long long (signed or unsigned), int16_t to uint64_t, "
-                f"size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t; "
-                f"{variable.get('name')!r} has debugger type {kind!r}"
+                f"{NATIVE_INTEGERS}; {variable.get('name')!r} has debugger type {kind!r}"
             )
         low, high = INTEGER_RANGES[kind]
         if not low <= int(value) <= high:

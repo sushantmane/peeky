@@ -106,3 +106,59 @@ def test_describe_lists_a_java_block_locals_lines_and_each_type_its_own():
         "ranking (int[], lines 51-53, 78-79), x (int, line 60), x (String, lines 70-71), "
         "i (line 60), y (no breakpoint line), z (long, no breakpoint line), z (int, lines 80-81)"
     )
+
+
+class _Prepared:
+    lines, manifest_id = {}, "m"
+
+    def close(self):
+        pass
+
+
+class _Target:
+    target_identity = {}
+
+    def prepare(self, program, root):
+        return _Prepared()
+
+
+def _verify_line(monkeypatch, capsys, *argv):
+    from peeky import cli
+
+    monkeypatch.setattr(cli, "adapter_for", lambda language, data: _Target())
+    monkeypatch.setattr(cli, "rust_tools", lambda: {})
+    assert cli.main(["describe", *map(str, argv), "--json"]) == 0
+    return json.loads(capsys.readouterr().out)["commands"]["verify"]
+
+
+def test_describe_names_verifys_at_only_where_verify_needs_it(tmp_path, monkeypatch, capsys):
+    # Twelfth evaluation's preparation: a one-source Java config and a one-file crate showed
+    # `--at`, though verify picks that file without it.
+    crate = tmp_path / "crate"
+    (crate / "src").mkdir(parents=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "c"\nversion = "0.1.0"\nedition = "2021"\n'
+    )
+    (crate / "src" / "main.rs").write_text("fn main() {}\n")
+    line = _verify_line(monkeypatch, capsys, crate)
+    assert line.startswith(f"peeky verify {crate} --check "), line
+    # Two sources: verify needs to be told which file the edit changes.
+    (crate / "src" / "util.rs").write_text("pub fn f() {}\n")
+    line = _verify_line(monkeypatch, capsys, crate)
+    assert line.startswith(f"peeky verify {crate} --at src/main.rs --check "), line
+    app = tmp_path / "java"
+    (app / "app").mkdir(parents=True)
+    (app / "app" / "Desks.java").write_text("class Desks {}\n")
+    config = app / "peeky.json"
+    config.write_text(
+        json.dumps({"bundle": "b", "sources": ["app/Desks.java"], "main_class": "app.Desks"})
+    )
+    line = _verify_line(monkeypatch, capsys, app, "--config", config)
+    assert line.startswith(f"peeky verify {app} --config {config} --check "), line
+    config.write_text(
+        json.dumps(
+            {"bundle": "b", "sources": ["app/Desks.java", "app/B.java"], "main_class": "app.Desks"}
+        )
+    )
+    line = _verify_line(monkeypatch, capsys, app, "--config", config)
+    assert line.startswith(f"peeky verify {app} --config {config} --at app/Desks.java "), line

@@ -216,6 +216,8 @@ CUT = {**WHOLE, "output_truncated": True}
 OPEN = {**WHOLE, "drained": False, "exit_code": None}
 # Text after Peeky's disconnect (lldb-dap 18's crash on Linux): kept apart, not as output.
 NOISY = {**OPEN, "after_disconnect": "free(): invalid pointer\n"}
+# The same from lldb-dap, which sends none of the program's output after `exited`: whole.
+LLDB_NOISY = {**WHOLE, "after_disconnect": "free(): invalid pointer\n"}
 # Its stream ended cleanly, but the adapter then failed (#213 review).
 CRASHED = {**OPEN, "stream_drained": True, "adapter_exit": 2}
 KILLED = {**OPEN, "stream_drained": True, "adapter_exit": -6}
@@ -292,6 +294,16 @@ def test_until_hits_says_the_output_can_follow_the_last_hit(monkeypatch, final, 
             False,
             "arriving):\n  at the hit\n  after it\nthe debugger sent more text once Peeky "
             "began closing the session, its own or the program's still on its way "
+            "(output_after_disconnect in --json)",
+        ),
+        # Twelfth evaluation's preparation: the output is whole, so the text after the
+        # disconnect is the debugger's own, and the output is not called partial.
+        (
+            "terminated",
+            LLDB_NOISY,
+            True,
+            "output:\n  at the hit\n  after it\nthe debugger sent text of its own as Peeky "
+            "closed the session, after the program's output had all come "
             "(output_after_disconnect in --json)",
         ),
     ],

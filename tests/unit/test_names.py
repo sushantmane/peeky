@@ -139,3 +139,18 @@ def test_the_note_says_how_sql_matches_a_short_name():
         "use instance = 'cz::gen_apply<i32>' for a closure or generic instance as shown "
         "(short_function merges a function's closures and a generic's instances)"
     ), note
+
+
+def test_a_gcc_static_function_reads_as_clangs():
+    # Twelfth evaluation's preparation: GCC's `static int list(...)` showed as `::list` in
+    # the function column and in the note's `short_function(function) = '::list'`.
+    from peeky.names import shortened_note
+
+    gcc = "::list(const std::vector<int, std::allocator<int> > &)"
+    assert display_function(gcc) == "list(const std::vector<int> &)"
+    assert short_function(gcc) == "list"
+    assert function_labels([gcc, "main"]) == {gcc: "list", "main": "main"}
+    assert "short_function(function) = 'list'" in shortened_note(function_labels([gcc]))
+    # A name of a namespace's own keeps it; `::` alone, or before no name, stays.
+    assert short_function("::geo::area(int)") == "geo::area"
+    assert display_function("::") == "::" and display_function("::(x)") == "::(x)"
