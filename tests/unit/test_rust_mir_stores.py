@@ -758,6 +758,19 @@ def test_what_vec_stores_through_its_box_pointer_is_a_copy_the_statement_uses():
     assert used(constant, 1, stop) == read(constant, 1, stop) == set()
 
 
+def test_the_box_to_vec_conversion_is_proven_under_the_root_the_dump_names():
+    # #320 review round 3: `std::boxed::box_assume_init_into_vec_unsafe` needs `std` only;
+    # a crate's `mod alloc {}` leaves it the standard library's, a `mod std {}` doesn't.
+    body = body_of(LITERAL)
+    converted = after(body, "_4 = std::boxed::box_assume_init_into_vec_unsafe")
+    assert 4 in read(body, 1, converted, frozenset({"std"}))
+    assert 4 not in read(body, 1, converted, frozenset({"core", "alloc"}))
+    for module, trusted in (("mod alloc {}", {"std"}), ("mod std {}", {"alloc"})):
+        source = SOURCE.replace("use std::env;", f"use std::env;\n{module}")
+        owned = OwnedLocals([body], {}, ("src/main.rs",), texts={"src/main.rs": source})
+        assert owned._std_transfers() == trusted, module
+
+
 def test_the_vec_a_statement_still_uses_holds_what_was_stored_in_its_box():
     # `add(vec![x, 1],` / `other());`: at the second line the Vec `_3` is yet to be given.
     body = body_of(PENDING)

@@ -1290,6 +1290,11 @@ def test_the_standard_address_comparisons_free_nothing_a_reference_points_at(cal
     assert body.gaps_before(29, (1, 0)) == {(0, 3)}
     assert body.used_before(29, (1, 0), compares=True)
     assert body.gaps_before(29, (1, 0), compares=True) == set()
+    # #320 review round 3: only under the root the dump names it by (`core` for a bare
+    # `addr_eq`), where the crate gives that name nothing of its own.
+    root = "std" if call.startswith("std") else "core"
+    assert body.used_before(29, (1, 0), compares=frozenset({root}))
+    assert not body.used_before(29, (1, 0), compares=frozenset({"std", "core", "alloc"} - {root}))
 
 
 @pytest.mark.parametrize(
@@ -1368,38 +1373,41 @@ def owned_crate(text, defined=()):
 )
 def test_the_dump_s_address_comparisons_are_the_standard_library_s(text):
     owned = owned_crate(text, defined={"main", "<impl at src/main.rs:3:1: 3:9>::eq", "x::eq"})
-    assert owned._std_compares() is True
+    assert owned._std_compares() == {"std", "core"}
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "trusted"),
     [
-        # A `std` or `core` of the crate's own: the dump names its items `std::…` too.
-        "mod std { pub mod ptr {} }\n",
-        "use crate::m as core;\n",
-        "macro_rules! m { () => { mod std {} } }\n",
+        # A `std` or `core` of the crate's own: the dump names its items `std::…` too. Each
+        # root is proven alone since #320 review round 3, so the other still counts.
+        ("mod std { pub mod ptr {} }\n", {"core"}),
+        ("use crate::m as core;\n", {"std"}),
+        ("macro_rules! m { () => { mod std {} } }\n", {"core"}),
+        # An `alloc` of its own names neither (#320 review round 3).
+        ("mod alloc {}\n", {"std", "core"}),
         # An `addr_eq` of its own, which the dump would name alone.
-        "fn addr_eq(a: *const u8, b: *const u8) -> bool { a == b }\n",
-        "use std::ptr::addr_eq;\nfn main() { addr_eq(a, b); }\n",
+        ("fn addr_eq(a: *const u8, b: *const u8) -> bool { a == b }\n", set()),
+        ("use std::ptr::addr_eq;\nfn main() { addr_eq(a, b); }\n", set()),
         # A source that does not lex.
-        'fn main() { let s = "open; }\n',
+        ('fn main() { let s = "open; }\n', set()),
         # A macro may declare `mod std` from its argument (#272 review), and `extern
         # crate` may take the name.
-        "macro_rules! make_mod { ($n:ident) => { mod $n {} } }\nmake_mod!(std);\n",
-        "make_mod! { core }\n",
-        "make_mod![r#std];\n",
-        "outer!(inner!(std));\n",
-        "extern crate core as std;\n",
-        "extern  crate alloc as core;\n",
+        ("macro_rules! make_mod { ($n:ident) => { mod $n {} } }\nmake_mod!(std);\n", {"core"}),
+        ("make_mod! { core }\n", {"std"}),
+        ("make_mod![r#std];\n", {"core"}),
+        ("outer!(inner!(std));\n", {"core"}),
+        ("extern crate core as std;\n", {"core"}),
+        ("extern  crate alloc as core;\n", {"std"}),
         # Raw identifiers on either side (#272 review, round 2).
-        "extern crate evil as r#std;\n",
-        "extern crate evil as r#core;\n",
-        "extern crate r#evil as std;\n",
-        "extern crate r#evil\nas\tcore;\n",
+        ("extern crate evil as r#std;\n", {"core"}),
+        ("extern crate evil as r#core;\n", {"std"}),
+        ("extern crate r#evil as std;\n", {"core"}),
+        ("extern crate r#evil\nas\tcore;\n", {"std"}),
     ],
 )
-def test_a_crate_that_may_name_them_itself_trusts_none(text):
-    assert owned_crate(text)._std_compares() is False
+def test_a_crate_that_may_name_a_root_itself_trusts_no_comparison_under_it(text, trusted):
+    assert owned_crate(text)._std_compares() == trusted
 
 
 @pytest.mark.parametrize(
@@ -1409,12 +1417,12 @@ def test_a_crate_whose_dump_holds_its_own_comparison_trusts_none(name):
     # #272 review: `make_mod!(std)` declared `mod std { pub mod ptr { fn eq } }`, dumped
     # as `fn std::ptr::eq(…)`, and its calls as `std::ptr::eq::<Friend>(…)`. The
     # standard library's bodies are never in the crate's dump.
-    assert owned_crate("fn main() {}\n", defined={"main", name})._std_compares() is False
-    assert owned_crate("fn main() {}\n", defined={"main"})._std_compares() is True
+    assert owned_crate("fn main() {}\n", defined={"main", name})._std_compares() == set()
+    assert owned_crate("fn main() {}\n", defined={"main"})._std_compares() == {"std", "core"}
     body = mir({0: ["return;"]}, header=f"fn {name}(_1: *const T) -> bool {{")
     assert body.path == name
     owned = OwnedLocals([body], {}, ("src/main.rs",), texts={"src/main.rs": "fn main() {}\n"})
-    assert owned._std_compares() is False
+    assert owned._std_compares() == set()
 
 
 def test_every_function_dumped_is_named_parsed_or_not(tmp_path):

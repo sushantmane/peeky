@@ -326,6 +326,14 @@ def test_only_what_the_inlined_call_is_given_is_withheld():
         owned.unsafe_code = UNSAFE
         assert owned.inlined_reads(HASH, "z", 47, AT, ((15, "eq"),)) == verdict
         assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "eq"),)) == ([], None)
+    # Each under the root the dump names it by (#320 review round 3): a crate's `mod std`
+    # may be what `std::ptr::eq` names, and leaves `core::ptr::eq` the standard library's.
+    for root, verdict in (("std", (["eq"], "unsafe")), ("core", ([], None))):
+        compared = MIXED.replace(clone, f"_4 = {root}::ptr::eq::<u32>(copy _5, copy _5)")
+        owned = owned_of(compared, "mixed", source=SOURCE + "mod std {}\n")
+        assert owned._std_compares() == {"core"}
+        owned.unsafe_code = UNSAFE
+        assert owned.inlined_reads(HASH, "x", 47, AT, ((15, "eq"),)) == verdict
 
 
 def test_an_enclosing_call_is_not_the_inlined_one_its_name_tells():

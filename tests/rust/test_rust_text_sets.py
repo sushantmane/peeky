@@ -157,6 +157,10 @@ fn main() {
     println!("{:?} {:?} {} {} {} {}", chars.next(), cell.borrow(), shout(), n, copy, e);
 }
 """
+# #320: `first` (`chars.next()`) and `copy` (`e.clone()`) hold copies of `a` and `e`, and
+# the program never reads either String by value again, so a change there is refused for
+# that before any borrow is judged. Moved at the end, they are read again.
+BORROWS_READ = BORROWS.replace("copy, e);\n}", "copy, e);\n    drop(a);\n    drop(e);\n}")
 
 
 @pytest.mark.timeout(400)
@@ -176,6 +180,9 @@ def test_a_string_a_live_borrow_reads_is_never_changed(crate, capsys):
         return code, json.loads(capsys.readouterr().out)
 
     refused = "change it before a borrow of it is taken, or after the borrow's last use. A borrow "
+    code, result = change("// MANY", "a")
+    refusal(code, result, "the program's own `first` (at line 25) may hold a copy of `a`")
+    (crate / "src/main.rs").write_text(BORROWS_READ)
     # `head` and `tail`; an iterator; a `&str` pushed into a Vec, or into a RefCell's;
     # a closure that borrows it.
     for marker, name in (("// HEAD", "s"), *(("// MANY", each) for each in "abcd")):
@@ -310,6 +317,8 @@ fn main() {
     s.push('!');
 }
 """
+# #320: `merged` holds what `spans` parsed out of `text`; moved at the end, `text` is read.
+ADDRESSES_READ = ADDRESSES.replace("    s.push('!');\n}", "    s.push('!');\n    drop(text);\n}")
 UNSAFE = """#[inline(never)]
 fn mark() {}
 fn main() {
@@ -339,19 +348,22 @@ def test_crate_types_without_pointers_and_quiet_drops_hold_no_borrow(crate, caps
     # borrow of `text`, and a `Vec<&str>` dropped at the end of `main` as reading `b`.
     (crate / "src/main.rs").write_text(ADDRESSES)
     code, result = probe_at(crate, capsys, ADDRESSES, "SPANS", "text")
+    refusal(code, result, "the program's own `merged` (at line 13) may hold a copy of `text`")
+    (crate / "src/main.rs").write_text(ADDRESSES_READ)
+    code, result = probe_at(crate, capsys, ADDRESSES_READ, "SPANS", "text")
     if WRITES:
         assert code == 0 and "MERGED:[Span { start: 1, end: 3 }" in result["output"], result
     else:
         refusal(code, result, "cannot write memory")
     # A type of the crate's that holds a pointer still counts.
-    code, result = probe_at(crate, capsys, ADDRESSES, "POINTING", "s")
+    code, result = probe_at(crate, capsys, ADDRESSES_READ, "POINTING", "s")
     refusal(
         code,
         result,
         "`s` cannot be changed to a text at this stop: change it before a borrow of it",
     )
     # BORROWS' `v: Vec<&str>` holds `b` until `main` ends, but its drop never reads it.
-    (crate / "src/main.rs").write_text(BORROWS)
+    (crate / "src/main.rs").write_text(BORROWS_READ)
     lines = BORROWS.splitlines()
     after = next(i for i, line in enumerate(lines, 1) if "// MANY" in line) + 1
     code = main(["probe", str(crate), "--at", f"src/main.rs:{after}", "--set", 'b="x"', "--json"])
@@ -423,6 +435,8 @@ fn main() {
     s.push('!');
 }
 """
+# #320: `b`, `e` and `r` hold what was computed from `s.len()`; moved at the end, `s` is read.
+OWNING_READ = OWNING.replace("    s.push('!');\n}", "    s.push('!');\n    drop(s);\n}")
 
 
 @pytest.mark.timeout(400)
@@ -432,6 +446,9 @@ def test_crate_types_owning_boxes_enums_or_themselves_hold_no_borrow(crate, caps
     # through a Box is judged by what else it holds.
     (crate / "src/main.rs").write_text(OWNING)
     code, result = probe_at(crate, capsys, OWNING, "OWNING", "s")
+    refusal(code, result, "the program's own `b`, `e` and `r` (at lines 16, 17 and 18) may hold")
+    (crate / "src/main.rs").write_text(OWNING_READ)
+    code, result = probe_at(crate, capsys, OWNING_READ, "OWNING", "s")
     if WRITES:
         assert code == 0, result.get("error")
         assert "OWNING:aé 10 true 10 true" in result["output"], result

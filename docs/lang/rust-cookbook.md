@@ -1425,6 +1425,14 @@ holds for integer locals too.
 - What a function of the crate's returns is never said to hold a copy for sure. `total` may
   return anything, so the note says the statement may hold one. Only the standard library's own
   step that makes `vec!`'s Vec of its Box passes on what the Box holds.
+- What a call returns may be a copy of the local, where the call is given a pointer into it:
+  `let y = x.clone();`, `x.to_string()`, `ptr::read(&x)` or `format!("{}", x)`. Such a binding
+  blocks a change after it ([When the program has its own copy](#when-the-program-has-its-own-copy)).
+- Only the standard library's measures and comparisons are proven to return no copy: `len`,
+  `is_empty`, `contains`, `starts_with`, `eq`, `lt`, `cmp`, `partial_cmp` and the like. Each must
+  be a method of a standard type, and return a `bool`, `usize` or `Ordering` the local can't hold.
+- A crate type of its own named `String` or `Vec` is not the standard one. Its `String::len` may
+  return a copy, so it is counted as one.
 
 Peeky follows the MIR in the order the code runs. A temporary made before the local took its
 current value holds an older value, so it doesn't block a change. For example, in
@@ -1441,7 +1449,8 @@ bring unsafe code that reads through one.
 - The standard library's `ptr::eq` and `ptr::addr_eq` read only the two addresses. So a call of
   one holds a copy only of what its pointers hold, never of what they point at.
 - That is so only where Peeky proves the call is the standard library's. The crate must have no
-  `std` or `core` of its own (`mod std`, `use x as core`), nor its own function of that name.
+  item of its own named like the root the call is under (`mod std`, `use x as core`), nor its own
+  function of that name.
 - A breakpoint on `if ptr::eq(e, l) {` stops inside the inlined `ptr::eq`. There, `week` and
   `pick` are `[settable]`.
 
@@ -1543,8 +1552,33 @@ A call may store a copy too, through a `&mut` or raw pointer it is given, of ano
 A read through a pointer made from the binding is a use of it. So after
 `let r = v.last_mut().unwrap();` and `*r = x;`, a later `*r` uses `v`'s copy.
 
-A value a call computes from a pointer into the local is not counted as a copy, as for `x.len()`.
-So `s.push_str(&x.to_string())`, `let y = x.clone();` and `ptr::read(&x)` leave `x` settable.
+A value a call returns, given a pointer into the local, may be a copy too. After
+`let y = x.clone();`, `s.push_str(&x.to_string());` or `let y = unsafe { ptr::read(&x) };`, the
+refusal says ``the program's own `y` (at line 11) may hold a copy of `x` that it goes on with``.
+
+- Peeky can't see what a function of the crate's computes, so its result may be a copy. In
+  `let mean = w.push(v);`, `mean` may hold a value computed from `w.sum`.
+- So on the next line, `w.sum` is refused. On the loop's last pass, a change there is never seen,
+  since the program prints the old `mean`.
+- A result that only points, as a `&str`, an iterator or `Option<&u32>`, points into the local.
+  It holds no copy, but a call given it may return one: `v.iter().sum()`.
+- A result that holds a value beside a reference may hold a copy: `(u32, &'static ())`, or a
+  struct with a `u32` and a `&u32` field.
+- `Box::new`, `Box::pin`, `Rc::new` and `Arc::new` return only what they are given. So a Box of a
+  closure that borrows `s` holds no copy of `s`.
+- So do the standard library's iterator adapters. `let it = s.chars().rev();` only borrows `s`, so
+  a change to `s` there is refused for the borrow. A `map` closure that holds a copy of `x` holds
+  it; one that borrows `x` doesn't.
+- Where Peeky can't tell whether a result holds a copy or only points into the local, the refusal
+  says both: ``may hold a copy of `x` that it goes on with, unless `c` only points into it``.
+- A crate module named `std`, `core` or `alloc` makes paths under it the crate's own, not the
+  standard library's. It leaves the other roots the standard library's: beside a `mod alloc {}`,
+  `a.len()` (`core::slice`) still measures.
+- The standard library's measures and comparisons return none: `x.len()`, `x.eq(&5)`,
+  `x.cmp(&5)`. That is so only where Peeky proves they are the standard library's own, and the
+  local can't hold what they return.
+- `let b = std::mem::take(&mut a);` leaves `a` its default value, so the refusal names `b`, not
+  `a`.
 
 Where no local of the function stands for what the pointer points at, the pointer itself does.
 That is so for an argument `p`, or one `Box::into_raw` returned. After `*p = x;`, the refusal says

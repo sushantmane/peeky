@@ -1016,6 +1016,9 @@ def _either(clauses):
     return clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" or {clauses[-1]}"
 
 
+# What a refusal says of a binding that may hold a copy or only point into the local
+# (#320 review: ``_copy_reason``), which has no copy to change for sure.
+_ONLY_POINTS = " only point"
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1044,6 +1047,7 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
       true at each, whichever it is;
     - where only bindings of the program's own may hold a copy it goes on with (a call
       given `&mut x` since may have changed `x`): ("kept", what says so, their places);
+      it says which of them may only point into it instead ("pointing", #320 review);
     - else ("may", what the statement does that may leave a copy of ``target``, places):
       it reads it ("value", on some path, maybe past the stop), uses a binding's copy of
       it ("copied"), reads another part of it ("whole"), uses a pointer that may point
@@ -1117,6 +1121,11 @@ def _copy_reason(proofs, hashed, found, home, target="it"):
         + (f" (at {made})" if made else "")
         + f" {holds} a copy of {target} that it goes on with"
     )
+    # What a call returned, which may hold a copy or only point into it (#320 review:
+    # `(u32, &'static ())`, an iterator adapter of the crate's): Peeky can't tell which.
+    pointing = frozenset().union(*(dict(found.get("pointing") or ()).values())) & bound
+    if names := proofs.copy_names(hashed, pointing):
+        own += f", unless {_names(names)} only point{'s' if len(names) == 1 else ''} into it"
     if not clauses:
         return "kept", own, at, None
     return "may", _either(clauses), places | at, own
@@ -1178,7 +1187,8 @@ def _binding_at(proofs, body, root, line, path):
 def _slice_element(proofs, body, assigned):
     """Whether the values ``assigned`` to a reference local (``body._assignments()``'s)
     are all a standard slice iterator's items, in a crate whose `std` paths are the
-    standard library's (OwnedLocals._std_compares)."""
+    standard library's (OwnedLocals._std_compares: under the `std` root ``_SLICE_NEXT``
+    names, #320 review round 3, as a `mod core` of the crate's leaves them)."""
     found = [_FOR_ITEM.fullmatch(value) for value in assigned]
     if not found or not all(found):
         return False
@@ -1189,7 +1199,7 @@ def _slice_element(proofs, body, assigned):
             return False
     # A crate's own `trait Iterator` (`impl Iterator for std::slice::Iter<…>`) is dumped
     # `<std::slice::Iter<…> as Iterator>::next` too (review of #276).
-    return bool(proofs._std_compares()) and bool(proofs._std_iterator())
+    return "std" in proofs._std_compares() and bool(proofs._std_iterator())
 
 
 def _spans_and_text(session, bodies, source, name, line, texts):
@@ -2791,7 +2801,7 @@ class RustSession(NativeSession):
             return None
         found = {
             reads: proofs.coded_hazards(hashed, plain, line, path, projection, reads)
-            for reads in _READINGS
+            for reads in (*_READINGS, "pointing")
         }
         kind, detail, places, kept = _copy_reason(proofs, hashed, found, source, f"`{plain}`")
         made = _line_list(places, source)
@@ -2871,7 +2881,7 @@ class RustSession(NativeSession):
                 statements = (
                     "copied"
                     if "has already copied" in detail
-                    or (kept and "statement under way" not in detail)
+                    or (kept and "statement under way" not in detail and _ONLY_POINTS not in detail)
                     else "holds"
                     if kept or "already holds a copy" in detail
                     else "untraced"
@@ -3098,7 +3108,8 @@ class RustSession(NativeSession):
             # fact only what the MIR shows at every place the stop can be.
             home = (place.get("source") or {}).get("path")
             found = {"any": found} | {
-                reads: proofs.copy_hazards(**asked, reads=reads) for reads in _READINGS[1:]
+                reads: proofs.copy_hazards(**asked, reads=reads)
+                for reads in (*_READINGS[1:], "pointing")
             }
             kind, detail, places, kept = _copy_reason(proofs, hashed[1], found, home)
             made = _line_list(places, home)
@@ -3120,10 +3131,14 @@ class RustSession(NativeSession):
                 )
             if kind == "kept":
                 # #300 review: a call given `&mut x` since the copy may have changed it.
+                # #320 review: where what holds it may only point into it, there may be
+                # no copy to change.
                 return _Copied(
                     f"{detail}, {unseen}",
-                    "Change it before the program copies it (a stop on an earlier line), or "
-                    "change the copy instead",
+                    "Change it before the program copies or borrows it (a stop on an earlier line)"
+                    if _ONLY_POINTS in detail
+                    else "Change it before the program copies it (a stop on an earlier line), "
+                    "or change the copy instead",
                     "the program may hold a copy" + (f" ({made})" if made else ""),
                 )
             if kind == "may" and kept:

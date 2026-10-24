@@ -384,7 +384,62 @@ used again. Such a temporary is:
 - A source counts where it holds a direct copy or points at one (the flow's `kept`, review round
   2). That is a borrow of such a holder (`&a` after `let a = [x];`), a cast or aggregate of such a
   pointer, and a pointer a call returns from one or from a pointer into the local (`a.iter()`).
-  A value a call computes is not one (`x.to_string()`), as #192 has it for `x.len()`.
+- What a call returns is a direct copy where the call is given a pointer into the local or into
+  what holds a copy (#320: `x.clone()`, `x.to_string()`, `ptr::read(&x)`, `format!("{}", x)`).
+  Only a result type holding nothing but pointers holds no copy (`_pointer_only`, review): a
+  reference, a raw pointer, `NonNull`, a tuple, array or `Option` of these, or a standard view of
+  `_POINTER_VIEWS` (`slice::Iter`, `str::Chars`, `fmt::Arguments`). `(u32, &'static ())` and a
+  struct `Hybrid<'_> { v: u32, r: &u32 }` may hold a copy.
+- An adapter of `_TRANSPARENT` holds only the iterators it wraps (review round 2): `Rev`, `Fuse`,
+  `Enumerate`, `Cycle`, `Cloned`, `Copied`, `Zip` and `Chain`. So `Rev<Chars<'_>>` holds no copy.
+  `Skip`, `Take`, `StepBy`, `Peekable` and those holding a closure (`Map`) may.
+- A standard path counts only under a root the crate gives nothing of its own
+  (`OwnedLocals._std_crates`, set as `Body.std_paths`, review round 2). A `mod alloc` of the
+  crate's makes `alloc::str::Chars` its own, and leaves `std::` paths the standard library's.
+- Each proof needs only the root its path is under (review round 3). `core::slice::<impl
+  [u32]>::len` needs `core`, `std::mem::take` needs `std`, and an inherent `Vec::len` needs the
+  root of the type its argument points at. So a `mod alloc {}` leaves `a.len()` a measure.
+- A result whose type shows a pointer (a reference, a lifetime, a closure, a trait object) may
+  also point into the local (the flow's `aims`), as a cast, copy or aggregate of one does. A read
+  through it may be a copy. A call given one may store a copy into what holds no pointer
+  (`out.push_str(&name)`). Into what may hold one it may have stored the pointer itself, as
+  #164's `v.push(&s[2..])` does, so that isn't counted.
+- `Body._only_wraps` proves a call the standard library's that returns only what it is given
+  (`_WRAPPERS`: `Box::new`, `Box::pin`, `Rc::new`, `Arc::new`). What it returns holds a copy only
+  where what it was given did. So #164's `Box::new(move || check(t))`, with `t = &s[2..]`, holds
+  none.
+- So does an iterator adapter call (`_ADAPTER_CALL`: `<std::str::Chars<'_> as Iterator>::rev`,
+  `map`, `filter`, `skip`, review round 2). `Iterator` must be the standard trait
+  (`_std_iterator`), on a type under a trusted standard root. A `map` given a `move` closure that
+  holds a copy holds it; one given a closure that borrows the local holds none.
+- A binding that may hold a copy and may point into the local (`Body.pointing_copies_at`) is said
+  to hold a copy "unless it only points into it" (`copy_hazards(reads="pointing")`). The advice
+  then doesn't offer to change the copy.
+- A cast to a type naming a function (`as Box<dyn Fn() -> usize>`) is no call: only a statement
+  with a `return:` edge is one.
+- `Body._only_measures` proves a call the standard library's that only measures or compares, so
+  its result is no copy. It is a method of `_MEASURES` (`len`, `is_empty`, `contains`,
+  `starts_with`) of a standard type, slice or `str`, or `eq`, `lt`, `cmp`, `partial_cmp` and the
+  like of `PartialEq`, `PartialOrd` or `Ord`.
+- Each argument must point at a primitive or a standard type (`_standard_only`), and the inherent
+  method's type must be what the first argument points at. So the method is the standard
+  library's own.
+- A dump names an inherent method by its type's short name (`String::len`), as it would a type of
+  the crate's own of that name. So the name must be one the crate gives no item of its own
+  (`OwnedLocals._trusted_names`, set as `Body.trusted_names`): none it declares, imports under
+  that name, passes bare to a macro, or names in a `macro_rules!` body (`_named_own`).
+- A comparison needs its trait's root trusted, where the dump names one, and no `PartialEq`,
+  `PartialOrd` or `Ord` of the crate's own (`OwnedLocals._std_traits`, set as
+  `Body.std_traits`). `_std_compares` (`ptr::eq`) and `_std_transfers` (`vec!`'s Box) return
+  the roots they trust.
+- What a measure or comparison returns must be a `bool`, `usize` or `Ordering` the local's type
+  can't hold (`_may_hold_type`): a `Vec<usize>`'s `len()` may be a copy of a `usize`.
+- Where the proven standard `mem::take` or `mem::replace` is given a pointer surely to a local
+  (`_sure_pointee`: `&mut a`, reborrowed, each assigned once and never borrowed), that local holds
+  no copy after it. Its result holds what it held.
+- A call stores only into what the pointers it is given were made from (`_made_from`: `v` of
+  `&mut v`), since #320. It no longer stores into every alias `_stored_into` links to them, such as
+  a pointer `format_args!` puts in the same tuple. A store statement still writes into them all.
 - A callee may write through an argument only on positive evidence (`Body._may_write_through`,
   review round 3). Its type may show a writable pointer (`_may_write`): a `&mut` or raw pointer,
   a cell, a type parameter, or a mutable standard view (`_MUTABLE_VIEWS`: `Entry`, the `IterMut`
@@ -492,6 +547,8 @@ the breakpoint stops (#324).
   which `lent_from` follows.
 - In unsafe code, a call may read a local through a pointer it isn't given, as a `static mut`
   holds. So every inlined call but the standard library's `ptr::eq` withholds every local.
+  That `ptr::eq` must be proven under the root the dump names it by (`_trusts`,
+  `_comparison_root`, #320 review round 3).
 - Where the DWARF's inlined calls made from the line aren't the IR's (`IrFunction.inlined`), or a
   column holds no call, every local is withheld. Where the pc or the DWARF blocks are not known,
   every call the IR shows inlined on the line counts, and a line that may invoke a macro is not
@@ -509,8 +566,11 @@ the breakpoint stops (#324).
 - A call's result counts only on its return edge.
 - `Body.direct_copies_at` gives the direct copies, from the blocks reachable from `bb0` or a
   coroutine's resumption. That is a copy or move of the local or a part, what is computed from one,
-  a closure or aggregate holding one, and a read through a pointer to it. It isn't what a call
-  given a pointer returns, such as `x.len()`.
+  a closure or aggregate holding one, and a read through a pointer to it. It is also what a call
+  given a pointer into it returns (#320), but not what a standard measure returns, as `x.len()`.
+- Every reading of `copy_hazards` judges by `copy_undoes` the same direct copies: those the "any"
+  reading doesn't hold as temporaries. So a value `format!` made from a binding's copy is never
+  said to read the local.
 - A temporary that read the local blocks the change wherever it is used again. One taken from a
   binding's copy is judged as that binding is: `a + x` still reads `x`.
 - Copies are judged by the part they may have taken: `direct_copies_at(…, projection)`. An

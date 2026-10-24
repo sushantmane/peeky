@@ -864,7 +864,7 @@ fn main() {
         let _ = allow(&mut other, now); // TWO_OTHER
         seen.push(allow(&mut w, now)); // TWO_CALL
     }
-    println!("SEEN:{:?}", seen);
+    println!("SEEN:{:?} COUNT:{}", seen, w.count);
 }
 """
 
@@ -876,6 +876,8 @@ def test_rust_the_advice_reaches_the_examined_call_of_a_function_called_from_two
     # Review 3 of the sixth evaluation's PR: `--set-hit N` counts the call line's own
     # stops, not the called function's. Stopped in `allow` at its hit 4 (the call on
     # `w`, `now=1`), `--set-hit 4` at the call line changed the call where `now=11`.
+    # `seen` holds what `allow(&mut w, …)` returned, which may be computed from `w.count`
+    # (#320): the program reads `w.count` at the end, so a change at the call line is seen.
     (crate / "src/main.rs").write_text(TWO_CALLS)
     allow, call = (
         next(i for i, line in enumerate(TWO_CALLS.splitlines(), 1) if marker in line)
