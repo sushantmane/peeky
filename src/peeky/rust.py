@@ -3204,13 +3204,16 @@ class RustSession(NativeSession):
         blocks = self.code_blocks.get(hashed[1]) if hashed else None
         if not blocks or pc is None or place is None:
             return False
-        addresses = self._own_rows(blocks, place)
-        if not addresses:
-            return False
-        start = min(addresses)
-        found = self._line_inlined(blocks, place, start)
-        lows = [min(low for low, _ in block.ranges) for block, _ in found or ()]
-        return pc in (start, min([start, *lows]))
+        memo = self.__dict__.setdefault("_start_memo", {})
+        if (hashed[1], place) not in memo:
+            if len(memo) >= 1024:
+                memo.clear()
+            addresses = self._own_rows(blocks, place)
+            start = min(addresses, default=None)
+            found = self._line_inlined(blocks, place, start) if addresses else None
+            lows = [min(low for low, _ in block.ranges) for block, _ in found or ()]
+            memo[hashed[1], place] = (start, min([start, *lows]) if addresses else None)
+        return memo[hashed[1], place][0] is not None and pc in memo[hashed[1], place]
 
     def _own_rows(self, blocks, place):
         """The addresses of the rows of ``place`` (source, line) in the function whose
