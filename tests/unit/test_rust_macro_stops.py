@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from peeky.errors import classify
+from peeky.errors import UnplacedStop, classify
 from peeky.rust import RustSession
 from peeky.rust_mir import macro_definitions, macro_lines
 from peeky.rust_symbols import CodeBlock
@@ -122,6 +122,50 @@ def test_a_stop_at_an_inlined_calls_site_is_the_builds(tmp_path):
     frame["source"]["path"] = str(tmp_path.parent / "elsewhere.rs")
     with pytest.raises(RuntimeError, match="does not match"):
         session.validate_stop(frame)
+
+
+def test_the_stops_pc_must_be_in_the_inlined_calls_code(tmp_path, monkeypatch):
+    # #326 review: line 11 is `bump`'s site, but a pc at line 12's row (0x1d0), outside
+    # `bump`'s code (0x1c0..0x1c8), is not a stop there; nor is the macro's line 1 at a pc
+    # outside `clone`'s code, though the source defines a macro there.
+    for line, pc in ((11, 0x1D0), (11, 0x1BC), (11, 0x1C8), (1, 0x1D0), (1, 0x1B8)):
+        session, frame = session_at(tmp_path, line, pc)
+        with pytest.raises(RuntimeError, match="Native stopped line does not match"):
+            session.validate_stop(frame)
+    # A caller's frame: its return address may end the call's code (pc - 1 is in it).
+    session, frame = session_at(tmp_path, 11, 0x1C8)
+    session.innermost_id, frame["id"] = 1, 2
+    session.validate_stop(frame)
+    frame["id"] = 1
+    with pytest.raises(RuntimeError, match="does not match"):
+        session.validate_stop(frame)
+    # Before the load bias is read, the pc isn't known: `validate_debugger` decides, once it
+    # reads the bias with the module, before anything of the frame is read.
+    from peeky.native import NativeSession
+
+    monkeypatch.setattr(
+        NativeSession,
+        "validate_debugger",
+        lambda self, dap, frame: setattr(self, "load_bias", 0x4000),
+    )
+    for pc, valid in ((0x1C0, True), (0x1D0, False)):
+        session, frame = session_at(tmp_path, 11, pc)
+        session.load_bias = None
+        session.validate_stop(frame)
+        if valid:
+            session.validate_debugger(None, frame)
+        else:
+            with pytest.raises(RuntimeError, match="does not match"):
+                session.validate_debugger(None, frame)
+    # A bias that can't be read leaves the pc unknown: refused.
+    monkeypatch.setattr(NativeSession, "validate_debugger", lambda self, dap, frame: None)
+    session, frame = session_at(tmp_path, 11, 0x1C0)
+    session.load_bias = None
+    with pytest.raises(RuntimeError, match="does not match"):
+        session.validate_debugger(None, frame)
+    # A line with rows of its own is not checked again.
+    session, frame = session_at(tmp_path, 10, 0x1D0)
+    session.validate_debugger(None, frame)
 
 
 def test_a_stop_in_a_macros_definition_reads_no_value_and_says_why(tmp_path):
@@ -274,9 +318,11 @@ def test_the_worker_keeps_the_session_at_such_a_stop(tmp_path):
     # The state says why nothing is read.
     worker.stop_location = worker.read_location()
     assert worker.location()["macro_stop"] == session.macro_stop_note(frame)
-    with pytest.raises(ValueError, match="^Peeky reads no value of frame 0 "):
+    with pytest.raises(UnplacedStop, match="^Peeky reads no value of frame 0 ") as refused:
         worker.dispatch("inspect", {"session_id": "session", "stop_id": "stop"})
     assert worker.session == "session" and "variables" not in worker.dap.calls
+    # A probe tells its breakpoint's stop by the frame it carries.
+    assert (refused.value.frame["line"], refused.value.frame["name"]) == (1, frame["name"])
     # The caller's frame is on a line of its own, and reads.
     found = worker.dispatch("inspect", {"session_id": "session", "stop_id": "stop", "frame": 1})
     assert found["scopes"][0]["variables"][0]["name"] == "x"
@@ -289,3 +335,128 @@ def test_the_worker_keeps_the_session_at_such_a_stop(tmp_path):
     # A stop anywhere else has no such note.
     worker.forget_stop()
     assert worker.stop_macro is None
+
+
+NOTE = (
+    "Peeky reads no value of frame 0 (demo::inlined) here: the debugger shows the stop on line 3 "
+    "of src/main.rs, inside the definition of macro `pick!`. …"
+)
+
+
+class MacroStops:
+    """A probe's worker stopping at line 3 of src/main.rs once per entry of ``order``: in
+    `demo::own`, where the line has code of its own, or in `demo::inlined`, where the
+    debugger shows the stop inside the macro's definition, whose frame `inspect` refuses
+    (#326 review). ``at`` moves an inline-only stop to another line."""
+
+    adapter = None
+
+    def __init__(self, order, at=3):
+        self.order, self.at, self.calls, self.current = list(order), at, [], None
+
+    def frame(self):
+        line = 3 if self.current == "own" else self.at
+        return {
+            "name": f"demo::{self.current}::{HASH}",
+            "line": line,
+            "source": {"path": "/w/src/main.rs"},
+        }
+
+    def dispatch(self, operation, args):
+        self.calls.append(operation)
+        if operation == "launch":
+            return {
+                "session_id": "s",
+                "breakpoints": [
+                    {"id": index, "verified": True, "line": point["line"]}
+                    for index, point in enumerate(args["breakpoints"], 1)
+                ],
+                "artifact_manifest_id": None,
+                "target_identity": None,
+                "source_sha256": "x",
+            }
+        if operation == "breakpoints":
+            return {"breakpoints": [{"line": point["line"]} for point in args["breakpoints"]]}
+        if operation == "wait":
+            if not self.order:
+                return {"state": "terminated"}
+            self.current = self.order.pop(0)
+            frame = self.frame()
+            return {
+                "state": "stopped",
+                "stop_id": f"t{len(self.calls)}",
+                "event": {"body": {"reason": "breakpoint", "threadId": 1}},
+                "location": f"src/main.rs:{frame['line']}",
+                **({"macro_stop": NOTE} if self.current == "inlined" else {}),
+            }
+        if operation == "inspect":
+            if self.current == "inlined":
+                raise UnplacedStop(NOTE, self.frame())
+            return {
+                "frames": [self.frame()],
+                "scopes": [
+                    {
+                        "name": "Locals",
+                        "reference": 1,
+                        "variables": [{"name": "x", "value": "5", "variablesReference": 0}],
+                    }
+                ],
+            }
+        if operation == "set_variable":
+            return {"name": args["name"], "before": "5", "after": args["value"]}
+        if operation == "report":
+            return {"output": "OWN 6\nINLINED 6\n", "output_truncated": False}
+        return {}
+
+    def close(self):
+        self.calls.append("close")
+
+
+def probed(monkeypatch, worker, request):
+    import peeky.probe as probe_module
+
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    return probe_module.run_probe("/w", request)
+
+
+def test_a_probe_withholds_a_stop_inside_a_macros_definition_and_goes_on(monkeypatch):
+    # #326 review: a macro's line placed in one function, where it has code of its own, and
+    # inline-only in another, where the debugger shows the stop inside the macro's
+    # definition. Its `inspect` refusal failed the whole probe and closed its session.
+    from peeky.probe import Probe, _table
+
+    worker = MacroStops(["own", "inlined", "own"])
+    result = probed(monkeypatch, worker, Probe("src/main.rs", 3, ("x",), hits="all"))
+    assert result["status"] == "completed" and "error" not in result, result.get("error")
+    assert [(row["hit"], row.get("value")) for row in result["rows"]] == [
+        (1, "5"),
+        (2, None),
+        (3, "5"),
+    ]
+    withheld = result["rows"][1]
+    assert withheld["error"] == f"withheld: {NOTE}" and withheld["unavailable"] is True
+    assert withheld["settable"] is False and withheld["line"] == 3
+    assert withheld["function"] == f"demo::inlined::{HASH}"
+    assert f"withheld: {NOTE[:40]}" in _table(result)
+    # Nothing is changed there: a change due at that stop is refused, as any refusal is.
+    worker = MacroStops(["own", "inlined"])
+    request = Probe("src/main.rs", 3, ("x",), hits=2, set=(("x", "100"),), set_hit=2)
+    result = probed(monkeypatch, worker, request)
+    assert result["status"] == "failed" and "set_variable" not in worker.calls
+    assert result["error"]["code"] == "MUTATION_REJECTED", result["error"]
+    assert result["error"]["message"] == f"'x' cannot be changed at this stop: {NOTE}"
+    # `--capture return`: no step out of a stop Peeky can't place.
+    worker = MacroStops(["inlined"])
+    result = probed(monkeypatch, worker, Probe("src/main.rs", 3, ("x", "(return)")))
+    assert result["status"] == "completed", result.get("error")
+    assert [(row["phase"], row["error"]) for row in result["rows"]] == [
+        ("observed", f"withheld: {NOTE}"),
+        ("returned", f"withheld: {NOTE}"),
+    ]
+    # A stop whose place isn't the probe's breakpoint's is no hit of it: refused, as before.
+    worker = MacroStops(["inlined"], at=1)
+    result = probed(monkeypatch, worker, Probe("src/main.rs", 3, ("x",)))
+    assert result["status"] == "failed" and result.get("rows") in (None, [])
+    assert (
+        "Stopped at /w/src/main.rs:1 (breakpoint), not the requested" in result["error"]["message"]
+    )

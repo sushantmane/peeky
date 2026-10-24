@@ -530,6 +530,16 @@ class Refused(ValueError):
         self.code = code
 
 
+class UnplacedStop(ValueError):
+    """An inspection's refusal of a frame the runtime can't place among its function's
+    lines, of which nothing is read (#326: the debugger shows a Rust stop inside a macro's
+    definition). The session is kept. ``frame``: the frame, as an inspection lists it."""
+
+    def __init__(self, message, frame=None):
+        super().__init__(message)
+        self.frame = dict(frame or {})
+
+
 def classify(exc, *, session_closed=None):
     """Map an exception to the protocol error object.
 

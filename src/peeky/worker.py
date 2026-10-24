@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
-from peeky.errors import _RULES, PROTOCOL_VERSION, classify
+from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
 from peeky.identifiers import changeable, is_located, is_name, member_name, reachable
 from peeky.names import display_function
 from peeky.text_sets import Memory as TextMemory
@@ -2419,7 +2419,7 @@ class DebugWorker:
             ):
                 # The debugger shows the frame in a macro's definition, not on a line of its
                 # function (#326): nothing there is read, and the session is kept.
-                raise ValueError(why)
+                raise UnplacedStop(why, _public_sources(runtime, [selected_frame])[0])
             # Adapters may reuse raw scope IDs for different selected frames.
             # A new inspection revokes all earlier client scope handles.
             self.references.clear()

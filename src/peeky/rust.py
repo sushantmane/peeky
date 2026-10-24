@@ -3267,21 +3267,61 @@ class RustSession(NativeSession):
             return None
         return tuple(dict.fromkeys(name for name, low, high in spans if low <= place[1] <= high))
 
+    def _inlined_site(self, frame):
+        """(#326) Whether the frame's line, one with no row in the build, is where LLDB shows
+        a stop at a call the build inlined: True where the frame's pc is in the code of a
+        call inlined into its function from that line (a caller frame's return address
+        may end that code, so its pc - 1 counts too); False where it is not, or the frame
+        can't be placed; None where the pc isn't known yet (the load bias is read with the
+        module, in ``validate_debugger``). Only without the function's DWARF blocks does a
+        line in a macro's definition count by the source alone: such a stop reads no value
+        (``macro_stop``)."""
+        place, hashed = self._place(frame), _frame_hash(frame)
+        if place is None or place[0] not in self.lines:
+            return False
+        blocks = self.code_blocks.get(hashed[1]) if hashed else None
+        if not blocks:
+            return bool(self._macros_at(place))
+        pc = self._unslid(frame)
+        if pc is None:
+            return None
+        innermost = getattr(self, "innermost_id", None)
+        pcs = (pc,) if innermost is None or frame.get("id") == innermost else (pc, pc - 1)
+        return any(
+            low <= at < high
+            for block in blocks
+            if block.inlined and self._called_from(block, place)
+            for low, high in block.ranges
+            for at in pcs
+        )
+
     def validate_stop(self, frame):
         """NativeSession's check, and (#326) a stop LLDB shows on a line with no row of its
         own in the build: at a call the build inlined, LLDB shows the line the call is
-        made from. That line is the build's too where its debug information names it as
-        such a call's site in the frame's function, or where it is in a macro's definition
-        (`$v.clone()` of `macro_rules! mclone`)."""
+        made from. That line is the build's too where the frame's pc is in the code of
+        such a call (``_inlined_site``). Where the pc isn't known yet, ``validate_debugger``
+        decides, before anything of the frame is read."""
         try:
             super().validate_stop(frame)
         except RuntimeError:
-            place, hashed = self._place(frame), _frame_hash(frame)
-            if place is None or place[0] not in self.lines:
+            if self._inlined_site(frame) is False:
                 raise
-            blocks = self.code_blocks.get(hashed[1]) if hashed else None
-            if not self._site_lows(blocks or (), place) and not self._macros_at(place):
-                raise
+
+    def validate_debugger(self, dap, frame):
+        """NativeSession's check, then (#326) a line with no row in the build must be an
+        inlined call's site at the frame's pc, now that the load bias is known."""
+        super().validate_debugger(dap, frame)
+        place = self._place(frame)
+        if (lines := self.__dict__.get("_line_sets")) is None:
+            # Every read of a value asks: the build's lines, parsed once.
+            lines = self._line_sets = {name: frozenset(found) for name, found in self.lines.items()}
+        if (
+            place is not None
+            and place[0] in lines
+            and place[1] not in lines[place[0]]
+            and not self._inlined_site(frame)
+        ):
+            raise RuntimeError("Native stopped line does not match prepared symbols")
 
     def macro_stop(self, frame):
         """(#326) The macros whose definition ``frame`` is stopped in, on a line with no row

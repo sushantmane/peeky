@@ -109,6 +109,10 @@ of the macro it is.
   The session goes on. The state says why, in a note, and in JSON as `macro_stop`:
   ``Peeky reads no value of frame 0 (demo::single) here: the debugger shows the stop on line 6 of
   src/main.rs, inside the definition of macro `mclone!`…``
+- Where Peeky can't read the source as rustc does, such a line may be a macro's. Then
+  `macro_stop` says so instead: ``…which has no code of its own in demo::single…``.
+- A probe that stops there withholds each selector's row with the same reason, and goes on. A
+  change due at that stop is refused.
 - `session inspect` there is refused with the same message, as `INVALID_REQUEST`. `--frame 1`
   reads the caller.
 - `session step` goes on, past the macro's code, to the invocation's line. There the macro's code

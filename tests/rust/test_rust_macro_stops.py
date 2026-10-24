@@ -109,6 +109,29 @@ fn main() {
     println!("DECLARED {}", declared(x));
 }
 """
+# #326 review: a macro's line with code of its own in `own`, and only an inlined call's site
+# in `inlined`.
+MIXED = """use std::env;
+
+macro_rules! pick { (c $v:expr) => {{ $v.clone() }}; (a $v:expr) => {{ $v + 1 }}; } // PICK
+
+fn own(x: u32) -> u32 {
+    let y = pick!(a x); // OWN
+    y
+}
+
+fn inlined(mut x: u32) -> u32 {
+    std::hint::black_box(&mut x); // IBEFORE
+    let y = pick!(c x) + 1; // INLINED
+    y
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("OWN {}", own(x));
+    println!("INLINED {}", inlined(x));
+}
+"""
 RUN = ("--", "5")
 
 
@@ -322,3 +345,32 @@ def test_a_decl_macros_inlined_code_keeps_the_session(crate, capsys):
         assert "DECLARED 6" in output(capsys)
     finally:
         close(capsys)
+
+
+@pytest.mark.timeout(600)
+def test_a_macros_line_with_code_elsewhere_is_withheld_where_it_is_only_inlined(crate, capsys):
+    # #326 review: line PICK has code of its own in `own`, so it is the build's line, and a
+    # breakpoint there is placed. In `inlined`, LLDB shows the stop at `pick!`'s inlined
+    # `clone` on it too. On main that stop was judged as a line of `inlined`: `x` was
+    # `[not settable: part-way through line 3]`, which it isn't.
+    root, line = crate(MIXED), line_of("PICK", MIXED)
+    start(capsys, root, "IBEFORE", MIXED)
+    try:
+        macro_stop(capsys, "pick", line)
+        stepped_on(capsys, line_of("INLINED", MIXED))
+        assert "INLINED 6" in output(capsys)
+    finally:
+        close(capsys)
+    # A probe of the line: LLDB (host, 18 and 20) places its breakpoint on `own`'s code
+    # alone, since the build's one compile unit has a row of the line. A stop in
+    # `inlined` would be withheld, and the probe would go on (unit-tested).
+    at = ["probe", str(root), "--at", f"src/main.rs:{line}", "--capture", "x", "--hits", "all"]
+    code = main([*at, "--json", "--quiet", *RUN])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["status"] == "completed", result.get("error")
+    rows = [row for row in result["rows"] if row["phase"] == "observed"]
+    assert [row.get("value") for row in rows if "::own::" in row["function"]] == ["5"], rows
+    for row in rows:
+        if "::own::" not in row["function"]:
+            assert row["error"].startswith("withheld: Peeky reads no value of frame 0"), row
+    assert "OWN 6" in result["output"] and "INLINED 6" in result["output"]
