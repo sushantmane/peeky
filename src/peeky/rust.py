@@ -39,6 +39,7 @@ from peeky.compiled_verification import CompiledVerification
 from peeky.identifiers import is_located, is_name
 from peeky.names import display_function
 from peeky.native import (
+    _RUST_POINTER,
     NativeSession,
     _metadata,
     _path_name,
@@ -1047,6 +1048,33 @@ def _slice_element(proofs, body, assigned):
     return bool(proofs._std_compares()) and bool(proofs._std_iterator())
 
 
+def _spans_and_text(session, bodies, source, name, line, texts):
+    """(where each binding of ``name`` on ``line`` of ``source`` that ``bodies`` place
+    there ends, as the MIR prints it; the source's lines as rustc counts them), each None
+    where unknown: a binding whose span the MIR did not give, or a source that can't be
+    read. ``texts``: {source: its lines}, read once. ``session``: a RustSession."""
+    if source is None or source not in session.lines:
+        return None, None
+    bindings = [
+        binding
+        for body in bodies
+        for binding in body.bindings.get(name, ())
+        if binding[1] == source and binding[2] == line
+    ]
+    ends = [end for body in bodies for end in body.binding_ends.get((name, source, line), ())]
+    if not bindings or len(ends) != len(bindings):
+        # A binding whose span the MIR did not give: unsure.
+        return None, None
+    if source not in texts:
+        try:
+            text = read_source(Path(session.prepared.source_root) / source)
+        except (OSError, UnicodeDecodeError):
+            text = None
+        # As rustc counts columns: in characters, with no byte order mark.
+        texts[source] = None if text is None else source_lines(text.removeprefix("\ufeff"), True)
+    return ends, texts[source]
+
+
 def _redirected(body, local):
     """Whether the argument ``local`` of the MIR ``body`` may hold another value than
     the call passed, at some stop: the body assigns to it, whole or in part, or takes
@@ -1775,6 +1803,8 @@ class RustSession(NativeSession):
             def left_out(source, name, line):
                 if self._try_bindings(bodies, source, name, line, texts):
                     return True
+                if self._loop_iterators(bodies, source, name, line, texts):
+                    return True
                 places = own.get(name, set())
                 if name not in foreign or source is None or (source, line) in places:
                     return False
@@ -1791,29 +1821,8 @@ class RustSession(NativeSession):
         right after a `?` in the source (`residual` spans only the `?`, `val` the
         expression the `?` tries), which an identifier's never does. False where any span is missing or the source
         can't be read as rustc read it. ``texts``: {source: its lines}, read once."""
-        if source is None or source not in self.lines:
-            return False
-        bindings = [
-            binding
-            for body in bodies
-            for binding in body.bindings.get(name, ())
-            if binding[1] == source and binding[2] == line
-        ]
-        ends = [end for body in bodies for end in body.binding_ends.get((name, source, line), ())]
-        if not bindings or len(ends) != len(bindings):
-            # A binding whose span the MIR did not give: unsure, so shown.
-            return False
-        if source not in texts:
-            try:
-                text = read_source(Path(self.prepared.source_root) / source)
-            except (OSError, UnicodeDecodeError):
-                text = None
-            # As rustc counts columns: in characters, with no byte order mark.
-            texts[source] = (
-                None if text is None else source_lines(text.removeprefix("\ufeff"), True)
-            )
-        lines = texts[source]
-        if lines is None:
+        ends, lines = _spans_and_text(self, bodies, source, name, line, texts)
+        if ends is None or lines is None:
             return False
         for end_line, end_column in ends:
             if (
@@ -1822,6 +1831,31 @@ class RustSession(NativeSession):
             ):
                 return False
             if lines[end_line - 1][end_column - 2] != "?":
+                return False
+        return True
+
+    def _loop_iterators(self, bodies, source, name, line, texts):
+        """Whether ``bodies`` bind ``name`` on ``line`` of ``source`` only as a `for` loop
+        desugars it (eleventh evaluation, prep 7): `iter`, the loop's iterator, whose span
+        is the loop's iterator expression (`1..=weeks`, `team.iter().enumerate()`), so the
+        loop's block opens right after it. A binding the program writes spans its name,
+        which a `{` never follows. False where any span is missing or the source can't be
+        read as rustc read it (see _try_bindings)."""
+        if name != "iter":
+            return False
+        ends, lines = _spans_and_text(self, bodies, source, name, line, texts)
+        if ends is None or lines is None:
+            return False
+        for end_line, end_column in ends:
+            if (
+                not 1 <= end_line <= len(lines)
+                or not 1 <= end_column <= len(lines[end_line - 1]) + 1
+            ):
+                return False
+            after = "".join(
+                [lines[end_line - 1][end_column - 1 :], *lines[end_line : end_line + 8]]
+            )
+            if not after.lstrip().startswith("{"):
                 return False
         return True
 
@@ -2141,6 +2175,88 @@ class RustSession(NativeSession):
             return None
         path = (place.get("source") or {}).get("path")
         return self._in_scope(hashed[1], root.get("name"), place.get("line"), path)
+
+    def compiler_binding(self, variable, frame):
+        """Whether a root local lldb-dap lists in ``frame`` is a binding rustc makes, not
+        the program: a `for` loop's `iter` or a `?`'s `residual` or `val`, told as
+        `describe` tells them (_loop_iterators, _try_bindings; eleventh evaluation, prep
+        7). The worker leaves it out of a stop's listing, as `describe` does. False
+        where unsure: no MIR, or not one binding."""
+        name, at, place = str(variable.get("name")).partition(" @ ")
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        if name not in ("iter", "residual", "val") or not hashed or proofs is None:
+            return False
+        body = proofs.body(hashed[1])
+        if body is None:
+            return False
+        bindings = body.bindings.get(name, ())
+        if at:
+            file, _, number = place.rpartition(":")
+            found = {
+                (b[1], b[2]) for b in bindings if (Path(b[1]).name, str(b[2])) == (file, number)
+            }
+        else:
+            line = (frame or {}).get("line")
+            path = ((frame or {}).get("source") or {}).get("path")
+            local = proofs._local(body, name, line, path) if type(line) is int and path else None
+            found = {(b[1], b[2]) for b in bindings if local is not None and b[0] == local}
+        if len(found) != 1:
+            return False
+        source, line = found.pop()
+        texts = self.__dict__.setdefault("_binding_texts", {})
+        return self._loop_iterators([body], source, name, line, texts) or (
+            name != "iter" and self._try_bindings([body], source, name, line, texts)
+        )
+
+    def _loop_item(self, frame, siblings, element):
+        """The name of a `for` loop's item among ``siblings`` (the frame's root locals, as
+        lldb-dap lists them) that is a reference to a value of type ``element`` (the
+        debug information's name), through which a field a container's view does not
+        read can be read (eleventh evaluation: `team[1].leave` did not read where `e`,
+        the loop's `&Engineer`, did). A loop's item is a binding of the MIR scope just
+        inside the one holding the loop's `iter` (_loop_iterators). None where there is
+        none, or no MIR."""
+        hashed, proofs = _frame_hash(frame), getattr(self, "owned", None)
+        body = proofs.body(hashed[1]) if hashed and proofs is not None else None
+        if body is None or not siblings:
+            return None
+        texts = self.__dict__.setdefault("_binding_texts", {})
+        loops = {
+            b[4]
+            for b in body.bindings.get("iter", ())
+            if self._loop_iterators([body], b[1], "iter", b[2], texts)
+        }
+        items = {scope for scope, parent in body.scopes.items() if parent in loops}
+        line = (frame or {}).get("line")
+        path = ((frame or {}).get("source") or {}).get("path")
+        for sibling in siblings:
+            shown = str(sibling.get("name"))
+            name, at, place = shown.partition(" @ ")
+            kind = re.fullmatch(r"(.*?\S) ?\*", str(sibling.get("type") or ""))
+            if not kind or not _spelled(str(element), kind[1]):
+                continue
+            if at:
+                file, _, number = place.rpartition(":")
+                found = [
+                    b
+                    for b in body.bindings.get(name, ())
+                    if (Path(b[1]).name, str(b[2])) == (file, number)
+                ]
+            else:
+                local = (
+                    proofs._local(body, name, line, path) if type(line) is int and path else None
+                )
+                found = [
+                    b for b in body.bindings.get(name, ()) if local is not None and b[0] == local
+                ]
+            # A reference, never a raw pointer, whose target Peeky never reads.
+            if (
+                len(found) == 1
+                and found[0][4] in items
+                and str(body.types.get(found[0][0]) or "").startswith("&")
+            ):
+                return shown
+        return None
 
     def declared_at(self, variable, frame):
         """(`entry @ main.rs:81`, how many bindings that names) for a root local lldb-dap
@@ -3120,6 +3236,7 @@ class RustSession(NativeSession):
             parameter=parameter,
             owned=owned,
             declared=proofs.declared_type(hashed[1], variable.get("name")) if owned else None,
+            loop_item=lambda element: self._loop_item(frame, siblings, element),
         )
         if container is not None:
             return container
@@ -3628,7 +3745,8 @@ class RustSession(NativeSession):
         information, any other's when only one primitive renders as that name (`double`
         is `f64`); and a reference parameter's from the build's IR (`&mut
         limiter::Window`, not `limiter::Window *`), which declares each instantiation's
-        own types, never a type parameter."""
+        own types, never a type parameter; any other reference's or raw pointer's from
+        the build's debug information (`&rota::Engineer`, `*const u8`: _pointer_name)."""
         kind = variable.get("type")
         if not top and path and (declared := self._field_display_type(frame, path, kind)):
             return declared
@@ -3644,7 +3762,43 @@ class RustSession(NativeSession):
                 return declared
         if scalar := UNIQUE_SCALARS.get(kind):
             return scalar
-        return self._rust_name(frame, [variable.get("name")] if top else path, kind)
+        where = [variable.get("name")] if top else path
+        return self._pointer_name(frame, where, kind) or self._rust_name(frame, where, kind)
+
+    def _pointer_name(self, frame, path, kind):
+        """A reference's or raw pointer's Rust type (`&rota::Engineer`, `&&str`, `*const
+        u32`), where LLDB names it as C would (`rota::Engineer *`, `&str *`, `unsigned int
+        *`): the name the build's debug information gives the pointer type at ``path``
+        (the root local's name, then the debugger's child names), through each level of
+        pointer, where LLDB's ``kind`` spells what the last one points at. None where it
+        does not, or the debug information names no Rust pointer there."""
+        from peeky.fields import Unsettable, member_type
+
+        stars = re.fullmatch(r"(.*?\S) ?(\*+)", str(kind or ""))
+        hashed = _frame_hash(frame)
+        if not stars or not hashed or not path or not all(isinstance(s, str) for s in path):
+            return None
+        try:
+            functions, _ = self._field_types()
+            root, _ = self._declared_type(
+                functions.get(hashed[1]) or {},
+                path[0],
+                self._frame_scope(frame, {"name": path[0]}),
+            )
+            graph = self._field_cache[2]
+            node = member_type(graph, root, path[1:])
+        except (Unsettable, TypeError, IndexError):
+            return None
+        name = node[1] if node is not None and node[0] == "pointer" else None
+        levels = 0
+        while node is not None and node[0] == "pointer" and node[2] is not None and levels < 8:
+            if not _RUST_POINTER.fullmatch(node[1] or ""):
+                return None
+            levels, node = levels + 1, graph.get(node[2])
+        if not name or node is None or levels != len(stars[2]):
+            return None
+        pointee = node[11] if node[0] == "record" else node[1] if node[0] == "base" else None
+        return rust_spelling(name) if pointee and _spelled(pointee, stars[1]) else None
 
     def _rust_name(self, frame, path, kind):
         """A library type as the program spells it (#183: `Vec<u32>`, not LLDB's

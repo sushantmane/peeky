@@ -1755,10 +1755,23 @@ def _withheld_field(field, kind, reason):
     }
 
 
-def _text_field(field, raw, layout, read, left):
+def _through_element(field, item):
+    """Where to read an element's ``field`` that a container's view does not (#260): through
+    a reference to the element, the `for` loop's item ``item`` in scope where there is one
+    (eleventh evaluation: `e.leave` read where `team[1].leave` did not)."""
+    if item is None:
+        return "read it through a reference to the element, such as a `for` loop's item"
+    return (
+        f"read it through a reference to the element: `{item}.{field}`, at a stop where "
+        f"the `for` loop's item `{item}` is this element"
+    )
+
+
+def _text_field(field, raw, layout, read, left, item=None):
     """A `String` field of an element (its bytes ``raw``, at ``layout``'s offsets) read as
     text, and its text as `{:?}` shows it (None where not read whole); ``left``: how
-    many more texts this view may read (MAX_ELEMENT_TEXTS)."""
+    many more texts this view may read (MAX_ELEMENT_TEXTS); ``item``: see
+    _through_element."""
     data, length, capacity = (_word(raw, layout[key]) for key in ("data", "length", "capacity"))
     if not length <= capacity < 2**63:
         raise ValueError("Rust String length exceeds its capacity")
@@ -1768,8 +1781,7 @@ def _text_field(field, raw, layout, read, left):
         reason = (
             f"Peeky reads the text of only the first {MAX_ELEMENT_TEXTS} String fields of a "
             f"container's elements (each is a read of its own), and this is past them; it "
-            f"is {length} bytes long. Read it through a reference to the element, such as a "
-            "`for` loop's item"
+            f"is {length} bytes long. R{_through_element(field, item)[1:]}"
         )
         return _withheld_field(field, "String", reason), None
     count = min(length, MAX_FIELD_TEXT)
@@ -1795,9 +1807,10 @@ def _text_field(field, raw, layout, read, left):
     return child, rust_str_debug(text) if count == length else None
 
 
-def _unread_field(field, kind, through=None):
+def _unread_field(field, kind, through=None, item=None):
     """A field of an element Peeky does not read (#260), with why and what to do; or of
-    what an `Option` holds, read ``through`` a binding (`x` of `if let Some(x) = &last`)."""
+    what an `Option` holds, read ``through`` a binding (`x` of `if let Some(x) = &last`).
+    ``item``: see _through_element."""
     from peeky.rust import rust_spelling
 
     shown = rust_spelling(kind) if kind else None
@@ -1810,8 +1823,7 @@ def _unread_field(field, kind, through=None):
     else:
         reason = (
             f"Peeky reads an element's integer, bool, float, char and String fields, and "
-            f"`{field}` {what}: read it through a reference to the element, such as a `for` "
-            "loop's item"
+            f"`{field}` {what}: {_through_element(field, item)}"
         )
     return _withheld_field(field, shown, reason)
 
@@ -1829,11 +1841,11 @@ def _partial_debug(shape, shown, parts):
     return f"({inner})" if shape == "tuple" else f"{shown}({inner})"
 
 
-def _partial_elements(layout, raws, read, through=None):
+def _partial_elements(layout, raws, read, through=None, item=None):
     """(values, children) of elements with a `String` field or one Peeky does not read
     (#260): scalars as for any element, each String's text read from memory (the first
-    MAX_ELEMENT_TEXTS), and every other field withheld with why (``through``: see
-    _unread_field)."""
+    MAX_ELEMENT_TEXTS), and every other field withheld with why (``through``, ``item``:
+    see _unread_field)."""
     left = [MAX_ELEMENT_TEXTS]
     values, children = [], []
     for index, raw in enumerate(raws):
@@ -1846,11 +1858,11 @@ def _partial_elements(layout, raws, read, through=None):
             elif kind == _STRING:
                 text = layout["string"]
                 member, value = _text_field(
-                    name, raw[offset : offset + text["size"]], text, read, left
+                    name, raw[offset : offset + text["size"]], text, read, left, item
                 )
                 members.append(member)
             else:
-                members.append(_unread_field(name, rest[0] if rest else None, through))
+                members.append(_unread_field(name, rest[0] if rest else None, through, item))
                 value = None
             parts.append((name, value, kind))
         value = _partial_debug(layout["shape"], layout["shown"], [part[:2] for part in parts])
@@ -2196,7 +2208,16 @@ def unread_elements(name):
 
 
 def container_view(
-    variable, read, layouts, *, optimized, parameter=None, owned=False, declared=None, field=None
+    variable,
+    read,
+    layouts,
+    *,
+    optimized,
+    parameter=None,
+    owned=False,
+    declared=None,
+    field=None,
+    loop_item=None,
 ):
     """A proven container read from memory, or None to leave it raw.
 
@@ -2209,7 +2230,8 @@ def container_view(
     ``read(address, count)`` returns exactly ``count`` bytes or raises. The container
     is read at its compiler-validated offsets, then its first MAX_ELEMENTS elements (or
     MAX_TEXT_BYTES of text). A length above the capacity, or a null or misaligned
-    buffer, is never shown as contents.
+    buffer, is never shown as contents. ``loop_item(element type)``: the `for` loop's
+    item in scope that a field the view does not read can be read through, or None.
     """
     reference_type = REFERENCE_PARAMETERS.get(parameter)
     composite = None if reference_type else _composite_parameter(parameter)
@@ -2312,7 +2334,8 @@ def container_view(
         payload = read(f"0x{data:X}", count * width) if count else b""
         raws = [payload[i * width : (i + 1) * width] for i in range(count)]
         if _partial(layout):
-            elements, children = _partial_elements(layout, raws, read)
+            item = loop_item(layout["element"]) if loop_item else None
+            elements, children = _partial_elements(layout, raws, read, item=item)
         else:
             decode = _decoder(layout)
             elements = [decode(raw) for raw in raws]

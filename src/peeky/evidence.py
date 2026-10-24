@@ -401,11 +401,17 @@ def _caveat(alias=""):
     """What qualifies a row's value, so it is not evidence by itself: its view where that
     is not just how it was read (`memory`, `active-variant`): stale, unproven, opaque,
     budget-exhausted or one added later; else `note` where the row has a note (a C/C++
-    local a loop returns to, a Rust summary). NULL for a plain value, or none."""
+    local a loop returns to, a Rust summary). NULL for a plain value, or none; and for a
+    Rust raw pointer's address alone (`*const T`, `[unproven]`), whose view and note are
+    about what it points at: the address is the pointer's own value (COOKBOOK 4.8,
+    eleventh evaluation, prep 16)."""
     prefix = f"{alias}." if alias else ""
     return (
-        f"CASE WHEN {prefix}value IS NULL THEN NULL WHEN {prefix}view NOT IN ('memory', "
-        f"'active-variant') THEN {prefix}view WHEN {prefix}note IS NOT NULL THEN 'note' END"
+        f"CASE WHEN {prefix}value IS NULL THEN NULL WHEN {prefix}view = 'unproven' AND "
+        f"({prefix}type GLOB '[*]const *' OR {prefix}type GLOB '[*]mut *') AND "
+        f"{prefix}value GLOB '0x?*' AND substr({prefix}value, 3) NOT GLOB '*[^0-9a-fA-F]*' "
+        f"THEN NULL WHEN {prefix}view NOT IN ('memory', 'active-variant') THEN {prefix}view "
+        f"WHEN {prefix}note IS NOT NULL THEN 'note' END"
     )
 
 
@@ -686,6 +692,11 @@ _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS 
         || COALESCE(' (run b: stop ' || k.st || ')', '')
       WHEN b.pos IS NULL THEN 'missing in run b' || COALESCE(' (run a: stop ' || k.st || ')', '')
       WHEN a.pos IS NULL THEN 'missing in run a' || COALESCE(' (run b: stop ' || k.st || ')', '')
+      WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
+        AND {_POINTER_TYPE.format(t="a.t")} AND {_POINTER_TYPE.format(t="b.t")}
+        AND no_addresses(a.v, {_LANGUAGE.format(_A)}) IS no_addresses(b.v, {_LANGUAGE.format(_B)})
+        THEN 'addresses differ: its type changed, ' || a.t || ' -> ' || b.t || '; '
+          || substr('{_POINTS_ELSEWHERE.replace("'", "''")}', length('addresses differ: ') + 1)
       WHEN a.v IS NOT b.v AND a.t IS NOT NULL AND b.t IS NOT NULL AND a.t IS NOT b.t
         THEN 'type ' || a.t || ' -> ' || b.t
       WHEN a.v IS NOT b.v AND no_addresses(a.v, {_LANGUAGE.format(_A)})

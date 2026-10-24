@@ -32,6 +32,11 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   ([Rust 7.2](rust-cookbook.md#set-up-the-crate)).
 - Name the line with `--at src/main.rs:LINE`. Pass program arguments after `--`, or with repeated
   `--arg` ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
+- A line with no code of its own, such as `continue;` or a lone `}`, may have no breakpoint. Stop
+  on the line before it, then `session step` ([Rust 1.1](rust-cookbook.md#lines-with-no-breakpoint)).
+- `describe`, probes and `session inspect` leave out the bindings the compiler makes: a `for`
+  loop's `iter`, and a `?`'s `residual` and `val`
+  ([Rust 1.1](rust-cookbook.md#see-where-a-local-is-visible)).
 - `verify` also runs the crate's integration test, if it has one
   ([6.5](../COOKBOOK.md#65-writing-a-checker)).
 - To debug a crate on another host, run a worker there with `--rust-config`. Then add
@@ -45,7 +50,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 
 ## Read values
 
-- Locals show their Rust types, such as `Vec<u32>` and `&mut limiter::Window`
+- Locals show their Rust types, such as `Vec<u32>`, `&mut limiter::Window` and
+  `*const kitty::Friend`, where LLDB writes `limiter::Window *`
   ([Rust 1.1](rust-cookbook.md#read-types-as-the-program-spells-them)).
 - These read from memory, marked `[memory]`: an owned `String`, a `Vec` of plain elements, and
   a reference parameter of them (`&[T]`, `&str`)
@@ -121,6 +127,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - A raw pointer shows only its address, `[unproven]`. To see which element it points at in
   another run, join the runs on `address(value)` minus a base each run has
   ([Rust 4.8](rust-cookbook.md#48-compare-addresses-across-runs)).
+- To see what `ptr::eq(e, l)` compares, capture `e` and `l` at its line. Each shows its address, so
+  compare their `address(value)` at each hit in SQL ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).
 - In `queries diff`, a value whose addresses differ says `addresses differ`: what it points at
   may differ too ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)).
 - A local whose slot may hold leftovers is withheld: the row says `no value yet:` and why. That is

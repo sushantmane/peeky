@@ -248,6 +248,8 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
   exception leaves the block. So `name (std::string, lines 22-25, 35)` is an `if` block's local.
   It is visible on the block's lines, and at the closing `}` while an exception unwinds. It is not
   visible on the lines between. C blocks have no such cleanup code.
+- A probe at that closing `}` stops where the function returns, with no exception under way. So
+  such a local is `not found` there. Read it on the block's own lines.
 - A span is never narrower than where the debugger can show the local. So it keeps the lines
   inside it without code, such as comments or a lone `}`.
 - A block that also runs another file's code, such as an `#include` inside it, gives no lines. A
@@ -1627,6 +1629,10 @@ element 6 in one run and at element 4 in the other.
   ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element.
 - There is one row per selector, as for `addresses only` below. The note says at how many hits:
   `addresses differ at 2 hits (one row per selector: its first hit): …`.
+- A pointer whose type changed too, but whose values differ only in addresses, ranks here, not
+  with the real differences. Its note says so: `its type changed, &rota::Engineer ->
+  *const rota::Engineer; it may point at another element too`. An edit from a reference to a raw
+  pointer gives such a row.
 
 **5. Qualified values.** A value that a view or a note qualifies, in either run, ranks here. Its
 note says `qualified (run a: note, run b: note): not evidence by itself`.
@@ -1639,6 +1645,9 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
   `missing in run b; qualified (run a: note)`,
   `intervention only in run a; qualified (run a: note)`.
 - `queries run` shows each note.
+- A Rust raw pointer that shows only its address isn't qualified here. Its `[unproven]` and its
+  note are about what it points at, and its address is its own value
+  ([4.8](#48-compare-addresses-across-runs)). It ranks as a pointer, in tier 4.
 
 **6. Address-only differences** say `addresses only`. These are other values that differ only in
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
@@ -2462,6 +2471,7 @@ Choose the base with care:
 Read an address with its row's view and note, as you read the value:
 
 - `[unproven]` on a raw pointer is about what it points at. Its address is the pointer's own value.
+  So `diff` and the other queries don't count a Rust raw pointer's address as qualified.
 - `[stale]` bytes are leftovers, not what the variable holds now.
 
 SQLite's integers are signed. So an address at or above 2^63 comes back negative, as its 64-bit

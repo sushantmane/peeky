@@ -173,9 +173,9 @@ def test_describe_lists_each_binding_of_a_name_by_its_selector(tmp_path, state, 
     names = next(line for line in out.splitlines() if line.startswith("names in roster::main "))
     for shown in (
         "entry @ main.rs:61 (roster::Entry, line 61)",
-        "entry @ main.rs:81 (roster::Entry *, line 82)",
+        "entry @ main.rs:81 (&roster::Entry, line 82)",
         "points @ main.rs:73 (Vec<String>, lines 74-85)",
-        "points @ main.rs:81 (&str *, line 82)",
+        "points @ main.rs:81 (&&str, line 82)",
     ):
         assert shown in names, names
     assert " or " not in names, names
