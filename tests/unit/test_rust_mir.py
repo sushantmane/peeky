@@ -2630,6 +2630,892 @@ def test_a_breakpoints_place_on_its_line_is_told_by_its_column_or_not_at_all():
     assert judged(None) is None
 
 
+# #300 (eleventh evaluation, `rota`): `if let Some(l) = &last {` / `if ptr::eq(e, l) {`,
+# as rustc 1.96 builds it at -Zmir-opt-level=0, cut to what line 39 needs. `e` points
+# into `team`, `l` into `last`; `week` and `pick` are read by neither.
+RAW_EQ = """// MIR for `plan` after PreCodegen
+
+fn plan(_1: &mut [Engineer], _2: u32) -> () {
+    debug team => _1;                    // in scope 0 at src/main.rs:28:9: 28:13
+    debug weeks => _2;                   // in scope 0 at src/main.rs:28:32: 28:37
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:28:40: 28:40
+    let mut _6: &std::option::Option<Engineer>; // in scope 0 at src/main.rs:38:30: 38:35
+    let mut _7: isize;                   // in scope 0 at src/main.rs:38:20: 38:27
+    let mut _9: bool;                    // in scope 0 at src/main.rs:39:20: 39:33
+    let mut _10: *const Engineer;        // in scope 0 at src/main.rs:39:28: 39:29
+    let mut _11: *const Engineer;        // in scope 0 at src/main.rs:39:31: 39:32
+    let mut _14: usize;                  // in scope 0 at src/main.rs:43:16: 43:20
+    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20
+    scope 1 {
+        debug last => _3;                // in scope 1 at src/main.rs:31:9: 31:17
+        let mut _3: std::option::Option<Engineer>; // in scope 1 at src/main.rs:31:9: 31:17
+        debug week => _4;                // in scope 1 at src/main.rs:32:9: 32:13
+        let _4: u32;                     // in scope 1 at src/main.rs:32:9: 32:13
+        debug pick => _12;               // in scope 1 at src/main.rs:33:13: 33:21
+        let mut _12: usize;              // in scope 1 at src/main.rs:33:13: 33:21
+        debug e => _13;                  // in scope 1 at src/main.rs:34:17: 34:18
+        let _13: &Engineer;              // in scope 1 at src/main.rs:34:17: 34:18
+        scope 2 {
+            debug l => _8;               // in scope 2 at src/main.rs:38:25: 38:26
+            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26
+        }
+    }
+
+    bb0: {
+        _3 = Option::<Engineer>::None;   // scope 0 at src/main.rs:31:38: 31:42
+        _4 = copy _2;                    // scope 1 at src/main.rs:32:9: 32:13
+        _12 = const usize::MAX;          // scope 1 at src/main.rs:33:24: 33:34
+        _13 = first(copy _1) -> [return: bb1, unwind continue]; // scope 1 at src/main.rs:34:23: 34:34
+    }
+
+    bb1: {
+        _6 = &_3;                        // scope 1 at src/main.rs:38:30: 38:35
+        _7 = discriminant((*_6));        // scope 1 at src/main.rs:38:30: 38:35
+        switchInt(move _7) -> [1: bb2, otherwise: bb4]; // scope 1 at src/main.rs:38:20: 38:27
+    }
+
+    bb2: {
+        _8 = &(((*_6) as Some).0: Engineer); // scope 2 at src/main.rs:38:25: 38:26
+        _10 = &raw const (*_13);         // scope 2 at src/main.rs:39:28: 39:29
+        _11 = &raw const (*_8);          // scope 2 at src/main.rs:39:31: 39:32
+        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:33
+    }
+
+    bb3: {
+        switchInt(move _9) -> [0: bb4, otherwise: bb5]; // scope 2 at src/main.rs:39:20: 39:33
+    }
+
+    bb4: {
+        _14 = copy _12;                  // scope 1 at src/main.rs:43:16: 43:20
+        _15 = copy _4;                   // scope 1 at src/main.rs:44:16: 44:20
+        goto -> bb5;                     // scope 1 at src/main.rs:43:13: 45:14
+    }
+
+    bb5: {
+        return;                          // scope 0 at src/main.rs:47:2: 47:2
+    }
+}
+"""
+# Its source, as far as the proofs read it: line 39 is `if ptr::eq(e, l) {`.
+RAW_EQ_SOURCE = "\n".join(
+    [
+        "//! An on-call rota.",
+        "use std::ptr;",
+        "",
+        "struct Engineer {",
+        "    name: String,",
+        "    shifts: u32,",
+        "}",
+        *[""] * 20,
+        "fn plan(team: &mut [Engineer], weeks: u32) {",
+        "",
+        "",
+        "    let mut last: Option<Engineer> = None;",
+        "    let week = weeks;",
+        "    let mut pick = usize::MAX;",
+        "    let e = first(team);",
+        "",
+        "",
+        "",
+        "    if let Some(l) = &last {",
+        "        if ptr::eq(e, l) {",
+        "",
+        "",
+        "",
+        "        let _ = pick;",
+        "        let _ = week;",
+        "        }",
+        "    }",
+        "}",
+        "",
+    ]
+)
+# The crate's own `std::ptr::eq`, which the dump names as the standard library's.
+SHADOWED_SOURCE = RAW_EQ_SOURCE.replace(
+    "use std::ptr;",
+    "mod std { pub mod ptr { pub fn eq<T>(_: *const T, _: *const T) -> bool { true } } }",
+)
+HASH = "h0123456789abcdef"
+RAW_EQ_BLOCKS = {
+    "start": {31, 32, 33, 34},
+    "bb1": {38},
+    "bb2": {38, 39},
+    "bb3": {39},
+    "bb4": {43, 44},
+    "bb5": {47},
+}
+RAW_EQ_CALL = (
+    "        _9 = std::ptr::eq::<Engineer>(move _10, move _11) -> [return: bb3, unwind continue];"
+)
+ALL_NAMES = ("week", "pick", "last", "e", "l", "team")
+
+
+def raw_eq_owned(text=RAW_EQ, source=RAW_EQ_SOURCE, **blocks):
+    """OwnedLocals over ``text`` (with ``blocks``, the IR's other blocks) and ``source``.
+    Its proofs judge every place of a line: LLVM inlines `ptr::eq` at -O0, and a line
+    breakpoint on line 39 stops inside it, which the MIR places past the call."""
+    function = IrFunction("plan", "rota", "src/main.rs", {**RAW_EQ_BLOCKS, **blocks}, {}, 28)
+    texts = {"src/main.rs": source} if source is not None else {}
+    return OwnedLocals([parse_body(text)], {HASH: function}, ("src/main.rs",), texts=texts)
+
+
+def raw_eq_variant(call, *changes):
+    """RAW_EQ with line 39's call ``call``, and each (old, new) of ``changes`` made."""
+    assert RAW_EQ.count(RAW_EQ_CALL) == 1
+    text = RAW_EQ.replace(RAW_EQ_CALL, f"        _9 = {call} -> [return: bb3, unwind continue];")
+    for old, new in changes:
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    return text
+
+
+def raw_eq_session(owned, projection=()):
+    """A RustSession stopped on line 39 of RAW_EQ's `plan` (the frame's own hash), over
+    ``owned``: the reasons `inspect` and a probe's refusal give (for a change to the part
+    ``projection`` of a local)."""
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    judge = owned.copy_hazards
+    owned.copy_hazards = lambda *args, **asked: judge(*args, **{**asked, "breakpoint": False})
+    session = object.__new__(RustSession)
+    session.owned = owned
+    session.prepared = SimpleNamespace(source_root="/w")
+    session._optimized = lambda: False
+    session._stop_block = lambda hashed, frame: None
+    session._projection = lambda *args: projection
+    session._frame_scope = lambda frame, variable: None
+    session._settable_names = lambda source, line: []
+    frame = {"name": f"rota::plan::{HASH}", "line": 39, "column": 20}
+    frame["source"] = {"path": "/w/src/main.rs"}
+
+    def why(name):
+        return session.mid_statement({"name": name}, frame, "breakpoint")
+
+    why.session = session
+    return why
+
+
+def withheld(owned, names=ALL_NAMES):
+    return [owned.copied_in_progress(HASH, name, 39, "/w/src/main.rs") for name in names]
+
+
+def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local():
+    # #300: back from `ptr::eq(e, l)`, every local was refused, as if the call read it:
+    # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
+    # point anywhere. The standard library's `ptr::eq` compares the two addresses only.
+    owned = raw_eq_owned()
+    assert withheld(owned) == [False] * len(ALL_NAMES)
+    # Whatever else the crate holds: the call is still the standard library's.
+    owned = raw_eq_owned()
+    owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
+    assert withheld(owned) == [False] * len(ALL_NAMES)
+    # A `std::ptr::eq` of the crate's own, or a source Peeky cannot read, may read them.
+    for source in (SHADOWED_SOURCE, None):
+        assert withheld(raw_eq_owned(source=source)) == [True] * len(ALL_NAMES)
+    # `addr_eq` too, but `<*const T>::eq` and any other call are judged as before.
+    owned = raw_eq_owned(
+        raw_eq_variant("std::ptr::addr_eq::<Engineer, Engineer>(move _10, move _11)")
+    )
+    assert withheld(owned) == [False] * len(ALL_NAMES)
+    owned = raw_eq_owned(raw_eq_variant("<*const Engineer as PartialEq>::eq(move _10, move _11)"))
+    assert withheld(owned) == [True] * len(ALL_NAMES)
+
+
+def test_a_call_given_a_raw_pointer_may_read_through_it_whatever_the_source_shows():
+    # Review of #300: whether the crate has unsafe code was read from its source, but a
+    # standard-library macro brings its own (`#[allow_internal_unsafe]`) with no `unsafe`
+    # in the source. Here one expands on line 39 to `ptr::read` of a pointer to `week`:
+    # `week` stays refused, though the crate shows no unsafe code.
+    macro = "/rustc/0123456789abcdef/library/core/src/macros/mod.rs:60"
+    text = raw_eq_variant(
+        "core::ptr::read::<u32>(move _10)",
+        ("        _10 = &raw const (*_13);  ", "        _10 = &raw const _4;      "),
+        ("// scope 2 at src/main.rs:39:28: 39:29", f"// scope 2 at {macro}:9: 60:30"),
+        (
+            "(move _10) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:39:20: 39:33",
+            f"(move _10) -> [return: bb3, unwind continue]; // scope 2 at {macro}:9: 60:40",
+        ),
+    )
+    source = RAW_EQ_SOURCE.replace("        if ptr::eq(e, l) {", "        if peek!(week) == 0 {")
+    owned = raw_eq_owned(text, source)
+    owned.unsafe_code = None
+    assert withheld(owned, ["week", "pick"]) == [True, False]
+    why = raw_eq_session(owned)("week")
+    assert why == (
+        "a statement under way at the stop uses a pointer that may point into it (at "
+        "core/src/macros/mod.rs:60), so it may hold a copy of it, which it uses after the stop"
+    )
+    assert why.row == "a statement under way may hold a copy (core/src/macros/mod.rs:60)"
+
+
+UNSAFE_CODE = "the crate has unsafe code (in src/main.rs)"
+
+
+def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it():
+    # Review of #300: a call given a pointer into the local, or a reference Peeky does not
+    # follow, was said to have "already read it into a temporary". Here `std::ptr::eq` is
+    # the crate's own, so it may read what it is given; and the crate has unsafe code,
+    # which changes nothing.
+    owned = raw_eq_owned(source=SHADOWED_SOURCE)
+    owned.unsafe_code = UNSAFE_CODE
+    why = raw_eq_session(owned)
+    # `last`: `l` points into it, and the call is given a pointer made from `l`.
+    assert why("last") == (
+        "a statement under way at the stop uses a pointer that may point into it (at line 39), so it "
+        "may hold a copy of it, which it uses after the stop"
+    )
+    assert why("last").row == "a statement under way may hold a copy (line 39)"
+    assert why("e") == why("last")
+    # `week`: only through `e` and `l`, which Peeky does not follow.
+    assert why("week") == (
+        "a statement under way at the stop uses `e` and `l` (at line 39), references Peeky "
+        "can't trace that may point at it, so it may hold a copy of it, which it uses after "
+        "the stop"
+    )
+
+
+def test_a_refusal_says_the_statement_read_it_only_where_every_place_it_can_stop_did():
+    # Review of #300: the places a stop on line 39 can be were joined, so the call's copy
+    # of `e`, made past the call, was said to be read at the places before it too.
+    owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
+    why = raw_eq_session(owned)
+    assert why("e") == (
+        "a statement under way at the stop reads it into a temporary (at line 39), so it may "
+        "hold a copy of it, which it uses after the stop"
+    )
+    # Where the stop can only be past the call, a crate function given a copy of `e` has
+    # read it.
+    owned = raw_eq_owned(raw_eq_variant("same(copy _13, copy _8)"))
+    owned._positions = lambda site, line, facts, block=None: [(3, 0)]
+    why = raw_eq_session(owned)
+    assert why("e") == (
+        "a statement under way at the stop has already read it into a temporary (at line "
+        "39), which it uses after the stop"
+    )
+    assert why("e").row == "a statement under way read it (line 39)"
+    assert why("l").startswith("a statement under way at the stop has already read it")
+    assert why("week").startswith("a statement under way at the stop uses `e` and `l` (at")
+
+
+def test_a_refusal_names_each_variable_it_cannot_trace_by_what_it_is():
+    # Review of #300: every name was called "a reference", raw pointers too.
+    named = (
+        "            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26\n",
+        "            let _8: &Engineer;           // in scope 2 at src/main.rs:38:25: 38:26\n"
+        "            debug p => _10;              // in scope 2 at src/main.rs:39:13: 39:14\n"
+        "            debug q => _11;              // in scope 2 at src/main.rs:39:16: 39:17\n",
+    )
+
+    def why(call):
+        owned = raw_eq_owned(raw_eq_variant(call, named))
+        owned.unsafe_code = UNSAFE_CODE
+        return raw_eq_session(owned)("week")
+
+    assert why("same(copy _10, copy _11)").startswith(
+        "a statement under way at the stop uses `p` and `q` (at line 39), raw pointers Peeky "
+        "can't trace that may point at it,"
+    )
+    assert why("same(copy _13, copy _11)").startswith(
+        "a statement under way at the stop uses `e` and `q` (at line 39), values holding "
+        "pointers Peeky can't trace that may point at it,"
+    )
+    owned = raw_eq_owned(raw_eq_variant("same(copy _10, copy _8)", named))
+    held = owned.copy_hazards(HASH, "week", 39, "/w/src/main.rs")[-1][1]
+    assert owned.untraced_reads(HASH, held) == (
+        {("src/main.rs", 39)},
+        [("l", "reference"), ("p", "raw pointer")],
+    )
+
+
+A, B = (1, 0), (2, 0)  # two places a stop on the line can be
+NONE = [(A, set()), (B, set())]
+
+
+def copy_reason(any_, explicit=(), value=None, traced=None, **others):
+    """``rust._copy_reason`` over these readings, of a fake crate where `_20` is the
+    binding `n` (on line 20), `_5` is computed from it, and `e` a reference on line 9."""
+    from types import SimpleNamespace
+
+    from peeky.rust import _copy_reason
+
+    proofs = SimpleNamespace(
+        copy_lines=lambda hashed, held, named_only=False: {("src/main.rs", min(held))},
+        copy_names=lambda hashed, held: ["n"] if 20 in held else [],
+        copy_sources=lambda hashed, held, among: frozenset({20}) & among if held else held,
+        untraced_reads=lambda hashed, held: ({("src/main.rs", 9)}, [("e", "reference")]),
+    )
+    full = others.pop("full", False)
+    found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
+    found |= {"taken": [], "sources": [], "copied": [], "bindings": [], "whole": value}
+    found |= others
+    reason = _copy_reason(proofs, "h", found, "/w/src/main.rs")
+    return reason if full else reason[:2]
+
+
+def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be_did():
+    # Review of #300: the places a stop can be were joined, so one with a read the MIR
+    # shows made the claim for all, though another held only what may have been read.
+    reason, a, b, none = copy_reason, A, B, NONE
+
+    assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})]) == ("read", None)
+    # Where a reading is not known, no more than that it may have read it.
+    assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, set())]) == (
+        "may",
+        "may have read it (at line 5)",
+    )
+    sure_at_a = [(a, {5}), (b, set())]
+    assert reason([(a, {5}), (b, {7})], sure_at_a, sure_at_a, sure_at_a) == (
+        "may",
+        "reads it into a temporary (at line 5) or uses `e` (at line 9), a reference Peeky "
+        "can't trace that may point at it",
+    )
+    assert reason([(a, {5}), (b, set())], sure_at_a, sure_at_a, sure_at_a)[1] == (
+        "reads it into a temporary (at line 5)"
+    )
+    # A read only on some path to the place: what may hold a copy, by value.
+    assert reason([(a, {6})], [(a, set())], [(a, {6})], [(a, {6})])[1] == (
+        "reads it into a temporary (at line 6)"
+    )
+    none = [(a, set()), (b, set())]
+    assert reason([(a, {7}), (b, {7})], none, none, [(a, {7}), (b, {7})]) == (
+        "may",
+        "uses a pointer that may point into it (at line 7)",
+    )
+    # The program's own binding `_20` (`n`): named where every place holds what it, or a
+    # temporary computed from it (`_5`, `let z = n + 1;`), surely took.
+    bindings = [(a, {20}), (b, {20})]
+    for taken in ([(a, {20}), (b, {20})], [(a, {20}), (b, {5})], [(a, {5}), (b, {5})]):
+        sure = {"taken": taken, "sources": bindings, "copied": taken, "bindings": bindings}
+        assert reason(taken, none, none, none, **sure) == ("named", ["n"]), taken
+        # Where Peeky cannot tell which binding gave it, only that the program holds one.
+        sure["sources"] = []
+        assert reason(taken, none, none, none, **sure)[0] == "holds", taken
+    # Nor read: a temporary computed from the binding's copy.
+    copied = [(a, {5}), (b, set())]
+    assert reason(copied, none, copied, copied, copied=copied, bindings=bindings) == (
+        "may",
+        "uses `n` (at line 20), which may hold the program's own copy of it",
+    )
+    assert reason(copied, none, copied, copied, copied=copied) == (
+        "may",
+        "uses what may be the program's own copy of it (at line 5)",
+    )
+    # The binding itself: the program goes on with it, whether or not the statement under
+    # way at the stop uses it (review round 3: `pause();` before `x = y;`).
+    named_at_a = [(a, {20}), (b, set())]
+    sure = {"taken": named_at_a, "sources": named_at_a, "copied": named_at_a}
+    assert reason([(a, {20}), (b, {7})], none, none, none, **sure, full=True) == (
+        "may",
+        "uses `e` (at line 9), a reference Peeky can't trace that may point at it",
+        {("src/main.rs", 9), ("src/main.rs", 20)},
+        "the program's own `n` (at line 20) may hold a copy of it that it goes on with",
+    )
+
+
+def test_a_binding_is_named_only_where_it_gave_the_copy_at_every_place():
+    # Review round 2 of #300: the bindings each place's copy came from were joined, so a
+    # read at one place and a binding's copy at the other named the binding, though a
+    # stop at the first never used it; so did a different binding at each place.
+    read_then_n = [(A, {5}), (B, {20})]
+    explicit, taken = [(A, {5}), (B, set())], [(A, set()), (B, {20})]
+    sure = {"taken": taken, "sources": taken, "copied": taken, "bindings": taken}
+    assert copy_reason(read_then_n, explicit, explicit, explicit, **sure) == ("holds", None)
+    each = [(A, {20}), (B, {21})]
+    sure = {"taken": each, "sources": each, "copied": each, "bindings": each}
+    assert copy_reason(each, NONE, NONE, NONE, **sure) == ("holds", None)
+    # One binding gave both: named.
+    both = [(A, {20}), (B, {5})]
+    sure = {"taken": both, "sources": [(A, {20}), (B, {20})], "copied": both, "bindings": both}
+    assert copy_reason(both, NONE, NONE, NONE, **sure) == ("named", ["n"])
+
+
+def test_a_refusal_where_each_place_holds_a_copy_another_way_says_only_that(monkeypatch):
+    # Review round 2 of #300: where one place holds the statement's read and another a
+    # binding's copy, what is true at each: the program already holds a copy.
+    import peeky.rust
+
+    holds = ("holds", None, {("src/main.rs", 12), ("src/main.rs", 32)}, None)
+    monkeypatch.setattr(peeky.rust, "_copy_reason", lambda *args, **kwargs: holds)
+    owned = raw_eq_owned(source=SHADOWED_SOURCE)
+    judge = raw_eq_session(owned)
+    why = judge("week")
+    assert why == (
+        "the program already holds a copy of it (at lines 12 and 32), which it uses after the stop"
+    )
+    assert why.row == "the program holds a copy (lines 12 and 32)"
+    assert why.advice.startswith("That statement may already hold a copy of the old value")
+    # Before the program runs, where every place of the line is past such a copy.
+    owned.copied_everywhere = lambda *args, **kwargs: frozenset({9})
+    kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert kind == "statement" and text == (
+        "at every place line 39 can stop at, the program already holds a copy of `week` (at "
+        "lines 12 and 32), which it uses after the stop, so a change there would not reach it"
+    )
+    failures = [("f", (kind, text))]
+    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
+
+
+def test_a_binding_a_call_may_have_changed_since_is_said_only_to_maybe_hold_a_copy(
+    monkeypatch,
+):
+    # Review round 3 of #300: `let y = x; keep(&mut x);` may change `x`, so `y` no longer
+    # surely holds a copy of it: no binding is named as having copied it, and the
+    # statement under way is not said to use `y` (it may be `pause();`).
+    import peeky.rust
+    from peeky.errors import _mutation_hint
+
+    copied = [(A, {20}), (B, {20})]
+    others = {"copied": copied, "bindings": copied}
+    assert copy_reason(copied, NONE, NONE, NONE, **others, full=True) == (
+        "kept",
+        "the program's own `n` (at line 20) may hold a copy of it that it goes on with",
+        {("src/main.rs", 20)},
+        None,
+    )
+    kept = "the program's own `n` (at line 32) may hold a copy of {} that it goes on with"
+    lines = {("src/main.rs", 32)}
+
+    def reason(proofs, hashed, found, home, target="it"):
+        return "kept", kept.format(target), lines, None
+
+    monkeypatch.setattr(peeky.rust, "_copy_reason", reason)
+    owned = raw_eq_owned(source=SHADOWED_SOURCE)
+    judge = raw_eq_session(owned)
+    why = judge("week")
+    assert why == (
+        "the program's own `n` (at line 32) may hold a copy of it that it goes on with, so a "
+        "change to `week` may never be seen: Peeky proves no read of the changed part first "
+        "(a reference lent to a call, or `{:?}`, is not one)"
+    )
+    assert why.row == "the program may hold a copy (line 32)"
+    assert why.advice.startswith("Change it before the program copies it (a stop on an")
+    owned.copied_everywhere = lambda *args, **kwargs: frozenset({9})
+    kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert kind == "statement" and text == (
+        "at every place line 39 can stop at, the program's own `n` (at line 32) may hold a "
+        "copy of `week` that it goes on with, so a change there may never be seen: Peeky "
+        "proves no read of the changed part first (a reference lent to a call, or `{:?}`, is "
+        "not one)"
+    )
+    failures = [("f", (kind, text))]
+    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    assert ". Change it before the program copies it (`--set-at` an earlier line), or " in (refusal)
+    assert _mutation_hint(refusal).startswith("Change it before the program copies it")
+
+    # With a statement under way that may hold a copy at another place: both, hedged.
+    def mixed(proofs, hashed, found, home, target="it"):
+        said = f"reads {target} into a temporary (at line 12)"
+        return "may", said, lines | {("src/main.rs", 12)}, kept.format(target)
+
+    monkeypatch.setattr(peeky.rust, "_copy_reason", mixed)
+    why = judge("week")
+    assert why == (
+        "a statement under way at the stop reads it into a temporary (at line 12), so it may "
+        "hold a copy of it, which it uses after the stop, or the program's own `n` (at line "
+        "32) may hold a copy of it that it goes on with"
+    )
+    assert why.row == "a statement under way or the program may hold a copy (lines 12 and 32)"
+    assert why.advice.startswith("Change it before the program copies it: at a stop on an")
+    kind, text = judge.session._copied_everywhere(HASH, "week", "src/main.rs", 39)
+    assert text == (
+        "at every place line 39 can stop at, a statement under way reads `week` into a "
+        "temporary (at line 12), so it may hold a copy, which it uses after the stop, or the "
+        "program's own `n` (at line 32) may hold a copy of `week` that it goes on with, so a "
+        "change there may not reach it"
+    )
+    failures = [("f", (kind, text))]
+    refusal = judge.session._never_message("week", "week", [], "src/main.rs", 39, failures)
+    assert ". Change it before the program copies it (`--set-at` an earlier line);" in refusal
+    assert not _mutation_hint(refusal).startswith("Change it before the program copies it")
+
+
+def test_a_write_to_the_changed_part_leaves_no_read_of_it_standing():
+    # Review round 2 of #300: `_2 = copy (_1.0: u32); (_1.0: u32) = const 3_u32;` left
+    # `_2` surely read from the local's current value, though it holds the old field.
+    s = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+
+    def read(first, write, projection):
+        body = mir({0: [first, write, "return;"]}, bindings=s)
+        return body.read_copies_at(1, (0, 2), projection)[0]
+
+    field = "_2 = copy (_1.0: u32);"
+    first = (("field", 0),)
+    assert read(field, "StorageLive(_4);", first) == {2}
+    assert read(field, "_1 = (const 1_u32, const 2_u32);", first) == set()
+    assert read(field, "(_1.0: u32) = const 3_u32;", first) == set()
+    assert read(field, "(_1.1: u32) = const 3_u32;", first) == {2}
+    # A write to any part changes the whole local; one not known may be the part.
+    assert read(field, "(_1.1: u32) = const 3_u32;", ()) == set()
+    assert read("_2 = copy _1;", "StorageLive(_4);", None) == {2}
+    assert read("_2 = copy _1;", "(_1.1: u32) = const 3_u32;", None) == set()
+    element = "_2 = copy _1[1 of 3];"
+    second = (("index", 1),)
+    assert read(element, "StorageLive(_4);", second) == {2}
+    assert read(element, "_1[0 of 3] = const 9_u32;", second) == {2}
+    assert read(element, "_1[1 of 3] = const 9_u32;", second) == set()
+    assert read(element, "_1[_5] = const 9_u32;", second) == set()
+    # Through a pointer surely made from it.
+    through = mir(
+        {0: ["_6 = &mut _1;", field, "((*_6).0: u32) = const 3_u32;", "return;"]}, bindings=s
+    )
+    assert through.read_copies_at(1, (0, 2), ())[0] == {2}
+    assert through.read_copies_at(1, (0, 3), ())[0] == set()
+
+
+def test_a_write_through_a_pointer_that_may_point_into_the_changed_part_ends_a_read():
+    # Review round 3 of #300: a pointer was followed only for the whole local, so
+    # `_2 = copy (_1.0: u32); _6 = &mut (_1.0: u32); (*_6) = const 3_u32;` left `_2` read
+    # for a change to `s.0`, though it holds the old field.
+    s = "debug s => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+
+    def read(first, borrow, projection):
+        body = mir({0: [first, borrow, "(*_6) = const 3_u32;", "return;"]}, bindings=s)
+        return body.read_copies_at(1, (0, 3), projection)[0]
+
+    field, first = "_2 = copy (_1.0: u32);", (("field", 0),)
+    assert read(field, "_6 = &mut (_1.0: u32);", first) == set()
+    assert read(field, "_6 = &raw mut (_1.0: u32);", first) == set()
+    # Into another field, another constant element, or another local: apart.
+    assert read(field, "_6 = &mut (_1.1: u32);", first) == {2}
+    assert read(field, "_6 = &mut _7;", first) == {2}
+    element, second = "_2 = copy _1[1 of 3];", (("index", 1),)
+    assert read(element, "_6 = &mut _1[0 of 3];", second) == {2}
+    assert read(element, "_6 = &mut _1[1 of 3];", second) == set()
+    assert read(element, "_6 = &mut _1[_5];", second) == set()
+    # Through a pointer loaded from memory, though the outer one points elsewhere: `_7` holds
+    # `&mut s.0`.
+    body = mir(
+        {
+            0: [
+                field,
+                "_6 = &mut (_1.0: u32);",
+                "_7 = (move _6,);",
+                "_8 = &mut _7;",
+                "(*((*_8).0: &mut u32)) = const 3_u32;",
+                "return;",
+            ]
+        },
+        bindings=s,
+    )
+    assert body.read_copies_at(1, (0, 5), first)[0] == set()
+    assert body.read_copies_at(1, (0, 4), first)[0] == {2}
+    # An intrinsic's copy through a pointer.
+    copies = "copy_nonoverlapping(dst = move _6, src = move _9, count = const 1_usize);"
+    body = mir({0: [field, "_6 = &raw mut (_1.0: u32);", copies, "return;"]}, bindings=s)
+    assert body.read_copies_at(1, (0, 3), first)[0] == set()
+    # A pointer of no known origin, where the part is lent writably somewhere.
+    body = mir(
+        {
+            0: [
+                field,
+                "_7 = &mut (_1.0: u32);",
+                "_6 = get(move _7) -> [return: bb1, unwind continue];",
+            ],
+            1: ["(*_6) = const 3_u32;", "return;"],
+        },
+        bindings=s,
+    )
+    assert body.read_copies_at(1, (1, 0), first)[0] == set()
+
+
+# rustc 1.96.0's `-Zdump-mir=PreCodegen -Zmir-include-spans=yes` for (review round 4 of
+# #300; it prints 4 with `f(1, &raw mut z)`):
+#
+#     fn f(mut x: u32, mut p: *mut u32) -> u32 {
+#         let y = x;
+#         let q = &mut p;
+#         let r = &raw mut x;
+#         *q = r;
+#         unsafe {
+#             *p = 3;
+#         }
+#         y + x
+#     }
+RETARGETED = """// MIR for `f` after PreCodegen
+
+fn f(_1: u32, _2: *mut u32) -> u32 {
+    debug x => _1;                       // in scope 0 at src/main.rs:2:6: 2:11
+    debug p => _2;                       // in scope 0 at src/main.rs:2:18: 2:23
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:2:38: 2:41
+    let _3: u32;                         // in scope 0 at src/main.rs:3:9: 3:10
+    let mut _6: u32;                     // in scope 0 at src/main.rs:10:9: 10:10
+    let mut _7: (u32, bool);             // in scope 0 at src/main.rs:10:5: 10:10
+    scope 1 {
+        debug y => _3;                   // in scope 1 at src/main.rs:3:9: 3:10
+        let _4: &mut *mut u32;           // in scope 1 at src/main.rs:4:9: 4:10
+        scope 2 {
+            debug q => _4;               // in scope 2 at src/main.rs:4:9: 4:10
+            let _5: *mut u32;            // in scope 2 at src/main.rs:5:9: 5:10
+            scope 3 {
+                debug r => _5;           // in scope 3 at src/main.rs:5:9: 5:10
+                let mut _8: *const ();   // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _9: usize;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _10: usize;      // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _11: usize;      // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _12: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _13: *const ();  // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _14: usize;      // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _15: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _16: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _17: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+                let mut _18: bool;       // in scope 3 at src/main.rs:8:9: 8:15
+            }
+        }
+    }
+
+    bb0: {
+        _3 = copy _1;                    // scope 0 at src/main.rs:3:13: 3:14
+        _4 = &mut _2;                    // scope 1 at src/main.rs:4:13: 4:19
+        _5 = &raw mut _1;                // scope 2 at src/main.rs:5:13: 5:23
+        (*_4) = copy _5;                 // scope 3 at src/main.rs:6:5: 6:11
+        _8 = copy _2 as *const () (PtrToPtr); // scope 3 at src/main.rs:8:9: 8:15
+        _9 = copy _8 as usize (Transmute); // scope 3 at src/main.rs:8:9: 8:15
+        _10 = Sub(const <u32 as std::mem::SizedTypeProperties>::ALIGN, const 1_usize); // scope 3 at src/main.rs:8:9: 8:15
+        _11 = BitAnd(copy _9, copy _10); // scope 3 at src/main.rs:8:9: 8:15
+        _12 = Eq(copy _11, const 0_usize); // scope 3 at src/main.rs:8:9: 8:15
+        assert(copy _12, "misaligned pointer dereference: address must be a multiple of {} but is {}", const <u32 as std::mem::SizedTypeProperties>::ALIGN, copy _9) -> [success: bb2, unwind unreachable]; // scope 3 at src/main.rs:8:9: 8:15
+    }
+
+    bb1: {
+        _0 = move (_7.0: u32);           // scope 3 at src/main.rs:10:5: 10:10
+        return;                          // scope 0 at src/main.rs:11:2: 11:2
+    }
+
+    bb2: {
+        _13 = copy _2 as *const () (PtrToPtr); // scope 3 at src/main.rs:8:9: 8:15
+        _14 = copy _13 as usize (Transmute); // scope 3 at src/main.rs:8:9: 8:15
+        _15 = Ne(const <u32 as std::mem::SizedTypeProperties>::SIZE, const 0_usize); // scope 3 at src/main.rs:8:9: 8:15
+        _16 = Eq(copy _14, const 0_usize); // scope 3 at src/main.rs:8:9: 8:15
+        _17 = BitAnd(copy _16, copy _15); // scope 3 at src/main.rs:8:9: 8:15
+        _18 = Not(copy _17);             // scope 3 at src/main.rs:8:9: 8:15
+        assert(copy _18, "null pointer dereference occurred") -> [success: bb3, unwind unreachable]; // scope 3 at src/main.rs:8:9: 8:15
+    }
+
+    bb3: {
+        (*_2) = const 3_u32;             // scope 3 at src/main.rs:8:9: 8:15
+        _6 = copy _1;                    // scope 3 at src/main.rs:10:9: 10:10
+        _7 = AddWithOverflow(copy _3, copy _6); // scope 3 at src/main.rs:10:5: 10:10
+        assert(!move (_7.1: bool), "attempt to compute `{} + {}`, which would overflow", copy _3, move _6) -> [success: bb1, unwind continue]; // scope 3 at src/main.rs:10:5: 10:10
+    }
+}
+"""
+
+
+def test_a_pointer_argument_retargeted_through_a_loan_may_point_into_the_local():
+    # Review round 4 of #300: an argument pointer was apart from every local of the frame,
+    # and `_4 = &mut _2` (`q = &mut p`) apart too, so `(*_4) = copy _5` (`*q = r`) kept `p`
+    # apart, and `(*_2) = const 3_u32` (`*p = 3`, which writes `x`) left `y` holding a copy.
+    body = parse_body(RETARGETED)
+    assert body.arguments == {1, 2}
+    assert body.read_copies_at(1, (3, 0))[1] == {3}
+    assert body.read_copies_at(1, (3, 1))[1] == set()
+    # Where `p` is never lent, it still points elsewhere: `*p = 3` keeps `y`'s copy.
+    lent = RETARGETED.replace("_4 = &mut _2;", "_4 = &mut _9;")
+    lent = lent.replace("(*_4) = copy _5;", "(*_4) = copy _9;")
+    body = parse_body(lent)
+    assert body.read_copies_at(1, (3, 1))[1] == {3}
+    # Nor is a pointer copied from a lent one, nor a pointer local lent only `&` (a `Cell`).
+    copied = RETARGETED.replace("_8 = copy _2 as *const () (PtrToPtr);", "_16 = copy _2;")
+    copied = copied.replace("(*_2) = const 3_u32;", "(*_16) = const 3_u32;")
+    body = parse_body(copied)
+    assert body.read_copies_at(1, (3, 1))[1] == set()
+    shared = lent.replace("_4 = &mut _9;", "_4 = &_2;")
+    body = parse_body(shared)
+    assert body.read_copies_at(1, (3, 1))[1] == set()
+
+
+def test_a_call_that_may_change_the_changed_part_ends_a_read():
+    # Review round 3 of #300 (ruling): `let y = x; keep(&mut x);` may change `x`, so `y`
+    # no longer surely holds a copy of its current value; nor does anything read before.
+    s = "debug x => _1;   // in scope 1 at src/main.rs:2:9: 2:10\n"
+    s += "debug y => _2;   // in scope 1 at src/main.rs:3:9: 3:10\n"
+
+    def sure(*between, projection=()):
+        body = mir(
+            {
+                0: ["_2 = copy _1;", "_3 = copy _1;", *between, "goto -> bb1;"],
+                1: ["return;"],
+            },
+            bindings=s,
+        )
+        read, taken, _ = body.read_copies_at(1, (1, 0), projection)
+        return read, taken
+
+    assert sure() == ({3}, {2, 3})
+    calls = ("_5 = &mut _1;", "_4 = keep(move _5) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy _1;", "_3 = copy _1;", *calls], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0))[:2] == (set(), set())
+    # A drop may run code that writes through a pointer it holds, too.
+    dropped = ("_5 = &mut _1;", "drop(_6) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy _1;", "_3 = copy _1;", *dropped], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0))[:2] == (set(), set())
+    # Where nothing lends it writably, a call cannot change it.
+    lent = ("_5 = &_1;", "_4 = look(move _5) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy _1;", "_3 = copy _1;", *lent], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0))[:2] == ({3}, {2, 3})
+    # Nor a call where only another field is lent writably, for a change to the first.
+    other = ("_5 = &mut (_1.1: u32);", "_4 = keep(move _5) -> [return: bb1, unwind continue];")
+    body = mir({0: ["_2 = copy (_1.0: u32);", *other], 1: ["return;"]}, bindings=s)
+    assert body.read_copies_at(1, (1, 0), (("field", 0),))[0] == set()  # `_2` is a binding
+    assert body.read_copies_at(1, (1, 0), (("field", 0),))[1] == {2}
+    # Its unwind edge, too: the call may have changed it before it unwound.
+    unwinds = ("_5 = &mut _1;", "_4 = keep(move _5) -> [return: bb1, unwind: bb2];")
+    body = mir({0: ["_3 = copy _1;", *unwinds], 1: ["return;"], 2: ["resume;"]}, bindings=s)
+    assert body.read_copies_at(1, (2, 0))[0] == set()
+
+
+def line_39(*statements):
+    """A change to RAW_EQ (``raw_eq_variant``): ``statements`` on line 39 for its first
+    (a block's end and the next's start, `}` first, as they are)."""
+    comment = "// scope 2 at src/main.rs:39:28: 39:29"
+    shown = "".join(
+        f"    {each}\n" if each.startswith("}") else f"        {each}  {comment}\n"
+        for each in statements[:-1]
+    )
+    return ("        _10 = &raw const (*_13);  ", f"{shown}        {statements[-1]}  ")
+
+
+def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
+    # Review round 2 of #300: what surely read the local was taken from what may have
+    # (joined over the paths, through an aggregate holding pointers to other locals too,
+    # whatever part a change makes), so "has already read it" could be false.
+    def why(call, *changes, name="week", projection=(), **blocks):
+        owned = raw_eq_owned(raw_eq_variant(call, *changes), **blocks)
+        owned._positions = lambda site, line, facts, block=None: [(3, 0)]
+        return raw_eq_session(owned, projection)(name)
+
+    sure = "a statement under way at the stop has already read it into a temporary (at line 39)"
+    maybe = ", so it may hold a copy of it, which it uses after the stop"
+    # `same(week)`: read by value on every path.
+    assert why("same(copy _4)").startswith(sure)
+    # `let r = &week; same(*r)`: through a pointer made from it.
+    assert why("same(move _17)", line_39("_16 = &_4;", "_17 = copy (*_16);")).startswith(sure)
+    # `let pair = (&week, &pick); same(*pair.1)` reads only `pick`.
+    pair = line_39(
+        "_16 = &_4;",
+        "_17 = &_12;",
+        "_18 = (move _16, move _17);",
+        "_19 = copy (*(_18.1: &usize));",
+    )
+    assert why("same(copy _19)", pair) == (
+        "a statement under way at the stop uses a pointer that may point into it (at line 39)"
+        + maybe
+    )
+    # `same(if c { week } else { pick })`: read on one path only.
+    branch = line_39(
+        "switchInt(copy _2) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_17 = copy _4;",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "_17 = copy _12;",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_10 = &raw const (*_13);",
+    )
+    assert why("same(copy _17)", branch, bb6={39}, bb7={39}, bb8={39}) == (
+        "a statement under way at the stop reads it into a temporary (at line 39)" + maybe
+    )
+    # `tt: (u32, u32)`, `same(tt.1)`: a change to `tt.0` is not what it read.
+    pair_local = (
+        "        debug pick => _12;  ",
+        "        debug tt => _16;                 // in scope 1 at src/main.rs:33:9: 33:11\n"
+        "        debug pick => _12;  ",
+    )
+    field = line_39("_17 = copy (_16.1: u32);", "_10 = &raw const (*_13);")
+    whole = why("same(copy _17)", pair_local, field, name="tt")
+    assert whole.startswith(sure), whole
+    part = why("same(copy _17)", pair_local, field, name="tt", projection=(("field", 0),))
+    assert part == (
+        "a statement under way at the stop reads another part of it into a temporary (at "
+        "line 39)" + maybe
+    )
+    # `let week = weeks;` on line 32, then `weeks = week + 1 …`: the program goes on with
+    # its own copy, on every path or on one.
+    assign = (
+        "    bb3: {\n",
+        "    bb3: {\n        _2 = move _17;  // scope 2 at src/main.rs:39:20: 39:21\n",
+    )
+    plus = line_39("_17 = Add(copy _4, const 1_u32);", "_10 = &raw const (*_13);")
+    assert why("same(const 0_u32)", plus, assign, name="weeks") == (
+        "the program has already copied its value into `week` (at line 32) and goes on with "
+        "that copy, so a change to `weeks` may never be seen: Peeky proves no read of the "
+        "changed part first (a reference lent to a call, or `{:?}`, is not one)"
+    )
+    plus_or_zero = line_39(
+        "switchInt(copy _12) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_17 = Add(copy _4, const 1_u32);",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "_17 = const 0_u32;",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_10 = &raw const (*_13);",
+    )
+    found = why(
+        "same(const 0_u32)", plus_or_zero, assign, name="weeks", bb6={39}, bb7={39}, bb8={39}
+    )
+    assert found == (
+        "a statement under way at the stop uses `week` (at line 32), which may hold the "
+        "program's own copy of it" + maybe
+    )
+    # `if c { pick = weeks; }` on one path only: `pick` is no copy it surely uses.
+    branch_pick = line_39(
+        "switchInt(copy _9) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_12 = copy _2;",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_17 = Add(copy _4, copy _12);",
+        "_10 = &raw const (*_13);",
+    )
+    blocks = {"bb6": {39}, "bb7": {39}, "bb8": {39}}
+    found = why("same(const 0_u32)", branch_pick, assign, name="weeks", **blocks)
+    assert found.startswith(
+        "the program has already copied its value into `week` (at line 32) and goes on"
+    ), found
+    # `week = 0` after `week + 1` was computed: still the copy it was computed from, and
+    # where `week` took it.
+    reset = line_39(
+        "_17 = Add(copy _4, const 1_u32);", "_4 = const 0_u32;", "_10 = &raw const (*_13);"
+    )
+    found = why("same(const 0_u32)", reset, assign, name="weeks")
+    assert found.startswith(
+        "the program has already copied its value into `week` (at line 32) and goes on"
+    ), found
+    # On one path only, and `week` reset since: what may be the program's copy.
+    branch_reset = line_39(
+        "switchInt(copy _12) -> [0: bb6, otherwise: bb7];",
+        "}\n\n    bb6: {",
+        "_17 = Add(copy _4, const 1_u32);",
+        "goto -> bb8;",
+        "}\n\n    bb7: {",
+        "_17 = const 0_u32;",
+        "goto -> bb8;",
+        "}\n\n    bb8: {",
+        "_4 = const 0_u32;",
+        "_10 = &raw const (*_13);",
+    )
+    found = why("same(const 0_u32)", branch_reset, assign, name="weeks", **blocks)
+    assert found == (
+        "a statement under way at the stop uses what may be the program's own copy of it (at "
+        "line 39)" + maybe
+    )
+    # `let week = weeks;` on line 32, then `same(week, e.shifts)`: the statement reads the
+    # program's own copy, not `weeks`; only `e` may have reached it.
+    shifts = line_39("_17 = copy ((*_13).1: u32);", "_10 = &raw const (*_13);")
+    assert why("same(copy _4, move _17)", shifts, name="weeks") == (
+        "a statement under way at the stop uses `e` (at line 39), a reference Peeky can't "
+        "trace that may point at it" + maybe
+    )
+
+
 def test_format_args_constructors_count_only_where_nothing_else_can_pass_for_them():
     # Review of #105 (round 3): the crate's own `mod core { pub mod fmt { ... } }` prints
     # its `core::fmt::Arguments::new(&s.a)` just as the standard library's.

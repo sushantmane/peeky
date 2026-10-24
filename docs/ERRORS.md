@@ -185,7 +185,9 @@ message says `cannot be changed here`.
 - Rust: at a breakpoint, or after a step to its line's start, where the MIR proves that no
   statement is under way. The MIR is the compiler's mid-level representation of the function.
 - Rust: not where a binding of the program's own holds a copy that it goes on with. That binding
-  replaces or drops the local unread: ``the program has already copied `x` into `n` ``.
+  replaces or drops the local unread: ``the program has already copied `x` into `n` ``. Where a call
+  given `&mut x` since may have changed `x`: ``the program's own `n` (at line 34) may hold a copy
+  of `x` that it goes on with``.
 
 ### Texts
 

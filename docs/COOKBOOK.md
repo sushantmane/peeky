@@ -832,7 +832,8 @@ rule leaves nothing settable at a stop, `session inspect` says why in a note.
 
 In JSON, every root, field and element row that a change could name carries `settable: true` or
 `false`, Java's rows too. A Java row of a type that `set` changes says why it isn't settable in
-`not_settable`. A Java element whose mark can't be promised either way says why in
+`not_settable`. So does a Rust root row that a statement under way withholds, and one that no stop
+can change (`register`). A Java element whose mark can't be promised either way says why in
 `maybe_settable`: `[maybe settable: …]`.
 `false` includes two things that `set` refuses:
 

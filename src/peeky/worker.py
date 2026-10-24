@@ -3437,9 +3437,20 @@ class DebugWorker:
                     output.update(type=rust, debugger_type=kind)
                 if isinstance(note, str):
                     output["note"] = note[:500]
-                if not ancestry and (marked := self.view_settable(variable, frame)) is not None:
+                withheld = []
+                if (
+                    not ancestry
+                    and (marked := self.view_settable(variable, frame, withheld)) is not None
+                ):
                     # A Rust String's text (#137), shown as read from memory.
                     output["settable"] = marked and reachable({"name": name, "selected_as": plain})
+                    if (
+                        withheld
+                        and (row := getattr(withheld[0], "row", None))
+                        and reachable({"name": name, "selected_as": plain})
+                    ):
+                        # Why a statement under way withholds it, as other rows say (#300).
+                        output["not_settable"] = row
                 if plain:
                     output["selected_as"] = plain
                 if declared_at:
@@ -3479,6 +3490,8 @@ class DebugWorker:
                 elif settable and mid and (why := mid(variable, frame, self.stop_reason)):
                     settable = False
                     self.unsettable_reasons.append((name, why))
+                    # Its short form, where the runtime gives one, for the row too (#300).
+                    never = getattr(why, "row", None)
                 elif (
                     settable
                     and (read_after := getattr(self.runtime, "read_after", None))
@@ -3517,7 +3530,11 @@ class DebugWorker:
                 settable = False
             # A value no stop of this build can change (#138: a Rust local the IR keeps in
             # a register), and why, so no probe waits for a hit to learn it.
-            if settable is False and (rule := getattr(self.runtime, "never_settable_row", None)):
+            if (
+                settable is False
+                and not never
+                and (rule := getattr(self.runtime, "never_settable_row", None))
+            ):
                 if not ancestry:
                     never = rule(variable, frame)
                 elif root is not None:
@@ -4440,9 +4457,11 @@ class DebugWorker:
         )
         return held_in_place(variable, memory)
 
-    def view_settable(self, variable, frame):
+    def view_settable(self, variable, frame, why=None):
         """The `[settable]` mark of a root string a runtime's view shows (a Rust String,
-        #137), as for a root listed as the debugger shows it; None for other values."""
+        #137), as for a root listed as the debugger shows it; None for other values.
+        Where only a statement under way withholds it, ``why`` (a list, if given) gets
+        the runtime's reason (#300: its row says so)."""
         if not getattr(self.runtime, "text_language", None):
             return None
         try:
@@ -4450,14 +4469,18 @@ class DebugWorker:
         except ValueError:
             return None
         mid = getattr(self.runtime, "mid_statement", None)
-        return bool(
+        if not (
             self.capabilities.get("supports_set_variable", False) is True
             and frame.get("id") == self.innermost_frame
             and not self.optimized()
             and self.has_memory_location(variable)
             and self.text_settable(variable, frame)
-            and not (mid and mid(variable, frame, self.stop_reason))
-        )
+        ):
+            return False
+        reason = mid(variable, frame, self.stop_reason) if mid else None
+        if reason and why is not None:
+            why.append(reason)
+        return not reason
 
     def set_text(self, runtime, variable, reference, kind, text, shape=None):
         """Write ``text`` into the string ``variable``, a root local listed under the

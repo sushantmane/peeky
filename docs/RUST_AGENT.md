@@ -371,6 +371,49 @@ used again. Such a temporary is:
 - what a call given such a pointer returns. `format_args!`'s calls don't count, because they keep
   the pointer, unless the crate itself names something `core` or `std` that could pass for them.
 
+A pointer that Peeky doesn't follow may point into any local: a read through a reference variable,
+or a call given one. A raw pointer counts as any other, since the source alone doesn't show unsafe
+code: a standard-library macro brings its own (`#[allow_internal_unsafe]`).
+
+- A call the dump names `std::ptr::eq`, `core::ptr::eq` or `addr_eq` (`_ADDRESS_COMPARISON`) reads
+  only the two addresses. Where `OwnedLocals._std_compares` proves it the standard library's, as
+  for a reference's last use above, its result holds only what its operands hold
+  (`_copy_verdict`).
+- A refusal states a read only where `copy_hazards(reads="explicit")` finds one at every place.
+  That is `Body.read_copies_at`, a must-analysis met by intersection over every way into a block.
+  It counts a `copy` or `move` of an overlapping place (`_reads_part`), and a read through a pointer
+  surely made from a borrow of the whole local. A temporary computed from either counts too.
+- A write that may overlap the changed part ends what it knows: `_written_place` and `_apart`. A
+  write through a pointer ends it too, unless the pointer surely points apart from the part: a
+  borrow of another local, or of a part `_apart` from it, a copy of one, or an argument. A pointer
+  loaded from memory (`(*((*_8).0: &mut u32))`) is never known to point apart. Nor is a pointer
+  local that is itself borrowed anywhere (`Body._borrowed`): `q = &mut p; *q = &raw mut x;`
+  retargets `p`, and `&p` may do so through a `Cell`.
+- Where a writable borrow of a place that may overlap the part is taken anywhere in the body
+  (`Body._exposed`), a call, a drop or a `copy_nonoverlapping` ends what it knows, on every edge.
+  `keep(&mut x)` may change `x`, so `let y = x;` before it no longer surely holds a copy of `x`.
+- A temporary computed from a binding's copy doesn't count as read: the statement read the copy.
+  It counts only as the binding's (#192), through `copy_undoes` (`reads="taken"`, or `"copied"`
+  where it may). A refusal names the bindings it was surely computed from (`reads="sources"`),
+  which stays true after the binding is assigned again. Where it may be, `copy_sources` walks back.
+- It names them only where every place has such a copy, from bindings common to all. Where each
+  place holds a sure copy, some another way, it says "the program already holds a copy of it".
+- A binding that may hold a copy is named apart from the statement under way, which may not use
+  it: "the program's own `y` (at line 34) may hold a copy of it that it goes on with".
+- It leaves out a pointer an aggregate or a call holds, a local a writable borrow is taken of, and
+  a coroutine's body. `rust._copy_reason` decides the wording.
+- Otherwise it hedges, by what each other reading finds:
+  - `reads="value"`: reads by value, on some path, of what may overlap the changed part;
+  - `reads="whole"`: the same for the whole local, so another part's read;
+  - `reads="traced"`: also pointers the flow shows may point into the local;
+  - `reads="any"` alone: a pointer Peeky doesn't follow. `untraced_reads` names those variables,
+    each by its kind.
+
+A rule by type isn't used, though a `*const Engineer` can't point into a `u32` in safe code. It
+holds only for a pointee of the crate's own type that holds no pointer, which only the debug
+information shows. Standard types can view a local as another type: `Cell::from_mut`,
+`slice::from_ref`.
+
 - The line's first MIR place may emit no code, as `&k` in `let t = (&k,` / `s.a,` / `s.b);`. So the
   stop's column places a breakpoint on its line.
 - `let arr = [s.a,` / `k,` / `s.b];` builds its array on line 1, after reading `s.a`.
