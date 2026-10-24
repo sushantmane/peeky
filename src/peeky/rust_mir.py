@@ -1339,7 +1339,9 @@ class Body:
             self._copy_reads = (parts, mentions, seeds, at, frozenset(named))
         return self._copy_reads
 
-    def copies_at(self, local, position, formatting=True, compares=False, reads="any"):
+    def copies_at(
+        self, local, position, formatting=True, compares=False, reads="any", projection=()
+    ):
         """The temporaries that may hold a value read from ``local``'s current value at
         ``position`` ((block, index): before that statement), on some path from bb0
         (#183): ``copies_of``'s reading of each assignment, taken in the order the code
@@ -1348,8 +1350,9 @@ class Body:
         holds an earlier one, which a change to it does not touch either (`for entry in
         args`: the iterator's `next` into a temporary, then `entry` moved out of it).
         ``copies_of`` where the flow is past its budget; ``compares`` and ``reads`` as for
-        ``_copy_verdict``."""
-        state = self._copy_state(local, position, formatting, (), compares, reads)
+        ``_copy_verdict``, and with "value", only reads of what may overlap the part
+        ``projection``."""
+        state = self._copy_state(local, position, formatting, projection, compares, reads)
         return self.copies_of(local, formatting, compares, reads) if state is None else state[0]
 
     def direct_copies_at(
@@ -1429,7 +1432,7 @@ class Body:
         if target in named:
             return holds, points, direct, own
         hold, point = _copy_verdict(
-            parts[found], local, holds, points, formatting, compares, reads, own
+            parts[found], local, holds, points, formatting, compares, reads, own, touched
         )
         return (
             holds | {target} if hold else holds,
@@ -1439,14 +1442,16 @@ class Body:
         )
 
     def read_copies_at(self, local, position, projection=()):
-        """The locals, the program's own bindings among them, that surely hold a value read
-        from ``local``'s current value (or from its part ``projection``) at ``position``,
-        on every path from bb0 (#300: what a refusal may say the statement has read): a
-        `copy` or `move` of it or of an overlapping place (``_reads_part``), a read
-        through a pointer made from a borrow of it (the whole local only), or a value
-        computed from such a local. A pointer a call returns, one an aggregate holds, a
-        local a writable borrow is ever taken of, and a coroutine's body are not followed.
-        None where that is not known (past the budget)."""
+        """What surely holds a value read from ``local``'s current value (or from its part
+        ``projection``) at ``position``, on every path from bb0 (#300: what a refusal may
+        say the statement has read): (the temporaries that read it, the locals, the
+        program's own bindings among them, that took it by value), or None where that is
+        not known (past the budget). A read is a `copy` or `move` of it or of an
+        overlapping place (``_reads_part``), a read through a pointer made from a borrow of
+        it (the whole local only), or a value computed from what holds one; a temporary
+        computed from a binding's copy took it, but the statement did not read it (#192).
+        A pointer a call returns or an aggregate holds, a local a writable borrow is ever
+        taken of, and a coroutine's body are not followed."""
         if self.coroutine is not None:
             return None
         if self._read_flows is None:
@@ -1459,33 +1464,33 @@ class Body:
         if entry is None:
             return None
         if number not in entry:
-            return frozenset()
+            return frozenset(), frozenset()
         state = entry[number]
         for at in range(min(index, len(self.blocks[number].statements))):
             state = self._read_step(local, projection, number, at, state)
-        return state[0]
+        return state[0], state[1]
 
     def _read_step(self, local, projection, number, index, state):
-        """``read_copies_at``'s transfer over one statement: (read, own) after it, the
-        locals surely holding a read of it, and the pointers surely made from a borrow of
-        it (``projection`` () only)."""
-        read, own = state
+        """``read_copies_at``'s transfer over one statement: (read, taken, own) after it:
+        its two sets, and the pointers surely made from a borrow of the local
+        (``projection`` () only)."""
+        empty = frozenset()
         text = _STRING.sub('""', self.blocks[number].statements[index][0])
         whole = _WHOLE_ASSIGNMENT.match(text)
         if re.match(rf"Storage(?:Live|Dead)\(_{local}\);$", text) or (
             whole and int(whole[1]) == local
         ):
-            return frozenset(), frozenset()
+            return empty, empty, empty
         if ended := _STORAGE.match(text) or _DROP.match(text):
-            return read - {int(ended[1])}, own - {int(ended[1])}
-        parts, _, _, at, _ = self._copy_parts()
+            return tuple(each - {int(ended[1])} for each in state)
+        parts, _, _, at, named = self._copy_parts()
         found = at.get((number, index))
         if found is None:
             return state
         target, mentioned, _, borrow, _, _, _, _ = parts[found]
         if target == local:
             return state
-        read, own = read - {target}, own - {target}
+        read, taken, own = (each - {target} for each in state)
         if self._writable_borrows is None:
             self._writable_borrows = frozenset(
                 int(n)
@@ -1494,7 +1499,7 @@ class Body:
                 for n in _WRITABLE_BORROW.findall(_STRING.sub('""', statement))
             )
         if not whole or target in self._writable_borrows:
-            return read, own
+            return read, taken, own
         value, whole_local = whole[2], projection == ()
         plain = [int(n) for n in re.findall(r"\(\*_([0-9]+)\)", value)]
         through = bool(plain) and len(plain) == value.count("(*") and set(plain) <= own
@@ -1502,23 +1507,22 @@ class Body:
             rooted = _DIRECT_BORROW.match(value)
             if whole_local and ((rooted and int(rooted[1]) == local) or through):
                 own = own | {target}
-            return read, own
-        if (
-            _reads_part(value, local, projection)
-            or (whole_local and through)
-            or bool(mentioned & read)
-        ):
+            return read, taken, own
+        reads = _reads_part(value, local, projection) or (whole_local and through)
+        if reads or mentioned & taken:
+            taken = taken | {target}
+        if target not in named and (reads or mentioned & read):
             read = read | {target}
         copied = re.fullmatch(r"(?:copy|move) _([0-9]+)", value)
         if whole_local and copied and int(copied[1]) in own:
             own = own | {target}
-        return read, own
+        return read, taken, own
 
     def _read_flow(self, local, projection):
-        """{block: (read, own) on entry} for ``read_copies_at``: its transfer, met by
-        intersection over every way in (the greatest fixpoint from bb0); None past the
+        """{block: (read, taken, own) on entry} for ``read_copies_at``: its transfer, met
+        by intersection over every way in (the greatest fixpoint from bb0); None past the
         budget. A call sets its result on its return edge only."""
-        entry = {0: (frozenset(), frozenset())}
+        entry = {0: (frozenset(),) * 3}
         work, queued, steps = [0], {0}, 0
         limit = max(MAX_ITERATIONS, STEPS_PER_BLOCK * len(self.blocks))
         while work:
@@ -1540,7 +1544,7 @@ class Body:
                     continue
                 out = after if block.returns is None or target == block.returns else state
                 old = entry.get(target)
-                met = out if old is None else (old[0] & out[0], old[1] & out[1])
+                met = out if old is None else tuple(a & b for a, b in zip(old, out))
                 if met != old:
                     entry[target] = met
                     if target not in queued:
@@ -2682,7 +2686,9 @@ def _pointer_kind(kind):
     return None
 
 
-def _copy_verdict(part, local, holds, points, formatting, compares, reads, own=frozenset()):
+def _copy_verdict(
+    part, local, holds, points, formatting, compares, reads, own=frozenset(), touched=None
+):
     """(hold, point): whether the assignment ``part`` (``Body._copy_parts``) may make its
     target hold a value read from ``local``, or point into it, given the temporaries that
     may already (``holds``, ``points``; ``own``: the pointers made from a borrow of it).
@@ -2695,13 +2701,15 @@ def _copy_verdict(part, local, holds, points, formatting, compares, reads, own=f
     ``reads`` says which pointers count (#300: what a refusal may say): "any", also one
     Peeky does not follow (read through, or a reference variable a call is given), which
     may point anywhere; "traced", only one the flow shows may point into ``local``
-    (``points``, ``own``); "value", none: only reads of it by value, or of what holds
-    one. What surely read it is ``Body.read_copies_at``'s."""
+    (``points``, ``own``); "value", none: only reads of it by value (``touched``: of a
+    place that may overlap the part a change makes, where given), or of what holds one.
+    What surely read it is ``Body.read_copies_at``'s."""
     _, mentioned, through, borrow, call, formats, pointers, compare = part
     if compares and compare:
         return local in mentioned or bool(mentioned & holds), False
     if reads == "value":
-        return bool(mentioned & holds) or (not borrow and local in mentioned), False
+        mine = local in mentioned if touched is None else touched
+        return bool(mentioned & holds) or (not borrow and mine), False
     if reads == "traced":
         through = through and bool(mentioned & (points | own))
         points, pointers = points | own, frozenset()
@@ -4483,9 +4491,9 @@ class OwnedLocals:
         copy is judged by (#192 review); without ``named``, those copies are left out
         (what holds for every part of an aggregate, whose parts are judged each). The
         standard library's `ptr::eq` reads no pointee (#300, ``_std_compares``).
-        ``reads``: which pointers count ("any", "traced", "value": ``_copy_verdict``), or
-        "explicit": only what surely read it (``Body.read_copies_at``), which a refusal
-        may state as a fact (#300)."""
+        ``reads``: which pointers count ("any", "traced", "value": ``_copy_verdict``; and
+        "whole", as "value" for the whole local), or "explicit": only what surely read it
+        (``Body.read_copies_at``), which a refusal may state as a fact (#300)."""
         site = self._site(hashed, line, path)
         if site is None:
             return None
@@ -4507,7 +4515,10 @@ class OwnedLocals:
         if breakpoint and not function.inline_only:
             positions = _first_places(body, function, positions)
         formatting, bindings = self._formatting(), body.named_locals()
-        mode = {"compares": self._std_compares(), "reads": reads}
+        compares = self._std_compares()
+        # "whole": as "value", for a change to the whole local (#300: another part read).
+        flow = "value" if reads == "whole" else reads
+        part = projection if reads == "value" else ()
         # What a call std's printing makes reads (#192 review 4: by its file and path).
         sinks = (frozenset(self.std_macros), frozenset(each.path for each in self.bodies))
 
@@ -4517,18 +4528,20 @@ class OwnedLocals:
             # with, never reading the local (#192: `n` of `x = match x { n => … n }`).
             live = body.live_ahead(position)
             if reads == "explicit":
-                read = body.read_copies_at(local, position, projection)
-                if read is None:
+                sure = body.read_copies_at(local, position, projection)
+                if sure is None:
                     return None
-                return frozenset(n for n in read - bindings if live >> n & 1) | frozenset(
+                read, taken = sure
+                return frozenset(n for n in read if live >> n & 1) | frozenset(
                     n
-                    for n in (read & bindings if named else ())
+                    for n in (taken - read if named else ())
                     if body.copy_undoes(n, local, position, projection, sinks)
                 )
-            direct = body.direct_copies_at(local, position, formatting, projection, **mode)
+            direct = body.direct_copies_at(local, position, formatting, projection, compares, flow)
             if direct is None:
                 return None
-            temporaries = body.copies_at(local, position, formatting, **mode) - bindings
+            temporaries = body.copies_at(local, position, formatting, compares, flow, part)
+            temporaries -= bindings
             return frozenset(n for n in temporaries if live >> n & 1) | frozenset(
                 n
                 for n in (direct - temporaries if named else ())

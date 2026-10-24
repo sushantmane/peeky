@@ -2939,18 +2939,26 @@ def test_a_refusal_says_it_read_the_local_only_where_every_place_the_stop_can_be
     )
     a, b = (1, 0), (2, 0)
 
-    def reason(any_, explicit=None, value=None, traced=None):
+    def reason(any_, explicit=None, value=None, traced=None, whole=None):
         found = {"any": any_, "explicit": explicit, "value": value, "traced": traced}
+        found["whole"] = value if whole is None else whole
         return _copy_reason(proofs, "h", found, "/w/src/main.rs")[:2]
 
     assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, {6})]) == ("read", None)
+    # Where a reading is not known, no more than that it may have read it.
+    assert reason([(a, {5}), (b, {6})], [(a, {5}), (b, set())]) == (
+        "may",
+        "may have read it (at line 5)",
+    )
     sure_at_a = [(a, {5}), (b, set())]
     assert reason([(a, {5}), (b, {7})], sure_at_a, sure_at_a, sure_at_a) == (
         "may",
         "reads it into a temporary (at line 5) or uses `e` (at line 9), a reference Peeky "
         "can't trace that may point at it",
     )
-    assert reason([(a, {5}), (b, set())], sure_at_a)[1] == "reads it into a temporary (at line 5)"
+    assert reason([(a, {5}), (b, set())], sure_at_a, sure_at_a, sure_at_a)[1] == (
+        "reads it into a temporary (at line 5)"
+    )
     # A read only on some path to the place: what may hold a copy, by value.
     assert reason([(a, {6})], [(a, set())], [(a, {6})], [(a, {6})])[1] == (
         "reads it into a temporary (at line 6)"
@@ -3033,8 +3041,16 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     whole = why("same(copy _17)", pair_local, field, name="tt")
     assert whole.startswith(sure), whole
     part = why("same(copy _17)", pair_local, field, name="tt", projection=(("field", 0),))
-    assert (
-        part == "a statement under way at the stop reads it into a temporary (at line 39)" + maybe
+    assert part == (
+        "a statement under way at the stop reads another part of it into a temporary (at "
+        "line 39)" + maybe
+    )
+    # `let week = weeks;` on line 32, then `same(week, e.shifts)`: the statement reads the
+    # program's own copy, not `weeks`; only `e` may have reached it.
+    shifts = line_39("_17 = copy ((*_13).1: u32);", "_10 = &raw const (*_13);")
+    assert why("same(copy _4, move _17)", shifts, name="weeks") == (
+        "a statement under way at the stop uses `e` (at line 39), a reference Peeky can't "
+        "trace that may point at it" + maybe
     )
 
 
