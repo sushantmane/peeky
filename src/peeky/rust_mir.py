@@ -1483,6 +1483,8 @@ _NOT_SHARED = re.compile(r"&(?:mut |raw |fake )")
 _SUCCESSOR = re.compile(r"\bbb([0-9]+)\b")
 _RETURN_EDGE = re.compile(r"\breturn: bb([0-9]+)\b")
 _EXITS = re.compile(r"^(?:return|unreachable|resume|abort|terminate)\b")
+# The function's normal return, where every local of its frame ends (#330).
+_RETURN = re.compile(r"^return;$")
 _NO_CODE = re.compile(r"^(?:StorageLive|StorageDead|Deinit)\(_[0-9]+\);$|^nop;$")
 _UNSUPPORTED = re.compile(r"^(?:yield|coroutine_drop|falseEdge|falseUnwind|tailcall|asm!)\b")
 
@@ -2175,11 +2177,12 @@ class Body:
 
     def copy_undoes(self, copy, root, start, projection=(), sinks=(frozenset(), frozenset())):
         """True if, on some path from ``start`` ((block, index): before that statement),
-        the program uses ``copy`` (or a pointer to it) and then assigns ``root`` whole or
-        ends it without reading what a change made (#192): it goes on with the value
-        ``copy`` took from ``root``, so a change made at ``start`` is never seen (`x = match
-        x { n => … n }` puts the old value back; `let y = x;` … `x = y + 1;`; a `move`
-        closure called before `x` goes out of scope unread). Where the program reads
+        the program assigns ``root`` whole or ends it without reading what a change made,
+        and uses ``copy`` (or a pointer to it) before or after that (#192, #330): it goes
+        on with the value ``copy`` took from ``root``, so a change made at ``start`` is
+        never seen (`x = match x { n => … n }` puts the old value back; `let y = x;` … `x
+        = y + 1;`; a `move` closure called before `x` goes out of scope unread). Where the
+        program reads
         ``root`` first, it sees the change there, whatever its copies hold (`let a = s.x;`
         keeps the old value, as the program's own). ``projection`` is the part changed
         (``_root_access``): only a read that surely covers part of it counts, `copy`,
@@ -2188,35 +2191,128 @@ class Body:
         path goes on (#192 review: `ignore(&x)`, `println!("{}", x.a)` for a change to
         `x.b`, `ignore(format_args!("{}", x))`). A write
         covering the whole part counts as an assignment, any other as nothing. ``sinks``:
-        ``_format_reads``'s (trusted files, the crate's own function paths)."""
+        ``_format_reads``'s (trusted files, the crate's own function paths).
+
+        A use of the copy after the assignment or end counts as one before it (#330: `u.
+        push(y); let t = n; y = t;` then `println!("{:?}", u)`; a struct pushed into a Vec
+        and then ended, before the Vec is used): the old value is all that is left. An
+        argument has no end of its own: it ends where the function returns."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
-        # (block, index, whether the copy was used on the way here).
-        pending, seen = [(start[0], start[1], False)], set()
+        # (block, index, whether the copy was used on the way here, whether ``root`` was
+        # assigned or ended unread on the way here: then any use of the copy is enough).
+        pending, seen = [(start[0], start[1], False, False)], set()
         while pending:
-            number, index, used = pending.pop()
-            if (number, index, used) in seen or number not in self.blocks:
+            state = pending.pop()
+            number, index, used, gone = state
+            if state in seen or number not in self.blocks:
                 continue
-            seen.add((number, index, used))
+            seen.add(state)
             block = self.blocks[number]
             stopped = False
             for text, _, _ in block.statements[index:]:
                 used = used or any(_event(text, each) == "use" for each in copies)
+                if gone:
+                    if used:
+                        return True
+                    if _event(text, copy) == "end":
+                        stopped = True
+                        break
+                    continue
                 access = _root_access(text, root, projection, formats)
                 if access == "read":
                     stopped = True
                     break
-                if access == "end":
+                if access == "end" or (root in self.arguments and _RETURN.match(text)):
                     if used:
                         return True
-                    stopped = True
-                    break
+                    # Its old value is gone: the copy, if used later, is all that is left.
+                    gone = True
+                    if _event(text, copy) == "end":
+                        stopped = True
+                        break
+                    continue
                 if _event(text, copy) == "end" and not used:
                     stopped = True
                     break
             if not stopped:
                 resumed = (self.resumes[number],) if number in self.resumes else ()
-                pending.extend((successor, 0, used) for successor in (*block.successors, *resumed))
+                pending.extend(
+                    (successor, 0, used, gone) for successor in (*block.successors, *resumed)
+                )
         return False
+
+    def unread_ends(self, local, start, projection=()):
+        """Where the part ``projection`` of ``local`` (``_root_access``'s) ends, unread,
+        on every path from ``start`` ((block, index): before that statement), so a change
+        made there is never seen (#330): {(kind, (block, index))}, kind "write" (an
+        assignment covering it, `y = t;`), "scope" (the end of its storage) or "return"
+        (the function returns). A path that ends otherwise (a panic, `process::exit`)
+        adds none. None where some path may read it first (``_unread_access``). Pointers
+        made from it before ``start`` are the caller's to judge
+        (``OwnedLocals.unread_after``)."""
+        ends, pending, seen = set(), [start], set()
+        while pending:
+            number, index = pending.pop()
+            if (number, index) in seen or number not in self.blocks:
+                continue
+            seen.add((number, index))
+            block = self.blocks[number]
+            stopped = False
+            for offset, (text, _, _) in enumerate(block.statements[index:], index):
+                access = self._unread_access(text, local, projection)
+                if access == "read":
+                    return None
+                if access is not None or _RETURN.match(text):
+                    ends.add((access or "return", (number, offset)))
+                    stopped = True
+                    break
+            if not stopped:
+                resumed = (self.resumes[number],) if number in self.resumes else ()
+                pending.extend((successor, 0) for successor in (*block.successors, *resumed))
+        return frozenset(ends)
+
+    def _unread_access(self, text, local, projection=()):
+        """What the MIR statement ``text`` surely does to the part ``projection`` of
+        ``local``, for ``unread_ends``: "write" (it assigns a place covering the part,
+        reading none of it), "scope" (its storage ends), None (it leaves the part as it
+        was, unread: no mention, a marker, a `copy` or `move` of a place surely apart, a
+        write that reads none of it, a drop that runs no code: ``_quiet_drop``), else
+        "read" (it may read it: a borrow, a dereference, a drop that may run code, any
+        other mention)."""
+        plain = _STRING.sub('""', text)
+        if local not in {int(n) for n in _MENTIONED.findall(plain)}:
+            return None
+        if plain.startswith(f"StorageDead(_{local})"):
+            return "scope"
+        if plain.startswith(f"Deinit(_{local})"):
+            return "write"
+        if _NOT_A_USE.match(plain):
+            return None
+        if dropped := _DROP_PLACE.match(plain):
+            # A drop of the local or of a place of its own, whose type's drop runs no code.
+            head = re.match(rf"\(*_{local}\b", dropped[1])
+            place = _place_steps(dropped[1], head.end() - len(f"_{local}")) if head else None
+            whole = place is not None and place[2] == len(dropped[1])
+            return None if whole and _quiet_drop(self.types.get(local), self.generics) else "read"
+        steps, value = None, plain
+        if head := re.match(rf"\(*_{local}\b", plain):
+            place = _place_steps(plain, head.end() - len(f"_{local}"))
+            if place is not None and plain.startswith(" = ", place[2]):
+                steps, value = place[0], plain[place[2] + 3 :]
+        for found in re.finditer(rf"(?<![\w])_{local}\b", value):
+            place = _place_steps(value, found.start())
+            if place is None or not value[: place[1]].endswith(("copy ", "move ")):
+                return "read"
+            if not _apart(place[0], projection):
+                return "read"
+        if steps is None:
+            return None
+        covered = not steps or (
+            projection is not None
+            and len(steps) <= len(projection)
+            and _overlaps(steps, projection)
+        )
+        return "write" if covered else None
 
     def _format_reads(self, trusted=frozenset(), crate=frozenset()):
         """{a call that formats what it is given (``_FORMAT_SINK``, from std's macros'
@@ -6699,26 +6795,10 @@ class OwnedLocals:
         "bindings", not hazards but the bindings that may hold a direct copy; "pointing",
         those of them that may also point into it (#320 review: what a call returns, where
         Peeky can't tell which it holds), for the refusal to say so."""
-        site = self._site(hashed, line, path)
-        if site is None:
+        placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
+        if placed is None:
             return None
-        body, function = site[0], site[1]
-        if not body.supported:
-            return None
-        local = self._local(body, variable_name, line, path, block, site)
-        if local is None:
-            return None
-        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
-        if breakpoint and (facts is None or facts.column is None):
-            # The line's first place by the IR's order may emit no code (`&k` in `let t =
-            # (&k,` / `s.a,` / `s.b);`, whose first code is the tuple's, after `s.a` is
-            # read): only the stop's column tells the places it can be before apart.
-            return None
-        positions = self._positions(site, line, facts, block)
-        if not positions:
-            return None
-        if breakpoint and not function.inline_only:
-            positions = _first_places(body, function, positions)
+        body, local, positions = placed
         formatting, bindings = self._formatting(), body.named_locals()
         compares, transfers = self._std_compares(), self._std_transfers()
         # "whole": as "value", for a change to the whole local (#300: another part read);
@@ -6779,6 +6859,90 @@ class OwnedLocals:
 
         found = [(position, hazards(position)) for position in positions]
         return None if any(each is None for _, each in found) else found
+
+    def _stop_places(self, hashed, variable_name, line, path, breakpoint, column, block):
+        """(the body, the MIR local of ``variable_name``, the places the stop can be on
+        ``line`` of ``path``), as ``copy_hazards`` reads them, or None if not understood."""
+        site = self._site(hashed, line, path)
+        if site is None:
+            return None
+        body, function = site[0], site[1]
+        if not body.supported:
+            return None
+        local = self._local(body, variable_name, line, path, block, site)
+        if local is None:
+            return None
+        facts = self._facts(function, line, column) if breakpoint and not function.copies else None
+        if breakpoint and (facts is None or facts.column is None):
+            # The line's first place by the IR's order may emit no code (`&k` in `let t =
+            # (&k,` / `s.a,` / `s.b);`, whose first code is the tuple's, after `s.a` is
+            # read): only the stop's column tells the places it can be before apart.
+            return None
+        positions = self._positions(site, line, facts, block)
+        if not positions:
+            return None
+        if breakpoint and not function.inline_only:
+            positions = _first_places(body, function, positions)
+        return body, local, positions
+
+    def unread_after(
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        breakpoint=False,
+        column=None,
+        block=None,
+        projection=(),
+        coded=False,
+    ):
+        """Where the frame's local ``variable_name`` (the part ``projection`` of it, as for
+        ``copy_hazards``) ends unread on every path from every place the stop can be on
+        ``line`` of ``path`` (#330: `y = t;` before any read of `y`; the end of its scope):
+        [(kind, file, line)], sorted, kind as for ``Body.unread_ends``; empty where every
+        path ends otherwise (a panic). A change there is never seen. None where the
+        program may read it, or that is not understood: a pointer into it may still be
+        used (``Body.lent_from``, or a borrow ``_pointers_to`` follows), a coroutine's body
+        (its state outlives a suspension), or a crate with unsafe code (a pointer may be
+        kept where Peeky can't see). ``breakpoint``, ``column`` and ``block`` as for
+        ``copied_in_progress``; with ``coded``, only the places before a statement that
+        emits code, as ``coded_hazards``."""
+        if self.unsafe_code:
+            return None
+        placed = self._stop_places(hashed, variable_name, line, path, breakpoint, column, block)
+        if placed is None:
+            return None
+        body, local, positions = placed
+        if body.coroutine is not None:
+            return None
+        if coded:
+            positions = [
+                position
+                for position in positions
+                if not _NO_CODE.match(body.blocks[position[0]].statements[position[1]][0])
+            ] or positions
+        generics = self.type_parameters(hashed)
+        pointers = body.lent_from(local, generics) | body._pointers_to(local)
+        lent = _mask(pointers)
+        dropped = _mask(n for n in pointers if not _quiet_drop(body.types.get(n), generics))
+        ends = set()
+        for position in positions:
+            if body.live_ahead(position) & lent or (
+                body.live_ahead(position, drops=True) & body.maybe_initialized(position) & dropped
+            ):
+                return None
+            found = body.unread_ends(local, position, projection)
+            if found is None:
+                return None
+            ends |= found
+        where = set()
+        for kind, (number, index) in ends:
+            _, file, at = body.blocks[number].statements[index]
+            if file is None or at is None:
+                return None
+            where.add((kind, file, at))
+        return sorted(where)
 
     def copy_lines(self, hashed, temporaries, named_only=False):
         """The source lines where the code assigns any of ``temporaries`` in the body of

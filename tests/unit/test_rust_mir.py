@@ -2814,11 +2814,14 @@ def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local(
     # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
     # point anywhere. The standard library's `ptr::eq` compares the two addresses only.
     owned = raw_eq_owned()
-    assert withheld(owned) == [False] * len(ALL_NAMES)
+    # But `team`, an argument, ends unread where the function returns, after the branch
+    # uses what the call made of the address `first(team)` gave (#330).
+    past_team = [False] * (len(ALL_NAMES) - 1) + [True]
+    assert withheld(owned) == past_team
     # Whatever else the crate holds: the call is still the standard library's.
     owned = raw_eq_owned()
     owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
-    assert withheld(owned) == [False] * len(ALL_NAMES)
+    assert withheld(owned) == past_team
     # A `std::ptr::eq` of the crate's own, or a source Peeky cannot read, may read them.
     for source in (SHADOWED_SOURCE, None):
         assert withheld(raw_eq_owned(source=source)) == [True] * len(ALL_NAMES)
@@ -2826,7 +2829,7 @@ def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local(
     owned = raw_eq_owned(
         raw_eq_variant("std::ptr::addr_eq::<Engineer, Engineer>(move _10, move _11)")
     )
-    assert withheld(owned) == [False] * len(ALL_NAMES)
+    assert withheld(owned) == past_team
     owned = raw_eq_owned(raw_eq_variant("<*const Engineer as PartialEq>::eq(move _10, move _11)"))
     assert withheld(owned) == [True] * len(ALL_NAMES)
 
@@ -3506,9 +3509,12 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     found = why(
         "same(const 0_u32)", plus_or_zero, assign, name="weeks", bb6={39}, bb7={39}, bb8={39}
     )
+    # Past the call, `weeks` is assigned unread, and line 44 then reads `week`: the program
+    # goes on with its copy, on the path that never used it before too (#330).
     assert found == (
-        "a statement under way at the stop uses `week` (at line 32), which may hold the "
-        "program's own copy of it" + maybe
+        "the program has already copied its value into `week` (at line 32) and goes on with "
+        "that copy, so a change to `weeks` may never be seen: Peeky proves no read of the "
+        "changed part first (a reference lent to a call, or `{:?}`, is not one)"
     )
     # `if c { pick = weeks; }` on one path only: `pick` is no copy it surely uses.
     branch_pick = line_39(
@@ -3555,11 +3561,13 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
         "line 39)" + maybe
     )
     # `let week = weeks;` on line 32, then `same(week, e.shifts)`: the statement reads the
-    # program's own copy, not `weeks`; only `e` may have reached it.
+    # program's own copy, not `weeks`; only `e` may have reached it. And `weeks`, an
+    # argument, ends unread at the return, after line 44 reads `week` (#330).
     shifts = line_39("_17 = copy ((*_13).1: u32);", "_10 = &raw const (*_13);")
     assert why("same(copy _4, move _17)", shifts, name="weeks") == (
         "a statement under way at the stop uses `e` (at line 39), a reference Peeky can't "
-        "trace that may point at it" + maybe
+        "trace that may point at it" + maybe + ", or the program's own `week` (at line 32) "
+        "may hold a copy of it that it goes on with"
     )
 
 

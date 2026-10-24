@@ -1020,6 +1020,42 @@ def _either(clauses):
     return clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" or {clauses[-1]}"
 
 
+def _unread_where(ends, home, owner="it"):
+    """Where a local ends unread on every path from a stop, for a refusal (#330:
+    ``OwnedLocals.unread_after``'s [(kind, file, line)]): "it is overwritten at line 7
+    first", "it is overwritten at line 7, or goes out of scope at line 14, first", "the
+    function returns at line 9 first"; ``owner`` is what goes out of scope (`` `lap` ``
+    for a change to `lap.start`). None where every path ends otherwise (a panic)."""
+    lines = {}
+    for kind, file, line in ends:
+        lines.setdefault(kind, set()).add((file, line))
+    parts = []
+    if "write" in lines:
+        parts.append(f"it is overwritten at {_line_list(lines['write'], home)}")
+    if "scope" in lines:
+        parts.append(f"{owner} goes out of scope at {_line_list(lines['scope'], home)}")
+    if "return" in lines:
+        parts.append(f"the function returns at {_line_list(lines['return'], home)}")
+    if not parts:
+        return None
+    return f"{parts[0]} first" if len(parts) == 1 else ", or ".join(parts) + ", first"
+
+
+def _overwritten(ends):
+    """Whether some path from the stop overwrites the local (``_unread_where``'s ``ends``):
+    then a change can be made after that, where the program reads the new value."""
+    return any(kind == "write" for kind, _, _ in ends)
+
+
+# Where to change a value the program does not read after the stop (#330), by whether it
+# is overwritten ("written") or only ends ("ended").
+_UNREAD_ADVICE = {
+    "written": "Change it on a later line, after the program overwrites it, or on an earlier "
+    "line, before the program's last read of it",
+    "ended": "Change it on an earlier line, before the program's last read of it",
+}
+
+
 # What a refusal says of a binding that may hold a copy or only point into the local
 # (#320 review: ``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
@@ -2805,7 +2841,9 @@ class RustSession(NativeSession):
             except Unsettable as exc:
                 return ("type", str(exc))
         if kept is True:
-            return self._copied_everywhere(hashed, plain, source, line, projection)
+            return self._copied_everywhere(
+                hashed, plain, source, line, projection
+            ) or self._unread_everywhere(hashed, plain, source, line, projection)
         if _state_held(body, plain):
             return ("state", plain)
         if kept is None and body is None:
@@ -2814,6 +2852,22 @@ class RustSession(NativeSession):
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
         return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
+
+    def _unread_everywhere(self, hashed, plain, source, line, projection=()):
+        """("unread", (where it ends unread, whether it is overwritten there)) where, from
+        every place ``line`` can stop at in ``hashed``, no path reads ``plain`` (the part
+        ``projection`` of it) before it is overwritten or ends (#330:
+        ``OwnedLocals.unread_after``): a change there is never seen. Else None."""
+        proofs = getattr(self, "owned", None)
+        check = getattr(proofs, "unread_after", None)
+        if check is None or self._optimized():
+            return None
+        path = str(Path(self.prepared.source_root) / source)
+        ends = check(hashed, plain, line, path, projection=projection, coded=True)
+        if ends is None:
+            return None
+        owner = f"`{plain}`" if projection else "it"
+        return ("unread", (_unread_where(ends, source, owner), _overwritten(ends)))
 
     def _copied_everywhere(self, hashed, plain, source, line, projection=()):
         """("statement", why) where every place ``line`` can stop at in ``hashed`` is
@@ -2889,7 +2943,7 @@ class RustSession(NativeSession):
         # (function, rule naming it as FUNCTION): the functions sharing a rule are named
         # together, each rule once (a generic's instances, a closure on the line).
         parts, registers, states = [], set(), False  # registers: the advice for each
-        statements = False
+        statements = unread = False
         for function, (kind, detail) in failures:
             if kind == "register":
                 parameter, why = detail
@@ -2928,6 +2982,17 @@ class RustSession(NativeSession):
                     else True
                 )
                 parts.append((function, f"in {FUNCTION}, {detail}"))
+            elif kind == "unread":
+                where, written = detail
+                unread = "written" if written or unread == "written" else "ended"
+                parts.append(
+                    (
+                        function,
+                        f"in {FUNCTION}, the program does not read `{name}` after any stop of "
+                        f"line {line}, so a change there would never be seen"
+                        + (f": {where}" if where else ""),
+                    )
+                )
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
@@ -2968,6 +3033,8 @@ class RustSession(NativeSession):
                 ". Change it at the first line of that statement (`--set-at` it), before it "
                 + ("starts" if statements == "untraced" else "reads the value")
             )
+        if unread:
+            text += f". {_UNREAD_ADVICE[unread]} (`--set-at` there)"
         if states:
             text += (
                 ". Change what it is computed from before it is assigned, or copy it with a "
@@ -3141,6 +3208,9 @@ class RustSession(NativeSession):
             }
             found = proofs.copy_hazards(**asked)
         if found is not None and not any(hazards for _, hazards in found):
+            # #330: no path from the stop reads it before it is overwritten or ends.
+            if unread := self._unread_here(variable, place, asked, proofs, steps):
+                return unread
             # #324: code LLVM inlined from a call on the line may run below where the line
             # breakpoint stops (`x.clone()`), and read the local before the stop.
             return self._inlined_read(variable, frame, hashed[1], proofs)
@@ -3243,6 +3313,37 @@ class RustSession(NativeSession):
             "Peeky cannot tell from the build's MIR whether a statement under way at the "
             "stop has read it",
             row="Peeky can't tell if a statement under way read it",
+        )
+
+    def _unread_here(self, variable, place, asked, proofs, steps=None):
+        """``mid_statement``'s reason where no path from any place of the stop reads the
+        local ``variable`` (the part ``steps`` reach in it) before it is overwritten or
+        ends (#330: ``OwnedLocals.unread_after``): a change there is never seen. Else
+        None."""
+        check = getattr(proofs, "unread_after", None)
+        if check is None:
+            return None
+        ends = check(**{key: value for key, value in asked.items() if key != "named"})
+        if ends is None:
+            return None
+        home = (place.get("source") or {}).get("path")
+        owner = f"`{variable.get('name')}`" if steps else "it"
+        lines = {}
+        for kind, file, line in ends:
+            lines.setdefault(kind, set()).add((file, line))
+        short = {"write": "overwritten at", "scope": "out of scope at", "return": "returns at"}
+        row = ", ".join(
+            f"{short[kind]} {_line_list(lines[kind], home)}"
+            for kind in ("write", "scope", "return")
+            if kind in lines
+        )
+        where = _unread_where(ends, home, owner)
+        written = "written" if _overwritten(ends) else "ended"
+        return _Copied(
+            "the program does not read it after this stop, so a change would never be seen"
+            + (f": {where}" if where else ""),
+            f"{_UNREAD_ADVICE[written]}, where `inspect` marks it [settable]",
+            "not read after the stop" + (f" ({row})" if row else ""),
         )
 
     def _projection(self, hashed, root, steps, where=None):
