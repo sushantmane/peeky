@@ -58,6 +58,7 @@ from peeky.rust_mir import (
     frame_shape,
     ir_functions,
     load_bodies,
+    macro_definitions,
     macro_lines,
     stop_block,
 )
@@ -3270,7 +3271,10 @@ class RustSession(NativeSession):
         that is the line's (``_line_inlined``: LLVM's inlined calls made from the line,
         and those just before it that Peeky can't place), where a step stops when that
         code comes first. At the first, ``_inlined_below`` tells what such code ran before
-        it. False where it is neither, or that is not known."""
+        it. A line with no row of its own (#326: `bump(&mut x);` of an
+        `#[inline(always)] fn bump`), outside macro definitions, starts at the lowest of
+        the calls inlined from it, where LLDB shows a step's stop on the line. False where
+        it is neither, or that is not known."""
         hashed, pc, place = _frame_hash(frame), self._unslid(frame), self._place(frame)
         blocks = self.code_blocks.get(hashed[1]) if hashed else None
         if not blocks or pc is None or place is None:
@@ -3281,10 +3285,217 @@ class RustSession(NativeSession):
                 memo.clear()
             addresses = self._own_rows(blocks, place)
             start = min(addresses, default=None)
-            found = self._line_inlined(blocks, place, start) if addresses else None
+            if start is None and self._address_rows():
+                defined = self._macro_lines(place[0])
+                if defined is not None and place[1] not in defined:
+                    start = min(self._site_lows(blocks, place), default=None)
+            found = self._line_inlined(blocks, place, start) if start is not None else None
             lows = [min(low for low, _ in block.ranges) for block, _ in found or ()]
-            memo[hashed[1], place] = (start, min([start, *lows]) if addresses else None)
+            memo[hashed[1], place] = (start, min([start, *lows]) if start is not None else None)
         return memo[hashed[1], place][0] is not None and pc in memo[hashed[1], place]
+
+    def _site_lows(self, blocks, place):
+        """The lowest address of each call LLVM inlined into the function whose ``blocks``
+        are given from ``place`` (source, line)."""
+        return [
+            min(low for low, _ in block.ranges)
+            for block in blocks
+            if block.inlined and self._called_from(block, place)
+        ]
+
+    def _source_as_built(self, source):
+        """The text of the declared ``source`` (relative to the workspace) as built, or
+        None."""
+        texts = getattr(getattr(self, "owned", None), "texts", None) or {}
+        if source in texts:
+            return texts[source]
+        return self._source_text(source) if source in self.lines else None
+
+    def _macro_lines(self, source):
+        """``macro_lines`` of the declared ``source``; None where it is not known."""
+        return macro_lines(self._source_as_built(source))
+
+    def _macros_at(self, place):
+        """The names of the macros whose definitions span ``place`` (source, line), in the
+        source's order; None where the source isn't read as rustc reads it."""
+        spans = macro_definitions(self._source_as_built(place[0]))
+        if spans is None:
+            return None
+        return tuple(dict.fromkeys(name for name, low, high in spans if low <= place[1] <= high))
+
+    def _inlined_site(self, frame, innermost=None):
+        """(#326) Whether the frame's line, one with no row in the build, is where LLDB shows
+        a stop at a call the build inlined: True where the frame's pc is in the code of a
+        call inlined into its function from that line (a caller frame's return address
+        may end that code, so its pc - 1 counts too); False where it is not, or the frame
+        can't be placed; None where the pc isn't known yet (the load bias is read with the
+        module, in ``validate_debugger``). Only without the function's DWARF blocks does a
+        line in a macro's definition count by the source alone: such a stop reads no value
+        (``macro_stop``). ``innermost``: whether the frame is the stop's innermost; None
+        where the frames an inspection last listed tell."""
+        place, hashed = self._place(frame), _frame_hash(frame)
+        if place is None or place[0] not in self.lines:
+            return False
+        blocks = self.code_blocks.get(hashed[1]) if hashed else None
+        if not blocks:
+            return bool(self._macros_at(place))
+        pc = self._unslid(frame)
+        if pc is None:
+            return None
+        if innermost is None:
+            listed = getattr(self, "innermost_id", None)
+            innermost = listed is None or frame.get("id") == listed
+        pcs = (pc,) if innermost else (pc, pc - 1)
+        return any(
+            low <= at < high
+            for block in blocks
+            if block.inlined and self._called_from(block, place)
+            for low, high in block.ranges
+            for at in pcs
+        )
+
+    def validate_stop(self, frame):
+        """NativeSession's check, and (#326) a stop LLDB shows on a line with no row of its
+        own in the build: at a call the build inlined, LLDB shows the line the call is
+        made from. That line is the build's too where the frame's pc is in the code of
+        such a call (``_inlined_site``). Where the pc isn't known yet, ``validate_debugger``
+        decides, before anything of the frame is read."""
+        try:
+            super().validate_stop(frame)
+        except RuntimeError:
+            if self._inlined_site(frame) is False:
+                raise
+
+    def validate_debugger(self, dap, frame):
+        """NativeSession's check, then (#326) a line with no row in the build must be an
+        inlined call's site at the frame's pc, now that the load bias is known."""
+        super().validate_debugger(dap, frame)
+        place = self._place(frame)
+        if (lines := self.__dict__.get("_line_sets")) is None:
+            # Every read of a value asks: the build's lines, parsed once.
+            lines = self._line_sets = {name: frozenset(found) for name, found in self.lines.items()}
+        if (
+            place is not None
+            and place[0] in lines
+            and place[1] not in lines[place[0]]
+            and not self._inlined_site(frame)
+        ):
+            raise RuntimeError("Native stopped line does not match prepared symbols")
+
+    def macro_stop(self, frame):
+        """(#326) The macros whose definition ``frame`` is stopped in, on a line with no row
+        of its own in its function; () where the source isn't read as rustc reads it, so
+        such a line may be a macro's; None for any other stop. LLDB shows a stop in a call
+        the build inlined (`$v.clone()` of `mclone!(x)`) on the line it is made from: here
+        the macro's definition, not the invocation's line, which the debug information
+        doesn't give. Rules keyed by the line would judge the definition as the function's."""
+        place = self._place(frame)
+        if place is None or place[0] not in self.lines:
+            return None
+        names = self._macros_at(place)
+        if names == ():
+            return None
+        hashed = _frame_hash(frame)
+        blocks = self.code_blocks.get(hashed[1]) if hashed else None
+        if blocks:
+            if self._own_rows(blocks, place):
+                return None
+        elif place[1] in self.lines[place[0]]:
+            # Its function's blocks are not known: the line has rows of its own somewhere.
+            return None
+        return names or ()
+
+    def macro_stop_state(self, dap, frame):
+        """``macro_stop_note`` for the innermost frame, for the stop's state, which is built
+        before anything validates the stop. Where the frame's function's DWARF blocks are
+        known, only once its pc is proven in the code of a call inlined from its line
+        (``_inlined_site``), the load bias read first where it isn't yet, with the module
+        (``validate_debugger``); else None, and `inspect` decides. Without them, the source
+        alone tells, as `inspect`'s refusal does: nothing of the frame is read either way."""
+        if self.macro_stop(frame) is None:
+            return None
+        hashed = _frame_hash(frame)
+        if hashed and self.code_blocks.get(hashed[1]):
+            if self._inlined_site(frame, innermost=True) is None:
+                try:
+                    self.validate_debugger(dap, frame)
+                except Exception:
+                    # A stop that doesn't match the build: `inspect` says so, and closes.
+                    return None
+            if self._inlined_site(frame, innermost=True) is not True:
+                return None
+        return self.macro_stop_note(frame)
+
+    def macro_stop_note(self, frame, index=0):
+        """Why ``session inspect`` reads no value of frame ``index`` stopped as
+        ``macro_stop`` says, and what to do; None for any other stop."""
+        names = self.macro_stop(frame)
+        if names is None:
+            return None
+        source, line = self._place(frame)
+        function = display_function(str(frame.get("name") or "")) or "this function"
+        if names:
+            where = (
+                f"inside the definition of macro {' or '.join(f'`{n}!`' for n in names)}. "
+                "That is the site of a call the macro makes, which the build inlined, and the "
+                "debug information doesn't say which invocation of the macro it is"
+            )
+        else:
+            where = (
+                f"which has no code of its own in {function}. That is the site of a call the "
+                "build inlined, and Peeky can't read the source as rustc does to tell whether "
+                "the line is in a macro's definition"
+            )
+        return (
+            f"Peeky reads no value of frame {index} ({function}) here: the debugger shows the "
+            f"stop on line {line} of {source}, {where}, so Peeky can't tell where in "
+            f"{function} the stop is. `session step` goes on to your code's next line, or "
+            "`session continue`"
+        )
+
+    def unplaceable_line(self, program, line):
+        """(#326) Why a breakpoint on ``line`` of ``program`` can't stop where it is asked,
+        or None: the line has no row of its own in the build, and the build inlined a call
+        made from it. LLDB places such a breakpoint on the call's code, and reports the
+        called function's line (`clone.rs:615` for `$v.clone()` of `macro_rules! mclone`
+        on line 1). In a macro's definition, that code may be any invocation's."""
+        try:
+            source = Path(program).resolve().relative_to(self.prepared.source_root).as_posix()
+        except (AttributeError, OSError, ValueError):
+            return None
+        if source not in self.lines or line in self.lines[source]:
+            return None
+        place = (source, line)
+        called = sorted(
+            {
+                block.call[3]
+                for blocks in self.code_blocks.values()
+                for block in blocks or ()
+                if block.inlined and self._called_from(block, place)
+            }
+        )
+        if not called:
+            return None
+        calls = f"the call of {_names(called)}" if all(called) else "a call"
+        names = self._macros_at(place)
+        if names == ():
+            return (
+                f"Line {line} has no code to stop at of its own: the build inlined {calls} "
+                "made there, and the debugger reports that code on the called function's own "
+                f"lines. Stop on an earlier line and `session step` onto line {line}, or choose "
+                "a line from `peeky describe`"
+            )
+        what = (
+            f"is in the definition of macro {' or '.join(f'`{n}!`' for n in names)}"
+            if names
+            else "may be in a macro's definition (Peeky can't read the source as rustc does)"
+        )
+        return (
+            f"Line {line} has no code to stop at of its own: it {what}. The build inlined "
+            f"{calls} made there into the code that invokes the macro, and the debug "
+            "information doesn't say which invocation a stop there is in. Put the breakpoint "
+            "on the line that invokes the macro, or choose a line from `peeky describe`"
+        )
 
     def _own_rows(self, blocks, place):
         """The addresses of the rows of ``place`` (source, line) in the function whose

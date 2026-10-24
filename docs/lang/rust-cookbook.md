@@ -13,6 +13,7 @@ are explained in [rust.md](rust.md#words-these-pages-use).
   - [See where a local is visible](#see-where-a-local-is-visible)
   - [Read types as the program spells them](#read-types-as-the-program-spells-them)
   - [Lines with no breakpoint](#lines-with-no-breakpoint)
+  - [Stops inside a macro's definition](#stops-inside-a-macros-definition)
   - [See where nothing can change, and the way around it](#see-where-nothing-can-change-and-the-way-around-it)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a reference or a Box](#read-through-a-reference-or-a-box)
@@ -95,6 +96,53 @@ breakpoint lines may skip it: `38-39, 43-44` for an `if` on lines 38 to 42 with 
   says so: `values are from line 43`.
 - To see whether the `continue` runs, stop on the line before it, the `if`. Then `session step`:
   the next stop shows where the program went.
+
+### Stops inside a macro's definition
+
+A `session step` can stop in a macro's code. With `macro_rules! mclone { ($v:expr) => {{
+$v.clone() }}; }` on line 6, a step onto `let y = mclone!(x) + 1;` stops before the macro's
+`clone` runs. The build inlines that call, and LLDB shows the stop on the line the call is made
+from: the macro's definition, `src/main.rs:6`. The debug information doesn't say which invocation
+of the macro it is.
+
+- So Peeky can't tell where in the function the stop is, and reads none of that frame's values.
+  The session goes on. The state says why, in a note, and in JSON as `macro_stop`:
+  ``Peeky reads no value of frame 0 (demo::single) here: the debugger shows the stop on line 6 of
+  src/main.rs, inside the definition of macro `mclone!`…``
+- Where Peeky can't read the source as rustc does, such a line may be a macro's. Then
+  `macro_stop` says so instead: ``…which has no code of its own in demo::single…``.
+- A probe that stops there withholds each selector's row with the same reason, and goes on. A
+  change due at that stop is refused.
+- `session inspect` there is refused with the same message, as `INVALID_REQUEST`. `--frame 1`
+  reads the caller.
+- `session step` goes on, past the macro's code, to the invocation's line. There the macro's code
+  has run, so a value it was given may be withheld:
+  `[not settable: code inlined before the stop may have read it]`. To change it, stop on an
+  earlier line.
+- The same holds for a macro that another macro invokes, where LLDB shows the inner macro's
+  definition. It holds for a macro defined in another file, such as `src/helpers.rs`, and for a
+  `macro` item (`decl_macro`).
+- A statement of the macro's own, such as `let s = $a + $b;`, has code on the definition's line.
+  A step stops there too, and Peeky judges it as that line.
+- The standard library's macros, such as `vec!`, `println!` and `assert!`, put their code on the
+  invocation's line. `session step --into` there stops in the standard library's sources, outside
+  the program's.
+
+A step can also stop on a line whose only code is a call the build inlined. An example is
+`bump(&mut x);`, where `bump` is your own `#[inline(always)]` function. LLDB shows the stop on that
+line, before `bump` runs. Peeky counts it as where the line starts, never part-way through it. A
+change there is still refused where the build's IR shows no code of the line's own: Peeky can't
+tell then whether a statement under way has read the value.
+
+A breakpoint on either kind of line is refused before it is placed. That is `--at`, `session
+start --at` or `session continue --to`. The debugger would put it on the inlined code, and report
+the called function's line, such as line 615 of `clone.rs`. The message says what to do instead:
+
+```
+peeky: [INVALID_BREAKPOINT] Line 6 has no code to stop at of its own: it is in the definition of macro `mclone!`. The build inlined the call of `clone` made there into the code that invokes the macro, and the debug information doesn't say which invocation a stop there is in. Put the breakpoint on the line that invokes the macro, or choose a line from `peeky describe`
+```
+
+For `bump(&mut x);`, it says to stop on an earlier line and `session step` onto it.
 
 ### See where nothing can change, and the way around it
 
@@ -1408,7 +1456,9 @@ holds for integer locals too.
   It is so too where the build's IR and debug information name different inlined calls.
 - A `session step` from the line before stops at the inlined call's first instruction, before it
   runs. There, `x` can change. A macro's code is the exception: LLDB shows that stop on the
-  macro's definition, so change the value on an earlier line instead.
+  macro's definition, where Peeky reads no value
+  ([Stops inside a macro's definition](#stops-inside-a-macros-definition)). So change the value on
+  an earlier line instead.
 - A line in another file, a macro's code, is named with its file:
   `(at alloc/src/macros.rs:113)` for `format!`.
 - The refusal says where a change works instead: before that statement starts. That is a stop

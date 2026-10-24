@@ -181,6 +181,13 @@ _RULES = (
         False,
     ),
     (
+        r"^Peeky reads no value of frame \d+ .* the debugger shows the stop on line",
+        "INVALID_REQUEST",
+        "Nothing in that frame is read or changed here: `session step` goes on to your code's "
+        "next line, and `--frame N` reads a caller.",
+        False,
+    ),
+    (
         r"adapter bundle at .* predates Peeky's java-debug fixes",
         "UNSUPPORTED",
         "Rebuild it with scripts/setup_java_adapter.py, and point the target's bundle or "
@@ -532,6 +539,16 @@ class Refused(ValueError):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code
+
+
+class UnplacedStop(ValueError):
+    """An inspection's refusal of a frame the runtime can't place among its function's
+    lines, of which nothing is read (#326: the debugger shows a Rust stop inside a macro's
+    definition). The session is kept. ``frame``: the frame, as an inspection lists it."""
+
+    def __init__(self, message, frame=None):
+        super().__init__(message)
+        self.frame = dict(frame or {})
 
 
 def classify(exc, *, session_closed=None):
