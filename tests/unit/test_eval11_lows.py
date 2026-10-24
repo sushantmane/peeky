@@ -401,7 +401,10 @@ def test_a_session_report_says_where_it_is_and_how_far_it_came(tmp_path):
 
     worker = DebugWorker(tmp_path)
     worker.dap, worker.session, worker.state, worker.stop_id = Dap(), "s", "stopped", "t"
-    worker.stop_location, worker.stop_function = "/peeky-test-src/app/Seats.java:26", "Seats.block(int)"
+    worker.stop_location, worker.stop_function = (
+        "/peeky-test-src/app/Seats.java:26",
+        "Seats.block(int)",
+    )
     worker.stop_reason, worker.stop_hit, worker.hits, worker.steps = "breakpoint", 2, 2, 3
     report = worker.report(SimpleNamespace(manifest_id=None))
     assert {key: report[key] for key in ("location", "function", "hit", "hits", "steps")} == {
