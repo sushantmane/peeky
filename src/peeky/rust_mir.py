@@ -5452,7 +5452,9 @@ class OwnedLocals:
         `let y = x.clone();`, whose inlined `clone` reads `x` before the line's first row
         of its own, where LLDB stops): ([the calls' paths, as the MIR names them], True)
         if one of those calls may read it, being given it or what may point into it
-        (``Body.lent_from``; in unsafe code, any raw pointer); ([], False) if none can;
+        (``Body.lent_from``, which the borrow rules keep sound: a pointer into a local is made
+        in its own frame; in unsafe code, any raw pointer; the standard library's `ptr::eq`
+        reads none, #300); ([], False) if none can;
         None if not understood (a call no statement of the line explains). ``columns``:
         the calls' DWARF columns on the line (bytes; 0 where not given), or None where
         the stop's address is not known: then every call the IR shows inlined on the
@@ -5496,13 +5498,14 @@ class OwnedLocals:
         for number, index in sorted(matched):
             text = body.blocks[number].statements[index][0]
             given = _call_operands(text)
-            if (
-                local in given
-                or given & lent
-                or (
-                    self.unsafe_code
-                    and any(_RAW_POINTER.search(body.types.get(n) or "*const ") for n in given)
-                )
+            if local in given:
+                names.append(_callee(text))
+            elif _ADDRESS_COMPARISON.match(_STRING.sub('""', text)) and self._std_compares():
+                # The standard library's `ptr::eq` reads no pointee (#300).
+                continue
+            elif given & lent or (
+                self.unsafe_code
+                and any(_RAW_POINTER.search(body.types.get(n) or "*const ") for n in given)
             ):
                 names.append(_callee(text))
         return names, bool(names)

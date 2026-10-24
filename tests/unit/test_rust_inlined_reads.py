@@ -246,6 +246,16 @@ def test_only_what_the_inlined_call_is_given_is_withheld():
     assert owned.inlined_reads(HASH, "x", 47, AT, (15,)) == ([], False)
     owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
     assert owned.inlined_reads(HASH, "x", 47, AT, (15,)) == (["clone"], True)
+    # The standard library's `ptr::eq` reads the two addresses, never what they point at
+    # (#300), unsafe code or not; given `z` itself, it reads it.
+    clone = "_4 = <u32 as Clone>::clone(move _5)"
+    assert MIXED.count(clone) == 1
+    for given, verdict in (("copy _5, copy _5", ([], False)), ("copy _2, copy _5", (["eq"], True))):
+        compared = MIXED.replace(clone, f"_4 = std::ptr::eq::<u32>({given})")
+        owned = owned_of(compared, "mixed")
+        assert owned._std_compares()
+        owned.unsafe_code = "the crate has unsafe code (in src/main.rs)"
+        assert owned.inlined_reads(HASH, "z", 47, AT, (15,)) == verdict
 
 
 def test_a_calls_operands_name_and_columns():

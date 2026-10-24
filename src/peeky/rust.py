@@ -2978,10 +2978,6 @@ class RustSession(NativeSession):
             )
         found = asked = None
         if hashed and proofs is not None and not self._optimized():
-            # #324: code LLVM inlined from a call on the line may run below where the line
-            # breakpoint stops (`x.clone()`), and read the local before the stop.
-            if inlined := self._inlined_read(variable, frame, hashed[1], proofs):
-                return inlined
             asked = {
                 "hashed": hashed[1],
                 "variable_name": variable.get("name"),
@@ -2997,7 +2993,9 @@ class RustSession(NativeSession):
             }
             found = proofs.copy_hazards(**asked)
         if found is not None and not any(hazards for _, hazards in found):
-            return None
+            # #324: code LLVM inlined from a call on the line may run below where the line
+            # breakpoint stops (`x.clone()`), and read the local before the stop.
+            return self._inlined_read(variable, frame, hashed[1], proofs)
         if found:
             # #183: where the copy was made, not an example of where one may be; #300: as a
             # fact only what the MIR shows at every place the stop can be.
