@@ -385,9 +385,12 @@ used again. Such a temporary is:
   2). That is a borrow of such a holder (`&a` after `let a = [x];`), a cast or aggregate of such a
   pointer, and a pointer a call returns from one or from a pointer into the local (`a.iter()`).
   A value a call computes is not one (`x.to_string()`), as #192 has it for `x.len()`.
-- `_may_write` counts a standard type with a lifetime that is no owning container and no view
-  that only reads (`_FREE_PATHS`, `_QUIET_PATHS`): `Entry<'_, …>` and `IterMut<'_, …>` hold a
-  `&mut` their types don't show.
+- A callee may write through an argument only on positive evidence (`Body._may_write_through`,
+  review round 3). Its type may show a writable pointer (`_may_write`): a `&mut` or raw pointer,
+  a cell, a type parameter, or a mutable standard view (`_MUTABLE_VIEWS`: `Entry`, the `IterMut`
+  family, `RefMut`, `Drain`, `ChunksMut`). Or something it was made from shows one
+  (`_made_from`: a closure or a crate's struct capturing `&mut v`). A view that only reads, as
+  `ChunksExact` or `btree_map::Iter`, writes nothing.
 - `_pointers_to` follows what is made from a borrow through any value that may hold a pointer:
   `Option<&mut u32>` of `v.last_mut()`, then `r` of its `unwrap()`. So `copy_undoes` sees a
   later `*r` as a use of `v`.

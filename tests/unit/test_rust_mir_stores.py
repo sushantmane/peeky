@@ -2781,3 +2781,368 @@ def test_a_standard_type_with_a_lifetime_may_be_written_through():
         assert owner in body.direct_copies_at(2, stop), name
         reason, _ = why(text, ROUND4, name, line, statement)
         assert "may hold a copy of it that it goes on with" in reason, reason
+
+
+# #311 review round 3: a standard view with a lifetime was taken to write through a
+# `&mut` it may hold, whatever it was; `a.chunks_exact(1)` only reads. rustc 1.96.0's MIR
+# of this crate's functions:
+ROUND6 = """use std::collections::BTreeMap;
+use std::env;
+use std::path::Path;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+#[inline(never)]
+fn observe<I: Iterator>(it: I, x: u32) {
+    std::hint::black_box((it.count(), x));
+}
+
+fn chunked(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [7u32, 8];
+    observe(a.chunks_exact(1), x);
+    let k = other(); // CHUNKED
+    let t = a[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn rchunked(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [7u32, 8];
+    observe(a.rchunks(1), x);
+    let k = other(); // RCHUNKED
+    let t = a[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn split(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let s = String::from("a b");
+    observe(s.split_ascii_whitespace(), x);
+    let k = other(); // SPLIT
+    let t = s.len() as u32 + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn mapped(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut m: BTreeMap<u32, u32> = BTreeMap::new();
+    m.insert(1, 7);
+    observe(m.iter(), x);
+    let k = other(); // BTREE
+    let t = m[&1] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn pathed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let p = Path::new("/a/b").to_path_buf();
+    observe(p.components(), x);
+    let k = other(); // PATHED
+    let t = p.as_os_str().len() as u32 + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("CHUNKED {}", chunked(x));
+    println!("RCHUNKED {}", rchunked(x));
+    println!("SPLIT {}", split(x));
+    println!("BTREE {}", mapped(x));
+    println!("PATHED {}", pathed(x));
+}
+"""
+CHUNKED = """// MIR for `chunked` after PreCodegen
+
+fn chunked(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:15:12: 15:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:15:25: 15:28
+    let _2: u32;                         // in scope 0 at src/main.rs:16:9: 16:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:16:36: 16:39
+    let _5: ();                          // in scope 0 at src/main.rs:18:5: 18:34
+    let mut _6: std::slice::ChunksExact<'_, u32>; // in scope 0 at src/main.rs:18:13: 18:30
+    let mut _7: &[u32];                  // in scope 0 at src/main.rs:18:13: 18:14
+    let mut _8: &[u32; 2];               // in scope 0 at src/main.rs:18:13: 18:14
+    let mut _9: u32;                     // in scope 0 at src/main.rs:18:32: 18:33
+    let mut _12: u32;                    // in scope 0 at src/main.rs:20:13: 20:17
+    let _13: usize;                      // in scope 0 at src/main.rs:20:15: 20:16
+    let mut _14: bool;                   // in scope 0 at src/main.rs:20:13: 20:17
+    let mut _15: u32;                    // in scope 0 at src/main.rs:20:20: 20:21
+    let mut _16: (u32, bool);            // in scope 0 at src/main.rs:20:13: 20:21
+    let _17: &u32;                       // in scope 0 at src/main.rs:21:5: 21:29
+    let mut _18: &u32;                   // in scope 0 at src/main.rs:21:26: 21:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:16:9: 16:10
+        let _4: [u32; 2];                // in scope 1 at src/main.rs:17:9: 17:10
+        scope 2 {
+            debug a => _4;               // in scope 2 at src/main.rs:17:9: 17:10
+            let _10: u32;                // in scope 2 at src/main.rs:19:9: 19:10
+            scope 3 {
+                debug k => _10;          // in scope 3 at src/main.rs:19:9: 19:10
+                let _11: u32;            // in scope 3 at src/main.rs:20:9: 20:10
+                scope 4 {
+                    debug t => _11;      // in scope 4 at src/main.rs:20:9: 20:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:16:9: 16:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:16:36: 16:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:16:36: 16:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:16:13: 16:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:16:39: 16:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:17:9: 17:10
+        _4 = [const 7_u32, const 8_u32]; // scope 1 at src/main.rs:17:13: 17:22
+        StorageLive(_5);                 // scope 2 at src/main.rs:18:5: 18:34
+        StorageLive(_6);                 // scope 2 at src/main.rs:18:13: 18:30
+        StorageLive(_7);                 // scope 2 at src/main.rs:18:13: 18:14
+        StorageLive(_8);                 // scope 2 at src/main.rs:18:13: 18:14
+        _8 = &_4;                        // scope 2 at src/main.rs:18:13: 18:14
+        _7 = move _8 as &[u32] (PointerCoercion(Unsize, Implicit)); // scope 2 at src/main.rs:18:13: 18:14
+        StorageDead(_8);                 // scope 2 at src/main.rs:18:13: 18:14
+        _6 = core::slice::<impl [u32]>::chunks_exact(move _7, const 1_usize) -> [return: bb2, unwind continue]; // scope 2 at src/main.rs:18:13: 18:30
+    }
+
+    bb2: {
+        StorageDead(_7);                 // scope 2 at src/main.rs:18:29: 18:30
+        StorageLive(_9);                 // scope 2 at src/main.rs:18:32: 18:33
+        _9 = copy _2;                    // scope 2 at src/main.rs:18:32: 18:33
+        _5 = observe::<ChunksExact<'_, u32>>(move _6, move _9) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:18:5: 18:34
+    }
+
+    bb3: {
+        StorageDead(_9);                 // scope 2 at src/main.rs:18:33: 18:34
+        StorageDead(_6);                 // scope 2 at src/main.rs:18:33: 18:34
+        StorageDead(_5);                 // scope 2 at src/main.rs:18:34: 18:35
+        StorageLive(_10);                // scope 2 at src/main.rs:19:9: 19:10
+        _10 = other() -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:19:13: 19:20
+    }
+
+    bb4: {
+        StorageLive(_11);                // scope 3 at src/main.rs:20:9: 20:10
+        StorageLive(_12);                // scope 3 at src/main.rs:20:13: 20:17
+        StorageLive(_13);                // scope 3 at src/main.rs:20:15: 20:16
+        _13 = const 0_usize;             // scope 3 at src/main.rs:20:15: 20:16
+        _14 = Lt(copy _13, const 2_usize); // scope 3 at src/main.rs:20:13: 20:17
+        assert(move _14, "index out of bounds: the length is {} but the index is {}", const 2_usize, copy _13) -> [success: bb5, unwind continue]; // scope 3 at src/main.rs:20:13: 20:17
+    }
+
+    bb5: {
+        _12 = copy _4[_13];              // scope 3 at src/main.rs:20:13: 20:17
+        StorageLive(_15);                // scope 3 at src/main.rs:20:20: 20:21
+        _15 = copy _10;                  // scope 3 at src/main.rs:20:20: 20:21
+        _16 = AddWithOverflow(copy _12, copy _15); // scope 3 at src/main.rs:20:13: 20:21
+        assert(!move (_16.1: bool), "attempt to compute `{} + {}`, which would overflow", move _12, move _15) -> [success: bb6, unwind continue]; // scope 3 at src/main.rs:20:13: 20:21
+    }
+
+    bb6: {
+        _11 = move (_16.0: u32);         // scope 3 at src/main.rs:20:13: 20:21
+        StorageDead(_15);                // scope 3 at src/main.rs:20:20: 20:21
+        StorageDead(_12);                // scope 3 at src/main.rs:20:20: 20:21
+        StorageDead(_13);                // scope 3 at src/main.rs:20:21: 20:22
+        StorageLive(_17);                // scope 4 at src/main.rs:21:5: 21:29
+        StorageLive(_18);                // scope 4 at src/main.rs:21:26: 21:28
+        _18 = &_2;                       // scope 4 at src/main.rs:21:26: 21:28
+        _17 = std::hint::black_box::<&u32>(move _18) -> [return: bb7, unwind continue]; // scope 4 at src/main.rs:21:5: 21:29
+    }
+
+    bb7: {
+        StorageDead(_18);                // scope 4 at src/main.rs:21:28: 21:29
+        StorageDead(_17);                // scope 4 at src/main.rs:21:29: 21:30
+        _0 = copy _11;                   // scope 4 at src/main.rs:22:5: 22:6
+        StorageDead(_11);                // scope 3 at src/main.rs:23:1: 23:2
+        StorageDead(_10);                // scope 2 at src/main.rs:23:1: 23:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:23:1: 23:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:23:1: 23:2
+        return;                          // scope 0 at src/main.rs:23:2: 23:2
+    }
+}
+"""
+BTREE = """// MIR for `mapped` after PreCodegen
+
+fn mapped(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:45:11: 45:14
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:45:24: 45:27
+    let _2: u32;                         // in scope 0 at src/main.rs:46:9: 46:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:46:36: 46:39
+    let _5: std::option::Option<u32>;    // in scope 0 at src/main.rs:48:5: 48:19
+    let mut _6: &mut std::collections::BTreeMap<u32, u32>; // in scope 0 at src/main.rs:48:5: 48:6
+    let _7: ();                          // in scope 0 at src/main.rs:49:5: 49:25
+    let mut _8: std::collections::btree_map::Iter<'_, u32, u32>; // in scope 0 at src/main.rs:49:13: 49:21
+    let mut _9: &std::collections::BTreeMap<u32, u32>; // in scope 0 at src/main.rs:49:13: 49:14
+    let mut _10: u32;                    // in scope 0 at src/main.rs:49:23: 49:24
+    let mut _13: u32;                    // in scope 0 at src/main.rs:51:13: 51:18
+    let mut _14: &u32;                   // in scope 0 at src/main.rs:51:14: 51:18
+    let mut _15: &std::collections::BTreeMap<u32, u32>; // in scope 0 at src/main.rs:51:13: 51:14
+    let mut _16: &u32;                   // in scope 0 at src/main.rs:51:15: 51:17
+    let _17: &u32;                       // in scope 0 at src/main.rs:51:15: 51:17
+    let _18: u32;                        // in scope 0 at src/main.rs:51:16: 51:17
+    let mut _19: u32;                    // in scope 0 at src/main.rs:51:21: 51:22
+    let mut _20: (u32, bool);            // in scope 0 at src/main.rs:51:13: 51:22
+    let _21: &u32;                       // in scope 0 at src/main.rs:52:5: 52:29
+    let mut _22: &u32;                   // in scope 0 at src/main.rs:52:26: 52:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:46:9: 46:10
+        let mut _4: std::collections::BTreeMap<u32, u32>; // in scope 1 at src/main.rs:47:9: 47:14
+        scope 2 {
+            debug m => _4;               // in scope 2 at src/main.rs:47:9: 47:14
+            let _11: u32;                // in scope 2 at src/main.rs:50:9: 50:10
+            scope 3 {
+                debug k => _11;          // in scope 3 at src/main.rs:50:9: 50:10
+                let _12: u32;            // in scope 3 at src/main.rs:51:9: 51:10
+                let mut _23: &u32;       // in scope 3 at src/main.rs:51:15: 51:17
+                scope 4 {
+                    debug t => _12;      // in scope 4 at src/main.rs:51:9: 51:10
+                }
+            }
+        }
+    }
+
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:46:9: 46:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:46:36: 46:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:46:36: 46:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:46:13: 46:40
+    }
+
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:46:39: 46:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:47:9: 47:14
+        _4 = BTreeMap::<u32, u32>::new() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:47:37: 47:52
+    }
+
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:48:5: 48:19
+        StorageLive(_6);                 // scope 2 at src/main.rs:48:5: 48:6
+        _6 = &mut _4;                    // scope 2 at src/main.rs:48:5: 48:6
+        _5 = BTreeMap::<u32, u32>::insert(move _6, const 1_u32, const 7_u32) -> [return: bb3, unwind: bb11]; // scope 2 at src/main.rs:48:5: 48:19
+    }
+
+    bb3: {
+        StorageDead(_6);                 // scope 2 at src/main.rs:48:18: 48:19
+        StorageDead(_5);                 // scope 2 at src/main.rs:48:19: 48:20
+        StorageLive(_7);                 // scope 2 at src/main.rs:49:5: 49:25
+        StorageLive(_8);                 // scope 2 at src/main.rs:49:13: 49:21
+        StorageLive(_9);                 // scope 2 at src/main.rs:49:13: 49:14
+        _9 = &_4;                        // scope 2 at src/main.rs:49:13: 49:14
+        _8 = BTreeMap::<u32, u32>::iter(move _9) -> [return: bb4, unwind: bb11]; // scope 2 at src/main.rs:49:13: 49:21
+    }
+
+    bb4: {
+        StorageDead(_9);                 // scope 2 at src/main.rs:49:20: 49:21
+        StorageLive(_10);                // scope 2 at src/main.rs:49:23: 49:24
+        _10 = copy _2;                   // scope 2 at src/main.rs:49:23: 49:24
+        _7 = observe::<std::collections::btree_map::Iter<'_, u32, u32>>(move _8, move _10) -> [return: bb5, unwind: bb11]; // scope 2 at src/main.rs:49:5: 49:25
+    }
+
+    bb5: {
+        StorageDead(_10);                // scope 2 at src/main.rs:49:24: 49:25
+        StorageDead(_8);                 // scope 2 at src/main.rs:49:24: 49:25
+        StorageDead(_7);                 // scope 2 at src/main.rs:49:25: 49:26
+        StorageLive(_11);                // scope 2 at src/main.rs:50:9: 50:10
+        _11 = other() -> [return: bb6, unwind: bb11]; // scope 2 at src/main.rs:50:13: 50:20
+    }
+
+    bb6: {
+        StorageLive(_12);                // scope 3 at src/main.rs:51:9: 51:10
+        StorageLive(_13);                // scope 3 at src/main.rs:51:13: 51:18
+        StorageLive(_14);                // scope 3 at src/main.rs:51:14: 51:18
+        StorageLive(_15);                // scope 3 at src/main.rs:51:13: 51:14
+        _15 = &_4;                       // scope 3 at src/main.rs:51:13: 51:14
+        StorageLive(_16);                // scope 3 at src/main.rs:51:15: 51:17
+        StorageLive(_17);                // scope 3 at src/main.rs:51:15: 51:17
+        _23 = const mapped::promoted[0]; // scope 3 at src/main.rs:51:15: 51:17
+        _17 = &(*_23);                   // scope 3 at src/main.rs:51:15: 51:17
+        _16 = &(*_17);                   // scope 3 at src/main.rs:51:15: 51:17
+        _14 = <BTreeMap<u32, u32> as Index<&u32>>::index(move _15, move _16) -> [return: bb7, unwind: bb11]; // scope 3 at src/main.rs:51:14: 51:18
+    }
+
+    bb7: {
+        _13 = copy (*_14);               // scope 3 at src/main.rs:51:13: 51:18
+        StorageDead(_16);                // scope 3 at src/main.rs:51:17: 51:18
+        StorageDead(_15);                // scope 3 at src/main.rs:51:17: 51:18
+        StorageLive(_19);                // scope 3 at src/main.rs:51:21: 51:22
+        _19 = copy _11;                  // scope 3 at src/main.rs:51:21: 51:22
+        _20 = AddWithOverflow(copy _13, copy _19); // scope 3 at src/main.rs:51:13: 51:22
+        assert(!move (_20.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _19) -> [success: bb8, unwind: bb11]; // scope 3 at src/main.rs:51:13: 51:22
+    }
+
+    bb8: {
+        _12 = move (_20.0: u32);         // scope 3 at src/main.rs:51:13: 51:22
+        StorageDead(_19);                // scope 3 at src/main.rs:51:21: 51:22
+        StorageDead(_13);                // scope 3 at src/main.rs:51:21: 51:22
+        StorageDead(_17);                // scope 3 at src/main.rs:51:22: 51:23
+        StorageDead(_14);                // scope 3 at src/main.rs:51:22: 51:23
+        StorageLive(_21);                // scope 4 at src/main.rs:52:5: 52:29
+        StorageLive(_22);                // scope 4 at src/main.rs:52:26: 52:28
+        _22 = &_2;                       // scope 4 at src/main.rs:52:26: 52:28
+        _21 = std::hint::black_box::<&u32>(move _22) -> [return: bb9, unwind: bb11]; // scope 4 at src/main.rs:52:5: 52:29
+    }
+
+    bb9: {
+        StorageDead(_22);                // scope 4 at src/main.rs:52:28: 52:29
+        StorageDead(_21);                // scope 4 at src/main.rs:52:29: 52:30
+        _0 = copy _12;                   // scope 4 at src/main.rs:53:5: 53:6
+        StorageDead(_12);                // scope 3 at src/main.rs:54:1: 54:2
+        StorageDead(_11);                // scope 2 at src/main.rs:54:1: 54:2
+        drop(_4) -> [return: bb10, unwind: bb12]; // scope 1 at src/main.rs:54:1: 54:2
+    }
+
+    bb10: {
+        StorageDead(_4);                 // scope 1 at src/main.rs:54:1: 54:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:54:1: 54:2
+        return;                          // scope 0 at src/main.rs:54:2: 54:2
+    }
+
+    bb11 (cleanup): {
+        drop(_4) -> [return: bb12, unwind terminate(cleanup)]; // scope 1 at src/main.rs:54:1: 54:2
+    }
+
+    bb12 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:45:1: 54:2
+    }
+}
+"""
+
+
+def test_a_view_that_only_reads_writes_no_copy_where_it_points():
+    # `observe(a.chunks_exact(1), x)` and `observe(m.iter(), x)`: neither view writes, so
+    # neither `a` nor `m` holds a copy of `x`. The refusal said "the program's own `a` …
+    # may hold a copy of `x` that it goes on with": no safe program can do that.
+    from peeky.rust_mir import _may_write
+
+    for kind in (
+        "std::slice::ChunksExact<'_, u32>",
+        "std::slice::RChunks<'_, u32>",
+        "std::collections::btree_map::Iter<'_, u32, u32>",
+        "std::str::SplitAsciiWhitespace<'_>",
+        "std::path::Components<'_>",
+    ):
+        assert _may_write(kind, ()) is False, kind
+    for text, name, line, view, owner, statement in (
+        (CHUNKED, "chunked", 19, 6, 4, "_10 = other()"),
+        (BTREE, "mapped", 50, 8, 4, "_11 = other()"),
+    ):
+        body = body_of(text)
+        stop = place(body, statement)
+        assert not body._may_write_through(view), name
+        assert owner not in body.direct_copies_at(2, stop), name
+        assert why(text, ROUND6, name, line, statement) == (None, None), name
+    # A view made from a `&mut` (an `IterMut`, an `Entry`, a closure capturing `&mut v`)
+    # still may: what it was made from shows it.
+    lent = CHUNKED.replace("let mut _8: &[u32; 2];", "let mut _8: &mut [u32; 2];")
+    body = body_of(lent.replace("_8 = &_4;", "_8 = &mut _4;"))
+    assert body._may_write_through(6)

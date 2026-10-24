@@ -3763,7 +3763,6 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
         _STORE_BASE,
         _STRING,
         _WHOLE_ASSIGNMENT,
-        _may_write,
     )
 
     def passes(body, local):
@@ -3800,7 +3799,7 @@ def test_a_locals_copies_are_what_passes_over_every_assignment_find():
                     given = {int(n) for n in _MENTIONED.findall(arguments[1])}
                     for base in given:
                         others = {n for n in given - {base} if body.types.get(n) != "()"}
-                        if others and _may_write(body.types.get(base), body.generics):
+                        if others and body._may_write_through(base):
                             written({base}, part[2], others)
         holds, points, changed = set(), set(), True
         while changed:

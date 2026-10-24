@@ -1506,7 +1506,8 @@ A call may store a copy too, through a `&mut` or raw pointer it is given, of ano
 - `v.extend_from_slice(&a)` after `let a = [x];`, or `v.extend(a.iter())`: what it is given
   points at a copy;
 - `m.entry(k).or_insert(x)` and `v.iter_mut().for_each(|r| *r = x)`: an `Entry` or `IterMut`
-  holds a `&mut` its type doesn't show.
+  holds a `&mut` its type doesn't show. A view that only reads, as `a.chunks_exact(1)` or
+  `m.iter()`, writes nothing, so it leaves `a` and `m` out.
 
 A read through a pointer made from the binding is a use of it. So after
 `let r = v.last_mut().unwrap();` and `*r = x;`, a later `*r` uses `v`'s copy.

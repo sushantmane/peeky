@@ -268,6 +268,48 @@ fn main() {
 }
 """
 
+# Review round 3: views that only read write no copy where they point.
+VIEWS = """use std::collections::BTreeMap;
+use std::env;
+
+#[inline(never)]
+fn other() -> u32 {
+    1
+}
+
+#[inline(never)]
+fn observe<I: Iterator>(it: I, x: u32) {
+    std::hint::black_box((it.count(), x));
+}
+
+fn chunked(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let a = [7u32, 8];
+    observe(a.chunks_exact(1), x);
+    let k = other(); // CHUNKED
+    let t = a[0] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn mapped(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let mut m: BTreeMap<u32, u32> = BTreeMap::new();
+    m.insert(1, 7);
+    observe(m.iter(), x);
+    let k = other(); // BTREE
+    let t = m[&1] + k;
+    std::hint::black_box(&x);
+    t
+}
+
+fn main() {
+    let x: u32 = env::args().nth(1).unwrap().parse().unwrap();
+    println!("CHUNKED {}", chunked(x));
+    println!("BTREE {}", mapped(x));
+}
+"""
+
 
 def line_of(text, marker):
     return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
@@ -428,3 +470,16 @@ def test_a_copy_that_reaches_a_binding_by_a_call_or_a_pointer_withholds_the_loca
     code, result = probe(capsys, root, line_of(SHAPES, "// ARRAY"), "--set", "x=100", "--", "5")
     assert code == 0, result.get("error")
     assert "SLICED 101" in result["output"], result["output"]
+
+
+@pytest.mark.timeout(400)
+def test_a_view_that_only_reads_leaves_the_local_settable(crate, capsys):
+    # `observe(a.chunks_exact(1), x)`, `observe(m.iter(), x)`: `a` and `m` hold no copy
+    # of `x`, which nothing reads again: the change is made, and the program runs on.
+    root = crate("views", VIEWS)
+    for marker, printed in (("CHUNKED", "CHUNKED 8"), ("BTREE", "BTREE 8")):
+        line = line_of(VIEWS, f"// {marker}")
+        code, result = probe(capsys, root, line, "--capture", "x", "--set", "x=100", "--", "5")
+        assert code == 0, (marker, result.get("error"))
+        assert result["interventions"][0]["after"] == "100", (marker, result["interventions"])
+        assert printed in result["output"], (marker, result["output"])

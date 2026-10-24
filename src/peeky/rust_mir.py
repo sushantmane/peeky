@@ -228,29 +228,36 @@ def _pointer_free(kind, generics, free_types=frozenset()):
     )
 
 
+# The standard library's views and guards that write through a `&mut` their types don't
+# show (#311 review rounds 2 and 3), by the last segment of their path: an `Entry`, the
+# `IterMut` family, `RefMut`, `Drain`, `ChunksMut` and the like. A view not listed only
+# reads (`ChunksExact`, `btree_map::Iter`, `path::Components`), unless what it was made
+# from shows a writable pointer (``Body._may_write_through``).
+_MUTABLE_VIEWS = frozenset(
+    "Entry OccupiedEntry VacantEntry RawEntryMut IterMut ValuesMut RefMut Drain DrainSorted "
+    "ExtractIf Splice PeekMut CursorMut ChunksMut ChunksExactMut RChunksMut RChunksExactMut "
+    "SplitMut SplitNMut RSplitMut RSplitNMut SplitInclusiveMut ChunkByMut ArrayChunksMut "
+    "MutexGuard MappedMutexGuard RwLockWriteGuard MappedRwLockWriteGuard".split()
+)
+
+
 def _may_write(kind, generics):
-    """Whether a callee given a value of the MIR type ``kind`` may write through a pointer
-    it holds (#311 review): a `&mut` or raw pointer, `NonNull`, a cell or lock, wherever
-    it is in the type (``_WRITABLE_TYPE``: `(&mut Vec<u32>, u32)` too); a type of the
-    crate's own, a type parameter, a closure, a trait object or a type not known, which may
-    hold one; and a standard type with a lifetime that is neither an owning container nor
-    a view that only reads (``_FREE_PATHS``, ``_QUIET_PATHS``), since its `&mut` does not
-    show (round 2: `hash_map::Entry<'_, u32, u32>`, `slice::IterMut<'_, u32>`). Not the
-    standard library's other types, by value or by shared reference (`&Vec<u32>`, `&str`,
-    `std::fmt::Arguments<'_>`)."""
+    """Whether a value of the MIR type ``kind`` shows that a callee given it may write
+    through a pointer it holds (#311 review): a `&mut` or raw pointer, `NonNull`, a cell
+    or lock, wherever it is in the type (``_WRITABLE_TYPE``: `(&mut Vec<u32>, u32)`
+    too); one of the standard library's mutable views (``_MUTABLE_VIEWS``: `hash_map::
+    Entry<'_, u32, u32>`, `slice::IterMut<'_, u32>`); a type parameter, or a type not
+    known. Not any other type (round 3: `slice::ChunksExact<'_, u32>` only reads); a crate's
+    type, a closure or another view writes only where what it was made from shows it
+    (``Body._may_write_through``)."""
     if kind is None or _WRITABLE_TYPE.search(kind):
         return True
-    if generics is None or mentions(kind, generics) or re.search(r"[{}]|\b(?:dyn|impl)\b", kind):
+    if generics is None or mentions(kind, generics):
         return True
-    borrowing = "'" in kind
-    for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind)):
-        if word in _PRIMITIVE_WORDS:
-            continue
-        if not word.startswith(_STD_PATHS):
-            return True
-        if borrowing and word not in _FREE_PATHS and word not in _QUIET_PATHS:
-            return True
-    return False
+    return any(
+        word.startswith(_STD_PATHS) and word.rsplit("::", 1)[-1] in _MUTABLE_VIEWS
+        for word in _TYPE_WORDS.findall(_LIFETIME.sub("", kind))
+    )
 
 
 def _quiet_drop(kind, generics):
@@ -1357,7 +1364,7 @@ class Body:
         (``_stored_into``), which it leaves holding what it held too (#311): a store
         (`(*_35) = [move _15, const 1_u32]`, as `vec![x, 1]` fills its Box), a
         `copy_nonoverlapping`, and a call given a pointer it may write through
-        (``_may_write``), of what else the call is given (#311 review: `Vec::push(move _6,
+        (``_may_write_through``), of what else the call is given (#311 review: `Vec::push(move _6,
         move _7)` with `_6 = &mut v`, `ptr::write(p, x)`, `mem::replace`, `mem::swap`); not
         of that pointer itself (`Box::new` given a closure holding `&s` copies no `s`). Where no local the
         pointers were made from stands for what they point at (an argument, the Box
@@ -1441,7 +1448,7 @@ class Body:
                         given = (
                             {int(n) for n in _MENTIONED.findall(arguments[1])} if arguments else ()
                         )
-                        bases = {n for n in given if _may_write(self.types.get(n), self.generics)}
+                        bases = {n for n in given if self._may_write_through(n)}
                         # Through each, what else it is given; `()` carries nothing.
                         writes = tuple(
                             through({base}, value, text, True, frozenset(others))
@@ -1482,6 +1489,22 @@ class Body:
                 if parts[part][0] in reported
             ),
         ]
+
+    def _may_write_through(self, local):
+        """Whether a callee given ``local`` may write through a pointer it holds (#311
+        review round 3): its type shows one (``_may_write``), or it may hold a pointer and
+        something it was made from shows one (``_made_from``: the `&mut v` an `Entry` or a
+        closure was made from). Positive evidence only: `a.chunks_exact(1)`, made from a
+        shared `&[u32]`, writes nothing."""
+        kind = self.types.get(local)
+        if _may_write(kind, self.generics):
+            return True
+        if _pointer_free(kind, self.generics):
+            return False
+        return any(
+            _may_write(self.types.get(made), self.generics)
+            for made in self._made_from(local) - {local}
+        )
 
     def _made_from(self, pointer):
         """The locals ``pointer`` may have been made from, back through every assignment
@@ -1937,9 +1960,8 @@ class Body:
         `copy_nonoverlapping`, may change, where something holds a read (#311): what it is
         given, moved or passed (#311 review: what a callee does with it is not known), and
         a local it is given a pointer that may point into, as `fill(p)` may overwrite the
-        Box `p` was made from: an alias of it of a type a callee may write through
-        (``_may_write``: a `&mut` or raw pointer, an aggregate or a crate's type that may
-        hold one, a type not known)."""
+        Box `p` was made from: an alias of it a callee may write through (``_may_write_through``: a
+        `&mut` or raw pointer, a mutable view, or a value made from one)."""
         read, taken, own, origins, apart, into = state
         if not (read or taken):
             return state
@@ -1950,7 +1972,7 @@ class Body:
         else:
             arguments = _CALL_ARGUMENTS.match(text)
             given = {int(n) for n in _MENTIONED.findall(arguments[1] if arguments else text)}
-            writable = {n for n in given if _may_write(self.types.get(n), self.generics)}
+            writable = {n for n in given if self._may_write_through(n)}
         held = read | taken
         lost = held & given
         lost |= {
