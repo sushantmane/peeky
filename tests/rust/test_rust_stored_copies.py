@@ -7,6 +7,7 @@ a copy a raw pointer stores in the program's own array, which a later line reads
 
 import json
 import os
+import sys
 
 import pytest
 
@@ -90,6 +91,8 @@ FIRST, SECOND, TEXTS, CLONED = (
     line_of(VECS, f"// {marker}") for marker in ("FIRST", "SECOND", "TEXTS", "CLONED")
 )
 SLOT, STORE, AFTER = (line_of(STORED, f"// {marker}") for marker in ("SLOT", "STORE", "AFTER"))
+# lldb-dap 21 writes memory (macOS here); 18 and 20 cannot, and a String's text is on the heap.
+WRITES = sys.platform == "darwin"
 
 
 @pytest.fixture
@@ -157,6 +160,11 @@ def test_a_string_cloned_into_vec_is_refused_on_the_statements_later_line(crate,
     ) in message, message
     # At the statement's first line, `texts` counts the new text: 2 + 3 + 1.
     code, result = probe(capsys, root, TEXTS, "--set", 's="zz"', *run)
+    if not WRITES:
+        error = result.get("error") or {}
+        assert code != 0 and error.get("code") == "MUTATION_REJECTED", result
+        assert "a String's text is on the heap" in error["message"], error
+        return
     assert code == 0, result.get("error")
     assert result["output"].strip().endswith("N 6 zz"), result["output"]
 
