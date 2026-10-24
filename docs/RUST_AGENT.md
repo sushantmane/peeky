@@ -473,6 +473,33 @@ information shows. Standard types can view a local as another type: `Cell::from_
 - `OwnedLocals.copied_everywhere` finds lines where every place a line can stop at is inside such a
   statement. Places that emit no code, such as `StorageDead`, are left aside.
 
+### Code inlined before the stop
+
+LLVM inlines `#[inline(always)]` calls even at opt-level 0, such as an integer's `clone`. Their
+rows carry the callee's lines, so their code may run below the line's first row of its own, where
+the breakpoint stops (#324).
+
+- `RustSession._inlined_below` finds them. They are the DWARF's inlined calls made from the stop's
+  line (`CodeBlock.call`: the call's file, line, column and callee's name), with code below the
+  stop's pc.
+- It also reads the code just before the pc (`_window`): back to the last row of another line
+  that is a statement's, outside inlined code and macro definitions (`macro_lines`). An inlined
+  call there that isn't a statement's is a doubt (`_unplaced`). Its site may be a macro's
+  definition, another file, or not given. A doubt withholds every local (#324 review).
+- `OwnedLocals.inlined_reads` matches each column, and name, to the line's MIR calls whose span
+  holds it (`_covers`, `_callee`). In safe code, a local given to one, or what may point into it
+  (`Body.lent_from`), is withheld. The borrow rules make a pointer into a local in its own frame,
+  which `lent_from` follows.
+- In unsafe code, a call may read a local through a pointer it isn't given, as a `static mut`
+  holds. So every inlined call but the standard library's `ptr::eq` withholds every local.
+- Where the DWARF's inlined calls made from the line aren't the IR's (`IrFunction.inlined`), or a
+  column holds no call, every local is withheld. Where the pc or the DWARF blocks are not known,
+  every call the IR shows inlined on the line counts, and a line that may invoke a macro is not
+  understood.
+- A step that ends at the line's lowest address, the inlined code included, stops before that
+  code (`_line_start`). LLDB stops there after a step from the line before, except before a
+  macro's code, which it shows on the macro's definition.
+
 ### The order the code runs
 
 `Body.copies_at` reads the MIR in the order the code runs.

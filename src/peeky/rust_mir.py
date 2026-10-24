@@ -3852,6 +3852,56 @@ def _target(block):
     return int(found[1]) if found and _DROP.match(block.terminator) else None
 
 
+def _covers(block, index, column, line, file, facts):
+    """True if code LLVM inlined from a call at DWARF ``column`` (bytes; 0 where not
+    given) of ``line`` may be call statement ``index``'s of ``block`` (#324): its span
+    holds the column, or it spans another file or none, where a macro's path on the line
+    (``facts.macros``, rustc collapsing the macro's code there) is at the column or the
+    line's text is not known."""
+    if column == 0:
+        return True
+    _, spanned, spanned_line = block.statements[index]
+    if spanned != file:
+        return spanned is None or column in facts.macros or not facts.known
+    span = _span(block, index)
+    if span is None:
+        return True
+    start = facts.to_bytes(span[0]) if spanned_line == line else 1
+    return start <= column and (span[1] > line or column <= facts.to_bytes(span[2]))
+
+
+def _call_operands(text):
+    """The locals a call statement's operands mention (`_11` of `_10 = <u32 as
+    Clone>::clone(move _11) -> [return: bb9, unwind continue];`), not its destination."""
+    plain = _STRING.sub('""', text)
+    head = plain.rpartition(" -> ")[0] or plain
+    _, assigned, value = head.partition(" = ")
+    return frozenset(int(n) for n in _MENTIONED.findall(value if assigned else head))
+
+
+def _callee(text):
+    """A call statement's function as the program calls it: the last segment of its
+    path, without generic arguments (`clone` of `<u32 as Clone>::clone(move _11)`,
+    `parse` of `core::str::<impl str>::parse::<u32>(…)`); "" where not told."""
+    head = _STRING.sub('""', text).rpartition(" -> ")[0]
+    value = head.partition(" = ")[2] or head
+    depth = 0
+    for at in range(len(value) - 1, -1, -1):
+        if value[at] == ")":
+            depth += 1
+        elif value[at] == "(":
+            depth -= 1
+            if depth == 0:
+                value = value[:at]
+                break
+    else:
+        return ""
+    if value.endswith(">") and "::<" in value:
+        value = value.rpartition("::<")[0]
+    name = value.rpartition("::")[2]
+    return name if re.fullmatch(r"(?:r#)?\w+", name) else ""
+
+
 def _scope(block, index):
     try:
         return block.scopes[index]
@@ -5394,6 +5444,112 @@ class OwnedLocals:
             for position in positions
         )
 
+    def inlined_reads(
+        self,
+        hashed,
+        variable_name,
+        line,
+        path,
+        inlined,
+        block=None,
+        free_types=frozenset(),
+        everywhere=None,
+    ):
+        """For the frame's local ``variable_name``, at a stop where its line starts but
+        code LLVM inlined from calls on ``line`` runs below the stop's address (#324:
+        `let y = x.clone();`, whose inlined `clone` reads `x` before the line's first row
+        of its own, where LLDB stops): ([the names of the functions called], why) where one
+        of those calls may read it, else ([], None); None if not understood.
+
+        ``why`` is "given" where a call is given the local or what may point into it
+        (``Body.lent_from``, which the borrow rules keep sound in safe code: a pointer into
+        a local is made in its own frame; in unsafe code any raw pointer too). It is
+        "unsafe" where the crate has unsafe code and a call is not the standard library's
+        `ptr::eq`, which reads no pointee (#300): such code may read the local through a
+        pointer it isn't given (a `static mut`), so every local is withheld (#324 review).
+
+        ``inlined``: (DWARF column on the line in bytes, 0 where not given; the function's
+        name, "" where not read) of each call below the stop, or None where the stop's
+        address is not known: then every call the IR shows inlined on the line counts,
+        and a line that may invoke a macro is not understood (its macro's calls may be
+        inlined from the macro's own lines). A call is the line's call statement whose span
+        holds its column (``_covers``), of its name where one is (an enclosing call,
+        `total` of `total(vec![x, 1])`, is not `vec!`'s inlined `new_uninit`); a column no
+        call holds is not understood.
+
+        ``everywhere``: the DWARF columns of every call made from the line that LLVM
+        inlined into the function, where known. Where those are not the IR's own
+        (``IrFunction.inlined``), the two disagree, and nothing is understood (#324
+        review). ``block`` and ``free_types`` as for ``borrow_live``."""
+        function = self.functions.get(hashed)
+        if function is None:
+            return None
+        ir = frozenset(function.inlined.get(line, ()))
+        if everywhere is not None and frozenset(everywhere) != ir:
+            return None
+        if inlined is None:
+            if may_invoke_macro(self.texts.get(function.file), line):
+                return None
+            inlined = tuple((column, "") for column in sorted(ir))
+        if not inlined:
+            return [], None
+        site = self._site(hashed, line, path)
+        if site is None:
+            return None
+        body = site[0]
+        if not body.supported:
+            return None
+        local = self._local(body, variable_name, line, path, block, site)
+        if local is None:
+            return None
+        facts = self._facts(function, line, None)
+        foreign = may_invoke_macro(self.texts.get(function.file), line)
+        calls = [
+            (number, len(each.statements) - 1)
+            for number, each in sorted(body.blocks.items())
+            if each.statements
+            and _call(each, len(each.statements) - 1)
+            and body.line_code(number, len(each.statements) - 1, line, function.file, foreign)
+        ]
+        matched = set()
+        for column, name in inlined:
+            found = [
+                (number, index)
+                for number, index in calls
+                if _covers(body.blocks[number], index, column, line, function.file, facts)
+            ]
+            if not found:
+                return None
+            # Where none is so named (a closure's call), any of them may be it.
+            named = [
+                at
+                for at in found
+                if name and _callee(body.blocks[at[0]].statements[at[1]][0]) == name
+            ]
+            matched.update(named or found)
+        lent = body.lent_from(local, self.type_parameters(hashed), free_types)
+        given_names, hidden_names = [], []
+        for number, index in sorted(matched):
+            text = body.blocks[number].statements[index][0]
+            given = _call_operands(text)
+            if local in given:
+                given_names.append(_callee(text))
+            elif _ADDRESS_COMPARISON.match(_STRING.sub('""', text)) and self._std_compares():
+                # The standard library's `ptr::eq` reads no pointee (#300).
+                continue
+            elif given & lent or (
+                self.unsafe_code
+                and any(_RAW_POINTER.search(body.types.get(n) or "*const ") for n in given)
+            ):
+                given_names.append(_callee(text))
+            elif self.unsafe_code:
+                hidden_names.append(_callee(text))
+        if given_names:
+            return given_names, "given"
+        if hidden_names:
+            return hidden_names, "unsafe"
+        return [], None
+
     def _formatting(self):
         """Whether a call that reads like `format_args!`'s constructors (and returns
         their type) is theirs (#105): the crate names nothing `core` or `std` but the
@@ -6219,6 +6375,39 @@ def _merged(body, function, blocks):
 _PATH_END = re.compile(r"[A-Za-z0-9_#:]\s*(?://.*)?$")
 # What may continue such a path: whitespace, line comments, `::` and ASCII identifiers.
 _PATH_TAIL = re.compile(r"(?:\s+|//[^\n]*|::|[A-Za-z0-9_#])*")
+
+
+# A macro's definition: `macro_rules! name`, or a `macro name` (`decl_macro`).
+_MACRO_DEFINITION = re.compile(r"\b(?:macro_rules\s*!\s*|macro\s+)(?:r#)?\w+\s*")
+
+
+@functools.lru_cache(maxsize=16)
+def macro_lines(text):
+    """The lines of ``text`` (from 1) a macro's definition spans, from its name to its
+    body's end: code there may be any invocation's, which LLVM's inlined calls name as
+    their site (#324 review: `$v.clone()` in `macro_rules! mclone`). None where the text
+    is not known, or not read as rustc reads it (rust_lexer.code_only)."""
+    if not isinstance(text, str):
+        return None
+    from peeky.rust_lexer import code_only
+
+    code = code_only(text)
+    if code is None:
+        return None
+    closing, found = _closings(code), set()
+    for match in _MACRO_DEFINITION.finditer(code):
+        at = end = match.end()
+        # The body; a `macro`'s arguments, then its body.
+        for _ in range(2):
+            if at >= len(code) or code[at] not in "([{":
+                break
+            end = closing.get(at, len(code) - 1)
+            at = end + 1
+            while at < len(code) and code[at].isspace():
+                at += 1
+        first = code.count("\n", 0, match.start()) + 1
+        found.update(range(first, code.count("\n", 0, end) + 2))
+    return frozenset(found)
 
 
 @functools.lru_cache(maxsize=16)
