@@ -236,7 +236,8 @@ def test_a_bit_precise_integer_is_judged_by_its_name_not_its_width(tmp_path):
     for bits in (16, 32, 64):
         probe = Probe("reg.c", at, ("plain",), ((f"b{bits}", "9"),))
         message = refused_before_launch(run_probe(tmp_path, probe, adapter=debug))
-        assert f"`b{bits}` has type `_BitInt({bits})`" in message, message
+        # clang 18's debug information names it `_BitInt`, later ones `_BitInt(32)`.
+        assert f"`b{bits}` has type `_BitInt" in message, message
         assert "only writable integer locals of these types" in message, message
     marked = run_probe(tmp_path, Probe("reg.c", at, ("b16", "b32", "b64", "plain")), adapter=debug)
     rows = {row["selector"]: row for row in marked["rows"]}

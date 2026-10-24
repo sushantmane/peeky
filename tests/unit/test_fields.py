@@ -284,9 +284,19 @@ def test_a_root_is_judged_by_the_name_the_debugger_gives_its_type():
                 (0x30, 1, "DW_TAG_base_type", base("long unsigned int", "DW_ATE_unsigned", "0x08")),
                 (0x34, 1, "DW_TAG_base_type", base("short int", "DW_ATE_signed", "0x02")),
                 (0x38, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000030"}),
+                (
+                    0x40,
+                    1,
+                    "DW_TAG_structure_type",
+                    {"DW_AT_name": '"basic"', "DW_AT_byte_size": "0x08"},
+                ),
+                (0x44, 1, "DW_TAG_typedef", {"DW_AT_type": "0x00000040", "DW_AT_name": '"string"'}),
+                (0x48, 1, "DW_TAG_array_type", {"DW_AT_type": "0x00000034"}),
+                (0x4A, 2, "DW_TAG_subrange_type", {"DW_AT_count": "0x08"}),
+                (0x50, 1, "DW_TAG_typedef", {"DW_AT_type": "0x00000048", "DW_AT_name": '"Name"'}),
             )
         ),
-        (0x14, 0x18, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38),
+        (0x14, 0x18, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x44, 0x50),
         CPP_LIBRARIES,
     )
     for offset, bits in ((0x20, 16), (0x24, 32), (0x28, 64)):
@@ -302,6 +312,9 @@ def test_a_root_is_judged_by_the_name_the_debugger_gives_its_type():
     )
     assert root_never_integer(graph, 0x14, "lossy", INTEGER_RANGES) is None
     assert root_never_integer(graph, 0x18, "c", INTEGER_RANGES) == "`c` has type `const int64_t`"
+    # A text may change a record or an array, by whatever name: the stop judges those.
+    assert root_never_integer(graph, 0x44, "s", INTEGER_RANGES) is None
+    assert root_never_integer(graph, 0x50, "tag", INTEGER_RANGES) is None
 
 
 DECLARED = dump(

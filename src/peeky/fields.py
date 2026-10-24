@@ -829,25 +829,28 @@ def debugger_type_name(graph, offset):
     `_BitInt(32)`). The name is None where the debug information names none, and kind
     says what it is then: "pointer", "reference", "enum" or "atomic". None for a
     record, an array, or a type the graph does not hold."""
-    words = []
+    words, named, atomic = [], None, False
     for _ in range(64):
         node = graph.get(offset)
         if node is None or node[0] in ("unknown", "other", "record", "array"):
+            # A text may change a record or an array, by whatever name (`std::string`).
             return None
         if node[0] == "qualifier":
-            if node[1] == "atomic":
-                return None, "atomic"
-            if node[1] in ("const", "volatile"):
+            atomic = atomic or (named is None and node[1] == "atomic")
+            if named is None and node[1] in ("const", "volatile"):
                 words.append(node[1])
             offset = node[2]
             continue
-        if node[0] == "typedef" and not node[1]:
+        if node[0] == "typedef":
+            if named is None and node[1]:
+                named = node[1]
             offset = node[2]
             continue
-        if node[0] == "typedef" or (node[0] in ("base", "enum") and node[1]):
+        if named is None and node[0] in ("base", "enum") and node[1]:
             named = _spelled(node[1]) if node[0] == "base" else node[1]
-            return " ".join([*words, named]), node[0]
-        return None, node[0]
+        if atomic:
+            return None, "atomic"
+        return (" ".join([*words, named]) if named else None), node[0]
     return None
 
 
