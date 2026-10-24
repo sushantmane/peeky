@@ -356,6 +356,185 @@ def _option_layout(struct, qualified, by_offset):
     }
 
 
+# An `Option` of a tuple or struct the crate defines, read from memory by its DWARF layout
+# (`Some(Engineer { name: "Björn", shifts: 1, .. })`).
+OPTION_COMPOSITE = "option-composite"
+_OPTION_NAME = re.compile(r"core::option::Option<(.+)>")
+_WORD = 8
+_MAX_NICHE_DEPTH = 16
+
+
+def _type_size(die, by_offset, depth=0):
+    """A member type's size in bytes: its `DW_AT_byte_size`; a thin pointer's is a word
+    (Peeky reads 64-bit targets), an array's its count of elements. Anything else
+    raises."""
+    if die is None or depth > _MAX_NICHE_DEPTH:
+        raise ValueError("Rust field has an unknown type")
+    if "DW_AT_byte_size" in die.attributes:
+        return _hex(die.attributes["DW_AT_byte_size"])
+    if die.tag == "DW_TAG_pointer_type":
+        return _WORD
+    ranges = [child for child in die.children if child.tag == "DW_TAG_subrange_type"]
+    if die.tag == "DW_TAG_array_type" and len(ranges) == 1:
+        count = _hex(ranges[0].attributes.get("DW_AT_count"))
+        return count * _type_size(_target(die, by_offset), by_offset, depth + 1)
+    raise ValueError("Rust field's size is not known")
+
+
+def _niche_range(die, offset, size, by_offset, names, depth=0):
+    """(lowest, highest): the values the field of the struct ``die`` that spans exactly
+    ``size`` bytes at ``offset`` may hold, where its type fixes them (a Vec's or
+    String's capacity, a NonNull's, a reference's or a Box's pointer, a bool, a char),
+    found through nested structs. Raises for any other field: its valid values are not
+    known, so a value outside them cannot be told from `None`."""
+    if depth > _MAX_NICHE_DEPTH or die is None or die.tag != "DW_TAG_structure_type":
+        raise ValueError("Rust niche is not inside a plain struct")
+    if any(child.tag in ("DW_TAG_variant_part", "DW_TAG_variant") for child in die.children):
+        raise ValueError("Rust niche is inside an enum")
+    holders = []
+    for member in die.children:
+        if member.tag != "DW_TAG_member":
+            continue
+        start = _hex(member.attributes.get("DW_AT_data_member_location"))
+        target = _target(member, by_offset)
+        width = _type_size(target, by_offset)
+        if start <= offset < start + width:
+            holders.append((start, member, target, width))
+    if len(holders) != 1:
+        raise ValueError("Rust niche is not inside exactly one field")
+    start, member, target, width = holders[0]
+    at = offset - start
+    if at + size > width:
+        raise ValueError("Rust niche spans more than one field")
+    if target.tag == "DW_TAG_structure_type":
+        return _niche_range(target, at, size, by_offset, names, depth + 1)
+    if at != 0 or size != width:
+        raise ValueError("Rust niche is part of a field")
+    holder, field = names.get(die.offset), _string(member.attributes.get("DW_AT_name"))
+    if target.tag == "DW_TAG_base_type":
+        if (
+            holder == "core::num::niche_types::UsizeNoHighBit"
+            and field == "__0"
+            and _sized_base(target, "usize", 8, "DW_ATE_unsigned")
+        ):
+            return 0, 2**63 - 1
+        if _sized_base(target, "bool", 1, "DW_ATE_boolean"):
+            return 0, 1
+        if _sized_base(target, "char", 4, "DW_ATE_UTF"):
+            return 0, 0x10FFFF
+    elif target.tag == "DW_TAG_pointer_type" and size == _WORD:
+        pointer = names.get(target.offset) or ""
+        if (
+            (field == "pointer" and re.fullmatch(r"core::ptr::non_null::NonNull<.+>", holder or ""))
+            or pointer.startswith("&")
+            or re.fullmatch(r"alloc::boxed::Box<.+>", pointer)
+        ):
+            return 1, 2**64 - 1
+    raise ValueError("Rust niche field's valid values are not known")
+
+
+def _composite_option_layout(struct, qualified, by_offset, names, crate):
+    """The layout of an `Option<T>` whose T is a tuple or struct of the crate's (see
+    _composite: its integer, bool, float, char and String fields read), proven from the
+    compiler's DWARF variant part; {"kind": "unqualified"} for anything else.
+
+    Either a tag of its own whose `DW_AT_discr_value`s name both variants, or a niche: a
+    field of T whose type fixes its valid values holds `None`'s value, which is outside
+    them, and `Some` is the variant without a value. A tag holding anything else is no
+    `Option`, so it is never decoded as one."""
+    unqualified = {"kind": "unqualified"}
+    match = _OPTION_NAME.fullmatch(qualified)
+    if not match or not (match[1].startswith("(") or match[1].startswith(f"{crate}::")):
+        return unqualified
+    try:
+        size = _hex(struct.attributes.get("DW_AT_byte_size"))
+        parts = [child for child in struct.children if child.tag == "DW_TAG_variant_part"]
+        if len(parts) != 1:
+            return unqualified
+        part = parts[0]
+        discriminant = _reference(part.attributes.get("DW_AT_discr"))[0]
+        members = [child for child in part.children if child.tag == "DW_TAG_member"]
+        variants = [child for child in part.children if child.tag == "DW_TAG_variant"]
+        if len(members) != 1 or len(variants) != 2 or len(part.children) != 3:
+            return unqualified
+        (tag,) = members
+        kind = _target(tag, by_offset)
+        if (
+            tag.offset != discriminant
+            or tag.attributes.get("DW_AT_artificial") != "true)"
+            or kind is None
+            or kind.tag != "DW_TAG_base_type"
+            or kind.children
+            or kind.attributes.get("DW_AT_encoding") != "DW_ATE_unsigned)"
+        ):
+            return unqualified
+        at = _hex(tag.attributes.get("DW_AT_data_member_location"))
+        width = _type_size(kind, by_offset)
+        if width not in (1, 2, 4, 8) or kind.attributes.get("DW_AT_name") != f'"u{width * 8}")':
+            return unqualified
+        found = {}
+        for variant in variants:
+            (member,) = variant.children
+            name = _string(member.attributes.get("DW_AT_name"))
+            target = _target(member, by_offset)
+            value = variant.attributes.get("DW_AT_discr_value")
+            if (
+                member.tag != "DW_TAG_member"
+                or name in found
+                or _hex(member.attributes.get("DW_AT_data_member_location")) != 0
+                or target is None
+                or not any(child is target for child in struct.children)
+                or target.tag != "DW_TAG_structure_type"
+                or target.attributes.get("DW_AT_name") != f'"{name}")'
+                or _hex(target.attributes.get("DW_AT_byte_size")) != size
+            ):
+                return unqualified
+            found[name] = (None if value is None else _hex(value), target)
+        if set(found) != {"None", "Some"}:
+            return unqualified
+        (none, none_type), (some, some_type) = found["None"], found["Some"]
+        if none is None or any(child.tag == "DW_TAG_member" for child in none_type.children):
+            return unqualified
+        fields = [child for child in some_type.children if child.tag == "DW_TAG_member"]
+        if len(fields) != 1 or fields[0].attributes.get("DW_AT_name") != '"__0")':
+            return unqualified
+        payload = _hex(fields[0].attributes.get("DW_AT_data_member_location"))
+        element = _target(fields[0], by_offset)
+        if element is None or names.get(element.offset) != match[1]:
+            return unqualified
+        composite = _composite(element, by_offset, names)
+        end = payload + composite["element_size"]
+        if end > size or payload % composite["alignment"] or not at + width <= size:
+            return unqualified
+        limit = 2 ** (8 * width)
+        if some is None:
+            # A niche: the tag is a field of the payload's.
+            if not payload <= at < at + width <= end:
+                return unqualified
+            valid = _niche_range(element, at - payload, width, by_offset, names)
+            if not none < limit or valid[0] <= none <= valid[1] or valid[1] >= limit:
+                return unqualified
+        else:
+            # A tag of its own, beside the payload.
+            overlaps = at < end and payload < at + width
+            if none == some or not (none < limit and some < limit) or overlaps:
+                return unqualified
+            valid = None
+    except (KeyError, ValueError, IndexError, TypeError):
+        return unqualified
+    return {
+        "kind": OPTION_COMPOSITE,
+        "size": size,
+        "tag": [at, width],
+        "none": none,
+        "some": some,
+        "valid": list(valid) if valid else None,
+        "payload": payload,
+        "element": match[1],
+        **composite,
+    }
+
+
 # Element types of the containers Peeky reads: {Rust name: (size, DWARF encoding,
 # LLDB's names for it)}. LLDB names scalars as C types, so i64 and isize (u64 and usize)
 # share a name; owned locals are told apart by their layouts, which must agree.
@@ -933,6 +1112,8 @@ def enum_layouts(text, unit, root=None):
     by_offset = {}
     _walk(root, by_offset, unit)
     layouts = {}
+    names = _qualified_names(root)
+    crate = unit.name.rpartition("/@/")[2].split(".")[0]
 
     def visit(die, prefix, named):
         for child in die.children:
@@ -947,6 +1128,8 @@ def enum_layouts(text, unit, root=None):
                         if named
                         else {"kind": "unqualified"}
                     )
+                    if named and layout["kind"] == "unqualified":
+                        layout = _composite_option_layout(child, qualified, by_offset, names, crate)
                     if layouts.get(qualified, layout) != layout:
                         layout = {"kind": "unqualified"}
                     layouts[qualified] = layout
@@ -1171,11 +1354,198 @@ def _option_value(variable, fetch, layout, kind):
     return f"Some({int(text)})"
 
 
-def active_variant(variable, fetch, layouts):
+_IDENTIFIER = re.compile(r"[^\W\d]\w*")
+# Why an enum is not decoded, when its layout is not one Peeky reads.
+UNQUALIFIED_WHY = (
+    "Peeky decodes `Option<i32>`, and an `Option` of a tuple or struct your crate defines "
+    "whose layout the debug information proves; it does not decode this `{kind}`"
+)
+
+
+def enum_address(variable):
+    """Where the debugger says a value is stored (its memoryReference, and the `T @ 0x…`
+    it shows, which must agree), as a pointer prints (`0x000000016fbfab10`); None if it
+    says neither or they disagree."""
+    found = set()
+    reference = variable.get("memoryReference")
+    if isinstance(reference, str) and _ADDRESS.fullmatch(reference):
+        found.add(int(reference, 16))
+    shown, at, place = str(variable.get("value") or "").rpartition(" @ ")
+    if at and _ADDRESS.fullmatch(place):
+        found.add(int(place, 16))
+    if len(found) != 1 or 0 in found:
+        return None
+    return f"0x{found.pop():016x}"
+
+
+_RESULT_NAME = re.compile(r"core::result::Result<.+>")
+
+
+def binding_advice(variable, top):
+    """What to read instead of an enum Peeky does not decode, where it holds a value:
+    what an `if let` on it binds (`Some(x)` of an `Option`, `Ok(x)` or `Err(e)` of a
+    `Result`), or a `match` arm, naming a root local (``top``)."""
+    name = str(variable.get("name") or "").partition(" @ ")[0]
+    kind = str(variable.get("type") or "")
+    named = top and _IDENTIFIER.fullmatch(name)
+    if _OPTION_NAME.fullmatch(kind):
+        if named:
+            return f"read what `if let Some(x) = &{name}` binds instead"
+        return "read what an `if let Some(x)` on it binds instead"
+    if _RESULT_NAME.fullmatch(kind):
+        if named:
+            return f"read what `if let Ok(x) = &{name}` or `Err(e)` binds instead"
+        return "read what an `if let Ok(x)` or `Err(e)` on it binds instead"
+    return "read what a `match` arm on it binds instead"
+
+
+def uninitialized_advice(name):
+    """What to do where the MIR does not prove a local initialized: there may be nothing
+    in it to borrow, so read it where it is."""
+    return (
+        f"read it on a line where `{name}` is assigned and not yet moved or dropped, such as "
+        "the one after its assignment"
+    )
+
+
+CALLER_ADVICE = "stop at a line of the function it belongs to, to read it there"
+OPTIMIZED_ADVICE = 'read it in an unoptimized build (`opt_level` "0", the default)'
+
+
+def enum_withheld(variable, value, why, *, top=False, instead=None):
+    """An enum shown as ``value`` (UNQUALIFIED or UNVERIFIED), its storage never read,
+    with ``why``, the address it is stored at (which a pointer into it can be compared
+    with) and what to do: ``instead``, else what an `if let` or a `match` on it binds
+    (binding_advice), which needs it to hold a value."""
+    address = enum_address(variable)
+    where = f"It is stored at {address}; " if address else "Its address is not known; "
+    advice = instead if instead is not None else binding_advice(variable, top)
+    return {
+        "name": variable.get("name"),
+        "type": variable.get("type"),
+        "variablesReference": 0,
+        "value": value,
+        "rust_view": "opaque",
+        "why": f"{why}. {where}{advice}",
+    }
+
+
+def option_view(variable, read, layout):
+    """A local `Option` of a tuple or struct read from memory by its proven layout (see
+    _composite_option_layout), as Rust's derived `{:?}` shows it: `None`, or
+    `Some(Engineer { name: "Björn", shifts: 1, .. })` with the payload as its child
+    `__0`, whose fields are its children as a container element's are (#260). A tag
+    holding neither variant's value, or a payload that does not read (a String's length
+    past its capacity), is withheld as UNVERIFIED, never a guess.
+
+    ``read(address, count)`` returns exactly ``count`` bytes or raises; None where the
+    debugger cannot read memory."""
+    from peeky.rust import rust_spelling
+
+    kind = variable.get("type")
+    name = str(variable.get("name") or "").partition(" @ ")[0]
+    view = {"name": variable.get("name"), "type": kind, "variablesReference": 0}
+    if read is None:
+        why = (
+            "Peeky reads this `Option` from memory, and this debugger cannot read memory "
+            "(lldb-dap 20 or later can)"
+        )
+        return enum_withheld(variable, UNVERIFIED, why, top=True)
+    reference, address = variable.get("memoryReference"), enum_address(variable)
+    if not isinstance(reference, str):
+        why = (
+            "Peeky reads this `Option` from memory, and the debugger gives no memory "
+            "reference for it (lldb-dap 20 or later does)"
+        )
+        return enum_withheld(variable, UNVERIFIED, why, top=True)
+    if address is None:
+        why = "Peeky reads this `Option` from memory, and the debugger's address for it is unclear"
+        return enum_withheld(variable, UNVERIFIED, why, top=True)
+    try:
+        raw = read(address, layout["size"])
+    except ViewBudgetExhausted as exc:
+        return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
+    except ValueError as exc:
+        detail = str(exc)
+        why = (
+            "Peeky reads this `Option` from memory, and the debugger did not read it "
+            f"({detail[:1].lower() + detail[1:200]})"
+        )
+        return enum_withheld(variable, UNVERIFIED, why, top=True)
+    try:
+        at, width = layout["tag"]
+        tag = int.from_bytes(raw[at : at + width], "little")
+        if tag == layout["none"]:
+            return {**view, "value": "None", "rust_view": "active-variant"}
+        valid = layout["valid"]
+        if not (valid[0] <= tag <= valid[1] if valid else tag == layout["some"]):
+            raise ValueError(f"its tag holds {tag}, the value of neither `None` nor `Some`")
+        start = layout["payload"]
+        through = (
+            f"`x` of `if let Some(x) = &{name}`"
+            if _IDENTIFIER.fullmatch(name)
+            else "what an `if let Some(x)` on it binds"
+        )
+        values, children = _partial_elements(
+            layout, [raw[start : start + layout["element_size"]]], read, through=through
+        )
+    except ViewBudgetExhausted as exc:
+        return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
+    except ValueError as exc:
+        detail = str(exc)
+        why = (
+            f"its bytes here do not hold a valid `{rust_spelling(kind)}`, so Peeky shows none "
+            f"of it ({detail[:1].lower() + detail[1:200]})"
+        )
+        return enum_withheld(variable, UNVERIFIED, why, top=True)
+    return {
+        **view,
+        "value": f"Some({values[0]})",
+        "rust_view": "active-variant",
+        "children": [{**children[0], "name": "__0"}],
+    }
+
+
+def option_layouts(kind, layouts):
+    """The names of the `Option` layouts read from memory (OPTION_COMPOSITE) that LLDB's
+    type name ``kind`` can be (see _spelled)."""
+    if not isinstance(kind, str) or not _OPTION_NAME.fullmatch(kind):
+        return []
+    return [
+        name
+        for name, layout in layouts.items()
+        if layout.get("kind") == OPTION_COMPOSITE and (name == kind or _spelled(name, kind))
+    ]
+
+
+def _without_lifetimes(name):
+    """A MIR type without its lifetimes, which the debug information never names:
+    `Pick<'_>` is `Pick`, `Pair<'a, T>` is `Pair<T>`, `&'a T` is `&T`."""
+    name = re.sub(r"<(?:'\w+(?:, )?)+>", "", name)
+    name = re.sub(r"(?<=<)(?:'\w+, )+", "", name)
+    return re.sub(r"&'\w+ ", "&", name)
+
+
+def option_name(declared, shown, layouts):
+    """The `Option` layout an owned local is, by the MIR's declared type
+    (`std::option::Option<Engineer>`) and confirmed by LLDB's name (see struct_name);
+    None unless exactly one of the crate's tuples and structs is its payload."""
+    exact = re.fullmatch(r"(?:std|core)::option::Option<(.+)>", str(declared or ""))
+    lldb = _OPTION_NAME.fullmatch(str(shown or ""))
+    if not exact or not lldb:
+        return None
+    element = struct_name(_without_lifetimes(exact[1]), lldb[1], layouts)
+    name = f"core::option::Option<{element}>" if element else None
+    return name if name in option_layouts(shown, layouts) else None
+
+
+def active_variant(variable, fetch, layouts, *, top=False):
     """Worker view for a compiled Rust enum value, or None for non-enum values.
 
     ``fetch(reference)`` must return bounded raw DAP children. Only the active
     variant's payload is read; inactive storage is never interpreted or exposed.
+    An enum it does not decode says why, where it is stored, and what to read instead
+    (``top``: it is a root local, which the advice names).
     """
     kind = variable.get("type")
     layout = layouts.get(kind) if isinstance(kind, str) else None
@@ -1183,14 +1553,26 @@ def active_variant(variable, fetch, layouts):
     if layout is None or layout["kind"] in CONTAINER_KINDS or composite_container(kind):
         return None
     view = {"name": variable.get("name"), "type": kind, "variablesReference": 0}
-    if layout["kind"] != "option":
+    if kind in QUALIFIED_CONTAINERS:
         return {**view, "value": UNQUALIFIED, "rust_view": "opaque"}
+    if layout["kind"] == OPTION_COMPOSITE:
+        why = (
+            "Peeky reads an `Option` of a tuple or struct only as a local of the innermost "
+            "frame, where the build's MIR proves it initialized"
+        )
+        return enum_withheld(variable, UNVERIFIED, why, top=top)
+    if layout["kind"] != "option":
+        from peeky.rust import rust_spelling
+
+        why = UNQUALIFIED_WHY.format(kind=rust_spelling(kind))
+        return enum_withheld(variable, UNQUALIFIED, why, top=top)
     try:
         value = _option_value(variable, fetch, layout, kind)
     except ViewBudgetExhausted as exc:
         return {**view, "value": _budget(exc), "rust_view": "budget-exhausted"}
     except ValueError:
-        return {**view, "value": UNVERIFIED, "rust_view": "opaque"}
+        why = "the debugger's view of it does not match its compiled layout"
+        return enum_withheld(variable, UNVERIFIED, why, top=top)
     return {**view, "value": value, "rust_view": "active-variant"}
 
 
@@ -1413,17 +1795,24 @@ def _text_field(field, raw, layout, read, left):
     return child, rust_str_debug(text) if count == length else None
 
 
-def _unread_field(field, kind):
-    """A field of an element Peeky does not read (#260), with why and what to do."""
+def _unread_field(field, kind, through=None):
+    """A field of an element Peeky does not read (#260), with why and what to do; or of
+    what an `Option` holds, read ``through`` a binding (`x` of `if let Some(x) = &last`)."""
     from peeky.rust import rust_spelling
 
     shown = rust_spelling(kind) if kind else None
     what = f"has type `{shown}`" if shown else "has a type the debug information does not name"
-    reason = (
-        f"Peeky reads an element's integer, bool, float, char and String fields, and "
-        f"`{field}` {what}: read it through a reference to the element, such as a `for` "
-        "loop's item"
-    )
+    if through is not None:
+        reason = (
+            f"Peeky reads the integer, bool, float, char and String fields of what an "
+            f"`Option` holds, and `{field}` {what}: read it through {through}"
+        )
+    else:
+        reason = (
+            f"Peeky reads an element's integer, bool, float, char and String fields, and "
+            f"`{field}` {what}: read it through a reference to the element, such as a `for` "
+            "loop's item"
+        )
     return _withheld_field(field, shown, reason)
 
 
@@ -1440,10 +1829,11 @@ def _partial_debug(shape, shown, parts):
     return f"({inner})" if shape == "tuple" else f"{shown}({inner})"
 
 
-def _partial_elements(layout, raws, read):
+def _partial_elements(layout, raws, read, through=None):
     """(values, children) of elements with a `String` field or one Peeky does not read
     (#260): scalars as for any element, each String's text read from memory (the first
-    MAX_ELEMENT_TEXTS), and every other field withheld with why."""
+    MAX_ELEMENT_TEXTS), and every other field withheld with why (``through``: see
+    _unread_field)."""
     left = [MAX_ELEMENT_TEXTS]
     values, children = [], []
     for index, raw in enumerate(raws):
@@ -1460,7 +1850,7 @@ def _partial_elements(layout, raws, read):
                 )
                 members.append(member)
             else:
-                members.append(_unread_field(name, rest[0] if rest else None))
+                members.append(_unread_field(name, rest[0] if rest else None, through))
                 value = None
             parts.append((name, value, kind))
         value = _partial_debug(layout["shape"], layout["shown"], [part[:2] for part in parts])

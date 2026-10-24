@@ -2121,3 +2121,37 @@ def test_a_selector_by_line_that_names_several_bindings_is_refused():
     )
     assert found is alone
     assert _scope_lookup(None, {}, {}, scopes, "x")[0] is row
+
+
+def test_an_opaque_rust_enum_row_says_why_where_it_is_and_what_to_read():
+    # #303: rota's `last: Option<Engineer>` read `<unqualified Rust enum layout>`, with no
+    # address to compare `l` of `if let Some(l) = &last` with, and nothing to read instead.
+    from peeky.probe import _capture
+
+    why = (
+        "Peeky decodes `Option<i32>`, and an `Option` of a tuple or struct your crate defines "
+        "whose layout the debug information proves; it does not decode this `Option<u32>`. It "
+        "is stored at 0x000000016fbfab10; read what `if let Some(x) = &count` binds instead"
+    )
+    count = {
+        "name": "count",
+        "type": "core::option::Option<unsigned int>",
+        "value": "<unqualified Rust enum layout>",
+        "variablesReference": 0,
+        "view": "opaque",
+        "opaque_reason": why,
+    }
+
+    class Worker(Tree):
+        def dispatch(self, operation, args):
+            if operation == "inspect":
+                return {**snapshot(count), "frames": [{"line": 3, "name": "f"}]}
+            return super().dispatch(operation, args)
+
+    [row] = _capture(Worker({}), {}, ("count",), 0, "observed")
+    assert row["value"] == "<unqualified Rust enum layout>" and row["view"] == "opaque", row
+    assert row["note"] == why[0].upper() + why[1:] + ".", row
+    # Without a reason (an older worker), no note.
+    count.pop("opaque_reason")
+    [row] = _capture(Worker({}), {}, ("count",), 0, "observed")
+    assert "note" not in row, row

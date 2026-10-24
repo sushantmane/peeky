@@ -790,6 +790,43 @@ def test_a_raw_pointer_view_says_so_on_its_row(tmp_path):
     assert all(row["view"] == "unproven" and not row["variablesReference"] for row in shown)
 
 
+def test_an_opaque_enum_view_passes_on_why_it_is_not_decoded(tmp_path):
+    # #303: why a Rust enum is not decoded, where it is stored and what to read instead
+    # reach its row; a decoded variant's own view has no such reason.
+    from types import SimpleNamespace
+
+    from peeky.worker import DebugWorker
+
+    why = "it does not decode this `Option<u32>`. It is stored at 0x0000000000000010"
+    views = {
+        "count": {"value": "<unqualified Rust enum layout>", "rust_view": "opaque", "why": why},
+        "last": {"value": "None", "rust_view": "active-variant", "why": why},
+    }
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        view_variable=lambda variable, fetch, read, **_: views[variable["name"]],
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    shown = worker.expose_variables(
+        [
+            {
+                "name": name,
+                "type": "core::option::Option<u32>",
+                "value": "",
+                "variablesReference": 7,
+            }
+            for name in views
+        ],
+        {"id": 1},
+        ("Locals",),
+        (),
+    )
+    assert [row.get("opaque_reason") for row in shown] == [why, None]
+    assert [row["view"] for row in shown] == ["opaque", "active-variant"]
+    assert not any(row["variablesReference"] for row in shown)
+
+
 def test_what_is_read_through_a_noted_local_carries_its_note(tmp_path):
     # #148: a root shown with a note (#140) passed it to nothing read through it; its
     # fields, their fields and a decoded preview's elements now carry it, said as read

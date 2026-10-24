@@ -734,12 +734,14 @@ def _describe_text(manifest):
     if views := manifest.get("value_views"):
         from peeky.rust_symbols import (
             CONTAINER_KINDS,
+            OPTION_COMPOSITE,
             QUALIFIED_CONTAINERS,
             REFERENCE_PARAMETERS,
             composite_container,
         )
 
-        enums = [name for name, kind in views.items() if kind == "option"]
+        enums = [name for name, kind in views.items() if kind in ("option", OPTION_COMPOSITE)]
+        composite_options = OPTION_COMPOSITE in views.values()
         containers = [
             declared
             for declared, (_, name, _) in REFERENCE_PARAMETERS.items()
@@ -760,7 +762,15 @@ def _describe_text(manifest):
         from peeky.rust import rust_spelling
 
         shown = ", ".join(dict.fromkeys(map(rust_spelling, enums)))
-        lines.append(f"qualified enum views: {shown or 'none'}")
+        lines.append(
+            f"qualified enum views: {shown or 'none'}"
+            + (
+                " (an Option of a tuple or struct reads from memory, as a local the build's "
+                "MIR proves initialized)"
+                if composite_options
+                else ""
+            )
+        )
         if containers:
             lines.append(
                 "read from memory (debuggers with readMemory): reference parameters, owned "
