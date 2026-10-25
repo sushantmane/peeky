@@ -4132,6 +4132,8 @@ def _pointer_type(kind):
 # What an element of an array, or what a pointer points at, can be for an offset into an
 # array to be proven (#302): never an incomplete type, a reference or a map entry.
 _ELEMENTS = frozenset({"record", "union", "scalar", "pointer", "library"})
+# How many arrays and objects one local holds that ``held_extents`` lists (#336).
+HELD_EXTENTS = 64
 # lldb-dap's text for a value with neither a value nor a summary: its type and address.
 _PLACED = re.compile(r"(.+) @ 0x([0-9a-fA-F]{1,16})")
 
@@ -5167,6 +5169,84 @@ class NativeSession:
         if kind is None or size is None or address is None:
             return None
         return {**found, "address": address, "element": kind, "element_size": size}
+
+    @property
+    def checks_past_ends(self):
+        """Whether a pointer one past an array's end is never read through (#336): in C
+        and C++, never Rust, whose references and Boxes LLDB also shows as pointers."""
+        return getattr(getattr(self, "target", None), "language", None) in ("c", "cpp")
+
+    def type_identity(self, offset):
+        """``Typed.identity`` of the type at ``offset`` in the build's debug information:
+        a pointer's pointee in one source file against an array's elements in another."""
+        from peeky.native_previews import Typed
+
+        return Typed(self.fields, offset).identity() if self.fields is not None else None
+
+    def held_extents(self, variable, frame, name):
+        """Where the arrays and objects a local of ``frame`` holds by value are (#336),
+        as ``value_extent`` gives each ({"address", "length" for an array, "element",
+        "element_size"}), with the selector that reads it: [(selector, extent)], at most
+        ``HELD_EXTENTS``; "element" is the type's ``Typed.identity``, so that a pointer in
+        another source file matches. The local itself, its members and theirs (`r.buf`), and those of
+        its first elements (`pts[1].tags`); a `std::array` is an array of its elements.
+        The local's address is the debugger's own, and each member's its offset in the
+        build's debug information from it. C++'s `this` holds its object's members
+        (`this.buf_`), at the pointer's address. None of a local the frame reaches
+        through a pointer or reference (a structured binding of one)."""
+        held = []
+        if name == "this":
+            typed = self._typed(frame, [name])
+            target = typed.target() if typed is not None and typed.kind() == "pointer" else None
+            address = _address(str(variable.get("value") or "").split(" ")[0])
+            if target is not None and address and target.kind() in ("record", "union"):
+                self._held("this", target, address, held, 0, own=False)
+            return held
+        found = self._typed(frame, [name], walked=True)
+        address = own_address(variable)
+        if found is None or address is None or found[1]:
+            return held
+        if found[0].bits is None and not found[0].entry:
+            self._held(name, found[0], address, held, 0)
+        return held
+
+    def _held(self, selector, typed, address, held, depth, own=True):
+        """``held_extents`` of the value ``typed`` at ``address``, added to ``held``;
+        ``own``: whether the value itself is listed (an array's element is not: the array
+        names each element's address)."""
+        if len(held) >= HELD_EXTENTS:
+            return
+        sort = typed.kind()
+        if sort == "library" and (inner := typed.array_member()) is not None:
+            placed = [at for name, _, at in typed.placed_members() if name == inner[0]]
+            if len(placed) != 1:
+                return
+            typed, address, sort = inner[1], address + placed[0], "array"
+        if sort == "array":
+            length, element = typed.count(), typed.element()
+            if type(length) is not int or length < 1 or element.dims:
+                return
+            kind, size = element.identity(), element.byte_size()
+            if element.kind() not in _ELEMENTS or kind is None or size is None:
+                return
+            extent = {"address": address, "length": length, "element": kind}
+            held.append((selector, {**extent, "element_size": size}))
+            if element.kind() in ("record", "union") and depth < 3:
+                for index in range(min(length, 16)):
+                    at = address + index * size
+                    self._held(f"{selector}[{index}]", element, at, held, depth + 1, own=False)
+            return
+        if sort not in ("record", "union", "scalar", "library"):
+            return
+        kind, size = typed.identity(), typed.byte_size()
+        if kind is None or size is None:
+            return
+        if own:
+            held.append((selector, {"address": address, "element": kind, "element_size": size}))
+        if sort in ("record", "union") and depth < 3:
+            for member, inner, offset in typed.placed_members():
+                if offset + (inner.byte_size() or 0) <= size:
+                    self._held(f"{selector}.{member}", inner, address + offset, held, depth + 1)
 
     def _string_class(self, kind):
         """``cxx_strings.string_class`` of a type, also through a typedef the build's

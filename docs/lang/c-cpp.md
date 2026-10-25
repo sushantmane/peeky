@@ -104,6 +104,12 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   ([C and C++ 2.1](c-cpp-cookbook.md#which-elements-address-a-pointer-holds)).
 - That is an address fact. Another object can have the same address, so it never says which
   object the pointer designates.
+- A pointer one past an array's end, such as `end = queue + 4`, is never read through: nothing
+  there belongs to the array. Its row says `[at the address one past queue's end]`, even read
+  alone, and `end[0]` says why it isn't read
+  ([C and C++ 2.1](c-cpp-cookbook.md#a-pointer-one-past-an-arrays-end)).
+- Peeky finds that array in the locals of each listed frame, and in the arrays they hold. Any
+  other pointer is read as the debugger reads it, even one into freed memory.
 - Where the array is a pointer, such as a parameter, a pointer says how far it is from it by
   address alone: `[level + 6 by address; same array not proven]`. It names no element
   ([C and C++ 2.1](c-cpp-cookbook.md#how-far-a-pointer-is-from-a-pointer-parameter)).

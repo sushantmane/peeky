@@ -2112,7 +2112,8 @@ def _returned_text(returned):
         return f"{who} returned: void (no value: {returned.get('reason')})"
     if returned.get("unavailable"):
         return f"{who} returned: <withheld: {returned.get('reason')}>"
-    return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}"
+    pointed = f"  [{pointed_text(returned)}]" if returned.get("past_end") else ""
+    return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}{pointed}"
 
 
 def _require_stepping(record, client):
@@ -2208,6 +2209,9 @@ def _get_lines(row, session="default"):
             else child.get("value")
         )
         shown = f"  [id {child['identity']}]" if child.get("identity") else ""
+        if child.get("past_end") and (pointed := pointed_text(child)):
+            # One past an array's end: nothing it points at is read (#336).
+            shown += f"  [{pointed}]"
         if child.get("view") == "unproven":
             shown += "  [unproven]"
         if child.get("stale"):
