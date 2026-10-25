@@ -1,4 +1,4 @@
-# Error codes (protocol 4)
+# Error codes (protocol 5)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -121,8 +121,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 3, this client 4`,
-  or, from the worker, `Client speaks protocol 3, this worker 4`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 4, this client 5`,
+  or, from the worker, `Client speaks protocol 4, this worker 5`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -451,7 +451,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 4`.
+HTTP response carries `X-Peeky-Protocol: 5`.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
@@ -462,4 +462,7 @@ HTTP response carries `X-Peeky-Protocol: 4`.
   take as a value to write. The worker's `launch` takes `entry_lines`, and its `set_variable`
   takes `restorable` and `target` and returns `restore`
   ([COOKBOOK 2.8](COOKBOOK.md#skip-a-statement-restore-with-before)).
+- **Protocol 5** withholds what a C or C++ pointer one past an array's end points at. The
+  worker's values give `past_end`, and a protocol 4 worker would read `end[0]` there as a value
+  ([C and C++ 2.1](lang/c-cpp-cookbook.md#a-pointer-one-past-an-arrays-end)).
 - A client and a worker of different protocols refuse each other before anything runs.

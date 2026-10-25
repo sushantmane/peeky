@@ -15,6 +15,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a pointer](#read-through-a-pointer)
   - [Which element's address a pointer holds](#which-elements-address-a-pointer-holds)
+  - [A pointer one past an array's end](#a-pointer-one-past-an-arrays-end)
   - [How far a pointer is from a pointer parameter](#how-far-a-pointer-is-from-a-pointer-parameter)
   - [Read a C++ map or set](#read-a-c-map-or-set)
 - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop)
@@ -116,6 +117,12 @@ refuses it, naming that selector.
   way. An example is a template's member typedef, such as `std::vector<T>::pointer` to a
   container.
 - A NULL or unreadable pointer is refused: `p is NULL`.
+- A pointer one past an array's end is refused, since nothing there belongs to the array
+  ([below](#a-pointer-one-past-an-arrays-end)).
+
+Peeky reads what any other pointer points at as the debugger does. It can't tell whether that
+memory is still the object. A pointer into a call that returned, or into a freed heap block,
+shows what is there now.
 
 ### Which element's address a pointer holds
 
@@ -162,11 +169,70 @@ have the same address:
 - Storage the program reuses, or an object you didn't capture.
 
 Otherwise the row shows the address alone. A C++ reference never says, nor does a pointer read
-alone. `--json` rows have `at_element_of`, such as `{"selector": "level", "index": 2, "length": 6}`,
-and `element_size`, the bytes of one element. An object has no `length`.
+alone, unless it is one past an array's end ([below](#a-pointer-one-past-an-arrays-end)). `--json`
+rows have `at_element_of`, such as `{"selector": "level", "index": 2, "length": 6}`, and
+`element_size`, the bytes of one element. An object has no `length`.
 
 An array passed to a function is a pointer there, with no length. So no element is named in it.
 Rows there say less ([below](#how-far-a-pointer-is-from-a-pointer-parameter)).
+
+### A pointer one past an array's end
+
+C lets a pointer hold the address one past an array's end, as `end` does in
+`long *end = queue + 4;`. But nothing there belongs to the array, so Peeky never reads through
+such a pointer. Its row shows its address, and says where it is, even with the array not
+captured:
+
+```
+$ peeky session get end
+end: long * = 0x000000016b8c3280  [at the address one past queue's end]
+  <children: none read: `end` holds the address one past the end of `queue`, and nothing there belongs to `queue`; read `queue` by name>
+```
+
+A selector that reads through it, such as `end[0]`, or `pend.x` for a pointer to a struct, is
+refused with the same reason. A `char *` one past a `char` array's end shows its address alone,
+never the text LLDB read there. So does such a `char *` that a function returned, in
+`session step --out` and `--capture return`.
+
+Peeky looks for the array in the locals of each frame it lists, at most ten:
+
+- An array local, or an array a local holds: a struct's member (`r.buf`), or one in the first 16
+  elements of an array of structs (`rs[1].buf`).
+- In C++, an array member of the object `this` points at (`this.buf_`). A `std::array` counts as
+  an array.
+- The pointer points at the array's element type, of its size, as for an element
+  ([above](#which-elements-address-a-pointer-holds)).
+- In another source file, a struct, class or union is that type only with the same layout: its
+  name, size, and each member's name, offset and type. Two files can give one name two layouts.
+
+Peeky reads a caller's locals once per stop, however often you inspect it.
+
+In a function the array was passed to, the row names the caller's frame:
+`[at the address one past queue's end in frame 1]`. Read the array there with
+`session get queue --frame 1`.
+
+Another object of the pointer's type can start at that address, such as the next array. Peeky
+names it, `[at the address one past t.a's end, also t.b[0]'s]`, but reads nothing:
+`` `t.b[0]` starts there too, but nothing shows `tend` points at it``. Read it by name if the
+pointer is meant to point at it. So a pointer to the start of an array that sits right after
+another of its type is refused too.
+
+`--json` rows, `session get`'s children and `session inspect`'s locals give it as `past_end`,
+such as `{"selector": "queue", "length": 4}`. Where another frame holds the array, it also has
+that frame's index and function: `"frame": 1, "function": "main"`. The store keeps the pointer's
+address, and the reason in place of what it points at.
+
+Peeky can't tell in these cases, so it reads what the pointer points at, as for any pointer:
+
+- One past a single object, such as `&x + 1`. Locals of one type often sit side by side, so a
+  pointer to the second would be refused too.
+- An array Peeky doesn't list: a global or `static` one, a heap block, a 2-D array, or one held
+  deeper than above.
+- An array whose address lldb-dap doesn't give. lldb-dap 18 gives none for a `char` array or a
+  `std::array`, and lldb-dap 20 and later give every value's.
+- An address two or more elements past the end, or before the start.
+- An array of an enum, or of a struct whose layout Peeky didn't read whole, in another source
+  file than the pointer's function.
 
 ### How far a pointer is from a pointer parameter
 

@@ -109,6 +109,28 @@ _UNAVAILABLE = re.compile(
 # The debugger's type of a pointer or an array (`const int *`, `char *const`, `int[96]`):
 # a field or an element of these alone says what its address can tell (#302).
 _POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
+# A C or C++ pointer's value that holds an address (`0x000000016f29b050`, `0x… "text"`).
+_NONZERO_ADDRESS = re.compile(r"0x0*[1-9a-fA-F][0-9a-fA-F]{0,15}(?![0-9a-zA-Z_])")
+# The bytes of what a C or C++ character pointer LLDB shows as text points at, by the type
+# LLDB names (`const char *`).
+_CHARACTER_SIZES = {
+    "char": 1,
+    "signed char": 1,
+    "unsigned char": 1,
+    "char8_t": 1,
+    "char16_t": 2,
+    "char32_t": 4,
+}
+
+
+def _character(identity):
+    """Whether a ``Typed.identity`` is a character type's (`base char DW_ATE_signed_char
+    1`): what a character pointer's text is read from."""
+    found = re.fullmatch(r"base (.+) (DW_ATE_\w+) ([0-9]+)", identity or "")
+    return bool(found) and (
+        found[2] in ("DW_ATE_signed_char", "DW_ATE_unsigned_char", "DW_ATE_UTF")
+        or found[1] in _CHARACTER_SIZES
+    )
 
 
 def optimization_level(identity):
@@ -236,6 +258,16 @@ class DebugWorker:
         # Which roots' values say what their addresses can tell (#302): every root's, none,
         # or the roots named; fields and elements follow their root.
         self.extents = False
+        # What the stop's frames hold, for the rule on a pointer one past an array's end
+        # (#336): each frame's variables as the debugger listed them, by frame id; the
+        # arrays and objects found in them, read once per inspection; and whether a
+        # caller's were fetched, which moves the debugger's scope context.
+        self.frame_variables = {}
+        self.past_bases = None
+        self.frame_scans = 0
+        # What each frame of one stop holds (#336), by frame id: a stop's callers are read
+        # once, however often it is inspected.
+        self.held_frames, self.held_stop = {}, None
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -888,6 +920,9 @@ class DebugWorker:
             if shown := getattr(runtime, "return_shown", None):
                 # As the language names and prints it (Rust: u8 65, not 'A').
                 kind, value = shown(entry)
+            if past := self.returned_past_end(kind, value, frames[0] if frames else None):
+                # A C string one past a character array's end (#336): its address alone.
+                returned["past_end"], value = past, _NONZERO_ADDRESS.match(value)[0]
             return {
                 **returned,
                 "value": str(value)[:2000],
@@ -2339,6 +2374,10 @@ class DebugWorker:
             # `session get` reads, and what is read through them until the next inspection.
             wanted = args.get("extents", False)
             self.extents = wanted if type(wanted) is bool else frozenset(wanted)
+            self.frame_variables, self.past_bases, self.frame_scans = {}, None, 0
+            if self.held_stop != self.stop_id:
+                # Another stop: its frames may hold other arrays, at other addresses.
+                self.held_frames, self.held_stop = {}, self.stop_id
             validate_children = getattr(runtime, "validate_children", None)
             # A timed-out view read may still be processed by the adapter; until its
             # reply drains, this inspection is read-only.
@@ -2473,6 +2512,7 @@ class DebugWorker:
                         and isinstance(v.get("name"), str)
                         and v["name"] not in groups
                     ]
+                    self.frame_variables.setdefault(selected, []).extend(variables)
                 self.reference_counter += 1
                 handle = self.reference_counter
                 shown = variables[: min(50, 512 - self.inspection_nodes)]
@@ -2490,9 +2530,17 @@ class DebugWorker:
                 if not module:
                     roots += shown
                 pending.append((handle, scope, exposed, len(variables)))
+            if (
+                index == 0
+                and self.stop_reason == "step"
+                and getattr(runtime, "checks_past_ends", False) is True
+            ):
+                # What a step out returned is judged against the stop's arrays (#336): read
+                # them before the scopes are bound for changes.
+                self.stop_bases(selected_frame)
             references = [scope["variablesReference"] for _, scope, _, _ in pending]
             writable = quiescent and not self.view_timed_out
-            if (self.view_fetches or self.preview_fetches) and writable:
+            if (self.view_fetches or self.preview_fetches or self.frame_scans) and writable:
                 # Value views issued nested reads that may change adapter scope context.
                 # Bind mutation authority only to freshly re-acquired, identical scopes.
                 references = self.reacquire_scopes(runtime, selected_frame, pending)
@@ -3304,6 +3352,9 @@ class DebugWorker:
                 if ancestry and changing_container
                 else None
             )
+            # A C or C++ pointer one past an array's end (#336): nothing it points at is
+            # read below, not even a container's own count.
+            past = self.past_end_of(variable, frame, [step for step, _ in ancestry] + [name])
             # An unordered container the debugger counts otherwise than its own count says
             # (GCC's, read as empty, #167): withheld, its entries never listed.
             unlisted = (
@@ -3313,7 +3364,7 @@ class DebugWorker:
                     [*ancestry, (name, kind)],
                     lambda path: self.raw_value(frame, path),
                 )
-                if unlisted_container
+                if unlisted_container and past is None
                 else None
             )
             changing = changing or unlisted
@@ -3672,11 +3723,26 @@ class DebugWorker:
             }
             if display_value and (shown := display_value(variable)) is not None:
                 output["value"] = shown
+            if reference_kind is not None:
+                past = None
+            if past is not None:
+                # A C or C++ pointer one past an array's end (#336): nothing there belongs
+                # to the array, so only its address shows, never what LLDB read there.
+                output["value"] = _NONZERO_ADDRESS.match(output["value"])[0]
+                output["past_end"] = past
+                self.children.pop(handle, None)
+                self.taints.pop(handle, None)
+                self.notes.pop(handle, None)
+                output["variablesReference"] = handle = raw = 0
             if handle and (whole := getattr(self.runtime, "whole_value", None)) and whole(variable):
                 # A Java String or boxed number (#204): a value, its class's own fields
                 # listed only when selected by name.
                 output["whole"] = True
-            if string_value and not (self.placeholders() and is_unavailable(output["value"])):
+            if (
+                string_value
+                and past is None
+                and not (self.placeholders() and is_unavailable(output["value"]))
+            ):
                 # A string the debugger shows only up to a NUL byte (#128); never one it
                 # has no value for (optimized out).
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
@@ -3865,6 +3931,133 @@ class DebugWorker:
         except (KeyError, TypeError, ValueError):
             return None
         return found if isinstance(found, dict) else None
+
+    def past_end_of(self, variable, frame, steps):
+        """The ``past_end`` of a C or C++ pointer the debugger lists in ``frame`` by the
+        names ``steps`` (#336, ``probe.past_end``): where it holds the address one past the
+        end of an array a listed frame holds, nothing it points at is read. Else None."""
+        runtime = self.runtime
+        value = variable.get("value")
+        if getattr(runtime, "checks_past_ends", False) is not True:
+            return None
+        if not isinstance(value, str) or not _NONZERO_ADDRESS.match(value):
+            return None
+        try:
+            pointer = runtime.value_extent(variable, frame, list(steps))
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not isinstance(pointer, dict) or "pointee" not in pointer:
+            return None
+        if identify := getattr(runtime, "type_identity", None):
+            # As the arrays' elements are told: alike in every source file of the build.
+            pointer = {**pointer, "pointee": identify(pointer["pointee"])}
+        from peeky.probe import past_end
+
+        return past_end(value, pointer, self.stop_bases(frame))
+
+    def returned_past_end(self, kind, value, frame):
+        """``past_end`` of a character pointer a function returned (#336), whose text LLDB
+        read from where it points, against the arrays of the stop's frames (``frame``
+        is the one it returned to); its type is only LLDB's name, so a character type
+        stands for every one of its size, as C lets them alias. None otherwise."""
+        bare = re.sub(r"\b(?:const|volatile|restrict)\b|\s+", " ", str(kind or "")).split()
+        size = _CHARACTER_SIZES.get(" ".join(bare[:-1])) if bare[-1:] == ["*"] else None
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if size is None or held is None or held.end() == len(value) or frame is None:
+            return None
+        if getattr(self.runtime, "checks_past_ends", False) is not True:
+            return None
+        from peeky.probe import past_end
+
+        bases = [
+            (selector, {**extent, "element": "character"}, place)
+            for selector, extent, place in self.stop_bases(frame)
+            if _character(extent.get("element"))
+        ]
+        return past_end(value, {"pointee": "character", "element_size": size}, bases)
+
+    def stop_bases(self, frame):
+        """The arrays and objects the locals of each frame of the program the inspection
+        listed hold, where the debugger places them (#336, ``held_extents``), as
+        ``probe.past_end`` takes them: ``frame``'s first, then the others' innermost first,
+        with their place ({"frame": index, "function"}). Read once per inspection, and
+        each frame's kept for its stop (``held_frames``), so another inspection of that
+        stop reads no caller again; a caller's locals are fetched here, and the debugger's
+        scopes then given back to ``frame`` (lldb-dap reads a scope of the frame last
+        asked). A caller whose locals did not all come is read again next time."""
+        if self.held_stop != self.stop_id:
+            self.held_frames, self.held_stop = {}, self.stop_id
+        if self.past_bases is None:
+            self.past_bases, scanned = [], False
+            for index, listed in enumerate(self.listed_frames or ()):
+                identity = listed.get("id")
+                if identity in self.held_frames:
+                    held = self.held_frames[identity]
+                else:
+                    variables, whole = self.frame_variables.get(identity), True
+                    if variables is None and not _in_program_sources(
+                        self.runtime, listed, self.root
+                    ):
+                        self.held_frames[identity] = None
+                        continue
+                    if variables is None:
+                        scanned = True
+                        variables, whole = self.frame_locals(listed)
+                    held = self.frame_held(variables, listed)
+                    if whole:
+                        self.held_frames[identity] = held
+                if held is not None:
+                    name = str(listed.get("name") or "")[:300]
+                    self.past_bases.append((index, identity, name, held))
+            if scanned:
+                self.frame_scans += 1
+                try:
+                    self.dap.request("scopes", {"frameId": frame["id"]}, timeout=5)
+                except (TimeoutError, RuntimeError, OSError) as exc:
+                    raise ValueError(
+                        "The debugger did not give back this frame's scopes after Peeky read "
+                        "its callers' locals; inspect again"
+                    ) from exc
+        own = [entry for entry in self.past_bases if entry[1] == frame.get("id")]
+        bases = [(selector, extent, {}) for entry in own for selector, extent in entry[3]]
+        for index, identity, name, held in self.past_bases:
+            if identity != frame.get("id"):
+                place = {"frame": index, "function": name}
+                bases += [(selector, extent, place) for selector, extent in held]
+        return bases
+
+    def frame_held(self, variables, frame):
+        """``held_extents`` of a frame's locals, at most 512."""
+        held = []
+        for variable in variables[:256]:
+            if len(held) >= 512:
+                break
+            if isinstance(variable, dict) and isinstance(variable.get("name"), str):
+                try:
+                    held += self.runtime.held_extents(variable, frame, variable["name"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return held[:512]
+
+    def frame_locals(self, frame):
+        """A caller frame's locals as the debugger lists them, and whether they all came
+        (``stop_bases``): none where the debugger refuses or doesn't answer in time; a
+        request that times out leaves the inspection read-only."""
+        variables = []
+        try:
+            scopes = self.dap.request("scopes", {"frameId": frame["id"]}, timeout=5)
+            for scope in self.runtime.local_scopes(scopes.get("scopes", []))[:4]:
+                reply = self.dap.request(
+                    "variables", {"variablesReference": scope["variablesReference"]}, timeout=5
+                )
+                variables += reply.get("variables", [])[:256]
+        except TimeoutError:
+            # Its reply may still come: no change is made until the next inspection.
+            self.view_timed_out = True
+            return [], False
+        except (RuntimeError, OSError, KeyError, TypeError, AttributeError):
+            return [], False
+        return variables, True
 
     def named_children(self, reference, indexed, name, runtime):
         """The children named ``name`` of the value ``reference`` names. An element LLDB
@@ -4912,6 +5105,7 @@ class DebugWorker:
         self.deeper_frames = None
         self.thread_count = None
         self.whole_frames = None
+        self.held_frames, self.held_stop, self.past_bases = {}, None, None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()
