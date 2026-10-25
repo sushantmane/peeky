@@ -190,7 +190,10 @@ def test_only_what_fails_in_every_function_on_the_line_is_refused_before_the_run
     # returns (#330): refused in both.
     code, result = probe(capsys, crate, shared, "--capture", "factor", "--set", "factor=3")
     message = refused_before_launch(result)
-    assert "in scale::scale::{closure#0}, `factor` is a local kept in a register" in message
+    # The closure reaches `factor` through its capture, a pointer (#335): not proven in memory.
+    assert "in scale::scale::{closure#0}, the build's IR doesn't prove `factor` in memory" in (
+        message
+    ), message
     assert (
         "the program's own `total` (at line 11) may hold a copy of `factor` that it goes on with"
     ) in message, message
