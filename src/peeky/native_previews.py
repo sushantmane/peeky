@@ -354,15 +354,19 @@ class Typed:
         base type by its name, encoding and size; a struct, class or union by its layout
         (``_layout``: its name, size, and each member's name, offset and type, those of
         its members too), never by its name alone, which two files may give two layouts.
-        Any other type (an enum, whose values the walk does not read), or a record whose
-        layout was not all read, is its offset in the debug information: the same type
-        only within one unit. None where it was not read."""
+        A pointer is told by what it points at, by name (#339: an `int **` in one file at
+        an `int *` local in another). Any other type (an enum, whose values the walk does
+        not read), or a record or pointer whose layout was not all read, is its offset in
+        the debug information: the same type only within one unit. None where it was not
+        read."""
         offset = self.resolved()
         node = self.graph.get(offset) if offset is not None else None
         if node is None:
             return None
         if node[0] == "base":
             return f"base {node[1]} {node[2]} {node[3]}"
+        if node[0] == "pointer" and (layout := _layout(self.graph, offset)) is not None:
+            return f"pointer {layout}"
         if node[0] == "record" and (layout := _layout(self.graph, offset)) is not None:
             digest = hashlib.sha256(layout.encode()).hexdigest()[:16]
             return f"{node[2]} {node[11] if len(node) > 11 else node[1]} {node[3]} {digest}"
@@ -449,8 +453,8 @@ def _layout(graph, offset, depth=0):
 
 def _named(graph, offset, depth=0):
     """What a pointer points at, as ``_layout`` names it without following it: a base
-    type's ``_layout``, a record's or enum's kind and name, a pointer's own target so
-    named, `void`; None where unread."""
+    type's ``_layout``, a record's or enum's kind and name, a pointer's own target and an
+    array's element so named, `fn` for a function, `void`; None where unread."""
     if offset is None:
         return "void"
     for _ in range(64):
@@ -469,6 +473,13 @@ def _named(graph, offset, depth=0):
     if node[0] == "pointer":
         aimed = _named(graph, node[2], depth + 1)
         return None if aimed is None else f"*{aimed}"
+    if node[0] == "array" and node[3]:
+        inner = _named(graph, node[2], depth + 1)
+        return None if inner is None else f"{list(node[3])}{inner}"
+    if node[0] == "other" and node[1] == "DW_TAG_subroutine_type":
+        # A function, whose parameters the walk does not read (#339: a callback member,
+        # a C++ class's vtable pointer).
+        return "fn"
     return None
 
 

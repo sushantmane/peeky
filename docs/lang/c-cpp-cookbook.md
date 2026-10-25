@@ -296,6 +296,8 @@ Peeky looks for the array in the locals of each frame it lists, at most ten:
   elements of an array of structs (`rs[1].buf`).
 - In C++, an array member of the object `this` points at (`this.buf_`). A `std::array` counts as
   an array.
+- A 2-D array counts as one array of its innermost elements, row after row: `char names[4][16]`
+  holds 64 `char`s.
 - The pointer points at the array's element type, of its size, as for an element
   ([above](#which-elements-address-a-pointer-holds)).
 - In another source file, a struct, class or union is that type only with the same layout: its
@@ -324,13 +326,14 @@ marks it `[unproven]` unless the address is in an object it places
 
 - One past a single object, such as `&x + 1`. Locals of one type often sit side by side, so a
   pointer to the second would be refused too.
-- An array Peeky doesn't list: a global or `static` one, a heap block, a 2-D array, or one held
-  deeper than above.
+- An array Peeky doesn't list: a global or `static` one, a heap block, or one held deeper than
+  above.
 - An array whose address lldb-dap doesn't give. lldb-dap 18 gives none for a `char` array or a
   `std::array`, and lldb-dap 20 and later give every value's.
 - An address two or more elements past the end, or before the start.
 - An array of an enum, or of a struct whose layout Peeky didn't read whole, in another source
-  file than the pointer's function.
+  file than the pointer's function. A pointer to an enum local in another file is marked
+  `[unproven]` for the same reason.
 
 ### How far a pointer is from a pointer parameter
 

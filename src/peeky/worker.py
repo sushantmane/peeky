@@ -305,8 +305,11 @@ class DebugWorker:
         # once, however often it is inspected; and the locals there the debugger gave no
         # address for, with where `main`'s arguments are (#339).
         self.held_frames, self.held_stop, self.held_extras = {}, None, {}
-        # What the rule on reading through a C or C++ pointer learned at one stop (#339).
+        # What the rule on reading through a C or C++ pointer learned at one stop (#339);
+        # whether a caller's locals didn't all come this inspection, and whether a read for
+        # the pointer being judged didn't: then its judgement isn't kept.
         self.pointee_stop = None
+        self.past_incomplete = self.pointee_partial = False
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -2417,6 +2420,7 @@ class DebugWorker:
             wanted = args.get("extents", False)
             self.extents = wanted if type(wanted) is bool else frozenset(wanted)
             self.frame_variables, self.past_bases, self.frame_scans = {}, None, 0
+            self.past_incomplete = False
             if self.held_stop != self.stop_id:
                 # Another stop: its frames may hold other arrays, at other addresses.
                 self.held_frames, self.held_stop, self.held_extras = {}, self.stop_id, {}
@@ -2578,8 +2582,11 @@ class DebugWorker:
                 and getattr(runtime, "checks_past_ends", False) is True
             ):
                 # What a step out returned is judged against the stop's arrays (#336): read
-                # them before the scopes are bound for changes.
+                # them before the scopes are bound for changes; so are what proves a C
+                # string it returned live (#339: the stack pointer, a local's `&name`).
                 self.stop_bases(selected_frame)
+                if isinstance(given, dict) and isinstance(given.get("value"), str):
+                    self.returned_unproven(given.get("type"), given["value"], selected_frame)
             references = [scope["variablesReference"] for _, scope, _, _ in pending]
             writable = quiescent and not self.view_timed_out
             if (self.view_fetches or self.preview_fetches or self.frame_scans) and writable:
@@ -4074,6 +4081,8 @@ class DebugWorker:
                     self.held_extras[identity] = {**extras, "index": index}
                     if whole:
                         self.held_frames[identity] = held
+                    else:
+                        self.past_incomplete = True
                 if held is not None:
                     name = str(listed.get("name") or "")[:300]
                     self.past_bases.append((index, identity, name, held))
@@ -4173,12 +4182,15 @@ class DebugWorker:
                 pointer = runtime.pointee_of(frame, list(steps))
             except (KeyError, TypeError, ValueError):
                 pointer = None
-            why = None
+            why, self.pointee_partial = None, False
             if isinstance(pointer, dict):
                 character = pointer["element_size"] == 1 and _character(pointer["pointee"])
                 why = self.judge_pointee(
                     int(held[0], 16), {**pointer, "character": character}, frame
                 )
+            if self.pointee_partial or self.past_incomplete:
+                # A read that didn't come may yet place it: judged again next time.
+                return why
             state["judged"][key] = why
         return state["judged"][key]
 
@@ -4225,8 +4237,10 @@ class DebugWorker:
                 try:
                     found = read(self.dap, self.innermost_frame)
                 except TimeoutError:
-                    # Its reply may still come: no change is made until the next inspection.
-                    self.view_timed_out = True
+                    # Its reply may still come: no change is made until the next inspection,
+                    # and it is asked again then.
+                    self.view_timed_out = self.pointee_partial = True
+                    return None
                 except (RuntimeError, OSError, KeyError, TypeError, ValueError):
                     found = None
             state["sp"] = found if type(found) is int and found > 0 else None
@@ -4256,7 +4270,12 @@ class DebugWorker:
                         settled = settled and not innermost
                         continue
                     state["hovers"] += 1
-                    state["placed"][key] = self.hover_place(runtime, variable, listed, name)
+                    try:
+                        state["placed"][key] = self.hover_place(runtime, variable, listed, name)
+                    except TimeoutError:
+                        # Asked again at the next inspection of this stop.
+                        self.pointee_partial, settled = True, settled and not innermost
+                        continue
                 found = state["placed"][key]
                 if found is None:
                     settled = settled and not innermost
@@ -4277,7 +4296,8 @@ class DebugWorker:
 
     def hover_place(self, runtime, variable, frame, name):
         """``held_extents`` of a local at the address the debugger gives for `&name` as a
-        hover (#339), or None where it gives none. lldb-dap 18 shows a summary in place
+        hover (#339), or None where it gives none; TimeoutError where it didn't answer in
+        time. lldb-dap 18 shows a summary in place
         of that address where the type has one (`&s = "text"` for a `std::string`): a
         struct's is then where its members are, less their offsets."""
         arguments = {"expression": f"&{name}", "frameId": frame.get("id"), "context": "hover"}
@@ -4286,7 +4306,7 @@ class DebugWorker:
             reply = self.dap.request("evaluate", arguments, timeout=2)
         except TimeoutError:
             self.view_timed_out = True
-            return None
+            raise
         except (RuntimeError, OSError):
             return None
         shown = {
@@ -4300,7 +4320,7 @@ class DebugWorker:
                 listed = self.dap.request("variables", {"variablesReference": reference}, timeout=2)
             except TimeoutError:
                 self.view_timed_out = True
-                return None
+                raise
             except (RuntimeError, OSError):
                 return None
             children = listed.get("variables") if isinstance(listed, dict) else None
@@ -5443,7 +5463,7 @@ class DebugWorker:
         self.thread_count = None
         self.whole_frames = None
         self.held_frames, self.held_stop, self.past_bases = {}, None, None
-        self.held_extras, self.pointee_stop = {}, None
+        self.held_extras, self.pointee_stop, self.past_incomplete = {}, None, False
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()

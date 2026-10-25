@@ -9,6 +9,7 @@ import bisect
 import contextlib
 import hashlib
 import json
+import math
 import os
 import platform
 import posixpath
@@ -5363,18 +5364,28 @@ class NativeSession:
                 return
             typed, address, sort = inner[1], address + placed[0], "array"
         if sort == "array":
-            length, element = typed.count(), typed.element()
-            if type(length) is not int or length < 1 or element.dims:
+            from peeky.native_previews import Typed
+
+            # A 2-D array is an array of its innermost elements, row after row (#339), its
+            # `dims` said: `names[4][16]`, 64 `char`s.
+            found = typed._array()
+            dims = found[1] if found else ()
+            if not dims or any(type(count) is not int or count < 1 for count in dims):
                 return
+            element, length = Typed(typed.graph, found[0]), math.prod(dims)
             kind, size = element.identity(), element.byte_size()
             if element.kind() not in _ELEMENTS or kind is None or size is None:
                 return
             extent = {"address": address, "length": length, "element": kind}
+            if len(dims) > 1:
+                extent["dims"] = list(dims)
             held.append((selector, {**extent, "element_size": size}))
             if element.kind() in ("record", "union") and depth < 3:
                 for index in range(min(length, 16)):
-                    at = address + index * size
-                    self._held(f"{selector}[{index}]", element, at, held, depth + 1, own=False)
+                    at, place = address + index * size, ""
+                    for count in reversed(dims):
+                        place, index = f"[{index % count}]{place}", index // count
+                    self._held(f"{selector}{place}", element, at, held, depth + 1, own=False)
             return
         if sort not in ("record", "union", "scalar", "library", "pointer"):
             return

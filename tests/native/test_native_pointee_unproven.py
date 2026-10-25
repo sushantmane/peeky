@@ -62,13 +62,15 @@ int main(void) {
   struct holder h = {live, 2};
   char name[8] = "maya";
   char *pn = name;
+  char rows[2][8] = {"ab", "cd"};
+  char *row = rows[1];
   const char *lit = "literal";
   char *dup = malloc(8);
   strcpy(dup, "heap");
   char *old = word();
   long total = peek(arr, 4);
-  printf("%ld %ld %ld %ld %s %s %s %d %ld %p %p %p %p\\n", *px, *pa, total, live[0], pn, lit,
-         dup, h.n, hc->a, (void *)two, (void *)dang, (void *)old, (void *)freed); /* MAIN */
+  printf("%ld %ld %ld %ld %s %s %s %s %d %ld %p %p %p %p\\n", *px, *pa, total, live[0], pn, row,
+         lit, dup, h.n, hc->a, (void *)two, (void *)dang, (void *)old, (void *)freed); /* MAIN */
   free(live);
   free(hc);
   free(dup);
@@ -137,17 +139,19 @@ def unproven(row, pointer, why, text=False):
 @pytest.mark.timeout(240)
 def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program, capsys):
     selectors = (
-        "px[0],pa[0],pn,pn[0],lit,h,two[0],two.a,dang[0],live[0],freed[0],hc.a,hc[0],h.p[0],dup,old"
+        "px[0],pa[0],pn,pn[0],row,lit,h,two[0],two.a,dang[0],live[0],freed[0],hc.a,hc[0],h.p[0],"
+        "dup,old"
     )
     result = probed(capsys, program, f"pointees.c:{line_of('MAIN')}", selectors)
     rows = {row["selector"]: row for row in result["rows"]}
-    # A local, an array element, a `char` array's text, a string literal (the program's own
-    # image), and a struct whose pointer member shows only its address: no mark.
+    # A local, an array element, a `char` array's text, a 2-D array's row, a string literal
+    # (the program's own image), and a struct whose pointer member shows only its address:
+    # no mark.
     assert rows["px[0]"]["value"] == "7" and rows["pa[0]"]["value"] == "2", rows
     assert rows["pn"]["value"].endswith('"maya"') and rows["pn[0]"]["value"] == "'m'", rows
-    assert rows["lit"]["value"].endswith('"literal"'), rows
+    assert rows["lit"]["value"].endswith('"literal"') and rows["row"]["value"].endswith('"cd"')
     assert rows["h"]["value"].startswith("{p = 0x") and rows["h"]["value"].endswith("n = 2}")
-    for selector in ("px[0]", "pa[0]", "pn", "pn[0]", "lit", "h"):
+    for selector in ("px[0]", "pa[0]", "pn", "pn[0]", "row", "lit", "h"):
         assert "view" not in rows[selector] and "note" not in rows[selector], rows[selector]
     # Two past `cells`' end: the bytes there are read, marked.
     past = "it holds the address of `cells[4]`, past the end of `cells`, which has 3 elements"

@@ -237,6 +237,57 @@ def test_a_struct_with_a_summary_is_where_its_members_are():
     assert session(1).address_from_members({}, "n", [hider]) is None
 
 
+def test_a_2d_arrays_rows_and_their_members_are_placed():
+    graph = {
+        1: ("base", "char", "DW_ATE_signed_char", 1),
+        2: ("array", "", 1, (4, 16), False),  # char[4][16]
+        3: record("pt", [("x", 4, 0)], 8),
+        4: ("base", "long", "DW_ATE_signed", 8),
+        5: ("array", "", 3, (2, 3), False),  # pt[2][3]
+    }
+    native = NativeSession.__new__(NativeSession)
+    native._typed = lambda frame, steps, walked=False: (
+        (Typed(graph, 2 if steps == ["names"] else 5), False) if walked else None
+    )
+    (names,) = native.held_extents(
+        {"value": "char[4][16] @ 0x1000", "type": "char[4][16]"}, {}, "names"
+    )
+    assert names == (
+        "names",
+        {"address": 0x1000, "length": 64, "element": CHAR, "element_size": 1, "dims": [4, 16]},
+    )
+    # `char *row = names[1]` is in it; past its end is #336's; no index names an element.
+    pointer = {"pointee": CHAR, "element_size": 1, "count": 1}
+    assert pointee_proven(0x1010, pointer, [(*names, {})]) is True
+    assert pointee_past(0x1042, pointer, [(*names, {})]) is None
+    found = dict(native.held_extents({"value": "pt[2][3] @ 0x2000", "type": "pt[2][3]"}, {}, "pts"))
+    assert found["pts[1][2].x"]["address"] == 0x2000 + 5 * 8
+
+
+def test_a_pointer_is_told_alike_in_every_source_file():
+    # `int **pp` in one file at `int *q` in another; a struct holding a callback, and a
+    # C++ class's vtable pointer (a pointer to a function), likewise.
+    graph = {
+        1: ("base", "int", "DW_ATE_signed", 4),
+        2: ("pointer", "", 1, 8),
+        3: ("base", "int", "DW_ATE_signed", 4),
+        4: ("qualifier", "const", 3),
+        5: ("pointer", "", 4, 8),
+        6: ("other", "DW_TAG_subroutine_type"),
+        7: ("pointer", "", 6, 8),
+        8: record("handler", [("on", 7, 0)], 8),
+        9: ("other", "DW_TAG_subroutine_type"),
+        10: ("pointer", "", 9, 8),
+        11: record("handler", [("on", 10, 0)], 8),
+        12: ("enum", "color", 4),
+    }
+    assert Typed(graph, 2).identity() == Typed(graph, 5).identity()
+    assert str(Typed(graph, 2).identity()).startswith("pointer ")
+    assert Typed(graph, 8).identity() == Typed(graph, 11).identity()
+    # An enum is still told only within its file: the walk reads no enumerators.
+    assert Typed(graph, 12).identity() == 12
+
+
 def test_a_base_class_is_an_object_where_the_build_places_it():
     # `struct Circle : Shape` with a vtable first: its `Shape` is 8 bytes in. A `Shape *` at
     # a `Circle` local points at a live `Shape`; a virtual base (no offset) is never placed.
@@ -529,6 +580,27 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert asked(stopped, "$sp") == 2 and asked(stopped, "&n") == 2
 
 
+def test_a_read_that_did_not_come_is_asked_again(stopped):
+    # The stack pointer's reply doesn't come in time: nothing is kept of that judgement, and
+    # the next inspection of the stop asks again (review: a timeout left `dang` unplaced).
+    request, slow = stopped.dap.request, [1]
+
+    def answer(operation, args, timeout=None):
+        if operation == "evaluate" and args["expression"] == "$sp" and slow:
+            slow.pop()
+            raise TimeoutError("no answer in time")
+        return request(operation, args, timeout)
+
+    stopped.dap.request = answer
+    for _ in range(2):
+        shown = {
+            v["name"]: v for v in call(stopped, "inspect", frame_id=1)["scopes"][0]["variables"]
+        }
+        page = call(stopped, "expand", handle=shown["dang"]["variablesReference"], start=0)
+    assert asked(stopped, "$sp") == 1  # the first one timed out, and was not recorded
+    assert "below the stack pointer" in page["unproven_read"]
+
+
 def test_a_heap_pointers_pointee_asks_nothing_of_locals_it_cant_be(stopped):
     # No `char *`: nothing else asks for `n` first.
     stopped.dap.variables[1] = [v for v in stopped.dap.variables[1] if v["name"] != "dup"]
@@ -656,6 +728,37 @@ def test_session_get_marks_each_child_and_says_why_once():
     ]
     (row,) = _capture(Stop(), stop, ("dup",), 1, "observed", children=True, pointers=True)
     assert _get_lines(row)[0] == f'dup: char * = {at(0x9200)} "heap"  [unproven]'
+
+
+def test_session_get_says_why_a_members_text_is_marked():
+    # A struct whose `char *` member's text is read from a heap block: the member is marked,
+    # and the row says why (review: it said Rust's note).
+    text = unproven_text("r.name", {"kind": "unplaced", "statics": True}, text=True)
+    name = {"name": "name", "type": "char *", "value": f'{at(0x9200)} "heap"'}
+    name.update(variablesReference=0, view="unproven", unproven_read=True, note=text)
+    count = {"name": "count", "type": "int", "value": "2", "variablesReference": 0}
+
+    class Holder:
+        def dispatch(self, operation, args):
+            if operation == "expand":
+                return {"variables": [name, count], "truncated": False}
+            if operation == "preview":
+                return {}
+            variable = {"name": "r", "type": "rec", "value": "{…}", "variablesReference": 3}
+            return {
+                "frame": 0,
+                "frames": [{"line": 9, "name": "main"}],
+                "scopes": [{"name": "Locals", "variables": [variable]}],
+            }
+
+    stop = {"session_id": "s", "stop_id": "t"}
+    (row,) = _capture(Holder(), stop, ("r",), 1, "observed", children=True, pointers=True)
+    assert row["note"] == text
+    assert _get_lines(row)[1:] == [
+        f'  r.name: char * = {at(0x9200)} "heap"  [unproven]',
+        "  r.count: int = 2",
+        f"  note: {text}",
+    ]
 
 
 def test_session_inspect_marks_a_pointers_text():

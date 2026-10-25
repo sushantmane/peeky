@@ -1915,11 +1915,12 @@ def _capture(
                     # (ninth evaluation: `<children: … exceeds bounded expansion limit>`).
                 listed = row.get("children", ())
                 unproven = [c for c in listed if c.get("view") == "unproven"]
-                read = [c["note"] for c in unproven if _THROUGH.match(str(c.get("note")))]
+                read = [c["note"] for c in unproven if _UNPROVEN_C.match(str(c.get("note")))]
                 if "note" not in row and read:
-                    # A C or C++ pointer's pointee, which Peeky can't show is a live object
-                    # (#339): why, once, for the children marked.
-                    row["note"] = read[0]
+                    # Read through a C or C++ pointer Peeky can't show points at a live
+                    # object, or a `char *` member's text (#339): each why, once, for the
+                    # children marked.
+                    row["note"] = "; ".join(dict.fromkeys(read[:3]))
                 elif "note" not in row and unproven:
                     # A caller's struct reads, but not what its pointers reach (#108); a
                     # live one, but not what its raw pointers do (#255).
@@ -2105,13 +2106,15 @@ def pointee_past(address, pointer, bases):
     ({"kind": "past", "selector", "index", "length"}), or before its start ({"kind":
     "before", "selector", "elements"}), with the array's place (``past_end``'s). The
     array nearest by elements, the pointer's own frame's first; within ``OFFSET_CAP``
-    elements. One past the end is ``past_end``'s (#336). None otherwise."""
+    elements; never a 2-D one, whose element no single index names. One past the end is
+    ``past_end``'s (#336). None otherwise."""
     size, found = pointer.get("element_size"), None
     for selector, base, place in bases:
         bounds = _base_bounds(base)
         if (
             bounds is None
             or "length" not in base
+            or "dims" in base
             or type(size) is not int
             or size != base.get("element_size")
             or pointer.get("pointee") is None
@@ -2349,6 +2352,9 @@ DEPTH_LIMITED_CHILDREN = (
 
 # How the worker prefixes the note of what is read through a local shown with one (#148).
 _THROUGH = re.compile(r"^read through `[^`\n]+`: ")
+# The note of a C or C++ value read through a pointer Peeky can't show points at a live
+# object, or of a pointer's own text read so (#339: ``unproven_text``).
+_UNPROVEN_C = re.compile(r"^(?:read through `[^`\n]+`: )?Peeky can't show that ")
 
 
 def _resume(worker, stop, returning, rows):
