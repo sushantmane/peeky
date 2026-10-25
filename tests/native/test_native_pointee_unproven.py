@@ -245,6 +245,10 @@ struct Counter {
   }
 };
 
+struct Tagged { long tag = 3; };
+struct Shape { long id = 5; };
+struct Circle : Tagged, Shape { long r = 2; };
+
 int main() {
   Counter onstack;
   Counter *heap = new Counter();
@@ -253,7 +257,10 @@ int main() {
   std::string s = "local";
   std::string *pl = &s;
   std::string *ps = new std::string("text");
-  std::printf("%ld %ld %s %s\\n", onstack.count, heap->count, pl->c_str(), ps->c_str()); /* MAIN */
+  Circle circle;
+  Shape *shape = &circle;
+  std::printf("%ld %ld %s %s %ld\\n", onstack.count, heap->count, pl->c_str(), ps->c_str(),
+              shape->id); /* MAIN */
   delete ps;
   delete heap;
   return 0;
@@ -272,10 +279,15 @@ def test_cpp_marks_members_read_through_a_heap_objects_this(tmp_path, monkeypatc
     assert [row["value"] for row in rows] == ["0", "0"], rows
     assert "view" not in rows[0], rows
     unproven(rows[1], "this", HEAP)
-    rows = probed(capsys, target, f"count.cpp:{line_of('MAIN', CPP)}", "heap.count,pl,ps")
-    rows = {row["selector"]: row for row in rows["rows"]}
+    at = f"count.cpp:{line_of('MAIN', CPP)}"
+    rows = {
+        row["selector"]: row
+        for row in probed(capsys, target, at, "heap.count,pl,ps,shape.id")["rows"]
+    }
     assert rows["heap.count"]["value"] == "2", rows
     unproven(rows["heap.count"], "heap", HEAP)
+    # A base class of a local, 8 bytes into it: a live `Shape`.
+    assert rows["shape.id"]["value"] == "5" and "view" not in rows["shape.id"], rows
     # A `std::string *`: at `main`'s `s`, its text is unmarked; at a heap string, marked.
     # lldb-dap 18 reads no libstdc++ string's text, and gives no address for `s`: nothing
     # is read, and nothing marked.

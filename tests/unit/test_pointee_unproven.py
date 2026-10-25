@@ -237,6 +237,35 @@ def test_a_struct_with_a_summary_is_where_its_members_are():
     assert session(1).address_from_members({}, "n", [hider]) is None
 
 
+def test_a_base_class_is_an_object_where_the_build_places_it():
+    # `struct Circle : Shape` with a vtable first: its `Shape` is 8 bytes in. A `Shape *` at
+    # a `Circle` local points at a live `Shape`; a virtual base (no offset) is never placed.
+    graph = {
+        1: ("base", "long", "DW_ATE_signed", 8),
+        2: record("Shape", [("id", 1, 0)], 8),
+        3: (*record("Circle", [("r", 1, 16)], 24)[:10], (2, 4), "Circle", (), (8, None)),
+        4: record("Far", [("f", 1, 0)], 8),
+    }
+    native = NativeSession.__new__(NativeSession)
+    native._typed = lambda frame, steps, walked=False: (
+        (Typed(graph, 3), False) if walked else Typed(graph, 3)
+    )
+    found = dict(native.held_extents({"value": "Circle @ 0x1000", "type": "Circle"}, {}, "c"))
+    shape = Typed(graph, 2).identity()
+    assert found["c.Shape"] == {"address": 0x1008, "element": shape, "element_size": 8}
+    assert found["c.Shape.id"]["address"] == 0x1008 and "c.Far" not in found
+    pointer = {"pointee": shape, "element_size": 8, "count": 1}
+    bases = [(name, extent, {}) for name, extent in found.items()]
+    assert pointee_proven(0x1008, pointer, bases) is True
+    assert pointee_proven(0x1000, pointer, bases) is False
+
+
+def record(name, members, size):
+    placed = tuple((m, t, at, False, None, None) for m, t, at in members)
+    held = tuple(t for _, t, _ in members)
+    return ("record", name, "struct", size, None, placed, held, False, False, None, (), name, ())
+
+
 def test_mains_argument_vector_is_where_its_strings_are():
     argv = {"name": "argv", "value": at(0x7FF0)}
     assert session(8).argument_vector(argv, {}, "argv") == 0x7FF0

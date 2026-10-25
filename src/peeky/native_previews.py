@@ -209,6 +209,20 @@ class Typed:
                 found.append((member[0], Typed(self.graph, member[1]), offset))
         return found
 
+    def placed_bases(self):
+        """[(name, Typed, byte offset)] of a class's base classes that the debug information
+        places (#339): never a virtual one, whose place only the running object says."""
+        node = self.node()
+        if node is None or node[0] != "record" or len(node) < 14:
+            return []
+        found = []
+        for base, offset in zip(node[10], node[13]):
+            inner = Typed(self.graph, base)
+            name = (inner.node() or ("", None))[1]
+            if name and type(offset) is int and offset >= 0:
+                found.append((name, inner, offset))
+        return found
+
     def byte_size(self):
         """How many bytes one value of the type takes, from the debug information, or
         None where it does not say (#302): a base type's, an enum's, a complete

@@ -5384,7 +5384,9 @@ class NativeSession:
         if own:
             held.append((selector, {"address": address, "element": kind, "element_size": size}))
         if sort in ("record", "union") and depth < 3:
-            for member, inner, offset in typed.placed_members():
+            # A base class is an object of its own where the build places it (#339: a
+            # `Shape *` at a `Circle`), named as LLDB names it, by its class.
+            for member, inner, offset in [*typed.placed_bases(), *typed.placed_members()]:
                 if offset + (inner.byte_size() or 0) <= size:
                     self._held(f"{selector}.{member}", inner, address + offset, held, depth + 1)
 
