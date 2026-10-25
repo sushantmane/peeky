@@ -187,10 +187,22 @@ message says `cannot be changed here`.
 - C and C++: at a statement's first instruction.
 - Rust: at a breakpoint, or after a step to its line's start, where the MIR proves that no
   statement is under way. The MIR is the compiler's mid-level representation of the function.
-- Rust: not where a binding of the program's own holds a copy that it goes on with. That binding
-  replaces or drops the local unread: ``the program has already copied `x` into `n` ``. Where a call
-  given `&mut x` since may have changed `x`: ``the program's own `n` (at line 34) may hold a copy
-  of `x` that it goes on with``.
+- Rust: a mark of `[settable]` covers the paths that don't panic or loop forever. On a path that
+  panics, or never leaves a loop, a change may not be seen.
+- Rust: not where the program goes on with a copy of the old value. It copied the local into a
+  binding of its own, or into a Vec by `push`. Then it replaces the local, or the local goes out of
+  scope, before reading it. The copy may be used before or after that:
+  ``the program has already copied `x` into `n` ``. Where a call given `&mut x` since may have
+  changed `x`: ``the program's own `n` (at line 34) may hold a copy of `x` that it goes on with``.
+  Where every path then panics or exits first: ``every path from here panics or exits before
+  reading `x` ``. Where a path never leaves a loop: ``on a path from here the program loops
+  forever without reading `x` ``.
+- Rust: not where no path reads the value again before it is overwritten or goes out of scope. The
+  stop's own line counts, as `total = k + 3;` does for `total`:
+  `the program does not read it after this stop, so a change would never be seen: it is overwritten
+  at line 7 first`. Where a call on the way may panic, it adds `, unless the program panics or exits
+  before that`. Where a drop's `Drop` impl may read it, it says only that the program may not read
+  it. The hint says to change it after that line, or before its last read.
 
 ### Texts
 
@@ -235,6 +247,7 @@ status 2. The build rules a change out for:
 - a Rust local kept in a register;
 - a Rust local inside a statement that has already read it, or copied it into a binding of the
   program's own. This must hold at every place of the line;
+- a Rust local that no path reads again from any place of the line;
 - a field through a pointer, or a field of a type that no change reaches;
 - a Java local whose declared type no change reaches, or that can't hold the value;
 - a Java field of a value declared as a type outside the program's classes. It is ruled out when

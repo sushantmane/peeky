@@ -31,6 +31,7 @@ are explained in [rust.md](rust.md#words-these-pages-use).
   - [What `--set` can change](#what---set-can-change)
   - [Where a change is allowed](#where-a-change-is-allowed)
   - [When the program has its own copy](#when-the-program-has-its-own-copy)
+  - [When the program never reads it again](#when-the-program-never-reads-it-again)
   - [Locals that can't change, and what to do](#locals-that-cant-change-and-what-to-do)
   - [Change a value behind a reference](#change-a-value-behind-a-reference)
   - [Set a String to a text](#set-a-string-to-a-text)
@@ -1417,8 +1418,9 @@ fields of structs and tuples your crate defines, and elements of fixed-size arra
 
 What a change makes true: the value's storage holds the new value, and the program's later reads
 of it see it. Copies that the program made itself keep the old value: `let a = s.a;` above the
-stop, or a `for` loop's iterator over `0..s.n`. The stop's own line may overwrite the change:
-`s = Tri { a: 9, ..s };`.
+stop, or a `for` loop's iterator over `0..s.n`. A change that no read can see is refused: the stop's
+own line `s = Tri { a: 9, ..s };` overwrites `s.a` before reading it
+([When the program never reads it again](#when-the-program-never-reads-it-again)).
 
 Every change is read back from the debugger. If it isn't the value asked for, the change is
 reported as not made (`MUTATION_REJECTED`). If something else was stored, the session is closed.
@@ -1445,6 +1447,10 @@ maintainers.
 A change is allowed only at a line breakpoint, or after a step that lands on a line's start.
 There, the MIR must show that no statement under way has read the value into a temporary. This
 holds for integer locals too.
+
+On a path where the program panics, or never leaves a loop, a change may not be seen; Peeky's marks
+are about the paths that don't panic or loop forever. The rules below judge only those paths: a
+read only on a panic's path, as by a `Drop` that runs while it unwinds, doesn't count.
 
 - So a change is never allowed back from a call, after `step --out`. For example, it is refused
   back from `f` in `let t = s.a + f();`.
@@ -1563,6 +1569,8 @@ Rows withheld at such a stop say why, as `session inspect` does:
 - `[not settable: a statement under way read it (line 17)]`;
 - ``[not settable: copied into `n` (line 35)]``;
 - `[not settable: the program may hold a copy (line 34)]`, for your binding's copy;
+- `[not settable: not read after the stop (overwritten at line 68)]`, or `(out of scope at line
+  80)`, where no path reads it again;
 - `[not settable: part-way through line 12]`, after a step back from a call;
 - ``[not settable: line 20's inlined `clone` may have read it]``, at a breakpoint past an inlined
   call, with `(unsafe code)` where the crate has unsafe code;
@@ -1574,8 +1582,9 @@ lands on a statement's first line.
 ### When the program has its own copy
 
 The program may have copied the value into a binding of its own, and go on with that copy. Then
-it never sees the change, so Peeky refuses it. That is the case when the copy is used, and the
-local is then replaced or dropped without being read.
+it never sees the change, so Peeky refuses it. That is the case when the local is then replaced or
+goes out of scope without being read, and the copy is used, before or after that. After
+`u.push(y);`, at `let t = n;` before `y = t;`, `y` is refused where `u` is printed later.
 
 In [examples/rust](../../examples/rust), line 35 computes `start` from `request.page`:
 
@@ -1594,10 +1603,42 @@ These bindings copy a value:
 - a `while let`'s binding: `x = v - 1`;
 - a plain copy: `let y = x;` … `x = y + 1;`;
 - a `move` closure called before `x` goes out of scope unread. Writing a part, as in `s.a = t;`,
-  reads none of it.
+  reads none of it;
+- a Vec a struct is pushed into: after `laps.push(lap);`, `lap.start = finish;` overwrites a field
+  that `laps` holds a copy of;
+- a copy of an argument, `let z = x;`: the argument goes out of scope when the function returns;
+- any copy, where every path then panics or exits before it reads the local again:
+  `let z = x; black_box(z); panic!()`. The refusal says
+  ``every path from here panics or exits before reading `x` ``.
+- any copy used on a path that then loops forever without reading the local:
+  `if k > 100 { record(z); loop {} }`. Another path that reads it doesn't help. The refusal says
+  ``on a path from here the program loops forever without reading `x` ``. A loop with a way out,
+  as a `for` loop has, doesn't count. A panic is no way out:
+  `loop { if p { panic!("stop"); } }` counts.
 
-If the program reads the local again, before or after it uses the copy, it sees the change. The
-copy keeps the old value as the program's own: `let a = s.x;`.
+A panic on some paths only doesn't count. After `let z = x;`, `if z == 0 { panic!() }` and then
+`x + k` leave `x` settable, because the path that doesn't panic reads it. So does
+`record(z); may_panic(k); x`, though a caller's `catch_unwind` may go on with `z`.
+
+Only std's own panics count as panics: `panic!`, `assert!`, `assert_eq!`, `unreachable!` and the
+like. `std::panic::panic_any` and `resume_unwind` count as a call that never returns, as
+`process::exit` does, so `if z == 0 { panic_any(1); }` leaves `x` refused.
+
+A drop reads the value only where Peeky proves that the `Drop` impl it runs reads that part on
+every path that doesn't panic. So where `impl Drop for D` prints `self.0`, a change to `d.0` after
+`let z = d.0;` is seen, and allowed. So is `h.d.0` of `h: Holder { d: D, n: u32 }`.
+
+Where the drop may read it or not, the refusal stays, and says so instead of proving no read:
+``the program has already copied its value into `z` (at line 30) and goes on with that copy, so a
+change to `d` may never be seen: `d` is dropped at line 33, and a `Drop` it runs may read the
+changed part, which Peeky can't tell``. That is the case for `d.1`.
+
+A drop that can't reach the part changes nothing: `h.n` of `Holder`, `s.n` of
+`S { name: String, n: u32 }`, or a struct holding `Vec<D>` and a number. `ManuallyDrop`,
+`MaybeUninit` and `PhantomData` drop nothing they hold.
+
+If the program reads the local again before it uses the copy, it sees the change. The copy keeps
+the old value as the program's own: `let a = s.x;`.
 
 A call given `&mut x` after the copy, as `let y = x; keep(&mut x);`, may change `x`. Then `y` may
 no longer hold a copy of its value, and the refusal says only that it may:
@@ -1751,6 +1792,38 @@ These don't count, so the change is refused there, even where the call or print 
 
 A copy counts only for the part it may have taken. `let seen = r.end;` doesn't block a change to
 `o.marks[0]`.
+
+### When the program never reads it again
+
+Where no path from the stop reads the value before it is overwritten or goes out of scope, a change
+is never seen. So Peeky refuses it, and says where it ends. Here line 67 is `let k = other();`, and
+line 68 is `total = k + n;`:
+
+```
+error [MUTATION_REJECTED]: `total` cannot be changed at src/main.rs:67, at any stop of this build: in unseen::overwritten, the program does not read `total` after any stop of line 67, so a change there would never be seen: it is overwritten at line 68 first, unless the program panics or exits before that. Refused before the program runs: nothing ran. Change it on a later line, after the program overwrites it, or on an earlier line, before the program's last read of it (`--set-at` there); settable here: no root locals (fields where rows mark them [settable])
+```
+
+- The stop's own line counts: `total = k + n;` overwrites `total` before reading it. So does
+  `s = Tri { a: 9, ..s };` for a change to `s.a`, though it reads `s.b`.
+- Anything that may read the changed part counts as a read: a `copy` or `move` of it, a borrow, a
+  call it is given, or a drop whose `Drop` impl surely reads it. Reading another field doesn't
+  count, nor does a read only where the program panics.
+- Where a drop's `Drop` impl may read it, which Peeky can't tell, the refusal says only that the
+  program may not read it: ``it is dropped at line 45 first; a `Drop` that drop runs may read the
+  changed part, which Peeky can't tell``.
+- A pointer into the local that may still be used counts too. After `let r = &a;`, this rule
+  doesn't refuse a change to `a` while `b += *r;` is still to run.
+- Peeky doesn't refuse a change this way in an async body, or in a crate with unsafe code, where a
+  pointer may be kept out of its sight.
+- Where a call or an overflow check on the way may panic, or a loop may never end, the line isn't
+  said to come first alone: ``it is overwritten at line 57 first, unless the program panics or
+  exits before that``. Peeky doesn't prove that a loop ends. Where no path reaches a line, it says
+  ``the program panics or exits first``.
+- Where the program also goes on with a copy, the refusal names the copy instead
+  ([When the program has its own copy](#when-the-program-has-its-own-copy)).
+
+To change the value the program goes on with, change it after the line that overwrites it, where
+the program reads it. Or change it before the program's last read of it.
 
 ### Locals that can't change, and what to do
 

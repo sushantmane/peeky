@@ -314,8 +314,9 @@ def test_rust_a_shadowed_root_is_selected_by_where_it_is_declared(crate, capsys)
     inner, outer = mid_line("// INNER"), mid_line("// OUTER")
     code, result = change(capsys, f"s @ main.rs:{inner}.b=50")
     assert code == 0 and result["after"] == "50", result
-    code, result = change(capsys, f"s@main.rs:{outer}.b=40")
-    assert code == 0 and result["after"] == "40", result
+    # The outer `s` is named too: the program never reads it again, so it is refused for
+    # that (#330), where the inner one is read.
+    refused(capsys, f"s@main.rs:{outer}.b=40", "the program does not read it after this stop")
     assert "shadow Tri { a: 11, b: 50, c: 30 }" in finish(capsys)
 
 
@@ -440,8 +441,9 @@ def test_rust_a_shadowed_root_integer_is_changed(crate, capsys):
     capsys.readouterr()
     code, result = change(capsys, f"x @ main.rs:{steps_line('// X_INNER')}=500")
     assert code == 0 and result["after"] == "500", result
-    code, result = change(capsys, f"x@main.rs:{steps_line('// X_OUTER')}=20")
-    assert code == 0 and result["after"] == "20", result
+    # The outer `x`, which the program never reads again, is refused for that (#330).
+    outer = f"x@main.rs:{steps_line('// X_OUTER')}=20"
+    refused(capsys, outer, "the program does not read it after this stop")
     assert main(["session", "continue", "--to-exit"]) == 0
     capsys.readouterr()
     assert main(["session", "report", "--json"]) == 0

@@ -696,9 +696,49 @@ DWARF's `DW_AT_call_line`. That line may have no row of its own in the line tabl
 
 ### The program's own bindings
 
-A binding of the program's own blocks the change where, on some path, the program uses it and then
-assigns or ends the local without reading the changed part (`Body.copy_undoes`). Only direct copies
-count for bindings.
+A binding of the program's own blocks the change where, on some path, the program assigns or ends
+the local without reading the changed part, and uses the binding before or after that
+(`Body.copy_undoes`). Only direct copies count for bindings.
+
+- A use after the local is assigned or ends counts too (#330): `u.push(y);`, then `y = t;`, then
+  `u` printed. So does a Vec a struct was pushed into, used after the struct ends. The copy is all
+  that is left of the old value.
+- The frame's exit ends every local and argument (`Body._frame_exit`, `_diverges`): a `return`,
+  or a call that never returns other than std's panic (`process::exit`, `abort`, a function of the
+  crate's that returns `!`). An argument has no `StorageDead`.
+- A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
+  (`Block.unwinds`) is not followed. Std's panic (`Body._panics`) is neither a read nor an end, and
+  its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count (review 4).
+- `_PANIC_CALL` lists std's panic entry points, under a root `std_paths` proves. Each name is one
+  the MIR always prints with its path: `std::rt::panic_fmt`, `core::panicking::panic`,
+  `assert_failed`. `panic_any` and `resume_unwind` print bare unless the crate has an item so
+  named, so they are left out: each is any call that never returns (review 4).
+- Only the listed entry points count; any other call that never returns is an exit, which only
+  refuses more. Std's other helpers (`expect_failed`, `panic_bounds_check`, the slice and `str`
+  `*_fail` ones) run inside calls that return or behind an `assert`, and never appear in a crate's
+  own MIR (review 5).
+- `Body.copy_kind` says why: "end", "loop" or "exits". "loop": a loop entered with the copy used,
+  which reads the local nowhere and has no way out (`_closed_loop`, on the walk's states), even
+  where another path reads it (review 4). A loop with a way out doesn't count. A place from which
+  every path reaches std's panic, or `unreachable`, is no way out (review 5).
+- "exits": every path panics, exits or never leaves a loop before a read, assignment or end
+  (`Body.exits_unread`), and a use of the copy is on the way: `let z = x; black_box(z); panic!()`.
+- The refusal says so (`OwnedLocals.exits_first`, `copy_kinds`): "every path from here panics or
+  exits before reading `x`", or "on a path from here the program loops forever without reading
+  `x`".
+- A drop reads the part only where Peeky proves it (`Body._drop_effect`, "read"). It finds the
+  types from the dropped place down to the part (`_path_types`: from places the body names, and
+  aggregates assigned to the local), outermost first. The first with a `Drop` impl of the crate's
+  (`OwnedLocals._droppers`, by the `self` of each impl's `drop`) must read the rest of the part on
+  every path its `drop` takes that doesn't panic, and some path must (`_drop_proves_read`): a
+  `copy`, a `move`, or std's printing of a borrow of it, before anything that could write it.
+- Where such an impl only may read it, the drop is "maybe": it reads nothing for the copy rule, and
+  the refusal names it (`Body.doubtful_drops`, `OwnedLocals.drop_doubts`) instead of saying that
+  Peeky proves no read. Where no type on the way has one, nothing runs that can reach the part.
+- Where the types on the way aren't known, `_holds_dropper` asks whether the local holds such a
+  type by value: through fields (`layouts`), tuples, arrays and standard containers, but not
+  `ManuallyDrop`, `MaybeUninit` or `PhantomData` (`_UNDROPPED`).
+- `_unread_access` judges a drop of the local the same way: "read", nothing, or a "drop" end.
 
 - Only a read that surely covers part of that part counts: `_root_access`, with the selector's MIR
   projection. `fields.member_indexes` maps fields, because rustc's DWARF lists them in declaration
@@ -719,6 +759,34 @@ count for bindings.
   message isn't one either, because a hook may never format it.
 - A borrow given to anything else is unknown, and the path goes on. A write to another part reads
   nothing, and one that covers the part assigns it.
+
+### Values no path reads again
+
+Where no path from the stop reads the changed part before it is overwritten or ends, a change is
+never seen (#330), whether or not a copy is kept. The rule is in the cookbook's
+[When the program never reads it again](lang/rust-cookbook.md#when-the-program-never-reads-it-again).
+
+- `Body.unread_ends` walks every path from each place, as `copy_undoes` does. It returns where the
+  part ends: "write", "scope" (`StorageDead`), "return", "drop" (a drop that may read it), or
+  "stop", where the frame may exit otherwise or panic (an exit, `Block.leaves`, `Block.unwinds`).
+  It returns None where a statement may read it first. It doesn't follow an edge only a panic
+  takes (#330 review 3), nor the cleanup of a call that never returns (review 4).
+- Each path the program may take must reach one of them. Where a loop lies on the way (`_cyclic`),
+  it adds "loop": Peeky doesn't prove that a loop ends (#330 review 2).
+- `Body._unread_access` judges each statement strictly, unlike `_root_access`. A borrow, a
+  dereference, a `discriminant`, a call given the local, and a drop that may run code are reads. A
+  `copy` or `move` of a place `_apart` from the part isn't, nor is a drop `_quiet_drop` allows.
+- `OwnedLocals.unread_after` adds what the walk can't see. A pointer into the local, of `lent_from`
+  or `_pointers_to`, that is live ahead counts as a read, as for `borrow_live`. So does a crate with
+  unsafe code, or a coroutine's body: then it says nothing.
+- `mid_statement` gives this reason only where no copy hazard is found, so a copy's reason, with
+  its advice, comes first. Before the run, `RustSession._unread_everywhere` refuses it where every
+  place of the line that emits code is so (`coded`).
+- The wording, from `rust._unread_where`: "it is overwritten at line 7 first", "it goes out of
+  scope at line 14 first", "the function returns at line 9 first", joined with "or". A line is
+  never said to come first where another path panics, exits or loops forever: "…, unless the
+  program panics or exits before that", or "the program panics or exits first". A "drop" end
+  hedges the rule itself (`_unread_lead`): "the program may not read it after this stop".
 
 ### How the change is written
 

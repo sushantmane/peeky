@@ -1020,6 +1020,106 @@ def _either(clauses):
     return clauses[0] if len(clauses) == 1 else ", ".join(clauses[:-1]) + f" or {clauses[-1]}"
 
 
+def _unread_where(ends, home, owner="it"):
+    """Where a local ends unread on every path from a stop, for a refusal (#330:
+    ``OwnedLocals.unread_after``'s [(kind, file, line)]): "it is overwritten at line 7
+    first", "it is overwritten at line 7, or goes out of scope at line 14, first", "the
+    function returns at line 9 first"; ``owner`` is what goes out of scope (`` `lap` ``
+    for a change to `lap.start`). Paths that end otherwise are named too, so the line
+    is never said to come first where it may not (#330 review): "…, unless the program
+    panics, exits or loops forever before that", or alone "the program panics or exits
+    first". A drop whose `Drop` impl may read it is named as one Peeky can't tell (#330
+    review 2): "it is dropped at line 21 first; a `Drop` that drop runs may read the
+    changed part, which Peeky can't tell". None where nothing is known."""
+    lines = {}
+    for kind, file, line in ends:
+        lines.setdefault(kind, set()).add((file, line))
+    parts = []
+    if "write" in lines:
+        parts.append(f"it is overwritten at {_line_list(lines['write'], home)}")
+    if "scope" in lines:
+        parts.append(f"{owner} goes out of scope at {_line_list(lines['scope'], home)}")
+    if "drop" in lines:
+        parts.append(f"{owner} is dropped at {_line_list(lines['drop'], home)}")
+    if "return" in lines:
+        parts.append(f"the function returns at {_line_list(lines['return'], home)}")
+    others = _either(_stopped(lines) or [""])
+    doubt = (
+        "; a `Drop` that drop runs may read the changed part, which Peeky can't tell"
+        if "drop" in lines
+        else ""
+    )
+    if not parts:
+        return f"the program {others} first" if others else None
+    where = f"{parts[0]} first" if len(parts) == 1 else ", or ".join(parts) + ", first"
+    return where + (f", unless the program {others} before that" if others else "") + doubt
+
+
+def _unread_lead(ends, what="it", where="this stop"):
+    """The rule a refusal of a value no path reads states (#330), hedged where a drop may
+    read it (review 2): "the program does not read it after this stop, so a change would
+    never be seen", or "the program may not read it after this stop, so a change may
+    never be seen"."""
+    if any(kind == "drop" for kind, _, _ in ends):
+        return f"the program may not read {what} after {where}, so a change may never be seen"
+    return f"the program does not read {what} after {where}, so a change would never be seen"
+
+
+def _drop_doubt(doubts, home, name):
+    """The clause a refusal by a copy ends with where a drop of the local ``name`` may read
+    the changed part (#330 review 2: ``OwnedLocals.drop_doubts``), in place of saying
+    that Peeky proves no read first: "`d` is dropped at line 21, and a `Drop` it runs may
+    read the changed part, which Peeky can't tell"."""
+    return (
+        f"{name} is dropped at {_line_list(doubts, home)}, and a `Drop` it runs may read the "
+        "changed part, which Peeky can't tell"
+    )
+
+
+def _exits_first(kinds, name, projection=()):
+    """The clause a refusal by a copy ends with where every path from the stop panics,
+    exits or never leaves a loop before reading the local ``name`` (#330 review 3:
+    ``OwnedLocals.exits_first``), in place of saying that Peeky proves no read first:
+    "every path from here panics or exits before reading `x`", or "panics, exits or
+    loops forever" (a loop may also panic)."""
+    what = name if projection == () else "the changed part"
+    return f"every path from here {_either(_stopped({'stop', *kinds}))} before reading {what}"
+
+
+def _loops_first(name, projection=()):
+    """The clause a refusal by a copy ends with where its only reason is a path that never
+    leaves a loop, once the copy is used, and reads the local ``name`` nowhere in it (#330
+    review 4: ``Body.copy_kind``'s "loop"): "on a path from here the program loops forever
+    without reading `x`"."""
+    what = name if projection == () else "the changed part"
+    return f"on a path from here the program loops forever without reading {what}"
+
+
+def _stopped(kinds):
+    """What a program may do instead of reaching where a local ends (#330 review), for
+    ``_either``: "panics" and "exits" where a path stops the frame, "loops forever" where
+    one never leaves a loop; ``kinds`` holds ``_unread_where``'s kinds."""
+    return [
+        *(["panics", "exits"] if "stop" in kinds else []),
+        *(["loops forever"] if "loop" in kinds else []),
+    ]
+
+
+def _overwritten(ends):
+    """Whether some path from the stop overwrites the local (``_unread_where``'s ``ends``):
+    then a change can be made after that, where the program reads the new value."""
+    return any(kind == "write" for kind, _, _ in ends)
+
+
+# Where to change a value the program does not read after the stop (#330), by whether it
+# is overwritten ("written") or only ends ("ended").
+_UNREAD_ADVICE = {
+    "written": "Change it on a later line, after the program overwrites it, or on an earlier "
+    "line, before the program's last read of it",
+    "ended": "Change it on an earlier line, before the program's last read of it",
+}
+
+
 # What a refusal says of a binding that may hold a copy or only point into the local
 # (#320 review: ``_copy_reason``), which has no copy to change for sure.
 _ONLY_POINTS = " only point"
@@ -2846,7 +2946,9 @@ class RustSession(NativeSession):
             except Unsettable as exc:
                 return ("type", str(exc))
         if kept is True:
-            return self._copied_everywhere(hashed, plain, source, line, projection)
+            return self._copied_everywhere(
+                hashed, plain, source, line, projection
+            ) or self._unread_everywhere(hashed, plain, source, line, projection)
         if _state_held(body, plain):
             return ("state", plain)
         if kept is None and body is None:
@@ -2855,6 +2957,23 @@ class RustSession(NativeSession):
             binding[0] in body.arguments for binding in body.bindings.get(plain, ())
         )
         return ("register", (parameter, self._not_in_memory(hashed, root, line, source)))
+
+    def _unread_everywhere(self, hashed, plain, source, line, projection=()):
+        """("unread", (where it ends unread, whether it is overwritten there)) where, from
+        every place ``line`` can stop at in ``hashed``, no path reads ``plain`` (the part
+        ``projection`` of it) before it is overwritten or ends (#330:
+        ``OwnedLocals.unread_after``): a change there is never seen. Else None."""
+        proofs = getattr(self, "owned", None)
+        check = getattr(proofs, "unread_after", None)
+        if check is None or self._optimized():
+            return None
+        path = str(Path(self.prepared.source_root) / source)
+        ends = check(hashed, plain, line, path, projection=projection, coded=True)
+        if ends is None:
+            return None
+        owner = "it" if projection == () else f"`{plain}`"
+        hedged = any(kind == "drop" for kind, _, _ in ends)
+        return ("unread", (_unread_where(ends, source, owner), _overwritten(ends), hedged))
 
     def _copied_everywhere(self, hashed, plain, source, line, projection=()):
         """("statement", why) where every place ``line`` can stop at in ``hashed`` is
@@ -2882,6 +3001,30 @@ class RustSession(NativeSession):
             "so a change there may never be seen: Peeky proves no read of the changed part "
             "first (a reference lent to a call, or `{:?}`, is not one)"
         )
+        doubts = getattr(proofs, "drop_doubts", lambda *args, **asked: ())(
+            hashed, plain, line, path, projection=projection, coded=True
+        )
+        exits = getattr(proofs, "exits_first", lambda *args, **asked: ())(
+            hashed, plain, line, path, projection=projection, coded=True
+        )
+        copied = getattr(proofs, "copy_kinds", lambda *args, **asked: ())(
+            hashed, plain, line, path, projection=projection, coded=True
+        )
+        if doubts:
+            # #330 review 2: a drop may read it, which Peeky can't tell.
+            unseen = "so a change there may never be seen: " + _drop_doubt(
+                doubts, source, f"`{plain}`"
+            )
+        elif exits:
+            # #330 review 3: no path that doesn't panic goes on to read it.
+            unseen = "so a change there may never be seen: " + _exits_first(
+                exits, f"`{plain}`", projection
+            )
+        elif copied == {"loop"}:
+            # #330 review 4: a path that never leaves a loop, nor reads it there.
+            unseen = "so a change there may never be seen: " + _loops_first(
+                f"`{plain}`", projection
+            )
         if kind == "named":
             # #192: a binding of the program's own holds the old value it goes on with.
             return (
@@ -2930,7 +3073,7 @@ class RustSession(NativeSession):
         # (function, rule naming it as FUNCTION): the functions sharing a rule are named
         # together, each rule once (a generic's instances, a closure on the line).
         parts, registers, states = [], set(), False  # registers: the advice for each
-        statements = False
+        statements = unread = False
         for function, (kind, detail) in failures:
             if kind == "register":
                 parameter, why = detail
@@ -2969,6 +3112,20 @@ class RustSession(NativeSession):
                     else True
                 )
                 parts.append((function, f"in {FUNCTION}, {detail}"))
+            elif kind == "unread":
+                where, written, hedged = detail
+                unread = "written" if written or unread == "written" else "ended"
+                lead = _unread_lead(
+                    [("drop", "", 0)] if hedged else [], f"`{name}`", f"any stop of line {line}"
+                )
+                parts.append(
+                    (
+                        function,
+                        f"in {FUNCTION}, "
+                        + lead.replace("so a change", "so a change there")
+                        + (f": {where}" if where else ""),
+                    )
+                )
             elif kind == "unproven":
                 registers.add(self._register_text(function, plain, ("own", None))[1])
                 parts.append(
@@ -3009,6 +3166,8 @@ class RustSession(NativeSession):
                 ". Change it at the first line of that statement (`--set-at` it), before it "
                 + ("starts" if statements == "untraced" else "reads the value")
             )
+        if unread:
+            text += f". {_UNREAD_ADVICE[unread]} (`--set-at` there)"
         if states:
             text += (
                 ". Change what it is computed from before it is assigned, or copy it with a "
@@ -3182,6 +3341,9 @@ class RustSession(NativeSession):
             }
             found = proofs.copy_hazards(**asked)
         if found is not None and not any(hazards for _, hazards in found):
+            # #330: no path from the stop reads it before it is overwritten or ends.
+            if unread := self._unread_here(variable, place, asked, proofs, steps):
+                return unread
             # #324: code LLVM inlined from a call on the line may run below where the line
             # breakpoint stops (`x.clone()`), and read the local before the stop.
             return self._inlined_read(variable, frame, hashed[1], proofs)
@@ -3205,6 +3367,26 @@ class RustSession(NativeSession):
                 "read of the changed part first (a reference lent to a call, or `{:?}`, is "
                 "not one)"
             )
+            where = {key: value for key, value in asked.items() if key != "named"}
+            doubts = getattr(proofs, "drop_doubts", lambda **asked: ())(**where)
+            exits = getattr(proofs, "exits_first", lambda **asked: ())(**where)
+            copied = getattr(proofs, "copy_kinds", lambda **asked: ())(**where)
+            name = f"`{variable.get('name')}`"
+            if doubts:
+                # #330 review 2: a drop may read it, which Peeky can't tell.
+                unseen = f"so a change to {name} may never be seen: " + _drop_doubt(
+                    doubts, home, name
+                )
+            elif exits:
+                # #330 review 3: no path that doesn't panic goes on to read it.
+                unseen = f"so a change to {name} may never be seen: " + _exits_first(
+                    exits, name, asked["projection"]
+                )
+            elif copied == {"loop"}:
+                # #330 review 4: a path that never leaves a loop, nor reads it there.
+                unseen = f"so a change to {name} may never be seen: " + _loops_first(
+                    name, asked["projection"]
+                )
             if kind == "named":
                 # #192: the program's own binding goes on with the old value.
                 names = _names(detail)
@@ -3284,6 +3466,46 @@ class RustSession(NativeSession):
             "Peeky cannot tell from the build's MIR whether a statement under way at the "
             "stop has read it",
             row="Peeky can't tell if a statement under way read it",
+        )
+
+    def _unread_here(self, variable, place, asked, proofs, steps=None):
+        """``mid_statement``'s reason where no path from any place of the stop reads the
+        local ``variable`` (the part ``steps`` reach in it) before it is overwritten or
+        ends (#330: ``OwnedLocals.unread_after``): a change there is never seen. Else
+        None."""
+        check = getattr(proofs, "unread_after", None)
+        if check is None:
+            return None
+        ends = check(**{key: value for key, value in asked.items() if key != "named"})
+        if ends is None:
+            return None
+        home = (place.get("source") or {}).get("path")
+        owner = f"`{variable.get('name')}`" if steps else "it"
+        lines = {}
+        for kind, file, line in ends:
+            lines.setdefault(kind, set()).add((file, line))
+        short = {
+            "write": "overwritten at",
+            "scope": "out of scope at",
+            "drop": "dropped at",
+            "return": "the function returns at",
+        }
+        row = ", ".join(
+            f"{short[kind]} {_line_list(lines[kind], home)}"
+            for kind in ("write", "scope", "drop", "return")
+            if kind in lines
+        )
+        if stops := _stopped(lines):
+            # #330 review: other paths end otherwise, and the row says so.
+            row += (", or " if row else "") + f"the program {_either(stops)}"
+        where = _unread_where(ends, home, owner)
+        written = "written" if _overwritten(ends) else "ended"
+        return _Copied(
+            _unread_lead(ends) + (f": {where}" if where else ""),
+            f"{_UNREAD_ADVICE[written]}, where `inspect` marks it [settable]",
+            ("maybe not read" if "drop" in lines else "not read")
+            + " after the stop"
+            + (f" ({row})" if row else ""),
         )
 
     def _projection(self, hashed, root, steps, where=None):

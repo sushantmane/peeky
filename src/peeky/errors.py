@@ -369,6 +369,13 @@ _MUTATION_HINTS = (
         "there), or change the copy the message names instead.",
     ),
     (
+        # Rust (#330): no path from the stop reads it before it is overwritten or ends.
+        r"(?:does|may) not read (?:it|`[^`]+`) after (?:this stop|any stop of line [0-9]+), so a "
+        r"change",
+        "Change it where the program still reads it: after the line that overwrites it, or "
+        "before its last read (a stop on that line, or `--set-at` there).",
+    ),
+    (
         r"assigns it again \(lines? [0-9, ]+\) before reading it",
         "Change it after that assignment has run: a later `--at`, or `session continue "
         "--to LINE` to the line after it.",

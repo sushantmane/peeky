@@ -45,9 +45,9 @@ the commands.
    pointer, reference or Box (`r->tail`, `self.k`); Java can (7.3). Use the call a refusal names
    (`--set-at LINE@N`) only where it says `settable`. Otherwise follow the refusal: read
    `describe`'s `mutable:` line, or use a candidate edit (7.1, 7.2).
-3. **Change only where nothing is under way:** C/C++ at a statement's first line, Rust where the
-   MIR proves it, and never after `step --out`. Rows mark what can change `[settable]`. A probe
-   whose change its build rules out is refused before it runs, with exit 2 (2.3, 7.1 to 7.3).
+3. **Change only where nothing is under way:** C/C++ at a statement's first line, Rust where the MIR
+   proves it, never after `step --out`. Rows mark what can change `[settable]` on paths that don't
+   panic or loop forever. A change the build rules out is refused before launch (exit 2; 2.3, 7).
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another; other hits only observe.
    `--set-at LINE@HIT` changes at any line's hit, `--at`'s too; `@all`: each stop while the probe
    runs, at most 100; `x=@before` undoes an earlier change (2.8).
@@ -153,10 +153,10 @@ the commands.
   types, values and texts: its page, and 2.3.
 - **Never** through a pointer, reference or Box, nor in a union, enum, packed, std or JDK type,
   bitfield or const.
-- **Where:** a change writes the variable's storage, which later reads see. The program's copies
-  keep the old value (`let a = s.x;`, a statement under way), and the stop's line may overwrite the
-  change. So C, C++ and Rust allow a change only where Peeky proves none is under way (rule 3).
-  Rust also refuses where the program goes on with a copy (7.2).
+- **Where:** a change writes the variable's storage. The program's copies keep the old value
+  (`let a = s.x;`, a statement under way), and the stop's line may overwrite the change. So C, C++
+  and Rust allow a change only where Peeky proves none is under way (rule 3). Rust also refuses
+  where the program goes on with a copy or never reads it again (7.2).
 - **Refused before the run:** what the build rules out, such as a Rust local kept in a register
   (`[not settable: register]`, listed by `describe`), or a field through a pointer. So is a Java
   local whose declared type isn't supported, a value that doesn't fit, or a local never read after

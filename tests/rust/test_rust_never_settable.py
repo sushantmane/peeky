@@ -185,8 +185,21 @@ def test_only_what_fails_in_every_function_on_the_line_is_refused_before_the_run
     message = refused_before_launch(result)
     assert "in scale::scale, `offset` is a parameter kept in a register" in message, message
     assert "{closure#0} has no local `offset`" in message, message
-    # `factor` is in memory in `scale` (the closure borrows it): not refused there.
+    # `factor` is in memory in `scale` (the closure borrows it), but `total` holds what was
+    # computed from it, and `scale` never reads the argument by value again before it
+    # returns (#330): refused in both.
     code, result = probe(capsys, crate, shared, "--capture", "factor", "--set", "factor=3")
+    message = refused_before_launch(result)
+    # The closure reaches `factor` through its capture, a pointer (#335): not proven in memory.
+    assert "in scale::scale::{closure#0}, the build's IR doesn't prove `factor` in memory" in (
+        message
+    ), message
+    assert (
+        "the program's own `total` (at line 11) may hold a copy of `factor` that it goes on with"
+    ) in message, message
+    # `total` is in memory in `scale`, which reads it: not refused there, though the closure
+    # has no `total`.
+    code, result = probe(capsys, crate, shared, "--capture", "total", "--set", "total=3")
     assert code == 0 and result["interventions"][0]["after"] == "3", result.get("error")
     # Never through a reference; a name no function there has is not found.
     code, result = probe(capsys, crate, call, "--set", "r.end=5")

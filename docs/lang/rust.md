@@ -169,12 +169,14 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   ([Rust 7.2](rust-cookbook.md#where-a-change-is-allowed)).
 - `describe`'s `mutable:` line lists, per function, the fields and elements `set` may change:
   `board.entries`, `grid.cells[*].n` ([Rust 7.2](rust-cookbook.md#what---set-can-change)).
-- The program's own copy can block a change. In `x = match x { n => … n }` or `let y = x;` …
-  `x = y + 1;`, the program goes on with the copy, `n` or `y`
-  ([Rust 7.2](rust-cookbook.md#when-the-program-has-its-own-copy)).
+- The program's own copy can block a change. In `x = match x { n => … n }`, `let y = x;` …
+  `x = y + 1;`, or `u.push(x);` … `x = t;` before `u` is read, the program goes on with the copy,
+  `n`, `y` or `u` ([Rust 7.2](rust-cookbook.md#when-the-program-has-its-own-copy)).
 - Such a change is refused, unless the program reads the changed part itself again. A reference
   given to a call doesn't count, nor does `{:?}`. Instead, change the value before the copy is
   made, or change the copy ([Rust 7.2](rust-cookbook.md#what-counts-as-reading-it-again)).
+- A change no path reads before the value is overwritten or goes out of scope is refused too, as
+  on `total = k + n;` itself ([Rust 7.2](rust-cookbook.md#when-the-program-never-reads-it-again)).
 - Write a non-ASCII name as rustc lists it, NFC-normalized: `größe.zähler`. Peeky proves where it
   is kept, in memory or a register, as it does for an ASCII name. So `--set ñ=6` and
   `--set größe.zähler=30` change a local and a field that the frame keeps in memory
