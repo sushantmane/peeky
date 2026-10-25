@@ -21,7 +21,7 @@ from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
 from peeky.identifiers import changeable, is_located, is_name, member_name, reachable
-from peeky.names import display_function
+from peeky.names import display_function, short_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
 from peeky.text_sets import held_in_place, parse_text, text_kind
@@ -123,10 +123,46 @@ _CHARACTER_SIZES = {
 }
 
 
+# What the rule on reading through a C or C++ pointer (#339) reads at most per stop: how
+# many of the listed frames' locals it asks the debugger to place (`&name`), and how many
+# bytes from `main`'s argument and environment vectors their strings take.
+PLACED_HOVERS = 32
+ARGUMENTS = 1 << 20
+# How far above the stack pointer a local Peeky didn't place may be (#339): only for
+# which locals it asks to place, never for what a note says.
+STACK_NEAR = 8 << 20
+# A local's name as a `&name` hover reads it (#339).
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,255}")
+
+
+def _selector_path(names):
+    """The selector that reads the value the debugger names by ``names`` from its root
+    local, as a note names a pointer (#339): `p`, `s.next`, `nodes[2]`, and `pp[0]` for
+    LLDB's `*pp`."""
+    path = str(names[0]) if names else ""
+    for name in names[1:]:
+        name = str(name)
+        if name.startswith("*"):
+            path += "[0]"
+        elif name.startswith("["):
+            path += name
+        else:
+            path += f".{name}"
+    return path
+
+
+def _through_this(selector):
+    """Whether a selector ``held_extents`` lists reads what C++'s `this` points at."""
+    return selector == "this" or selector.startswith(("this.", "this["))
+
+
 def _character(identity):
     """Whether a ``Typed.identity`` is a character type's (`base char DW_ATE_signed_char
-    1`): what a character pointer's text is read from."""
-    found = re.fullmatch(r"base (.+) (DW_ATE_\w+) ([0-9]+)", identity or "")
+    1`): what a character pointer's text is read from. An identity that is a type's offset
+    (an enum's, a pointer's) is none."""
+    found = re.fullmatch(
+        r"base (.+) (DW_ATE_\w+) ([0-9]+)", identity if isinstance(identity, str) else ""
+    )
     return bool(found) and (
         found[2] in ("DW_ATE_signed_char", "DW_ATE_unsigned_char", "DW_ATE_UTF")
         or found[1] in _CHARACTER_SIZES
@@ -266,8 +302,11 @@ class DebugWorker:
         self.past_bases = None
         self.frame_scans = 0
         # What each frame of one stop holds (#336), by frame id: a stop's callers are read
-        # once, however often it is inspected.
-        self.held_frames, self.held_stop = {}, None
+        # once, however often it is inspected; and the locals there the debugger gave no
+        # address for, with where `main`'s arguments are (#339).
+        self.held_frames, self.held_stop, self.held_extras = {}, None, {}
+        # What the rule on reading through a C or C++ pointer learned at one stop (#339).
+        self.pointee_stop = None
         self.view_items = 0
         self.view_bytes = 0
         self.view_deadline = 0.0
@@ -923,6 +962,9 @@ class DebugWorker:
             if past := self.returned_past_end(kind, value, frames[0] if frames else None):
                 # A C string one past a character array's end (#336): its address alone.
                 returned["past_end"], value = past, _NONZERO_ADDRESS.match(value)[0]
+            elif note := self.returned_unproven(kind, value, frames[0] if frames else None):
+                # One Peeky can't show points at a live object (#339): marked, with why.
+                returned.update(view="unproven", unproven_read=True, note=note[:1000])
             return {
                 **returned,
                 "value": str(value)[:2000],
@@ -2377,7 +2419,7 @@ class DebugWorker:
             self.frame_variables, self.past_bases, self.frame_scans = {}, None, 0
             if self.held_stop != self.stop_id:
                 # Another stop: its frames may hold other arrays, at other addresses.
-                self.held_frames, self.held_stop = {}, self.stop_id
+                self.held_frames, self.held_stop, self.held_extras = {}, self.stop_id, {}
             validate_children = getattr(runtime, "validate_children", None)
             # A timed-out view read may still be processed by the adapter; until its
             # reply drains, this inspection is read-only.
@@ -3304,7 +3346,16 @@ class DebugWorker:
         return data
 
     def expose_variables(
-        self, variables, frame, scope, ancestry, taint=None, root=None, noted=None, trail=()
+        self,
+        variables,
+        frame,
+        scope,
+        ancestry,
+        taint=None,
+        root=None,
+        noted=None,
+        trail=(),
+        through=None,
     ):
         """Only worker-issued handles leave the process. A child handle permits a write only
         to a member the runtime allows (Java fields and array elements), checked again
@@ -3313,7 +3364,11 @@ class DebugWorker:
         elements are marked settable where `set` would change them (C, C++, Rust).
         ``noted``: the parent's (note, refuses) (see ``self.notes``): every child shows
         that note, and none is settable where it refuses (#148). ``trail``: the
-        debugger's variable for each step of ``ancestry`` (Java: what holds an array)."""
+        debugger's variable for each step of ``ancestry`` (Java: what holds an array).
+        ``through``: the note of a C or C++ pointer on the way that Peeky can't show
+        points at a live object (#339, ``unproven_through``): every value read through
+        it is marked `unproven` with it, and so is a pointer's own text read through
+        one (a `char *`'s)."""
         result = []
         # What holds an array whose elements this listing shows (#261), asked once here.
         listing = {}
@@ -3834,6 +3889,15 @@ class DebugWorker:
                     handle, raw, settable = 0, 0, False
                 else:
                     output["value"] = shown[:2000]
+            if not output.get("unavailable") and (
+                marked := through or self.unproven_text_of(variable, frame, ancestry, output)
+            ):
+                # Read through a C or C++ pointer Peeky can't show points at a live
+                # object (#339): still shown, marked, with why.
+                output["view"], output["unproven_read"] = "unproven", True
+                output["note"] = (f"{marked}; {output['note']}" if output.get("note") else marked)[
+                    :1000
+                ]
             if kind is not None:
                 output["type"] = kind
             resolve = getattr(self.runtime, "typedef_kind", None)
@@ -3986,7 +4050,7 @@ class DebugWorker:
         scopes then given back to ``frame`` (lldb-dap reads a scope of the frame last
         asked). A caller whose locals did not all come is read again next time."""
         if self.held_stop != self.stop_id:
-            self.held_frames, self.held_stop = {}, self.stop_id
+            self.held_frames, self.held_stop, self.held_extras = {}, self.stop_id, {}
         if self.past_bases is None:
             self.past_bases, scanned = [], False
             for index, listed in enumerate(self.listed_frames or ()):
@@ -4004,6 +4068,8 @@ class DebugWorker:
                         scanned = True
                         variables, whole = self.frame_locals(listed)
                     held = self.frame_held(variables, listed)
+                    extras = self.frame_unplaced(variables, listed)
+                    self.held_extras[identity] = {**extras, "index": index}
                     if whole:
                         self.held_frames[identity] = held
                 if held is not None:
@@ -4038,6 +4104,243 @@ class DebugWorker:
                 except (KeyError, TypeError, ValueError):
                     continue
         return held[:512]
+
+    def frame_unplaced(self, variables, frame):
+        """What ``held_extents`` can't place of a frame's locals (#339): those the debugger
+        gave no address for (lldb-dap 18: a number, a `char` array, a pointer), which a
+        `&name` hover can place, [(name, variable)], at most 64, each named once in the
+        frame; and in `main`, where its argument and environment vectors point, whose
+        strings last the whole run: [(start, end)]. With the frame and its function."""
+        runtime, unplaced, regions, counts = self.runtime, [], [], {}
+        named = [
+            variable
+            for variable in variables[:256]
+            if isinstance(variable, dict) and isinstance(variable.get("name"), str)
+        ]
+        for variable in named:
+            counts[variable["name"]] = counts.get(variable["name"], 0) + 1
+        unplace = getattr(runtime, "unplaced_local", None)
+        vector = getattr(runtime, "argument_vector", None)
+        main = short_function(str(frame.get("name") or "")) == "main"
+        for variable in named:
+            name = variable["name"]
+            try:
+                if (
+                    unplace
+                    and counts[name] == 1
+                    and len(unplaced) < 64
+                    and _PLAIN_NAME.fullmatch(name)
+                    and unplace(variable, frame, name)
+                ):
+                    unplaced.append((name, variable))
+                if main and vector and type(start := vector(variable, frame, name)) is int:
+                    regions.append((start, start + ARGUMENTS))
+            except (KeyError, TypeError, ValueError):
+                continue
+        function = str(frame.get("name") or "")[:300]
+        return {"frame": frame, "function": function, "unplaced": unplaced, "regions": regions}
+
+    def pointee_state(self):
+        """What the rule on reading through a C or C++ pointer learned at this stop
+        (#339): each pointer's judgement, the stack pointer, and the locals placed by a
+        `&name` hover, with how many were asked."""
+        if not isinstance(self.pointee_stop, dict) or self.pointee_stop["stop"] != self.stop_id:
+            self.pointee_stop = {"stop": self.stop_id, "judged": {}, "placed": {}, "hovers": 0}
+        return self.pointee_stop
+
+    def pointee_unproven(self, variable, frame, steps):
+        """Why what the C or C++ pointer ``variable`` (the debugger's, by the names
+        ``steps`` in ``frame``) points at isn't proven to be a live object (#339):
+        ``probe.pointee_past``'s, or {"kind": ``probe.pointee_place``'s, "statics"}. None
+        where it is proven, and where nothing is judged: not C or C++, a NULL pointer, or
+        what the build's debug information doesn't size (`void *`, a function). Judged
+        once per stop."""
+        runtime = self.runtime
+        if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
+            return None
+        if not callable(getattr(runtime, "pointee_of", None)):
+            return None
+        value = variable.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if held is None:
+            return None
+        state = self.pointee_state()
+        key = (frame.get("id"), tuple(str(step) for step in steps), held[0])
+        if key not in state["judged"]:
+            try:
+                pointer = runtime.pointee_of(frame, list(steps))
+            except (KeyError, TypeError, ValueError):
+                pointer = None
+            why = None
+            if isinstance(pointer, dict):
+                character = pointer["element_size"] == 1 and _character(pointer["pointee"])
+                why = self.judge_pointee(
+                    int(held[0], 16), {**pointer, "character": character}, frame
+                )
+            state["judged"][key] = why
+        return state["judged"][key]
+
+    def judge_pointee(self, address, pointer, frame):
+        """``pointee_unproven`` of an address (#339): proven in the program's static
+        storage, in `main`'s arguments, or in an array or object a listed frame holds
+        (``stop_bases``; never one only C++'s `this` reaches, which may be gone itself);
+        else, near the stack pointer, the locals the debugger gave no address for are
+        placed (``placed_locals``) and asked again. Then why not: below the stack
+        pointer, outside an array, in the listed frames' stack, or nowhere Peeky placed."""
+        from peeky.probe import RED_ZONE, pointee_past, pointee_place, pointee_proven
+
+        ranges = getattr(self.runtime, "static_ranges", None)
+        statics = ranges() if callable(ranges) else None
+        bases = [entry for entry in self.stop_bases(frame) if not _through_this(entry[0])]
+        regions = [
+            region for extras in self.held_extras.values() for region in extras.get("regions", ())
+        ]
+        if pointee_proven(address, pointer, bases, statics, regions):
+            return None
+        sp, placed, settled = self.stop_stack_pointer(), [], True
+        if type(sp) is int and sp - RED_ZONE <= address < sp + STACK_NEAR:
+            placed, settled = self.placed_locals(pointer, frame, red=address < sp)
+            if placed and pointee_proven(address, pointer, bases + placed):
+                return None
+        kind = pointee_place(address, sp, bases + placed, settled)
+        # Below the stack pointer, a whole number of elements before some array above it
+        # says less than where it is.
+        if kind != "below" and (past := pointee_past(address, pointer, bases + placed)):
+            return past
+        return {"kind": kind, "statics": statics is not None}
+
+    def stop_stack_pointer(self):
+        """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or
+        None where the debugger doesn't give it; asked once per stop."""
+        state = self.pointee_state()
+        if "sp" not in state:
+            found, read = None, getattr(self.runtime, "stack_pointer", None)
+            if callable(read) and self.innermost_frame is not None:
+                try:
+                    found = read(self.dap, self.innermost_frame)
+                except TimeoutError:
+                    # Its reply may still come: no change is made until the next inspection.
+                    self.view_timed_out = True
+                except (RuntimeError, OSError, KeyError, TypeError, ValueError):
+                    found = None
+            state["sp"] = found if type(found) is int and found > 0 else None
+        return state["sp"]
+
+    def placed_locals(self, pointer, frame, red=False):
+        """The listed frames' locals the debugger gave no address for (``frame_unplaced``),
+        placed by asking it for `&name` as a hover (#339): it reads the frame's variables
+        and runs nothing. Only those that may hold what ``pointer`` points at, and with
+        ``red`` all of the innermost frame's, at most ``PLACED_HOVERS`` per stop. The
+        arrays and objects they hold, as ``stop_bases`` gives them (``frame``'s with no
+        place), and whether every local of the innermost frame is placed."""
+        state, runtime = self.pointee_state(), self.runtime
+        placed, settled = [], True
+        for identity, extras in self.held_extras.items():
+            listed, innermost = extras["frame"], identity == self.innermost_frame
+            place = (
+                {}
+                if identity == frame.get("id")
+                else {"frame": extras["index"], "function": extras["function"]}
+            )
+            for name, variable in extras["unplaced"]:
+                key = (identity, name)
+                if key not in state["placed"]:
+                    wanted = (red and innermost) or self.may_hold(variable, listed, name, pointer)
+                    if not wanted or state["hovers"] >= PLACED_HOVERS:
+                        settled = settled and not innermost
+                        continue
+                    state["hovers"] += 1
+                    state["placed"][key] = self.hover_place(runtime, variable, listed, name)
+                found = state["placed"][key]
+                if found is None:
+                    settled = settled and not innermost
+                    continue
+                placed += [(selector, extent, place) for selector, extent in found]
+        return placed, settled
+
+    def may_hold(self, variable, frame, name, pointer):
+        """Whether a local Peeky has no address for may hold what ``pointer`` points at
+        (#339): any, for a character type; else an array or object of its type inside."""
+        if pointer.get("character") is True:
+            return True
+        try:
+            relative = self.runtime.held_extents(variable, frame, name, address=1)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return any(extent.get("element") == pointer.get("pointee") for _, extent in relative)
+
+    def hover_place(self, runtime, variable, frame, name):
+        """``held_extents`` of a local at the address the debugger gives for `&name` as a
+        hover (#339), or None where it gives none."""
+        arguments = {"expression": f"&{name}", "frameId": frame.get("id"), "context": "hover"}
+        try:
+            reply = self.dap.request("evaluate", arguments, timeout=2)
+        except TimeoutError:
+            self.view_timed_out = True
+            return None
+        except (RuntimeError, OSError):
+            return None
+        shown = {
+            int(text, 16)
+            for text in re.findall(r"0x[0-9a-fA-F]{1,16}", str(reply.get("result") or ""))
+        }
+        if len(shown) != 1 or 0 in shown:
+            return None
+        try:
+            return runtime.held_extents(variable, frame, name, address=shown.pop())
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def unproven_through(self, frame, trail, ancestry):
+        """The note on every value read through the debugger's variables ``trail`` (each
+        step ``ancestry`` names from a root local of ``frame``) (#339): of the first C or
+        C++ pointer on the way that Peeky can't show points at a live object. None where
+        each does, or none is judged."""
+        names = [name for name, _ in ancestry]
+        for index, variable in enumerate(trail[: len(names)]):
+            if (why := self.pointee_unproven(variable, frame, names[: index + 1])) is not None:
+                from peeky.probe import unproven_text
+
+                return unproven_text(_selector_path(names[: index + 1]), why)
+        return None
+
+    def unproven_text_of(self, variable, frame, ancestry, output):
+        """The note on a C or C++ pointer's own row whose value holds text LLDB read
+        through it (`0x… "abc"`: a `char *`, a `std::string *`), where Peeky can't show it
+        points at a live object (#339). None otherwise, and for a pointer one past an
+        array's end, whose text is never shown (#336)."""
+        value = output.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if held is None or not value[held.end() :].strip() or output.get("past_end"):
+            return None
+        steps = [step for step, _ in ancestry] + [variable.get("name")]
+        if (why := self.pointee_unproven(variable, frame, steps)) is None:
+            return None
+        from peeky.probe import unproven_text
+
+        return unproven_text(_selector_path(steps), why, text=True)
+
+    def returned_unproven(self, kind, value, frame):
+        """The note on a character pointer a function returned (#339), whose text LLDB
+        read from where it points, where Peeky can't show it points at a live object (a
+        `char` array of the call that returned, a heap block); as ``returned_past_end``
+        takes its type, any byte-sized character type. None otherwise."""
+        bare = re.sub(r"\b(?:const|volatile|restrict)\b|\s+", " ", str(kind or "")).split()
+        size = _CHARACTER_SIZES.get(" ".join(bare[:-1])) if bare[-1:] == ["*"] else None
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if size != 1 or held is None or not value[held.end() :].strip() or frame is None:
+            return None
+        runtime = self.runtime
+        if getattr(runtime, "checks_past_ends", False) is not True:
+            return None
+        if not callable(getattr(runtime, "pointee_of", None)):
+            return None
+        pointer = {"pointee": None, "element_size": 1, "count": 1, "character": True}
+        if (why := self.judge_pointee(int(held[0], 16), pointer, frame)) is None:
+            return None
+        from peeky.probe import unproven_text
+
+        return unproven_text(None, why, text=True)
 
     def frame_locals(self, frame):
         """A caller frame's locals as the debugger lists them, and whether they all came
@@ -4187,6 +4490,9 @@ class DebugWorker:
         # Previews of the page's values only where asked: a listing shows them, a
         # selector walking to a field needs none (its value is previewed alone).
         self.previewing = args.get("previews", False) is True
+        # What is read through a C or C++ pointer on the way that Peeky can't show
+        # points at a live object (#339).
+        through = self.unproven_through(frame, trail, ancestry)
         result = self.expose_variables(
             variables[start : start + count],
             frame,
@@ -4196,6 +4502,7 @@ class DebugWorker:
             root=trail[0] if trail else None,
             noted=self.notes.get(args["handle"]),
             trail=trail,
+            through=through,
         )
         runtime.assert_current()
         return {
@@ -4203,6 +4510,9 @@ class DebugWorker:
             "start": start,
             "truncated": start + len(result) < len(variables),
             "remaining_nodes": 512 - self.inspection_nodes,
+            # What the expanded value's own children are read through: a client that
+            # reads a pointer's pointee whole (`p[0]`) marks it too.
+            **({"unproven_read": through} if through else {}),
         }
 
     def preview(self, args, runtime):
@@ -5106,6 +5416,7 @@ class DebugWorker:
         self.thread_count = None
         self.whole_frames = None
         self.held_frames, self.held_stop, self.past_bases = {}, None, None
+        self.held_extras, self.pointee_stop = {}, None
         self.references.clear()
         self.global_handles.clear()
         self.reference_frames.clear()
