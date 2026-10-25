@@ -3865,6 +3865,12 @@ def _integer_ranges():
 
 
 INTEGER_RANGES = _integer_ranges()
+# Which root locals `set` changes to a number: at the stop, and before the run (#332).
+NATIVE_INTEGERS = (
+    "Only writable integer locals of these types support native mutation: short, int, long, "
+    "long long (signed or unsigned), int16_t to uint64_t, size_t, ssize_t, ptrdiff_t, "
+    "intptr_t, uintptr_t"
+)
 # What a function may return that Peeky shows (#155): LLDB reads it from the return
 # register, exactly. Structs, classes, references and arrays are withheld.
 RETURN_SCALARS = frozenset(INTEGER_RANGES) | {
@@ -6658,15 +6664,15 @@ class NativeSession:
                 failures = []
                 for entry, shown in places:
                     if not steps:
-                        # A root is judged at the stop (its type as the debugger names it,
-                        # its declaration's progress), but one the frame reaches through a
-                        # pointer or reference never changes.
+                        # A root is judged at the stop (its declaration's progress), but
+                        # one the frame reaches through a pointer or reference, or whose
+                        # type is no writable integer (`const long`), never changes.
                         storages = self._declared_storages(entry.get("types") or {}, root, shown)
-                        if "through" not in storages:
+                        if "through" in storages:
+                            why = _not_framed(root, storages)
+                        elif text or not (why := self._root_never_integer(entry, root, shown)):
                             break
-                        failures.append(
-                            (entry.get("name") or "this function", _not_framed(root, storages))
-                        )
+                        failures.append((entry.get("name") or "this function", why))
                         continue
                     try:
                         if entry.get("types") is None:
@@ -6712,6 +6718,19 @@ class NativeSession:
                         f"build: {reasons}{later}. Refused before the program runs: nothing ran"
                     )
         return None
+
+    def _root_never_integer(self, entry, root, shown):
+        """The stop's refusal of a number for the root local ``root`` of the function
+        ``entry`` (``shown``: its declaration there), from the debug information's type,
+        where it is never a writable integer (fields.root_never_integer); else None."""
+        from peeky.fields import Unsettable, root_never_integer
+
+        try:
+            kind, _ = self._declared_type(entry.get("types") or {}, root, shown)
+        except Unsettable:
+            return None
+        why = root_never_integer(self.fields, kind, root, INTEGER_RANGES)
+        return f"{NATIVE_INTEGERS[0].lower()}{NATIVE_INTEGERS[1:]}; {why}" if why else None
 
     def storage_note(self, program, lines, name):
         """For an optimized build's refusal (#138): that the debug information gives the
@@ -7286,6 +7305,14 @@ class NativeSession:
         return declared
 
     def validate_mutation_target(self, variable, frame):
+        found = self._declared_name(variable, frame)
+        if found is not None and found[0] not in INTEGER_RANGES:
+            # The debug information's name for it decides too, as before the run.
+            raise ValueError(
+                f"{NATIVE_INTEGERS}; {variable.get('name')!r} has type "
+                f"{found[0] or 'a ' + found[1]!r} in the build's debug information (the "
+                f"debugger shows {variable.get('type')!r})"
+            )
         reason = self.not_yet_declared(variable, frame)
         if refusal := getattr(reason, "refusal", None):
             raise ValueError(refusal)
@@ -8814,8 +8841,27 @@ class NativeSession:
         return node is not None and node[0] == "array"
 
     def settable(self, variable, frame=None):
-        """Whether a root local is a writable integer of a type Peeky can change."""
-        return _writable_integer(variable)
+        """Whether a root local is a writable integer of a type Peeky can change: by the
+        debugger's name for its type and, where Peeky reads it, the debug information's
+        (``_declared_name``: LLDB 18 shows a `_BitInt(32)` as `int`)."""
+        if not _writable_integer(variable):
+            return False
+        found = self._declared_name(variable, frame) if frame is not None else None
+        return found is None or found[0] in INTEGER_RANGES
+
+    def _declared_name(self, variable, frame):
+        """The root local ``variable``'s type as the debugger would name it, from the
+        build's debug information (fields.debugger_type_name): (name or None, kind); None
+        where Peeky doesn't read it there (a record, an array, a frame it can't place)."""
+        from peeky.fields import Unsettable, debugger_type_name
+
+        if getattr(self, "fields", None) is None:
+            return None
+        try:
+            kind, _, graph = self._root_type(frame, variable)
+        except Unsettable:
+            return None
+        return debugger_type_name(graph, kind)
 
     def mutation_literal(self, value, variable=None):
         """The canonical decimal sent to LLDB (`+5` and unsigned `-0` are not its syntax)."""
@@ -8853,10 +8899,7 @@ class NativeSession:
             )
         if not _writable_integer(variable):
             raise ValueError(
-                f"Only writable integer locals of these types support native mutation: "
-                f"short, int, long, long long (signed or unsigned), int16_t to uint64_t, "
-                f"size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t; "
-                f"{variable.get('name')!r} has debugger type {kind!r}"
+                f"{NATIVE_INTEGERS}; {variable.get('name')!r} has debugger type {kind!r}"
             )
         low, high = INTEGER_RANGES[kind]
         if not low <= int(value) <= high:

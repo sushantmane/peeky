@@ -265,7 +265,7 @@ for any `--set-at` refusal. The hint says to give the value itself, or to try a 
 
 | Refused at the stop | The message says |
 | --- | --- |
-| No change to that name before this stop | `` `trend` has no earlier change to undo `` |
+| No change to that name before this stop | `` `trend` has no earlier change to undo ``, and where the probe changes it at another line, `` This stop of line 47 came before line 52's change, so restore at a line that stops once per pass, after line 52 `` |
 | The latest change was at another hit of its line | `` `trend` was last changed at hit 2 of line 15, not at hit 3 `` |
 | A text, an object, or a Java `float` or `double` | `cannot be written back exactly: …` |
 | Another thread, function, depth or callers | `` `trend` was changed at line 15@2 in find_turns, and this stop is 1 call deeper (a recursive call) `` |

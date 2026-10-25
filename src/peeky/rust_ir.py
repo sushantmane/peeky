@@ -41,14 +41,18 @@ _FIELD = {
 # (`%"gr\C3\B6\C3\9Fe"` for `größe`, its bytes in hex; #191); ir_string reads the
 # quoted one, or refuses it.
 _POINTER = r'%([-\w.$]+|"(?:[^"\\]|\\.)*")'
-# (pointer, variable, location); the location is the record's last operand.
+# (pointer, variable, expression, location); the location is the record's last operand.
 _DECLARES = (
-    re.compile(rf"#dbg_declare\(ptr {_POINTER}, (![0-9]+), .*, (![0-9]+)\)\s*$"),
+    re.compile(rf"#dbg_declare\(ptr {_POINTER}, (![0-9]+), (.*), (![0-9]+)\)\s*$"),
     re.compile(
-        rf"@llvm\.dbg\.declare\(metadata ptr {_POINTER}, metadata (![0-9]+), .*\), "
-        r"!dbg (![0-9]+)"
+        rf"@llvm\.dbg\.declare\(metadata ptr {_POINTER}, metadata (![0-9]+), "
+        r"metadata (.*)\), !dbg (![0-9]+)"
     ),
 )
+# A declaration's expression that says the variable is the slot itself, or a piece of it:
+# `!DIExpression()`, `!DIExpression(DW_OP_LLVM_fragment, 0, 32)`. Anything else (a closure's
+# capture, `DW_OP_deref, DW_OP_deref`: through its environment's pointer) is somewhere else.
+_PLAIN_EXPRESSION = re.compile(r"!DIExpression\((?:DW_OP_LLVM_fragment, [0-9]+, [0-9]+)?\)")
 _SPILL = re.compile(r"\.dbg\.spill")
 # A name field, read or not.
 _NAMED = re.compile(r"(?:\(|, )name: ")
@@ -92,16 +96,19 @@ def ir_locals(path, declarations=None):
     """(memory locals, reference parameters), read in one pass over the IR.
 
     Memory locals: {(function hash, local name): True only if every declaration is a
-    real slot}. Reference parameters: {(function hash, name): {"type": declared type,
+    real slot: the variable itself, or a piece of it, in an alloca of its own}. Reference parameters: {(function hash, name): {"type": declared type,
     "line": last line before the body}} for parameters whose only declaration is a
     non-inlined slot of their own (`<name>` or `<name>.dbg.spill`), and the only
     variable so named in the function's debug information, declared or not: a shadow
     never stored (`let é: &Vec<i64>;`) has no declaration (#194 review).
 
     ``declarations``, a dict if given, receives what the memory proof covers, per name:
-    {(function hash, local name): [(line declared, "slot" | "copy" | "inlined")]}: a
-    real slot, a `.dbg.spill` copy of a value kept in a register, or a declaration in a
-    copy inlined into another function (#138: why a name is not proven in memory).
+    {(function hash, local name): [(line declared, "slot" | "copy" | "inlined" |
+    "unknown")]}, one per declaration (a piece of a variable is one): a real slot, a
+    `.dbg.spill` copy of a value kept in a register, a declaration in a copy inlined into
+    another function (#138: why a name is not proven in memory), or one that says
+    nothing Peeky reads of where the variable is (reached through a pointer, as a
+    closure's capture is; no slot it can name; a location it doesn't recognize).
 
     The function hash is the `h<16 hex>` of the legacy-mangled linkage name, which
     LLDB also ends Rust frame names with. Locals without any declaration, or whose
@@ -139,7 +146,7 @@ def ir_locals(path, declarations=None):
                         # As its source names it; a name LLVM does not write, none,
                         # which still declares the variable, in no slot it can name.
                         pointer = ir_string(pointer[1:-1])
-                    declares.append((pointer, found[2], found[3]))
+                    declares.append((pointer, found[2], found[3].strip(), found[4]))
                     break
     # How many variables of each name each function's debug information holds, per
     # function hash: one whose name cannot be read could be any (name None), one whose
@@ -154,7 +161,7 @@ def ir_locals(path, declarations=None):
                 key = (hashed[1] if hashed else "?", _form(fields.get("name")))
                 named[key] = named.get(key, 0) + 1
     memory, parameters = {}, {}
-    for pointer, variable, location in declares:
+    for pointer, variable, expression, location in declares:
         kind, fields = entries.get(variable, (None, {}))
         if kind != "DILocalVariable" or "name" not in fields:
             continue
@@ -164,11 +171,18 @@ def ir_locals(path, declarations=None):
             continue
         where = entries.get(location, (None, {}))
         located = where[0] == "DILocation" and "inlined" not in where[1]
-        real = pointer is not None and not _SPILL.search(pointer) and located
+        plain = bool(_PLAIN_EXPRESSION.fullmatch(expression))
+        if pointer is None or not plain:
+            kind = "unknown"
+        elif where[0] == "DILocation" and "inlined" in where[1]:
+            kind = "inlined"
+        elif not located:
+            kind = "unknown"
+        else:
+            kind = "copy" if _SPILL.search(pointer) else "slot"
         key = (hashed[1], fields["name"])
-        memory[key] = memory.get(key, True) and real
-        if declarations is not None and pointer is not None:
-            kind = "slot" if real else "copy" if located else "inlined"
+        memory[key] = memory.get(key, True) and kind == "slot"
+        if declarations is not None:
             line = int(fields["line"]) if fields.get("line", "").isdigit() else None
             declarations.setdefault(key, []).append((line, kind))
         declared = entries.get(fields.get("type"), (None, {}))[1].get("name")
@@ -178,6 +192,7 @@ def ir_locals(path, declarations=None):
             and named.get((hashed[1], _form(fields["name"]))) == 1
             and not {(hashed[1], None), ("?", _form(fields["name"])), ("?", None)} & named.keys()
             and located
+            and plain
             and "arg" in fields
             and declared
             and all(lines)

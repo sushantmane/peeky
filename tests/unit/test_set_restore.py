@@ -278,9 +278,32 @@ def test_no_earlier_change_is_refused(monkeypatch):
         in message
     )
     assert "(--set-at LINE@1 x=VALUE)" in message
+    # Twelfth evaluation's preparation: the restore's line stops before the change's line in
+    # each pass; the advice names that, as COOKBOOK 2.8 does.
+    assert (
+        f"This stop of line {FLAT} came before line {GUARD}'s change, so restore at a line that "
+        f"stops once per pass, after line {GUARD} (COOKBOOK 2.8)"
+    ) in message, message
     assert classify(Refused("MUTATION_REJECTED", message))["hint"].startswith(
         "Give the value itself"
     )
+
+
+def test_a_restore_with_no_change_of_its_name_planned_says_to_make_one():
+    restores = probe_module._Restores(
+        [
+            {"name": "x", "value": BEFORE, "line": FLAT, "build_line": FLAT, "hit": ALL},
+            {"name": "y", "value": "0", "line": GUARD, "build_line": GUARD, "hit": ALL},
+        ]
+    )
+    with pytest.raises(Refused) as caught:
+        restores.value("x", FLAT, 1, {})
+    message = str(caught.value)
+    assert message.endswith(
+        "a change made at the same hit, so make that change at an earlier line "
+        "(--set-at LINE@1 x=VALUE)"
+    ), message
+    assert "COOKBOOK 2.8" not in message
 
 
 def test_a_change_at_another_hit_is_not_written_back(monkeypatch):
@@ -1150,6 +1173,49 @@ def test_the_evidence_names_every_write_with_no_matching_restore(monkeypatch, tm
     assert checked({**one, "made": 1, "ended": "made"}, "8@3") is None
 
 
+def test_set_effect_marks_a_write_proven_to_change_nothing(monkeypatch, tmp_path):
+    # Twelfth evaluation's preparation (rainfall run 2, hit 5): set_effect showed
+    # `in_spell: False -> False`, where the probe's own text says `no change`.
+    store = tmp_path / "evidence" / "evidence.db"
+    evidence.record(store, run(monkeypatch, Passes(passes("0", "1"), proven=True), flip()))
+    rows = evidence.query(store, "SELECT unchanged FROM interventions ORDER BY rowid", {})
+    assert [row["unchanged"] for row in rows["rows"]] == [1, 1, 0, 0]
+    texts = [
+        row["interventions"] for row in evidence.run_query(store, "set_effect", {"run": 1})["rows"]
+    ]
+    assert texts == [
+        "x: 0 -> 0, no change", "x: 0 -> 0, no change (restored from before 5@1)",
+        "x: 1 -> 0", "x: 0 -> 1 (restored from before 5@2)",
+    ], texts  # fmt: skip
+    table = evidence.query_table(store, evidence.run_query(store, "set_effect", {"run": 1}), {})
+    assert "x: 0 -> 0, no change (restored from before 5@1)" in table, table
+    # The same text not proven unchanged is not marked.
+    evidence.record(store, run(monkeypatch, Passes(passes("0")), flip()))
+    texts = [
+        row["interventions"] for row in evidence.run_query(store, "set_effect", {"run": 2})["rows"]
+    ]
+    assert texts == ["x: 0 -> 0", "x: 0 -> 0 (restored from before 5@1)"], texts
+
+
+def test_a_schema_19_store_gains_the_unchanged_column(monkeypatch, tmp_path):
+    import sqlite3
+
+    store = tmp_path / "evidence" / "evidence.db"
+    evidence.record(store, run(monkeypatch, Passes(passes("0"), proven=True), flip()))
+    connection = sqlite3.connect(store)
+    connection.executescript(
+        "DROP VIEW last_run; DROP VIEW evidence; "
+        "ALTER TABLE interventions DROP COLUMN unchanged; PRAGMA user_version = 19;"
+    )
+    connection.close()
+    evidence.record(store, run(monkeypatch, Passes(passes("0"), proven=True), flip()))
+    rows = evidence.query(store, "SELECT run_id, unchanged FROM interventions ORDER BY rowid", {})
+    assert [(row["run_id"], row["unchanged"]) for row in rows["rows"]] == [
+        (1, None), (1, None), (2, 1), (2, 1),
+    ]  # fmt: skip
+    assert evidence.query(store, "SELECT COUNT(*) AS n FROM last_run", {})["rows"][0]["n"] > 0
+
+
 def test_a_schema_18_store_gains_the_restore_column(monkeypatch, tmp_path):
     import sqlite3
 
@@ -1166,7 +1232,7 @@ def test_a_schema_18_store_gains_the_restore_column(monkeypatch, tmp_path):
         (1, None), (1, None), (2, None), (2, "5@1"),
     ]  # fmt: skip
     connection = sqlite3.connect(store)
-    assert connection.execute("PRAGMA user_version").fetchone() == (19,)
+    assert connection.execute("PRAGMA user_version").fetchone() == (evidence.SCHEMA_VERSION,)
     connection.close()
 
 
