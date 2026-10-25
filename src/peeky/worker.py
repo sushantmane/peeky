@@ -4271,7 +4271,9 @@ class DebugWorker:
 
     def hover_place(self, runtime, variable, frame, name):
         """``held_extents`` of a local at the address the debugger gives for `&name` as a
-        hover (#339), or None where it gives none."""
+        hover (#339), or None where it gives none. lldb-dap 18 shows a summary in place
+        of that address where the type has one (`&s = "text"` for a `std::string`): a
+        struct's is then where its members are, less their offsets."""
         arguments = {"expression": f"&{name}", "frameId": frame.get("id"), "context": "hover"}
         try:
             reply = self.dap.request("evaluate", arguments, timeout=2)
@@ -4284,6 +4286,19 @@ class DebugWorker:
             int(text, 16)
             for text in re.findall(r"0x[0-9a-fA-F]{1,16}", str(reply.get("result") or ""))
         }
+        members = getattr(runtime, "address_from_members", None)
+        reference = reply.get("variablesReference")
+        if (len(shown) != 1 or 0 in shown) and callable(members) and type(reference) is int:
+            try:
+                listed = self.dap.request("variables", {"variablesReference": reference}, timeout=2)
+            except TimeoutError:
+                self.view_timed_out = True
+                return None
+            except (RuntimeError, OSError):
+                return None
+            children = listed.get("variables") if isinstance(listed, dict) else None
+            address = members(frame, name, children[:64] if isinstance(children, list) else [])
+            shown = {address} if type(address) is int else set()
         if len(shown) != 1 or 0 in shown:
             return None
         try:

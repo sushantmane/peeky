@@ -5280,6 +5280,25 @@ class NativeSession:
             return False
         return found[0].kind() in ("record", "union", "scalar", "library", "pointer", "array")
 
+    def address_from_members(self, frame, name, children):
+        """Where a struct, class or union local of ``frame`` is, from the debugger's
+        addresses of its members (`T @ 0x…`, ``children``) less their offsets in the
+        build's debug information (#339). lldb-dap 18 gives no address for a value that
+        has a summary, even when asked for `&name` (a `std::string`, whose text it shows
+        instead). None unless every member it places agrees."""
+        typed = self._typed(frame, [name])
+        if typed is None or typed.kind() not in ("record", "union", "library"):
+            return None
+        offsets = {member: offset for member, _, offset in typed.placed_members()}
+        found = set()
+        for child in children:
+            if not isinstance(child, dict) or child.get("name") not in offsets:
+                continue
+            placed = _PLACED.fullmatch(str(child.get("value") or ""))
+            if placed and placed[1] == child.get("type"):
+                found.add(int(placed[2], 16) - offsets[child["name"]])
+        return found.pop() if len(found) == 1 and min(found) > 0 else None
+
     def argument_vector(self, variable, frame, name):
         """Where a `char **` parameter of ``frame`` points (#339), which in `main` is its
         argument or environment vector: its strings last the whole run. None for any

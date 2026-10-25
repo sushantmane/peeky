@@ -187,6 +187,22 @@ GRAPH = {
     7: ("pointer", "", 6, None),  # char *
     8: ("pointer", "", 7, None),  # char **
     9: ("typedef", "LongPtr", 2),
+    10: (
+        "record",
+        "text",
+        "struct",
+        32,
+        None,
+        (("hider", 11, 0, False, None, None), ("length", 1, 8, False, None, None)),
+        (11, 1),
+        False,
+        False,
+        "std",
+        (),
+        "std::text",
+        (),
+    ),
+    11: ("record", "hider", "struct", 8, None, (), (), False, False, None, (), "hider", ()),
 }
 
 
@@ -206,6 +222,19 @@ def test_what_a_pointer_points_at_comes_from_the_debug_information():
     # `void *`, or what is no pointer: nothing to judge.
     assert session(5).pointee_of({}, ["v"]) is None
     assert session(1).pointee_of({}, ["n"]) is None
+
+
+def test_a_struct_with_a_summary_is_where_its_members_are():
+    # lldb-dap 18 shows `&s = "text"` for a `std::string`, with no address: its members
+    # have theirs (`T @ 0x…`), less their offsets.
+    hider = {"name": "hider", "type": "hider", "value": "hider @ 0x1200"}
+    length = {"name": "length", "type": "long", "value": "5"}
+    assert session(10).address_from_members({}, "s", [hider, length]) == 0x1200
+    # A member elsewhere than its offset says, or none placed: no address.
+    moved = {"name": "length", "type": "long", "value": "long @ 0x1300"}
+    assert session(10).address_from_members({}, "s", [hider, moved]) is None
+    assert session(10).address_from_members({}, "s", [length]) is None
+    assert session(1).address_from_members({}, "n", [hider]) is None
 
 
 def test_mains_argument_vector_is_where_its_strings_are():
@@ -259,7 +288,8 @@ SP = 0x800
 
 class Backend:
     """lldb-dap stopped in `main` (frame id 1), whose stack pointer is ``SP``. `arr` (long[4])
-    is at 0x1000, `n` (long, which lldb-dap 18 gives no address) at 0x1100; `heap` and
+    is at 0x1000, `n` (long, which lldb-dap 18 gives no address) at 0x1100, `text` (a
+    `std::string`, which it places only by its members) at 0x1200; `heap` and
     `dup` point at the heap, `lit` at the program's image (0x2000), `dang` below the stack
     pointer, `two` two past `arr`'s end, `gap` (an `int *`) between locals, `pn` at `n`."""
 
@@ -282,6 +312,8 @@ class Backend:
                 pointer("lit", "const char *", f'{at(0x2000)} "literal"', 9),
                 pointer("dup", "char *", f'{at(0x9200)} "heap"', 10),
                 pointer("ps", "std::string *", f"{at(0x9300)} <no text: lldb-dap 18>", 14),
+                pointer("text", "std::string", '"local"', 15),
+                pointer("pt", "std::string *", f'{at(0x1200)} "local"', 16),
                 pointer("pn", "long *", at(0x1100), 11),
                 pointer("two", "long *", at(0x1030), 12),
                 pointer("gap", "int *", at(0x1040), 13),
@@ -297,6 +329,8 @@ class Backend:
             11: [pointer("*pn", "long", "7", 0)],
             12: [pointer("*two", "long", "99", 0)],
             13: [pointer("*gap", "int", "98", 0)],
+            16: [pointer("hider", "hider", "hider @ 0x1200", 17)],
+            20: [pointer("hider", "hider", "hider @ 0x1200", 21)],
         }
 
     def request(self, operation, args, timeout=None):
@@ -316,6 +350,9 @@ class Backend:
         if operation == "evaluate" and args["expression"] == "&n":
             assert args["context"] == "hover", "a hover reads a variable, never runs code"
             return {"result": f"(long *) &n = {at(0x1100)}"}
+        if operation == "evaluate" and args["expression"] == "&text":
+            # lldb-dap 18: a type with a summary shows it in place of the address.
+            return {"result": '(std::string *) &text = "local"', "variablesReference": 20}
         raise AssertionError((operation, args))
 
 
@@ -329,6 +366,7 @@ class Runtime:
         ("lit",): {"pointee": CHAR, "element_size": 1, "count": 1},
         ("dup",): {"pointee": CHAR, "element_size": 1, "count": 1},
         ("ps",): {"pointee": "struct string 32 def", "element_size": 32, "count": 1},
+        ("pt",): {"pointee": "struct string 32 def", "element_size": 32, "count": 1},
         ("pn",): POINTS_LONG,
         ("two",): POINTS_LONG,
         ("gap",): {"pointee": "base int DW_ATE_signed 4", "element_size": 4, "count": 1},
@@ -367,10 +405,17 @@ class Runtime:
             return [ARR[:2]]
         if name == "n" and address is not None:
             return [("n", {"address": address, "element": LONG, "element_size": 8})]
+        if name == "text" and address is not None:
+            string = {"address": address, "element": "struct string 32 def", "element_size": 32}
+            return [("text", string)]
         return []
 
+    def address_from_members(self, frame, name, children):
+        assert name == "text" and children[0]["value"] == "hider @ 0x1200"
+        return 0x1200
+
     def unplaced_local(self, variable, frame, name):
-        return name == "n"
+        return name in ("n", "text")
 
     def argument_vector(self, variable, frame, name):
         return None
@@ -418,6 +463,8 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert "view" not in shown["lit"]
     # Where no text was read through it, only why there is none: nothing to mark.
     assert "view" not in shown["ps"]
+    # At `text`, which lldb-dap 18 places only by its members: no mark.
+    assert "view" not in shown["pt"] and asked(stopped, "&text") == 1
 
     def expand(name):
         return call(stopped, "expand", handle=shown[name]["variablesReference"], start=0)
