@@ -172,6 +172,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - The program's own copy can block a change. In `x = match x { n => … n }`, `let y = x;` …
   `x = y + 1;`, or `u.push(x);` … `x = t;` before `u` is read, the program goes on with the copy,
   `n`, `y` or `u` ([Rust 7.2](rust-cookbook.md#when-the-program-has-its-own-copy)).
+- So can a copy a call keeps in a `static` or a `thread_local!` that a later call reads, as
+  `local_set(&SLOT, x)` does ([Rust 7.2](rust-cookbook.md#copies-in-a-static-or-a-thread-local)).
 - Such a change is refused, unless the program reads the changed part itself again. A reference
   given to a call doesn't count, nor does `{:?}`. Instead, change the value before the copy is
   made, or change the copy ([Rust 7.2](rust-cookbook.md#what-counts-as-reading-it-again)).

@@ -344,6 +344,16 @@ _MUTATION_HINTS = (
         "itself refused this write, which no [settable] mark can promise.",
     ),
     (
+        # #329: a static or thread-local may keep what was computed from it, out of reach.
+        r"a static or thread-local may hold state derived from",
+        "Change it before the program uses it (a stop on an earlier line, or `--set-at` there).",
+    ),
+    (
+        # #329: a static or thread-local may keep the copy, which no change Peeky makes reaches.
+        r"a static or thread-local may hold a copy of",
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
+    ),
+    (
         # #320 review: a binding a call returned may hold a copy or only point into it.
         r"may hold a copy of (?:it|`[^`]+`) that it goes on with, unless [^.:]* only points? "
         r"into it",
