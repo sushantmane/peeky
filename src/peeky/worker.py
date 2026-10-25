@@ -3368,7 +3368,7 @@ class DebugWorker:
         ``through``: the note of a C or C++ pointer on the way that Peeky can't show
         points at a live object (#339, ``unproven_through``): every value read through
         it is marked `unproven` with it, and so is a pointer's own text read through
-        one (a `char *`'s)."""
+        one (a `char *`'s); never one with a note already (#148), which says why."""
         result = []
         # What holds an array whose elements this listing shows (#261), asked once here.
         listing = {}
@@ -3889,15 +3889,17 @@ class DebugWorker:
                     handle, raw, settable = 0, 0, False
                 else:
                     output["value"] = shown[:2000]
-            if not output.get("unavailable") and (
-                marked := through or self.unproven_text_of(variable, frame, ancestry, output)
+            if (
+                not output.get("unavailable")
+                and not isinstance(note, str)
+                and (marked := through or self.unproven_text_of(variable, frame, ancestry, output))
             ):
                 # Read through a C or C++ pointer Peeky can't show points at a live
-                # object (#339): still shown, marked, with why.
+                # object (#339): still shown, marked, with why. A value already noted
+                # (#148: leftovers, maybe) says why it may not be current; so does what
+                # is read through it, where the pointer is no better.
                 output["view"], output["unproven_read"] = "unproven", True
-                output["note"] = (f"{marked}; {output['note']}" if output.get("note") else marked)[
-                    :1000
-                ]
+                output["note"] = marked[:1000]
             if kind is not None:
                 output["type"] = kind
             resolve = getattr(self.runtime, "typedef_kind", None)
@@ -4514,8 +4516,10 @@ class DebugWorker:
         # selector walking to a field needs none (its value is previewed alone).
         self.previewing = args.get("previews", False) is True
         # What is read through a C or C++ pointer on the way that Peeky can't show
-        # points at a live object (#339).
-        through = self.unproven_through(frame, trail, ancestry)
+        # points at a live object (#339); not below a value with a note (#148), whose
+        # pointers may be leftovers themselves, as that note says.
+        noted = self.notes.get(args["handle"])
+        through = None if noted else self.unproven_through(frame, trail, ancestry)
         result = self.expose_variables(
             variables[start : start + count],
             frame,
@@ -4523,7 +4527,7 @@ class DebugWorker:
             ancestry,
             self.taints.get(args["handle"]),
             root=trail[0] if trail else None,
-            noted=self.notes.get(args["handle"]),
+            noted=noted,
             trail=trail,
             through=through,
         )
