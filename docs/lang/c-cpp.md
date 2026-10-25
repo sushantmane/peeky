@@ -108,8 +108,14 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   there belongs to the array. Its row says `[at the address one past queue's end]`, even read
   alone, and `end[0]` says why it isn't read
   ([C and C++ 2.1](c-cpp-cookbook.md#a-pointer-one-past-an-arrays-end)).
-- Peeky finds that array in the locals of each listed frame, and in the arrays they hold. Any
-  other pointer is read as the debugger reads it, even one into freed memory.
+- Peeky finds that array in the locals of each listed frame, and in the arrays they hold.
+- What any other pointer points at is read. Where Peeky can't show it is a live object, it is
+  marked `[unproven]`, with a note that says why: into a call that returned, a heap block, or past
+  an array. A live heap block and a freed one read alike
+  ([C and C++ 2.1](c-cpp-cookbook.md#when-what-a-pointer-points-at-is-unproven)).
+- It is proven live inside a local, an array or a struct of a listed frame, of its type, or in the
+  program's static storage. The pointer's own row is its address, unmarked, but a `char *`'s
+  text is marked. `queries diff` ranks such values as qualified.
 - Where the array is a pointer, such as a parameter, a pointer says how far it is from it by
   address alone: `[level + 6 by address; same array not proven]`. It names no element
   ([C and C++ 2.1](c-cpp-cookbook.md#how-far-a-pointer-is-from-a-pointer-parameter)).

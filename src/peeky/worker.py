@@ -4198,8 +4198,10 @@ class DebugWorker:
         if pointee_proven(address, pointer, bases, statics, regions):
             return None
         sp, placed, settled = self.stop_stack_pointer(), [], True
-        if type(sp) is int and sp - RED_ZONE <= address < sp + STACK_NEAR:
-            placed, settled = self.placed_locals(pointer, frame, red=address < sp)
+        if type(sp) is not int or sp - RED_ZONE <= address < sp + STACK_NEAR:
+            placed, settled = self.placed_locals(
+                pointer, frame, red=type(sp) is int and address < sp
+            )
             if placed and pointee_proven(address, pointer, bases + placed):
                 return None
         kind = pointee_place(address, sp, bases + placed, settled)
@@ -4216,6 +4218,8 @@ class DebugWorker:
         if "sp" not in state:
             found, read = None, getattr(self.runtime, "stack_pointer", None)
             if callable(read) and self.innermost_frame is not None:
+                # As for a caller's locals: scopes are bound for changes only afresh after.
+                self.frame_scans += 1
                 try:
                     found = read(self.dap, self.innermost_frame)
                 except TimeoutError:
@@ -4275,6 +4279,7 @@ class DebugWorker:
         of that address where the type has one (`&s = "text"` for a `std::string`): a
         struct's is then where its members are, less their offsets."""
         arguments = {"expression": f"&{name}", "frameId": frame.get("id"), "context": "hover"}
+        self.frame_scans += 1
         try:
             reply = self.dap.request("evaluate", arguments, timeout=2)
         except TimeoutError:

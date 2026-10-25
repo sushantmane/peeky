@@ -465,6 +465,9 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert "view" not in shown["ps"]
     # At `text`, which lldb-dap 18 places only by its members: no mark.
     assert "view" not in shown["pt"] and asked(stopped, "&text") == 1
+    # After those reads, the scopes are bound for changes afresh, as after a caller's.
+    calls = [operation for operation, _ in stopped.dap.calls]
+    assert calls[-2:] == ["stackTrace", "scopes"] and "evaluate" in calls[:-2]
 
     def expand(name):
         return call(stopped, "expand", handle=shown[name]["variablesReference"], start=0)

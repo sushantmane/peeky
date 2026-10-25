@@ -14,6 +14,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [How a C++ function's name is shown](#how-a-c-functions-name-is-shown)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a pointer](#read-through-a-pointer)
+  - [When what a pointer points at is unproven](#when-what-a-pointer-points-at-is-unproven)
   - [Which element's address a pointer holds](#which-elements-address-a-pointer-holds)
   - [A pointer one past an array's end](#a-pointer-one-past-an-arrays-end)
   - [How far a pointer is from a pointer parameter](#how-far-a-pointer-is-from-a-pointer-parameter)
@@ -119,10 +120,102 @@ refuses it, naming that selector.
 - A NULL or unreadable pointer is refused: `p is NULL`.
 - A pointer one past an array's end is refused, since nothing there belongs to the array
   ([below](#a-pointer-one-past-an-arrays-end)).
+- What any other pointer points at is read. Where Peeky can't show it is a live object, it is
+  marked `[unproven]`, with why ([below](#when-what-a-pointer-points-at-is-unproven)).
 
-Peeky reads what any other pointer points at as the debugger does. It can't tell whether that
-memory is still the object. A pointer into a call that returned, or into a freed heap block,
-shows what is there now.
+### When what a pointer points at is unproven
+
+A C or C++ pointer can outlive what it points at, and nothing in the program marks it. So Peeky
+checks where each pointer you read through points. It still reads what is there, since you may
+need it. But where it can't show that a live object is there, the value is marked `[unproven]`,
+with a note that says why.
+
+This `main` keeps items in an array, gets one from a call that returns its own local, and
+allocates another:
+
+```c
+static struct item *newest(void) {
+  struct item made = {7, 3};
+  struct item *p = &made;
+  return p;
+}
+
+int main(void) {
+  struct item stock[2] = {{1, 5}, {2, 8}};
+  struct item *first = &stock[0];
+  struct item *last = newest();
+  struct item *kept = malloc(sizeof *kept);
+  kept->id = 9;
+  kept->qty = 4;
+  printf("%ld %ld %ld\n", first->qty, last->qty, kept->qty); /* line 19 */
+```
+
+```sh
+peeky probe pick.c --at pick.c:19 --capture first.qty,last.qty,kept.qty,kept
+```
+
+```
+hit  phase     line  function  selector   type    value
+1    observed  19    main      first.qty  long    5
+1    observed  19    main      last.qty   long    4334437632  [unproven]
+1    observed  19    main      kept.qty   long    4  [unproven]
+1    observed  19    main      kept       item *  0x00000001025d5360
+status: completed  hits: 1  seconds: 1.006  max pause: 56.1 ms
+warning: last.qty: Peeky can't show that `last` points at a live object, so this value may be left over: it points below the stack pointer, where no live call keeps its locals, as a pointer into a call that has returned does; read the value before that call returns.
+warning: kept.qty: Peeky can't show that `kept` points at a live object, so this value may be left over: its address is in no local, member or element that Peeky could place in the frames it lists, nor in the program's static memory; if it is a heap block, Peeky can't tell whether that block is still allocated, so check where the program frees it.
+```
+
+`last.qty` reads what `newest`'s returned call left. `kept.qty` reads a live block, but Peeky
+can't ask the allocator, so a freed block would read the same way.
+
+What a pointer points at is proven live where its address is in one of these:
+
+- A local or parameter of a frame Peeky lists, at most ten, of the pointer's type.
+- An element of an array such a frame holds, or a member of a struct it holds. These are the
+  arrays and objects listed [below](#a-pointer-one-past-an-arrays-end), and number, `char` array
+  and pointer locals too.
+- The program's own static storage: a global, a `static` local or a string literal. It lasts the
+  whole run.
+- `main`'s argument and environment strings.
+
+A `char *` may point at any byte of such an object, as C allows. Otherwise, the note says what
+Peeky knows of the address:
+
+- ``it holds the address of `cells[4]`, past the end of `cells`, which has 3 elements``, or an
+  address some elements before an array's start.
+- `it points below the stack pointer`: no live call keeps its locals there.
+- `it points into the stack of the frames Peeky lists`, but at no local, member or element of its
+  type.
+- `its address is in no local, member or element that Peeky could place`: a heap block, say. A
+  live block and a freed one read alike.
+
+The mark is on what is read through the pointer: `last.qty`, `last[0]`, a struct read whole, and
+`session get last`'s children. `session get` gives the note once, below them. The pointer's own
+row is its address, with no mark. A `char *`'s text is read through it, so that row is marked
+too: `dup  char *  0x… "heap"  [unproven]`. So is a C string a function returns, in
+`--capture return` and `session step --out`.
+
+`--json` rows and the store keep `view: unproven` and the note. `queries diff` ranks such a value
+with the qualified ones, after the real differences
+([COOKBOOK 3.1](../COOKBOOK.md#31-two-inputs-side-by-side)). Two runs' leftovers can differ for
+any reason.
+
+Peeky checks addresses, not where a pointer came from:
+
+- A pointer into a call that returned reads as live where a later call's local of its type is at
+  that address now.
+- A pointer past a global array's end reads the next global, with no mark. Peeky doesn't check
+  which global an address is in.
+- A pointer to a member Peeky doesn't list is marked. It lists a struct's members three levels
+  deep, and the members of an array's first 16 elements.
+- In a method of a C++ object made with `new`, what `this` points at is marked: it is a heap
+  block.
+- A pointer into a library's own memory, such as `stdout`, is marked.
+- A C++ reference, and a smart pointer's object, aren't checked.
+
+lldb-dap 18 gives no address for a number, `char` array or pointer local, or a `std::string`.
+Peeky then asks for `&name`, as a hover that reads the variable and runs nothing. It asks at most
+32 times per stop, and only for locals that may hold what the pointer points at.
 
 ### Which element's address a pointer holds
 
@@ -222,7 +315,9 @@ such as `{"selector": "queue", "length": 4}`. Where another frame holds the arra
 that frame's index and function: `"frame": 1, "function": "main"`. The store keeps the pointer's
 address, and the reason in place of what it points at.
 
-Peeky can't tell in these cases, so it reads what the pointer points at, as for any pointer:
+Peeky can't tell in these cases, so it reads what the pointer points at, as for any pointer. It
+marks it `[unproven]` unless the address is in an object it places
+([above](#when-what-a-pointer-points-at-is-unproven)):
 
 - One past a single object, such as `&x + 1`. Locals of one type often sit side by side, so a
   pointer to the second would be refused too.
@@ -480,6 +575,9 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   ``read through `q`: …``. The note is in captures, in `session get` children (marked `[note]`) and
   in the evidence. Don't trust a value marked with a `note`, or anything read through that value.
   `--set` refuses them wherever it refuses the local.
+- **`[unproven]`** marks a value read through a pointer that Peeky can't show points at a live
+  object: into a call that returned, a heap block, or past an array. Its note says why. Don't
+  trust it as the object's value ([details](#when-what-a-pointer-points-at-is-unproven)).
 - On a line a loop returns to, such as a `do` body's first line, read the value on the next line.
 - Below a `setjmp` call, a local declared at or below the stop shows a `note` instead of
   `no value yet`. It reads plainly below its declaration.
