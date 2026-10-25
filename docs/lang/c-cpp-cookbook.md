@@ -171,9 +171,9 @@ can't ask the allocator, so a freed block would read the same way.
 What a pointer points at is proven live where its address is in one of these:
 
 - A local or parameter of a frame Peeky lists, at most ten, of the pointer's type.
-- An element of an array such a frame holds, or a member of a struct it holds. These are the
-  arrays and objects listed [below](#a-pointer-one-past-an-arrays-end), and number, `char` array
-  and pointer locals too.
+- An element of an array such a frame holds, or a member or base class of a struct it holds.
+  These are the arrays and objects listed [below](#a-pointer-one-past-an-arrays-end), and
+  number, `char` array and pointer locals too. A `Shape *` at a `Circle` local's `Shape` counts.
 - The program's own static storage: a global, a `static` local or a string literal. It lasts the
   whole run.
 - `main`'s argument and environment strings.
@@ -186,8 +186,8 @@ Peeky knows of the address:
 - `it points below the stack pointer`: no live call keeps its locals there.
 - `it points into the stack of the frames Peeky lists`, but at no local, member or element of its
   type.
-- `its address is in no local, member or element that Peeky could place`: a heap block, say. A
-  live block and a freed one read alike.
+- `its address is in no local, member or element that Peeky could place`, such as a heap
+  block's. A live block and a freed one read alike.
 
 The mark is on what is read through the pointer: `last.qty`, `last[0]`, a struct read whole, and
 `session get last`'s children. `session get` gives the note once, below them. The pointer's own
@@ -212,6 +212,9 @@ Peeky checks addresses, not where a pointer came from:
   block.
 - A pointer into a library's own memory, such as `stdout`, is marked.
 - A C++ reference, and a smart pointer's object, aren't checked.
+- A pointer with a `note` already, such as a local on a `do` body's first line, keeps that note
+  on what is read through it. It may hold leftovers itself
+  ([7.1](#values-peeky-withholds-or-cant-vouch-for)).
 
 lldb-dap 18 gives no address for a number, `char` array or pointer local, or a `std::string`.
 Peeky then asks for `&name`, as a hover that reads the variable and runs nothing. It asks at most
