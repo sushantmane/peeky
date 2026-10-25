@@ -277,6 +277,10 @@ def test_cpp_marks_members_read_through_a_heap_objects_this(tmp_path, monkeypatc
     assert rows["heap.count"]["value"] == "2", rows
     unproven(rows["heap.count"], "heap", HEAP)
     # A `std::string *`: at `main`'s `s`, its text is unmarked; at a heap string, marked.
+    # lldb-dap 18 reads no libstdc++ string's text, and gives no address for `s`: nothing
+    # is read, and nothing marked.
     assert "view" not in rows["pl"], rows
     if rows["ps"]["value"].endswith('"text"'):
         unproven(rows["ps"], "ps", HEAP, text=True)
+    else:
+        assert "view" not in rows["ps"], rows

@@ -281,6 +281,7 @@ class Backend:
                 pointer("dang", "long *", at(SP - 16), 7),
                 pointer("lit", "const char *", f'{at(0x2000)} "literal"', 9),
                 pointer("dup", "char *", f'{at(0x9200)} "heap"', 10),
+                pointer("ps", "std::string *", f"{at(0x9300)} <no text: lldb-dap 18>", 14),
                 pointer("pn", "long *", at(0x1100), 11),
                 pointer("two", "long *", at(0x1030), 12),
                 pointer("gap", "int *", at(0x1040), 13),
@@ -327,6 +328,7 @@ class Runtime:
         ("dang",): POINTS_LONG,
         ("lit",): {"pointee": CHAR, "element_size": 1, "count": 1},
         ("dup",): {"pointee": CHAR, "element_size": 1, "count": 1},
+        ("ps",): {"pointee": "struct string 32 def", "element_size": 32, "count": 1},
         ("pn",): POINTS_LONG,
         ("two",): POINTS_LONG,
         ("gap",): {"pointee": "base int DW_ATE_signed 4", "element_size": 4, "count": 1},
@@ -414,6 +416,8 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     )
     # A string literal is in the program's image, which lasts the whole run.
     assert "view" not in shown["lit"]
+    # Where no text was read through it, only why there is none: nothing to mark.
+    assert "view" not in shown["ps"]
 
     def expand(name):
         return call(stopped, "expand", handle=shown[name]["variablesReference"], start=0)
@@ -597,8 +601,10 @@ def test_a_returned_c_string_peeky_cant_place_is_marked():
     note = DebugWorker.returned_unproven(worker, "char *", f'{at(0x7F0)} "stale"', {"id": 1})
     assert note.startswith("Peeky can't show that the pointer it returned points at a live")
     assert calls == [(0x7F0, {"pointee": None, "element_size": 1, "count": 1, "character": True})]
-    # No text read, not a byte-sized character pointer: nothing to mark.
+    # No text read, or only why there is none; not a byte-sized character pointer: nothing
+    # to mark.
     assert DebugWorker.returned_unproven(worker, "char *", at(0x7F0), {"id": 1}) is None
+    assert DebugWorker.returned_unproven(worker, "char *", f"{at(0x7F0)} <no text>", {}) is None
     assert DebugWorker.returned_unproven(worker, "long *", f'{at(0x7F0)} "x"', {"id": 1}) is None
     returned = {
         "function": "word",

@@ -4307,11 +4307,13 @@ class DebugWorker:
     def unproven_text_of(self, variable, frame, ancestry, output):
         """The note on a C or C++ pointer's own row whose value holds text LLDB read
         through it (`0x… "abc"`: a `char *`, a `std::string *`), where Peeky can't show it
-        points at a live object (#339). None otherwise, and for a pointer one past an
-        array's end, whose text is never shown (#336)."""
+        points at a live object (#339). None otherwise: for a pointer one past an array's
+        end, whose text is never shown (#336), and where what follows the address is no
+        text read there but why there is none (`<no text: …>`)."""
         value = output.get("value")
         held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
-        if held is None or not value[held.end() :].strip() or output.get("past_end"):
+        shown = value[held.end() :].strip() if held is not None else ""
+        if not shown or shown.startswith("<") or output.get("past_end"):
             return None
         steps = [step for step, _ in ancestry] + [variable.get("name")]
         if (why := self.pointee_unproven(variable, frame, steps)) is None:
@@ -4328,7 +4330,8 @@ class DebugWorker:
         bare = re.sub(r"\b(?:const|volatile|restrict)\b|\s+", " ", str(kind or "")).split()
         size = _CHARACTER_SIZES.get(" ".join(bare[:-1])) if bare[-1:] == ["*"] else None
         held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
-        if size != 1 or held is None or not value[held.end() :].strip() or frame is None:
+        shown = value[held.end() :].strip() if held is not None else ""
+        if size != 1 or not shown or shown.startswith("<") or frame is None:
             return None
         runtime = self.runtime
         if getattr(runtime, "checks_past_ends", False) is not True:
