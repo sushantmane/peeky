@@ -1304,6 +1304,14 @@ _STALE_RUST = (
     "no proof here: an optimized build, a caller frame, or unmatched MIR. Its fields show "
     "leftover bytes, maybe a moved-from copy, and its pointers only their address"
 )
+# The same, for a local whose type the debug information shows holds no pointer.
+_STALE_PLAIN_RUST = (
+    "This is (or is inside) a Rust local the MIR does not prove initialized here: probe a "
+    "line where it is live, or read it where it is passed. It may be moved, dropped or not "
+    "yet assigned, or Peeky has no proof here: a closure's capture, an optimized build, a "
+    "caller frame, or unmatched MIR. Its type holds no pointer, but its fields may show "
+    "leftover bytes"
+)
 _UNREAD_RUST = (
     "This value is LLDB's summary (its type and address), not its contents: check "
     "contents with `peeky verify`. {items}{length}Peeky reads Rust contents only for "
@@ -1371,6 +1379,7 @@ _RUST_NOTE_OPENINGS = tuple(
         _COMPOSITE_RUST,
         _LENT_COMPOSITE_RUST,
         _STALE_RUST,
+        _STALE_PLAIN_RUST,
     )
 ) + (
     "This Rust Box",
@@ -1832,7 +1841,9 @@ def _capture(
                 elif variable.get("stale") and not _THROUGH.match(str(variable.get("note"))):
                     # A note carried from what holds it says why first (#260: a call may be
                     # changing it), else every way a value can be stale.
-                    row["note"] = _STALE_RUST + "."
+                    row["note"] = (
+                        _STALE_PLAIN_RUST if variable.get("pointer_free") else _STALE_RUST
+                    ) + "."
                 elif owned_type:
                     row["note"] = _rust_note(_FIELD_RUST, variable, selector)
                 elif "view" not in variable and _unread_rust(_lldb_type(variable)):
@@ -3728,6 +3739,12 @@ class _Restores:
     def __init__(self, points):
         self.points = [point for point in points if point["value"] == BEFORE]
         self.keys = {restore_key(point["name"]) for point in self.points}
+        # The changes the restores may undo: a restore's refusal names their lines.
+        self.changes = [
+            point
+            for point in points
+            if point["value"] != BEFORE and restore_key(point["name"]) in self.keys
+        ]
         # {selector: the latest change the probe made to it, where and when}.
         self.ledger = {}
         # {selector: {hit: the latest change the probe made to it at that hit}}, in the
@@ -3867,12 +3884,31 @@ class _Restores:
         not."""
         record = self.ledger.get(restore_key(name))
         if record is None:
+            # The lines whose change this stop came before (twelfth evaluation, prep 9).
+            later = sorted(
+                {
+                    point["line"]
+                    for point in self.changes
+                    if restore_key(point["name"]) == restore_key(name)
+                    and point["build_line"] != line
+                }
+            )
+            shown = next((p["line"] for p in self.points if p["build_line"] == line), line)
+            named = " and ".join(map(str, later))
             raise Refused(
                 "MUTATION_REJECTED",
                 f"`{name}` has no earlier change to undo: this probe made none before this "
                 f"stop. `{BEFORE}` writes back the value from just before a change made at "
-                f"the same hit, so make that change at an earlier line (--set-at "
-                f"LINE@{hit} {name}=VALUE)",
+                "the same hit"
+                + (
+                    f". This stop of line {shown} came before line {named}'s change, so "
+                    f"restore at a line that stops once per pass, after line {named} "
+                    f"(COOKBOOK 2.8), or make the change at an earlier line (--set-at "
+                    f"LINE@{hit} {name}=VALUE)"
+                    if later
+                    else f", so make that change at an earlier line (--set-at LINE@{hit} "
+                    f"{name}=VALUE)"
+                ),
             )
         where = f"line {record['at']}"
         if record["hit"] != hit:
@@ -5427,6 +5463,7 @@ def _table(result, short_names=True):
             row.get("value", "<" + errors.get(index, row.get("error", "")) + ">")
             + (f"  [{pointed}]" if (pointed := pointed_text(row)) else "")
             + (f"  [{row['view']}]" if row.get("view") else "")
+            + ("  [stale]" if row.get("stale") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
             + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
@@ -5443,11 +5480,18 @@ def _table(result, short_names=True):
         )
     if left_out:
         # Only whole scalars are left out (eleventh evaluation: an aggregate's equal row
-        # stayed under a line that said every equal row was left out).
+        # stayed under a line that said every equal row was left out). A Java String is an
+        # object, whose equal row stays too (twelfth evaluation's preparation).
+        kept_kinds = (
+            "a number, flag or char; object rows stay, a String's too: a Java String is an "
+            "object, and an equal text may be a new String"
+            if java
+            else "a number, flag or whole text; pointer, object and preview rows stay, as "
+            "they may hide a change"
+        )
         lines.append(
             f"after-set: {left_out} scalar row{'s' if left_out > 1 else ''} equal to the hit's "
-            "observed value left out (a number, flag or whole text; pointer, object and "
-            "preview rows stay, as they may hide a change; `--json` has every row)"
+            f"observed value left out ({kept_kinds}; `--json` has every row)"
         )
     if short_names and (note := _short_note(result)):
         lines.append(note)

@@ -616,11 +616,16 @@ def describe(args):
     )
     # The commands repeat the --config this describe was given (Java, explicit targets).
     target = f"{args.target} --config {args.config}" if args.config else args.target
-    # A file target is the file to edit; a directory needs --at to name it.
+    # A file target is the file to edit; a directory needs --at to name it, but where
+    # verify picks this program without it: a config's one source, a one-file crate.
     single = (
         Path(args.target).is_file() and Path(args.target).resolve() == (root / program).resolve()
     )
-    at = "" if single else f" --at {program}"
+    sources = tuple((data or {}).get("sources") or ())
+    only = sources == (program,) and (
+        bool(args.config) or (language == "rust" and not (data or {}).get("tests"))
+    )
+    at = "" if single or only else f" --at {program}"
     manifest = {
         "peeky": "describe",
         "language": language,
@@ -871,6 +876,9 @@ def _describe_text(manifest):
         "edit to it helps; change the value in the caller)",
         "async state": "held in an async body's state across an `.await` (change what it is "
         "computed from, or copy it into a local after the `.await`)",
+        "not proven in memory": "not proven in memory (Peeky reads no slot of its own for "
+        "every binding: a closure's capture is reached through the closure; change it where "
+        "it is declared, or with a candidate edit)",
     }
     for why, label in whys.items():
         never = []
@@ -1955,6 +1963,36 @@ def _frame_text(snapshot, base=None):
     return f"frame {index}: {function} ({_relative_location(where, base)})"
 
 
+def _inspect_pointed(snapshot):
+    """Says on each C or C++ pointer an inspection lists which element's address of an
+    array it lists it holds (`at_element_of`), or how far it is from another pointer
+    (`offset_from`), as one `session get` of them all does (probe._pointed), from each
+    value's `extent`, which is then dropped."""
+    from peeky.probe import _pointed
+
+    variables, rows, extents = [], [], {}
+    for scope in snapshot.get("scopes") or ():
+        for variable in scope.get("variables") or ():
+            extent = variable.pop("extent", None)
+            if not isinstance(extent, dict) or not reachable(variable):
+                continue
+            row = {
+                key: variable[key]
+                for key in ("value", "unavailable", "note", "view", "stale")
+                if key in variable
+            }
+            row["selector"] = variable.get("selected_as") or variable["name"]
+            extents[len(rows)] = extent
+            variables.append(variable)
+            rows.append(row)
+    _pointed(rows, extents)
+    for variable, row in zip(variables, rows):
+        for key in ("at_element_of", "offset_from"):
+            if key in row:
+                variable[key] = row[key]
+    return snapshot
+
+
 def _variables_text(snapshot, name="default", base=None):
     from peeky.names import display_function
 
@@ -2012,6 +2050,9 @@ def _variables_text(snapshot, name="default", base=None):
                     "only by Unicode normalization]"
                 )
             view = f"  [{variable['view']}]" if variable.get("view") else ""
+            if pointed := pointed_text(variable):
+                # Which element's address a C or C++ pointer holds (#302), as `get` says.
+                view = f"  [{pointed}]" + view
             if variable.get("stale"):
                 # May be moved or dropped: its fields are what it left behind (#108).
                 view += "  [stale]"
@@ -2249,6 +2290,8 @@ def session(args):
             **({"frame": args.frame} if args.frame else {}),
             # Listing a global runs its repr in the program, so only on request.
             **({"globals": True} if args.globals else {}),
+            # Which element's address a C or C++ pointer holds, as `session get` says.
+            **({"extents": True} if record.get("language") in ("c", "cpp") else {}),
         )
         if snapshot.get("frame", 0) != args.frame:
             # A worker that predates `frame` ignores it and shows the innermost frame.
@@ -2266,6 +2309,7 @@ def session(args):
             snapshot["warning"] = _OPTIMIZED_NOTE.format(snapshot["optimized"]).removeprefix(
                 "warning: "
             )
+        _inspect_pointed(snapshot)
         _emit(snapshot, args.json, lambda shown: _variables_text(shown, args.name, base))
     elif args.action == "get":
         from peeky.probe import returns

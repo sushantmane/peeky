@@ -65,6 +65,25 @@ def test_the_after_set_line_says_only_scalar_rows_are_left_out():
     ) in text, text
 
 
+def test_the_after_set_line_says_why_an_equal_java_string_stays():
+    # Twelfth evaluation's preparation (desks): `p.name  String  "Dev"` stayed among the
+    # after-set rows, equal to its observed one, under a line that said whole texts go.
+    rows = [_row("free", "3", type="int"), _row("p.name", '"Dev"', type="String")]
+    rows += [
+        _row("free", "3", "after-set", type="int"),
+        _row("p.name", '"Dev"', "after-set", type="String"),
+    ]
+    change = {"name": "seat", "before": "1", "after": "2", "hit": 1, "capture_hit": 1}
+    text = _table(_result(rows, [change], language="java"))
+    assert "after-set  47    rota::plan  p.name" in text, text
+    assert "after-set  47    rota::plan  free" not in text, text
+    assert (
+        "after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or "
+        "char; object rows stay, a String's too: a Java String is an object, and an equal text "
+        "may be a new String; `--json` has every row)"
+    ) in text, text
+
+
 def test_one_change_past_the_first_few_is_shown_whole():
     # grades 6 (prep 5): `set stats.lowest: 1 more change by --set-at line 61@all, at hits 4
     # to 4`, where the change itself fits on that line.

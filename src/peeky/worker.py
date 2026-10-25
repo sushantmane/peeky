@@ -3524,6 +3524,7 @@ class DebugWorker:
                 # debugger; only a struct or tuple preview's (view_writable) can lead to a
                 # change of a field, judged again from the debugger's own variable.
                 handle = 0
+                source = None
                 if view.get("children"):
                     self.reference_counter += 1
                     handle = self.reference_counter
@@ -3582,6 +3583,15 @@ class DebugWorker:
                     ):
                         # Why a statement under way withholds it, as other rows say (#300).
                         output["not_settable"] = row
+                elif (
+                    not ancestry
+                    and source is not None
+                    and (rule := getattr(self.runtime, "never_settable_row", None))
+                    and (never := rule({"name": name, "type": kind}, frame, member=True))
+                ):
+                    # A struct or tuple whose fields no stop can change says why, as each of
+                    # its fields does (`register`: the debugger reads its own copy).
+                    output["not_settable"] = never
                 if plain:
                     output["selected_as"] = plain
                 if declared_at:
@@ -3889,6 +3899,9 @@ class DebugWorker:
             if own == "stale":
                 # Not proven initialized: the bytes a move or drop left (#108).
                 output["stale"] = True
+                if getattr(own, "pointer_free", False):
+                    # Its type holds no pointer: its note says so (twelfth evaluation).
+                    output["pointer_free"] = True
             if isinstance(raw_reason, str) and not output.get("unavailable"):
                 output["raw_reason"] = raw_reason[:500]
             if (

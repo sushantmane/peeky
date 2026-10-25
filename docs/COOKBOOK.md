@@ -249,7 +249,10 @@ function. With `--json`, a scope's `spans` maps such a name to its blocks' `[fir
   It is visible on the block's lines, and at the closing `}` while an exception unwinds. It is not
   visible on the lines between. C blocks have no such cleanup code.
 - On the normal path, where no exception is under way, a probe at that closing `}` stops where
-  the function returns. There such a local is `not found`. Read it on the block's own lines.
+  the function returns, if the debugger put a breakpoint location there. There such a local is
+  `not found`. The debugger may put them only at the cleanup code, such as when an object of the
+  function's own scope is destroyed there too. Then the probe ends with `NO_STOP`. Read such a
+  local on the block's own lines.
 - A span is never narrower than where the debugger can show the local. So it keeps the lines
   inside it without code, such as comments or a lone `}`.
 - A block that also runs another file's code, such as an `#include` inside it, gives no lines. A
@@ -862,7 +865,8 @@ These rows stay, since they may hide a change:
 - a cut value;
 - a row with a note;
 - a Java value other than a primitive: a String set through an alias is a new object with the same
-  text;
+  text. A Java run's footer says so: `(a number, flag or char; object rows stay, a String's too: a
+  Java String is an object, and an equal text may be a new String; …)`;
 - a Python value whose identity changed.
 
 #### Every change is read back
@@ -1023,6 +1027,10 @@ program ended `but its output may still have been arriving`:
 One non-zero exit doesn't count. debugpy exits with status 1 when Peeky ends its input as debugpy
 answers the disconnect. Peeky provokes that exit. If debugpy's only failure is the one it then
 prints on stderr, the result has `exit_provoked: true` and no warning.
+
+The program's reported end alone never makes the output whole, whatever the adapter: only a clean
+end of the adapter's stream does. So with lldb-dap 18 on Linux, whose crash follows the end, the
+output stays `output so far`, even where it is all there.
 
 These rules hold for any probe, not only for `--until hits`.
 
@@ -1301,6 +1309,10 @@ refusal ends the probe, as any `--set-at` refusal does:
   to the same selector, as written. That change must have been made at the same hit of its own
   line: hit 3 of line 18 restores hit 3 of line 15. So pick two lines that stop once each per
   pass, like a guard and a line after its branch.
+- **A restore line that stops after the change line.** A restore on a loop's header stops before
+  the body's change in each pass, so its first stop has nothing to undo. The refusal says so:
+  ``This stop of line 47 came before line 52's change, so restore at a line that stops once per
+  pass, after line 52``.
 - **In the same frame.** The same thread, the same function at the same stack depth, under the
   same callers. A recursive call is another frame.
 - **In the same call.** A stack does not tell one call from another made from the same place.
@@ -2262,6 +2274,9 @@ hit  line  function  selector  observed  after_set  caveat_observed  caveat_afte
 ```
 
 - Rows come in the order the changes were made.
+- A write the worker proved changed nothing ends `, no change`, as the probe's text says it:
+  `in_spell: False -> False, no change`. A write of the same text not proven unchanged, such as a
+  new Java String, is not marked. `interventions.unchanged` (schema 20) keeps which.
 - `caveat_observed` and `caveat_after_set` name a view or a note that qualifies either value, as
   `hits` does.
 - A change at a stop where nothing was captured is one row, with what it changed before and after. A
@@ -3219,8 +3234,10 @@ diff:
 - To see what an edit does before you verify it, a candidate probe is simpler
   ([6.6](#66-see-what-a-fix-does-before-making-it)).
 - `--at` names the file to edit when the target is a directory. A config that declares one source,
-  as a Java program's often does, needs no `--at`: the edit goes into that source. With several,
-  the error lists them: pass the one that holds the `--old` text.
+  as a Java program's often does, needs no `--at`: the edit goes into that source. Nor does a Rust
+  crate whose only source is `src/main.rs`, with no integration test. `describe`'s `verify:` line
+  leaves `--at` out in both cases. With several sources, the error lists them: pass the one that
+  holds the `--old` text.
 - To keep the edited file, add `--keep`. It stays in the system's temporary directory, with a
   compiled program's build evidence beside it. Build artifacts are always removed.
 - The result prints the file's path after `candidate:`, and JSON names its directory in `kept`.

@@ -195,6 +195,31 @@ def test_session_get_says_which_element_a_pointer_holds(program, capsys):
         capsys.readouterr()
 
 
+@pytest.mark.timeout(240)
+def test_session_inspect_says_which_element_a_pointer_holds(program, capsys):
+    # Twelfth evaluation's preparation: `session inspect` listed `end` and `level` at the
+    # same stop and named no element, where `session get end level` does.
+    at = f"levels.c:{line_of('MAIN')}"
+    assert main(["session", "start", str(program), "--at", at, *ARGS]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "inspect"]) == 0
+        out = capsys.readouterr().out
+        assert "  top: const int * = 0x" in out and "  [at level[2]'s address]" in out, out
+        assert "  [at the address one past level's end]" in out, out
+        assert main(["session", "inspect", "--json"]) == 0
+        listed = {
+            variable["name"]: variable
+            for scope in json.loads(capsys.readouterr().out)["scopes"]
+            for variable in scope["variables"]
+        }
+        assert listed["first"]["at_element_of"] == {"selector": "level", "index": 0, "length": 6}
+        assert not any("extent" in variable for variable in listed.values()), listed
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
 ROSTER = """#include <cstdio>
 #include <string>
 struct Student {

@@ -71,10 +71,10 @@ def test_a_step_out_an_exception_cut_short_never_says_returned(program, cxx, cap
         assert main(["session", "step", "--out"]) == 0
         out = capsys.readouterr().out
         lines = out.splitlines()
-        # GCC's names for static functions, from their declarations (#167).
-        scope = "::" if cxx == "gcc" else ""
-        assert lines[0].startswith("state: stopped at ") and f" in {scope}f(int) " in lines[0], out
-        assert lines[1] == f"note: left `{scope}g(int)`; now in `{scope}f(int)`", out
+        # GCC's names for static functions, from their declarations (#167), read as
+        # clang's (`f(int)`, not `::f(int)`).
+        assert lines[0].startswith("state: stopped at ") and " in f(int) " in lines[0], out
+        assert lines[1] == "note: left `g(int)`; now in `f(int)`", out
         assert "it never returned" in out and "returned from" not in out, out
     finally:
         main(["session", "close"])

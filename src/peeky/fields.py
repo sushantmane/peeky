@@ -759,6 +759,101 @@ def settable_member(graph, root, name, steps, owner=None):
     raise Unsettable(f"`{path}` is not a single integer; select one of its fields or elements")
 
 
+def holds_pointer(graph, offset, limit=4096):
+    """Whether a value of the type at ``offset`` holds a pointer or a reference in its own
+    bytes, in a field or element at any depth: True; False where the debug information
+    shows none (`struct Lap { number: u32, secs: u32 }`); None where it cannot tell (a
+    type the walk did not read, an incomplete record, or a Rust enum, whose variants'
+    fields the graph does not list)."""
+    pending, seen = [offset], set()
+    while pending:
+        offset = pending.pop()
+        if offset in seen:
+            continue
+        seen.add(offset)
+        node = graph.get(offset)
+        if node is None or len(seen) > limit or node[0] in ("unknown", "other"):
+            return None
+        if node[0] in ("pointer", "reference"):
+            return True
+        if node[0] in ("typedef", "qualifier", "array"):
+            pending.append(node[2])
+        elif node[0] == "record":
+            if node[7] or node[8]:
+                return None
+            pending.extend(node[6])
+    return False
+
+
+def root_never_integer(graph, root, name, accepted):
+    """Why the root local ``name`` of type ``root`` is never an integer `set` changes,
+    by the contract the stop applies (native._writable_integer): its type, named as the
+    debugger names it (``debugger_type_name``), is none of ``accepted``, the native
+    integers' names. None where it is one, or where the debug information gives no
+    such name: a record or an array (a text may change those), or a type not read."""
+    found = debugger_type_name(graph, root)
+    if found is None:
+        return None
+    label, kind = found
+    if label is not None:
+        return None if label in accepted else f"`{name}` has type `{label}`"
+    return f"`{name}` is " + (
+        "atomic" if kind == "atomic" else f"{'an' if kind == 'enum' else 'a'} {kind}"
+    )
+
+
+# The words of C's standard integer types' names, which compilers order as they like
+# (GCC's `long unsigned int`) and the debugger spells as clang does (`unsigned long`).
+_INTEGER_WORDS = frozenset({"signed", "unsigned", "short", "long", "int"})
+
+
+def _spelled(name):
+    """A standard integer type's name as clang and LLDB spell it (`unsigned long` for
+    GCC's `long unsigned int`, `long` for `long int`); any other name as it is
+    (`_BitInt(32)`, `__int128`, `char`)."""
+    words = name.split()
+    if not words or not set(words) <= _INTEGER_WORDS:
+        return name
+    longs, shorts = words.count("long"), words.count("short")
+    signs = [word for word in words if word in ("signed", "unsigned")]
+    if len(signs) > 1 or words.count("int") > 1 or shorts > 1 or longs > 2 or shorts and longs:
+        return name
+    base = "short" if shorts else "long long" if longs == 2 else "long" if longs else "int"
+    return f"unsigned {base}" if signs == ["unsigned"] else base
+
+
+def debugger_type_name(graph, offset):
+    """(name, kind) of the type at ``offset`` as the debugger names a local of it: its
+    qualifiers, then the first named type under them, a typedef by its own name and a
+    standard integer as clang spells it (`const unsigned long`, `size_t`,
+    `_BitInt(32)`). The name is None where the debug information names none, and kind
+    says what it is then: "pointer", "reference", "enum" or "atomic". None for a
+    record, an array, or a type the graph does not hold."""
+    words, named, atomic = [], None, False
+    for _ in range(64):
+        node = graph.get(offset)
+        if node is None or node[0] in ("unknown", "other", "record", "array"):
+            # A text may change a record or an array, by whatever name (`std::string`).
+            return None
+        if node[0] == "qualifier":
+            atomic = atomic or (named is None and node[1] == "atomic")
+            if named is None and node[1] in ("const", "volatile"):
+                words.append(node[1])
+            offset = node[2]
+            continue
+        if node[0] == "typedef":
+            if named is None and node[1]:
+                named = node[1]
+            offset = node[2]
+            continue
+        if named is None and node[0] in ("base", "enum") and node[1]:
+            named = _spelled(node[1]) if node[0] == "base" else node[1]
+        if atomic:
+            return None, "atomic"
+        return (" ".join([*words, named]) if named else None), node[0]
+    return None
+
+
 def settable_parts(graph, root, name, limit=64, visits=4096):
     """The paths (`board.entries`, `bins[*].hi`, `board.cells[*].n`, `xs[*]`; `[*]`: any
     element) of the integer fields and elements of the struct, class, tuple or array

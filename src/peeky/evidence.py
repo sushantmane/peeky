@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -223,6 +223,11 @@ TABLES = {
             "restores_at": "For a restore (--set-at LINE@HIT name=@before), the LINE@HIT of "
             "the change whose value from before it wrote back (in the original's numbering); "
             "NULL for any other change, and for runs saved before schema 19",
+            "unchanged": "1 where the worker proved the write changed nothing: the same text "
+            "before and after, of a type whose text is the whole value (`no change` in the "
+            "probe's text and set_effect); 0 otherwise, a write of the same text not proven "
+            "unchanged too (a new Java String, a Python `1000`); NULL for runs saved before "
+            "schema 20",
         },
     ),
     "pauses": (
@@ -280,7 +285,7 @@ _DDL = (
     _CAPTURES.format("captures"),
     "CREATE TABLE interventions (run_id INTEGER NOT NULL, hit INTEGER, name TEXT, "
     "before TEXT, after TEXT, line INTEGER, capture_hit INTEGER, function TEXT, instance TEXT, "
-    "stop INTEGER, restores_at TEXT)",
+    "stop INTEGER, restores_at TEXT, unchanged INTEGER)",
     "CREATE TABLE pauses (run_id INTEGER NOT NULL, hit INTEGER, ms REAL)",
     *_CAPTURE_INDEXES,
     "CREATE INDEX interventions_run ON interventions (run_id)",
@@ -312,7 +317,8 @@ _DDL = (
 # the debugger's own name for the type (NULL for earlier runs, whose type spelled a Rust
 # reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315);
 # version 19 adds interventions.restores_at (#305), the change a restore undid (NULL
-# for earlier runs, which made none).
+# for earlier runs, which made none); version 20 adds interventions.unchanged, 1 for a
+# write the worker proved changed nothing (NULL for earlier runs).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -438,9 +444,10 @@ _MIGRATIONS = {
         ),
     ),
     17: (*_DROP_VIEWS, _add_columns(("debugger_type", "TEXT"))),
-    18: (
+    18: (*_DROP_VIEWS, _add_columns(("restores_at", "TEXT"), table="interventions")),
+    19: (
         *_DROP_VIEWS,
-        _add_columns(("restores_at", "TEXT"), table="interventions"),
+        _add_columns(("unchanged", "INTEGER"), table="interventions"),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -454,6 +461,8 @@ _A = f"COALESCE(:a, (SELECT MAX(run_id) FROM runs WHERE run_id < {_B}))"
 
 # What set_effect adds to a restore's change (#305): the change it undid.
 _RESTORED = "COALESCE(' (restored from before ' || restores_at || ')', '')"
+# And to a write the worker proved changed nothing, as the probe's text says it.
+_NO_CHANGE = "CASE WHEN unchanged THEN ', no change' ELSE '' END"
 # An intervention (`i`) made at a captured stop: that stop has after-set captures.
 _AT_CAPTURE = (
     "EXISTS (SELECT 1 FROM captures c WHERE c.run_id = i.run_id AND c.phase = 'after-set' "
@@ -1300,7 +1309,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
   SELECT o.hit, o.stop, o.line, o.function, o.selector, {_shown("o")} AS observed,
     {_shown("s")} AS after_set,
     {_caveat("o")} AS caveat_observed, {_caveat("s")} AS caveat_after_set,
-    (SELECT group_concat(name || ': ' || before || ' -> ' || after || {_RESTORED}, '; ')
+    (SELECT group_concat(name || ': ' || before || ' -> ' || after || {_NO_CHANGE} ||
+      {_RESTORED}, '; ')
       FROM interventions i
       WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS interventions,
     (SELECT MIN(rowid) FROM interventions i
@@ -1310,7 +1320,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
   UNION ALL
   SELECT i.hit, i.stop, i.line, i.function, i.name, i.before, i.after, NULL, NULL,
-    i.name || ': ' || i.before || ' -> ' || i.after || {_RESTORED}, i.rowid, 0
+    i.name || ': ' || i.before || ' -> ' || i.after || {_NO_CHANGE} || {_RESTORED}, i.rowid,
+    0
   FROM interventions i WHERE i.run_id = {_RUN} AND NOT {_AT_CAPTURE})
 ORDER BY seq, pos""",
         _RUN_PARAM,
@@ -1736,7 +1747,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
         )
         connection.executemany(
             "INSERT INTO interventions (run_id, hit, name, before, after, line, capture_hit, "
-            "function, instance, stop, restores_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "function, instance, stop, restores_at, unchanged) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1753,6 +1765,11 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     _text(change.get("instance")),
                     change["stop"] if type(change.get("stop")) is int else None,
                     _text(change.get("restores")),
+                    # As probe.unchanged: the worker's proof, never the text alone.
+                    int(
+                        change.get("unchanged") is True
+                        and change.get("before") == change.get("after")
+                    ),
                 )
                 for change in result.get("interventions") or []
             ],
@@ -3605,8 +3622,15 @@ def _change_text(change, shown):
     before, after = shown(change["before"]), shown(change["after"])
     return (
         f"{change['name']}: {_window(before, after, _CHANGE_WIDTH, _CHANGE_LEAD)} -> "
-        f"{_window(after, before, _CHANGE_WIDTH, _CHANGE_LEAD)}{_restored(change)}"
+        f"{_window(after, before, _CHANGE_WIDTH, _CHANGE_LEAD)}{_no_change(change)}"
+        f"{_restored(change)}"
     )
+
+
+def _no_change(change):
+    """`, no change` for a write the worker proved changed nothing, as set_effect's SQL
+    says it."""
+    return ", no change" if change.get("unchanged") else ""
 
 
 def _restored(change):
@@ -3630,7 +3654,9 @@ def _changes_text(row, changes, shown):
         and change["line"] == row.get("line")
         and None not in (change["name"], change["before"], change["after"])
     ]
-    pieces = [f"{c['name']}: {c['before']} -> {c['after']}{_restored(c)}" for c in here]
+    pieces = [
+        f"{c['name']}: {c['before']} -> {c['after']}{_no_change(c)}{_restored(c)}" for c in here
+    ]
     if cell == "; ".join(pieces):
         made = here
     else:
@@ -3748,7 +3774,8 @@ def query_table(path, result, params=None):
     if result.get("query") == "set_effect" and "interventions" in result["columns"]:
         changes = query(
             path,
-            "SELECT hit, line, name, before, after, restores_at FROM interventions WHERE "
+            "SELECT hit, line, name, before, after, restores_at, unchanged FROM interventions "
+            "WHERE "
             "run_id = :run "
             "ORDER BY rowid",
             {"run": params.get("run")},
