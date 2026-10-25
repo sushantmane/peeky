@@ -713,9 +713,14 @@ the local without reading the changed part, and uses the binding before or after
   the MIR always prints with its path: `std::rt::panic_fmt`, `core::panicking::panic`,
   `assert_failed`. `panic_any` and `resume_unwind` print bare unless the crate has an item so
   named, so they are left out: each is any call that never returns (review 4).
+- Only the listed entry points count; any other call that never returns is an exit, which only
+  refuses more. Std's other helpers (`expect_failed`, `panic_bounds_check`, the slice and `str`
+  `*_fail` ones) run inside calls that return or behind an `assert`, and never appear in a crate's
+  own MIR (review 5).
 - `Body.copy_kind` says why: "end", "loop" or "exits". "loop": a loop entered with the copy used,
   which reads the local nowhere and has no way out (`_closed_loop`, on the walk's states), even
-  where another path reads it (review 4). A loop with a way out doesn't count.
+  where another path reads it (review 4). A loop with a way out doesn't count. A place from which
+  every path reaches std's panic, or `unreachable`, is no way out (review 5).
 - "exits": every path panics, exits or never leaves a loop before a read, assignment or end
   (`Body.exits_unread`), and a use of the copy is on the way: `let z = x; black_box(z); panic!()`.
 - The refusal says so (`OwnedLocals.exits_first`, `copy_kinds`): "every path from here panics or

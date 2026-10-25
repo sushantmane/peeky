@@ -1432,9 +1432,9 @@ A change is allowed only at a line breakpoint, or after a step that lands on a l
 There, the MIR must show that no statement under way has read the value into a temporary. This
 holds for integer locals too.
 
-On a path where the program panics, a change may not be seen; Peeky's marks are about the paths
-that don't panic. The rules below judge only those paths: a read only on a panic's path, as by a
-`Drop` that runs while it unwinds, doesn't count.
+On a path where the program panics, or never leaves a loop, a change may not be seen; Peeky's marks
+are about the paths that don't panic or loop forever. The rules below judge only those paths: a
+read only on a panic's path, as by a `Drop` that runs while it unwinds, doesn't count.
 
 - So a change is never allowed back from a call, after `step --out`. For example, it is refused
   back from `f` in `let t = s.a + f();`.
@@ -1597,7 +1597,8 @@ These bindings copy a value:
 - any copy used on a path that then loops forever without reading the local:
   `if k > 100 { record(z); loop {} }`. Another path that reads it doesn't help. The refusal says
   ``on a path from here the program loops forever without reading `x` ``. A loop with a way out,
-  as a `for` loop has, doesn't count.
+  as a `for` loop has, doesn't count. A panic is no way out:
+  `loop { if p { panic!("stop"); } }` counts.
 
 A panic on some paths only doesn't count. After `let z = x;`, `if z == 0 { panic!() }` and then
 `x + k` leave `x` settable, because the path that doesn't panic reads it. So does

@@ -313,6 +313,22 @@ fn spun(n: u32) -> u32 {
     x + k
 }
 
+fn trapped(n: u32) -> u32 {
+    let mut x = n + 1;
+    black_box(&mut x);
+    let z = x; // TRAPPED_COPY
+    let k = other(); // TRAPPED
+    if k > 100 {
+        record(z);
+        loop {
+            if other() == 0 {
+                panic!("stop");
+            }
+        }
+    }
+    x + k
+}
+
 fn counted(n: u32) -> u32 {
     let mut x = n + 1;
     black_box(&mut x);
@@ -377,7 +393,13 @@ fn main() {
                 guarded(n)
             );
         }
-        "spun" => println!("SPUN {} COUNTED {} ANYED {}", spun(n), counted(n), anyed(n)),
+        "spun" => println!(
+            "SPUN {} COUNTED {} ANYED {} TRAPPED {}",
+            spun(n),
+            counted(n),
+            anyed(n),
+            trapped(n)
+        ),
         "unwinding" => {
             std::panic::set_hook(Box::new(|_| {}));
             let _ = std::panic::catch_unwind(|| unwinding(n));
@@ -713,17 +735,23 @@ def test_a_mark_of_settable_covers_the_paths_that_dont_panic(crate, capsys):
 def test_a_loop_the_program_never_leaves_refuses_on_its_own_path(crate, capsys):
     # Review 4: `if k > 100 { record(z); loop {} }`, then `x + k`: the path into the loop
     # uses `z` and never reads `x`. A loop with a way out to the read stays settable.
+    # Review 5: so does `loop { if other() == 0 { panic!("stop"); } }`, whose only way out
+    # is a panic.
     frames, run = crate.parent / "frames", ("--", "spun", "1")
-    message = refused(capsys, frames, "SPUN", "--set", "x=100", run=run)
-    assert (
-        f"the program has already copied `x` into `z` (at line {line_of('SPUN_COPY', FRAMES)}) "
-        "and goes on with that copy, so a change there may never be seen: on a path from here "
-        "the program loops forever without reading `x`"
-    ) in message, message
-    lines = changed(capsys, frames, "SPUN_COPY", "--set", "x=100", run=run)
-    assert lines == ["SPUN 101 COUNTED 4 ANYED 3"], lines
+    for marker, copy, seen in (
+        ("SPUN", "SPUN_COPY", "SPUN 101 COUNTED 4 ANYED 3 TRAPPED 3"),
+        ("TRAPPED", "TRAPPED_COPY", "SPUN 3 COUNTED 4 ANYED 3 TRAPPED 101"),
+    ):
+        message = refused(capsys, frames, marker, "--set", "x=100", run=run)
+        assert (
+            f"the program has already copied `x` into `z` (at line {line_of(copy, FRAMES)}) and "
+            "goes on with that copy, so a change there may never be seen: on a path from here "
+            "the program loops forever without reading `x`"
+        ) in message, message
+        lines = changed(capsys, frames, copy, "--set", "x=100", run=run)
+        assert lines == [seen], lines
     lines = changed(capsys, frames, "COUNTED", "--set", "x=100", run=run)
-    assert lines == ["SPUN 3 COUNTED 102 ANYED 3"], lines
+    assert lines == ["SPUN 3 COUNTED 102 ANYED 3 TRAPPED 3"], lines
 
 
 @pytest.mark.timeout(400)
@@ -742,7 +770,7 @@ def test_panic_any_is_a_call_that_never_returns_in_either_spelling(crate, capsys
             "read"
         ) in message, message
         lines = changed(capsys, root, "ANYED_COPY", "--set", "x=100", run=run)
-        assert lines[-1].endswith("ANYED 101"), lines
+        assert "ANYED 101" in lines[-1], lines
 
 
 @pytest.mark.timeout(400)

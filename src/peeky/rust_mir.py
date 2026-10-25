@@ -512,7 +512,8 @@ def _cyclic(nodes, start):
 def _closed_loop(graph, members):
     """Whether some cycle of ``graph`` ({node: its successors}) lies among ``members``, with
     no edge out of it: a loop the program, once in it, never leaves but by a panic (#330
-    review 4). Tarjan's strongly connected components, without recursion."""
+    review 4), where ``graph`` leaves out the edges a panic takes, and the places std's
+    panic ends (review 5). Tarjan's strongly connected components, without recursion."""
     order, low, on, stack = {}, {}, set(), []
     for root in members:
         if root in order:
@@ -1555,7 +1556,11 @@ _UNWIND_LEAVES = re.compile(r"\bunwind (?:continue|terminate)\b")
 # `assert!`'s `core::panicking::panic`, `assert_eq!`'s `assert_failed`. Each is a name
 # std has twice, or in `core::panicking`, which the MIR always prints with its path.
 # Review 4: not `panic_any` or `resume_unwind`, printed bare unless the crate has an
-# item so named: each is a call that never returns, in either spelling.
+# item so named: each is a call that never returns, in either spelling. Only these count;
+# any other call that never returns is an exit, which only refuses more. Std's other
+# helpers (`expect_failed`, `panic_bounds_check`, the slice and `str` `*_fail` ones) run
+# inside calls that return (`expect`, `index`), or a check's `assert`, and never appear
+# in a crate's own MIR (review 5, rustc 1.96.0).
 _PANIC_CALL = re.compile(
     r"^_[0-9]+ = (std|core)::(?:rt::(?:panic_fmt|panic_display|begin_panic)|panicking::(?:"
     r"panic|panic_fmt|panic_display|panic_str_2015|panic_explicit|assert_failed|"
@@ -2309,13 +2314,17 @@ class Body:
     def copy_kind(self, copy, root, start, projection=(), sinks=(frozenset(), frozenset())):
         """Why ``copy_undoes`` holds, or None (#330 review 4): "end" (a path assigns or ends
         ``root`` unread, the copy used before or after), "loop" (a path never leaves a
-        loop once the copy is used, reading ``root`` nowhere in it), or "exits" (every path
-        panics, exits or loops before reading ``root``, and the copy is used on one)."""
+        loop but by a panic once the copy is used, reading ``root`` nowhere in it; review
+        5), or "exits" (every path panics, exits or loops before reading ``root``, and the
+        copy is used on one)."""
         copies, formats = self._pointers_to(copy) | {copy}, self._format_reads(*sinks)
         # (block, index, whether the copy was used on the way here, whether ``root`` was
         # assigned or ended unread on the way here: then any use of the copy is enough);
         # ``graph``: {such a state: the states it goes on to}.
         pending, seen, used_any, graph = [(start[0], start[1], False, False)], set(), False, {}
+        # The states whose path panics in std's panic, or reaches `unreachable`, unread: no
+        # way out of a loop (review 5: `loop { if p { panic!("stop"); } }`).
+        panicked = set()
         while pending:
             state = pending.pop()
             number, index, used, gone = state
@@ -2357,7 +2366,8 @@ class Body:
             if stopped:
                 continue
             used_any = used_any or used
-            if self._panics(number):
+            if self._panics(number) or block.terminator.startswith("unreachable"):
+                panicked.add(state)
                 continue
             if self._frame_exit(number) or self._diverges(number):
                 # The frame ends, ``root`` with it, unread.
@@ -2371,8 +2381,22 @@ class Body:
                 if successor not in block.unwinds
             )
             pending.extend(graph[state])
-        # A loop entered with the copy used, which reads ``root`` nowhere and has no way out.
-        if _closed_loop(graph, {state for state in graph if state[2] and not state[3]}):
+        # A loop entered with the copy used, which reads ``root`` nowhere and has no way out
+        # but a panic: a place each path from which panics (`Arguments::from_str`, then
+        # `panic_fmt`) is no way out.
+        grown = True
+        while grown:
+            grown = False
+            for state, following in graph.items():
+                if state not in panicked and following and all(e in panicked for e in following):
+                    panicked.add(state)
+                    grown = True
+        kept = {
+            state: tuple(each for each in following if each not in panicked)
+            for state, following in graph.items()
+            if state not in panicked
+        }
+        if _closed_loop(kept, {state for state in kept if state[2] and not state[3]}):
             return "loop"
         if used_any and self.exits_unread(root, start, projection, formats) is not None:
             return "exits"
