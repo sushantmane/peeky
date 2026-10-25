@@ -267,8 +267,19 @@ A by-value parameter, or a `let` that the code never borrows or reassigns, may l
 register. This can happen even in a debug build. The debugger then shows a copy, so a change
 wouldn't reach the program.
 
-Rows mark such a local `[not settable: register]`. In a struct's preview, its fields are marked
-too. `describe`'s `mutable:` line lists them per function.
+Rows mark such a local `[not settable: register]`, only where the build's IR declares every
+piece of that binding on such a copy. In a struct's preview, its fields are marked too.
+`describe`'s `mutable:` line lists them per function.
+
+A struct or tuple of one or two plain fields, such as `P { a: i32, b: i32 }`, can be kept in
+registers too. Its preview still reads `[memory]`: the debugger keeps its own copy in memory,
+written when the `let` runs, so the value is right. The struct's row and each field are marked
+`[not settable: register]`, because a change to that copy wouldn't reach the program:
+`p  P { a: 4, b: 11 }  [memory]  [not settable: register]`.
+
+Where the IR doesn't show that, rows say `[not settable: not proven in memory]`. That is a
+closure's capture, which the closure reaches through a pointer, or a binding split between a slot
+and a register, or one with no declaration Peeky reads. Peeky changes neither.
 
 For example, this `limiter` crate's `src/main.rs` accepts at most `limit` events per window:
 
@@ -1047,6 +1058,11 @@ The details:
 - A local that may own memory through a pointer inside it is judged by the MIR's proof. That is a
   struct, tuple, array or enum that holds a `Box`, `Vec`, `String` or `Rc`. Any struct counts, but
   a tuple or array of only primitives and references doesn't.
+- A struct whose fields hold no pointer at any depth, by the build's debug information, is judged
+  the same way, but its note doesn't say it may own memory. A closure's capture of
+  `struct Lap { number: u32, secs: u32, pit: u32 }` reads `[stale]`, with
+  `Its type holds no pointer, but its fields may show leftover bytes`. Probe rows show `[stale]` too,
+  as `session inspect` does.
 - Where the MIR doesn't prove it initialized at the stop, it is `[stale]`. That happens after
   `drop(h)`, `consume(h)`, `let g = h;` or a partial move, `let d = h.b;`. It happens wherever
   nothing is proven too: in an optimized build, a closure's or async block's capture, or a macro's
@@ -1743,6 +1759,9 @@ Rows mark these locals `[not settable: …]`, with the reason:
 - **`[not settable: register]`:** a by-value parameter, or a `let` the code never borrows or
   reassigns, lives only in a register. Keep it in memory with a candidate edit
   ([6.6](#66-see-what-a-fix-does-before-making-it)).
+- **`[not settable: not proven in memory]`:** the build's IR doesn't show a slot of its own for every
+  binding of the name: a closure's capture, a binding split between a slot and a register, or no
+  declaration Peeky reads. Change it where it is declared, or with a candidate edit.
 - **`[not settable: another binding in a register (line 4)]`:** the function binds the name twice.
   It is settable only when both bindings are in memory. Black-box the `let` that the refusal names.
   A field inside a standard-library type, such as a `Vec`'s `len`, never gets this mark. `set`

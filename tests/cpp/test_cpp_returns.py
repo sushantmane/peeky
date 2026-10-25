@@ -185,7 +185,8 @@ def test_step_out_into_the_library_shows_what_before_returned(cpp, cxx, capsys):
         )
         main(["session", "inspect"])
         text = capsys.readouterr().out
-        assert f"{BEFORE[cxx]} returned: bool = {expected}" in text, text
+        # Shown without GCC's leading `::`, which the stored name keeps.
+        assert f"{BEFORE[cxx].removeprefix('::')} returned: bool = {expected}" in text, text
         assert main(["session", "get", "return", "a"]) == 1
         text = capsys.readouterr().out
         assert f"(return): bool = {expected}" in text

@@ -142,7 +142,8 @@ hit  phase     line  function  selector  type         value
 
 Peeky says it only where all of this holds:
 
-- Both values are read at one stop, in one frame: one probe hit, or one `session get`.
+- Both values are read at one stop, in one frame: one probe hit, one `session get`, or one
+  `session inspect`, which says it of the locals it lists.
 - The array's own type gives its length, such as `int level[96]`. A struct or another single
   object counts as an array of one.
 - The pointer points at the array's element type. A typedef or `const` makes no difference. A
@@ -444,7 +445,14 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   struct. Or it says that it can't.
 - Sometimes the build's debug information rules out a probe's `--set` like this in every function
   on its `--at` line. Then the probe is refused before the program runs. The debugger's launch
-  request isn't sent, and no run is saved.
+  request isn't sent, and no run is saved. A root local whose type isn't one of the integers
+  `set` lists is refused so too, by the name the debugger gives that type:
+  ``in main, only writable integer locals of these types support native mutation: …; `tracks`
+  has type `const long` ``. That covers a `const` or `volatile` one, a `char`, `bool`, float,
+  enum, pointer or reference, a typedef `set` doesn't list (`typedef long Count;`), and
+  `_BitInt(32)`. A struct, an array or a `std::string` is judged at the stop.
+- The stop judges a root by the same names, its debug information's too. LLDB 18 and 20 show a
+  `_BitInt(32)` as `int`, but it is never `[settable]`.
 
 ```sh
 peeky probe examples/c/pagination_bug.c --at 25 --capture 'start,page,items[1]' --set start=0
@@ -776,7 +784,9 @@ Some things only look different:
 
 - **Function names:** LLDB names a `static` function from its declaration, from the global scope:
   `::trim_left(const std::string &)`, where clang's build gives `trim_left(std::string const&)`.
-  A lambda is plain `operator()`, and an unnamed class's constructor is `<constructor>`. The
+  Tables and messages drop that leading `::`, so the column reads `trim_left` in both. The store
+  keeps the debugger's name, and `short_function(function) = 'trim_left'` matches either. A
+  lambda is plain `operator()`, and an unnamed class's constructor is `<constructor>`. The
   `short_function()` hint names what the store holds.
 - **Lines:** GCC runs a default member initializer on the line that builds the object. So `--at`
   the member's line never stops, and `describe` leaves that line out. A range `for` header stops

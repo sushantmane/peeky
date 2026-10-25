@@ -16,10 +16,11 @@ from peeky.fields import (
     element_reference,
     local_types,
     referred_locals,
+    root_never_integer,
     settable_member,
     type_graph,
 )
-from peeky.native import NativeSession, _parse_dies
+from peeky.native import INTEGER_RANGES, NativeSession, _parse_dies
 from peeky.worker import DebugWorker
 
 
@@ -220,6 +221,100 @@ def test_everything_else_is_refused_with_its_reason(root, steps, words):
     with pytest.raises(Unsettable) as caught:
         settable_member(GRAPH, root, "s", steps)
     assert words in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "root, words",
+    [
+        # A probe's number for such a root is refused before the run, as the stop would.
+        (0x34, "`n` has type `const int`"),
+        (0x38, "`n` has type `volatile int`"),
+        (0x18, "`n` has type `char`"),
+        (0x1C, "`n` has type `_Bool`"),
+        (0x20, "`n` has type `double`"),
+        (0x28, "`n` has type `__int128`"),
+        (0x2C, "`n` has type `wchar_t`"),
+        (0x48, "`n` has type `color`"),
+        (0x3C, "`n` is a pointer"),
+        (0x40, "`n` has type `PairPtr`"),
+        (0x44, "`n` is a reference"),
+        # Review of PR #335: the stop takes a type by its name, not its width: a typedef
+        # it doesn't list is refused there, so here too.
+        (0x30, "`n` has type `myint`"),
+        # A listed integer, and what a text may change, are judged at the stop.
+        (0x10, None),
+        (0x24, None),
+        (0x14, None),
+        (0x60, None),
+        (0x50, None),
+        (0x160, None),
+        (0x999, None),
+    ],
+)
+def test_a_root_that_is_never_a_writable_integer_is_named_with_its_type(root, words):
+    assert root_never_integer(GRAPH, root, "n", INTEGER_RANGES) == words
+
+
+def test_a_root_is_judged_by_the_name_the_debugger_gives_its_type():
+    # Review of PR #335: `_BitInt(32)` is a 4-byte DW_ATE_signed, which the stop refuses by
+    # its name (lldb-dap on macOS shows `_BitInt(32)`), so its width can't admit it here.
+    # GCC's `long unsigned int` is the debugger's `unsigned long`; a typedef the stop takes
+    # by its name (`typedef float int64_t;`) is the stop's to judge.
+    graph = type_graph(
+        _parse_dies(
+            dump(
+                (0x0B, 0, "DW_TAG_compile_unit", {"DW_AT_name": '"t.c"'}),
+                (0x10, 1, "DW_TAG_base_type", base("float", "DW_ATE_float", "0x04")),
+                (
+                    0x14,
+                    1,
+                    "DW_TAG_typedef",
+                    {"DW_AT_type": "0x00000010", "DW_AT_name": '"int64_t"'},
+                ),
+                (0x18, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000014"}),
+                (0x20, 1, "DW_TAG_base_type", base("_BitInt(16)", "DW_ATE_signed", "0x02")),
+                (0x24, 1, "DW_TAG_base_type", base("_BitInt(32)", "DW_ATE_signed", "0x04")),
+                (0x28, 1, "DW_TAG_base_type", base("_BitInt(64)", "DW_ATE_signed", "0x08")),
+                (
+                    0x2C,
+                    1,
+                    "DW_TAG_base_type",
+                    base("unsigned _BitInt(32)", "DW_ATE_unsigned", "0x04"),
+                ),
+                (0x30, 1, "DW_TAG_base_type", base("long unsigned int", "DW_ATE_unsigned", "0x08")),
+                (0x34, 1, "DW_TAG_base_type", base("short int", "DW_ATE_signed", "0x02")),
+                (0x38, 1, "DW_TAG_const_type", {"DW_AT_type": "0x00000030"}),
+                (
+                    0x40,
+                    1,
+                    "DW_TAG_structure_type",
+                    {"DW_AT_name": '"basic"', "DW_AT_byte_size": "0x08"},
+                ),
+                (0x44, 1, "DW_TAG_typedef", {"DW_AT_type": "0x00000040", "DW_AT_name": '"string"'}),
+                (0x48, 1, "DW_TAG_array_type", {"DW_AT_type": "0x00000034"}),
+                (0x4A, 2, "DW_TAG_subrange_type", {"DW_AT_count": "0x08"}),
+                (0x50, 1, "DW_TAG_typedef", {"DW_AT_type": "0x00000048", "DW_AT_name": '"Name"'}),
+            )
+        ),
+        (0x14, 0x18, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x44, 0x50),
+        CPP_LIBRARIES,
+    )
+    for offset, bits in ((0x20, 16), (0x24, 32), (0x28, 64)):
+        why = root_never_integer(graph, offset, "b", INTEGER_RANGES)
+        assert why == f"`b` has type `_BitInt({bits})`", why
+    assert root_never_integer(graph, 0x2C, "b", INTEGER_RANGES) == (
+        "`b` has type `unsigned _BitInt(32)`"
+    )
+    assert root_never_integer(graph, 0x30, "u", INTEGER_RANGES) is None
+    assert root_never_integer(graph, 0x34, "s", INTEGER_RANGES) is None
+    assert (
+        root_never_integer(graph, 0x38, "u", INTEGER_RANGES) == "`u` has type `const unsigned long`"
+    )
+    assert root_never_integer(graph, 0x14, "lossy", INTEGER_RANGES) is None
+    assert root_never_integer(graph, 0x18, "c", INTEGER_RANGES) == "`c` has type `const int64_t`"
+    # A text may change a record or an array, by whatever name: the stop judges those.
+    assert root_never_integer(graph, 0x44, "s", INTEGER_RANGES) is None
+    assert root_never_integer(graph, 0x50, "tag", INTEGER_RANGES) is None
 
 
 DECLARED = dump(

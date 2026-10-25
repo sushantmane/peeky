@@ -98,6 +98,7 @@ def test_a_recorded_probe_is_queryable_with_numbers_and_identity(store):
             "instance": None,
             "stop": None,
             "restores_at": None,
+            "unchanged": 0,
         }
     ]
     assert evidence.query(store, "SELECT worker FROM runs WHERE run_id = 2")["rows"] == [
