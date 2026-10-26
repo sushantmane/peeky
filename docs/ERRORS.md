@@ -90,8 +90,9 @@ The last column is the `retryable` field.
 
 - A read went past one of Peeky's bounds, such as on the children it lists. Read a narrower
   selector.
-- A probe ended after 100 stops in a row on the same signal, or C++ throw or catch filter, at one
-  place. Peeky let the program go on after each, and doesn't take them for a crash.
+- A probe ended at the 100th stop in a row on the same signal, or C++ throw or catch filter, at
+  one place in a call from one line of your code. Peeky let the program go on after each of the
+  first 99, and doesn't take them for a crash.
 - The program may raise that signal again and again, or LLDB may stop there without letting it
   past. Peeky can't tell which. Probe a line before those stops, or use an input that doesn't
   raise them.

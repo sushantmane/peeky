@@ -496,14 +496,17 @@ At a stop that isn't a crash, a probe reads nothing and lets the program go on, 
 For a signal, the warning adds that LLDB may not deliver it to the program. So the run after it can
 differ from one without Peeky.
 
-After 100 such stops in a row at one place, the probe ends with `BUDGET_EXHAUSTED`. A loop may
-raise a signal that often, or LLDB may stop there again without letting the program past. On
+At the 100th such stop in a row, the probe ends with `BUDGET_EXHAUSTED`. The same stop means the
+same description, place, and nearest frame of your code. A loop may raise a signal that often, or
+LLDB may stop there again without letting the program past. On
 macOS, a fault that the program handles does that. Peeky can't tell which, and the message says
 so. Probe a line before those stops, or use an input that doesn't raise them.
 
-In a session, the state says the same, and `crash` is in its JSON. Nothing in a frame outside your
-sources is read, at a crash or any other signal stop. `session inspect` there is refused, and the
-session goes on:
+In a session, the state says the same, and `crash` is in its JSON. At any other signal stop, or a
+C++ throw or catch filter's, the JSON has `signal_stop` instead. It has the same fields, and
+`kind`: `signal`, `exception` (a macOS Mach exception), or the filter's name, such as
+`cpp_throw`. Nothing in a frame outside your sources is read, at a crash or any other such stop.
+`session inspect` there is refused, and the session goes on:
 
 ```
 peeky: [INVALID_REQUEST] Nothing in frame 0 (__pthread_kill) is read: it is outside the program's sources, where the program crashed (signal SIGABRT). Frame 12, main at abort.cpp:12, is the nearest of your code: `session inspect --frame 12`

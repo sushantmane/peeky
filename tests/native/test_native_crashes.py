@@ -101,6 +101,12 @@ int main(int argc, char **argv) {
         raise(SIGABRT);
     for (int k = 0; argv[1][0] == 'l' && k < atoi(argv[2]); k++)
         raise(SIGINT); /* LOOP */
+    for (int k = 0; argv[1][0] == 'm' && k < atoi(argv[2]); k++) {
+        if (k % 2)
+            raise(SIGINT); /* ODD */
+        else
+            raise(SIGINT); /* EVEN */
+    }
     printf("done %d\\n", n); /* DONE */
     return 0;
 }
@@ -253,19 +259,32 @@ def test_a_loop_of_handled_signals_is_bounded_with_an_honest_message(cc, capsys)
     assert code == 1 and result["status"] == "failed" and result["hits"] == 0, result
     error = result["error"]
     assert error["code"] == "BUDGET_EXHAUSTED", error
-    assert error["message"].startswith(
-        "The probe ended after the program stopped 100 times in a row on signal SIGINT"
-    ), error
-    assert (
-        f"in a call from main at handled.c:{loop}, letting it go on each time."
-        in (error["message"])
-    ), error
-    assert error["message"].endswith(
-        "The program may cause that stop again and again, or the debugger may stop there "
-        "without letting it past: Peeky can't tell which"
+    # On the reviewed head: "letting it go on each time", and a warning of 100 times, though
+    # the 100th stop was not let go on.
+    assert error["message"] == (
+        "The probe ended at the program's 100th stop in a row on signal SIGINT, outside the "
+        f"program's sources, in a call from main at handled.c:{loop}. It let the program go "
+        "on after each of the first 99. The program may cause that stop again and again, or "
+        "the debugger may stop there without letting it past: Peeky can't tell which"
     ), error
     assert error["hint"].startswith("Probe a line the program reaches before these stops")
     assert result["output"].startswith("start 3\n"), result
+    assert any(
+        w.startswith("The probe let the program go on after it stopped on signal SIGINT (99 times)")
+        for w in result["warnings"]
+    ), result["warnings"]
+    # Raises alternating between two lines reach one place in libc, but are not the same
+    # stop: none comes 100 times in a row, and the probe goes on to its line (on the
+    # reviewed head: BUDGET_EXHAUSTED, naming only the last line).
+    code, result = probe(capsys, "handled.c", done, "m", "150")
+    assert code == 0 and result["status"] == "completed", result
+    assert "error" not in result and "done 3\n" in result["output"], result
+    assert any(
+        w.startswith(
+            "The probe let the program go on after it stopped on signal SIGINT (150 times)"
+        )
+        for w in result["warnings"]
+    ), result["warnings"]
 
 
 @pytest.mark.timeout(300)

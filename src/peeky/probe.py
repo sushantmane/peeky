@@ -4469,16 +4469,20 @@ def run_probe(
                 )[:300]
                 # A C++ throw or catch filter's stop is no signal (`kind`: exceptionInfo's).
                 filtered = seen.get("kind") not in (None, "signal", "exception")
-                passed[(what, filtered)] = passed.get((what, filtered), 0) + 1
-                place = (what, state.get("location"))
+                # The same stop: the same text, place, and nearest frame of the program's code
+                # (a loop raising from two lines reaches one place in libc from each).
+                place = (what, state.get("location"), seen.get("function"), seen.get("location"))
                 again = (place, again[1] + 1 if again[0] == place else 1)
                 if again[1] >= REPEATED_STOPS:
                     # A bound, not a proof: the program may make progress between them.
                     repeated = {**seen, "description": what}
                     if "location" not in repeated and place[1]:
                         repeated["stopped_at"] = str(place[1])[:500]
+                    for call in reversed(returning):
+                        rows.extend(_never_returned(call, "the probe ended before it returned"))
+                    returning.clear()
                     status = "failed"
-                    say(f"ending the probe after {again[1]} such stops in a row")
+                    say(f"ending the probe at the {again[1]}th such stop in a row")
                     break
                 for call in reversed(returning):
                     rows.extend(
@@ -4486,6 +4490,8 @@ def run_probe(
                     )
                 returning.clear()
                 worker.dispatch("continue", stop)
+                # Counted once the program was let go on from it.
+                passed[(what, filtered)] = passed.get((what, filtered), 0) + 1
                 continue
             again = (None, 0)
             if reason in CRASH_STOPS:
@@ -4937,10 +4943,10 @@ def run_probe(
                 shown = {**repeated, "location": at[len(base) :]}
             result["error"] = {
                 "code": "BUDGET_EXHAUSTED",
-                "message": f"The probe ended after the program stopped {REPEATED_STOPS} times "
-                f"in a row on {crash_text(shown, crashed=False)}, letting it go on each time. "
-                "The program may cause that stop again and again, or the debugger may stop "
-                "there without letting it past: Peeky can't tell which",
+                "message": f"The probe ended at the program's {REPEATED_STOPS}th stop in a row on "
+                f"{crash_text(shown, crashed=False)}. It let the program go on after each of the "
+                f"first {REPEATED_STOPS - 1}. The program may cause that stop again and again, "
+                "or the debugger may stop there without letting it past: Peeky can't tell which",
                 "hint": "Probe a line the program reaches before these stops, or run it with "
                 "input that doesn't raise them.",
                 "retryable": False,
