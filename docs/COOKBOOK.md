@@ -220,8 +220,9 @@ How C++ names are shortened: [C and C++ 1.1](lang/c-cpp-cookbook.md#how-a-c-func
 SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing. Match a frame with
 `short_function(function) = 'trim_left'`, or with its whole name.
 
-- A query's table that shows short names says so in a note. So does `peeky sql --help`.
-- A probe's table says it once per state directory, and never with `--quiet`.
+- `peeky sql --help` says so every time.
+- A probe's or a query's table that shows short names says so in a note, once per state directory
+  for both. A probe with `--quiet` never says it.
 
 `short_function` drops the parameters of every overload, and a Rust symbol's hash. So these share
 one name:

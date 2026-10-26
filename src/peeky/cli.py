@@ -1386,8 +1386,8 @@ def _probe_text(result, quiet=False):
     from peeky.probe import _short_note
 
     # The note on short frame names and instance labels, once per state directory and
-    # never with --quiet (seventh evaluation, finding 8): `peeky sql --help`, `--schema`
-    # and query tables say it too.
+    # never with --quiet (seventh evaluation, finding 8): `peeky sql --help` and `--schema`
+    # say it too, and query tables within the same once (twelfth evaluation, laps 6).
     noted = not result.get("refused_before_launch") and _short_note(result) is not None
     short_names = not quiet and noted and _short_names_once()
     # A Python candidate's note on its copied root (eighth evaluation, L6): once per
