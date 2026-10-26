@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -76,6 +77,10 @@ int main(int argc, char **argv) {
   union num un;
   un.i = 5;
   double *pd = &un.d;
+  union num ua[1];
+  ua[0].i = 6;
+  double *pua = &ua[0].d;
+  const char *after = lit + 8;
   long *tp = table + 1;
   long *tpast = table + 5;
   long *code = (long *)(uintptr_t)&main;
@@ -83,8 +88,8 @@ int main(int argc, char **argv) {
   long *la = (long *)argv;
   printf("%ld %ld %ld %ld %s %s %s %s %d %ld %p %p %p %p\\n", *px, *pa, total, live[0], pn, row,
          lit, dup, h.n, hc->a, (void *)two, (void *)dang, (void *)old, (void *)freed);
-  printf("%ld %p %ld %p %p %s %p\\n", un.i, (void *)pd, *tp, (void *)tpast, (void *)code, arg,
-         (void *)la); /* MAIN */
+  printf("%ld %p %ld %p %ld %p %p %s %p %p\\n", un.i, (void *)pd, ua[0].i, (void *)pua, *tp,
+         (void *)tpast, (void *)code, arg, (void *)la, (void *)after); /* MAIN */
   free(live);
   free(hc);
   free(dup);
@@ -138,6 +143,10 @@ HEAP = (
     "lists, nor in the program's static memory; if it is a heap block, Peeky can't tell "
     "whether that block is still allocated, so check where the program frees it"
 )
+IMAGE = (
+    "it points into the program's loaded image, but no compatible global, static local or "
+    "proven string literal is there; read the global it should point at by name"
+)
 BELOW = (
     "it points below the stack pointer, where no live call keeps its locals, as a pointer "
     "into a call that has returned does; read the value before that call returns"
@@ -154,7 +163,7 @@ def unproven(row, pointer, why, text=False):
 def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program, capsys):
     selectors = (
         "px[0],pa[0],pn,pn[0],row,lit,h,two[0],two.a,dang[0],live[0],freed[0],hc.a,hc[0],h.p[0],"
-        "dup,old,pd[0],tp[0],tpast[0],code[0],arg,la[0]"
+        "dup,old,pd[0],pua[0],tp[0],tpast[0],code[0],arg,la[0],after"
     )
     result = probed(capsys, program, f"pointees.c:{line_of('MAIN')}", selectors, "--", "Maya")
     rows = {row["selector"]: row for row in result["rows"]}
@@ -165,8 +174,16 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
     assert rows["pn"]["value"].endswith('"maya"') and rows["pn[0]"]["value"] == "'m'", rows
     assert rows["lit"]["value"].endswith('"literal"') and rows["row"]["value"].endswith('"cd"')
     assert rows["h"]["value"].startswith("{p = 0x") and rows["h"]["value"].endswith("n = 2}")
-    for selector in ("px[0]", "pa[0]", "pn", "pn[0]", "row", "lit", "h"):
+    for selector in ("px[0]", "pa[0]", "pn", "pn[0]", "row", "h"):
         assert "view" not in rows[selector] and "note" not in rows[selector], rows[selector]
+    if sys.platform == "darwin":
+        # `__TEXT,__cstring` holds only string literals: from the pointer to its NUL.
+        assert "view" not in rows["lit"], rows
+    else:
+        # The linkers merge an ELF's literals into `.rodata`, among other constants: no
+        # proof there, nor past the literal (review of PR #341).
+        unproven(rows["lit"], "lit", IMAGE, text=True)
+        unproven(rows["after"], "after", IMAGE, text=True)
     # Two past `cells`' end: the bytes there are read, marked.
     past = "it holds the address of `cells[4]`, past the end of `cells`, which has 3 elements"
     for selector in ("two[0]", "two.a"):
@@ -187,13 +204,14 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
     unproven(rows["old"], "old", BELOW, text=True)
     # A union's other member, which a declaration doesn't prove holds a value.
     unproven(rows["pd[0]"], "pd", "read `un` by name, and the member the program last stored")
+    # An element of an array of unions, likewise (review of PR #341: the stack note).
+    assert "it points into the union `ua[0]`" in rows["pua[0]"]["note"], rows
     # A global's element; past its end; into the program's code (review of PR #341: any
     # address in a load segment counted).
     assert rows["tp[0]"]["value"] == "2" and "view" not in rows["tp[0]"], rows
     past = "it holds the address of `table[5]`, past the end of `table`, which has 3 elements"
     unproven(rows["tpast[0]"], "tpast", f"{past}; read `table` by name")
-    unproven(rows["code[0]"], "code", "read the global it should point at by name")
-    assert "the program's static storage, but at no global" in rows["code[0]"]["note"], rows
+    unproven(rows["code[0]"], "code", IMAGE)
     # `main`'s argument string, read through a `char *`; the vector itself as `long`s.
     assert rows["arg"]["value"].endswith('"Maya"') and "view" not in rows["arg"], rows
     assert rows["la[0]"]["view"] == "unproven", rows
@@ -204,6 +222,23 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
     table = capsys.readouterr().out
     assert "  11  [unproven]" in table and "[note]" not in table, table
     assert "live[0]: Peeky can't show that `live` points at a live object" in table, table
+
+
+@pytest.mark.timeout(240)
+def test_more_arguments_than_peeky_reads_say_so(program, capsys):
+    # 64 arguments (the most a probe passes), so 65 strings with the program's name: Peeky
+    # reads 64 of them, so a heap `char *` may be one it didn't; its note says so, and
+    # never that a local was left unplaced (review of PR #341).
+    words = [f"w{i}" for i in range(64)]
+    at = f"pointees.c:{line_of('MAIN')}"
+    (row,) = probed(capsys, program, at, "dup", "--", *words)["rows"]
+    unproven(row, "dup", ARGUMENT_LIMIT, text=True)
+
+
+ARGUMENT_LIMIT = (
+    "Peeky didn't read every one of `main`'s argument and environment strings at this stop: "
+    "the per-stop limit was reached; read the string it should point at by name"
+)
 
 
 @pytest.mark.timeout(240)

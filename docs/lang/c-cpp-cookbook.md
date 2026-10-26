@@ -180,10 +180,12 @@ What a pointer points at is proven live where its address is in one of these:
 
 A `char *` may point at any byte of such an object, as C allows. It may also point into a string
 literal, or one of `main`'s argument strings, from the pointer to the string's NUL. Environment
-strings count where `main` declares `envp`.
+strings count where `main` declares `envp`. A literal counts only in a section that holds nothing
+but strings, as macOS's `__cstring` does. Linux linkers merge literals into `.rodata`, among other
+constants, so there a literal's text is marked.
 
 A union's member is never proven, only the union itself: no declaration says which member holds a
-value. Nor does a declaration in scope say which object a storage holds after placement `new`.
+value. An element of an array of unions is a union too. Nor does a declaration in scope say which object a storage holds after placement `new`.
 Where the types differ, what is read is marked.
 
 Otherwise, the note says what Peeky knows of the address:
@@ -194,8 +196,8 @@ Otherwise, the note says what Peeky knows of the address:
 - `it points into the stack of the frames Peeky lists`, but at no local, member or element of its
   type.
 - ``it points into the union `un` ``, and no declaration says which of its members holds a value.
-- `it points into the program's static storage`, but at no global, `static` local or string
-  literal of its type.
+- `it points into the program's loaded image, but no compatible global, static local or proven
+  string literal is there`, as a pointer into the program's code does.
 - `its address is in no local, member or element that Peeky could place`, such as a heap
   block's. A live block and a freed one read alike.
 
@@ -231,7 +233,9 @@ locals that may hold what the pointer points at. It reads `argv[N]` the same way
 Peeky bounds what it reads per stop: 32 locals asked for, 256 locals of a frame, 64 that need
 asking, and 64 argument strings. Where a bound left a local unplaced, the note says only that:
 `Peeky didn't place every local at this stop: the per-stop limit was reached`. It never says the
-pointer points at no local then, or below the stack pointer.
+pointer points at no local then, or below the stack pointer. Where only the argument strings were
+cut short, it says so: ``Peeky didn't read every one of `main`'s argument and environment
+strings``.
 
 ### Which element's address a pointer holds
 

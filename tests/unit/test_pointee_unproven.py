@@ -285,29 +285,49 @@ def test_the_programs_variables_in_static_storage_are_its_globals_exactly():
     assert native.static_bases() is None
 
 
-def test_a_string_literal_is_from_the_pointer_to_its_nul(tmp_path):
+def test_a_string_literal_is_proven_only_in_a_section_of_strings(tmp_path):
     import struct
 
-    # An ELF64 whose `.rodata` (at 0x400, file offset 0x200) holds "ab\0cd\0".
-    names = b"\0.rodata\0.shstrtab\0"
-    data = b"ab\0cd\0"
+    # An ELF64 with a `.rodata` of other constants (at 0x500: "ab" then padding and a
+    # number, flags SHF_ALLOC), and a `.rodata.str1.1` of strings (at 0x400: "ab\0cd\0",
+    # SHF_ALLOC | SHF_MERGE | SHF_STRINGS, entries of one byte). Review of PR #341: any
+    # `.rodata` counted, so padding or a pointer past a literal followed by a NUL did.
+    strings, constants = b"ab\0cd\0", b"ab\0\0\x07\0\0\0"
     header = bytearray(64)
     header[:6] = b"\x7fELF\x02\x01"
     struct.pack_into("<Q", header, 40, 0x300)
-    struct.pack_into("<HHH", header, 58, 64, 3, 2)
+    struct.pack_into("<HH", header, 58, 64, 3)
     body = bytearray(0x300 - 64)
-    body[0x200 - 64 : 0x200 - 64 + len(data)] = data
-    body[0x280 - 64 : 0x280 - 64 + len(names)] = names
+    body[0x200 - 64 : 0x200 - 64 + len(strings)] = strings
+    body[0x280 - 64 : 0x280 - 64 + len(constants)] = constants
     sections = struct.pack("<IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    sections += struct.pack("<IIQQQQIIQQ", 1, 1, 2, 0x400, 0x200, len(data), 0, 0, 1, 0)
-    sections += struct.pack("<IIQQQQIIQQ", 9, 3, 0, 0, 0x280, len(names), 0, 0, 1, 0)
+    sections += struct.pack("<IIQQQQIIQQ", 1, 1, 0x32, 0x400, 0x200, len(strings), 0, 0, 1, 1)
+    sections += struct.pack("<IIQQQQIIQQ", 9, 1, 0x2, 0x500, 0x280, len(constants), 0, 0, 8, 0)
     (tmp_path / "elf").write_bytes(bytes(header) + bytes(body) + sections)
-    assert string_sections(tmp_path / "elf") == ((0x400, 0x400 + len(data), 0x200),)
+    assert string_sections(tmp_path / "elf") == ((0x400, 0x400 + len(strings), 0x200),)
     native = NativeSession.__new__(NativeSession)
     native.binary, native.load_bias = tmp_path / "elf", 0x1000
-    assert native.literal_range(0x1401) == (0x1401, 0x1403)
+    # The entry an address is in: from the section's start or the byte after a NUL, to
+    # its NUL.
+    assert native.literal_range(0x1401) == (0x1400, 0x1403)
     assert native.literal_range(0x1403) == (0x1403, 0x1406)
     assert native.literal_range(0x1406) is None
+    # Other constants, a literal's padding, a pointer past it: never.
+    assert native.literal_range(0x1500) is None and native.literal_range(0x1503) is None
+    # A Mach-O section of type S_CSTRING_LITERALS in `__TEXT` (`__cstring`), and no
+    # other.
+    segment = struct.pack(
+        "<II16sQQQQIIII", 0x19, 72 + 160, b"__TEXT", 0x1000, 0x1000, 0, 0x1000, 5, 5, 2, 0
+    )
+    segment += struct.pack(
+        "<16s16sQQIIIIIIII", b"__cstring", b"__TEXT", 0x1100, 6, 0x100, 0, 0, 0, 2, 0, 0, 0
+    )
+    segment += struct.pack(
+        "<16s16sQQIIIIIIII", b"__const", b"__TEXT", 0x1200, 8, 0x200, 3, 0, 0, 0, 0, 0, 0
+    )
+    macho = struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 1, len(segment), 0, 0)
+    (tmp_path / "macho").write_bytes(macho + segment)
+    assert string_sections(tmp_path / "macho") == ((0x1100, 0x1106, 0x100),)
 
 
 def test_mains_argument_strings_are_read_with_their_nul():
@@ -346,6 +366,13 @@ def test_a_unions_members_are_held_but_marked():
     assert found["b.u"].get("union_object") is True and "union" not in found["b.u"]
     assert found["b.u.i"]["union"] is True and found["b.u.d"]["union"] is True
     assert "union" not in found["b.n"]
+    # An array of unions: each element listed is a union a pointer at a member is in
+    # (review of PR #341: `&a[0].d` fell through to the stack note).
+    graph[5] = ("array", "", 3, (2,), False)
+    native._typed = lambda frame, steps, walked=False: (Typed(graph, 5), False)
+    found = dict(native.held_extents({"value": "u[2] @ 0x2000", "type": "u[2]"}, {}, "a"))
+    assert found["a[1]"]["union_object"] is True and found["a[1]"]["address"] == 0x2008
+    assert found["a[1].d"]["union"] is True and "union" not in found["a"]
 
 
 def test_a_2d_arrays_rows_and_their_members_are_placed():
@@ -731,9 +758,8 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert "unproven_read" not in expand("tp")
     assert "the address of `table[3]`, past the end of `table`" in expand("tpast")["unproven_read"]
     assert expand("code")["unproven_read"].endswith(
-        "it points into the program's static storage, but at no global, `static` local or "
-        "string literal of its type that Peeky placed; read the global it should point at by "
-        "name"
+        "it points into the program's loaded image, but no compatible global, static local or "
+        "proven string literal is there; read the global it should point at by name"
     )
     # A union's member, which no declaration proves holds a value.
     assert expand("pd")["unproven_read"].endswith(
@@ -848,6 +874,36 @@ def test_a_bound_on_locals_leaves_only_the_limit_note(stopped):
     stopped.runtime.unplaced_local = lambda variable, frame, name: False
     shown = {v["name"]: v for v in call(stopped, "inspect", frame_id=1)["scopes"][0]["variables"]}
     assert expand_note(stopped, shown["dang"]).endswith(LIMIT)
+
+
+ARGUMENT_LIMIT = (
+    "Peeky didn't read every one of `main`'s argument and environment strings at this stop: "
+    "the per-stop limit was reached; read the string it should point at by name"
+)
+
+
+def test_more_argument_strings_than_the_bound_say_so_apart(stopped):
+    # 70 arguments: the 64 Peeky reads don't place them all. That is no local left
+    # unplaced (review of PR #341: the note said "didn't place every local").
+    from peeky.worker import ARGUMENT_STRINGS
+
+    request, read = stopped.dap.request, []
+
+    def answer(operation, args, timeout=None):
+        if operation == "evaluate" and args["expression"].startswith("argv["):
+            index = int(args["expression"][5:-1])
+            read.append(index)
+            return {"result": f'{at(0x7000 + 16 * index)} "a{index}"'}
+        return request(operation, args, timeout)
+
+    stopped.dap.request = answer
+    shown = {v["name"]: v for v in call(stopped, "inspect", frame_id=1)["scopes"][0]["variables"]}
+    assert shown["dup"]["note"].endswith(ARGUMENT_LIMIT), shown["dup"]["note"]
+    assert read == list(range(ARGUMENT_STRINGS)) and ARGUMENT_STRINGS == 64
+    assert unproven_text("p", {"kind": "limit", "limits": ["locals", "arguments"]}).endswith(
+        "Peeky reached a per-stop proof limit: it didn't place every local, nor read every one "
+        "of `main`'s argument and environment strings; read what it should point at by name"
+    )
 
 
 def expand_note(worker, variable):

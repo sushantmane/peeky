@@ -3443,9 +3443,11 @@ def static_variables(dies, limit=MAX_STATICS):
 
 
 def string_sections(binary):
-    """[(start, end, file offset)] of an executable's sections of C strings, before any
-    slide (#339): a Mach-O's `__TEXT,__cstring`, which holds only string literals, and an
-    ELF's `.rodata` sections, where the linker puts them among other constants."""
+    """[(start, end, file offset)] of an executable's sections that hold only C strings,
+    each ended by its NUL, before any slide (#339): a Mach-O's of `S_CSTRING_LITERALS`
+    (`__TEXT,__cstring`), or an ELF's of `SHF_MERGE` and `SHF_STRINGS` with entries of one
+    byte (`.rodata.str1.1`). The linkers merge an ELF's into `.rodata`, among other
+    constants, which holds no proof: there, none."""
     with Path(binary).open("rb") as stream:
         header = stream.read(64)
         if len(header) >= 32 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
@@ -3465,30 +3467,31 @@ def string_sections(binary):
                     sections = struct.unpack_from("<I", commands, cursor + 64)[0]
                     for index in range(min(sections, (length - 72) // 80)):
                         at = cursor + 72 + index * 80
-                        name, segment = commands[at : at + 16], commands[at + 16 : at + 32]
+                        segment = commands[at + 16 : at + 32]
                         address, extent, offset = struct.unpack_from("<QQI", commands, at + 32)
-                        if (name.rstrip(b"\0"), segment.rstrip(b"\0")) == (b"__cstring", b"__TEXT"):
+                        flags = struct.unpack_from("<I", commands, at + 64)[0]
+                        # S_CSTRING_LITERALS, in the read-only `__TEXT`.
+                        if flags & 0xFF == 0x2 and segment.rstrip(b"\0") == b"__TEXT" and extent:
                             found.append((address, address + extent, offset))
                 cursor += length
             return tuple(found)
         if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01":
             raise ValueError("Expected a 64-bit little-endian executable")
         table = struct.unpack_from("<Q", header, 40)[0]
-        entry, count, names = struct.unpack_from("<HHH", header, 58)
-        if entry != 64 or not 0 < count <= 4096 or names >= count:
+        entry, count = struct.unpack_from("<HH", header, 58)
+        if entry != 64 or not 0 < count <= 4096:
             raise ValueError("Invalid ELF section header table")
         stream.seek(table)
         raw = stream.read(entry * count)
         if len(raw) != entry * count:
             raise ValueError("Truncated ELF section header table")
         headers = [struct.unpack_from("<IIQQQQIIQQ", raw, i * entry) for i in range(count)]
-        stream.seek(headers[names][4])
-        strings = stream.read(min(headers[names][5], 1 << 20))
         found = []
-        for name, kind, _, address, offset, size, *_ in headers:
-            label = strings[name : strings.find(b"\0", name)] if name < len(strings) else b""
-            # SHT_PROGBITS, with no write and no exec flag.
-            if label.startswith(b".rodata") and kind == 1 and address and size:
+        for _, kind, flags, address, offset, size, _, _, _, entry_size in headers:
+            # SHT_PROGBITS; SHF_ALLOC, SHF_MERGE and SHF_STRINGS, never SHF_WRITE or
+            # SHF_EXECINSTR; strings of one-byte characters.
+            strings_only = flags & 0x37 == 0x32 and entry_size == 1
+            if kind == 1 and strings_only and address and size:
                 found.append((address, address + size, offset))
         return tuple(found)
 
@@ -5380,9 +5383,11 @@ class NativeSession:
         return found[1]
 
     def literal_range(self, address):
-        """(start, end) of the C string at ``address`` in the program's string literals
-        (#339: ``string_sections``), from it to its NUL, read from the executable's file;
-        None where the address is in none, or no NUL ends it there within 4096 bytes."""
+        """(start, end) of the C string ``address`` is in, in a section of the program
+        that holds only string literals (#339: ``string_sections``), read from the
+        executable's file: from its first byte (the section's, or the one after a NUL) to
+        its NUL. None where the address is in none, or either end is more than 4096 bytes
+        off."""
         bias, binary = getattr(self, "load_bias", None), getattr(self, "binary", None)
         if type(bias) is not int or binary is None:
             return None
@@ -5396,14 +5401,18 @@ class NativeSession:
         for start, end, offset in sections:
             if start + bias <= address < end + bias:
                 at = address - bias - start
+                before = min(at, 4096)
                 try:
                     with Path(binary).open("rb") as stream:
-                        stream.seek(offset + at)
-                        data = stream.read(min(4096, end - start - at))
+                        stream.seek(offset + at - before)
+                        data = stream.read(before + min(4096, end - start - at))
                 except OSError:
                     return None
-                ends = data.find(b"\0")
-                return None if ends < 0 else (address, address + ends + 1)
+                first, ends = data.rfind(b"\0", 0, before), data.find(b"\0", before)
+                if ends < 0 or (first < 0 and before < at):
+                    # No NUL, or no boundary it can be told from: no proof.
+                    return None
+                return address - before + first + 1, address - before + ends + 1
         return None
 
     def stack_pointer(self, dap, frame_id):
@@ -5531,11 +5540,14 @@ class NativeSession:
                 extent["dims"] = list(dims)
             held.append((selector, {**extent, "element_size": size}))
             if element.kind() in ("record", "union") and depth < 3:
+                # A union element is listed itself too (#339): the union a pointer at one
+                # of its members is in, which no element of the array names otherwise.
+                whole = element.kind() == "union"
                 for index in range(min(length, 16)):
                     at, place = address + index * size, ""
                     for count in reversed(dims):
                         place, index = f"[{index % count}]{place}", index // count
-                    self._held_into(f"{selector}{place}", element, at, held, depth + 1, own=False)
+                    self._held_into(f"{selector}{place}", element, at, held, depth + 1, own=whole)
             return
         if sort not in ("record", "union", "scalar", "library", "pointer"):
             return

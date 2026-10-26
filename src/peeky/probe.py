@@ -2164,8 +2164,8 @@ def unproven_text(pointer, why, text=False):
     """The note on what is read through the C or C++ pointer named ``pointer``, which
     Peeky can't show points at a live object (#339): the rule, why, then what to do.
     ``why``: ``pointee_past``'s, {"kind": "union", "selector", place}, or {"kind":
-    ``pointee_place``'s, "static" or "limit", "statics": whether Peeky knew where the
-    program's static memory is}. ``text``: the note of the
+    ``pointee_place``'s, "image" or "limit" (with `limits`: "locals", "arguments"),
+    "statics": whether Peeky knew where the program's image is}. ``text``: the note of the
     pointer's own row, whose text LLDB read through it (a `char *`'s); with ``pointer``
     None, of the one a function returned."""
     kind = why.get("kind")
@@ -2203,11 +2203,23 @@ def unproven_text(pointer, why, text=False):
             f"its members holds a value; read `{base}` {how}, and the member the program "
             "last stored"
         )
-    elif kind == "static":
+    elif kind == "image":
         reason = (
-            "it points into the program's static storage, but at no global, `static` "
-            "local or string literal of its type that Peeky placed; read the global it "
-            "should point at by name"
+            "it points into the program's loaded image, but no compatible global, static "
+            "local or proven string literal is there; read the global it should point at by "
+            "name"
+        )
+    elif kind == "limit" and why.get("limits") == ["arguments"]:
+        reason = (
+            "Peeky didn't read every one of `main`'s argument and environment strings at "
+            "this stop: the per-stop limit was reached; read the string it should point at "
+            "by name"
+        )
+    elif kind == "limit" and "arguments" in (why.get("limits") or ()):
+        reason = (
+            "Peeky reached a per-stop proof limit: it didn't place every local, nor read "
+            "every one of `main`'s argument and environment strings; read what it should "
+            "point at by name"
         )
     elif kind == "limit":
         reason = (

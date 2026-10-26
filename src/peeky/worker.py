@@ -4241,9 +4241,9 @@ class DebugWorker:
         or one of `main`'s argument strings, from it to its NUL. Else, near the stack
         pointer, the locals the debugger gave no address for are placed
         (``placed_locals``) and asked again. Then why not: below the stack pointer,
-        outside an array, in a union, in the program's static storage, in the listed
-        frames' stack, or nowhere Peeky placed; or, where a bound left some local
-        unplaced, only that ("limit")."""
+        outside an array, in a union, in the program's loaded image, in the listed
+        frames' stack, or nowhere Peeky placed; or, where a bound left some local or
+        argument string unplaced, only that ("limit", with its `limits`)."""
         from peeky.probe import RED_ZONE, pointee_past, pointee_place, pointee_proven
 
         runtime = self.runtime
@@ -4256,7 +4256,7 @@ class DebugWorker:
             (name, extent, {}) for name, extent in (held() if callable(held) else None) or ()
         ]
         bases = [entry for entry in self.stop_bases(frame) if not _through_this(entry[0])]
-        strings, cut = [], False
+        strings, cut, arguments_cut = [], False, False
         if pointer.get("character") is True:
             literal = getattr(runtime, "literal_range", None)
             if callable(literal) and (found := literal(address)) is not None:
@@ -4264,7 +4264,7 @@ class DebugWorker:
         if pointee_proven(address, pointer, bases + globals_, strings):
             return None
         if pointer.get("character") is True:
-            strings, cut = self.argument_strings()
+            strings, arguments_cut = self.argument_strings()
             if pointee_proven(address, pointer, [], strings):
                 return None
         sp, placed, settled = self.stop_stack_pointer(), [], True
@@ -4288,10 +4288,12 @@ class DebugWorker:
                     # Which of its members holds a value, no declaration says.
                     return {"kind": "union", "selector": selector, **place}
         if segments and any(start <= address < end for start, end in segments):
-            kind = "static"
-        elif cut:
-            # A local Peeky didn't place may be there: it says no more than that.
-            kind = "limit"
+            kind = "image"
+        elif cut or arguments_cut:
+            # A local, or an argument string, Peeky didn't place may be there: it says
+            # no more than that, and which bound it reached.
+            limits = ["locals"] * cut + ["arguments"] * arguments_cut
+            return {"kind": "limit", "limits": limits, "statics": segments is not None}
         return {"kind": kind, "statics": segments is not None}
 
     def argument_strings(self):
