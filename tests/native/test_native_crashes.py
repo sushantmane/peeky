@@ -76,6 +76,7 @@ int main(int argc, char **argv) {
 
 HANDLED = """#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t got;
@@ -98,6 +99,8 @@ int main(int argc, char **argv) {
     }
     if (argv[1][0] == 'a')
         raise(SIGABRT);
+    for (int k = 0; argv[1][0] == 'l' && k < atoi(argv[2]); k++)
+        raise(SIGINT); /* LOOP */
     printf("done %d\\n", n); /* DONE */
     return 0;
 }
@@ -227,6 +230,42 @@ def test_a_signal_the_program_handles_is_no_crash_and_the_probe_goes_on(cc, caps
         assert all(f"stopped on signal {name}, which Peeky" in w for w in stopped), stopped
         if name != "SIGPIPE":
             assert len(stopped) == 1, result
+
+
+@pytest.mark.timeout(300)
+def test_a_loop_of_handled_signals_is_bounded_with_an_honest_message(cc, capsys):
+    Path("handled.c").write_text(HANDLED)
+    done, loop = line_of(HANDLED, "DONE"), line_of(HANDLED, "LOOP")
+    # 25 raises from one line: the program makes progress; the probe goes on to its line.
+    # On the reviewed head: DEBUGGER_ERROR, "the debugger doesn't let it past", at 20.
+    code, result = probe(capsys, "handled.c", done, "l", "25")
+    assert code == 0 and result["status"] == "completed", result
+    assert [row["value"] for row in result["rows"]] == ["3"], result["rows"]
+    assert "error" not in result and "done 3\n" in result["output"], result
+    assert any(
+        w.startswith("The probe let the program go on after it stopped on signal SIGINT")
+        and "(25 times)" in w
+        for w in result["warnings"]
+    ), result["warnings"]
+    # Past the bound, the probe ends, and says what it can't tell, not that the debugger
+    # failed.
+    code, result = probe(capsys, "handled.c", done, "l", "150")
+    assert code == 1 and result["status"] == "failed" and result["hits"] == 0, result
+    error = result["error"]
+    assert error["code"] == "BUDGET_EXHAUSTED", error
+    assert error["message"].startswith(
+        "The probe ended after the program stopped 100 times in a row on signal SIGINT"
+    ), error
+    assert (
+        f"in a call from main at handled.c:{loop}, letting it go on each time."
+        in (error["message"])
+    ), error
+    assert error["message"].endswith(
+        "The program may cause that stop again and again, or the debugger may stop there "
+        "without letting it past: Peeky can't tell which"
+    ), error
+    assert error["hint"].startswith("Probe a line the program reaches before these stops")
+    assert result["output"].startswith("start 3\n"), result
 
 
 @pytest.mark.timeout(300)

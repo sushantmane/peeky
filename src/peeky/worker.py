@@ -802,7 +802,8 @@ class DebugWorker:
         frame is read. (summary, crashed): ``crashed`` is True only where the stop is a
         fatal signal the program neither handles nor ignores (``fatal_signal``).
 
-        ``description``: the debugger's ("signal SIGABRT"). ``outside_program``: whether
+        ``description``: the debugger's ("signal SIGABRT"); ``kind``: exceptionInfo's
+        exceptionId (`signal`, `exception`, or a filter's: `cpp_throw`). ``outside_program``: whether
         it stopped outside the program's sources (in libc, the C++ runtime, `abort`).
         ``frame``, ``function`` and ``location``: the nearest frame of the program's own
         code, among the first MAX_FRAMES. ``uncaught_exception``: the C++ runtime found no
@@ -819,6 +820,8 @@ class DebugWorker:
             kind = info.get("exceptionId") if isinstance(info, dict) else None
         except Exception:
             kind = None
+        if isinstance(kind, str) and kind:
+            crash["kind"] = kind[:100]
         crashed = self.fatal_signal(kind, crash.get("description", "")) is True
         try:
             stack = self.dap.request(
@@ -1270,6 +1273,9 @@ class DebugWorker:
         if self.stop_id and self.stop_crash is not None:
             # The program crashed (#342): what the debugger says, and where in its code.
             where["crash"] = dict(self.stop_crash)
+        elif self.stop_id and self.stop_signal is not None:
+            # Another `exception` or `signal` stop: the same, and no crash (review of #348).
+            where["signal_stop"] = dict(self.stop_signal)
         if self.stop_id and self.call_change:
             # Another function or depth than where the session's step started (#262).
             where["call_change"] = dict(self.call_change)

@@ -26,7 +26,7 @@ The last column is the `retryable` field.
 | `STALE_HANDLE` | An expansion handle was revoked, or the frame or scope changed. | `inspect` again. | yes |
 | `NOT_FOUND` | A name or selector isn't visible ([details](#not_found)). | Use a name from the message's `visible:` or `children:` list. | no |
 | `MUTATION_REJECTED` | Peeky can't make that change there. Nothing was written. | Follow the hint: it names the one way around the rule ([the rules](#when-a-change-is-refused-mutation_rejected)). | no |
-| `BUDGET_EXHAUSTED` | A bounded read limit was reached. | Narrow the request. | no |
+| `BUDGET_EXHAUSTED` | A bounded read limit was reached, or a probe's limit of signal stops in a row ([details](#budget_exhausted)). | Narrow the request. | no |
 | `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
 | `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
@@ -85,6 +85,16 @@ The last column is the `retryable` field.
 - The output so far is kept. The C++ runtime and `assert` write the exception's type or the failed
   condition to it.
 - See [C and C++ 5.1](lang/c-cpp-cookbook.md#when-the-program-crashes).
+
+### BUDGET_EXHAUSTED
+
+- A read went past one of Peeky's bounds, such as on the children it lists. Read a narrower
+  selector.
+- A probe ended after 100 stops in a row on the same signal, or C++ throw or catch filter, at one
+  place. Peeky let the program go on after each, and doesn't take them for a crash.
+- The program may raise that signal again and again, or LLDB may stop there without letting it
+  past. Peeky can't tell which. Probe a line before those stops, or use an input that doesn't
+  raise them.
 
 ### BUILD_FAILED
 

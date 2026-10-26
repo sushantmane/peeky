@@ -488,9 +488,13 @@ output so far (the program was stopped at its crash):
 - An exception that the program catches never stops it.
 
 At a stop that isn't a crash, a probe reads nothing and lets the program go on, with a warning.
-LLDB may not deliver the signal to the program, so the run after it can differ from one without
-Peeky. If the same stop comes back 20 times in a row, the probe ends with `DEBUGGER_ERROR`. On
-macOS, a fault that the program handles does that.
+For a signal, the warning adds that LLDB may not deliver it to the program. So the run after it can
+differ from one without Peeky.
+
+After 100 such stops in a row at one place, the probe ends with `BUDGET_EXHAUSTED`. A loop may
+raise a signal that often, or LLDB may stop there again without letting the program past. On
+macOS, a fault that the program handles does that. Peeky can't tell which, and the message says
+so. Probe a line before those stops, or use an input that doesn't raise them.
 
 In a session, the state says the same, and `crash` is in its JSON. Nothing in a frame outside your
 sources is read, at a crash or any other signal stop. `session inspect` there is refused, and the

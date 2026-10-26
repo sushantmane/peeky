@@ -78,6 +78,7 @@ def test_a_crash_names_its_description_and_the_programs_nearest_frame(worker, tm
     assert crashed is True
     assert crash == {
         "description": "signal SIGABRT",
+        "kind": "signal",
         "outside_program": True,
         "uncaught_exception": True,
         "frame": 5,
@@ -233,7 +234,7 @@ def test_terminate_alone_or_a_crash_with_no_frame_of_the_program_says_so(worker,
     crash, crashed = worker.read_crash(runtime, {"description": "signal SIGSEGV"})
     worker.stop_signal = worker.stop_crash = crash
     assert crashed is True
-    assert crash == {"description": "signal SIGSEGV", "outside_program": True}
+    assert crash == {"description": "signal SIGSEGV", "kind": "signal", "outside_program": True}
     assert worker.crash_refusal(called[1], 1) == (
         "Nothing in frame 1 (abort) is read: it is outside the program's sources, on the stack "
         "of its stop (signal SIGSEGV), and none of its first 64 frames is in your code: "

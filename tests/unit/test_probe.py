@@ -90,9 +90,11 @@ def test_probe_requests_are_bounded_and_typed(change):
 class FakeWorker:
     """Scripted worker: one stop with a given reason/location, then termination."""
 
-    def __init__(self, reason="breakpoint", path="/w/main.py", line=8, update=None, crash=None):
+    def __init__(
+        self, reason="breakpoint", path="/w/main.py", line=8, update=None, crash=None, seen=None
+    ):
         self.reason, self.path, self.line, self.update = reason, path, line, update
-        self.crash = crash
+        self.crash, self.seen = crash, seen
         self.calls = []
         self.stopped = False
 
@@ -119,6 +121,8 @@ class FakeWorker:
                 result["breakpoint_events"] = [{"breakpoint": {"id": 1, "line": self.update}}]
             if self.crash is not None:
                 result["crash"] = self.crash
+            if self.seen is not None:
+                result["signal_stop"] = self.seen
             return result
         if operation == "inspect":
             frame = {"source": {"path": self.path}, "line": self.line}
@@ -147,6 +151,11 @@ class FakeWorker:
         ({"update": 9, "line": 9}, True),
         ({"reason": "exception"}, False),
         ({"reason": "signal"}, False),
+        ({"reason": "exception", "seen": {"kind": "cpp_throw", "description": "C++ Throw"}}, False),
+        (
+            {"reason": "exception", "seen": {"kind": "signal", "description": "signal SIGINT"}},
+            False,
+        ),
         ({"reason": "exception", "crash": {}}, False),
         ({"reason": "signal", "crash": {"description": "signal SIGSEGV"}}, False),
         ({"line": 12}, False),
@@ -178,10 +187,18 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
         # throw filter's stop. Nothing is read, and the program goes on to its end.
         assert result["status"] == "no-stop" and result["hits"] == 0, result
         assert "crash" not in result and result["error"]["code"] == "NO_STOP"
+        seen = fake.get("seen") or {}
+        what = seen.get("description", f"reason: {fake['reason']}")
+        # A C++ throw or catch filter's stop is no signal: nothing about delivering one.
         assert result["warnings"][0] == (
-            f"The probe let the program go on after it stopped on reason: {fake['reason']}, "
-            "which Peeky doesn't take for a crash. The debugger may not deliver a signal to "
-            "the program, so its run after that stop can differ from one without Peeky."
+            f"The probe let the program go on after it stopped on {what}, which Peeky "
+            "doesn't take for a crash."
+            + (
+                ""
+                if seen.get("kind") == "cpp_throw"
+                else " The debugger may not deliver a signal to the program, so its run after "
+                "that stop can differ from one without Peeky."
+            )
         ), result["warnings"]
         assert {"inspect", "set_variable"}.isdisjoint(worker.calls) and result["rows"] == []
         assert "continue" in worker.calls
