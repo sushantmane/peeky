@@ -471,6 +471,38 @@ _GLOBAL_VALUE = re.compile(
     r"|^&(?:raw (?:const|mut) |mut )?/\*tls\*/ "
 )
 _CLOSURE_TYPE = re.compile(r"\{closure@[^{}]*\}")
+# The standard library's calls that keep what they are given past the call (#340 review 2): a
+# thread runs a moved closure after it, `forget` and `leak` never drop, and a channel hands a
+# sent value to its receiving end. By path, without generic arguments; rustc may leave out a
+# unique name's module (`spawn::<…>`, `Box::<T>::leak`), so the path may end any of these.
+_KEEPING_CALLS = (
+    "thread::spawn",
+    "thread::Builder::spawn",
+    "thread::Scope::spawn",
+    "mem::forget",
+    "boxed::Box::leak",
+    "mpsc::Sender::send",
+    "mpsc::SyncSender::send",
+)
+
+
+def _keeping_call(path):
+    """Whether the call path ``path`` may be one of ``_KEEPING_CALLS`` (#340 review 2): its
+    segments, past a root of the standard library's, end one of them. A function of the
+    crate's so spelled counts too, which only withholds more."""
+    plain = _plain_path(path or "")
+    if not plain or plain.startswith("<"):
+        return False
+    segments = plain.split("::")
+    if segments[0] in _STD_CRATES and len(segments) > 1:
+        segments = segments[1:]
+    return any(
+        known.split("::")[-len(segments) :] == segments
+        or segments[-len(known.split("::")) :] == known.split("::")
+        for known in _KEEPING_CALLS
+    )
+
+
 # A function item's type (`fn(u32) {direct_set}`, `for<'a> fn(&'a u32) {m::read}`): its path.
 _FN_ITEM = re.compile(
     r"(?:for<[^<>]*>\s*)?(?:unsafe\s+)?(?:extern\s+\"[^\"]*\"\s+)?fn\([^{}]*?\)(?:\s*->\s*[^{}]*?)?\s*\{([^{}]+)\}"
@@ -2258,6 +2290,12 @@ class Body:
     # What the crate's functions may touch of its global state (#329: ``global_state``), set
     # when matched; None until then, or where the crate names none: no call touches any.
     globals: GlobalState | None = None
+    # The names of the crate's functions that may keep what they are given past the call
+    # (#340 review 2: ``OwnedLocals._keepers``), set when matched; None until then: any of
+    # them may. And the roots under which `ptr::eq` and `addr_eq` are proven the standard
+    # library's (``OwnedLocals._std_compares``).
+    keepers: frozenset | None = None
+    compares: frozenset = frozenset()
     # {pseudo-local (``_GLOBAL_BASE`` on): (the place that may store a copy in global state,
     # the globals' types, ``GlobalState``'s)}, found with ``_copy_parts``.
     global_holders: dict = field(default_factory=dict)
@@ -3072,14 +3110,30 @@ class Body:
         """Whether the pointer binding ``copy``, or what is made from it (``_aliases``), is
         handed on where it may be kept (#340 review): stored through a pointer into
         anything else, or given to a call with another value that may hold a pointer (it may
-        store it there: `out.push(p)`), or to one that may touch global state."""
+        store it there: `out.push(p)`), or to one that may touch global state. Also to a
+        call that keeps what it is given past the call (review 2): the standard library's
+        `thread::spawn`, `forget`, `Box::leak` or `Sender::send` (``_keeping_call``), or a
+        function of the crate's that may make one (``keepers``). Not to the standard
+        library's `ptr::eq` or `addr_eq`, proven so (``compares``), which compare
+        addresses only."""
         aliases = self._aliases(copy) | {copy}
         for (number, index), edge in self._global_edges().items():
             if edge[0] != "call":
                 continue
-            operands = set(_call_operands(self.blocks[number].statements[index][0]))
+            text = self.blocks[number].statements[index][0]
+            operands = set(_call_operands(text))
             if not operands & aliases:
                 continue
+            _, name, _, path = edge
+            if _keeping_call(path):
+                return True
+            compare = _comparison_root(_STRING.sub('""', text))
+            if compare and _trusts(self.compares, compare):
+                continue
+            if not _std_callee(path, self.std_paths, self._layouts()) and (
+                self.keepers is None or name in self.keepers or not name
+            ):
+                return True
             if self.global_touch((number, index)) or any(
                 not _pointer_free(self.types.get(n), self.generics) for n in operands - aliases
             ):
@@ -8039,6 +8093,8 @@ class OwnedLocals:
             found.layouts = self._layouts()
             found.droppers = self._droppers()
             found.globals = self._globals()
+            found.keepers = self._keepers()
+            found.compares = self._std_compares()
             found.sinks = (
                 frozenset(self.std_macros),
                 frozenset(each.path for each in self.bodies),
@@ -9554,6 +9610,38 @@ class OwnedLocals:
                     found[name] = None if name in found else body
             self._droppers_known = found
         return self._droppers_known
+
+    def _keepers(self):
+        """The names of the crate's functions that may keep what they are given past the
+        call (#340 review 2): one that calls the standard library's `thread::spawn`, `forget`,
+        `Box::leak` or `Sender::send` (``_keeping_call``), or a function of the crate's so
+        named, however deep. By name, so a namesake counts too. A closure's body counts for
+        any call of a closure (`call`, `call_mut`, `call_once`), and a call by a function
+        pointer (no name) for any function."""
+        if "_keepers_known" not in self.__dict__:
+            found = set()
+            while True:
+                grown = set(found)
+                for body in self.bodies:
+                    if body.name in grown:
+                        continue
+                    for edge in body._global_edges().values():
+                        if edge[0] != "call":
+                            continue
+                        _, name, _, path = edge
+                        if _keeping_call(path) or (
+                            not _std_callee(path, self._std_crates(), self._layouts())
+                            and (name in grown or (not name and grown))
+                        ):
+                            grown.add(body.name)
+                            if body.name.startswith("{closure#"):
+                                grown |= {"call", "call_mut", "call_once"}
+                            break
+                if grown == found:
+                    break
+                found = grown
+            self._keepers_known = frozenset(found)
+        return self._keepers_known
 
     def _globals(self):
         """``GlobalState`` of the crate (#329: ``global_state``), or None where it names no

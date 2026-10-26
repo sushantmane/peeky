@@ -520,6 +520,79 @@ fn main() {
 """
 
 
+# A pointer `fresh()` returned, a leaked `Box` into which `lock_set(r, x)` stores `x`, handed
+# to a thread the frame spawns and detaches, or to `later(r)`, which spawns one; and compared
+# by the standard library's `ptr::eq`, which keeps nothing.
+KEEPS = """use std::sync::Mutex;
+use std::time::Duration;
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(1)
+}
+
+#[inline(never)]
+fn fresh() -> &'static Mutex<u32> {
+    Box::leak(Box::new(Mutex::new(0)))
+}
+
+#[inline(never)]
+fn lock_set(m: &Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+#[inline(never)]
+fn later(m: &'static Mutex<u32>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        println!("LATER {}", *m.lock().unwrap());
+    });
+}
+
+fn spawned(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x); // SPAWNED_CALL
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        println!("THREAD {}", *r.lock().unwrap());
+    });
+    let k = other(); // SPAWNED
+    std::hint::black_box(&x);
+    k
+}
+
+fn handed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    later(r);
+    let k = other(); // HANDED
+    std::hint::black_box(&x);
+    k
+}
+
+fn compared(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    let q = fresh();
+    lock_set(r, x);
+    std::hint::black_box(std::ptr::eq(r, q));
+    let k = other(); // COMPARED
+    std::hint::black_box(&x);
+    k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("SPAWNED {}", spawned(n));
+    println!("HANDED {}", handed(n));
+    println!("COMPARED {}", compared(n));
+    std::thread::sleep(Duration::from_millis(600));
+}
+"""
+
+
 def line_of(marker, text=SOURCE):
     return next(i for i, line in enumerate(text.splitlines(), 1) if line.endswith(f"// {marker}"))
 
@@ -555,6 +628,11 @@ def traits(tmp_path, monkeypatch):
 @pytest.fixture
 def paths(tmp_path, monkeypatch):
     return make(tmp_path, monkeypatch, "paths", PATHS)
+
+
+@pytest.fixture
+def keeps(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "keeps", KEEPS)
 
 
 def probe(capsys, root, marker, *argv, text=SOURCE):
@@ -701,3 +779,24 @@ def test_a_call_counts_by_its_path_and_by_where_the_pointer_it_returns_may_point
         assert (
             f"a static or thread-local may hold {what} `x` (from line {line_of(marker, PATHS) - 1})"
         ) in message, (marker, message)
+
+
+@pytest.mark.timeout(600)
+def test_a_pointer_handed_to_a_thread_outlives_the_frame(keeps, capsys):
+    # The thread reads the copy in what `r` points at after the stop. `x` was settable, and
+    # the thread printed `THREAD 5`, the old value.
+    for marker, lines in (("SPAWNED", (29, 30)), ("HANDED", (42, 43))):
+        message, _ = refused(*probe(capsys, keeps, marker, "--set", "x=100", text=KEEPS), marker)
+        assert (
+            f"the program's own `r` (at lines {lines[0]} and {lines[1]}) may point at a copy of "
+            "`x` that it goes on with"
+        ) in message, (marker, message)
+    # Before `lock_set(r, x)`, the change reaches the thread.
+    code, result = probe(capsys, keeps, "SPAWNED_CALL", "--set", "x=100", text=KEEPS)
+    assert code == 0, result.get("error")
+    assert "THREAD 100" in result["output"].splitlines(), result["output"]
+    # `black_box(std::ptr::eq(r, q))` hands `r` to nothing that keeps it: `x` was refused.
+    code, result = probe(capsys, keeps, "COMPARED", "--capture", "x", "--set", "x=100", text=KEEPS)
+    assert code == 0, result.get("error")
+    (row,) = [r for r in result["rows"] if r["selector"] == "x" and r["phase"] == "observed"]
+    assert row.get("settable") is True, row

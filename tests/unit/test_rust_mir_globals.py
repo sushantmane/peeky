@@ -23,6 +23,7 @@ from peeky.rust_mir import (
     _crate_traits,
     _impl_trait,
     _inherent,
+    _keeping_call,
     _own_trait,
     global_state,
     parse_body,
@@ -4989,3 +4990,758 @@ def test_a_later_read_of_another_global_leaves_the_copy_unused():
     assert body.global_holders[holder][1] == {MUTEX}
     assert not body.reads_global(holder, *place(body, "_9 = other()"))
     assert body.global_use(*place(body, "_9 = other()")) == {ATOMIC}
+
+
+# The `keeps` crate (#340 review 2): a pointer `fresh()` returned (a leaked `Box`), into which
+# `lock_set(r, x)` stores `x`, handed to a thread the frame spawns, or to `later(r)`, which
+# spawns one; and compared by the standard library's `ptr::eq`, which keeps nothing.
+KEEPS_SOURCE = """use std::sync::Mutex;
+use std::time::Duration;
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(1)
+}
+
+#[inline(never)]
+fn fresh() -> &'static Mutex<u32> {
+    Box::leak(Box::new(Mutex::new(0)))
+}
+
+#[inline(never)]
+fn lock_set(m: &Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+#[inline(never)]
+fn later(m: &'static Mutex<u32>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        println!("LATER {}", *m.lock().unwrap());
+    });
+}
+
+fn spawned(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        println!("THREAD {}", *r.lock().unwrap());
+    });
+    let k = other();
+    std::hint::black_box(&x);
+    k
+}
+
+fn handed(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    later(r);
+    let k = other();
+    std::hint::black_box(&x);
+    k
+}
+
+fn compared(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    let q = fresh();
+    lock_set(r, x);
+    std::hint::black_box(std::ptr::eq(r, q));
+    let k = other();
+    std::hint::black_box(&x);
+    k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("SPAWNED {}", spawned(n));
+    println!("HANDED {}", handed(n));
+    println!("COMPARED {}", compared(n));
+    std::thread::sleep(Duration::from_millis(600));
+}
+"""
+
+K_OTHER = """// MIR for `other` after PreCodegen
+
+fn other() -> u32 {
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:5:15: 5:18
+    bb0: {
+        _0 = std::hint::black_box::<u32>(const 1_u32) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:6:5: 6:28
+    }
+    bb1: {
+        return;                          // scope 0 at src/main.rs:7:2: 7:2
+    }
+}
+"""
+
+K_FRESH = """// MIR for `fresh` after PreCodegen
+
+fn fresh() -> &std::sync::Mutex<u32> {
+    let mut _0: &std::sync::Mutex<u32>;  // return place in scope 0 at src/main.rs:10:15: 10:34
+    let _1: &mut std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:11:5: 11:39
+    let mut _2: std::boxed::Box<std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:11:15: 11:38
+    let mut _3: std::sync::Mutex<u32>;   // in scope 0 at src/main.rs:11:24: 11:37
+    bb0: {
+        StorageLive(_1);                 // scope 0 at src/main.rs:11:5: 11:39
+        StorageLive(_2);                 // scope 0 at src/main.rs:11:15: 11:38
+        StorageLive(_3);                 // scope 0 at src/main.rs:11:24: 11:37
+        _3 = std::sync::Mutex::<u32>::new(const 0_u32) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:11:24: 11:37
+    }
+    bb1: {
+        _2 = Box::<std::sync::Mutex<u32>>::new(move _3) -> [return: bb2, unwind: bb4]; // scope 0 at src/main.rs:11:15: 11:38
+    }
+    bb2: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:11:37: 11:38
+        _1 = Box::<std::sync::Mutex<u32>>::leak::<'_>(move _2) -> [return: bb3, unwind: bb4]; // scope 0 at src/main.rs:11:5: 11:39
+    }
+    bb3: {
+        _0 = &(*_1);                     // scope 0 at src/main.rs:11:5: 11:39
+        StorageDead(_2);                 // scope 0 at src/main.rs:11:38: 11:39
+        StorageDead(_1);                 // scope 0 at src/main.rs:11:38: 11:39
+        return;                          // scope 0 at src/main.rs:12:2: 12:2
+    }
+    bb4 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:10:1: 12:2
+    }
+}
+"""
+
+K_LOCK_SET = """// MIR for `lock_set` after PreCodegen
+
+fn lock_set(_1: &std::sync::Mutex<u32>, _2: u32) -> () {
+    debug m => _1;                       // in scope 0 at src/main.rs:15:13: 15:14
+    debug v => _2;                       // in scope 0 at src/main.rs:15:29: 15:30
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:15:36: 15:36
+    let mut _3: u32;                     // in scope 0 at src/main.rs:16:26: 16:27
+    let mut _4: &mut u32;                // in scope 0 at src/main.rs:16:5: 16:23
+    let mut _5: &mut std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:16:6: 16:23
+    let mut _6: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:16:6: 16:23
+    let mut _7: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:16:6: 16:14
+    let mut _8: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:16:6: 16:7
+    bb0: {
+        StorageLive(_3);                 // scope 0 at src/main.rs:16:26: 16:27
+        _3 = copy _2;                    // scope 0 at src/main.rs:16:26: 16:27
+        StorageLive(_4);                 // scope 0 at src/main.rs:16:5: 16:23
+        StorageLive(_5);                 // scope 0 at src/main.rs:16:6: 16:23
+        StorageLive(_6);                 // scope 0 at src/main.rs:16:6: 16:23
+        StorageLive(_7);                 // scope 0 at src/main.rs:16:6: 16:14
+        StorageLive(_8);                 // scope 0 at src/main.rs:16:6: 16:7
+        _8 = &(*_1);                     // scope 0 at src/main.rs:16:6: 16:7
+        _7 = std::sync::Mutex::<u32>::lock(move _8) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:16:6: 16:14
+    }
+    bb1: {
+        StorageDead(_8);                 // scope 0 at src/main.rs:16:13: 16:14
+        _6 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _7) -> [return: bb2, unwind: bb6]; // scope 0 at src/main.rs:16:6: 16:23
+    }
+    bb2: {
+        _5 = &mut _6;                    // scope 0 at src/main.rs:16:6: 16:23
+        StorageDead(_7);                 // scope 0 at src/main.rs:16:22: 16:23
+        _4 = <std::sync::MutexGuard<'_, u32> as DerefMut>::deref_mut(move _5) -> [return: bb3, unwind: bb5]; // scope 0 at src/main.rs:16:5: 16:23
+    }
+    bb3: {
+        StorageDead(_5);                 // scope 0 at src/main.rs:16:22: 16:23
+        (*_4) = move _3;                 // scope 0 at src/main.rs:16:5: 16:27
+        StorageDead(_3);                 // scope 0 at src/main.rs:16:26: 16:27
+        drop(_6) -> [return: bb4, unwind: bb6]; // scope 0 at src/main.rs:16:27: 16:28
+    }
+    bb4: {
+        StorageDead(_6);                 // scope 0 at src/main.rs:16:27: 16:28
+        StorageDead(_4);                 // scope 0 at src/main.rs:16:27: 16:28
+        _0 = const ();                   // scope 0 at src/main.rs:15:37: 17:2
+        return;                          // scope 0 at src/main.rs:17:2: 17:2
+    }
+    bb5 (cleanup): {
+        drop(_6) -> [return: bb6, unwind terminate(cleanup)]; // scope 0 at src/main.rs:16:27: 16:28
+    }
+    bb6 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:15:1: 17:2
+    }
+}
+"""
+
+K_LATER = """// MIR for `later` after PreCodegen
+
+fn later(_1: &std::sync::Mutex<u32>) -> () {
+    debug m => _1;                       // in scope 0 at src/main.rs:20:10: 20:11
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:20:33: 20:33
+    let _2: std::thread::JoinHandle<()>; // in scope 0 at src/main.rs:21:5: 24:7
+    let mut _3: {closure@src/main.rs:21:24: 21:31}; // in scope 0 at src/main.rs:21:24: 24:6
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:21:5: 24:7
+        StorageLive(_3);                 // scope 0 at src/main.rs:21:24: 24:6
+        _3 = {closure@src/main.rs:21:24: 21:31} { m: copy _1 }; // scope 0 at src/main.rs:21:24: 24:6
+        _2 = spawn::<{closure@src/main.rs:21:24: 21:31}, ()>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:21:5: 24:7
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:24:6: 24:7
+        drop(_2) -> [return: bb2, unwind: bb3]; // scope 0 at src/main.rs:24:7: 24:8
+    }
+    bb2: {
+        StorageDead(_2);                 // scope 0 at src/main.rs:24:7: 24:8
+        _0 = const ();                   // scope 0 at src/main.rs:20:34: 25:2
+        return;                          // scope 0 at src/main.rs:25:2: 25:2
+    }
+    bb3 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:20:1: 25:2
+    }
+}
+"""
+
+K_LATER_CLOSURE = """// MIR for `later::{closure#0}` after PreCodegen
+
+fn later::{closure#0}(_1: {closure@src/main.rs:21:24: 21:31}) -> () {
+    debug m => (_1.0: &std::sync::Mutex<u32>); // in scope 0 at src/main.rs:20:10: 20:11
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:21:31: 21:31
+    let _2: ();                          // in scope 0 at src/main.rs:22:9: 22:55
+    let mut _3: std::time::Duration;     // in scope 0 at src/main.rs:22:28: 22:54
+    let _4: ();                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+    let _5: ();                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+    let mut _6: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _7: (&u32,);                     // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _8: &u32;                    // in scope 0 at src/main.rs:23:30: 23:48
+    let _9: &u32;                        // in scope 0 at src/main.rs:23:30: 23:48
+    let mut _10: &std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:23:31: 23:48
+    let _11: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:23:31: 23:48
+    let mut _12: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:23:31: 23:39
+    let mut _13: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:23:31: 23:32
+    let mut _15: core::fmt::rt::Argument<'_>; // in scope 0 at src/main.rs:23:25: 23:27
+    let mut _16: &u32;                   // in scope 0 at src/main.rs:23:30: 23:48
+    let mut _17: &[u8; 11];              // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _18: &[u8; 11];                  // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _19: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _20: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _21: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:21:24: 24:6
+    let mut _22: &u32;                   // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    scope 1 {
+        debug args => _7;                // in scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        let _14: [core::fmt::rt::Argument<'_>; 1]; // in scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        scope 2 {
+            debug args => _14;           // in scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:22:9: 22:55
+        StorageLive(_3);                 // scope 0 at src/main.rs:22:28: 22:54
+        _3 = Duration::from_millis(const 300_u64) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:22:28: 22:54
+    }
+    bb1: {
+        _2 = sleep(move _3) -> [return: bb2, unwind continue]; // scope 0 at src/main.rs:22:9: 22:55
+    }
+    bb2: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:22:54: 22:55
+        StorageDead(_2);                 // scope 0 at src/main.rs:22:55: 22:56
+        StorageLive(_4);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+        StorageLive(_5);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+        StorageLive(_6);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_7);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_8);                 // scope 0 at src/main.rs:23:30: 23:48
+        StorageLive(_9);                 // scope 0 at src/main.rs:23:30: 23:48
+        StorageLive(_10);                // scope 0 at src/main.rs:23:31: 23:48
+        StorageLive(_11);                // scope 0 at src/main.rs:23:31: 23:48
+        StorageLive(_12);                // scope 0 at src/main.rs:23:31: 23:39
+        StorageLive(_13);                // scope 0 at src/main.rs:23:31: 23:32
+        _21 = copy (_1.0: &std::sync::Mutex<u32>); // scope 0 at src/main.rs:23:31: 23:32
+        _13 = &(*_21);                   // scope 0 at src/main.rs:23:31: 23:32
+        _12 = std::sync::Mutex::<u32>::lock(move _13) -> [return: bb3, unwind continue]; // scope 0 at src/main.rs:23:31: 23:39
+    }
+    bb3: {
+        StorageDead(_13);                // scope 0 at src/main.rs:23:38: 23:39
+        _11 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _12) -> [return: bb4, unwind: bb11]; // scope 0 at src/main.rs:23:31: 23:48
+    }
+    bb4: {
+        _10 = &_11;                      // scope 0 at src/main.rs:23:31: 23:48
+        StorageDead(_12);                // scope 0 at src/main.rs:23:47: 23:48
+        _9 = <std::sync::MutexGuard<'_, u32> as Deref>::deref(move _10) -> [return: bb5, unwind: bb10]; // scope 0 at src/main.rs:23:30: 23:48
+    }
+    bb5: {
+        StorageDead(_10);                // scope 0 at src/main.rs:23:47: 23:48
+        _8 = &(*_9);                     // scope 0 at src/main.rs:23:30: 23:48
+        _7 = (move _8,);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_8);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_14);                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_15);                // scope 1 at src/main.rs:23:25: 23:27
+        StorageLive(_16);                // scope 1 at src/main.rs:23:30: 23:48
+        _22 = copy (_7.0: &u32);         // scope 1 at src/main.rs:23:30: 23:48
+        _16 = &(*_22);                   // scope 1 at src/main.rs:23:30: 23:48
+        _15 = core::fmt::rt::Argument::<'_>::new_display::<u32>(move _16) -> [return: bb6, unwind: bb10]; // scope 1 at src/main.rs:23:25: 23:27
+    }
+    bb6: {
+        StorageDead(_16);                // scope 1 at src/main.rs:23:26: 23:27
+        _14 = [move _15];                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_15);                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_17);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_18);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _18 = const b""; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _17 = &(*_18);                   // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_19);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_20);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _20 = &_14;                      // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _19 = &(*_20);                   // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _6 = Arguments::<'_>::new::<11, 1>(move _17, move _19) -> [return: bb7, unwind: bb10]; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    }
+    bb7: {
+        StorageDead(_20);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_19);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_18);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_17);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        _5 = std::io::_print(move _6) -> [return: bb8, unwind: bb10]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+    }
+    bb8: {
+        StorageDead(_6);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:61: 146:62
+        StorageDead(_14);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        drop(_11) -> [return: bb9, unwind: bb11]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+    }
+    bb9: {
+        StorageDead(_11);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_9);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_7);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_5);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        _4 = const ();                   // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+        StorageDead(_4);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:147:5: 147:6
+        _0 = const ();                   // scope 0 at src/main.rs:21:32: 24:6
+        return;                          // scope 0 at src/main.rs:24:6: 24:6
+    }
+    bb10 (cleanup): {
+        drop(_11) -> [return: bb11, unwind terminate(cleanup)]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+    }
+    bb11 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:21:24: 24:6
+    }
+}
+"""
+
+K_SPAWNED = """// MIR for `spawned` after PreCodegen
+
+fn spawned(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:27:12: 27:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:27:25: 27:28
+    let _2: u32;                         // in scope 0 at src/main.rs:28:9: 28:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:28:36: 28:39
+    let _5: ();                          // in scope 0 at src/main.rs:30:5: 30:19
+    let mut _6: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:30:14: 30:15
+    let mut _7: u32;                     // in scope 0 at src/main.rs:30:17: 30:18
+    let _8: std::thread::JoinHandle<()>; // in scope 0 at src/main.rs:31:5: 34:7
+    let mut _9: {closure@src/main.rs:31:24: 31:31}; // in scope 0 at src/main.rs:31:24: 34:6
+    let _11: &u32;                       // in scope 0 at src/main.rs:36:5: 36:29
+    let mut _12: &u32;                   // in scope 0 at src/main.rs:36:26: 36:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:28:9: 28:10
+        let _4: &std::sync::Mutex<u32>;  // in scope 1 at src/main.rs:29:9: 29:10
+        scope 2 {
+            debug r => _4;               // in scope 2 at src/main.rs:29:9: 29:10
+            let _10: u32;                // in scope 2 at src/main.rs:35:9: 35:10
+            scope 3 {
+                debug k => _10;          // in scope 3 at src/main.rs:35:9: 35:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:28:9: 28:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:28:36: 28:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:28:36: 28:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:28:13: 28:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:28:39: 28:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:29:9: 29:10
+        _4 = fresh() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:29:13: 29:20
+    }
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:30:5: 30:19
+        StorageLive(_6);                 // scope 2 at src/main.rs:30:14: 30:15
+        _6 = &(*_4);                     // scope 2 at src/main.rs:30:14: 30:15
+        StorageLive(_7);                 // scope 2 at src/main.rs:30:17: 30:18
+        _7 = copy _2;                    // scope 2 at src/main.rs:30:17: 30:18
+        _5 = lock_set(move _6, move _7) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:30:5: 30:19
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 2 at src/main.rs:30:18: 30:19
+        StorageDead(_6);                 // scope 2 at src/main.rs:30:18: 30:19
+        StorageDead(_5);                 // scope 2 at src/main.rs:30:19: 30:20
+        StorageLive(_8);                 // scope 2 at src/main.rs:31:5: 34:7
+        StorageLive(_9);                 // scope 2 at src/main.rs:31:24: 34:6
+        _9 = {closure@src/main.rs:31:24: 31:31} { r: copy _4 }; // scope 2 at src/main.rs:31:24: 34:6
+        _8 = spawn::<{closure@src/main.rs:31:24: 31:31}, ()>(move _9) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:31:5: 34:7
+    }
+    bb4: {
+        StorageDead(_9);                 // scope 2 at src/main.rs:34:6: 34:7
+        drop(_8) -> [return: bb5, unwind: bb8]; // scope 2 at src/main.rs:34:7: 34:8
+    }
+    bb5: {
+        StorageDead(_8);                 // scope 2 at src/main.rs:34:7: 34:8
+        StorageLive(_10);                // scope 2 at src/main.rs:35:9: 35:10
+        _10 = other() -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:35:13: 35:20
+    }
+    bb6: {
+        StorageLive(_11);                // scope 3 at src/main.rs:36:5: 36:29
+        StorageLive(_12);                // scope 3 at src/main.rs:36:26: 36:28
+        _12 = &_2;                       // scope 3 at src/main.rs:36:26: 36:28
+        _11 = std::hint::black_box::<&u32>(move _12) -> [return: bb7, unwind continue]; // scope 3 at src/main.rs:36:5: 36:29
+    }
+    bb7: {
+        StorageDead(_12);                // scope 3 at src/main.rs:36:28: 36:29
+        StorageDead(_11);                // scope 3 at src/main.rs:36:29: 36:30
+        _0 = copy _10;                   // scope 3 at src/main.rs:37:5: 37:6
+        StorageDead(_10);                // scope 2 at src/main.rs:38:1: 38:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:38:1: 38:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:38:1: 38:2
+        return;                          // scope 0 at src/main.rs:38:2: 38:2
+    }
+    bb8 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:27:1: 38:2
+    }
+}
+"""
+
+K_SPAWNED_CLOSURE = """// MIR for `spawned::{closure#0}` after PreCodegen
+
+fn spawned::{closure#0}(_1: {closure@src/main.rs:31:24: 31:31}) -> () {
+    debug r => (_1.0: &std::sync::Mutex<u32>); // in scope 0 at src/main.rs:29:9: 29:10
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:31:31: 31:31
+    let _2: ();                          // in scope 0 at src/main.rs:32:9: 32:55
+    let mut _3: std::time::Duration;     // in scope 0 at src/main.rs:32:28: 32:54
+    let _4: ();                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+    let _5: ();                          // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+    let mut _6: std::fmt::Arguments<'_>; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _7: (&u32,);                     // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _8: &u32;                    // in scope 0 at src/main.rs:33:31: 33:49
+    let _9: &u32;                        // in scope 0 at src/main.rs:33:31: 33:49
+    let mut _10: &std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:33:32: 33:49
+    let _11: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:33:32: 33:49
+    let mut _12: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:33:32: 33:40
+    let mut _13: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:33:32: 33:33
+    let mut _15: core::fmt::rt::Argument<'_>; // in scope 0 at src/main.rs:33:26: 33:28
+    let mut _16: &u32;                   // in scope 0 at src/main.rs:33:31: 33:49
+    let mut _17: &[u8; 12];              // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _18: &[u8; 12];                  // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _19: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let _20: &[core::fmt::rt::Argument<'_>; 1]; // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    let mut _21: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:31:24: 34:6
+    let mut _22: &u32;                   // in scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    scope 1 {
+        debug args => _7;                // in scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        let _14: [core::fmt::rt::Argument<'_>; 1]; // in scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        scope 2 {
+            debug args => _14;           // in scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:32:9: 32:55
+        StorageLive(_3);                 // scope 0 at src/main.rs:32:28: 32:54
+        _3 = Duration::from_millis(const 300_u64) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:32:28: 32:54
+    }
+    bb1: {
+        _2 = sleep(move _3) -> [return: bb2, unwind continue]; // scope 0 at src/main.rs:32:9: 32:55
+    }
+    bb2: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:32:54: 32:55
+        StorageDead(_2);                 // scope 0 at src/main.rs:32:55: 32:56
+        StorageLive(_4);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+        StorageLive(_5);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+        StorageLive(_6);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_7);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_8);                 // scope 0 at src/main.rs:33:31: 33:49
+        StorageLive(_9);                 // scope 0 at src/main.rs:33:31: 33:49
+        StorageLive(_10);                // scope 0 at src/main.rs:33:32: 33:49
+        StorageLive(_11);                // scope 0 at src/main.rs:33:32: 33:49
+        StorageLive(_12);                // scope 0 at src/main.rs:33:32: 33:40
+        StorageLive(_13);                // scope 0 at src/main.rs:33:32: 33:33
+        _21 = copy (_1.0: &std::sync::Mutex<u32>); // scope 0 at src/main.rs:33:32: 33:33
+        _13 = &(*_21);                   // scope 0 at src/main.rs:33:32: 33:33
+        _12 = std::sync::Mutex::<u32>::lock(move _13) -> [return: bb3, unwind continue]; // scope 0 at src/main.rs:33:32: 33:40
+    }
+    bb3: {
+        StorageDead(_13);                // scope 0 at src/main.rs:33:39: 33:40
+        _11 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _12) -> [return: bb4, unwind: bb11]; // scope 0 at src/main.rs:33:32: 33:49
+    }
+    bb4: {
+        _10 = &_11;                      // scope 0 at src/main.rs:33:32: 33:49
+        StorageDead(_12);                // scope 0 at src/main.rs:33:48: 33:49
+        _9 = <std::sync::MutexGuard<'_, u32> as Deref>::deref(move _10) -> [return: bb5, unwind: bb10]; // scope 0 at src/main.rs:33:31: 33:49
+    }
+    bb5: {
+        StorageDead(_10);                // scope 0 at src/main.rs:33:48: 33:49
+        _8 = &(*_9);                     // scope 0 at src/main.rs:33:31: 33:49
+        _7 = (move _8,);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_8);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_14);                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_15);                // scope 1 at src/main.rs:33:26: 33:28
+        StorageLive(_16);                // scope 1 at src/main.rs:33:31: 33:49
+        _22 = copy (_7.0: &u32);         // scope 1 at src/main.rs:33:31: 33:49
+        _16 = &(*_22);                   // scope 1 at src/main.rs:33:31: 33:49
+        _15 = core::fmt::rt::Argument::<'_>::new_display::<u32>(move _16) -> [return: bb6, unwind: bb10]; // scope 1 at src/main.rs:33:26: 33:28
+    }
+    bb6: {
+        StorageDead(_16);                // scope 1 at src/main.rs:33:27: 33:28
+        _14 = [move _15];                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageDead(_15);                // scope 1 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageLive(_17);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_18);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _18 = const b""; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _17 = &(*_18);                   // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_19);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        StorageLive(_20);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _20 = &_14;                      // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _19 = &(*_20);                   // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+        _6 = Arguments::<'_>::new::<12, 1>(move _17, move _19) -> [return: bb7, unwind: bb10]; // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:28: 146:61
+    }
+    bb7: {
+        StorageDead(_20);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_19);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_18);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        StorageDead(_17);                // scope 2 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:60: 146:61
+        _5 = std::io::_print(move _6) -> [return: bb8, unwind: bb10]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:9: 146:62
+    }
+    bb8: {
+        StorageDead(_6);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:61: 146:62
+        StorageDead(_14);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        drop(_11) -> [return: bb9, unwind: bb11]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+    }
+    bb9: {
+        StorageDead(_11);                // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_9);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_7);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        StorageDead(_5);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+        _4 = const ();                   // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:145:23: 147:6
+        StorageDead(_4);                 // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:147:5: 147:6
+        _0 = const ();                   // scope 0 at src/main.rs:31:32: 34:6
+        return;                          // scope 0 at src/main.rs:34:6: 34:6
+    }
+    bb10 (cleanup): {
+        drop(_11) -> [return: bb11, unwind terminate(cleanup)]; // scope 0 at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs:146:62: 146:63
+    }
+    bb11 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:31:24: 34:6
+    }
+}
+"""
+
+K_HANDED = """// MIR for `handed` after PreCodegen
+
+fn handed(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:40:11: 40:14
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:40:24: 40:27
+    let _2: u32;                         // in scope 0 at src/main.rs:41:9: 41:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:41:36: 41:39
+    let _5: ();                          // in scope 0 at src/main.rs:43:5: 43:19
+    let mut _6: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:43:14: 43:15
+    let mut _7: u32;                     // in scope 0 at src/main.rs:43:17: 43:18
+    let _8: ();                          // in scope 0 at src/main.rs:44:5: 44:13
+    let mut _9: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:44:11: 44:12
+    let _11: &u32;                       // in scope 0 at src/main.rs:46:5: 46:29
+    let mut _12: &u32;                   // in scope 0 at src/main.rs:46:26: 46:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:41:9: 41:10
+        let _4: &std::sync::Mutex<u32>;  // in scope 1 at src/main.rs:42:9: 42:10
+        scope 2 {
+            debug r => _4;               // in scope 2 at src/main.rs:42:9: 42:10
+            let _10: u32;                // in scope 2 at src/main.rs:45:9: 45:10
+            scope 3 {
+                debug k => _10;          // in scope 3 at src/main.rs:45:9: 45:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:41:9: 41:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:41:36: 41:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:41:36: 41:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:41:13: 41:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:41:39: 41:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:42:9: 42:10
+        _4 = fresh() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:42:13: 42:20
+    }
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:43:5: 43:19
+        StorageLive(_6);                 // scope 2 at src/main.rs:43:14: 43:15
+        _6 = &(*_4);                     // scope 2 at src/main.rs:43:14: 43:15
+        StorageLive(_7);                 // scope 2 at src/main.rs:43:17: 43:18
+        _7 = copy _2;                    // scope 2 at src/main.rs:43:17: 43:18
+        _5 = lock_set(move _6, move _7) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:43:5: 43:19
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 2 at src/main.rs:43:18: 43:19
+        StorageDead(_6);                 // scope 2 at src/main.rs:43:18: 43:19
+        StorageDead(_5);                 // scope 2 at src/main.rs:43:19: 43:20
+        StorageLive(_8);                 // scope 2 at src/main.rs:44:5: 44:13
+        StorageLive(_9);                 // scope 2 at src/main.rs:44:11: 44:12
+        _9 = &(*_4);                     // scope 2 at src/main.rs:44:11: 44:12
+        _8 = later(move _9) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:44:5: 44:13
+    }
+    bb4: {
+        StorageDead(_9);                 // scope 2 at src/main.rs:44:12: 44:13
+        StorageDead(_8);                 // scope 2 at src/main.rs:44:13: 44:14
+        StorageLive(_10);                // scope 2 at src/main.rs:45:9: 45:10
+        _10 = other() -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:45:13: 45:20
+    }
+    bb5: {
+        StorageLive(_11);                // scope 3 at src/main.rs:46:5: 46:29
+        StorageLive(_12);                // scope 3 at src/main.rs:46:26: 46:28
+        _12 = &_2;                       // scope 3 at src/main.rs:46:26: 46:28
+        _11 = std::hint::black_box::<&u32>(move _12) -> [return: bb6, unwind continue]; // scope 3 at src/main.rs:46:5: 46:29
+    }
+    bb6: {
+        StorageDead(_12);                // scope 3 at src/main.rs:46:28: 46:29
+        StorageDead(_11);                // scope 3 at src/main.rs:46:29: 46:30
+        _0 = copy _10;                   // scope 3 at src/main.rs:47:5: 47:6
+        StorageDead(_10);                // scope 2 at src/main.rs:48:1: 48:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:48:1: 48:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:48:1: 48:2
+        return;                          // scope 0 at src/main.rs:48:2: 48:2
+    }
+}
+"""
+
+K_COMPARED = """// MIR for `compared` after PreCodegen
+
+fn compared(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:50:13: 50:16
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:50:26: 50:29
+    let _2: u32;                         // in scope 0 at src/main.rs:51:9: 51:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:51:36: 51:39
+    let _6: ();                          // in scope 0 at src/main.rs:54:5: 54:19
+    let mut _7: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:54:14: 54:15
+    let mut _8: u32;                     // in scope 0 at src/main.rs:54:17: 54:18
+    let _9: bool;                        // in scope 0 at src/main.rs:55:5: 55:45
+    let mut _10: bool;                   // in scope 0 at src/main.rs:55:26: 55:44
+    let mut _11: *const std::sync::Mutex<u32>; // in scope 0 at src/main.rs:55:39: 55:40
+    let mut _12: *const std::sync::Mutex<u32>; // in scope 0 at src/main.rs:55:42: 55:43
+    let _14: &u32;                       // in scope 0 at src/main.rs:57:5: 57:29
+    let mut _15: &u32;                   // in scope 0 at src/main.rs:57:26: 57:28
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:51:9: 51:10
+        let _4: &std::sync::Mutex<u32>;  // in scope 1 at src/main.rs:52:9: 52:10
+        scope 2 {
+            debug r => _4;               // in scope 2 at src/main.rs:52:9: 52:10
+            let _5: &std::sync::Mutex<u32>; // in scope 2 at src/main.rs:53:9: 53:10
+            scope 3 {
+                debug q => _5;           // in scope 3 at src/main.rs:53:9: 53:10
+                let _13: u32;            // in scope 3 at src/main.rs:56:9: 56:10
+                scope 4 {
+                    debug k => _13;      // in scope 4 at src/main.rs:56:9: 56:10
+                }
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:51:9: 51:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:51:36: 51:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:51:36: 51:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:51:13: 51:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:51:39: 51:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:52:9: 52:10
+        _4 = fresh() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:52:13: 52:20
+    }
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:53:9: 53:10
+        _5 = fresh() -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:53:13: 53:20
+    }
+    bb3: {
+        StorageLive(_6);                 // scope 3 at src/main.rs:54:5: 54:19
+        StorageLive(_7);                 // scope 3 at src/main.rs:54:14: 54:15
+        _7 = &(*_4);                     // scope 3 at src/main.rs:54:14: 54:15
+        StorageLive(_8);                 // scope 3 at src/main.rs:54:17: 54:18
+        _8 = copy _2;                    // scope 3 at src/main.rs:54:17: 54:18
+        _6 = lock_set(move _7, move _8) -> [return: bb4, unwind continue]; // scope 3 at src/main.rs:54:5: 54:19
+    }
+    bb4: {
+        StorageDead(_8);                 // scope 3 at src/main.rs:54:18: 54:19
+        StorageDead(_7);                 // scope 3 at src/main.rs:54:18: 54:19
+        StorageDead(_6);                 // scope 3 at src/main.rs:54:19: 54:20
+        StorageLive(_9);                 // scope 3 at src/main.rs:55:5: 55:45
+        StorageLive(_10);                // scope 3 at src/main.rs:55:26: 55:44
+        StorageLive(_11);                // scope 3 at src/main.rs:55:39: 55:40
+        _11 = &raw const (*_4);          // scope 3 at src/main.rs:55:39: 55:40
+        StorageLive(_12);                // scope 3 at src/main.rs:55:42: 55:43
+        _12 = &raw const (*_5);          // scope 3 at src/main.rs:55:42: 55:43
+        _10 = std::ptr::eq::<std::sync::Mutex<u32>>(move _11, move _12) -> [return: bb5, unwind continue]; // scope 3 at src/main.rs:55:26: 55:44
+    }
+    bb5: {
+        StorageDead(_12);                // scope 3 at src/main.rs:55:43: 55:44
+        StorageDead(_11);                // scope 3 at src/main.rs:55:43: 55:44
+        _9 = std::hint::black_box::<bool>(move _10) -> [return: bb6, unwind continue]; // scope 3 at src/main.rs:55:5: 55:45
+    }
+    bb6: {
+        StorageDead(_10);                // scope 3 at src/main.rs:55:44: 55:45
+        StorageDead(_9);                 // scope 3 at src/main.rs:55:45: 55:46
+        StorageLive(_13);                // scope 3 at src/main.rs:56:9: 56:10
+        _13 = other() -> [return: bb7, unwind continue]; // scope 3 at src/main.rs:56:13: 56:20
+    }
+    bb7: {
+        StorageLive(_14);                // scope 4 at src/main.rs:57:5: 57:29
+        StorageLive(_15);                // scope 4 at src/main.rs:57:26: 57:28
+        _15 = &_2;                       // scope 4 at src/main.rs:57:26: 57:28
+        _14 = std::hint::black_box::<&u32>(move _15) -> [return: bb8, unwind continue]; // scope 4 at src/main.rs:57:5: 57:29
+    }
+    bb8: {
+        StorageDead(_15);                // scope 4 at src/main.rs:57:28: 57:29
+        StorageDead(_14);                // scope 4 at src/main.rs:57:29: 57:30
+        _0 = copy _13;                   // scope 4 at src/main.rs:58:5: 58:6
+        StorageDead(_13);                // scope 3 at src/main.rs:59:1: 59:2
+        StorageDead(_5);                 // scope 2 at src/main.rs:59:1: 59:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:59:1: 59:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:59:1: 59:2
+        return;                          // scope 0 at src/main.rs:59:2: 59:2
+    }
+}
+"""
+
+KEEPS = tuple(each for name, each in sorted(globals().items()) if name.startswith("K_"))
+
+
+def keeps_why(text, name, line):
+    return why(text, name, line, first_at(text, line), "x", KEEPS, (), KEEPS_SOURCE, {})
+
+
+def test_a_pointer_handed_to_what_keeps_it_past_the_call_outlives_the_frame():
+    # After `std::thread::spawn(move || … *r.lock() …)`, its `JoinHandle` dropped, or
+    # `later(r)`, which spawns one, the thread reads `x`'s copy in what `r` points at once
+    # the frame goes on. Each left `x` settable, and the thread printed the old value.
+    for text, name, line, lines in (
+        (K_SPAWNED, "spawned", 35, "29 and 30"),
+        (K_HANDED, "handed", 45, "42 and 43"),
+    ):
+        reason, _ = keeps_why(text, name, line)
+        assert reason.startswith(
+            f"the program's own `r` (at lines {lines}) may point at a copy of it that it goes on "
+            "with"
+        ), (name, reason)
+    owned = owned_of(K_SPAWNED, "spawned", first_at(K_SPAWNED, 35), KEEPS, (), KEEPS_SOURCE, {})
+    body = owned.body(HASH)
+    assert body._escapes(body.bindings["r"][0][0])
+    # `later` spawns a thread; `lock_set` and `other` keep nothing they are given.
+    assert {"later", "handed", "spawned"} <= body.keepers
+    assert not {"lock_set", "other"} & body.keepers
+    for path in (
+        "spawn::<{closure@src/main.rs:22:24: 22:31}, ()>",
+        "std::thread::spawn::<F, T>",
+        "Builder::spawn::<F, ()>",
+        "Scope::<'_, '_>::spawn::<F, ()>",
+        "std::mem::forget::<Box<u32>>",
+        "Box::<std::sync::Mutex<u32>>::leak::<'_>",
+        "std::sync::mpsc::Sender::<&u32>::send",
+        "SyncSender::<u32>::send",
+    ):
+        assert _keeping_call(path), path
+    for path in ("std::ptr::eq::<u32>", "lock_set", "Vec::<u32>::push", "std::mem::swap::<u32>"):
+        assert not _keeping_call(path), path
+
+
+def test_the_standard_librarys_ptr_eq_hands_a_pointer_to_nothing():
+    # `black_box(std::ptr::eq(r, q))` compares addresses: `q` is no place it stores `r`. `x`
+    # was refused, `r` said to point at a copy of it.
+    assert keeps_why(K_COMPARED, "compared", 56) == (None, None)
+    owned = owned_of(K_COMPARED, "compared", first_at(K_COMPARED, 56), KEEPS, (), KEEPS_SOURCE, {})
+    body = owned.body(HASH)
+    r = body.bindings["r"][0][0]
+    assert not body._escapes(r)
+    assert not body._reachable_after(r, body._made_from(r))
+    # Only where it is proven the standard library's.
+    body.compares = frozenset()
+    assert body._escapes(r)

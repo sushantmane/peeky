@@ -711,9 +711,17 @@ the local without reading the changed part, and uses the binding before or after
   as a caller may read it. That is an argument `p` of `*p = x;`, or `r` of `let r = slot();`
   returning a `&'static Mutex<u32>`. Something else must reach it (`_reachable_after`, #340
   review): an argument, a constant address, a call that may return global state, or a call or
-  store it was handed to (`_escapes`). So `r` of `let r = fresh();`, a leaked `Box`, doesn't. Global state does too ([Global state](#global-state)).
-  The standard library's `ptr::eq` and `addr_eq`, proven so (`_std_compares`), write nothing
-  through the pointers they are given (`_copy_store`).
+  store it was handed to (`_escapes`). So `r` of `let r = fresh();`, a leaked `Box`, doesn't.
+  Global state does too ([Global state](#global-state)).
+- `_escapes` counts a call given the binding, or what is made from it, with another value that
+  may hold a pointer, or one that may touch global state. It also counts a call that keeps what
+  it is given past the call (review 2). That is the standard library's `thread::spawn`,
+  `Builder::spawn`, `Scope::spawn`, `mem::forget`, `Box::leak` and `Sender::send`, by path
+  (`_KEEPING_CALLS`, `_keeping_call`). rustc may print these without their module
+  (`spawn::<…>`). A function of the crate's counts if it may make such a call, however deep
+  (`OwnedLocals._keepers`, `Body.keepers`, by name), as does a call by a function pointer.
+- The standard library's `ptr::eq` and `addr_eq`, proven so (`_std_compares`, `Body.compares`),
+  write nothing through the pointers they are given (`_copy_store`), nor keep them (`_escapes`).
 - A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
   (`Block.unwinds`) is not followed. Std's panic (`Body._panics`) is neither a read nor an end, and
   its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count (review 4).

@@ -1713,6 +1713,12 @@ caller after the return, may read it. So the copy blocks a change even where the
 uses `p` again. That holds too for a `&'static` a call returned: `r` of `let r = slot();`, with
 `fn slot() -> &'static Mutex<u32>`, after `lock_set(r, x)`.
 
+Where nothing else can reach what the pointer points at, it ends with the function. An example
+is a leaked `Box` that `fresh()` returned. That changes once the pointer is handed to something
+that keeps it past the call: a thread the function spawns (`std::thread::spawn(move || …)`, its
+`JoinHandle` dropped), `mem::forget`, `Box::leak`, a channel's `send`, or a function of your crate
+that spawns one. The standard library's `ptr::eq` only compares the address, so it keeps nothing.
+
 To change the value, change it before the copy is made, or change the copy.
 
 #### Copies behind a cell or a channel
