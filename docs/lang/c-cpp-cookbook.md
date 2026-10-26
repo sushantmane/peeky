@@ -451,6 +451,18 @@ A crash is the program's failure, not Peeky's. It can be a fault, such as `strle
 signal. It can be `abort`, after an uncaught C++ exception, `std::terminate` or a failed `assert`.
 Most such crashes stop in libc, the C++ runtime or `abort`, outside your sources.
 
+LLDB stops on other signals too, and on a C++ throw or catch filter. So Peeky calls a stop a crash
+only with proof:
+
+- The signal is SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE. On macOS, that includes a Mach
+  exception that becomes one, such as `EXC_BAD_ACCESS`. It also includes LLDB's `hit program
+  assert`.
+- The program neither handles nor ignores that signal. Peeky reads the program's signal masks, and
+  runs nothing in it: Linux's `/proc/PID/status`, or macOS's process information.
+
+Any other such stop isn't a crash. Examples are a SIGINT or SIGPIPE the program handles, and a
+filter's stop. Where Peeky can't read the masks, it doesn't call the stop a crash either.
+
 A probe ends at the crash with `status: failed` and `PROGRAM_CRASHED`. The hits before it stand,
 and the output so far is kept:
 
@@ -475,16 +487,22 @@ output so far (the program was stopped at its crash):
   again at each `continue`.
 - An exception that the program catches never stops it.
 
+At a stop that isn't a crash, a probe reads nothing and lets the program go on, with a warning.
+LLDB may not deliver the signal to the program, so the run after it can differ from one without
+Peeky. If the same stop comes back 20 times in a row, the probe ends with `DEBUGGER_ERROR`. On
+macOS, a fault that the program handles does that.
+
 In a session, the state says the same, and `crash` is in its JSON. Nothing in a frame outside your
-sources is read. `session inspect` there is refused, and the session goes on:
+sources is read, at a crash or any other signal stop. `session inspect` there is refused, and the
+session goes on:
 
 ```
 peeky: [INVALID_REQUEST] Nothing in frame 0 (__pthread_kill) is read: it is outside the program's sources, where the program crashed (signal SIGABRT). Frame 12, main at abort.cpp:12, is the nearest of your code: `session inspect --frame 12`
 ```
 
 `--frame N` reads that frame as any caller's, even past the 10 frames listed. Its values are
-never settable. A frame of your code whose line doesn't match the build still fails, with
-`DEBUGGER_ERROR`.
+never settable. A frame of your code whose line or module doesn't match the build still fails,
+with `DEBUGGER_ERROR`.
 
 ## 7.1 C and C++
 

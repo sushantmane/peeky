@@ -78,6 +78,8 @@ The last column is the `retryable` field.
 
 - The program stopped on a fault or a signal, such as `abort` after an uncaught C++ exception or
   a failed `assert`. The probe ends there, with `status: failed`, and Peeky ends the program.
+- It is a crash only for SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE, where the program neither
+  handles nor ignores the signal. At any other signal stop, the probe lets the program go on.
 - The message says what the debugger says, such as `signal SIGABRT`, and where in your code the
   crash came from. `crash` in JSON has the same. There is no exit status.
 - The output so far is kept. The C++ runtime and `assert` write the exception's type or the failed
