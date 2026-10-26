@@ -1791,14 +1791,21 @@ hint: Change it before the program copies it (a stop on an earlier line, or `--s
 - A call stores there where it is given a pointer to such state, as `&SLOT` or `&S` of a
   `static S: Mutex<u32>`. A store in place counts too: `A.store(x, Ordering::Relaxed)`, or
   `*LAZY.lock().unwrap() = x`.
-- So does a pointer only a call returned, with nothing of the function's behind it:
-  `lock_set(slot(), x)` with `fn slot() -> &'static Mutex<u32>`, or
-  `registry().lock().unwrap().push(x)`. A `Mutex` the function owns is no global state.
+- So does a pointer a call returned, where that function may return one into such state:
+  `lock_set(slot(), x)` with `fn slot() -> &'static Mutex<u32> { &S }`, or
+  `registry().lock().unwrap().push(x)`. A function may also keep the pointer it returns in such
+  state. A `Mutex` the function owns is no global state. Nor is a leaked `Box`:
+  `lock_set(fresh(), x)` with `fn fresh() -> &'static Mutex<u32>` returning
+  `Box::leak(Box::new(Mutex::new(0)))` leaves `x` settable.
 - A value given to the call may carry both the pointer and the copy: `run(Job { a: &A, v: x })`,
   or a closure that captures `&A` and `x`.
 - A function of your crate's that names such state itself stores there what it is given:
   `direct_set(x)`, with `fn direct_set(v: u32) { A.store(v, Ordering::Relaxed); }`. So does a
   function that calls one, however deep, and a closure or method that names one.
+- Peeky tells functions apart by their paths. `clean::note(x)` stays settable where only
+  `dirty::note` stores in a static. Where the MIR's path doesn't tell which function a call is,
+  as for a trait's method, every function of that name counts. Then the refusal says only
+  ``may hold state derived from `x` ``.
 - The standard library's code names none of your statics. It can only call back into your code: a
   closure or a function it is given, as `direct_set` in `once(x).for_each(direct_set)`, or a trait
   `impl` of your type, such as a `Display` it formats. Such a call counts where that code may
@@ -1819,15 +1826,19 @@ hint: Change it before the program copies it (a stop on an earlier line, or `--s
   pointer, a closure behind `dyn Fn`, or a value of a type parameter.
 - Peeky follows calls through the whole crate. Past 64 rounds of that search, it treats every
   function as one that may touch any global state.
-- The copy is the program's own until something may read it: a later call that may touch global
-  state, a use of a pointer to it, or the function's return, after which a caller may read it.
-  Where the program reads `x` again first, it sees the change, and `x` stays `[settable]`.
+- The copy is the program's own until something may read it: a later call that may touch that
+  global state, a use of a pointer to it, or the function's return, after which a caller may read
+  it. Where the program reads `x` again first, it sees the change, and `x` stays `[settable]`.
+- Peeky tells global state apart only by its type. A call that reads another `static` of the
+  same type counts as reading the copy too. One of another type doesn't.
 - A `static` or `thread_local!` holds "a copy" only where each one the call may reach holds a value
   of `x`'s very type. Otherwise the refusal says ``may hold state derived from `x` ``. That is so
   for a `static BIG: AtomicU64` given `u64::from(x) * 2`.
 - A call that touches no global state stores nothing there, and `x` stays `[settable]`. That holds
-  for a function of your crate's that names no such state, however deep, and for the standard
-  library's own calls, such as `println!` of a type with a derived `Debug`.
+  for a function of your crate's that names no such state and is given no pointer to one, nor a
+  value that holds one, however deep. It holds too for the standard library's own calls, such as
+  `println!` of a type with a derived `Debug`. A call given `&SLOT` touches `SLOT`, though it
+  names no static itself.
 - A function that names global state counts even where it stores something else there, such as
   a counter it bumps, or only reads it. Peeky doesn't follow what it stores, so the refusal says
   only that the state may hold a copy.

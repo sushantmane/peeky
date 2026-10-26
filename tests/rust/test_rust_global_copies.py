@@ -371,6 +371,155 @@ fn main() {
 """
 
 
+# Two modules with a function and a method of one name, where only `dirty`'s store in `A`;
+# pointers a call returns, into a static (`slot()`) or a leaked `Box` (`fresh()`); and a
+# global read after the stop (`FLAG`) that isn't the one the copy went to (`S`).
+PATHS = """use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static A: AtomicU32 = AtomicU32::new(0);
+static FLAG: AtomicU32 = AtomicU32::new(0);
+static S: Mutex<u32> = Mutex::new(0);
+
+mod dirty {
+    pub fn note(v: u32) {
+        super::A.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub struct Wrap(pub u32);
+
+    impl Wrap {
+        pub fn keep(&self) {
+            super::A.store(self.0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+mod clean {
+    pub fn note(v: u32) {
+        std::hint::black_box(v);
+    }
+
+    pub struct Wrap(pub u32);
+
+    impl Wrap {
+        pub fn keep(&self) {
+            std::hint::black_box(self.0);
+        }
+    }
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(FLAG.load(Ordering::Relaxed))
+}
+
+#[inline(never)]
+fn fresh() -> &'static Mutex<u32> {
+    Box::leak(Box::new(Mutex::new(0)))
+}
+
+#[inline(never)]
+fn slot() -> &'static Mutex<u32> {
+    &S
+}
+
+#[inline(never)]
+fn lock_set(m: &Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+static KEPT_PTRS: Mutex<Vec<&'static Mutex<u32>>> = Mutex::new(Vec::new());
+
+#[inline(never)]
+fn fresh_kept() -> &'static Mutex<u32> {
+    let m: &'static Mutex<u32> = Box::leak(Box::new(Mutex::new(0)));
+    KEPT_PTRS.lock().unwrap().push(m);
+    m
+}
+
+fn named_fresh(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    let k = other(); // NAMED_FRESH
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn kept_fresh(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(fresh_kept(), x);
+    let k = other(); // KEPT_FRESH
+    std::hint::black_box(&x);
+    *KEPT_PTRS.lock().unwrap()[0].lock().unwrap() + k
+}
+
+fn unrelated(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(&S, x);
+    let k = other(); // UNRELATED
+    std::hint::black_box(&x);
+    let y = x + k;
+    std::hint::black_box(&y);
+    *S.lock().unwrap() + y
+}
+
+fn freshly(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(fresh(), x);
+    let k = other(); // FRESH
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn slotted(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(slot(), x);
+    let k = other(); // SLOTTED
+    std::hint::black_box(&x);
+    *S.lock().unwrap() + k
+}
+
+fn cleaned(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    clean::note(x);
+    clean::Wrap(x).keep();
+    let k = other(); // CLEAN
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn dirtied(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    dirty::note(x);
+    let k = other(); // DIRTY
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn kept(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    dirty::Wrap(x).keep();
+    let k = other(); // KEPT
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("FRESH {}", freshly(n));
+    println!("SLOTTED {}", slotted(n));
+    println!("CLEAN {}", cleaned(n));
+    println!("DIRTY {}", dirtied(n));
+    println!("KEPT {}", kept(n));
+    println!("NAMED_FRESH {}", named_fresh(n));
+    println!("KEPT_FRESH {}", kept_fresh(n));
+    println!("UNRELATED {}", unrelated(n));
+}
+"""
+
+
 def line_of(marker, text=SOURCE):
     return next(i for i, line in enumerate(text.splitlines(), 1) if line.endswith(f"// {marker}"))
 
@@ -401,6 +550,11 @@ def shown(tmp_path, monkeypatch):
 @pytest.fixture
 def traits(tmp_path, monkeypatch):
     return make(tmp_path, monkeypatch, "traits", TRAITS)
+
+
+@pytest.fixture
+def paths(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "paths", PATHS)
 
 
 def probe(capsys, root, marker, *argv, text=SOURCE):
@@ -516,3 +670,34 @@ def test_a_trait_of_the_crates_own_runs_only_where_its_code_calls_it(traits, cap
         "a static or thread-local may hold a copy of `x` (from line "
         f"{line_of('DYNAMIC', TRAITS) - 1})"
     ) in message, message
+
+
+@pytest.mark.timeout(900)
+def test_a_call_counts_by_its_path_and_by_where_the_pointer_it_returns_may_point(paths, capsys):
+    # `lock_set(fresh(), x)` and `let r = fresh(); lock_set(r, x);` store `x` in a leaked
+    # `Box` nothing else reaches; `clean::note(x)` and `clean::Wrap(x).keep()` store nothing,
+    # though `dirty`'s, so named, store in `A`. Each leaves `x` settable. `lock_set(&S, x)`
+    # followed by `x + k` does too (a guard): the program reads `x` before it returns.
+    for marker, printed in (
+        ("FRESH", "FRESH 0"),
+        ("NAMED_FRESH", "NAMED_FRESH 5"),
+        ("CLEAN", "CLEAN 0"),
+        ("UNRELATED", "UNRELATED 105"),
+    ):
+        code, result = probe(capsys, paths, marker, "--capture", "x", "--set", "x=100", text=PATHS)
+        assert code == 0, (marker, result.get("error"))
+        (row,) = [r for r in result["rows"] if r["selector"] == "x" and r["phase"] == "observed"]
+        assert row.get("settable") is True, (marker, row)
+        assert printed in result["output"].splitlines(), (marker, result["output"])
+    # `slot()` returns `&S`, `dirty::note` and `dirty::Wrap::keep` store in `A`, and
+    # `fresh_kept()` keeps the pointer it returns in a static.
+    for marker, what in (
+        ("SLOTTED", "a copy of"),
+        ("DIRTY", "a copy of"),
+        ("KEPT", "a copy of"),
+        ("KEPT_FRESH", "state derived from"),
+    ):
+        message, _ = refused(*probe(capsys, paths, marker, "--set", "x=100", text=PATHS), marker)
+        assert (
+            f"a static or thread-local may hold {what} `x` (from line {line_of(marker, PATHS) - 1})"
+        ) in message, (marker, message)

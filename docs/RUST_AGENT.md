@@ -709,7 +709,9 @@ the local without reading the changed part, and uses the binding before or after
 - What a pointer binding stands for, where nothing of the frame does (`_pointees`), outlives the
   binding and the frame (`Body._outlives_frame`, #329): its end and the frame's `return` use it,
   as a caller may read it. That is an argument `p` of `*p = x;`, or `r` of `let r = slot();`
-  returning a `&'static Mutex<u32>`. Global state does too ([Global state](#global-state)).
+  returning a `&'static Mutex<u32>`. Something else must reach it (`_reachable_after`, #340
+  review): an argument, a constant address, a call that may return global state, or a call or
+  store it was handed to (`_escapes`). So `r` of `let r = fresh();`, a leaked `Box`, doesn't. Global state does too ([Global state](#global-state)).
   The standard library's `ptr::eq` and `addr_eq`, proven so (`_std_compares`), write nothing
   through the pointers they are given (`_copy_store`).
 - A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
@@ -780,8 +782,14 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
   function touches what it names, and what each call and drop in it may (`_global_edges`), found
   again until nothing grows. `OwnedLocals._globals` sets it as `Body.globals` at match time. It is
   None where the crate names no such state, and then nothing changes.
-- A call reaches the crate's functions by its last path segment (`_callee`), every function so
-  named. The standard library's code names none of the crate's statics. It reaches the crate's
+- A call reaches the crate's functions by its path (`GlobalState.resolve`, #340 review). A
+  function's key is its path without generic arguments (`clean::note`). A method's is its module's,
+  its type's from the `impl` header (`_impl_self`) and its own (`clean::Wrap::keep`), and
+  `Wrap::keep` too. A call path matches a key exactly, or as its last segments (rustc leaves out a
+  unique name's module), or by a method's type and name. Where the path doesn't tell (a trait's
+  method, `<Wrap as Tr>::keep`, or a method whose `impl` header Peeky can't read), every function
+  of that last segment counts (`names`). If there is more than one, the kinds gain `_ANY_GLOBAL`,
+  so the refusal says "state derived from". The standard library's code names none of the crate's statics. It reaches the crate's
   code only through what it is given (`GlobalState.carried`): a closure's body, by its type; a
   trait `impl` of a type of the crate's (`GlobalState.impls`), as a derived `Debug`'s `fmt`; or
   anything, for a function pointer, `dyn Fn`, `impl`, a type parameter or a type not known. A
@@ -816,15 +824,20 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
 - `_copy_parts` gives each place that may store a value there a pseudo-local of its own, numbered
   from `_GLOBAL_BASE` (`Body.global_holders`: the place, the globals' types). That is a call given a
   pointer into it (`_made_from` reaches a root), a call `global_touch` says may touch it, a store
-  through such a pointer, and a drop that may. A pointer only a call returned, with no argument,
-  no value the frame owns and no binding that outlives the frame behind it, counts as one into
-  global state (`lock_set(slot(), x)`). What else the place is given counts whole, the pointer
+  through such a pointer, and a drop that may. A pointer a call returned counts as one into global
+  state where that call may return one (`Body._returned_kinds`, `GlobalState.returned`): `slot()`
+  of `lock_set(slot(), x)`, not `fresh()` returning a leaked `Box`.
+- `global_state` also finds what each function's return may point into
+  (`Body.returned_globals`, the `GlobalState.returns` view). That is nothing where its type holds
+  no pointer. Else it is a global it names that the return is made from, what a call it is made
+  from may return, and any global it touches, which may keep the pointer. What else the place is given counts whole, the pointer
   too: `Job { a: &A, v: x }` carries both. It holds what else the place is given, as
   `_copy_store` judges it: a copy, a pointer into the local, or what holds a copy.
 - `copies_at` never counts it as a temporary. `copy_kind` judges it as a binding. It is used by a
-  statement that may touch global state (`Body.global_use`: a pointer into it, a call or drop
-  `global_touch` names), and by the frame's `return`, after which a caller may read it. It never
-  ends.
+  statement that may read a global it may be (`Body.reads_global`): `Body.global_use` gives the
+  types of the globals a statement may read, through a pointer into one or a call or drop
+  `global_touch` names. Globals are told apart by type only, so two statics of one type count as
+  one. The frame's `return` uses it too, after which a caller may read it. It never ends.
 - `Body.global_level` says "copy" only where each global the place may reach holds a value of the
   local's very type (`_copy_level`; a `static mut`'s value as a `Cell` of its type). Otherwise, and
   for a global not known, it says "derived".

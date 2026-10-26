@@ -3532,3 +3532,1460 @@ def test_the_trait_an_impl_block_implements():
         assert not _own_trait(("Sink", False), both), line
     assert _own_trait(("crate::Sink", False), _crate_traits({**texts, "src/m.rs": "use other::*;"}))
     assert _own_trait(("Sink", False), _crate_traits({**texts, "src/m.rs": "use crate::Sink;"}))
+
+
+# The `paths` crate (#340 review): two modules with functions and methods of one name, one
+# storing in `A`; pointers a call returns, into a static or a leaked `Box`; and a global that
+# is read after the stop that isn't the one the copy went to.
+PATHS_SOURCE = """use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static A: AtomicU32 = AtomicU32::new(0);
+static FLAG: AtomicU32 = AtomicU32::new(0);
+static S: Mutex<u32> = Mutex::new(0);
+
+mod dirty {
+    pub fn note(v: u32) {
+        super::A.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub struct Wrap(pub u32);
+
+    impl Wrap {
+        pub fn keep(&self) {
+            super::A.store(self.0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+mod clean {
+    pub fn note(v: u32) {
+        std::hint::black_box(v);
+    }
+
+    pub struct Wrap(pub u32);
+
+    impl Wrap {
+        pub fn keep(&self) {
+            std::hint::black_box(self.0);
+        }
+    }
+}
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(FLAG.load(Ordering::Relaxed))
+}
+
+#[inline(never)]
+fn fresh() -> &'static Mutex<u32> {
+    Box::leak(Box::new(Mutex::new(0)))
+}
+
+#[inline(never)]
+fn slot() -> &'static Mutex<u32> {
+    &S
+}
+
+#[inline(never)]
+fn lock_set(m: &Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+static KEPT_PTRS: Mutex<Vec<&'static Mutex<u32>>> = Mutex::new(Vec::new());
+
+#[inline(never)]
+fn fresh_kept() -> &'static Mutex<u32> {
+    let m: &'static Mutex<u32> = Box::leak(Box::new(Mutex::new(0)));
+    KEPT_PTRS.lock().unwrap().push(m);
+    m
+}
+
+fn named_fresh(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    let k = other();
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn kept_fresh(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(fresh_kept(), x);
+    let k = other();
+    std::hint::black_box(&x);
+    *KEPT_PTRS.lock().unwrap()[0].lock().unwrap() + k
+}
+
+fn unrelated(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(&S, x);
+    let k = other();
+    std::hint::black_box(&x);
+    let y = x + k;
+    std::hint::black_box(&y);
+    *S.lock().unwrap() + y
+}
+
+fn freshly(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(fresh(), x);
+    let k = other();
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn slotted(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    lock_set(slot(), x);
+    let k = other();
+    std::hint::black_box(&x);
+    *S.lock().unwrap() + k
+}
+
+fn cleaned(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    clean::note(x);
+    clean::Wrap(x).keep();
+    let k = other();
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn dirtied(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    dirty::note(x);
+    let k = other();
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn kept(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    dirty::Wrap(x).keep();
+    let k = other();
+    std::hint::black_box(&x);
+    A.load(Ordering::Relaxed) + k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("FRESH {}", freshly(n));
+    println!("SLOTTED {}", slotted(n));
+    println!("CLEAN {}", cleaned(n));
+    println!("DIRTY {}", dirtied(n));
+    println!("KEPT {}", kept(n));
+    println!("NAMED_FRESH {}", named_fresh(n));
+    println!("KEPT_FRESH {}", kept_fresh(n));
+    println!("UNRELATED {}", unrelated(n));
+}
+"""
+
+P_OTHER = """// MIR for `other` after PreCodegen
+
+fn other() -> u32 {
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:37:15: 37:18
+    let mut _1: u32;                     // in scope 0 at src/main.rs:38:26: 38:54
+    let mut _2: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:38:26: 38:30
+    let _3: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:38:26: 38:30
+    let mut _4: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:38:36: 38:53
+    bb0: {
+        StorageLive(_1);                 // scope 0 at src/main.rs:38:26: 38:54
+        StorageLive(_2);                 // scope 0 at src/main.rs:38:26: 38:30
+        StorageLive(_3);                 // scope 0 at src/main.rs:38:26: 38:30
+        _3 = const {alloc7: &Atomic<u32>}; // scope 0 at src/main.rs:38:26: 38:30
+        _2 = &(*_3);                     // scope 0 at src/main.rs:38:26: 38:30
+        StorageLive(_4);                 // scope 0 at src/main.rs:38:36: 38:53
+        _4 = std::sync::atomic::Ordering::Relaxed; // scope 0 at src/main.rs:38:36: 38:53
+        _1 = Atomic::<u32>::load(move _2, move _4) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:38:26: 38:54
+    }
+    bb1: {
+        StorageDead(_4);                 // scope 0 at src/main.rs:38:53: 38:54
+        StorageDead(_2);                 // scope 0 at src/main.rs:38:53: 38:54
+        _0 = std::hint::black_box::<u32>(move _1) -> [return: bb2, unwind continue]; // scope 0 at src/main.rs:38:5: 38:55
+    }
+    bb2: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:38:54: 38:55
+        StorageDead(_1);                 // scope 0 at src/main.rs:38:54: 38:55
+        return;                          // scope 0 at src/main.rs:39:2: 39:2
+    }
+}
+"""
+
+
+P_FRESH = """// MIR for `fresh` after PreCodegen
+
+fn fresh() -> &std::sync::Mutex<u32> {
+    let mut _0: &std::sync::Mutex<u32>;  // return place in scope 0 at src/main.rs:42:15: 42:34
+    let _1: &mut std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:43:5: 43:39
+    let mut _2: std::boxed::Box<std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:43:15: 43:38
+    let mut _3: std::sync::Mutex<u32>;   // in scope 0 at src/main.rs:43:24: 43:37
+    bb0: {
+        StorageLive(_1);                 // scope 0 at src/main.rs:43:5: 43:39
+        StorageLive(_2);                 // scope 0 at src/main.rs:43:15: 43:38
+        StorageLive(_3);                 // scope 0 at src/main.rs:43:24: 43:37
+        _3 = std::sync::Mutex::<u32>::new(const 0_u32) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:43:24: 43:37
+    }
+    bb1: {
+        _2 = Box::<std::sync::Mutex<u32>>::new(move _3) -> [return: bb2, unwind: bb4]; // scope 0 at src/main.rs:43:15: 43:38
+    }
+    bb2: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:43:37: 43:38
+        _1 = Box::<std::sync::Mutex<u32>>::leak::<'_>(move _2) -> [return: bb3, unwind: bb4]; // scope 0 at src/main.rs:43:5: 43:39
+    }
+    bb3: {
+        _0 = &(*_1);                     // scope 0 at src/main.rs:43:5: 43:39
+        StorageDead(_2);                 // scope 0 at src/main.rs:43:38: 43:39
+        StorageDead(_1);                 // scope 0 at src/main.rs:43:38: 43:39
+        return;                          // scope 0 at src/main.rs:44:2: 44:2
+    }
+    bb4 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:42:1: 44:2
+    }
+}
+"""
+
+
+P_FRESH_KEPT = """// MIR for `fresh_kept` after PreCodegen
+
+fn fresh_kept() -> &std::sync::Mutex<u32> {
+    let mut _0: &std::sync::Mutex<u32>;  // return place in scope 0 at src/main.rs:59:20: 59:39
+    let _1: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:60:9: 60:10
+    let _2: &mut std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:60:34: 60:68
+    let mut _3: std::boxed::Box<std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:60:44: 60:67
+    let mut _4: std::sync::Mutex<u32>;   // in scope 0 at src/main.rs:60:53: 60:66
+    let _5: ();                          // in scope 0 at src/main.rs:61:5: 61:38
+    let mut _6: &mut std::vec::Vec<&std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:61:5: 61:30
+    let mut _7: &mut std::vec::Vec<&std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:61:5: 61:38
+    let mut _8: &mut std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:61:5: 61:30
+    let mut _9: std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:61:5: 61:30
+    let mut _10: std::result::Result<std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>, std::sync::PoisonError<std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>>>; // in scope 0 at src/main.rs:61:5: 61:21
+    let mut _11: &std::sync::Mutex<std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:61:5: 61:14
+    let _12: &std::sync::Mutex<std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:61:5: 61:14
+    let mut _13: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:61:36: 61:37
+    scope 1 {
+        debug m => _1;                   // in scope 1 at src/main.rs:60:9: 60:10
+    }
+    bb0: {
+        StorageLive(_1);                 // scope 0 at src/main.rs:60:9: 60:10
+        StorageLive(_2);                 // scope 0 at src/main.rs:60:34: 60:68
+        StorageLive(_3);                 // scope 0 at src/main.rs:60:44: 60:67
+        StorageLive(_4);                 // scope 0 at src/main.rs:60:53: 60:66
+        _4 = std::sync::Mutex::<u32>::new(const 0_u32) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:60:53: 60:66
+    }
+    bb1: {
+        _3 = Box::<std::sync::Mutex<u32>>::new(move _4) -> [return: bb2, unwind: bb10]; // scope 0 at src/main.rs:60:44: 60:67
+    }
+    bb2: {
+        StorageDead(_4);                 // scope 0 at src/main.rs:60:66: 60:67
+        _2 = Box::<std::sync::Mutex<u32>>::leak::<'_>(move _3) -> [return: bb3, unwind: bb10]; // scope 0 at src/main.rs:60:34: 60:68
+    }
+    bb3: {
+        _1 = &(*_2);                     // scope 0 at src/main.rs:60:34: 60:68
+        StorageDead(_3);                 // scope 0 at src/main.rs:60:67: 60:68
+        StorageDead(_2);                 // scope 0 at src/main.rs:60:68: 60:69
+        StorageLive(_5);                 // scope 1 at src/main.rs:61:5: 61:38
+        StorageLive(_6);                 // scope 1 at src/main.rs:61:5: 61:30
+        StorageLive(_7);                 // scope 1 at src/main.rs:61:5: 61:38
+        StorageLive(_8);                 // scope 1 at src/main.rs:61:5: 61:30
+        StorageLive(_9);                 // scope 1 at src/main.rs:61:5: 61:30
+        StorageLive(_10);                // scope 1 at src/main.rs:61:5: 61:21
+        StorageLive(_11);                // scope 1 at src/main.rs:61:5: 61:14
+        StorageLive(_12);                // scope 1 at src/main.rs:61:5: 61:14
+        _12 = const {alloc26: &std::sync::Mutex<Vec<&std::sync::Mutex<u32>>>}; // scope 1 at src/main.rs:61:5: 61:14
+        _11 = &(*_12);                   // scope 1 at src/main.rs:61:5: 61:14
+        _10 = std::sync::Mutex::<Vec<&std::sync::Mutex<u32>>>::lock(move _11) -> [return: bb4, unwind continue]; // scope 1 at src/main.rs:61:5: 61:21
+    }
+    bb4: {
+        StorageDead(_11);                // scope 1 at src/main.rs:61:20: 61:21
+        _9 = Result::<std::sync::MutexGuard<'_, Vec<&std::sync::Mutex<u32>>>, PoisonError<std::sync::MutexGuard<'_, Vec<&std::sync::Mutex<u32>>>>>::unwrap(move _10) -> [return: bb5, unwind: bb10]; // scope 1 at src/main.rs:61:5: 61:30
+    }
+    bb5: {
+        _8 = &mut _9;                    // scope 1 at src/main.rs:61:5: 61:30
+        _7 = <std::sync::MutexGuard<'_, Vec<&std::sync::Mutex<u32>>> as DerefMut>::deref_mut(move _8) -> [return: bb6, unwind: bb9]; // scope 1 at src/main.rs:61:5: 61:38
+    }
+    bb6: {
+        _6 = &mut (*_7);                 // scope 1 at src/main.rs:61:5: 61:30
+        StorageDead(_10);                // scope 1 at src/main.rs:61:29: 61:30
+        StorageDead(_8);                 // scope 1 at src/main.rs:61:29: 61:30
+        StorageLive(_13);                // scope 1 at src/main.rs:61:36: 61:37
+        _13 = copy _1;                   // scope 1 at src/main.rs:61:36: 61:37
+        _5 = Vec::<&std::sync::Mutex<u32>>::push(move _6, move _13) -> [return: bb7, unwind: bb9]; // scope 1 at src/main.rs:61:5: 61:38
+    }
+    bb7: {
+        StorageDead(_13);                // scope 1 at src/main.rs:61:37: 61:38
+        StorageDead(_6);                 // scope 1 at src/main.rs:61:37: 61:38
+        drop(_9) -> [return: bb8, unwind: bb10]; // scope 1 at src/main.rs:61:38: 61:39
+    }
+    bb8: {
+        StorageDead(_12);                // scope 1 at src/main.rs:61:38: 61:39
+        StorageDead(_9);                 // scope 1 at src/main.rs:61:38: 61:39
+        StorageDead(_7);                 // scope 1 at src/main.rs:61:38: 61:39
+        StorageDead(_5);                 // scope 1 at src/main.rs:61:38: 61:39
+        _0 = copy _1;                    // scope 1 at src/main.rs:62:5: 62:6
+        StorageDead(_1);                 // scope 0 at src/main.rs:63:1: 63:2
+        return;                          // scope 0 at src/main.rs:63:2: 63:2
+    }
+    bb9 (cleanup): {
+        drop(_9) -> [return: bb10, unwind terminate(cleanup)]; // scope 1 at src/main.rs:61:38: 61:39
+    }
+    bb10 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:59:1: 63:2
+    }
+}
+"""
+
+
+P_SLOT = """// MIR for `slot` after PreCodegen
+
+fn slot() -> &std::sync::Mutex<u32> {
+    let mut _0: &std::sync::Mutex<u32>;  // return place in scope 0 at src/main.rs:47:14: 47:33
+    let _1: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:48:5: 48:7
+    let _2: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:48:6: 48:7
+    bb0: {
+        StorageLive(_1);                 // scope 0 at src/main.rs:48:5: 48:7
+        StorageLive(_2);                 // scope 0 at src/main.rs:48:6: 48:7
+        _2 = const {alloc10: &std::sync::Mutex<u32>}; // scope 0 at src/main.rs:48:6: 48:7
+        _1 = &(*_2);                     // scope 0 at src/main.rs:48:5: 48:7
+        _0 = &(*_1);                     // scope 0 at src/main.rs:48:5: 48:7
+        StorageDead(_2);                 // scope 0 at src/main.rs:48:6: 48:7
+        StorageDead(_1);                 // scope 0 at src/main.rs:48:6: 48:7
+        return;                          // scope 0 at src/main.rs:49:2: 49:2
+    }
+}
+"""
+
+
+P_LOCK_SET = """// MIR for `lock_set` after PreCodegen
+
+fn lock_set(_1: &std::sync::Mutex<u32>, _2: u32) -> () {
+    debug m => _1;                       // in scope 0 at src/main.rs:52:13: 52:14
+    debug v => _2;                       // in scope 0 at src/main.rs:52:29: 52:30
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:52:36: 52:36
+    let mut _3: u32;                     // in scope 0 at src/main.rs:53:26: 53:27
+    let mut _4: &mut u32;                // in scope 0 at src/main.rs:53:5: 53:23
+    let mut _5: &mut std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:53:6: 53:23
+    let mut _6: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:53:6: 53:23
+    let mut _7: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:53:6: 53:14
+    let mut _8: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:53:6: 53:7
+    bb0: {
+        StorageLive(_3);                 // scope 0 at src/main.rs:53:26: 53:27
+        _3 = copy _2;                    // scope 0 at src/main.rs:53:26: 53:27
+        StorageLive(_4);                 // scope 0 at src/main.rs:53:5: 53:23
+        StorageLive(_5);                 // scope 0 at src/main.rs:53:6: 53:23
+        StorageLive(_6);                 // scope 0 at src/main.rs:53:6: 53:23
+        StorageLive(_7);                 // scope 0 at src/main.rs:53:6: 53:14
+        StorageLive(_8);                 // scope 0 at src/main.rs:53:6: 53:7
+        _8 = &(*_1);                     // scope 0 at src/main.rs:53:6: 53:7
+        _7 = std::sync::Mutex::<u32>::lock(move _8) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:53:6: 53:14
+    }
+    bb1: {
+        StorageDead(_8);                 // scope 0 at src/main.rs:53:13: 53:14
+        _6 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _7) -> [return: bb2, unwind: bb6]; // scope 0 at src/main.rs:53:6: 53:23
+    }
+    bb2: {
+        _5 = &mut _6;                    // scope 0 at src/main.rs:53:6: 53:23
+        StorageDead(_7);                 // scope 0 at src/main.rs:53:22: 53:23
+        _4 = <std::sync::MutexGuard<'_, u32> as DerefMut>::deref_mut(move _5) -> [return: bb3, unwind: bb5]; // scope 0 at src/main.rs:53:5: 53:23
+    }
+    bb3: {
+        StorageDead(_5);                 // scope 0 at src/main.rs:53:22: 53:23
+        (*_4) = move _3;                 // scope 0 at src/main.rs:53:5: 53:27
+        StorageDead(_3);                 // scope 0 at src/main.rs:53:26: 53:27
+        drop(_6) -> [return: bb4, unwind: bb6]; // scope 0 at src/main.rs:53:27: 53:28
+    }
+    bb4: {
+        StorageDead(_6);                 // scope 0 at src/main.rs:53:27: 53:28
+        StorageDead(_4);                 // scope 0 at src/main.rs:53:27: 53:28
+        _0 = const ();                   // scope 0 at src/main.rs:52:37: 54:2
+        return;                          // scope 0 at src/main.rs:54:2: 54:2
+    }
+    bb5 (cleanup): {
+        drop(_6) -> [return: bb6, unwind terminate(cleanup)]; // scope 0 at src/main.rs:53:27: 53:28
+    }
+    bb6 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:52:1: 54:2
+    }
+}
+"""
+
+
+P_CLEAN_NOTE = """// MIR for `clean::note` after PreCodegen
+
+fn clean::note(_1: u32) -> () {
+    debug v => _1;                       // in scope 0 at src/main.rs:23:17: 23:18
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:23:24: 23:24
+    let _2: u32;                         // in scope 0 at src/main.rs:24:9: 24:32
+    let mut _3: u32;                     // in scope 0 at src/main.rs:24:30: 24:31
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:24:9: 24:32
+        StorageLive(_3);                 // scope 0 at src/main.rs:24:30: 24:31
+        _3 = copy _1;                    // scope 0 at src/main.rs:24:30: 24:31
+        _2 = std::hint::black_box::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:24:9: 24:32
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:24:31: 24:32
+        StorageDead(_2);                 // scope 0 at src/main.rs:24:32: 24:33
+        _0 = const ();                   // scope 0 at src/main.rs:23:25: 25:6
+        return;                          // scope 0 at src/main.rs:25:6: 25:6
+    }
+}
+"""
+
+
+P_DIRTY_NOTE = """// MIR for `dirty::note` after PreCodegen
+
+fn dirty::note(_1: u32) -> () {
+    debug v => _1;                       // in scope 0 at src/main.rs:9:17: 9:18
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:9:24: 9:24
+    let _2: ();                          // in scope 0 at src/main.rs:10:9: 10:64
+    let mut _3: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:10:9: 10:17
+    let _4: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:10:9: 10:17
+    let mut _5: u32;                     // in scope 0 at src/main.rs:10:24: 10:25
+    let mut _6: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:10:27: 10:63
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:10:9: 10:64
+        StorageLive(_3);                 // scope 0 at src/main.rs:10:9: 10:17
+        StorageLive(_4);                 // scope 0 at src/main.rs:10:9: 10:17
+        _4 = const {alloc4: &Atomic<u32>}; // scope 0 at src/main.rs:10:9: 10:17
+        _3 = &(*_4);                     // scope 0 at src/main.rs:10:9: 10:17
+        StorageLive(_5);                 // scope 0 at src/main.rs:10:24: 10:25
+        _5 = copy _1;                    // scope 0 at src/main.rs:10:24: 10:25
+        StorageLive(_6);                 // scope 0 at src/main.rs:10:27: 10:63
+        _6 = std::sync::atomic::Ordering::Relaxed; // scope 0 at src/main.rs:10:27: 10:63
+        _2 = Atomic::<u32>::store(move _3, move _5, move _6) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:10:9: 10:64
+    }
+    bb1: {
+        StorageDead(_6);                 // scope 0 at src/main.rs:10:63: 10:64
+        StorageDead(_5);                 // scope 0 at src/main.rs:10:63: 10:64
+        StorageDead(_3);                 // scope 0 at src/main.rs:10:63: 10:64
+        StorageDead(_4);                 // scope 0 at src/main.rs:10:64: 10:65
+        StorageDead(_2);                 // scope 0 at src/main.rs:10:64: 10:65
+        _0 = const ();                   // scope 0 at src/main.rs:9:25: 11:6
+        return;                          // scope 0 at src/main.rs:11:6: 11:6
+    }
+}
+"""
+
+
+P_CLEAN_KEEP = """// MIR for `clean::<impl at src/main.rs:29:5: 29:14>::keep` after PreCodegen
+
+fn clean::<impl at src/main.rs:29:5: 29:14>::keep(_1: &clean::Wrap) -> () {
+    debug self => _1;                    // in scope 0 at src/main.rs:30:21: 30:26
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:30:27: 30:27
+    let _2: u32;                         // in scope 0 at src/main.rs:31:13: 31:41
+    let mut _3: u32;                     // in scope 0 at src/main.rs:31:34: 31:40
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:31:13: 31:41
+        StorageLive(_3);                 // scope 0 at src/main.rs:31:34: 31:40
+        _3 = copy ((*_1).0: u32);        // scope 0 at src/main.rs:31:34: 31:40
+        _2 = std::hint::black_box::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:31:13: 31:41
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:31:40: 31:41
+        StorageDead(_2);                 // scope 0 at src/main.rs:31:41: 31:42
+        _0 = const ();                   // scope 0 at src/main.rs:30:28: 32:10
+        return;                          // scope 0 at src/main.rs:32:10: 32:10
+    }
+}
+"""
+
+
+P_DIRTY_KEEP = """// MIR for `dirty::<impl at src/main.rs:15:5: 15:14>::keep` after PreCodegen
+
+fn dirty::<impl at src/main.rs:15:5: 15:14>::keep(_1: &dirty::Wrap) -> () {
+    debug self => _1;                    // in scope 0 at src/main.rs:16:21: 16:26
+    let mut _0: ();                      // return place in scope 0 at src/main.rs:16:27: 16:27
+    let _2: ();                          // in scope 0 at src/main.rs:17:13: 17:73
+    let mut _3: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:17:13: 17:21
+    let _4: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:17:13: 17:21
+    let mut _5: u32;                     // in scope 0 at src/main.rs:17:28: 17:34
+    let mut _6: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:17:36: 17:72
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:17:13: 17:73
+        StorageLive(_3);                 // scope 0 at src/main.rs:17:13: 17:21
+        StorageLive(_4);                 // scope 0 at src/main.rs:17:13: 17:21
+        _4 = const {alloc4: &Atomic<u32>}; // scope 0 at src/main.rs:17:13: 17:21
+        _3 = &(*_4);                     // scope 0 at src/main.rs:17:13: 17:21
+        StorageLive(_5);                 // scope 0 at src/main.rs:17:28: 17:34
+        _5 = copy ((*_1).0: u32);        // scope 0 at src/main.rs:17:28: 17:34
+        StorageLive(_6);                 // scope 0 at src/main.rs:17:36: 17:72
+        _6 = std::sync::atomic::Ordering::Relaxed; // scope 0 at src/main.rs:17:36: 17:72
+        _2 = Atomic::<u32>::store(move _3, move _5, move _6) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:17:13: 17:73
+    }
+    bb1: {
+        StorageDead(_6);                 // scope 0 at src/main.rs:17:72: 17:73
+        StorageDead(_5);                 // scope 0 at src/main.rs:17:72: 17:73
+        StorageDead(_3);                 // scope 0 at src/main.rs:17:72: 17:73
+        StorageDead(_4);                 // scope 0 at src/main.rs:17:73: 17:74
+        StorageDead(_2);                 // scope 0 at src/main.rs:17:73: 17:74
+        _0 = const ();                   // scope 0 at src/main.rs:16:28: 18:10
+        return;                          // scope 0 at src/main.rs:18:10: 18:10
+    }
+}
+"""
+
+
+P_FRESHLY = """// MIR for `freshly` after PreCodegen
+
+fn freshly(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:92:12: 92:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:92:25: 92:28
+    let _2: u32;                         // in scope 0 at src/main.rs:93:9: 93:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:93:36: 93:39
+    let _4: ();                          // in scope 0 at src/main.rs:94:5: 94:25
+    let mut _5: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:94:14: 94:21
+    let _6: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:94:14: 94:21
+    let mut _7: u32;                     // in scope 0 at src/main.rs:94:23: 94:24
+    let _9: &u32;                        // in scope 0 at src/main.rs:96:5: 96:29
+    let mut _10: &u32;                   // in scope 0 at src/main.rs:96:26: 96:28
+    let mut _11: u32;                    // in scope 0 at src/main.rs:97:5: 97:30
+    let mut _12: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:97:5: 97:6
+    let _13: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:97:5: 97:6
+    let mut _14: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:97:12: 97:29
+    let mut _15: u32;                    // in scope 0 at src/main.rs:97:33: 97:34
+    let mut _16: (u32, bool);            // in scope 0 at src/main.rs:97:5: 97:34
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:93:9: 93:10
+        let _8: u32;                     // in scope 1 at src/main.rs:95:9: 95:10
+        scope 2 {
+            debug k => _8;               // in scope 2 at src/main.rs:95:9: 95:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:93:9: 93:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:93:36: 93:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:93:36: 93:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:93:13: 93:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:93:39: 93:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:94:5: 94:25
+        StorageLive(_5);                 // scope 1 at src/main.rs:94:14: 94:21
+        StorageLive(_6);                 // scope 1 at src/main.rs:94:14: 94:21
+        _6 = fresh() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:94:14: 94:21
+    }
+    bb2: {
+        _5 = &(*_6);                     // scope 1 at src/main.rs:94:14: 94:21
+        StorageLive(_7);                 // scope 1 at src/main.rs:94:23: 94:24
+        _7 = copy _2;                    // scope 1 at src/main.rs:94:23: 94:24
+        _4 = lock_set(move _5, move _7) -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:94:5: 94:25
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 1 at src/main.rs:94:24: 94:25
+        StorageDead(_5);                 // scope 1 at src/main.rs:94:24: 94:25
+        StorageDead(_6);                 // scope 1 at src/main.rs:94:25: 94:26
+        StorageDead(_4);                 // scope 1 at src/main.rs:94:25: 94:26
+        StorageLive(_8);                 // scope 1 at src/main.rs:95:9: 95:10
+        _8 = other() -> [return: bb4, unwind continue]; // scope 1 at src/main.rs:95:13: 95:20
+    }
+    bb4: {
+        StorageLive(_9);                 // scope 2 at src/main.rs:96:5: 96:29
+        StorageLive(_10);                // scope 2 at src/main.rs:96:26: 96:28
+        _10 = &_2;                       // scope 2 at src/main.rs:96:26: 96:28
+        _9 = std::hint::black_box::<&u32>(move _10) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:96:5: 96:29
+    }
+    bb5: {
+        StorageDead(_10);                // scope 2 at src/main.rs:96:28: 96:29
+        StorageDead(_9);                 // scope 2 at src/main.rs:96:29: 96:30
+        StorageLive(_11);                // scope 2 at src/main.rs:97:5: 97:30
+        StorageLive(_12);                // scope 2 at src/main.rs:97:5: 97:6
+        StorageLive(_13);                // scope 2 at src/main.rs:97:5: 97:6
+        _13 = const {alloc4: &Atomic<u32>}; // scope 2 at src/main.rs:97:5: 97:6
+        _12 = &(*_13);                   // scope 2 at src/main.rs:97:5: 97:6
+        StorageLive(_14);                // scope 2 at src/main.rs:97:12: 97:29
+        _14 = std::sync::atomic::Ordering::Relaxed; // scope 2 at src/main.rs:97:12: 97:29
+        _11 = Atomic::<u32>::load(move _12, move _14) -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:97:5: 97:30
+    }
+    bb6: {
+        StorageDead(_14);                // scope 2 at src/main.rs:97:29: 97:30
+        StorageDead(_12);                // scope 2 at src/main.rs:97:29: 97:30
+        StorageLive(_15);                // scope 2 at src/main.rs:97:33: 97:34
+        _15 = copy _8;                   // scope 2 at src/main.rs:97:33: 97:34
+        _16 = AddWithOverflow(copy _11, copy _15); // scope 2 at src/main.rs:97:5: 97:34
+        assert(!move (_16.1: bool), "attempt to compute `{} + {}`, which would overflow", move _11, move _15) -> [success: bb7, unwind continue]; // scope 2 at src/main.rs:97:5: 97:34
+    }
+    bb7: {
+        _0 = move (_16.0: u32);          // scope 2 at src/main.rs:97:5: 97:34
+        StorageDead(_15);                // scope 2 at src/main.rs:97:33: 97:34
+        StorageDead(_13);                // scope 2 at src/main.rs:97:33: 97:34
+        StorageDead(_11);                // scope 2 at src/main.rs:97:33: 97:34
+        StorageDead(_8);                 // scope 1 at src/main.rs:98:1: 98:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:98:1: 98:2
+        return;                          // scope 0 at src/main.rs:98:2: 98:2
+    }
+}
+"""
+
+
+P_NAMED_FRESH = """// MIR for `named_fresh` after PreCodegen
+
+fn named_fresh(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:65:16: 65:19
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:65:29: 65:32
+    let _2: u32;                         // in scope 0 at src/main.rs:66:9: 66:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:66:36: 66:39
+    let _5: ();                          // in scope 0 at src/main.rs:68:5: 68:19
+    let mut _6: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:68:14: 68:15
+    let mut _7: u32;                     // in scope 0 at src/main.rs:68:17: 68:18
+    let _9: &u32;                        // in scope 0 at src/main.rs:70:5: 70:29
+    let mut _10: &u32;                   // in scope 0 at src/main.rs:70:26: 70:28
+    let mut _11: u32;                    // in scope 0 at src/main.rs:71:5: 71:30
+    let mut _12: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:71:5: 71:6
+    let _13: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:71:5: 71:6
+    let mut _14: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:71:12: 71:29
+    let mut _15: u32;                    // in scope 0 at src/main.rs:71:33: 71:34
+    let mut _16: (u32, bool);            // in scope 0 at src/main.rs:71:5: 71:34
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:66:9: 66:10
+        let _4: &std::sync::Mutex<u32>;  // in scope 1 at src/main.rs:67:9: 67:10
+        scope 2 {
+            debug r => _4;               // in scope 2 at src/main.rs:67:9: 67:10
+            let _8: u32;                 // in scope 2 at src/main.rs:69:9: 69:10
+            scope 3 {
+                debug k => _8;           // in scope 3 at src/main.rs:69:9: 69:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:66:9: 66:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:66:36: 66:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:66:36: 66:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:66:13: 66:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:66:39: 66:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:67:9: 67:10
+        _4 = fresh() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:67:13: 67:20
+    }
+    bb2: {
+        StorageLive(_5);                 // scope 2 at src/main.rs:68:5: 68:19
+        StorageLive(_6);                 // scope 2 at src/main.rs:68:14: 68:15
+        _6 = &(*_4);                     // scope 2 at src/main.rs:68:14: 68:15
+        StorageLive(_7);                 // scope 2 at src/main.rs:68:17: 68:18
+        _7 = copy _2;                    // scope 2 at src/main.rs:68:17: 68:18
+        _5 = lock_set(move _6, move _7) -> [return: bb3, unwind continue]; // scope 2 at src/main.rs:68:5: 68:19
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 2 at src/main.rs:68:18: 68:19
+        StorageDead(_6);                 // scope 2 at src/main.rs:68:18: 68:19
+        StorageDead(_5);                 // scope 2 at src/main.rs:68:19: 68:20
+        StorageLive(_8);                 // scope 2 at src/main.rs:69:9: 69:10
+        _8 = other() -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:69:13: 69:20
+    }
+    bb4: {
+        StorageLive(_9);                 // scope 3 at src/main.rs:70:5: 70:29
+        StorageLive(_10);                // scope 3 at src/main.rs:70:26: 70:28
+        _10 = &_2;                       // scope 3 at src/main.rs:70:26: 70:28
+        _9 = std::hint::black_box::<&u32>(move _10) -> [return: bb5, unwind continue]; // scope 3 at src/main.rs:70:5: 70:29
+    }
+    bb5: {
+        StorageDead(_10);                // scope 3 at src/main.rs:70:28: 70:29
+        StorageDead(_9);                 // scope 3 at src/main.rs:70:29: 70:30
+        StorageLive(_11);                // scope 3 at src/main.rs:71:5: 71:30
+        StorageLive(_12);                // scope 3 at src/main.rs:71:5: 71:6
+        StorageLive(_13);                // scope 3 at src/main.rs:71:5: 71:6
+        _13 = const {alloc4: &Atomic<u32>}; // scope 3 at src/main.rs:71:5: 71:6
+        _12 = &(*_13);                   // scope 3 at src/main.rs:71:5: 71:6
+        StorageLive(_14);                // scope 3 at src/main.rs:71:12: 71:29
+        _14 = std::sync::atomic::Ordering::Relaxed; // scope 3 at src/main.rs:71:12: 71:29
+        _11 = Atomic::<u32>::load(move _12, move _14) -> [return: bb6, unwind continue]; // scope 3 at src/main.rs:71:5: 71:30
+    }
+    bb6: {
+        StorageDead(_14);                // scope 3 at src/main.rs:71:29: 71:30
+        StorageDead(_12);                // scope 3 at src/main.rs:71:29: 71:30
+        StorageLive(_15);                // scope 3 at src/main.rs:71:33: 71:34
+        _15 = copy _8;                   // scope 3 at src/main.rs:71:33: 71:34
+        _16 = AddWithOverflow(copy _11, copy _15); // scope 3 at src/main.rs:71:5: 71:34
+        assert(!move (_16.1: bool), "attempt to compute `{} + {}`, which would overflow", move _11, move _15) -> [success: bb7, unwind continue]; // scope 3 at src/main.rs:71:5: 71:34
+    }
+    bb7: {
+        _0 = move (_16.0: u32);          // scope 3 at src/main.rs:71:5: 71:34
+        StorageDead(_15);                // scope 3 at src/main.rs:71:33: 71:34
+        StorageDead(_13);                // scope 3 at src/main.rs:71:33: 71:34
+        StorageDead(_11);                // scope 3 at src/main.rs:71:33: 71:34
+        StorageDead(_8);                 // scope 2 at src/main.rs:72:1: 72:2
+        StorageDead(_4);                 // scope 1 at src/main.rs:72:1: 72:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:72:1: 72:2
+        return;                          // scope 0 at src/main.rs:72:2: 72:2
+    }
+}
+"""
+
+
+P_KEPT_FRESH = """// MIR for `kept_fresh` after PreCodegen
+
+fn kept_fresh(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:74:15: 74:18
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:74:28: 74:31
+    let _2: u32;                         // in scope 0 at src/main.rs:75:9: 75:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:75:36: 75:39
+    let _4: ();                          // in scope 0 at src/main.rs:76:5: 76:30
+    let mut _5: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:76:14: 76:26
+    let _6: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:76:14: 76:26
+    let mut _7: u32;                     // in scope 0 at src/main.rs:76:28: 76:29
+    let _9: &u32;                        // in scope 0 at src/main.rs:78:5: 78:29
+    let mut _10: &u32;                   // in scope 0 at src/main.rs:78:26: 78:28
+    let mut _11: u32;                    // in scope 0 at src/main.rs:79:5: 79:50
+    let mut _12: &u32;                   // in scope 0 at src/main.rs:79:5: 79:50
+    let mut _13: &std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:79:6: 79:50
+    let _14: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:79:6: 79:50
+    let mut _15: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:79:6: 79:41
+    let mut _16: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:79:6: 79:34
+    let _17: &&std::sync::Mutex<u32>;    // in scope 0 at src/main.rs:79:31: 79:34
+    let mut _18: &std::vec::Vec<&std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:79:6: 79:31
+    let _19: &std::vec::Vec<&std::sync::Mutex<u32>>; // in scope 0 at src/main.rs:79:6: 79:31
+    let mut _20: &std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:79:6: 79:31
+    let _21: std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:79:6: 79:31
+    let mut _22: std::result::Result<std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>, std::sync::PoisonError<std::sync::MutexGuard<'_, std::vec::Vec<&std::sync::Mutex<u32>>>>>; // in scope 0 at src/main.rs:79:6: 79:22
+    let mut _23: &std::sync::Mutex<std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:79:6: 79:15
+    let _24: &std::sync::Mutex<std::vec::Vec<&std::sync::Mutex<u32>>>; // in scope 0 at src/main.rs:79:6: 79:15
+    let mut _25: u32;                    // in scope 0 at src/main.rs:79:53: 79:54
+    let mut _26: (u32, bool);            // in scope 0 at src/main.rs:79:5: 79:54
+    let mut _27: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:79:31: 79:34
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:75:9: 75:10
+        let _8: u32;                     // in scope 1 at src/main.rs:77:9: 77:10
+        scope 2 {
+            debug k => _8;               // in scope 2 at src/main.rs:77:9: 77:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:75:9: 75:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:75:36: 75:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:75:36: 75:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:75:13: 75:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:75:39: 75:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:76:5: 76:30
+        StorageLive(_5);                 // scope 1 at src/main.rs:76:14: 76:26
+        StorageLive(_6);                 // scope 1 at src/main.rs:76:14: 76:26
+        _6 = fresh_kept() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:76:14: 76:26
+    }
+    bb2: {
+        _5 = &(*_6);                     // scope 1 at src/main.rs:76:14: 76:26
+        StorageLive(_7);                 // scope 1 at src/main.rs:76:28: 76:29
+        _7 = copy _2;                    // scope 1 at src/main.rs:76:28: 76:29
+        _4 = lock_set(move _5, move _7) -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:76:5: 76:30
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 1 at src/main.rs:76:29: 76:30
+        StorageDead(_5);                 // scope 1 at src/main.rs:76:29: 76:30
+        StorageDead(_6);                 // scope 1 at src/main.rs:76:30: 76:31
+        StorageDead(_4);                 // scope 1 at src/main.rs:76:30: 76:31
+        StorageLive(_8);                 // scope 1 at src/main.rs:77:9: 77:10
+        _8 = other() -> [return: bb4, unwind continue]; // scope 1 at src/main.rs:77:13: 77:20
+    }
+    bb4: {
+        StorageLive(_9);                 // scope 2 at src/main.rs:78:5: 78:29
+        StorageLive(_10);                // scope 2 at src/main.rs:78:26: 78:28
+        _10 = &_2;                       // scope 2 at src/main.rs:78:26: 78:28
+        _9 = std::hint::black_box::<&u32>(move _10) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:78:5: 78:29
+    }
+    bb5: {
+        StorageDead(_10);                // scope 2 at src/main.rs:78:28: 78:29
+        StorageDead(_9);                 // scope 2 at src/main.rs:78:29: 78:30
+        StorageLive(_11);                // scope 2 at src/main.rs:79:5: 79:50
+        StorageLive(_12);                // scope 2 at src/main.rs:79:5: 79:50
+        StorageLive(_13);                // scope 2 at src/main.rs:79:6: 79:50
+        StorageLive(_14);                // scope 2 at src/main.rs:79:6: 79:50
+        StorageLive(_15);                // scope 2 at src/main.rs:79:6: 79:41
+        StorageLive(_16);                // scope 2 at src/main.rs:79:6: 79:34
+        StorageLive(_17);                // scope 2 at src/main.rs:79:31: 79:34
+        StorageLive(_18);                // scope 2 at src/main.rs:79:6: 79:31
+        StorageLive(_19);                // scope 2 at src/main.rs:79:6: 79:31
+        StorageLive(_20);                // scope 2 at src/main.rs:79:6: 79:31
+        StorageLive(_21);                // scope 2 at src/main.rs:79:6: 79:31
+        StorageLive(_22);                // scope 2 at src/main.rs:79:6: 79:22
+        StorageLive(_23);                // scope 2 at src/main.rs:79:6: 79:15
+        StorageLive(_24);                // scope 2 at src/main.rs:79:6: 79:15
+        _24 = const {alloc26: &std::sync::Mutex<Vec<&std::sync::Mutex<u32>>>}; // scope 2 at src/main.rs:79:6: 79:15
+        _23 = &(*_24);                   // scope 2 at src/main.rs:79:6: 79:15
+        _22 = std::sync::Mutex::<Vec<&std::sync::Mutex<u32>>>::lock(move _23) -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:79:6: 79:22
+    }
+    bb6: {
+        StorageDead(_23);                // scope 2 at src/main.rs:79:21: 79:22
+        _21 = Result::<std::sync::MutexGuard<'_, Vec<&std::sync::Mutex<u32>>>, PoisonError<std::sync::MutexGuard<'_, Vec<&std::sync::Mutex<u32>>>>>::unwrap(move _22) -> [return: bb7, unwind: bb18]; // scope 2 at src/main.rs:79:6: 79:31
+    }
+    bb7: {
+        _20 = &_21;                      // scope 2 at src/main.rs:79:6: 79:31
+        _19 = <std::sync::MutexGuard<'_, Vec<&std::sync::Mutex<u32>>> as Deref>::deref(move _20) -> [return: bb8, unwind: bb17]; // scope 2 at src/main.rs:79:6: 79:31
+    }
+    bb8: {
+        _18 = &(*_19);                   // scope 2 at src/main.rs:79:6: 79:31
+        StorageDead(_22);                // scope 2 at src/main.rs:79:30: 79:31
+        StorageDead(_20);                // scope 2 at src/main.rs:79:30: 79:31
+        _17 = <Vec<&std::sync::Mutex<u32>> as Index<usize>>::index(move _18, const 0_usize) -> [return: bb9, unwind: bb17]; // scope 2 at src/main.rs:79:31: 79:34
+    }
+    bb9: {
+        _27 = copy (*_17);               // scope 2 at src/main.rs:79:6: 79:34
+        _16 = &(*_27);                   // scope 2 at src/main.rs:79:6: 79:34
+        StorageDead(_18);                // scope 2 at src/main.rs:79:33: 79:34
+        _15 = std::sync::Mutex::<u32>::lock(move _16) -> [return: bb10, unwind: bb17]; // scope 2 at src/main.rs:79:6: 79:41
+    }
+    bb10: {
+        StorageDead(_16);                // scope 2 at src/main.rs:79:40: 79:41
+        _14 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _15) -> [return: bb11, unwind: bb17]; // scope 2 at src/main.rs:79:6: 79:50
+    }
+    bb11: {
+        _13 = &_14;                      // scope 2 at src/main.rs:79:6: 79:50
+        StorageDead(_15);                // scope 2 at src/main.rs:79:49: 79:50
+        _12 = <std::sync::MutexGuard<'_, u32> as Deref>::deref(move _13) -> [return: bb12, unwind: bb16]; // scope 2 at src/main.rs:79:5: 79:50
+    }
+    bb12: {
+        _11 = copy (*_12);               // scope 2 at src/main.rs:79:5: 79:50
+        StorageDead(_13);                // scope 2 at src/main.rs:79:49: 79:50
+        StorageLive(_25);                // scope 2 at src/main.rs:79:53: 79:54
+        _25 = copy _8;                   // scope 2 at src/main.rs:79:53: 79:54
+        _26 = AddWithOverflow(copy _11, copy _25); // scope 2 at src/main.rs:79:5: 79:54
+        assert(!move (_26.1: bool), "attempt to compute `{} + {}`, which would overflow", move _11, move _25) -> [success: bb13, unwind: bb16]; // scope 2 at src/main.rs:79:5: 79:54
+    }
+    bb13: {
+        _0 = move (_26.0: u32);          // scope 2 at src/main.rs:79:5: 79:54
+        StorageDead(_25);                // scope 2 at src/main.rs:79:53: 79:54
+        drop(_14) -> [return: bb14, unwind: bb17]; // scope 2 at src/main.rs:79:53: 79:54
+    }
+    bb14: {
+        drop(_21) -> [return: bb15, unwind: bb18]; // scope 2 at src/main.rs:79:53: 79:54
+    }
+    bb15: {
+        StorageDead(_24);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_21);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_19);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_17);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_14);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_12);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_11);                // scope 2 at src/main.rs:79:53: 79:54
+        StorageDead(_8);                 // scope 1 at src/main.rs:80:1: 80:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:80:1: 80:2
+        return;                          // scope 0 at src/main.rs:80:2: 80:2
+    }
+    bb16 (cleanup): {
+        drop(_14) -> [return: bb17, unwind terminate(cleanup)]; // scope 2 at src/main.rs:79:53: 79:54
+    }
+    bb17 (cleanup): {
+        drop(_21) -> [return: bb18, unwind terminate(cleanup)]; // scope 2 at src/main.rs:79:53: 79:54
+    }
+    bb18 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:74:1: 80:2
+    }
+}
+"""
+
+
+P_SLOTTED = """// MIR for `slotted` after PreCodegen
+
+fn slotted(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:100:12: 100:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:100:25: 100:28
+    let _2: u32;                         // in scope 0 at src/main.rs:101:9: 101:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:101:36: 101:39
+    let _4: ();                          // in scope 0 at src/main.rs:102:5: 102:24
+    let mut _5: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:102:14: 102:20
+    let _6: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:102:14: 102:20
+    let mut _7: u32;                     // in scope 0 at src/main.rs:102:22: 102:23
+    let _9: &u32;                        // in scope 0 at src/main.rs:104:5: 104:29
+    let mut _10: &u32;                   // in scope 0 at src/main.rs:104:26: 104:28
+    let mut _11: u32;                    // in scope 0 at src/main.rs:105:5: 105:23
+    let mut _12: &u32;                   // in scope 0 at src/main.rs:105:5: 105:23
+    let mut _13: &std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:105:6: 105:23
+    let _14: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:105:6: 105:23
+    let mut _15: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:105:6: 105:14
+    let mut _16: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:105:6: 105:7
+    let _17: &std::sync::Mutex<u32>;     // in scope 0 at src/main.rs:105:6: 105:7
+    let mut _18: u32;                    // in scope 0 at src/main.rs:105:26: 105:27
+    let mut _19: (u32, bool);            // in scope 0 at src/main.rs:105:5: 105:27
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:101:9: 101:10
+        let _8: u32;                     // in scope 1 at src/main.rs:103:9: 103:10
+        scope 2 {
+            debug k => _8;               // in scope 2 at src/main.rs:103:9: 103:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:101:9: 101:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:101:36: 101:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:101:36: 101:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:101:13: 101:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:101:39: 101:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:102:5: 102:24
+        StorageLive(_5);                 // scope 1 at src/main.rs:102:14: 102:20
+        StorageLive(_6);                 // scope 1 at src/main.rs:102:14: 102:20
+        _6 = slot() -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:102:14: 102:20
+    }
+    bb2: {
+        _5 = &(*_6);                     // scope 1 at src/main.rs:102:14: 102:20
+        StorageLive(_7);                 // scope 1 at src/main.rs:102:22: 102:23
+        _7 = copy _2;                    // scope 1 at src/main.rs:102:22: 102:23
+        _4 = lock_set(move _5, move _7) -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:102:5: 102:24
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 1 at src/main.rs:102:23: 102:24
+        StorageDead(_5);                 // scope 1 at src/main.rs:102:23: 102:24
+        StorageDead(_6);                 // scope 1 at src/main.rs:102:24: 102:25
+        StorageDead(_4);                 // scope 1 at src/main.rs:102:24: 102:25
+        StorageLive(_8);                 // scope 1 at src/main.rs:103:9: 103:10
+        _8 = other() -> [return: bb4, unwind continue]; // scope 1 at src/main.rs:103:13: 103:20
+    }
+    bb4: {
+        StorageLive(_9);                 // scope 2 at src/main.rs:104:5: 104:29
+        StorageLive(_10);                // scope 2 at src/main.rs:104:26: 104:28
+        _10 = &_2;                       // scope 2 at src/main.rs:104:26: 104:28
+        _9 = std::hint::black_box::<&u32>(move _10) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:104:5: 104:29
+    }
+    bb5: {
+        StorageDead(_10);                // scope 2 at src/main.rs:104:28: 104:29
+        StorageDead(_9);                 // scope 2 at src/main.rs:104:29: 104:30
+        StorageLive(_11);                // scope 2 at src/main.rs:105:5: 105:23
+        StorageLive(_12);                // scope 2 at src/main.rs:105:5: 105:23
+        StorageLive(_13);                // scope 2 at src/main.rs:105:6: 105:23
+        StorageLive(_14);                // scope 2 at src/main.rs:105:6: 105:23
+        StorageLive(_15);                // scope 2 at src/main.rs:105:6: 105:14
+        StorageLive(_16);                // scope 2 at src/main.rs:105:6: 105:7
+        StorageLive(_17);                // scope 2 at src/main.rs:105:6: 105:7
+        _17 = const {alloc10: &std::sync::Mutex<u32>}; // scope 2 at src/main.rs:105:6: 105:7
+        _16 = &(*_17);                   // scope 2 at src/main.rs:105:6: 105:7
+        _15 = std::sync::Mutex::<u32>::lock(move _16) -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:105:6: 105:14
+    }
+    bb6: {
+        StorageDead(_16);                // scope 2 at src/main.rs:105:13: 105:14
+        _14 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _15) -> [return: bb7, unwind: bb12]; // scope 2 at src/main.rs:105:6: 105:23
+    }
+    bb7: {
+        _13 = &_14;                      // scope 2 at src/main.rs:105:6: 105:23
+        StorageDead(_15);                // scope 2 at src/main.rs:105:22: 105:23
+        _12 = <std::sync::MutexGuard<'_, u32> as Deref>::deref(move _13) -> [return: bb8, unwind: bb11]; // scope 2 at src/main.rs:105:5: 105:23
+    }
+    bb8: {
+        _11 = copy (*_12);               // scope 2 at src/main.rs:105:5: 105:23
+        StorageDead(_13);                // scope 2 at src/main.rs:105:22: 105:23
+        StorageLive(_18);                // scope 2 at src/main.rs:105:26: 105:27
+        _18 = copy _8;                   // scope 2 at src/main.rs:105:26: 105:27
+        _19 = AddWithOverflow(copy _11, copy _18); // scope 2 at src/main.rs:105:5: 105:27
+        assert(!move (_19.1: bool), "attempt to compute `{} + {}`, which would overflow", move _11, move _18) -> [success: bb9, unwind: bb11]; // scope 2 at src/main.rs:105:5: 105:27
+    }
+    bb9: {
+        _0 = move (_19.0: u32);          // scope 2 at src/main.rs:105:5: 105:27
+        StorageDead(_18);                // scope 2 at src/main.rs:105:26: 105:27
+        drop(_14) -> [return: bb10, unwind: bb12]; // scope 2 at src/main.rs:105:26: 105:27
+    }
+    bb10: {
+        StorageDead(_17);                // scope 2 at src/main.rs:105:26: 105:27
+        StorageDead(_14);                // scope 2 at src/main.rs:105:26: 105:27
+        StorageDead(_12);                // scope 2 at src/main.rs:105:26: 105:27
+        StorageDead(_11);                // scope 2 at src/main.rs:105:26: 105:27
+        StorageDead(_8);                 // scope 1 at src/main.rs:106:1: 106:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:106:1: 106:2
+        return;                          // scope 0 at src/main.rs:106:2: 106:2
+    }
+    bb11 (cleanup): {
+        drop(_14) -> [return: bb12, unwind terminate(cleanup)]; // scope 2 at src/main.rs:105:26: 105:27
+    }
+    bb12 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:100:1: 106:2
+    }
+}
+"""
+
+
+P_CLEANED = """// MIR for `cleaned` after PreCodegen
+
+fn cleaned(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:108:12: 108:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:108:25: 108:28
+    let _2: u32;                         // in scope 0 at src/main.rs:109:9: 109:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:109:36: 109:39
+    let _4: ();                          // in scope 0 at src/main.rs:110:5: 110:19
+    let mut _5: u32;                     // in scope 0 at src/main.rs:110:17: 110:18
+    let _6: ();                          // in scope 0 at src/main.rs:111:5: 111:26
+    let mut _7: &clean::Wrap;            // in scope 0 at src/main.rs:111:5: 111:19
+    let _8: clean::Wrap;                 // in scope 0 at src/main.rs:111:5: 111:19
+    let mut _9: u32;                     // in scope 0 at src/main.rs:111:17: 111:18
+    let _11: &u32;                       // in scope 0 at src/main.rs:113:5: 113:29
+    let mut _12: &u32;                   // in scope 0 at src/main.rs:113:26: 113:28
+    let mut _13: u32;                    // in scope 0 at src/main.rs:114:5: 114:30
+    let mut _14: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:114:5: 114:6
+    let _15: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:114:5: 114:6
+    let mut _16: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:114:12: 114:29
+    let mut _17: u32;                    // in scope 0 at src/main.rs:114:33: 114:34
+    let mut _18: (u32, bool);            // in scope 0 at src/main.rs:114:5: 114:34
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:109:9: 109:10
+        let _10: u32;                    // in scope 1 at src/main.rs:112:9: 112:10
+        scope 2 {
+            debug k => _10;              // in scope 2 at src/main.rs:112:9: 112:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:109:9: 109:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:109:36: 109:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:109:36: 109:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:109:13: 109:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:109:39: 109:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:110:5: 110:19
+        StorageLive(_5);                 // scope 1 at src/main.rs:110:17: 110:18
+        _5 = copy _2;                    // scope 1 at src/main.rs:110:17: 110:18
+        _4 = clean::note(move _5) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:110:5: 110:19
+    }
+    bb2: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:110:18: 110:19
+        StorageDead(_4);                 // scope 1 at src/main.rs:110:19: 110:20
+        StorageLive(_6);                 // scope 1 at src/main.rs:111:5: 111:26
+        StorageLive(_7);                 // scope 1 at src/main.rs:111:5: 111:19
+        StorageLive(_8);                 // scope 1 at src/main.rs:111:5: 111:19
+        StorageLive(_9);                 // scope 1 at src/main.rs:111:17: 111:18
+        _9 = copy _2;                    // scope 1 at src/main.rs:111:17: 111:18
+        _8 = clean::Wrap(move _9);       // scope 1 at src/main.rs:111:5: 111:19
+        _7 = &_8;                        // scope 1 at src/main.rs:111:5: 111:19
+        StorageDead(_9);                 // scope 1 at src/main.rs:111:18: 111:19
+        _6 = clean::Wrap::keep(move _7) -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:111:5: 111:26
+    }
+    bb3: {
+        StorageDead(_7);                 // scope 1 at src/main.rs:111:25: 111:26
+        StorageDead(_8);                 // scope 1 at src/main.rs:111:26: 111:27
+        StorageDead(_6);                 // scope 1 at src/main.rs:111:26: 111:27
+        StorageLive(_10);                // scope 1 at src/main.rs:112:9: 112:10
+        _10 = other() -> [return: bb4, unwind continue]; // scope 1 at src/main.rs:112:13: 112:20
+    }
+    bb4: {
+        StorageLive(_11);                // scope 2 at src/main.rs:113:5: 113:29
+        StorageLive(_12);                // scope 2 at src/main.rs:113:26: 113:28
+        _12 = &_2;                       // scope 2 at src/main.rs:113:26: 113:28
+        _11 = std::hint::black_box::<&u32>(move _12) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:113:5: 113:29
+    }
+    bb5: {
+        StorageDead(_12);                // scope 2 at src/main.rs:113:28: 113:29
+        StorageDead(_11);                // scope 2 at src/main.rs:113:29: 113:30
+        StorageLive(_13);                // scope 2 at src/main.rs:114:5: 114:30
+        StorageLive(_14);                // scope 2 at src/main.rs:114:5: 114:6
+        StorageLive(_15);                // scope 2 at src/main.rs:114:5: 114:6
+        _15 = const {alloc4: &Atomic<u32>}; // scope 2 at src/main.rs:114:5: 114:6
+        _14 = &(*_15);                   // scope 2 at src/main.rs:114:5: 114:6
+        StorageLive(_16);                // scope 2 at src/main.rs:114:12: 114:29
+        _16 = std::sync::atomic::Ordering::Relaxed; // scope 2 at src/main.rs:114:12: 114:29
+        _13 = Atomic::<u32>::load(move _14, move _16) -> [return: bb6, unwind continue]; // scope 2 at src/main.rs:114:5: 114:30
+    }
+    bb6: {
+        StorageDead(_16);                // scope 2 at src/main.rs:114:29: 114:30
+        StorageDead(_14);                // scope 2 at src/main.rs:114:29: 114:30
+        StorageLive(_17);                // scope 2 at src/main.rs:114:33: 114:34
+        _17 = copy _10;                  // scope 2 at src/main.rs:114:33: 114:34
+        _18 = AddWithOverflow(copy _13, copy _17); // scope 2 at src/main.rs:114:5: 114:34
+        assert(!move (_18.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _17) -> [success: bb7, unwind continue]; // scope 2 at src/main.rs:114:5: 114:34
+    }
+    bb7: {
+        _0 = move (_18.0: u32);          // scope 2 at src/main.rs:114:5: 114:34
+        StorageDead(_17);                // scope 2 at src/main.rs:114:33: 114:34
+        StorageDead(_15);                // scope 2 at src/main.rs:114:33: 114:34
+        StorageDead(_13);                // scope 2 at src/main.rs:114:33: 114:34
+        StorageDead(_10);                // scope 1 at src/main.rs:115:1: 115:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:115:1: 115:2
+        return;                          // scope 0 at src/main.rs:115:2: 115:2
+    }
+}
+"""
+
+
+P_DIRTIED = """// MIR for `dirtied` after PreCodegen
+
+fn dirtied(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:117:12: 117:15
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:117:25: 117:28
+    let _2: u32;                         // in scope 0 at src/main.rs:118:9: 118:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:118:36: 118:39
+    let _4: ();                          // in scope 0 at src/main.rs:119:5: 119:19
+    let mut _5: u32;                     // in scope 0 at src/main.rs:119:17: 119:18
+    let _7: &u32;                        // in scope 0 at src/main.rs:121:5: 121:29
+    let mut _8: &u32;                    // in scope 0 at src/main.rs:121:26: 121:28
+    let mut _9: u32;                     // in scope 0 at src/main.rs:122:5: 122:30
+    let mut _10: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:122:5: 122:6
+    let _11: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:122:5: 122:6
+    let mut _12: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:122:12: 122:29
+    let mut _13: u32;                    // in scope 0 at src/main.rs:122:33: 122:34
+    let mut _14: (u32, bool);            // in scope 0 at src/main.rs:122:5: 122:34
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:118:9: 118:10
+        let _6: u32;                     // in scope 1 at src/main.rs:120:9: 120:10
+        scope 2 {
+            debug k => _6;               // in scope 2 at src/main.rs:120:9: 120:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:118:9: 118:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:118:36: 118:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:118:36: 118:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:118:13: 118:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:118:39: 118:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:119:5: 119:19
+        StorageLive(_5);                 // scope 1 at src/main.rs:119:17: 119:18
+        _5 = copy _2;                    // scope 1 at src/main.rs:119:17: 119:18
+        _4 = dirty::note(move _5) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:119:5: 119:19
+    }
+    bb2: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:119:18: 119:19
+        StorageDead(_4);                 // scope 1 at src/main.rs:119:19: 119:20
+        StorageLive(_6);                 // scope 1 at src/main.rs:120:9: 120:10
+        _6 = other() -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:120:13: 120:20
+    }
+    bb3: {
+        StorageLive(_7);                 // scope 2 at src/main.rs:121:5: 121:29
+        StorageLive(_8);                 // scope 2 at src/main.rs:121:26: 121:28
+        _8 = &_2;                        // scope 2 at src/main.rs:121:26: 121:28
+        _7 = std::hint::black_box::<&u32>(move _8) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:121:5: 121:29
+    }
+    bb4: {
+        StorageDead(_8);                 // scope 2 at src/main.rs:121:28: 121:29
+        StorageDead(_7);                 // scope 2 at src/main.rs:121:29: 121:30
+        StorageLive(_9);                 // scope 2 at src/main.rs:122:5: 122:30
+        StorageLive(_10);                // scope 2 at src/main.rs:122:5: 122:6
+        StorageLive(_11);                // scope 2 at src/main.rs:122:5: 122:6
+        _11 = const {alloc4: &Atomic<u32>}; // scope 2 at src/main.rs:122:5: 122:6
+        _10 = &(*_11);                   // scope 2 at src/main.rs:122:5: 122:6
+        StorageLive(_12);                // scope 2 at src/main.rs:122:12: 122:29
+        _12 = std::sync::atomic::Ordering::Relaxed; // scope 2 at src/main.rs:122:12: 122:29
+        _9 = Atomic::<u32>::load(move _10, move _12) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:122:5: 122:30
+    }
+    bb5: {
+        StorageDead(_12);                // scope 2 at src/main.rs:122:29: 122:30
+        StorageDead(_10);                // scope 2 at src/main.rs:122:29: 122:30
+        StorageLive(_13);                // scope 2 at src/main.rs:122:33: 122:34
+        _13 = copy _6;                   // scope 2 at src/main.rs:122:33: 122:34
+        _14 = AddWithOverflow(copy _9, copy _13); // scope 2 at src/main.rs:122:5: 122:34
+        assert(!move (_14.1: bool), "attempt to compute `{} + {}`, which would overflow", move _9, move _13) -> [success: bb6, unwind continue]; // scope 2 at src/main.rs:122:5: 122:34
+    }
+    bb6: {
+        _0 = move (_14.0: u32);          // scope 2 at src/main.rs:122:5: 122:34
+        StorageDead(_13);                // scope 2 at src/main.rs:122:33: 122:34
+        StorageDead(_11);                // scope 2 at src/main.rs:122:33: 122:34
+        StorageDead(_9);                 // scope 2 at src/main.rs:122:33: 122:34
+        StorageDead(_6);                 // scope 1 at src/main.rs:123:1: 123:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:123:1: 123:2
+        return;                          // scope 0 at src/main.rs:123:2: 123:2
+    }
+}
+"""
+
+
+P_KEPT = """// MIR for `kept` after PreCodegen
+
+fn kept(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:125:9: 125:12
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:125:22: 125:25
+    let _2: u32;                         // in scope 0 at src/main.rs:126:9: 126:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:126:36: 126:39
+    let _4: ();                          // in scope 0 at src/main.rs:127:5: 127:26
+    let mut _5: &dirty::Wrap;            // in scope 0 at src/main.rs:127:5: 127:19
+    let _6: dirty::Wrap;                 // in scope 0 at src/main.rs:127:5: 127:19
+    let mut _7: u32;                     // in scope 0 at src/main.rs:127:17: 127:18
+    let _9: &u32;                        // in scope 0 at src/main.rs:129:5: 129:29
+    let mut _10: &u32;                   // in scope 0 at src/main.rs:129:26: 129:28
+    let mut _11: u32;                    // in scope 0 at src/main.rs:130:5: 130:30
+    let mut _12: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:130:5: 130:6
+    let _13: &std::sync::atomic::Atomic<u32>; // in scope 0 at src/main.rs:130:5: 130:6
+    let mut _14: std::sync::atomic::Ordering; // in scope 0 at src/main.rs:130:12: 130:29
+    let mut _15: u32;                    // in scope 0 at src/main.rs:130:33: 130:34
+    let mut _16: (u32, bool);            // in scope 0 at src/main.rs:130:5: 130:34
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:126:9: 126:10
+        let _8: u32;                     // in scope 1 at src/main.rs:128:9: 128:10
+        scope 2 {
+            debug k => _8;               // in scope 2 at src/main.rs:128:9: 128:10
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:126:9: 126:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:126:36: 126:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:126:36: 126:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:126:13: 126:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:126:39: 126:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:127:5: 127:26
+        StorageLive(_5);                 // scope 1 at src/main.rs:127:5: 127:19
+        StorageLive(_6);                 // scope 1 at src/main.rs:127:5: 127:19
+        StorageLive(_7);                 // scope 1 at src/main.rs:127:17: 127:18
+        _7 = copy _2;                    // scope 1 at src/main.rs:127:17: 127:18
+        _6 = dirty::Wrap(move _7);       // scope 1 at src/main.rs:127:5: 127:19
+        _5 = &_6;                        // scope 1 at src/main.rs:127:5: 127:19
+        StorageDead(_7);                 // scope 1 at src/main.rs:127:18: 127:19
+        _4 = dirty::Wrap::keep(move _5) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:127:5: 127:26
+    }
+    bb2: {
+        StorageDead(_5);                 // scope 1 at src/main.rs:127:25: 127:26
+        StorageDead(_6);                 // scope 1 at src/main.rs:127:26: 127:27
+        StorageDead(_4);                 // scope 1 at src/main.rs:127:26: 127:27
+        StorageLive(_8);                 // scope 1 at src/main.rs:128:9: 128:10
+        _8 = other() -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:128:13: 128:20
+    }
+    bb3: {
+        StorageLive(_9);                 // scope 2 at src/main.rs:129:5: 129:29
+        StorageLive(_10);                // scope 2 at src/main.rs:129:26: 129:28
+        _10 = &_2;                       // scope 2 at src/main.rs:129:26: 129:28
+        _9 = std::hint::black_box::<&u32>(move _10) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:129:5: 129:29
+    }
+    bb4: {
+        StorageDead(_10);                // scope 2 at src/main.rs:129:28: 129:29
+        StorageDead(_9);                 // scope 2 at src/main.rs:129:29: 129:30
+        StorageLive(_11);                // scope 2 at src/main.rs:130:5: 130:30
+        StorageLive(_12);                // scope 2 at src/main.rs:130:5: 130:6
+        StorageLive(_13);                // scope 2 at src/main.rs:130:5: 130:6
+        _13 = const {alloc4: &Atomic<u32>}; // scope 2 at src/main.rs:130:5: 130:6
+        _12 = &(*_13);                   // scope 2 at src/main.rs:130:5: 130:6
+        StorageLive(_14);                // scope 2 at src/main.rs:130:12: 130:29
+        _14 = std::sync::atomic::Ordering::Relaxed; // scope 2 at src/main.rs:130:12: 130:29
+        _11 = Atomic::<u32>::load(move _12, move _14) -> [return: bb5, unwind continue]; // scope 2 at src/main.rs:130:5: 130:30
+    }
+    bb5: {
+        StorageDead(_14);                // scope 2 at src/main.rs:130:29: 130:30
+        StorageDead(_12);                // scope 2 at src/main.rs:130:29: 130:30
+        StorageLive(_15);                // scope 2 at src/main.rs:130:33: 130:34
+        _15 = copy _8;                   // scope 2 at src/main.rs:130:33: 130:34
+        _16 = AddWithOverflow(copy _11, copy _15); // scope 2 at src/main.rs:130:5: 130:34
+        assert(!move (_16.1: bool), "attempt to compute `{} + {}`, which would overflow", move _11, move _15) -> [success: bb6, unwind continue]; // scope 2 at src/main.rs:130:5: 130:34
+    }
+    bb6: {
+        _0 = move (_16.0: u32);          // scope 2 at src/main.rs:130:5: 130:34
+        StorageDead(_15);                // scope 2 at src/main.rs:130:33: 130:34
+        StorageDead(_13);                // scope 2 at src/main.rs:130:33: 130:34
+        StorageDead(_11);                // scope 2 at src/main.rs:130:33: 130:34
+        StorageDead(_8);                 // scope 1 at src/main.rs:131:1: 131:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:131:1: 131:2
+        return;                          // scope 0 at src/main.rs:131:2: 131:2
+    }
+}
+"""
+
+
+P_UNRELATED = """// MIR for `unrelated` after PreCodegen
+
+fn unrelated(_1: u32) -> u32 {
+    debug arg => _1;                     // in scope 0 at src/main.rs:82:14: 82:17
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:82:27: 82:30
+    let _2: u32;                         // in scope 0 at src/main.rs:83:9: 83:10
+    let mut _3: u32;                     // in scope 0 at src/main.rs:83:36: 83:39
+    let _4: ();                          // in scope 0 at src/main.rs:84:5: 84:20
+    let mut _5: &std::sync::Mutex<u32>;  // in scope 0 at src/main.rs:84:14: 84:16
+    let _6: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:84:14: 84:16
+    let _7: &std::sync::Mutex<u32>;      // in scope 0 at src/main.rs:84:15: 84:16
+    let mut _8: u32;                     // in scope 0 at src/main.rs:84:18: 84:19
+    let _10: &u32;                       // in scope 0 at src/main.rs:86:5: 86:29
+    let mut _11: &u32;                   // in scope 0 at src/main.rs:86:26: 86:28
+    let mut _13: u32;                    // in scope 0 at src/main.rs:87:13: 87:14
+    let mut _14: u32;                    // in scope 0 at src/main.rs:87:17: 87:18
+    let mut _15: (u32, bool);            // in scope 0 at src/main.rs:87:13: 87:18
+    let _16: &u32;                       // in scope 0 at src/main.rs:88:5: 88:29
+    let mut _17: &u32;                   // in scope 0 at src/main.rs:88:26: 88:28
+    let mut _18: u32;                    // in scope 0 at src/main.rs:89:5: 89:23
+    let mut _19: &u32;                   // in scope 0 at src/main.rs:89:5: 89:23
+    let mut _20: &std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:89:6: 89:23
+    let _21: std::sync::MutexGuard<'_, u32>; // in scope 0 at src/main.rs:89:6: 89:23
+    let mut _22: std::result::Result<std::sync::MutexGuard<'_, u32>, std::sync::PoisonError<std::sync::MutexGuard<'_, u32>>>; // in scope 0 at src/main.rs:89:6: 89:14
+    let mut _23: &std::sync::Mutex<u32>; // in scope 0 at src/main.rs:89:6: 89:7
+    let _24: &std::sync::Mutex<u32>;     // in scope 0 at src/main.rs:89:6: 89:7
+    let mut _25: u32;                    // in scope 0 at src/main.rs:89:26: 89:27
+    let mut _26: (u32, bool);            // in scope 0 at src/main.rs:89:5: 89:27
+    scope 1 {
+        debug x => _2;                   // in scope 1 at src/main.rs:83:9: 83:10
+        let _9: u32;                     // in scope 1 at src/main.rs:85:9: 85:10
+        scope 2 {
+            debug k => _9;               // in scope 2 at src/main.rs:85:9: 85:10
+            let _12: u32;                // in scope 2 at src/main.rs:87:9: 87:10
+            scope 3 {
+                debug y => _12;          // in scope 3 at src/main.rs:87:9: 87:10
+            }
+        }
+    }
+    bb0: {
+        StorageLive(_2);                 // scope 0 at src/main.rs:83:9: 83:10
+        StorageLive(_3);                 // scope 0 at src/main.rs:83:36: 83:39
+        _3 = copy _1;                    // scope 0 at src/main.rs:83:36: 83:39
+        _2 = identity::<u32>(move _3) -> [return: bb1, unwind continue]; // scope 0 at src/main.rs:83:13: 83:40
+    }
+    bb1: {
+        StorageDead(_3);                 // scope 0 at src/main.rs:83:39: 83:40
+        StorageLive(_4);                 // scope 1 at src/main.rs:84:5: 84:20
+        StorageLive(_5);                 // scope 1 at src/main.rs:84:14: 84:16
+        StorageLive(_6);                 // scope 1 at src/main.rs:84:14: 84:16
+        StorageLive(_7);                 // scope 1 at src/main.rs:84:15: 84:16
+        _7 = const {alloc10: &std::sync::Mutex<u32>}; // scope 1 at src/main.rs:84:15: 84:16
+        _6 = &(*_7);                     // scope 1 at src/main.rs:84:14: 84:16
+        _5 = &(*_6);                     // scope 1 at src/main.rs:84:14: 84:16
+        StorageLive(_8);                 // scope 1 at src/main.rs:84:18: 84:19
+        _8 = copy _2;                    // scope 1 at src/main.rs:84:18: 84:19
+        _4 = lock_set(move _5, move _8) -> [return: bb2, unwind continue]; // scope 1 at src/main.rs:84:5: 84:20
+    }
+    bb2: {
+        StorageDead(_8);                 // scope 1 at src/main.rs:84:19: 84:20
+        StorageDead(_5);                 // scope 1 at src/main.rs:84:19: 84:20
+        StorageDead(_7);                 // scope 1 at src/main.rs:84:20: 84:21
+        StorageDead(_6);                 // scope 1 at src/main.rs:84:20: 84:21
+        StorageDead(_4);                 // scope 1 at src/main.rs:84:20: 84:21
+        StorageLive(_9);                 // scope 1 at src/main.rs:85:9: 85:10
+        _9 = other() -> [return: bb3, unwind continue]; // scope 1 at src/main.rs:85:13: 85:20
+    }
+    bb3: {
+        StorageLive(_10);                // scope 2 at src/main.rs:86:5: 86:29
+        StorageLive(_11);                // scope 2 at src/main.rs:86:26: 86:28
+        _11 = &_2;                       // scope 2 at src/main.rs:86:26: 86:28
+        _10 = std::hint::black_box::<&u32>(move _11) -> [return: bb4, unwind continue]; // scope 2 at src/main.rs:86:5: 86:29
+    }
+    bb4: {
+        StorageDead(_11);                // scope 2 at src/main.rs:86:28: 86:29
+        StorageDead(_10);                // scope 2 at src/main.rs:86:29: 86:30
+        StorageLive(_12);                // scope 2 at src/main.rs:87:9: 87:10
+        StorageLive(_13);                // scope 2 at src/main.rs:87:13: 87:14
+        _13 = copy _2;                   // scope 2 at src/main.rs:87:13: 87:14
+        StorageLive(_14);                // scope 2 at src/main.rs:87:17: 87:18
+        _14 = copy _9;                   // scope 2 at src/main.rs:87:17: 87:18
+        _15 = AddWithOverflow(copy _13, copy _14); // scope 2 at src/main.rs:87:13: 87:18
+        assert(!move (_15.1: bool), "attempt to compute `{} + {}`, which would overflow", move _13, move _14) -> [success: bb5, unwind continue]; // scope 2 at src/main.rs:87:13: 87:18
+    }
+    bb5: {
+        _12 = move (_15.0: u32);         // scope 2 at src/main.rs:87:13: 87:18
+        StorageDead(_14);                // scope 2 at src/main.rs:87:17: 87:18
+        StorageDead(_13);                // scope 2 at src/main.rs:87:17: 87:18
+        StorageLive(_16);                // scope 3 at src/main.rs:88:5: 88:29
+        StorageLive(_17);                // scope 3 at src/main.rs:88:26: 88:28
+        _17 = &_12;                      // scope 3 at src/main.rs:88:26: 88:28
+        _16 = std::hint::black_box::<&u32>(move _17) -> [return: bb6, unwind continue]; // scope 3 at src/main.rs:88:5: 88:29
+    }
+    bb6: {
+        StorageDead(_17);                // scope 3 at src/main.rs:88:28: 88:29
+        StorageDead(_16);                // scope 3 at src/main.rs:88:29: 88:30
+        StorageLive(_18);                // scope 3 at src/main.rs:89:5: 89:23
+        StorageLive(_19);                // scope 3 at src/main.rs:89:5: 89:23
+        StorageLive(_20);                // scope 3 at src/main.rs:89:6: 89:23
+        StorageLive(_21);                // scope 3 at src/main.rs:89:6: 89:23
+        StorageLive(_22);                // scope 3 at src/main.rs:89:6: 89:14
+        StorageLive(_23);                // scope 3 at src/main.rs:89:6: 89:7
+        StorageLive(_24);                // scope 3 at src/main.rs:89:6: 89:7
+        _24 = const {alloc10: &std::sync::Mutex<u32>}; // scope 3 at src/main.rs:89:6: 89:7
+        _23 = &(*_24);                   // scope 3 at src/main.rs:89:6: 89:7
+        _22 = std::sync::Mutex::<u32>::lock(move _23) -> [return: bb7, unwind continue]; // scope 3 at src/main.rs:89:6: 89:14
+    }
+    bb7: {
+        StorageDead(_23);                // scope 3 at src/main.rs:89:13: 89:14
+        _21 = Result::<std::sync::MutexGuard<'_, u32>, PoisonError<std::sync::MutexGuard<'_, u32>>>::unwrap(move _22) -> [return: bb8, unwind: bb13]; // scope 3 at src/main.rs:89:6: 89:23
+    }
+    bb8: {
+        _20 = &_21;                      // scope 3 at src/main.rs:89:6: 89:23
+        StorageDead(_22);                // scope 3 at src/main.rs:89:22: 89:23
+        _19 = <std::sync::MutexGuard<'_, u32> as Deref>::deref(move _20) -> [return: bb9, unwind: bb12]; // scope 3 at src/main.rs:89:5: 89:23
+    }
+    bb9: {
+        _18 = copy (*_19);               // scope 3 at src/main.rs:89:5: 89:23
+        StorageDead(_20);                // scope 3 at src/main.rs:89:22: 89:23
+        StorageLive(_25);                // scope 3 at src/main.rs:89:26: 89:27
+        _25 = copy _12;                  // scope 3 at src/main.rs:89:26: 89:27
+        _26 = AddWithOverflow(copy _18, copy _25); // scope 3 at src/main.rs:89:5: 89:27
+        assert(!move (_26.1: bool), "attempt to compute `{} + {}`, which would overflow", move _18, move _25) -> [success: bb10, unwind: bb12]; // scope 3 at src/main.rs:89:5: 89:27
+    }
+    bb10: {
+        _0 = move (_26.0: u32);          // scope 3 at src/main.rs:89:5: 89:27
+        StorageDead(_25);                // scope 3 at src/main.rs:89:26: 89:27
+        drop(_21) -> [return: bb11, unwind: bb13]; // scope 3 at src/main.rs:89:26: 89:27
+    }
+    bb11: {
+        StorageDead(_24);                // scope 3 at src/main.rs:89:26: 89:27
+        StorageDead(_21);                // scope 3 at src/main.rs:89:26: 89:27
+        StorageDead(_19);                // scope 3 at src/main.rs:89:26: 89:27
+        StorageDead(_18);                // scope 3 at src/main.rs:89:26: 89:27
+        StorageDead(_12);                // scope 2 at src/main.rs:90:1: 90:2
+        StorageDead(_9);                 // scope 1 at src/main.rs:90:1: 90:2
+        StorageDead(_2);                 // scope 0 at src/main.rs:90:1: 90:2
+        return;                          // scope 0 at src/main.rs:90:2: 90:2
+    }
+    bb12 (cleanup): {
+        drop(_21) -> [return: bb13, unwind terminate(cleanup)]; // scope 3 at src/main.rs:89:26: 89:27
+    }
+    bb13 (cleanup): {
+        resume;                          // scope 0 at src/main.rs:82:1: 90:2
+    }
+}
+"""
+
+PATHS = tuple(each for name, each in sorted(globals().items()) if name.startswith("P_"))
+PATHS_LAYOUTS = {
+    **{
+        name: CrateType(payloads=frozenset(), parts=frozenset({("prim", "u32")}))
+        for name in ("clean::Wrap", "dirty::Wrap", "::Wrap")
+    },
+}
+MUTEX = "&std::sync::Mutex<u32>"
+
+
+def paths_why(text, name, line):
+    return why(text, name, line, first_at(text, line), "x", PATHS, (), PATHS_SOURCE, PATHS_LAYOUTS)
+
+
+def paths_state():
+    return owned_of(
+        P_FRESHLY, "freshly", first_at(P_FRESHLY, 95), PATHS, (), PATHS_SOURCE, PATHS_LAYOUTS
+    )._globals()
+
+
+def test_a_pointer_a_call_returns_is_global_state_only_where_the_call_may_return_one():
+    # `fresh()` returns a leaked `Box`, which nothing else reaches: `lock_set(fresh(), x)`, or
+    # `lock_set(r, x)` after `let r = fresh();`, keeps no copy the program goes on with, though
+    # `other()` reads the static `FLAG` after. Each was refused.
+    assert paths_why(P_FRESHLY, "freshly", 95) == (None, None)
+    assert paths_why(P_NAMED_FRESH, "named_fresh", 69) == (None, None)
+    # `slot()` returns `&S`; `fresh_kept()` keeps what it returns in `KEPT_PTRS`.
+    assert paths_why(P_SLOTTED, "slotted", 103)[0].startswith(
+        "a static or thread-local may hold a copy of it (from line 102)"
+    )
+    assert paths_why(P_KEPT_FRESH, "kept_fresh", 77)[0].startswith(
+        "a static or thread-local may hold state derived from it (from line 76)"
+    )
+    returns = paths_state().returns
+    assert returns.paths["fresh"] == returns.paths["other"] == frozenset()
+    assert returns.paths["slot"] == {MUTEX}
+    assert returns.paths["fresh_kept"] == {
+        "&std::sync::Mutex<std::vec::Vec<&std::sync::Mutex<u32>>>"
+    }
+
+
+def test_a_call_is_told_by_its_path_not_its_name():
+    # `clean::note` and `clean::Wrap::keep` store nothing, though `dirty`'s, so named, store
+    # in `A`, which the program reads after. `clean`'s were refused as if they stored `x`.
+    assert paths_why(P_CLEANED, "cleaned", 112) == (None, None)
+    for text, name, line in ((P_DIRTIED, "dirtied", 120), (P_KEPT, "kept", 128)):
+        assert paths_why(text, name, line)[0].startswith(
+            f"a static or thread-local may hold a copy of it (from line {line - 1})"
+        ), name
+    state = paths_state()
+    assert state.paths["dirty::note"] == state.paths["dirty::Wrap::keep"] == {ATOMIC}
+    assert state.paths["clean::note"] == state.paths["clean::Wrap::keep"] == frozenset()
+    assert state.named("note", "clean::note") == frozenset()
+    assert state.named("keep", "dirty::Wrap::keep") == {ATOMIC}
+    assert state.named("identity", "identity::<u32>") == frozenset()
+    # Where the path doesn't tell which (a trait's, or a short one that two end with), every
+    # function so named may be it, and which global it touches can't be told.
+    for name, path in (("note", "<T as Note>::note"), ("note", "note"), ("keep", "Wrap::keep")):
+        assert state.named(name, path) == {ATOMIC, _ANY_GLOBAL}, path
+
+
+def test_a_later_read_of_another_global_leaves_the_copy_unused():
+    # `lock_set(&S, x)` keeps `x` in `S`, and `other()` reads only `FLAG`, of another type:
+    # it no longer counts as reading the copy (``reads_global``), as any call touching global
+    # state did. `x + k` reads `x` first, so the program sees a change either way.
+    assert paths_why(P_UNRELATED, "unrelated", 85) == (None, None)
+    owned = owned_of(
+        P_UNRELATED, "unrelated", first_at(P_UNRELATED, 85), PATHS, (), PATHS_SOURCE, PATHS_LAYOUTS
+    )
+    body = owned.body(HASH)
+    body.direct_copies_at(2, place(body, first_at(P_UNRELATED, 85)))
+    (holder,) = (
+        each for each, (at, _) in body.global_holders.items() if at == place(body, "_4 = lock_set(")
+    )
+    assert body.global_holders[holder][1] == {MUTEX}
+    assert not body.reads_global(holder, *place(body, "_9 = other()"))
+    assert body.global_use(*place(body, "_9 = other()")) == {ATOMIC}

@@ -1012,8 +1012,14 @@ class GlobalState(NamedTuple):
     Mutex<u32>`, `&std::thread::LocalKey<std::cell::Cell<u32>>`, `*mut u32` of a `static
     mut`; ``_ANY_GLOBAL`` for one not known). Empty for a function that touches none.
 
+    - ``paths``: {a function's path, without generic arguments: what it may touch}, its
+      module's (`clean::note`), or for a method its module's, its type's and its own
+      (`clean::Wrap::keep`), which a call path names (``resolve``);
+    - ``methods``: {a method's type and name (`Wrap::keep`): what the crate's methods so
+      named may touch}, for a call whose path names its type elsewhere;
     - ``names``: {a function's name, the last segment of its path: what the crate's
-      functions so named may touch}, for a call naming it (`local_set`, `Wrap::keep`);
+      functions so named may touch}, for a call whose path doesn't tell it (`<Wrap as
+      Tr>::keep`), and ``counts``: how many functions of the crate's are so named;
     - ``closures``: {a closure's type: what its body may touch};
     - ``impls``: what any function of a trait's `impl` block may touch, which the standard
       library may call for a type of the crate's (`Display::fmt`, `Clone::clone`, `drop`); not
@@ -1021,11 +1027,15 @@ class GlobalState(NamedTuple):
       by its name (``_impl_trait``, ``_own_trait``);
     - ``every``: what any function may touch;
     - ``unknown``: the names of functions the dump has that Peeky can't read, which may
-      touch anything;
+      touch anything, and ``unknown_paths``: their paths;
+    - ``unkeyed``: the names of methods whose `impl` header Peeky can't read, which a call
+      by any path may be;
     - ``trusted`` and ``layouts``: the standard library's path roots and the crate's types
       (``_may_write``);
     - ``formats``: what any function of an `impl` of a formatting trait (``_FORMAT_TRAITS``),
-      or of a trait not known, may touch: all that formatting runs."""
+      or of a trait not known, may touch: all that formatting runs;
+    - ``returns``: the same tables of what each function's return may point into (#340
+      review: ``Body.returned_globals``), for ``returned``; None in that view itself."""
 
     names: dict
     closures: dict
@@ -1035,6 +1045,12 @@ class GlobalState(NamedTuple):
     trusted: frozenset = _STD_CRATES
     layouts: TypeLayouts | None = None
     formats: frozenset = frozenset()
+    paths: dict | None = None
+    methods: dict | None = None
+    counts: dict | None = None
+    unknown_paths: frozenset = frozenset()
+    unkeyed: frozenset = frozenset()
+    returns: "GlobalState | None" = None
 
     def anything(self):
         """What a call that may run any of the crate's code may touch."""
@@ -1052,13 +1068,63 @@ class GlobalState(NamedTuple):
         the instance's types show where it is called."""
         found = set()
         if not _std_callee(path, self.trusted, self.layouts):
-            found |= self.names.get(name, frozenset())
-            if name in self.unknown:
-                found |= self.anything()
+            found |= self.named(name, path)
         for kind in kinds:
             found |= self.carried(kind)
         for kind in _path_types(path):
             found |= self.carried(kind, named=True)
+        return frozenset(found)
+
+    def returned(self, name, kinds, path=""):
+        """What a pointer such a call returns may point into, of the crate's global state
+        (#340 review): what the function it names may return (``Body.returned_globals``),
+        or code of the crate's what it is given carries; the standard library's own returns
+        point only into what it is given, which ``Body._made_from`` follows."""
+        return frozenset() if self.returns is None else self.returns.call(name, kinds, path)
+
+    def resolve(self, path):
+        """The keys of ``paths`` the call path ``path`` (as the MIR prints it) may name (#340
+        review): its own, or each it ends (rustc leaves out a module where the name is
+        unique: `helper` of `util::helper`); else a method's (`Wrap::keep`) by its type and
+        name. None where the path doesn't tell (`<Wrap as Tr>::keep`, a method whose `impl`
+        Peeky can't read, a function it can't read): then ``names`` does."""
+        if not path or path.startswith("<") or self.paths is None:
+            return None
+        plain = _plain_path(path)
+        name = plain.rpartition("::")[2]
+        if plain in self.unknown_paths or any(
+            each.endswith("::" + plain) for each in self.unknown_paths
+        ):
+            return None
+        if plain in self.paths:
+            return [plain]
+        found = [key for key in self.paths if key.endswith("::" + plain)]
+        if not found and plain.count("::") >= 1:
+            short = "::".join(plain.split("::")[-2:])
+            found = [key for key in self.methods or () if key == short]
+            found = [("method", key) for key in found]
+        if found or (name not in self.unkeyed and name not in self.unknown):
+            return found
+        return None
+
+    def named(self, name, path):
+        """What a call of the function ``name`` by the path ``path`` may touch, of the
+        crate's functions (#340 review: ``resolve``). Where the path doesn't tell, every
+        function so named may be it: where more than one is, and one may touch global state,
+        which global it is can't be told (``_ANY_GLOBAL``)."""
+        keys = self.resolve(path)
+        if keys is not None:
+            found = set()
+            for key in keys:
+                found |= self.methods[key[1]] if isinstance(key, tuple) else self.paths[key]
+            if len(keys) > 1 and found:
+                found.add(_ANY_GLOBAL)
+            return frozenset(found)
+        found = set(self.names.get(name, ()))
+        if found and (self.counts or {}).get(name, 0) > 1:
+            found.add(_ANY_GLOBAL)
+        if name in self.unknown or not name:
+            found |= self.anything()
         return frozenset(found)
 
     def drop(self, kinds):
@@ -1092,9 +1158,7 @@ class GlobalState(NamedTuple):
             path = _without_turbofish(item[1].strip())
             if not _std_callee(path, self.trusted, self.layouts):
                 callee = re.split(r"::|<", path.rpartition("::")[2] or path)[0]
-                found |= self.names.get(callee, frozenset())
-                if callee in self.unknown or not callee:
-                    found |= self.anything()
+                found |= self.named(callee, path)
         rest = _FN_ITEM.sub("()", rest)
         # A trait object of a trait other than `Fn`, `FnMut` or `FnOnce` (`&dyn Debug` a
         # derived `Debug` passes on) runs only an `impl` of it; a closure, or a function
@@ -1202,6 +1266,43 @@ def _impl_trait(block, texts):
     return "", False
 
 
+def _impl_self(block, texts):
+    """The last segment of the type the `impl` block ``block`` is for (#340 review): `Wrap`
+    of `impl<T> Wrap<T>` or of `impl fmt::Display for m::Wrap`. None where its header can't
+    be read, or names no plain path (`impl dyn Tr`, a derive's span)."""
+    header = _impl_header(block, texts)
+    if header is None:
+        return None
+    header = " ".join(header.split())
+    found = re.match(r"(?:unsafe )?impl\b ?", header)
+    if found is None:
+        return None
+    rest = header[found.end() :]
+    if rest.startswith("<"):
+        depth = 0
+        for at, char in enumerate(rest):
+            if char == "<":
+                depth += 1
+            elif char == ">" and rest[at - 1 : at] != "-":
+                depth -= 1
+                if depth == 0:
+                    rest = " " + rest[at + 1 :].lstrip()
+                    break
+        else:
+            return None
+    depth, start = 0, 0
+    for at, char in enumerate(rest):
+        if char in "<([":
+            depth += 1
+        elif char in ")]" or (char == ">" and rest[at - 1 : at] != "-"):
+            depth -= 1
+        elif depth == 0 and rest.startswith(" for ", at):
+            start = at + len(" for ")
+    target = _plain_path(rest[start:].strip())
+    named = re.fullmatch(r"(?:::)?(?:\w+::)*(\w+)", target)
+    return named[1] if named else None
+
+
 def _crate_traits(texts):
     """(the names of the traits the crate's sources ``texts`` ({file: text}) define, the
     names each `use` of a path outside the crate mentions, whether such a `use` is a glob)
@@ -1296,11 +1397,28 @@ def global_state(bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=No
     roots = [body.global_roots(trusted, layouts) for body in bodies]
     if not any(roots):
         return None
-    read = {body.name for body in bodies}
-    unknown = frozenset(
-        name for path in defined if (name := (_segments(path) or [""])[-1]) not in read
-    )
+    read = {body.path for body in bodies}
+    unknown_paths = frozenset(_plain_path(path) for path in defined if path not in read)
+    unknown = frozenset((_segments(path) or [""])[-1] for path in unknown_paths)
     touched = [frozenset(found.values()) for found in roots]
+    # #340 review: each function by its path; a method by its module's, its type's and its
+    # own (`clean::Wrap::keep`), and by its type's and its own (`Wrap::keep`).
+    keys, shorts, unkeyed, counts = [], [], set(), {}
+    for body in bodies:
+        segments = _segments(body.path)
+        counts[body.name] = counts.get(body.name, 0) + 1
+        if len(segments) > 1 and segments[-2].startswith("<impl at "):
+            kind = _impl_self(segments[-2], texts or {})
+            if kind is None:
+                unkeyed.add(body.name)
+                keys.append(_plain_path(body.path))
+                shorts.append(None)
+                continue
+            keys.append("::".join([*segments[:-2], kind, segments[-1]]))
+            shorts.append(f"{kind}::{segments[-1]}")
+        else:
+            keys.append(_plain_path(body.path))
+            shorts.append(None)
     traits = _crate_traits(texts or {})
     # Of each body's `impl` block: None for none, an inherent one or one of a trait of the
     # crate's own; else whether formatting may run it (a formatting trait's, or one not known).
@@ -1319,16 +1437,19 @@ def global_state(bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=No
                 name is None or name in _FORMAT_TRAITS or (found[1] and name not in _STD_DERIVES)
             )
 
-    def state_of(touched):
-        names, closures, impls, formats = {}, {}, set(), set()
-        for body, found, block in zip(bodies, touched, blocks):
+    def view(touched, formatting=True):
+        names, closures, impls, formats, paths, methods = {}, {}, set(), set(), {}, {}
+        for body, found, block, key, short in zip(bodies, touched, blocks, keys, shorts):
             names[body.name] = names.get(body.name, frozenset()) | found
+            paths[key] = paths.get(key, frozenset()) | found
+            if short is not None:
+                methods[short] = methods.get(short, frozenset()) | found
             for closure in _CLOSURE_TYPE.findall(body.types.get(1, "") if body.arguments else ""):
                 closures[closure] = closures.get(closure, frozenset()) | found
             # A function of a trait's `impl` block, at the crate's root or in a module.
             if block is not None:
                 impls |= found
-                if block:
+                if block and formatting:
                     formats |= found
         every = frozenset().union(*touched)
         return GlobalState(
@@ -1340,12 +1461,22 @@ def global_state(bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=No
             trusted,
             layouts,
             frozenset(formats),
+            paths,
+            methods,
+            counts,
+            unknown_paths,
+            frozenset(unkeyed),
         )
 
+    def state_of(touched, returned):
+        # Formatting returns only whether it wrote: no pointer.
+        return view(touched)._replace(returns=view(returned, False))
+
+    returned = [frozenset()] * len(bodies)
     for _ in range(_GLOBAL_ROUNDS):
-        state, memo = state_of(touched), {}
-        grown = []
-        for body, found in zip(bodies, touched):
+        state, memo = state_of(touched, returned), {}
+        grown, gave = [], []
+        for body, found, given in zip(bodies, touched, returned):
             if not body.supported:
                 found = found | state.anything() | {_ANY_GLOBAL}
             for edge in body._global_edges().values():
@@ -1356,12 +1487,14 @@ def global_state(bodies, trusted=_STD_CRATES, layouts=None, defined=(), texts=No
                     )
                 found = found | memo[edge]
             grown.append(found)
-        if grown == touched:
+            gave.append(given | body.returned_globals(state, found))
+        if grown == touched and gave == returned:
             return state
-        touched = grown
-    everything = frozenset().union(*touched) | {_ANY_GLOBAL}
-    state = state_of([everything] * len(bodies))
-    return state._replace(impls=everything, every=everything, formats=everything)
+        touched, returned = grown, gave
+    everything = frozenset().union(*touched, *returned) | {_ANY_GLOBAL}
+    state = state_of([everything] * len(bodies), [everything] * len(bodies))
+    returns = state.returns._replace(impls=everything, every=everything)
+    return state._replace(impls=everything, every=everything, formats=everything, returns=returns)
 
 
 def _in_state(flags, shared, handle):
@@ -1942,6 +2075,19 @@ def _without_turbofish(path):
     return path
 
 
+def _plain_path(path):
+    """``path`` without any generic arguments (`Gen::<u32>::keep::<T>` -> `Gen::keep`)."""
+    out, depth = [], 0
+    for at, char in enumerate(path):
+        if char == "<" and path[at - 1 : at] != "-":
+            depth += 1
+        elif char == ">" and path[at - 1 : at] != "-" and depth:
+            depth -= 1
+        elif not depth:
+            out.append(char)
+    return re.sub(r"::(?=::|$)", "", "".join(out)).strip(":")
+
+
 def _standard_only(kind, generics, trusted=_STD_CRATES):
     """Whether every type the MIR type ``kind`` names is a primitive or the standard
     library's (#320): no type of the crate's own, type parameter, closure or trait
@@ -2118,6 +2264,7 @@ class Body:
     _global_root_cache: tuple | None = None
     _global_edge_cache: dict | None = None
     _global_pointer_cache: tuple | None = None
+    _call_target_cache: dict | None = None
     _share_edges: dict | None = None
     saved: frozenset = frozenset()
     resumes: dict = field(default_factory=dict)
@@ -2816,7 +2963,7 @@ class Body:
                 ended = _event(text, copy) == "end"
                 used = (
                     used
-                    or (stored and self.global_use(number, offset))
+                    or (stored and self.reads_global(copy, number, offset))
                     or any(_event(text, each) == "use" for each in copies)
                     # What it stands for outlives it: code after, or a caller, may read it.
                     or (ended and outlives)
@@ -2898,7 +3045,54 @@ class Body:
             return True
         if copy not in self.named_locals() or not _POINTER_TYPE.match(self.types.get(copy, "")):
             return False
-        return bool(self._pointees(self._made_from(copy), frozenset({copy})))
+        owners = self._made_from(copy)
+        return bool(self._pointees(owners, frozenset({copy}))) and self._reachable_after(
+            copy, owners
+        )
+
+    def _reachable_after(self, copy, owners):
+        """Whether what the pointer binding ``copy``, made from ``owners``, stands for may be
+        reached once the frame returns (#340 review): the caller's (an argument it was made
+        from), global state's (a constant address, a pointer a call returned that may point
+        into it: ``_returned_kinds``), or what it was handed to (``_escapes``). Not the
+        leaked `Box` `fresh()` returned, which only the binding reaches."""
+        if owners & self.arguments or self._returned_kinds(owners):
+            return True
+        assigned = self._assignments()
+        for local in owners:
+            for value in assigned.get(local, ()):
+                value = _STRING.sub('""', value)
+                call = " -> " in value and not _NOT_A_CALL.match(value)
+                if not call and not _MENTIONED.search(value):
+                    # A constant: a static's address, or one Peeky can't place.
+                    return True
+        return self._escapes(copy)
+
+    def _escapes(self, copy):
+        """Whether the pointer binding ``copy``, or what is made from it (``_aliases``), is
+        handed on where it may be kept (#340 review): stored through a pointer into
+        anything else, or given to a call with another value that may hold a pointer (it may
+        store it there: `out.push(p)`), or to one that may touch global state."""
+        aliases = self._aliases(copy) | {copy}
+        for (number, index), edge in self._global_edges().items():
+            if edge[0] != "call":
+                continue
+            operands = set(_call_operands(self.blocks[number].statements[index][0]))
+            if not operands & aliases:
+                continue
+            if self.global_touch((number, index)) or any(
+                not _pointer_free(self.types.get(n), self.generics) for n in operands - aliases
+            ):
+                return True
+        for block in self.blocks.values():
+            for text, _, _ in block.statements:
+                text = _STRING.sub('""', text)
+                stored = _STORE_BASE.match(text)
+                if stored and int(stored[1]) not in aliases and " = " in text:
+                    value = text.split(" = ", 1)[1]
+                    if {int(n) for n in _MENTIONED.findall(value)} & aliases:
+                        return True
+        return False
 
     def exits_unread(self, root, start, projection=(), formats=None):
         """Where every path from ``start`` panics, exits or never leaves a loop before it
@@ -3732,32 +3926,14 @@ class Body:
                         continue
                     owners = self._made_from(base)
                     found |= {roots[root] for root in owners & roots.keys()}
-                    if not owners & roots.keys() and outside(owners):
-                        found.add(self.types.get(base) or _ANY_GLOBAL)
+                    # #340 review: a pointer a call returned, where that call may return
+                    # one into global state (``GlobalState.returned``): `slot()` of
+                    # `lock_set(slot(), x)` returning `&S`, `registry()`'s `&'static
+                    # Mutex<Vec<u32>>`; not `fresh()` returning a leaked `Box`. A binding
+                    # that stands for it is the program's own (``_outlives_frame``).
+                    if not any(n in named and self._outlives_frame(n) for n in owners):
+                        found |= self._returned_kinds(owners)
                 return found
-
-            def outside(owners):
-                # A pointer only a call returned, with nothing of the frame's behind it: no
-                # argument, no value the frame owns (one that shows no pointer and shares
-                # nothing, as `m` of `m.lock()`), no binding that stands for it
-                # (``_outlives_frame``). `slot()` of `lock_set(slot(), x)`, `registry()`'s
-                # `&'static Mutex<Vec<u32>>` and the guard `lock()` gives.
-                return (
-                    not owners & self.arguments
-                    and not any(
-                        not _SHOWS_POINTER.search(self.types.get(n) or "&")
-                        and not _may_share(
-                            self.types.get(n), self.generics, self.std_paths, self._layouts()
-                        )
-                        for n in owners
-                    )
-                    and not any(n in named and self._outlives_frame(n) for n in owners)
-                    and any(
-                        "->" in each and not _NOT_A_CALL.match(each)
-                        for n in owners
-                        for each in assigned.get(n, ())
-                    )
-                )
 
             for number, block in self.blocks.items():
                 for index, (text, _, _) in enumerate(block.statements):
@@ -3883,6 +4059,43 @@ class Body:
             self._global_root_cache = cached = (trusted, layouts, found)
         return cached[2]
 
+    def returned_globals(self, state, touched=frozenset()):
+        """What this body's return may point into, of the crate's global state (#340
+        review: ``global_state``): nothing where its type holds no pointer; else what it is
+        made from (``_made_from``) of a global it names, what a call it is made from may
+        return (``_returned_kinds``), and any global it may touch (``touched``), which may
+        keep the pointer it returns. Anything for a body Peeky can't analyze."""
+        if not self.supported:
+            return state.anything() | {_ANY_GLOBAL}
+        kind = self.types.get(0)
+        if kind is None or _pointer_free(kind, ()):
+            return frozenset()
+        owners = self._made_from(0)
+        roots = self.global_roots(state.trusted, state.layouts)
+        found = {roots[n] for n in owners & roots.keys()} | set(touched)
+        return frozenset(found | self._returned_kinds(owners, state))
+
+    def _returned_kinds(self, owners, state=None):
+        """What a pointer among ``owners`` that a call returned may point into, of the
+        crate's global state (#340 review: ``GlobalState.returned``)."""
+        state = self.globals if state is None else state
+        if state is None:
+            return frozenset()
+        if self._call_target_cache is None:
+            targets = {}
+            for (number, index), edge in self._global_edges().items():
+                whole = _WHOLE_ASSIGNMENT.match(
+                    _STRING.sub('""', self.blocks[number].statements[index][0])
+                )
+                if edge[0] == "call" and whole:
+                    targets.setdefault(int(whole[1]), []).append(edge[1:])
+            self._call_target_cache = targets
+        found = set()
+        for local in owners:
+            for name, kinds, path in self._call_target_cache.get(local, ()):
+                found |= state.returned(name, kinds, path)
+        return frozenset(found)
+
     def _global_edges(self):
         """{(block, index): ("call", its function's name (``_callee``), the MIR types of the
         locals it is given and calls, its path), or ("drop", "", (the dropped local's type,),
@@ -3929,9 +4142,10 @@ class Body:
 
     def _global_pointers(self):
         """{each local that may point into global state: the types of the globals} (#329):
-        a local ``global_roots`` gives, and one made from it, back through each assignment as
-        ``_made_from`` follows them (`_6 = &(*_7)`, a guard `lock` returns, what `deref_mut`
-        of that returns), whose type may hold a pointer."""
+        a local ``global_roots`` gives, or a call that may return a pointer into it
+        (``_returned_kinds``: `r` of `let r = slot();`), and one made from it, back through
+        each assignment as ``_made_from`` follows them (`_6 = &(*_7)`, a guard `lock`
+        returns, what `deref_mut` of that returns), whose type may hold a pointer."""
         state = self.globals
         if state is None:
             return {}
@@ -3950,7 +4164,11 @@ class Body:
                     for source in sources - {target}:
                         users.setdefault(source, set()).add(target)
             found = {root: {kind} for root, kind in roots.items()}
-            pending = list(roots)
+            self._returned_kinds(())
+            for local in self._call_target_cache:
+                if kinds := self._returned_kinds({local}):
+                    found[local] = found.get(local, set()) | kinds
+            pending = list(found)
             while pending:
                 source = pending.pop()
                 for target in users.get(source, ()):
@@ -3967,24 +4185,33 @@ class Body:
         return cached[1]
 
     def global_use(self, number, index):
-        """Whether the statement at (``number``, ``index``) may read the crate's global state
-        with interior mutability (#329): it uses a pointer into it (``_global_pointers``),
-        or a call or drop that may touch it (``global_touch``). A copy a place stored there
-        is the program's own from then on (``copy_kind``)."""
+        """The types of the crate's global state with interior mutability the statement at
+        (``number``, ``index``) may read (#329): of a pointer into it it uses
+        (``_global_pointers``), and what a call or drop there may touch (``global_touch``).
+        Empty where none. A copy a place stored in one of them is the program's own from
+        then on (``copy_kind``, ``reads_global``)."""
         if self.globals is None:
-            return False
-        cached = self._global_pointer_cache
-        uses = cached[2] if cached is not None and cached[0] is self.globals else None
-        if uses is not None and (number, index) in uses:
-            return uses[number, index]
-        text = _STRING.sub('""', self.blocks[number].statements[index][0])
-        whole = _WHOLE_ASSIGNMENT.match(text)
-        mentioned = {int(n) for n in _MENTIONED.findall(whole[2] if whole else text)}
-        found = bool(mentioned & self._global_pointers().keys()) or bool(
-            self.global_touch((number, index))
-        )
-        self._global_pointer_cache[2][number, index] = found
-        return found
+            return frozenset()
+        pointers = self._global_pointers()
+        uses = self._global_pointer_cache[2]
+        if (number, index) not in uses:
+            text = _STRING.sub('""', self.blocks[number].statements[index][0])
+            whole = _WHOLE_ASSIGNMENT.match(text)
+            mentioned = {int(n) for n in _MENTIONED.findall(whole[2] if whole else text)}
+            found = set(self.global_touch((number, index)))
+            for local in mentioned & pointers.keys():
+                found |= pointers[local]
+            uses[number, index] = frozenset(found)
+        return uses[number, index]
+
+    def reads_global(self, holder, number, index):
+        """Whether the statement at (``number``, ``index``) may read the global state the
+        pseudo-local ``holder`` stands for (#340 review): a global of a type it may be, or
+        one not known on either side. Globals are told apart by their types only, so two
+        statics of one type count as one."""
+        kinds = self.global_use(number, index)
+        held = self.global_holders.get(holder, (None, frozenset({_ANY_GLOBAL})))[1]
+        return bool(kinds) and bool(kinds & held or _ANY_GLOBAL in kinds | held)
 
     def global_level(self, holder, local_kind):
         """What the global state ``holder`` (a pseudo-local, ``global_holders``) may hold of
