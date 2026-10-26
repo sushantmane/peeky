@@ -31,7 +31,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 - Two lambdas on one line get the same name, `<lambda>`. Their stops are counted together, and a
   warning says so ([Python 2.8](python-cookbook.md#28-change-a-value-then-restore-it)).
 - A string's value keeps its quotes: `'Évora'`. So in SQL, `value = 'Évora'` matches nothing. Write
-  `text(value, language) = 'Évora'`, and read a list with `elements(value, language)`
+  `text(value, language, type) = 'Évora'`, which reads a `str` only. `elements` is NULL for a
+  Python list, since a class's `__repr__` may look like a number: capture `xs[0]` instead
   ([4.9](../COOKBOOK.md#49-a-lists-elements-and-a-strings-text)).
 - `[id 6]` is debugpy's number for an object. At one hit, the same number means the same object.
   Across hits, a different number means a different object, but the same number may be a new

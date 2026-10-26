@@ -123,8 +123,8 @@ TABLES = {
             "`unsigned long` and `rota::Engineer *`)",
             "value": "Value as the debugger displays it, in the language's notation: a "
             "Python string with its quotes (`'Évora'`), a Java array with its type "
-            "(`int[3]@55 [3, 0, 7]`). text(value, language) and elements(value, language) "
-            "read a string and a list's elements. NULL when there is none",
+            "(`int[3]@55 [3, 0, 7]`). text(value, language, type) and elements(value, "
+            "language) read a string and a list's elements. NULL when there is none",
             "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
             "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
             "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not). A hex "
@@ -2039,7 +2039,7 @@ def _reader(path, *, snapshot=False):
     connection.create_function("set_outcome", 4, bounded(_set_outcome), deterministic=True)
     connection.create_function("address", 1, bounded(_address), deterministic=True)
     connection.create_function("elements", 2, bounded(stored_values.elements), deterministic=True)
-    connection.create_function("text", 2, bounded(stored_values.text), deterministic=True)
+    connection.create_function("text", 3, bounded(stored_values.text), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
@@ -2157,8 +2157,8 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
             )
         elif re.search(r"wrong number of arguments to function (?:elements|text)\(", message):
             message += (
-                " (elements and text take the run's language too: elements(value, language), "
-                "with language from the evidence view)"
+                " (write elements(value, language) and text(value, language, type): the "
+                "evidence view has those columns)"
             )
         elif (
             (column := re.search(r"ambiguous column name: (?:\w+\.)?(\w+)", message))
@@ -3544,15 +3544,18 @@ def schema(path):
             "minus a base, the same element's address in each run (COOKBOOK 4.8). From 2^63 on "
             "it is the two's complement, a negative INTEGER: printf('0x%x', address(value)) "
             "gives its hex back (and 0x0 for NULL)",
-            "elements(value, language)": "A list's or array's elements as a JSON array, "
-            "for json_each: `int[3]@55 [3, 0, 7]` gives `[3, 0, 7]` (COOKBOOK 4.9). language "
-            "is the run's (evidence.language). Numbers, strings, chars, booleans, null and "
-            "nested lists only; NULL unless Peeky reads every element exactly: a preview cut "
-            "short (`…`, `...`) or holding an object, a struct or a pointer gives NULL",
-            "text(value, language)": "A string's or char's text without its quotes and "
-            "escapes: Python's `'Évora'` gives `Évora` (COOKBOOK 4.9); after a C or C++ "
-            "pointer's address, the text it points at. language is the run's. NULL for "
-            "other values, and where Peeky can't decode the text exactly: cut short, or "
+            "elements(value, language)": "A Java, C, C++ or Rust list's or array's elements "
+            "as a JSON array, for json_each: `int[3]@55 [3, 0, 7]` gives `[3, 0, 7]` "
+            "(COOKBOOK 4.9). language is the run's (evidence.language). Numbers, strings, "
+            "chars, booleans, null and nested lists only; NULL unless Peeky reads every "
+            "element exactly: a preview cut short (`…`, `...`) or holding an object, a struct "
+            "or a pointer gives NULL, and so does any Python list (debugpy shows each element "
+            "by its own __repr__, which a class may write as `1`)",
+            "text(value, language, type)": "A string's or char's text without its quotes and "
+            "escapes, by the row's language and type: Python's `'Évora'` of type str gives "
+            "`Évora` (COOKBOOK 4.9); a Java char its character; after a C or C++ pointer's "
+            "address, the text it points at. NULL for other values (a Python value whose "
+            "type is not str), and where Peeky can't decode the text exactly: cut short, or "
             "bytes that are no text (`\\xff`)",
         },
         "examples": list(EXAMPLES),

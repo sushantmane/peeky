@@ -1,7 +1,10 @@
-"""SQL's elements(value, language) and text(value, language) (twelfth evaluation, desks 1
-and rainfall 6): a stored value is its language's notation, never JSON, and a Python
-string keeps its quotes, so `json_each(substr(value, instr(value, '[')))` failed with
-`malformed JSON` on `int[3]@55 [490, 484, 497]`, and `value = 'Göteborg'` matched nothing."""
+"""SQL's elements(value, language) and text(value, language, type) (twelfth evaluation,
+desks 1 and rainfall 6): a stored value is its language's notation, never JSON, and a
+Python string keeps its quotes, so `json_each(substr(value, instr(value, '[')))` failed
+with `malformed JSON` on `int[3]@55 [490, 484, 497]`, and `value = 'Göteborg'` matched
+nothing. Review of PR #347: debugpy shows a Python value by its own `__repr__`, which a
+class may write as `1` or `'Göteborg'`; a C `long double`'s `1e-4000` read as 0; and a
+Java char is bare (`+`)."""
 
 import json
 import re
@@ -19,20 +22,21 @@ def _run(rows, language):
         "probe": {
             "program": "a.py",
             "line": 8,
-            "capture": list(dict.fromkeys(selector for _, selector, _ in rows)),
+            "capture": list(dict.fromkeys(row[1] for row in rows)),
             "set": [],
             "hits": 1,
             "args": [],
         },
         "status": "completed",
         "error": None,
-        "hits": max(hit for hit, _, _ in rows),
+        "hits": max(row[0] for row in rows),
         "seconds": 1.0,
         "pauses_ms": [1.0],
         "output": "",
         "rows": [
-            dict(hit=hit, phase="observed", line=8, selector=selector, value=value)
-            for hit, selector, value in rows
+            dict(hit=row[0], phase="observed", line=8, selector=row[1], value=row[2])
+            | ({"type": row[3]} if len(row) > 3 else {})
+            for row in rows
         ],
         "interventions": [],
         "warnings": [],
@@ -46,9 +50,10 @@ def store(tmp_path_factory):
     return path
 
 
-def _call(store, function, value, language):
-    sql = f"SELECT {function}(:value, :language) AS got"
-    [row] = evidence.query(store, sql, {"value": value, "language": language})["rows"]
+def _call(store, function, value, language, kind=None):
+    arguments = ":value, :language, :kind" if function == "text" else ":value, :language"
+    params = {"value": value, "language": language, "kind": kind}
+    [row] = evidence.query(store, f"SELECT {function}({arguments}) AS got", params)["rows"]
     return row["got"]
 
 
@@ -70,19 +75,6 @@ def _call(store, function, value, language):
         # A String element of 38 characters that doesn't end in `…` was not cut.
         ('String[1]@66 ["' + "a" * 38 + '"]', "java", ["a" * 38]),
         ('String[1]@66 ["' + "a" * 36 + '…"]', "java", ["a" * 36 + "…"]),
-        # Python: a list, a tuple, nested lists, non-ASCII text, either quote.
-        ("[1, 2]", "python", [1, 2]),
-        ("['Göteborg', 'Kraków', 'Tromsø']", "python", ["Göteborg", "Kraków", "Tromsø"]),
-        ("[[1, 2], [3], []]", "python", [[1, 2], [3], []]),
-        ("(5, 6)", "python", [5, 6]),
-        ("(5,)", "python", [5]),
-        ("()", "python", []),
-        ("[1.5, -2, 1e+16, True, False, None]", "python", [1.5, -2, 1e16, True, False, None]),
-        ("[\"it's\", 'say \"hi\"', 'a, b']", "python", ["it's", 'say "hi"', "a, b"]),
-        ("['\\xe9\\u0142\\U0001f600', 'a\\nb']", "python", ["éł😀", "a\nb"]),
-        ("[(1, 'a'), (2, 'b')]", "python", [[1, "a"], [2, "b"]]),
-        # 128 characters is the most debugpy shows uncut inside a list.
-        ("['" + "é" * 128 + "']", "python", ["é" * 128]),
         # C and C++: an array, a container (by its count), nested, a reference's.
         ("[5, 6, 7]", "c", [5, 6, 7]),
         ("[-1, 0, 2147483647]", "c", [-1, 0, 2147483647]),
@@ -92,6 +84,8 @@ def _call(store, function, value, language):
         ("size=0 []", "cpp", []),
         ("[size=2 [1, 2], size=0 []]", "cpp", [[1, 2], []]),
         ("0x000000016fdff2c8 size=2 [1.5, 3.1400001]", "cpp", [1.5, 3.1400001]),
+        # Decimals a double holds to as many digits as they have.
+        ("[0.10000000000000001, 1.0E+10, 5e-324, -0.0]", "c", [0.1, 1e10, 5e-324, -0.0]),
         ('["Zoë", "a\\tb", ""]', "cpp", ["Zoë", "a\tb", ""]),
         ("[L'a', L'\\0', U'é', 'b']", "cpp", ["a", "\0", "é", "b"]),
         ('[u8"Åsa", L"Łódź"]', "cpp", ["Åsa", "Łódź"]),
@@ -127,6 +121,13 @@ def test_elements_reads_each_languages_list_exactly(store, value, language, list
         ("[[...], 1]", "python"),
         ("[...]", "python"),
         ("[1, 2, ...] (first 2 of 300)", "rust"),
+        # Python: debugpy shows each element by its own __repr__ (a NumberObject in a list
+        # shows `[1]`), and the store keeps no element's type, so no list is read.
+        ("[1]", "python"),
+        ("['Göteborg', 'Kraków']", "python"),
+        ("[1.5, True, None]", "python"),
+        ("(5, 6)", "python"),
+        ("[]", "python"),
         # A count that disagrees with the elements shown.
         ("int[3]@55 [490, 484]", "java"),
         ("ArrayList@142 size=3 [1, 2]", "java"),
@@ -158,7 +159,12 @@ def test_elements_reads_each_languages_list_exactly(store, value, language, list
         ("['\\ud800']", "python"),
         # Integers past 64 bits, which SQLite would read as an inexact REAL.
         ("[18446744073709551615]", "rust"),
-        ("[123456789012345678901234567890]", "python"),
+        # A C or C++ `long double`'s decimals, which a double would read as 0 or 1.
+        ("[1e-4000]", "cpp"),
+        ("[1.0000000000000000001]", "cpp"),
+        ("[3.14159265358979323851]", "c"),
+        ("[1.18973149535723176502e+4932]", "c"),
+        ("[2e-324]", "c"),
         # Not a list, or not this language's notation.
         ("{7}", "cpp"),
         ("490", "java"),
@@ -180,38 +186,60 @@ def test_elements_is_null_unless_every_element_is_read_exactly(store, value, lan
 
 
 @pytest.mark.parametrize(
-    "value, language, shown",
+    "value, language, kind, shown",
     [
-        # Python (rainfall: `'Göteborg'` is stored with its quotes).
-        ("'Göteborg'", "python", "Göteborg"),
-        ('"Île-d\'Yeu"', "python", "Île-d'Yeu"),
-        ("'a\\nb\\t\\\\'", "python", "a\nb\t\\"),
-        ("'\\xe9\\u0142\\U0001f600'", "python", "éł😀"),
-        ("''", "python", ""),
-        # Java: a String is java-debug's text between quotes, unescaped; a char is escaped.
-        ('"Málaga"', "java", "Málaga"),
-        ('"say "hi" \\n"', "java", 'say "hi" \\n'),
-        ("'A'", "java", "A"),
-        ("'\\u00e9'", "java-attach", "é"),
+        # Python (rainfall: `'Göteborg'` is stored with its quotes), a `str` by its type.
+        ("'Göteborg'", "python", "str", "Göteborg"),
+        ('"Île-d\'Yeu"', "python", "str", "Île-d'Yeu"),
+        ("'a\\nb\\t\\\\'", "python", "str", "a\nb\t\\"),
+        ("'\\xe9\\u0142\\U0001f600'", "python", "str", "éł😀"),
+        ("''", "python", "str", ""),
+        # Java: a String is java-debug's text between quotes, unescaped; a char is bare.
+        ('"Málaga"', "java", "String", "Málaga"),
+        ('"say "hi" \\n"', "java", "java.lang.String", 'say "hi" \\n'),
+        ('""', "java", "String", ""),
+        ("+", "java", "char", "+"),
+        ("é", "java-attach", "char", "é"),
+        ('"', "java", "char", '"'),
         # C and C++: a literal, a wide one, octal NULs, a pointer's or reference's text.
-        ('"Zürich"', "c", "Zürich"),
-        ('L"Žilina"', "cpp", "Žilina"),
-        ('u"Ålesund"', "cpp", "Ålesund"),
-        ('"a\\tb\\000c\\"d"', "c", 'a\tb\0c"d'),
-        ('"\\U0001f600"', "cpp", "😀"),
-        ('0x0000000100003f80 "Nîmes"', "c", "Nîmes"),
-        ("'A'", "c", "A"),
-        ("'\\0'", "cpp", "\0"),
+        ('"Zürich"', "c", "char[16]", "Zürich"),
+        ('L"Žilina"', "cpp", "const wchar_t *", "Žilina"),
+        ('u"Ålesund"', "cpp", "std::u16string", "Ålesund"),
+        ('"a\\tb\\000c\\"d"', "c", "char[8]", 'a\tb\0c"d'),
+        ('"\\U0001f600"', "cpp", "std::string", "😀"),
+        ('0x0000000100003f80 "Nîmes"', "c", "const char *", "Nîmes"),
+        ("'A'", "c", "char", "A"),
+        ("'\\0'", "cpp", "char", "\0"),
         # Rust: `{:?}` escapes and JSON's, both of which Peeky writes.
-        ('"Reykjavík"', "rust", "Reykjavík"),
-        ('"say \\"hi\\""', "rust", 'say "hi"'),
-        ('"a\\u{1b}b\\u001bc\\0"', "rust", "a\x1bb\x1bc\0"),
-        ("'\\u{e9}'", "rust", "é"),
-        ("'\\''", "rust", "'"),
+        ('"Reykjavík"', "rust", "String", "Reykjavík"),
+        ('"say \\"hi\\""', "rust", "&str", 'say "hi"'),
+        ('"a\\u{1b}b\\u001bc\\0"', "rust", "String", "a\x1bb\x1bc\0"),
+        ("'\\u{e9}'", "rust", "char", "é"),
+        ("'\\''", "rust", "char", "'"),
     ],
 )
-def test_text_decodes_each_languages_string(store, value, language, shown):
-    assert _call(store, "text", value, language) == shown
+def test_text_decodes_each_languages_string(store, value, language, kind, shown):
+    assert _call(store, "text", value, language, kind) == shown
+
+
+@pytest.mark.parametrize(
+    "value, language, kind",
+    [
+        # A Python value other than a `str`: debugpy shows it by its own __repr__, which a
+        # class may write as `'Göteborg'` (`return "'Göteborg'"`), and a str subclass too.
+        ("'Göteborg'", "python", "City"),
+        ("'Göteborg'", "python", "MyStr"),
+        ("'Göteborg'", "python", None),
+        ("'Göteborg'", "python", ""),
+        # A Java char is bare: a quoted one, or a longer text, is no char's value.
+        ("'A'", "java", "char"),
+        ("ab", "java", "char"),
+        ("+", "java", "int"),
+        ('"x"', "java", "char"),
+    ],
+)
+def test_text_needs_the_rows_type(store, value, language, kind):
+    assert _call(store, "text", value, language, kind) is None
 
 
 @pytest.mark.parametrize(
@@ -247,7 +275,11 @@ def test_text_decodes_each_languages_string(store, value, language, shown):
     ],
 )
 def test_text_is_null_unless_decoded_exactly(store, value, language):
-    assert _call(store, "text", value, language) is None
+    kind = {"python": "str", "java": "String"}.get(language, "char *")
+    assert _call(store, "text", value, language, kind) is None
+
+
+cities_shown = ("Lisboa", "Évora", "Faro")
 
 
 def _recorded(tmp_path):
@@ -256,7 +288,9 @@ def _recorded(tmp_path):
         evidence.record(path, _run([(1, "start", "1")], "python"), language="python")
     counts = [(1, "counts", "int[4]@61 [3, 0, 7, 2]"), (2, "counts", "int[4]@61 [3, 4, 7, 2]")]
     evidence.record(path, _run(counts, "java"), language="java")
-    cities = [(1, "city", "'Lisboa'"), (2, "city", "'Évora'"), (3, "city", "'Faro'")]
+    cities = [(hit, "city", repr(name), "str") for hit, name in enumerate(cities_shown, 1)]
+    # A class whose __repr__ reads like a str's: no match.
+    cities.append((4, "city", "'Évora'", "Place"))
     evidence.record(path, _run(cities, "python"), language="python")
     return path
 
@@ -301,11 +335,12 @@ def test_a_failing_json_function_keeps_sqlites_message_and_names_elements(tmp_pa
     assert "malformed JSON" in message and "elements(value, language)" in message
     hint = message[message.index("malformed JSON") + len("malformed JSON") :]
     assert len(hint) <= 150
-    with pytest.raises(ValueError) as failed:
-        evidence.query(path, "SELECT elements(value) FROM captures")
-    message = str(failed.value)
-    assert "wrong number of arguments to function elements()" in message
-    assert "elements(value, language)" in message and "evidence" in message
+    for call in ("elements(value)", "text(value, language)"):
+        with pytest.raises(ValueError) as failed:
+            evidence.query(path, f"SELECT {call} FROM evidence")
+        message = str(failed.value)
+        assert f"wrong number of arguments to function {call.split('(')[0]}()" in message
+        assert "elements(value, language) and text(value, language, type)" in message
     # json_each's own `value` column, beside the view's.
     with pytest.raises(ValueError) as failed:
         evidence.query(
@@ -320,10 +355,10 @@ def test_the_schema_lists_each_function_on_one_line(tmp_path):
     path = _recorded(tmp_path)
     described = evidence.schema(path)
     functions = evidence.schema_part_text(evidence.schema_part(described, ["functions"]))
-    for name in ("elements(value, language)", "text(value, language)"):
+    for name in ("elements(value, language)", "text(value, language, type)"):
         [line] = [line for line in functions.splitlines() if line.startswith(f"  {name}: ")]
         assert "COOKBOOK 4.9" in line
     index = evidence.schema_index(described)
     assert "elements" in index and "text" in index.split("SQL functions Peeky adds:")[1]
     value = described["tables"]["captures"]["columns"]["value"]
-    assert "'Évora'" in value and "text(value, language)" in value
+    assert "'Évora'" in value and "text(value, language, type)" in value

@@ -1,5 +1,5 @@
 """A stored value's elements and text, for SQL: `elements(value, language)` and
-`text(value, language)` (twelfth evaluation).
+`text(value, language, type)` (twelfth evaluation).
 
 A captured value is stored as Peeky shows it, in its language's notation: a Java array is
 `int[3]@55 [490, 484, 497]`, a Python string `'Göteborg'`, with its quotes. So
@@ -10,16 +10,21 @@ exactly what the program holds; anything else is NULL, never a guess:
 - a preview cut short (`…`, `...`) or a count that disagrees with its elements;
 - an element that is not a number, string, char, boolean, null or nested list (an object,
   a struct, a pointer, an enumerator);
-- a string that may be cut (a Java element's 38th character `…`; a Python element over 128
-  characters, which debugpy cuts in the middle with `...`) or that is not text (a C byte
-  `\\xff`, a lone surrogate);
-- an integer outside SQLite's 64 bits, or a float that is not finite;
+- a string that may be cut (a Java element's 38th character `…`) or that is not text (a C
+  byte `\\xff`, a lone surrogate);
+- an integer outside SQLite's 64 bits, or a decimal that a double does not hold exactly as
+  written (a `long double`'s `1e-4000` or `1.0000000000000000001`);
+- a Python value other than a `str` (by the row's type): debugpy shows a value by its own
+  `__repr__`, which any class may write to look like `[1]` or `'Göteborg'`, so a list's
+  elements are never known to be what they look like;
 - a value of 2000 characters or more, as the worker keeps a value's first 2000 and marks no
   cut there.
 """
 
 import json
+import math
 import re
+from decimal import Decimal
 
 KEPT = 2000
 _DEPTH = 32
@@ -84,13 +89,10 @@ _BRACED = re.compile(r"u\{([0-9a-fA-F]{1,6})\}")
 _PREFIX = re.compile(r"u8|[LuU]")
 # Each family's words for true, false and null.
 _WORDS = {
-    "python": (("True", "true"), ("False", "false"), ("None", "null")),
     "java": (("true", "true"), ("false", "false"), ("null", "null")),
     "c": (("true", "true"), ("false", "false")),
     "rust": (("true", "true"), ("false", "false")),
 }
-# debugpy cuts a string inside a list longer than this in its middle (`'aaa...aaa'`).
-_PYTHON_INNER = 128
 # Peeky's Java preview cuts a String element after 37 characters, with `…` (java._brief).
 _JAVA_INNER = 38
 
@@ -126,27 +128,16 @@ class _Reader:
         if self.family == "c" and (size := _SIZE.match(text, self.at)):
             count, self.at = int(size[1]), size.end()
         opening = text[self.at : self.at + 1]
-        openings = {"python": "[(", "java": "[", "rust": "["}.get(self.family)
-        if openings is None:
-            openings = "[{" if count is not None else "["
-        if not opening or opening not in openings:
+        if not opening or opening not in ("[{" if count is not None else "["):
             raise _Unsure()
-        closing = {"[": "]", "(": ")", "{": "}"}[opening]
+        closing = "]" if opening == "[" else "}"
         self.at += 1
-        items, comma = [], False
+        items = []
         while not text.startswith(closing, self.at):
             if items:
-                if opening == "(" and len(items) == 1 and text.startswith(",)", self.at):
-                    # A Python tuple of one: `(5,)`.
-                    comma = True
-                    self.at += 1
-                    break
                 self.expect(", ")
             items.append(self.element(depth))
         self.at += 1
-        if opening == "(" and len(items) == 1 and not comma:
-            # `(5)` is no tuple.
-            raise _Unsure()
         if count is not None and count != len(items):
             raise _Unsure()
         return items
@@ -154,7 +145,7 @@ class _Reader:
     def element(self, depth):
         text, at = self.text, self.at
         if self.family != "java" and (
-            text.startswith(("[", "("), at) or (self.family == "c" and _SIZE.match(text, at))
+            text.startswith("[", at) or (self.family == "c" and _SIZE.match(text, at))
         ):
             return self.sequence(depth + 1)
         decoded = self.literal(inner=True)
@@ -181,8 +172,6 @@ class _Reader:
         decoded = _joined(units, self.family)
         if quote == "'" and self.family != "python" and len(decoded) != 1:
             # A char literal holds one character.
-            raise _Unsure()
-        if inner and self.family == "python" and len(decoded) > _PYTHON_INNER:
             raise _Unsure()
         if inner and self.family == "java" and quote == '"':
             if len(decoded) == _JAVA_INNER and decoded.endswith("…"):
@@ -245,11 +234,17 @@ def _joined(units, family):
 
 
 def _number(found):
+    """The number token, where SQLite reads it as written: an integer of 64 bits, or a
+    decimal a double holds to as many digits as it has (a C `long double`'s `1e-4000`
+    would read as 0, and `1.0000000000000000001` as 1)."""
     token = found[0]
     if found[1] is None and found[2] is None:
         if not -(2**63) <= int(token) < 2**63:
             raise _Unsure()
-    elif float(token) in (float("inf"), float("-inf")):
+        return _Raw(token)
+    number = float(token)
+    digits = re.split("[eE]", token.lstrip("-"))[0].replace(".", "").lstrip("0")
+    if math.isinf(number) or Decimal(f"{number:.{max(len(digits), 1) - 1}e}") != Decimal(token):
         raise _Unsure()
     return _Raw(token)
 
@@ -265,9 +260,10 @@ def _json(item):
 def elements(value, language):
     """A list's or array's elements as a JSON array (`[490, 484, 497]`), where ``value``
     is a preview Peeky reads exactly for ``language`` (the run's: runs.language), else
-    None. Registered as the SQL function elements(value, language)."""
+    None; never a Python list's (see the module's docstring). Registered as the SQL
+    function elements(value, language)."""
     family = _family(value, language)
-    if family is None:
+    if family is None or family == "python":
         return None
     reader, count = _Reader(value, family), None
     if family == "java":
@@ -286,22 +282,28 @@ def elements(value, language):
     return _json(items)
 
 
-def text(value, language):
+def text(value, language, kind):
     """A string's or char's text without its quotes and escapes (`'Göteborg'` gives
-    `Göteborg`), where ``value`` is a literal Peeky decodes exactly for ``language``, else
-    None. Registered as the SQL function text(value, language)."""
+    `Göteborg`), where ``value`` is a literal Peeky decodes exactly for ``language`` and
+    ``kind`` (the row's type), else None. Registered as the SQL function text(value,
+    language, type)."""
     family = _family(value, language)
-    if family is None:
+    if family is None or (family == "python" and kind != "str"):
+        # debugpy shows any other Python value by its own __repr__.
         return None
-    if family == "java" and value.startswith('"'):
-        # java-debug shows a String's text between quotes, unescaped.
-        if len(value) < 2 or not value.endswith('"'):
+    if family == "java":
+        # java-debug shows a char bare (`+`), and a String's text between quotes, unescaped.
+        if kind == "char" and len(value) == 1:
+            shown = value
+        elif kind != "char" and len(value) >= 2 and value[0] == value[-1] == '"':
+            shown = value[1:-1]
+        else:
             return None
         try:
-            value[1:-1].encode("utf-8")
+            shown.encode("utf-8")
         except UnicodeError:
             return None
-        return value[1:-1]
+        return shown
     reader = _Reader(value, family)
     if family == "c" and (address := _ADDRESS.match(value)):
         # The text a C or C++ pointer or reference points at.
