@@ -5705,9 +5705,9 @@ def _table(result, short_names=True):
 
 
 def crash_text(crash):
-    """A crash's summary (#342), as the worker gave it: "signal SIGABRT, in
-    __pthread_kill (outside the program's sources) in a call from main at abort.cpp:12, a
-    C++ exception that was not caught"."""
+    """A crash's summary (#342), as the worker gave it: "signal SIGABRT, outside the
+    program's sources, in a call from main at abort.cpp:12, after a C++ exception that
+    nothing caught"."""
     text = str(crash.get("description") or "the debugger did not say what")
     nearest = crash.get("location")
     function = display_function(crash.get("function")) or "?"

@@ -29,7 +29,7 @@ The last column is the `retryable` field.
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached. | Narrow the request. | no |
 | `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
-| `PROGRAM_CRASHED` (probe result) | A C or C++ program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
+| `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
