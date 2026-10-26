@@ -2,16 +2,26 @@
 (`strlen(NULL)`), a failed `assert`, an uncaught C++ exception and `std::terminate` stop
 in libc, the C++ runtime or `abort`, outside the program's sources. Each is the program's
 crash (`PROGRAM_CRASHED`), with its output so far and the nearest frame of its own code,
-not a debugger failure that drops the output; a fault in the program's own code is too."""
+not a debugger failure that drops the output; a fault in the program's own code is too.
+A signal the program handles, and a C++ throw or catch filter's stop, are no crash: the
+probe lets the program go on (review of #342). The crash's frame is checked against the
+build's module, as `inspect` checks one."""
 
 import json
 import os
 import shutil
 import subprocess
+import threading
+import time
+from pathlib import Path
 
 import pytest
 
 from peeky.cli import main
+from peeky.client import Client
+from peeky.errors import PeekyError
+from peeky.native import NativeTarget
+from peeky.worker import make_server
 
 CRASH = """#include <assert.h>
 #include <stdio.h>
@@ -59,6 +69,36 @@ int main(int argc, char **argv) {
             std::terminate(); /* TERMINATE */
     }
     std::printf("done %d\\n", n); /* DONE */
+    return 0;
+}
+"""
+
+
+HANDLED = """#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+
+static volatile sig_atomic_t got;
+
+static void on_signal(int number) { got = number; }
+
+int main(int argc, char **argv) {
+    int n = argc;
+    signal(SIGINT, on_signal);
+    signal(SIGPIPE, on_signal);
+    signal(SIGABRT, on_signal);
+    printf("start %d\\n", n); /* START */
+    fflush(stdout);
+    if (argv[1][0] == 'i')
+        raise(SIGINT);
+    if (argv[1][0] == 'p') {
+        int ends[2];
+        if (pipe(ends) == 0 && close(ends[0]) == 0)
+            n = (int)write(ends[1], "x", 1);
+    }
+    if (argv[1][0] == 'a')
+        raise(SIGABRT);
+    printf("done %d\\n", n); /* DONE */
     return 0;
 }
 """
@@ -172,6 +212,24 @@ def test_a_fault_in_libc_an_assert_and_a_fault_in_the_program_are_its_crashes(cc
 
 
 @pytest.mark.timeout(300)
+def test_a_signal_the_program_handles_is_no_crash_and_the_probe_goes_on(cc, capsys):
+    Path("handled.c").write_text(HANDLED)
+    start = line_of(HANDLED, "START")
+    # On the previous head: PROGRAM_CRASHED for SIGABRT; on main, DEBUGGER_ERROR.
+    for argument, name in (("i", "SIGINT"), ("p", "SIGPIPE"), ("a", "SIGABRT")):
+        code, result = probe(capsys, "handled.c", start, argument)
+        assert code == 0 and result["status"] == "completed", (name, result)
+        assert "crash" not in result and "error" not in result, (name, result)
+        assert [row["value"] for row in result["rows"]] == ["2"], result["rows"]
+        assert "start 2\n" in result["output"] and "done " in result["output"], result
+        # Where the debugger stopped on it (LLDB on Linux stops on SIGPIPE, macOS's not).
+        stopped = [w for w in result.get("warnings", ()) if "let the program go on" in w]
+        assert all(f"stopped on signal {name}, which Peeky" in w for w in stopped), stopped
+        if name != "SIGPIPE":
+            assert len(stopped) == 1, result
+
+
+@pytest.mark.timeout(300)
 def test_cpp_an_uncaught_exception_is_the_programs_crash_with_its_output(cpp_dir, capsys):
     before = line_of(ABORT, "BEFORE")
     code, result = probe(capsys, "abort.cpp", before, "x")
@@ -246,3 +304,89 @@ def test_cpp_a_session_at_the_crash_reads_only_the_programs_frames(cpp_dir, caps
         assert f"`session inspect --frame {nearest}` reads that frame of your code]" in out, out
     finally:
         main(["session", "close"])
+
+
+@pytest.fixture
+def served(cxx, tmp_path):
+    """A worker in this process, for a C++ session on abort.cpp: its DAP and its runtime are
+    at hand (a C++ throw filter, which no Peeky command sets; a module that isn't the
+    build's)."""
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "abort.cpp").write_text(ABORT)
+    target = NativeTarget(
+        sources=("abort.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT") if cxx == "clang" else None,
+    )
+    token = "native-crash-tests-token-123456"
+    server = make_server(root, token, 0, adapter=target)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server, Client(f"http://127.0.0.1:{server.server_port}", token)
+    server.worker.close()
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=3)
+
+
+def wait_stop(client, session):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        state = client.call("wait", **session, timeout=1)
+        if state["state"] != "running":
+            return state
+    pytest.fail("no stop")
+
+
+@pytest.mark.timeout(300)
+def test_cpp_a_throw_or_catch_filters_stop_is_no_crash(served):
+    server, client = served
+    before = line_of(ABORT, "BEFORE")
+    started = client.call("launch", program="abort.cpp", breakpoints=[{"line": before}], args=[])
+    session = {"session_id": started["session_id"]}
+    state = wait_stop(client, session)
+    assert state["reason"] == "breakpoint", state
+    # lldb-dap 18 and 20 report a filter's stop as `exception`, as they do a signal's.
+    server.worker.dap.request("setExceptionBreakpoints", {"filters": ["cpp_throw", "cpp_catch"]})
+    client.call("continue", **session, stop_id=state["stop_id"])
+    state = wait_stop(client, session)
+    assert state["state"] == "stopped" and state["reason"] == "exception", state
+    # On the previous head: `crash`, and "the program crashed"; on main, DEBUGGER_ERROR.
+    assert "crash" not in state, state
+    with pytest.raises(PeekyError) as refused:
+        client.call("inspect", **session, stop_id=state["stop_id"])
+    error = refused.value.payload
+    assert error["code"] == "INVALID_REQUEST" and not error["session_closed"], error
+    assert "where the program stopped (" in error["message"], error
+    assert "crash" not in error["message"], error
+    # The session goes on; the program catches what it throws.
+    server.worker.dap.request("setExceptionBreakpoints", {"filters": []})
+    client.call("continue", **session, stop_id=state["stop_id"])
+    state = wait_stop(client, session)
+    assert state["reason"] == "breakpoint", state
+
+
+@pytest.mark.timeout(300)
+def test_cpp_a_crash_frame_whose_module_is_not_the_builds_fails_closed(served):
+    server, client = served
+    throw = line_of(ABORT, "THROW")
+    started = client.call("launch", program="abort.cpp", breakpoints=[{"line": throw}], args=["x"])
+    session = {"session_id": started["session_id"]}
+    state = wait_stop(client, session)
+    assert state["reason"] == "breakpoint", state
+    # The program's frame at the crash then lies in a module that isn't the prepared one.
+    server.worker.runtime.module_identity = "0" * 32
+    client.call("continue", **session, stop_id=state["stop_id"])
+    with pytest.raises(PeekyError) as failed:
+        wait_stop(client, session)
+    # On the previous head: a `crash` naming main at abort.cpp, from `validate_stop` alone.
+    error = failed.value.payload
+    assert error["code"] == "DEBUGGER_ERROR" and error["session_closed"], error
+    assert "module" in error["message"], error

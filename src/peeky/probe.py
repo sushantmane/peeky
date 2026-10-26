@@ -38,6 +38,9 @@ from peeky.worker import (
 )
 
 MAX_SELECTORS = 32
+# How many times in a row a probe lets the program go on from the same `exception` or
+# `signal` stop that is no crash (a macOS fault it handles: LLDB stops there again).
+REPEATED_STOPS = 20
 MAX_SETS = 8
 MAX_HITS = 100
 # The highest hit a --set-at may name: its line's stops are counted, not captured.
@@ -4147,8 +4150,10 @@ def run_probe(
     # None (a failure or the timeout); and the change being made when one failed: for
     # each request's outcome (`_set_outcomes`).
     finished, attempt = None, None
-    # What the debugger said of the program's crash, where it crashed (#342).
-    crash = None
+    # What the debugger said of the program's crash, where it crashed (#342); and the
+    # other `exception` or `signal` stops the probe let the program go on from, by what
+    # the debugger said, with how many came in a row at one place.
+    crash, passed, again = None, {}, (None, 0)
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # Each --set-at, with its line in the build that runs (#137).
@@ -4424,11 +4429,34 @@ def run_probe(
                     say("all requested hits captured; ending the probe now")
                     break
                 continue
+            if reason in CRASH_STOPS and not isinstance(state.get("crash"), dict):
+                # Not a proven crash (review of #342): a signal the program may handle
+                # (SIGINT, SIGPIPE), a C++ throw or catch filter's stop, or a fatal one
+                # whose handlers can't be read. Nothing is read; the program goes on.
+                what = str(body.get("description") or f"reason: {reason}")[:300]
+                passed[what] = passed.get(what, 0) + 1
+                place = (what, state.get("location"))
+                again = (place, again[1] + 1 if again[0] == place else 1)
+                if again[1] >= REPEATED_STOPS:
+                    raise RuntimeError(
+                        f"The program stopped on {what} at {state.get('location')} again each "
+                        f"time the probe let it go on ({again[1]} times): the debugger doesn't "
+                        "let it past, so the probe ends here"
+                    )
+                for call in reversed(returning):
+                    rows.extend(
+                        _never_returned(call, f"the program stopped on {what} before it returned")
+                    )
+                returning.clear()
+                worker.dispatch("continue", stop)
+                continue
+            again = (None, 0)
             if reason in CRASH_STOPS:
-                # The program crashed (#342): a fault, a signal, or `abort` after an
-                # uncaught C++ exception. Nothing more is read or changed: the worker's
-                # summary says where, and the probe ends with the program stopped there.
-                crash = state.get("crash") if isinstance(state.get("crash"), dict) else {}
+                # The program crashed (#342): a fatal signal it neither handles nor
+                # ignores, from a fault or `abort` (after an uncaught C++ exception).
+                # Nothing more is read or changed: the worker's summary says where, and
+                # the probe ends with the program stopped there.
+                crash = dict(state["crash"])
                 if not crash.get("description") and isinstance(body.get("description"), str):
                     crash = {**crash, "description": body["description"][:300]}
                 if "location" not in crash and state.get("location"):
@@ -4801,6 +4829,14 @@ def run_probe(
             for call in reversed(returning):
                 rows.extend(_never_returned(call, "the probe timed out before it returned"))
             returning.clear()
+        for what, count in passed.items():
+            warnings.append(
+                f"The probe let the program go on after it stopped on {what}"
+                + (f" ({count} times)" if count > 1 else "")
+                + ", which Peeky doesn't take for a crash. The debugger may not deliver a "
+                "signal to the program, so its run after that stop can differ from one "
+                "without Peeky."
+            )
         report = reported = worker.dispatch("report", session)
         at_hits = probe.until == "hits" and status == "completed" and hits >= probe.limit
         result.update(

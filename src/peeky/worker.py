@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import tempfile
 import threading
 import time
@@ -59,9 +60,18 @@ RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
 # Stops where a user's step left the thread, maybe outside the program's sources: its
 # end, or (LLDB) the point another thread's stop at the same time caught it (#162).
 STEP_STOPS = frozenset({"step", "interrupted"})
-# Stops where the program crashed (#342): a signal, a fault, or `abort` after an uncaught
-# C++ exception or a failed `assert`. lldb-dap calls them all `exception`.
+# Stops that may be a crash (#342): lldb-dap calls every signal stop `exception`, as it
+# does a C++ throw or catch filter's. Only some are crashes (``fatal_signal``).
 CRASH_STOPS = frozenset({"exception", "signal"})
+# Signals whose default action ends the program, raised by its own fault or `abort`: a stop
+# on one is a crash where the program neither handles nor ignores it (review of #342).
+FATAL_SIGNALS = ("SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL", "SIGFPE")
+# A macOS Mach exception, as LLDB describes it, and the signals it becomes.
+MACH_SIGNALS = {
+    "EXC_BAD_ACCESS": ("SIGSEGV", "SIGBUS"),
+    "EXC_BAD_INSTRUCTION": ("SIGILL",),
+    "EXC_ARITHMETIC": ("SIGFPE",),
+}
 # The frames `inspect --frame N` and a crash's summary may list: `inspect` lists 10, or
 # up to frame N; a crash's nearest frame of the program's own code is looked for in these.
 MAX_FRAMES = 64
@@ -314,9 +324,10 @@ class DebugWorker:
         self.stop_outside = self.stop_returns = self.co_served = False
         # Why the stop's frame is not read: the debugger shows it in a macro's definition.
         self.stop_macro = None
-        # What a crash stop tells (#342): the debugger's description, and the nearest frame
-        # of the program's own code.
-        self.stop_crash = None
+        # What an `exception` or `signal` stop tells (#342): the debugger's description,
+        # and the nearest frame of the program's own code; and the same where it is a
+        # proven crash.
+        self.stop_signal = self.stop_crash = None
         # Where the last step started (#155): the function it may leave, and the stack
         # its return must come back to, to tell whose value a debugger lists after it;
         # and, while a step out runs, what watches its caller (NativeSession.watch_return).
@@ -787,19 +798,28 @@ class DebugWorker:
             return None
 
     def read_crash(self, runtime, body):
-        """What a crash stop tells (#342), for display; nothing of any frame is read.
+        """What an `exception` or `signal` stop tells (#342), for display; nothing of any
+        frame is read. (summary, crashed): ``crashed`` is True only where the stop is a
+        fatal signal the program neither handles nor ignores (``fatal_signal``).
 
         ``description``: the debugger's ("signal SIGABRT"). ``outside_program``: whether
         it stopped outside the program's sources (in libc, the C++ runtime, `abort`).
         ``frame``, ``function`` and ``location``: the nearest frame of the program's own
         code, among the first MAX_FRAMES. ``uncaught_exception``: the C++ runtime found no
         handler for a thrown exception (`__cxa_throw` called `std::terminate`). That frame
-        is checked against the prepared build, as `inspect` checks one: a mismatch in the
-        program's own sources is provenance, and fails closed.
+        is checked against the prepared build and its module, as `inspect` checks one: a
+        mismatch is provenance, and fails closed.
         """
         crash = {}
         if isinstance(text := body.get("description"), str) and text.strip():
             crash["description"] = text.strip()[:300]
+        try:
+            # lldb-dap: `signal`, `exception` (a Mach exception), or the filter's name.
+            info = self.dap.request("exceptionInfo", {"threadId": self.thread_id}, timeout=2)
+            kind = info.get("exceptionId") if isinstance(info, dict) else None
+        except Exception:
+            kind = None
+        crashed = self.fatal_signal(kind, crash.get("description", "")) is True
         try:
             stack = self.dap.request(
                 "stackTrace", {"threadId": self.thread_id, "levels": MAX_FRAMES}, timeout=2
@@ -807,9 +827,9 @@ class DebugWorker:
             frames = [f for f in stack.get("stackFrames") or () if isinstance(f, dict)]
         except Exception:
             # Best effort, as the stop's location is: nothing more is said.
-            return crash
+            return crash, crashed
         if not frames:
-            return crash
+            return crash, crashed
         crash["outside_program"] = not _inside_program(runtime, frames[0])
         names = [str(frame.get("name") or "") for frame in frames]
         thrown = next((i for i, name in enumerate(names) if "__cxa_throw" in name), None)
@@ -819,6 +839,8 @@ class DebugWorker:
         for index, frame in enumerate(frames[:MAX_FRAMES]):
             if _inside_program(runtime, frame):
                 runtime.validate_stop(frame)
+                if validate_debugger := getattr(runtime, "validate_debugger", None):
+                    validate_debugger(self.dap, frame)
                 path = frame["source"]["path"]
                 crash.update(
                     frame=index,
@@ -826,17 +848,37 @@ class DebugWorker:
                     location=f"{_display_path(runtime, path)}:{frame.get('line')}",
                 )
                 break
-        return crash
+        return crash, crashed
+
+    def fatal_signal(self, kind, description):
+        """Whether an `exception` or `signal` stop is a crash (review of #342): True for a
+        signal of FATAL_SIGNALS (a macOS Mach exception that becomes one, or LLDB's
+        `hit program assert`) that the program neither handles nor ignores, by its signal
+        masks; None where they can't be read; else False: a C++ throw or catch filter's
+        stop, or any other signal, such as a SIGINT or SIGPIPE the program may handle."""
+        if kind not in (None, "signal", "exception"):
+            return False
+        names = _stop_signals(description)
+        if not names or not all(name in FATAL_SIGNALS for name in names):
+            return False
+        masks = _signal_dispositions(getattr(self.dap, "process_pid", None))
+        numbers = [getattr(signal, name, None) for name in names]
+        if masks is None or None in numbers:
+            return None
+        caught, ignored = masks
+        return not any((caught | ignored) >> (int(number) - 1) & 1 for number in numbers)
 
     def crash_refusal(self, frame, index):
-        """Why nothing of ``frame``, outside the program's sources, is read at a crash
-        stop (#342), and which frame of the program's own code to read instead."""
-        crash = self.stop_crash or {}
+        """Why nothing of ``frame``, outside the program's sources, is read at an
+        `exception` or `signal` stop (#342), and which frame of the program's own code to
+        read instead. Only a proven crash is called one."""
+        crash = self.stop_signal or {}
         what = crash.get("description") or f"reason: {self.stop_reason}"
+        happened = "crashed" if self.stop_crash is not None else "stopped"
         text = (
             f"Nothing in frame {index} ({str(frame.get('name') or '?')[:200]}) is read: it is "
             "outside the program's sources, "
-            + ("where the program crashed" if index == 0 else "on the stack of its crash")
+            + (f"where the program {happened}" if index == 0 else "on the stack of its stop")
             + f" ({what})"
         )
         if type(nearest := crash.get("frame")) is int:
@@ -1688,7 +1730,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
-        self.stop_macro = self.stop_crash = None
+        self.stop_macro = self.stop_crash = self.stop_signal = None
         self.step_origin = self.step_held = None
         self.forget_calls()
         self.stop_hit = self.stop_line = self.stop_place = None
@@ -2110,7 +2152,7 @@ class DebugWorker:
             self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
-            self.stop_macro = self.stop_crash = None
+            self.stop_macro = self.stop_crash = self.stop_signal = None
             self.step_origin = self.return_watch = self.step_held = None
             self.reset_calls()
             self.stop_all_threads = False
@@ -2420,11 +2462,10 @@ class DebugWorker:
                     }
                 )
             self.stop_location = self.read_location() if self.stop_id else None
-            self.stop_crash = (
-                self.read_crash(runtime, event.get("body") or {})
-                if self.stop_id and self.stop_reason in CRASH_STOPS
-                else None
-            )
+            self.stop_signal = self.stop_crash = None
+            if self.stop_id and self.stop_reason in CRASH_STOPS:
+                self.stop_signal, crashed = self.read_crash(runtime, event.get("body") or {})
+                self.stop_crash = self.stop_signal if crashed else None
             # Counted like a probe's hits: every stop at the session's breakpoints,
             # including other threads' stops served one by one; never `--to` lines.
             self.classify_hit()
@@ -5536,6 +5577,57 @@ def _display_path(runtime, path):
     shown = Path(source_root) / relative
     # Only a file the user has (a source, not a build product) is shown as theirs.
     return str(shown) if shown.is_file() else path
+
+
+def _stop_signals(description):
+    """The signals a stop's description names (review of #342): LLDB's `signal SIGABRT…`,
+    its assert recognizer's `hit program assert` (SIGABRT), or the signals a macOS Mach
+    exception becomes; () for anything else (a C++ throw filter's `C++ Throw`)."""
+    text = str(description or "").strip()
+    if found := re.match(r"signal (SIG[A-Z0-9]+)\b", text):
+        return (found.group(1),)
+    if text == "hit program assert":
+        return ("SIGABRT",)
+    return next((names for name, names in MACH_SIGNALS.items() if text.startswith(name)), ())
+
+
+def _signal_dispositions(pid):
+    """(caught, ignored): masks of the signals process ``pid`` has a handler for and
+    ignores, bit N - 1 for signal N, read without running anything in it (Linux's
+    /proc/PID/status, macOS's kinfo_proc); None where they can't be read."""
+    if type(pid) is not int or pid <= 1:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            fields = dict(
+                line.split(":", 1)
+                for line in Path(f"/proc/{pid}/status").read_text().splitlines()
+                if ":" in line
+            )
+            return int(fields["SigCgt"].strip(), 16), int(fields["SigIgn"].strip(), 16)
+        except (OSError, KeyError, ValueError):
+            return None
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+    import struct
+
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        # CTL_KERN, KERN_PROC, KERN_PROC_PID: one struct kinfo_proc (648 bytes on 64-bit).
+        mib = (ctypes.c_int * 4)(1, 14, 1, pid)
+        size = ctypes.c_size_t(648)
+        buffer = ctypes.create_string_buffer(648)
+        if libc.sysctl(mib, 4, buffer, ctypes.byref(size), None, 0) != 0 or size.value != 648:
+            return None
+        raw = buffer.raw
+        # extern_proc: p_pid at 40; p_sigignore and p_sigcatch at 232 and 236.
+        if struct.unpack_from("i", raw, 40)[0] != pid:
+            return None
+        ignored, caught = struct.unpack_from("II", raw, 232)
+        return caught, ignored
+    except (OSError, AttributeError, ValueError, struct.error):
+        return None
 
 
 def _in_program_sources(runtime, frame, root):
