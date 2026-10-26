@@ -144,7 +144,9 @@ has no examples or scripts. Run the recipes from the unpacked source archive,
   same names.
 - A `PEEKY_*` tool variable takes a full path, or a program's name on `PATH`, such as
   `PEEKY_NATIVE_CC=gcc`. For a name, Peeky prints the file it found: `peeky: PEEKY_NATIVE_CC=gcc:
-  using /usr/bin/gcc …`.
+  using /usr/bin/gcc …`. For rustup's `cargo` and `rustc`, it uses rustup's 1.96.0 toolchain.
+- A run on a worker (`--worker`) builds with the tools its configuration names. This host's
+  `PEEKY_*` tool variables aren't read then.
 - In a Docker container, the debugger needs ptrace. Start the container with
   `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`. Otherwise Docker's default seccomp
   profile refuses a call LLDB makes as it launches the program.

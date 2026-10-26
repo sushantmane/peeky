@@ -2,7 +2,9 @@
 examples; tool variables that name a program on PATH."""
 
 import fnmatch
+import json
 import re
+import socket
 import sys
 import tomllib
 from pathlib import Path
@@ -128,3 +130,94 @@ def test_a_bare_name_not_on_path_says_what_to_do(toolchain, monkeypatch):
         "PEEKY_NATIVE_CXX=g++-99: no program named g++-99 on PATH; install it, or set "
         "PEEKY_NATIVE_CXX to its full path",
     )
+
+
+def test_a_relative_path_entry_is_not_called_a_link(toolchain, monkeypatch, capsys):
+    # Review of the PATH lookup: `which` gives `bin/cc` for a relative PATH entry; that
+    # is not a link, and the note gives the absolute path.
+    (toolchain / "bin" / "cc").write_text("#!/bin/sh\n")
+    (toolchain / "bin" / "cc").chmod(0o755)
+    monkeypatch.setenv("PATH", "bin:/usr/bin:/bin")
+    monkeypatch.setenv("PEEKY_NATIVE_CC", "cc")
+    assert cli.native_tools("c")["compiler"] == str(toolchain / "bin" / "cc")
+    assert capsys.readouterr().err == (
+        f"peeky: PEEKY_NATIVE_CC=cc: using {toolchain / 'bin' / 'cc'}, the first cc on PATH\n"
+    )
+
+
+@pytest.mark.parametrize("link", ["symbolic", "hard"])
+def test_rustups_cargo_and_rustc_proxies_name_its_pinned_toolchain(
+    tmp_path, monkeypatch, capsys, link
+):
+    # Review of the PATH lookup: `cargo` and `rustc` on PATH are rustup's proxies, links
+    # to rustup itself. Taken as found, both were rustup, and the build was refused as not
+    # "the same real toolchain sysroot binaries".
+    from peeky.rust import _toolchain
+
+    here = tmp_path.resolve()
+    proxies, toolchain = here / "cargo-bin", here / "toolchains" / "1.96.0" / "bin"
+    proxies.mkdir()
+    toolchain.mkdir(parents=True)
+    (toolchain.parent / "lib" / "rustlib").mkdir(parents=True)
+    (proxies / "rustup").write_text(
+        f'#!/bin/sh\n[ "$1 $2 $3" = "which --toolchain 1.96.0" ] || exit 1\necho "{toolchain}/$4"\n'
+    )
+    tool = here / "tool"
+    for program in (proxies / "rustup", toolchain / "cargo", toolchain / "rustc", tool):
+        program.write_text(program.read_text() if program.exists() else "#!/bin/sh\n")
+        program.chmod(0o755)
+    for name in ("cargo", "rustc"):
+        if link == "symbolic":
+            (proxies / name).symlink_to(proxies / "rustup")
+        else:
+            (proxies / name).hardlink_to(proxies / "rustup")
+    monkeypatch.setenv("PATH", f"{proxies}:/usr/bin:/bin")
+    monkeypatch.setenv("PEEKY_RUST_CARGO", "cargo")
+    monkeypatch.setenv("PEEKY_RUST_RUSTC", "rustc")
+    for name in ("DAP", "DWARFDUMP", "LINKER", "DSYMUTIL"):
+        monkeypatch.setenv(f"PEEKY_RUST_{name}", str(tool))
+    monkeypatch.setattr(cli, "_ON_PATH_SAID", set(), raising=False)
+    tools = cli.rust_tools()
+    assert (tools["cargo"], tools["rustc"]) == (str(toolchain / "cargo"), str(toolchain / "rustc"))
+    assert _toolchain(tools["cargo"], tools["rustc"]) == (tools["cargo"], tools["rustc"])
+    assert capsys.readouterr().err == "".join(
+        f"peeky: PEEKY_RUST_{name.upper()}={name}: using {toolchain / name}, rustup's 1.96.0 "
+        f"{name}: the first {name} on PATH, {proxies / name}, is rustup's proxy\n"
+        for name in ("cargo", "rustc")
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["probe", "main.c", "--at", "2", "--capture", "x", "--no-save"],
+        ["session", "start", "main.c", "--at", "2", "--name", "remote-tools"],
+    ],
+)
+def test_a_run_on_a_worker_neither_looks_for_nor_names_this_hosts_tools(
+    tmp_path, monkeypatch, capsys, command
+):
+    # Review of the PATH lookup: the worker's configuration names its tools. A remote
+    # probe or session looked for the client's, said `using …` for a compiler it would
+    # never run, and failed where the client had none.
+    here = tmp_path.resolve()
+    (here / "bin").mkdir()
+    (here / "bin" / "cc351").write_text("#!/bin/sh\n")
+    (here / "bin" / "cc351").chmod(0o755)
+    (here / "main.c").write_text("int main(void) {\n  int x = 1;\n  return x;\n}\n")
+    monkeypatch.chdir(here)
+    for name in ("CC", "CXX", "DAP", "DWARFDUMP", "DSYMUTIL", "SYSROOT"):
+        monkeypatch.delenv(f"PEEKY_NATIVE_{name}", raising=False)
+    monkeypatch.setenv("PEEKY_NATIVE_CC", "cc351")  # on PATH; no adapter or dwarfdump is
+    monkeypatch.setenv("PATH", str(here / "bin"))
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(here / "state"))
+    monkeypatch.setenv(cli.WORKER_TOKEN_ENV, "a-worker-token-of-some-length")
+    monkeypatch.setattr(cli, "_ON_PATH_SAID", set(), raising=False)
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{unused.getsockname()[1]}"
+    code = cli.main([*command, "--worker", url, "--json"])
+    out, err = capsys.readouterr()
+    assert code != 0
+    assert json.loads(out)["error"]["code"] == "UNREACHABLE", out
+    assert "PEEKY_NATIVE" not in err and "Cannot find" not in out
