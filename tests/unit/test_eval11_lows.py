@@ -59,9 +59,8 @@ def test_the_after_set_line_says_only_scalar_rows_are_left_out():
     assert "after-set  47    rota::plan  team" in text, text
     assert "after-set  47    rota::plan  week" not in text, text
     assert (
-        "after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or "
-        "whole text; pointer, object and preview rows stay, as they may hide a change; "
-        "`--json` has every row)"
+        "after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` "
+        "has all"
     ) in text, text
 
 
@@ -78,9 +77,8 @@ def test_the_after_set_line_says_why_an_equal_java_string_stays():
     assert "after-set  47    rota::plan  p.name" in text, text
     assert "after-set  47    rota::plan  free" not in text, text
     assert (
-        "after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or "
-        "char; object rows stay, a String's too: a Java String is an object, and an equal text "
-        "may be a new String; `--json` has every row)"
+        "after-set: 1 number, flag or char row equal to the observed value left out (a String "
+        "stays: it is an object); `--json` has all"
     ) in text, text
 
 
@@ -89,15 +87,19 @@ def test_one_change_past_the_first_few_is_shown_whole():
     # to 4`, where the change itself fits on that line.
     changes = _all("stats.lowest", [("101", "101"), ("58", "101"), ("72", "101"), ("64", "101")])
     text = _table(_result(interventions=changes))
-    assert "set stats.lowest: 64 -> 101  (--set-at line 26@all, hit 4, in main)" in text, text
+    assert (
+        "set stats.lowest: 64 -> 101  (--set-at line 26@all, stop 4 of line 26, in main)" in text
+    ), text
     assert "more change" not in text and "more writes" not in text, text
     # Two or more past the first few are counted; at one hit, by its number.
     more = _all("n", [("1", "2")] * 5)
     text = _table(_result(interventions=more))
-    assert "set n: 2 more changes by --set-at line 26@all, at hits 4 to 5 (" in text, text
+    assert "set n: 2 more changes by --set-at line 26@all, at stops 4 to 5 of line 26 (" in text, (
+        text
+    )
     more[4]["hit"] = 4
     text = _table(_result(interventions=more))
-    assert "set n: 2 more changes by --set-at line 26@all, at hit 4 (" in text, text
+    assert "set n: 2 more changes by --set-at line 26@all, at stop 4 of line 26 (" in text, text
 
 
 def _proven(changes):
@@ -113,23 +115,34 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
     pairs = [("3", "0"), ("0", "0"), ("3", "0"), ("0", "0"), ("2", "0"), ("0", "0"), ("1", "0")]
     changes = _proven(_all("free", pairs, function="Seats.block(boolean[],int)"))
     text = _table(_result(interventions=changes, language="java"))
-    assert "set free: 3 -> 0  (--set-at line 26@all, hit 1, in Seats.block(" in text, text
-    assert "set free: 0 -> 0, no change  (--set-at line 26@all, hit 2, in Seats.block(" in text
+    assert "set free: 3 -> 0  (--set-at line 26@all, stop 1 of line 26, in Seats.block(" in text, (
+        text
+    )
     assert (
-        "set free: 4 more writes by --set-at line 26@all, at hits 4 to 7: 2 changes and 2 with "
+        "set free: 0 -> 0, no change  (--set-at line 26@all, stop 2 of line 26, in Seats.block("
+        in text
+    )
+    assert (
+        "set free: 4 more writes by --set-at line 26@all, at stops 4 to 7 of line 26: 2 changes and 2 with "
         "no change (`--json` lists each)"
     ) in text, text
     every = _proven(_all("free", [("0", "0")] * 5))
     text = _table(_result(interventions=every, language="java"))
-    assert "set free: 2 more writes by --set-at line 26@all, at hits 4 to 5, each with no" in text
+    assert (
+        "set free: 2 more writes by --set-at line 26@all, at stops 4 to 5 of line 26, each with no"
+        in text
+    )
     # Review of PR #314: java-debug shows a char bare, so five `+ -> +` writes were "2 more
     # changes". The worker's proof decides it, for a root local (`sign`) and a field alike.
     for name in ("sign", "chars.mark"):
         chars = _proven(_all(name, [("+", "+")] * 5))
         text = _table(_result(interventions=chars, language="java"))
-        assert f"set {name}: + -> +, no change  (--set-at line 26@all, hit 3, in main)" in text
         assert (
-            f"set {name}: 2 more writes by --set-at line 26@all, at hits 4 to 5, each with no "
+            f"set {name}: + -> +, no change  (--set-at line 26@all, stop 3 of line 26, in main)"
+            in text
+        )
+        assert (
+            f"set {name}: 2 more writes by --set-at line 26@all, at stops 4 to 5 of line 26, each with no "
             "change (`--json` lists each)"
         ) in text, text
     # Round 2: the text alone is never proof (a Java String, a Python `1000`, a float, or
@@ -138,11 +151,11 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
     alike = _all("x", [("1000", "1000")] * 5, line=9)
     text = _table(_result(interventions=alike, language="python"))
     assert (
-        "set x: 1000 -> 1000, same text, not proven unchanged  (--set-at line 9@all, hit 1, in "
+        "set x: 1000 -> 1000, same text, not proven unchanged  (--set-at line 9@all, stop 1 of line 9, in "
         "main)"
     ) in text, text
     assert (
-        "set x: 2 more writes by --set-at line 9@all, at hits 4 to 5, each with the same text, "
+        "set x: 2 more writes by --set-at line 9@all, at stops 4 to 5 of line 9, each with the same text, "
         "not proven unchanged (`--json` lists each)"
     ) in text, text
     assert "more change" not in text, text
@@ -152,7 +165,7 @@ def test_a_write_of_the_value_already_there_is_marked_and_counted_apart():
         mixed[index]["unchanged"] = True
     text = _table(_result(interventions=mixed))
     assert (
-        "set x: 5 more writes by --set-at line 26@all, at hits 4 to 8: 2 changes, 2 with no "
+        "set x: 5 more writes by --set-at line 26@all, at stops 4 to 8 of line 26: 2 changes, 2 with no "
         "change and 1 with the same text, not proven unchanged (`--json` lists each)"
     ) in text, text
     assert not probe_module.unchanged({"before": "1", "after": "1"})

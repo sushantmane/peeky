@@ -114,4 +114,4 @@ def test_an_all_resets_a_java_field_wherever_the_input_agrees(debounce, capsys):
     after = [row for row in result["rows"] if row["phase"] == "after-set"]
     assert {row["hit"] for row in after} == set(range(1, result["hits"] + 1))
     text = _table(result)
-    assert f"(--set-at line {agrees}@all, hit 1, in " in text, text
+    assert f"(--set-at line {agrees}@all, stop 1 of line {agrees}, in " in text, text

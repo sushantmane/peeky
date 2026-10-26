@@ -844,8 +844,8 @@ def test_the_first_difference_after_unequal_stops_is_a_real_one(
     count, after = result["notes"]
     assert "Run 1 stopped 3 times at its line and run 2 4" in count, count
     assert after == (
-        "the first difference at a hit is at hit 2; 2 of the 4 rows at a hit come after it, "
-        "where pairing by hit number may compare different calls: read those with `join`"
+        "the first real difference at a hit is at hit 2; 2 of the 4 rows at a hit come after "
+        "it, where pairing by hit number may compare different calls: read those with `join`"
     )
 
 

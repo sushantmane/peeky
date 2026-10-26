@@ -100,11 +100,11 @@ def test_an_all_resets_a_python_count_wherever_the_input_agrees(state, capsys):
     # A Python int written alike may be another object: the same text, not proven
     # unchanged, counted apart from the changes (review of PR #314).
     assert (
-        f"set count: 0 -> 0, same text, not proven unchanged  (--set-at line {agrees}@all, hit "
-        "1, in debounce)"
+        f"set count: 0 -> 0, same text, not proven unchanged  (--set-at line {agrees}@all, stop "
+        f"1 of line {agrees}, in debounce)"
     ) in text, text
     assert (
-        f"more writes by --set-at line {agrees}@all, at hits 4 to {result['hits']}: 5 changes "
+        f"more writes by --set-at line {agrees}@all, at stops 4 to {result['hits']} of line {agrees}: 5 changes "
         "and 8 with the same text, not proven unchanged"
     ) in text, text
     # A field is refused before the run, @all or not: Python changes only a frame's own

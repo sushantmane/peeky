@@ -1,8 +1,11 @@
 # Peeky Cookbook: Python
 
-This cookbook covers what is different for Python. Read the [COOKBOOK](../COOKBOOK.md) first: it
-has the recipes every language shares. Each section here has the number and title of the COOKBOOK
-section it adds to. For a one-page summary of the Python rules, see [python.md](python.md).
+**[AGENT_GUIDE.md](../AGENT_GUIDE.md) and [python.md](python.md) cover most tasks.** This cookbook
+is for details, which they cite by section number.
+
+This cookbook covers what is different for Python. The [COOKBOOK](../COOKBOOK.md) has the recipes
+every language shares. Each section here has the number and title of the COOKBOOK section it adds
+to. For a one-page summary of the Python rules, see [python.md](python.md).
 
 Peeky debugs Python with debugpy, Python's debugger.
 

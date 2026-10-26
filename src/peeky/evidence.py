@@ -958,6 +958,9 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # real divergences, a pointer whose type Peeky can't compare across store generations
 # (`_UNTOLD`), whose values differ only in addresses: maybe a change, never the first.
 _REAL_RANK, _UNTOLD_RANK, _ONLY_IN_RANK = 10, 10.5, 15
+# The pointers whose addresses differ: another element's address of a captured array
+# (`_element_first` names an earlier hit of theirs), then the others.
+_ELEMENT_RANK, _ADDRESS_RANK = 11, 12
 # One row per selector (and stop) of a pointer's type rows whose values differ only in
 # addresses, its first hit's: the type's note, how many hits, then `_MOVED_TOO`.
 _TYPE_FOLDED = f"""kind || CASE WHEN COUNT(*) > 1 THEN ' at ' || COUNT(*) || ' hits'
@@ -992,12 +995,13 @@ _RANKED = f"""(
   -- First among the addresses that differ, each at its own hit: another element's address
   -- of the same captured array, which an address alone may explain (#302). With no
   -- qualified value, note is kind.
-  UNION ALL SELECT 11, hit, phase, selector, value_a, value_b, differs, kind, pos FROM pair
+  UNION ALL SELECT {_ELEMENT_RANK}, hit, phase, selector, value_a, value_b, differs, kind, pos
+    FROM pair
     WHERE differs AND qualified IS NULL AND NOT unchanged AND kind LIKE 'the address of %'
   -- As rank 14 below, but the count goes after `addresses differ`, before what to do. With
   -- no qualified value, note is kind: named once, the GROUP BY's terms stay well within
   -- SQLite's limit, the column limit Peeky sets (#302).
-  UNION ALL SELECT 12, hit, phase, selector, value_a, value_b, differs,
+  UNION ALL SELECT {_ADDRESS_RANK}, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses differ at ' || COUNT(*) || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
       || 'selector') || ': its first hit)' || substr(kind, length('addresses differ') + 1)
@@ -1051,9 +1055,9 @@ _RANKED = f"""(
 _DIFF = f"""{_PAIR}
 SELECT {_PAIR_COLUMNS} FROM {_RANKED}
 ORDER BY rank, hit, phase = 'after-set', pos"""
-# The same rows' tiers and hits, for `_after_first`.
+# The same rows' tiers, hits and selectors, for `_after_first` and `_element_first`.
 _DIFF_RANKS = f"""{_PAIR}
-SELECT rank, hit FROM {_RANKED} WHERE hit IS NOT NULL"""
+SELECT rank, hit, selector, pos FROM {_RANKED} WHERE hit IS NOT NULL"""
 # A heap or stack address: 0x, optional leading zeros, then 9-16 significant hex
 # digits that are not all f. NULL, small sentinels, all-ones (-1, MAP_FAILED) and
 # 8-digit data (0xdeadbeef, flags) are values, never masked. One regex, no callback.
@@ -1251,9 +1255,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "where either run did not complete; (sets) says how each change went, as `outputs` does); "
         "then values only one run's intervention changed (an after-set value equal to its hit's "
         "observed one is left out; more than 3 alike are one row, its first hit's); then real "
-        "differences in hit and capture order (the first is the first divergence); then C or C++ "
-        "pointers at another element's address of an array both runs captured (`the address "
-        "of ...`, by address alone: the pointer or the array may have moved), in hit order; "
+        "differences in hit and capture order (the first is the first real divergence); then C or "
+        "C++ pointers at another element's address of an array both runs captured (`the address "
+        "of ...`, by address alone: the pointer or the array may have moved), in hit order, "
+        "with a note naming the first such hit where it comes before the first real difference; "
         "then other values "
         "whose addresses differ where an address may be another element's (a pointer or a "
         "reference, or any C, C++ or Rust value: note `addresses differ: ...`, which says to "
@@ -1274,12 +1279,14 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "masked; never that the hits are the same moments). A selector that differs after an "
         "intervention or an edit may "
         "follow from it, so it is left out of what agrees; where its values line up better at "
-        "other hits, the note says so, that the change may account for it, and that the hits are "
+        "other hits and no key pairs every hit, the note says so, that the change may account "
+        "for it, and that the hits are "
         "not said to line up. Such a note's first line is its verdict (hits pair by, hits pair "
         "as far as, or hits may not line up), then each detail on a line of its own after `- `. "
         "The text table shows a long value from just before where it first "
-        "differs from the other run's, and (sets) as a count and the first change that differs; "
-        "--json has them whole",
+        "differs from the other run's, (output) as output_window gives it (200 characters), and "
+        "(sets) as a count and the changes that fit in 72 characters, from the first that differs "
+        "where not all fit, with how many are not shown; --json has them whole",
         _DIFF,
         _PAIR_PARAMS,
         (),
@@ -1288,9 +1295,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         'Inputs, requested interventions (sets: each [name, value, "requested at '
         'LINE@HIT"], a --set\'s too, with how it went where recorded: ", not made: that hit '
         'never came", ", made at 6 stops; refused at hit 7", ", made at 1 stop before --until '
-        'hits ended the probe"), outcome and program output of two runs',
+        'hits ended the probe"), outcome and program output of two runs, run a first',
         f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
-        f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
+        f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id IS NOT {_A}, run_id",
         _PAIR_PARAMS,
         (),
     ),
@@ -2657,13 +2664,17 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
         return _run(path, name, params, limit)[0]
 
 
-def canned(path, name, params=None, *, limit=DEFAULT_ROWS, table=False):
+def canned(path, name, params=None, *, limit=DEFAULT_ROWS, table=False, short_note=None):
     """(result, text): ``run_query``'s result and, with ``table``, its text table
-    (``query_table``), all read in one snapshot of the store."""
+    (``query_table``, given ``short_note``), all read in one snapshot of the store."""
     params = _checked(name, params)
     with _snapshot(path):
         result, params = _run(path, name, params, limit)
-        text = query_table(path, {**result, "query": name}, params) if table else None
+        text = (
+            query_table(path, {**result, "query": name}, params, short_note=short_note)
+            if table
+            else None
+        )
     return result, text
 
 
@@ -2689,10 +2700,12 @@ def _run(path, name, params, limit):
     if name in ("compare", "diff"):
         notes += _labels(path, bound)
     if name == "diff":
+        ranked = query(path, _DIFF_RANKS, bound, limit=MAX_ROWS)["rows"]
+        notes += _element_first(ranked)
         unaligned, counted = _unaligned(path, bound)
         notes += unaligned
         if counted:
-            notes += _after_first(path, bound)
+            notes += _after_first(ranked)
     if gone := [run for run in held if run not in _present(path, held)]:
         one = len(gone) == 1
         notes.append(
@@ -2774,16 +2787,17 @@ def _unaligned(path, params):
     ], True
 
 
-def _after_first(path, params):
+def _after_first(rows):
     """Where the runs stopped a different number of times (``_unaligned``): how many of
     `diff`'s rows at a hit come after the first hit with a real difference, where pairing
     by number may compare different calls (#201: 20 of rechnung's 22 rows were). Every
     row is kept. The first is among the real divergences only, by their tier
     (``_REAL_RANK``): a pointer whose address differs, an address-only value and a
     qualified one rank after them, and may be no difference (review of PR #294: a
-    pointer's row at hit 1 made the note say hit 1, though the rows led with hit 2).
-    Where no hit has a real difference, there is no note."""
-    rows = query(path, _DIFF_RANKS, params, limit=MAX_ROWS)["rows"]
+    pointer's row at hit 1 made the note say hit 1, though the rows led with hit 2), so
+    the note says "real" (`_element_first` names an earlier element's address that
+    differs). Where no hit has a real difference, there is no note. ``rows`` are
+    `_DIFF_RANKS`'s."""
     hits = [row["hit"] for row in rows if row["rank"] != _ONLY_IN_RANK]
     real = [row["hit"] for row in rows if row["rank"] == _REAL_RANK]
     if not real:
@@ -2793,9 +2807,43 @@ def _after_first(path, params):
     if not later:
         return []
     return [
-        f"the first difference at a hit is at hit {first}; {later} of the {len(hits)} rows "
-        "at a hit come after it, where pairing by hit number may compare different calls: "
-        "read those with `join`"
+        f"the first real difference at a hit is at hit {first}; {later} of the {len(hits)} "
+        "rows at a hit come after it, where pairing by hit number may compare different "
+        "calls: read those with `join`"
+    ]
+
+
+def _element_first(rows):
+    """A note where a C or C++ pointer holds a different element's address of a captured
+    array in each run (``_ELEMENT_RANK``, #312) at an earlier hit than the first real
+    difference (twelfth evaluation: playlist's `now` held `queue[3]`'s address in one run
+    and `queue[2]`'s in the other at hit 4, but its row came after the real differences
+    at hits 5 and 6, though AGENT_GUIDE said `diff` puts the first divergence first). The
+    rows keep their tiers, since layout alone can change an address (review 2 of PR
+    #312), so the note names that hit and its selectors, and never calls them the first
+    difference: a pointer that only `addresses differ` names may differ earlier (most do,
+    as the stack moves between runs, so they are not named). ``rows`` are
+    `_DIFF_RANKS`'s."""
+    elements = [row for row in rows if row["rank"] == _ELEMENT_RANK]
+    real = [row["hit"] for row in rows if row["rank"] == _REAL_RANK]
+    if not elements or not real:
+        return []
+    first = min(row["hit"] for row in elements)
+    if first >= min(real):
+        return []
+    named = list(
+        dict.fromkeys(
+            row["selector"]
+            for row in sorted(elements, key=lambda row: row["pos"])
+            if row["hit"] == first
+        )
+    )
+    one = len(named) == 1
+    return [
+        f"{_quoted(named)} {'holds' if one else 'hold'} a different element's address in each "
+        f"run at hit {first}, before the first real difference (hit {min(real)}); "
+        f"{'its row comes' if one else 'their rows come'} after the real differences, since "
+        "layout alone can change an address"
     ]
 
 
@@ -2864,7 +2912,8 @@ def _structure_apart(path, run):
     left out from then on of what agrees and of the hits that differ, and the note names
     it; its values before still tell. Where its values line up better at other hits,
     the note says so, and that the change may account for it: that still vetoes saying
-    the hits line up (review of PR #269).
+    the hits line up (review of PR #269), unless values that agree pair every hit as a
+    `join` key (``_after_change``).
 
     Where nothing above is found and some values agree between the runs at every hit,
     the note says what agrees, and what pairing by number amounts to: where they are
@@ -3139,7 +3188,7 @@ def _structure_apart(path, run):
     if left_out:
         return [
             _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedged, join)
-        ], hedged is not None
+        ], hedged is not None and not paired
     if not shown:
         return [], False
     differing = [
@@ -3173,14 +3222,20 @@ def _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedge
     that the hits line up (review of PR #269); what was left out, and why; and a sign
     that the hits may not line up among those left out (``hedged``: the selector and
     what it saw), which the change may account for. Where some values that agree are
-    unique across the hits, the verdict is that the hits pair by them, and such a sign
-    comes last (eleventh evaluation: grades' `quiz` 88 at another hit, beside `name`):
-    it does not settle whether the calls were reordered, and is never graded (review of
-    PR #308: a key may be a counter, which is no evidence against a reorder). Else the
+    unique across the hits, the verdict is that the hits pair by them, and such a sign is
+    left out, its selector named with the others left out (twelfth evaluation: after
+    `hits pair by p.name`, three agents read "saw the same values of `desk` in another
+    order … does not settle whether the calls were reordered" as a reorder; the key
+    already pairs the hits, and the verdict's caveat that this does not prove the hits
+    are the same moments stays). Else the
     sign is the verdict. ``paired`` is `_paired`'s lines where some values that agree are
     unique across the hits, as a `join` key; else ``loose`` is the verdict that they pair
     as far as ``shown`` show, and ``agreed`` says what agrees and why it is no key."""
     it = "them" if any(changes.values()) else "it"
+    if paired:
+        # The key pairs every hit: a left-out value's alternate alignment adds nothing but
+        # doubt it cannot settle (twelfth evaluation: three agents read it as a reorder).
+        hedged = None
     others = [selector for selector in left_out if not hedged or selector != hedged[0]]
 
     def leaves(detail):
@@ -3202,16 +3257,7 @@ def _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedge
             "no other selector both agrees between the runs and changes from hit to hit",
         )
     if paired:
-        lines = [*paired, leaves(True)]
-        if hedged:
-            selector, saw = hedged
-            lines += [
-                saw,
-                "that alternate alignment does not settle whether the calls were reordered: "
-                f"`{selector}` may differ because of {_cause(changes, edited, not others)}, "
-                "or match by chance",
-            ]
-        return _note(*lines)
+        return _note(*paired, leaves(True))
     if not hedged:
         return _note(*loose, leaves(True))
     selector, saw = hedged
@@ -3545,9 +3591,14 @@ _PAIRED = {
 }
 # Characters shown before a long value's first difference.
 _LEAD = 40
+# `outputs` shows both runs' arguments whole up to this length.
+_ARGS_WHOLE = 300
 # A set_effect change's values in text: each at most this long, and from this many
 # characters before where they differ.
 _CHANGE_WIDTH, _CHANGE_LEAD = 50, 30
+# A `(sets)` cell in text: its changes, as many as fit in this many characters (three
+# short ones do), then how many more there are.
+_SETS_WIDTH = 72
 
 
 def _window(value, other, width, lead=_LEAD):
@@ -3568,12 +3619,14 @@ def _window(value, other, width, lead=_LEAD):
 
 
 def _sets_text(value, other=None):
-    """A `diff` or `compare` `(sets)` cell in text: how many changes, one of them, and `…`
-    for the others (tenth evaluation: six `--set-at`s made every line of the table 230
-    columns wide). The one shown is the first that differs from the ``other`` run's, so
-    that a difference in a later change's outcome shows (review of PR #278); else the
-    first. Where one is a `LINE@all` (#265), made at every stop of its line, they are
-    counted as requests. None where the cell is not such a list."""
+    """A `diff` or `compare` `(sets)` cell in text: how many changes, then each as
+    `name=value (LINE@HIT)`, its outcome after, as many as fit in ``_SETS_WIDTH`` (tenth
+    evaluation: six `--set-at`s made every line of the table 230 columns wide; twelfth:
+    `2 changes: desk=0 (requested at 58@4), …` hid the second). Where they don't all fit,
+    they start at the first that differs from the ``other`` run's, so that a difference in
+    a later change's outcome shows (review of PR #278), and `…` marks each cut, with how
+    many it hides. Where one is a `LINE@all` (#265), made at every stop of its line, they
+    are counted as requests. None where the cell is not such a list."""
 
     def parsed(text):
         try:
@@ -3586,35 +3639,46 @@ def _sets_text(value, other=None):
             return None
         return sets
 
+    def piece(item):
+        name, set_value, where = (str(part) for part in item)
+        if len(set_value) > _CHANGE_WIDTH:
+            set_value = set_value[: _CHANGE_WIDTH - 1] + "…"
+        return f"{name}={set_value} ({where.removeprefix('requested at ')})"
+
     sets, others = parsed(value), parsed(other) or []
     if sets is None:
         return None
     if not sets:
         return "none"
-    index = next((i for i, item in enumerate(sets) if i >= len(others) or others[i] != item), 0)
-    name, set_value, where = (str(part) for part in sets[index])
-    if len(set_value) > _CHANGE_WIDTH:
-        set_value = set_value[: _CHANGE_WIDTH - 1] + "…"
     many = len(sets) > 1
     noun = "request" if any(re.search(r"@all\b", str(item[2])) for item in sets) else "change"
-    # A restore (#305) is named even where `…` stands for it: a run with one and a run
-    # without it differ in what they asked.
-    restores = [
-        f"{item[0]}=@before ({item[2]})"
-        for i, item in enumerate(sets)
-        if i != index and item[1] == "@before"
-    ]
-    return (
-        f"{len(sets)} {noun}{'s' if many else ''}: "
-        + ("…, " if index else "")
-        + f"{name}={set_value} ({where})"
-        + (", …" if index < len(sets) - 1 else "")
-        + (
-            f"; restore{'s' if len(restores) > 1 else ''}: {', '.join(restores)}"
-            if restores
-            else ""
+    pieces = [piece(item) for item in sets]
+    index = next((i for i, item in enumerate(sets) if i >= len(others) or others[i] != item), 0)
+
+    def shown(start, end):
+        """The cell with ``pieces[start:end]``, and how many it hides, but restores (#305),
+        named even where `…` stands for them: a run with one and a run without it differ in
+        what they asked."""
+        hidden = [i for i in range(len(sets)) if not start <= i < end]
+        restores = [pieces[i] for i in hidden if sets[i][1] == "@before"]
+        left = len(hidden) - len(restores)
+        return (
+            f"{len(sets)} {noun}{'s' if many else ''}: "
+            + ("…, " if start else "")
+            + ", ".join(pieces[start:end])
+            + (", …" if end < len(sets) else "")
+            + (f" ({left} not shown)" if left else ""),
+            restores,
         )
-    )
+
+    start = 0 if len(shown(0, len(sets))[0]) <= _SETS_WIDTH else index
+    end = start + 1
+    while end < len(sets) and len(shown(start, end + 1)[0]) <= _SETS_WIDTH:
+        end += 1
+    text, restores = shown(start, end)
+    if restores:
+        text += f"; restore{'s' if len(restores) > 1 else ''}: {', '.join(restores)}"
+    return text
 
 
 def _change_text(change, shown):
@@ -3664,9 +3728,12 @@ def _changes_text(row, changes, shown):
     return "; ".join(_change_text(change, shown) for change in made) if made else None
 
 
-def table(result, width=120, changes=None):
+def table(result, width=120, changes=None, short_note=None, runs=None):
     """A plain-text table of a query result. A `function` column shows each frame's
     short name (see ``names.function_labels``), with a note: the result keeps it whole.
+    ``short_note``, where given, is asked whether to add that note when one applies,
+    given the runs the table shows (``runs``, else its rows' run_id values, else None):
+    the CLI's says yes once per saved run (twelfth evaluation, laps 6; review of PR #350).
     For a canned query (``result["query"]``) that compares values, a long value shows
     from just before where it first differs from its pair (`_PAIRED`); `diff`'s
     `(sets)` row shows how many changes and the first; set_effect's `interventions`
@@ -3692,9 +3759,21 @@ def table(result, width=120, changes=None):
         value = row[column]
         if column == "function":
             return text(shortened.get(value, value))
+        if query_name == "outputs" and column == "args" and value is not None:
+            # Both runs' arguments whole where they are short enough (twelfth evaluation,
+            # laps 4: 12 reads were cut at 120 characters), else from where they differ.
+            others = [shown(other["args"]) for other in result["rows"] if other is not row]
+            if all(len(item) <= _ARGS_WHOLE for item in [shown(value), *others]):
+                return shown(value)
+            return _window(shown(value), others[0] if len(others) == 1 else None, width)
         if query_name in ("diff", "compare") and row.get("selector") == "(sets)":
             if column in paired and (summary := _sets_text(value, row.get(paired[column]))):
                 return text(summary)
+        if query_name == "diff" and row.get("selector") == "(output)" and column in paired:
+            # Already `output_window`'s 200 characters from before where the outputs first
+            # differ, at one offset in both runs: whole, as COOKBOOK 3.1 says (twelfth
+            # evaluation: a second cut at ``width`` hid the tail of both).
+            return shown(value)
         if column in paired and value is not None and row.get(paired[column]) is not None:
             return _window(shown(value), shown(row[paired[column]]), width)
         if query_name == "set_effect" and column == "interventions" and changes:
@@ -3712,7 +3791,9 @@ def table(result, width=120, changes=None):
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
     ]
     count = result["row_count"]
-    if note := shortened_note(shortened):
+    if runs is None and "run_id" in columns:
+        runs = sorted({row["run_id"] for row in result["rows"] if type(row["run_id"]) is int})
+    if (note := shortened_note(shortened)) and (short_note is None or short_note(runs)):
         lines.append(note)
     # A note of several lines (`diff`'s verdict on how hits pair, then its details) keeps
     # its details under its `note:`.
@@ -3761,7 +3842,7 @@ def _compact_join(path, result, params):
     }
 
 
-def query_table(path, result, params=None):
+def query_table(path, result, params=None, short_note=None):
     """`table` for a canned query's ``result`` (``result["query"]`` names it), run with
     ``params`` from ``prepare``, which name its runs: read again by run id, never as "the
     newest", which a probe may have saved since. For set_effect, with the run's changes,
@@ -3781,7 +3862,8 @@ def query_table(path, result, params=None):
             {"run": params.get("run")},
             limit=MAX_ROWS,
         )["rows"]
-    return table(result, changes=changes)
+    named = [params[run] for run in ("a", "b", "run") if type(params.get(run)) is int]
+    return table(result, changes=changes, short_note=short_note, runs=named or None)
 
 
 # What `peeky sql --schema NAME` takes besides a table or view, in the whole text's order.
@@ -3794,13 +3876,41 @@ _VIEW_SUMMARIES = {
 }
 
 
+# The languages whose runs fill a column; any other's are NULL there. `peeky sql --schema`
+# says so beside its name (twelfth evaluation, desks 8: a Java store listed the C and C++
+# columns with the rest).
+_COLUMN_LANGUAGES = {
+    ("captures", "identity"): "Python",
+    ("captures", "scope"): "Python",
+    ("captures", "instance"): "Rust",
+    ("interventions", "instance"): "Rust",
+    ("captures", "stop"): "C, C++, Rust",
+    ("interventions", "stop"): "C, C++, Rust",
+    **{
+        ("captures", column): "C, C++"
+        for column in (
+            "element_size",
+            "at_element_of",
+            "element_index",
+            "offset_from",
+            "element_offset",
+        )
+    },
+}
+
+
 def _schema_lines(manifest, name):
     """The text of one table, view or other part (``SCHEMA_PARTS``) of ``manifest``."""
     if name in manifest.get("tables", {}):
         info = manifest["tables"][name]
         return [
             f"table {name}: {info['description']}",
-            *(f"  {column}: {meaning}" for column, meaning in info["columns"].items()),
+            *(
+                f"  {column}"
+                + (f" [{only} only]" if (only := _COLUMN_LANGUAGES.get((name, column))) else "")
+                + f": {meaning}"
+                for column, meaning in info["columns"].items()
+            ),
         ]
     if name in manifest.get("views", {}):
         return [f"view {name}: {manifest['views'][name]}"]

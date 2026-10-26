@@ -69,6 +69,9 @@ Peeky debugs Python with debugpy, Python's debugger.
   changes a local at every stop of the line ([2.8](../COOKBOOK.md#change-it-at-every-stop-all)).
   `name=@before` writes back a number, `True`, `False` or `None` as it was before the probe's
   change at the same hit ([Python 2.8](python-cookbook.md#restore-a-value-with-before)).
+- To skip a statement in an experiment, flip its guard at one line and restore it at the next:
+  `--set-at 14@all ready=False --set-at 17@all ready=@before`
+  ([2.8](../COOKBOOK.md#skip-a-statement-restore-with-before)).
 
 ## See what a function returned
 
