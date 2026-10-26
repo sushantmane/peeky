@@ -329,3 +329,56 @@ def test_cpp_reads_nothing_one_past_an_arrays_end(tmp_path, monkeypatch, cxx, ca
     # A member array, through `this`.
     rows = probed(capsys, target, f"ends.cpp:{line_of('SUM', CPP)}", "this.end_,this.end_[0]")
     assert rows[1]["error"].startswith(f"this.end_[0] {reason('this.end_', 'this.buf')}"), rows
+
+
+TRACKS = """#include <cstdio>
+#include <string>
+
+struct Item {
+  std::string name;
+  int uses = 0;
+};
+
+int main() {
+  Item items[4];
+  items[0].name = "a";
+  items[3].name = "left";
+  Item *end = items + 4;
+  Item *cur = items + 4;
+  Item *last = items + 3;
+  Item *pick = items + 3;
+  std::printf("%d %d\\n", (int)(end - cur), pick->uses + last->uses); /* MAIN */
+  return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_cpp_pointers_at_one_address_say_so_plainly(tmp_path, monkeypatch, cxx, capsys):
+    # Twelfth evaluation, playlist: `end … [now + 0 by address; same array not proven; at
+    # the address one past queue's end]` doubted one array beside a fact that both are one
+    # past `queue`'s end; and `now.title` read `"Coda"` at `end`'s address, with nothing to
+    # tie it to `end`.
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    (tmp_path / "items.cpp").write_text(TRACKS)
+    target = tmp_path / "items.cpp"
+    at = f"items.cpp:{line_of('MAIN', TRACKS)}"
+    rows = probed(capsys, target, at, "cur,end,pick,last,pick.uses,last[0].uses,cur.uses")
+    rows = {row["selector"]: row for row in rows}
+    assert placed(rows["end"]) == {"selector": "items", "length": 4}, rows
+    assert rows["end"]["offset_from"] == {"selector": "cur", "offset": 0}, rows
+    assert rows["last"]["offset_from"] == {"selector": "cur", "offset": -1}, rows
+    assert rows["pick.uses"]["read_through"] == {
+        "selector": "pick",
+        "same_address_as": ["last"],
+    }, rows
+    assert rows["last[0].uses"]["read_through"] == {
+        "selector": "last",
+        "same_address_as": ["pick"],
+    }, rows
+    assert rows["cur.uses"]["error"].startswith(f"cur.uses {reason('cur', 'items')}"), rows
+    assert main(["probe", str(target), "--at", at, "--capture", "cur,end,pick,last,pick.uses"]) == 0
+    table = capsys.readouterr().out
+    assert "  [same address as `cur`; at the address one past items's end]" in table, table
+    assert "  0  [read through `pick`, which holds the same address as `last`]" in table, table
+    assert "same array not proven" in table and "+ 0 by address" not in table, table

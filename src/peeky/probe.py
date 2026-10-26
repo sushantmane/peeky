@@ -2361,15 +2361,85 @@ def _pointed(rows, extents):
         offset = pointer_offset(row["value"], extent, rows[other]["value"], base)
         if offset is not None:
             row["offset_from"] = {"selector": rows[other]["selector"], "offset": offset}
+    _read_through(rows, pointers)
+
+
+# How many other pointers a value read through one names as holding its address.
+_SAME_ADDRESS_CAP = 3
+
+
+def _read_through(rows, pointers):
+    """Says on a value read straight through a captured C or C++ pointer (`now.title`,
+    `now[0]`) which other captured pointers of its type hold the same address
+    (`read_through`: {selector, same_address_as}; twelfth evaluation, playlist 3: `now`
+    equal to `end`, the program's one past its last track, read `"Coda"`, an element the
+    program no longer counts, with nothing to say so). Peeky can't know the program's
+    count, so it never says the value is left over; only where it was read. Not through a
+    second pointer (`now.next.title`), which reads elsewhere."""
+    held, paths = {}, {}
+    for index, extent in pointers:
+        found = _HELD.match(rows[index]["value"])
+        try:
+            path = tuple(parse_selector(rows[index]["selector"]))
+        except ValueError:
+            continue
+        if found and int(found[1], 16):
+            selector = rows[index]["selector"]
+            held[selector] = (int(found[1], 16), extent["pointee"], extent.get("element_size"))
+            paths[path] = selector
+    if len(held) < 2:
+        return
+    for row in rows:
+        try:
+            steps = parse_selector(row["selector"]) if "value" in row else []
+        except ValueError:
+            continue
+        if len(steps) > 2 and steps[-2] == "[0]" and not steps[-1].startswith("["):
+            pointer = paths.get(tuple(steps[:-2]))
+        elif len(steps) > 1 and (steps[-1] == "[0]" or not steps[-1].startswith("[")):
+            pointer = paths.get(tuple(steps[:-1]))
+        else:
+            continue
+        if pointer is None:
+            continue
+        same = [
+            selector
+            for selector, each in held.items()
+            if selector not in (pointer, row["selector"]) and each == held[pointer]
+        ]
+        if same:
+            row["read_through"] = {
+                "selector": pointer,
+                "same_address_as": same[:_SAME_ADDRESS_CAP],
+            }
 
 
 def pointed_text(row):
     """A row's `at_element_of` as tables show it, an address fact: `at level[6]'s
     address`, `at x's address`, or `at the address one past level's end`, which is never
     read. Or its `offset_from`, which names no element: `level + 6 by address; same array
-    not proven` (`level - 2` before it). Then its `past_end`, where that says more
-    (#336): `at the address one past queue's end`, `in frame 1` where another frame holds
-    the array, and what else starts there (`, also b[0]'s`) where nothing above says."""
+    not proven` (`level - 2` before it), or `same address as `now``, which is no claim on
+    any array. Then its `past_end`, where that says more (#336): `at the address one past
+    queue's end`, `in frame 1` where another frame holds the array, and what else starts
+    there (`, also b[0]'s`) where nothing above says. Then its `read_through`: `read
+    through `now`, which holds the same address as `end``."""
+    return "; ".join(each for each in (_pointer_text(row), _through_text(row)) if each)
+
+
+def _through_text(row):
+    """``pointed_text`` of a row's `read_through` alone."""
+    through = row.get("read_through")
+    if not isinstance(through, dict) or not isinstance(through.get("selector"), str):
+        return ""
+    same = [f"`{each}`" for each in through.get("same_address_as") or () if isinstance(each, str)]
+    if not same:
+        return ""
+    named = same[0] if len(same) == 1 else ", ".join(same[:-1]) + " and " + same[-1]
+    return f"read through `{through['selector']}`, which holds the same address as {named}"
+
+
+def _pointer_text(row):
+    """``pointed_text`` of a row's `at_element_of`, `offset_from` and `past_end`."""
     shown = _element_text(row)
     past, into = row.get("past_end"), row.get("at_element_of")
     if not isinstance(past, dict) or not isinstance(past.get("selector"), str):
@@ -2390,13 +2460,18 @@ def pointed_text(row):
 
 
 def _element_text(row):
-    """``pointed_text`` of a row's `at_element_of` or `offset_from` alone."""
+    """``pointed_text`` of a row's `at_element_of` or `offset_from` alone. An offset of 0
+    is only an equal address, so it says no more (twelfth evaluation, playlist 2: `now +
+    0 by address; same array not proven` beside `at the address one past queue's end`,
+    which `now` holds too)."""
     into = row.get("at_element_of")
     apart = row.get("offset_from")
     if not isinstance(into, dict) and isinstance(apart, dict):
         base, offset = apart.get("selector"), apart.get("offset")
         if not isinstance(base, str) or type(offset) is not int:
             return ""
+        if offset == 0:
+            return f"same address as `{base}`"
         sign = "-" if offset < 0 else "+"
         return f"{base} {sign} {abs(offset)} by address; same array not proven"
     if not isinstance(into, dict):
