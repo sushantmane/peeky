@@ -70,7 +70,7 @@ public class Marks {
 """
 
 
-RUNNING = "other threads are running; set checks again"
+RUNNING = "other threads, the JVM's own included, are running; set checks again"
 
 
 @pytest.fixture

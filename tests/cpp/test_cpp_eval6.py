@@ -201,7 +201,8 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
-    assert "note: function shows short frame names" in text, text
+    # Once per run: the probe said it (twelfth evaluation, laps 6; review of PR #350).
+    assert "note: function shows short frame names" not in text, text
     query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'trim_left'"
     assert main(["sql", query, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
@@ -213,8 +214,8 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     assert "twice(int)" in text and by_text in text, text
     assert "basic_string" not in text, text
     # A probe's table says the note once per state directory (seventh evaluation,
-    # finding 8); a query's table always does. Its example is what short_function
-    # gives: both overloads' rows.
+    # finding 8); a query's table says it of a run that has not had it (twelfth
+    # evaluation, laps 6). Its example is what short_function gives: both overloads' rows.
     assert "note: function shows short frame names" not in text, text
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out

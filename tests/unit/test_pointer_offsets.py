@@ -602,6 +602,76 @@ def test_a_pointer_proven_in_one_run_only_may_point_elsewhere(store):
     )
 
 
+def queued(index):
+    return {"element_size": 16, "at_element_of": {"selector": "queue", "index": index}}
+
+
+def playlist(base, nows, queues):
+    """playlist (C++, line 81): `now` into `queue` (`Track[32]`, 16 bytes an element),
+    `end` at its element 3, and `p`, a pointer `diff` proves nothing of."""
+    rows = []
+    for hit, (now, queue) in enumerate(zip(nows, queues), 1):
+        rows += [
+            (hit, "now", "Track *", f"0x{base + 16 * now:016x}", queued(now)),
+            (hit, "end", "Track *", f"0x{base + 48:016x}", queued(3)),
+            (hit, "p", "Track *", f"0x{base + 0x400 + 16 * hit:016x}"),
+            (hit, "queue", "Track[32]", queue, {"element_size": 16}),
+        ]
+    return captured(rows)
+
+
+def test_an_element_address_before_the_first_real_difference_is_named(store):
+    # Twelfth evaluation, playlist: at hit 4 `now` held `queue[3]`'s address in one run
+    # and `queue[2]`'s in the other, but its row came after the real differences (`queue`
+    # at hits 5 and 6), though AGENT_GUIDE said `diff` puts the first divergence first.
+    # The row keeps its tier, as layout alone can change an address, and a note names
+    # its hit. `p`, whose addresses differ at every hit, proves nothing: not named.
+    same, played = "[{plays = 2}, {plays = 1}]", "[{plays = 2}, {plays = 2}]"
+    evidence.record(
+        store,
+        playlist(0x16F98EDC8, [0, 1, 3, 3, 2, 0], [same] * 4 + [played, played]),
+        language="cpp",
+    )
+    evidence.record(
+        store,
+        playlist(0x16B47EDC8, [0, 1, 3, 2, 1, 2], [same] * 4 + [same, same]),
+        language="cpp",
+    )
+    result = evidence.run_query(store, "diff")
+    assert [
+        (r["hit"], r["selector"], (r["note"] or "")[:16] or None) for r in result["rows"][:6]
+    ] == [
+        (5, "queue", None),
+        (6, "queue", None),
+        (4, "now", "the address of `"),
+        (5, "now", "the address of `"),
+        (6, "now", "the address of `"),
+        (1, "p", "addresses differ"),
+    ], result["rows"]
+    assert result.get("notes", [])[:1] == [
+        "`now` holds a different element's address in each run at hit 4, before the first "
+        "real difference (hit 5); its row comes after the real differences, since layout "
+        "alone can change an address"
+    ], result.get("notes")
+    # At the first real difference's hit or after it, nothing to say.
+    evidence.record(
+        store,
+        playlist(0x16B47EDC8, [0, 1, 3, 3, 1, 2], [same] * 4 + [same, same]),
+        language="cpp",
+    )
+    notes = evidence.run_query(store, "diff", {"a": 1, "b": 3}).get("notes", [])
+    assert not any("element's address in each run" in note for note in notes), notes
+    # With no real difference, the element rows lead their tier in hit order: no note.
+    evidence.record(
+        store,
+        playlist(0x16F98EDC8, [0, 1, 3, 2, 2, 0], [same] * 4 + [played, played]),
+        language="cpp",
+    )
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 4})
+    assert [r["selector"] for r in rows["rows"]][:1] == ["now"], rows
+    assert not any("element's address in each run" in n for n in rows.get("notes", [])), rows
+
+
 @pytest.mark.parametrize("key", ["at_element_of", "offset_from"])
 def test_the_alignment_note_reads_element_addresses_and_offsets_masked(store, key):
     # `word` reads "a", "b", "c" in both runs, at other elements' addresses of `text`, or
