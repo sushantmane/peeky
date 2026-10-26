@@ -341,16 +341,18 @@ def test_the_evidence_keeps_each_change_and_says_how_the_request_went(monkeypatc
     ]
     assert (
         evidence._sets_text(row["value_b"])
-        == "1 request: x=5 (requested at 9@all, made at 5 stops, to the program's end)"
+        == "1 request: x=5 (9@all, made at 5 stops, to the program's end)"
     )
     assert evidence._sets_text(row["value_a"]) == "none"
+    # Twelfth evaluation: two or three changes are all shown.
     two = [["x", "5", "requested at 9@2"], ["y", "1", "requested at 9@3"]]
-    assert evidence._sets_text(json.dumps(two)) == "2 changes: x=5 (requested at 9@2), …"
-    # Against the other run's, the first change that differs.
-    other = [two[0], ["y", "1", "requested at 9@3, not made: that hit never came"]]
-    assert (
-        evidence._sets_text(json.dumps(two), json.dumps(other))
-        == "2 changes: …, y=1 (requested at 9@3)"
+    assert evidence._sets_text(json.dumps(two)) == "2 changes: x=5 (9@2), y=1 (9@3)"
+    # Where they don't fit, from the first change that differs from the other run's.
+    made = "made at 5 stops, to the program's end"
+    long = [["x", "5", f"requested at 9@all, {made}"], ["y", "1", f"requested at 7@all, {made}"]]
+    other = [long[0], ["y", "1", "requested at 7@all, made at 2 stops; refused at hit 3"]]
+    assert evidence._sets_text(json.dumps(long), json.dumps(other)) == (
+        f"2 requests: …, y=1 (7@all, {made}) (1 not shown)"
     )
 
 

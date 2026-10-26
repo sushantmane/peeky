@@ -1403,8 +1403,8 @@ keeps a restore as any change, with more:
   what it reads from the warnings: `not made` where the line never stopped, the cap's count, or
   nothing else. It says nothing of the writes a restore made no restore for;
 - `set_effect` shows it as `trend: 0 -> 1 (restored from before 15@2)`;
-- the `(sets)` rows of `diff` and `compare` name each restore, which `…` would hide:
-  `2 requests: trend=0 (…), …; restore: trend=@before (requested at 18@all, …)`.
+- the `(sets)` rows of `diff` and `compare` name each restore, even where `…` stands for it:
+  `2 requests: trend=0 (…), …; restore: trend=@before (18@all, …)`.
 
 #### Where and when a change is made
 
@@ -1487,9 +1487,10 @@ lists each function's stops.
   `--until hits` ended it, differ in `(sets)`.
 - `diff` and `compare` start with a `(status)` row, with each run's error, where either run didn't
   complete. Two runs refused at different hits differ there too.
-- `diff`'s table shows its `(sets)` row short: how many changes, and the first that differs from the
-  other run's. `--json` has them all. With an `@all` among them, it counts requests:
-  `1 request: db.count=0 (requested at 18@all, made at 16 stops, to the program's end)`.
+- `diff`'s table shows its `(sets)` row short: how many changes, then each as `name=value
+  (LINE@HIT)` with how it went, as many as fit in 72 characters
+  ([3.1](#the-rows-diff-shows-in-order)). `--json` has them all. With an `@all` among them, it
+  counts requests: `1 request: db.count=0 (18@all, made at 16 stops, to the program's end)`.
 - `diff` shows more than 3 alike `intervention only in run b` rows as one, its first hit's. Its note
   says how many hits there were: `intervention only in run b, at 15 hits`.
 - The `interventions` table lists each change made: its `line`, `hit`, `capture_hit`, `function`
@@ -1782,16 +1783,22 @@ appears only where it applies:
 - `(sets)`: the runs requested or made different interventions. Each is
   `[name, value, "requested at LINE@HIT"]`, with how it went, as in
   [3.2](#32-inputs-outcomes-and-outputs-of-the-last-two-runs). The table shows how many each run
-  made, and the first that differs: `6 changes: db.count=0 (requested at 80@5), …`, or `none`.
-  `--json` has the whole list.
+  made, then each as `name=value (LINE@HIT)`: `2 changes: desk=0 (58@4), desk=0 (58@7)`, or
+  `none`. Two or three short changes fit in its 72 characters.
+  - Where they don't all fit, the list starts at the first change that differs from the other
+    run's. `…` marks each cut, and the count says how many are hidden:
+    `6 changes: db.count=0 (80@5), db.count=0 (80@8), … (4 not shown)`.
+  - A restore is named even where `…` stands for it. `--json` has the whole list.
 
 A candidate's `--at` keeps the original's line numbers. So `--at 33` is the same line, even where
 the candidate's rows show its line 34. It gives no `(line)` row.
 
-The `(output)` row shows up to 200 characters of each output. Each window starts 60 characters
-before the first character that differs. It starts at the beginning when the difference is within
-the first 60. `…` marks a cut. The note says where the outputs differ, counted from 1:
-`output differs at line 4, column 13`. So after a `--set`, this row shows the intervention's effect.
+The `(output)` row shows up to 200 characters of each output, in the table and in `--json`. Each
+window starts 60 characters before the first character that differs, at the same place in both
+runs. It starts at the beginning when the difference is within the first 60. `…` marks a cut. So
+both show the first difference, and at least 139 characters after it where the output has them.
+The note says where the outputs differ, counted from 1: `output differs at line 4, column 13`. So
+after a `--set`, this row shows the intervention's effect.
 
 **2. Values that only one run's `--set` changed** say `intervention only in run a` or
 `intervention only in run b`. They come before what may follow from them. Peeky leaves out an `after-set` row where, in each run that has one, it
@@ -1799,7 +1806,8 @@ equals that run's `observed` value at that hit. The intervention didn't touch it
 only `r.tail` was set. The `observed` row shows any difference.
 
 **3. Real differences** come in hit order, then in `--capture` order. The first of them is the first
-divergence.
+real divergence. A C or C++ pointer at another element's address can differ at an earlier hit. Its
+row stays in tier 4, and a note names its hit (tier 4).
 
 - A hit that one run never reached says `missing in run b`.
 - A value whose type changed says so, for example after an edit to `long long`:
@@ -1818,7 +1826,8 @@ divergence.
 **Long values.** The table cuts a value at 120 characters. Where the two runs' values first differ
 near or past that cut, both show from 40 characters before the difference instead. Both start at
 the same place, so the two windows line up. `…` marks every cut. `--json` keeps every value whole.
-The table never cuts a note, so a note always shows what to do.
+The `(output)` and `(sets)` rows have their own windows, above. The table never cuts a note, so a
+note always shows what to do.
 
 **4. Pointers whose addresses differ** say `addresses differ`. An address can be another element's
 in the other run, so such a row may be a real difference. A pointer into an array may point at
@@ -1828,6 +1837,10 @@ element 6 in one run and at element 4 in the other.
   hit order. Each says which, in each run: ``the address of `level[6]` in run a, of `level[4]` in
   run b``. That is an address fact: the pointer may have changed, or only the array moved
   ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
+- Such a row may be at an earlier hit than the first real difference. Then a note names that hit,
+  so you can still read the hits in order: ``note: `now` holds a different element's address in
+  each run at hit 4, before the first real difference (hit 5); …``. Other pointers whose addresses
+  differ aren't named there: most differ at every hit, since the stack moves.
 
 - Most are a pointer or a reference, by their type, such as `const int *` or
   `const std::string &`. They say `it may point at another element too`.
@@ -1923,7 +1936,7 @@ run_a  run_b  hit   phase     selector  value_a          value_b               d
 1      2      4     observed  v         NULL             8                     1        missing in run a
 1      2      4     observed  total     NULL             62                    1        missing in run a
 note: pair the hits by a value instead: `peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`. Run 1 stopped 3 times at its line and run 2 4, so a hit need not be the same moment in both, and pairing by hit number can show every later hit as a difference
-note: the first difference at a hit is at hit 1; 5 of the 6 rows at a hit come after it, where pairing by hit number may compare different calls: read those with `join`
+note: the first real difference at a hit is at hit 1; 5 of the 6 rows at a hit come after it, where pairing by hit number may compare different calls: read those with `join`
 (8 rows)
 ```
 
@@ -2009,7 +2022,8 @@ Only plain values count in these checks. Peeky checks each selector on its own.
 - It still counts where its values line up better at other hits. The change may account for that,
   so the note says it doesn't prove a reorder.
 - Where values that agree are unique across the hits, the verdict is that the hits pair by them.
-  Such a sign then comes last ([below](#when-values-agree-at-every-hit)).
+  They already pair every hit, so the note leaves such a sign out
+  ([below](#when-values-agree-at-every-hit)).
 - `after-set` rows never count.
 
 In this C example, `--set-at` resets a counter, `db.count`, in `main`. The probe stops in `settle`,
@@ -2090,10 +2104,10 @@ peeky queries diff --param a=3 --param b=6
 ```
 
 ```
-run_a  run_b  hit   phase      selector  value_a       value_b                               differs  note
-3      6      NULL  NULL       (output)  total: 36\n  total: 13\n                          1        output differs at line 1, column 8
-3      6      NULL  NULL       (sets)    none          1 change: total=5 (requested at 9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
-3      6      4     after-set  total     NULL          5                                     1        intervention only in run b
+run_a  run_b  hit   phase      selector  value_a      value_b                  differs  note
+3      6      NULL  NULL       (output)  total: 36\n  total: 13\n              1        output differs at line 1, column 8
+3      6      NULL  NULL       (sets)    none         1 change: total=5 (9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
+3      6      4     after-set  total     NULL         5                        1        intervention only in run b
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=6 --param key=i` would, but that does not prove the hits are the same moments
   - no single selector's values line up better at other hits
@@ -2117,19 +2131,19 @@ What the note says depends on the case:
   either way.
 - **The sign comes from a selector left out.** Its values may differ because of the change, or match
   by chance. Where values that agree are unique across the hits, the verdict is that the hits pair by
-  them, and the sign comes last. It doesn't settle whether the calls were reordered. A key may be a
-  counter, which agrees either way. Here an edit swaps the first two calls, and `key` agrees at every
-  hit:
+  them. Those values already pair every hit, so the note doesn't give the sign. It names the
+  selector with the others left out. Here an edit swaps the first two calls, and `key` agrees at
+  every hit:
 
   ```
   hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 --param key=key` would, but that does not prove the hits are the same moments
-  - runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B')
-  - that alternate alignment does not settle whether the calls were reordered: `call` may differ because of the edit, or match by chance
+  - `call` differs after the edit and may follow from it, so this check leaves it out
   ```
 
-  Where no value that agrees is unique across the hits, the sign is the verdict, as in the
-  `db.stable` example above.
+  A key may be a counter, which agrees even where calls were reordered. So the verdict's second
+  line says that pairing by it doesn't prove the hits are the same moments. Where no value that
+  agrees is unique across the hits, the sign is the verdict, as in the `db.stable` example above.
 
 - **Most hits differ.** Where values differ at more than half the hits, and at least 2, the note
   says so before anything that agrees. It says the values don't show that the hits are the same
@@ -2171,9 +2185,7 @@ What the note says depends on the case:
   ```
   hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 --param key=ms` would, but that does not prove the hits are the same moments
-  - `db.candidate`, `db.count` and `changes` differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
-  - runs 1 and 3 saw `db.stable`'s values at other hits (run 3's hit 11 matches run 1's hit 7: 1)
-  - that alternate alignment does not settle whether the calls were reordered: `db.stable` may differ because of the interventions, or match by chance
+  - `db.stable`, `db.candidate`, `db.count` and 1 more differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
   ```
 
 - **After an intervention that left nothing out,** the note says what agrees, what differs and which
