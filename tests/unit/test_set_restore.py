@@ -247,8 +247,12 @@ def test_the_guard_flip_writes_back_each_hit_s_own_value(monkeypatch):
         (f"{FLAT}@3", f"{GUARD}@3", "0", "-1"),
     ]
     text = probe_module._table(result)
-    assert f"set x: 0 -> -1  (restored, --set-at line {FLAT}@all, hit 3, in f)" in text, text
-    assert f"set x: -1 -> 0  (--set-at line {GUARD}@all, hit 3, in f)" in text, text
+    assert (
+        f"set x: 0 -> -1  (restored, --set-at line {FLAT}@all, stop 3 of line {FLAT}, in f)" in text
+    ), text
+    assert f"set x: -1 -> 0  (--set-at line {GUARD}@all, stop 3 of line {GUARD}, in f)" in text, (
+        text
+    )
     # Each restore is one of the run's outcomes, as any change is.
     assert [o["value"] for o in result["set_outcomes"]] == ["0", BEFORE]
     assert result["set_outcomes"][1]["made"] == 3 and result["set_outcomes"][1]["complete"]
@@ -258,13 +262,19 @@ def test_many_restores_are_counted_as_restores(monkeypatch):
     worker = Passes(passes(*["1", "-1"] * 4))
     result = run(monkeypatch, worker, flip())
     text = probe_module._table(result)
-    assert f"set x: 5 more restores by --set-at line {FLAT}@all, at hits 4 to 8" in text, text
-    assert f"set x: 5 more changes by --set-at line {GUARD}@all, at hits 4 to 8" in text, text
+    assert (
+        f"set x: 5 more restores by --set-at line {FLAT}@all, at stops 4 to 8 of line {FLAT}"
+        in text
+    ), text
+    assert (
+        f"set x: 5 more changes by --set-at line {GUARD}@all, at stops 4 to 8 of line {GUARD}"
+        in text
+    ), text
     # The value written back may be the one already there: said so, as for any write.
     worker = Passes(passes(*["0"] * 6))
     text = probe_module._table(run(monkeypatch, worker, flip()))
     assert (
-        f"set x: 3 more restores by --set-at line {FLAT}@all, at hits 4 to 6, each with the "
+        f"set x: 3 more restores by --set-at line {FLAT}@all, at stops 4 to 6 of line {FLAT}, each with the "
         "same text, not proven unchanged"
     ) in text, text
 
@@ -438,8 +448,9 @@ def test_a_restore_over_another_value_says_so(monkeypatch):
     restore = result["interventions"][1]
     assert (restore["before"], restore["after"], restore["overwrote"]) == ("2", "1", "2")
     text = probe_module._table(result)
-    assert "set x: 2 -> 1  (restored over the current 2, --set-at line 8@all, hit 1, in f)" in (
-        text
+    assert (
+        "set x: 2 -> 1  (restored over the current 2, --set-at line 8@all, stop 1 of line 8, in f)"
+        in (text)
     )
     # Round 2 of the review of PR #322: the probe's own write through another name for
     # the same storage (`y` here; Java `c.n`, `c` being `b`'s Box) is no write of the
@@ -1096,8 +1107,8 @@ def test_the_evidence_links_each_restore_to_the_change_it_undid(monkeypatch, tmp
         ]
     )
     assert evidence._sets_text(sets) == (
-        "2 requests: x=0 (requested at 5@all, made at 2 stops, to the program's end), …; "
-        "restore: x=@before (requested at 8@all, made at 2 stops, to the program's end)"
+        "2 requests: x=0 (5@all, made at 2 stops, to the program's end), …; "
+        "restore: x=@before (8@all, made at 2 stops, to the program's end)"
     )
 
 

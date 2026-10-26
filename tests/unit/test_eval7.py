@@ -83,7 +83,9 @@ def test_the_short_name_note_is_said_once_per_state_directory(cli, capsys):
     assert cli(probe_result()) == 0
     again = capsys.readouterr().out
     assert note not in again and "trim_left " in again, again
-    # The SQL text says it where SQL is used: `peeky sql --help` and query tables.
+    # The SQL text says it where SQL is used: `peeky sql --help` always, and a query's
+    # table of a run that has not had it, once per run (twelfth evaluation, laps 6: it
+    # came under every query; review of PR #350). Run 3's probe left it out.
     from peeky.cli import main
 
     with pytest.raises(SystemExit):
@@ -92,6 +94,8 @@ def test_the_short_name_note_is_said_once_per_state_directory(cli, capsys):
     assert "short_function(function) = 'trim_left'" in help_text, help_text
     assert main(["queries", "run"]) == 0
     assert note in capsys.readouterr().out
+    assert main(["queries", "run"]) == 0
+    assert note not in capsys.readouterr().out
 
 
 def test_the_instance_note_follows_the_same_rule(cli, capsys):
@@ -445,7 +449,7 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
     # #201: how many rows come after the first hit that differs (every row is kept).
     assert after.startswith(
-        "the first difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
+        "the first real difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
     ), after
     assert len(result["rows"]) == 5
     assert main(["queries", "diff", "--store", str(store)]) == 0

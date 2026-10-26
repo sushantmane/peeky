@@ -273,13 +273,34 @@ def combine_edits(text, edit):
     return text[first : last + len(old_last)], "".join(pieces)
 
 
+def _edit_delta(text, start, old, new):
+    """The lines one edit at ``start`` adds (or, negative, removes), as lines are counted:
+    a last line without a newline is one, and a final newline starts none. Within the
+    file, the newlines it adds or removes; at its end, the lines of the file before and
+    after (review of PR #350: removing an unterminated last line, `b` of `a\\nb`, removes
+    a line but no newline)."""
+    if start + len(old) < len(text):
+        return new.count("\n") - old.count("\n")
+    return len(split_lines(text[:start] + new)) - len(split_lines(text))
+
+
+def keeps_lines(text, edit):
+    """Whether ``edit`` adds and removes no line anywhere, so that every line of the
+    candidate has the original's number."""
+    spans = _edit_spans(text, edit_pairs(edit))
+    candidate = text.replace(*combine_edits(text, edit), 1)
+    return all(_edit_delta(text, start, old, new) == 0 for start, old, new, _ in spans) and len(
+        split_lines(candidate)
+    ) == len(split_lines(text))
+
+
 def _through(text, start, old, new, line, head, which=""):
     """How one edit at ``start`` moves original line ``line``: None if the line is
     before it, else the lines it adds or removes. ``head`` is the edited text up to the
     edit's end. Lines inside an edit that changes the line count are refused."""
     first = text.count("\n", 0, start) + 1
     last = text.count("\n", 0, start + len(old) - 1) + 1
-    delta = new.count("\n") - old.count("\n")
+    delta = _edit_delta(text, start, old, new)
     if line < first:
         return None
     if line > last:
@@ -294,13 +315,20 @@ def _through(text, start, old, new, line, head, which=""):
         return delta
     if delta == 0:
         return 0
-    span = (
-        f"line {first}, which becomes" if first == last else f"lines {first}-{last}, which become"
-    )
     after = last + delta
-    became = f"line {first}" if after <= first else f"lines {first}-{after}"
+    if after < first:
+        # Every line of it goes (`b` of `a\nb`, or `b\n` of `a\nb\nc`).
+        span = f"line {first}" if first == last else f"lines {first}-{last}"
+        span += ", which the candidate removes"
+    else:
+        span = (
+            f"line {first}, which becomes"
+            if first == last
+            else f"lines {first}-{last}, which become"
+        ) + (f" line {first}" if after == first else f" lines {first}-{after}")
+        span += " of the candidate"
     raise ValueError(
-        f"Line {line} is inside the edit{which} ({span} {became} of the candidate). An edit "
+        f"Line {line} is inside the edit{which} ({span}). An edit "
         "that changes the number of lines has no matching line inside it: probe a line "
         "before or after the edit"
     )
@@ -5397,6 +5425,58 @@ def _restored(change):
     return "restored, "
 
 
+# A Rust reference to a crate's own type, as rows spell it (`&laps::Read`).
+_CRATE_REFERENCE = re.compile(r"&(?:mut )?(?!(?:std|core|alloc)::)[A-Za-z_]\w*(?:::[A-Za-z_]\w*)+")
+
+
+def _address_only_note(result):
+    """Why a Rust row of a reference to a crate's type shows only its address, or None
+    (twelfth evaluation, laps 2: `read &laps::Read 0x…` beside a `read.car` that read). A
+    reference parameter's struct of plain scalar fields is the only one previewed through a
+    reference (`rust_symbols.struct_view`); a field to read instead is named only where
+    the probe read one (review of PR #350: `&app::State` may be an enum, with no field)."""
+    if (result.get("target_identity") or {}).get("language") != "rust":
+        return None
+    rows = result.get("rows", ())
+    bare = [
+        row["selector"]
+        for row in rows
+        if _CRATE_REFERENCE.fullmatch(str(row.get("type") or ""))
+        and re.fullmatch(r"0x[0-9a-fA-F]+", str(row.get("value") or ""))
+        and not any(row.get(key) for key in ("view", "note", "error", "unproven_pointer"))
+    ]
+    bare = list(dict.fromkeys(bare))
+    if not bare:
+        return None
+    shown = ", ".join(f"`{name}`" for name in bare[:3]) + (" and more" if len(bare) > 3 else "")
+    note = f"note: {shown} show{'s' if len(bare) == 1 else ''} only the address a reference holds"
+    # A field the probe read through one of them, as captured: its struct has fields.
+    read = next(
+        (
+            (name, row["selector"])
+            for name in bare
+            for row in rows
+            if str(row.get("selector")).startswith(f"{name}.")
+            and "value" in row
+            and not row.get("error")
+        ),
+        None,
+    )
+    if read is None:
+        one = len(bare) == 1
+        return note + (
+            "; its row reads nothing through it" if one else "; no row reads through them"
+        )
+    return (
+        note + ": Peeky previews a struct through a reference only for a reference parameter "
+        f"whose fields are all plain scalars; its fields read by name, as `{read[1]}`"
+    )
+
+
+# The short reasons a Java field's row gives that hold at every stop (java._MEMBER_ROWS).
+_MEMBER_REASONS = ("final", "static")
+
+
 def _table(result, short_names=True):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory."""
@@ -5448,6 +5528,21 @@ def _table(result, short_names=True):
     ]
     left_out = len(result["rows"]) - len(kept)
     errors = repeated_visible(kept, lambda row: f"at hit {row['hit']}")
+    # A Java field's `final` or `static`, true of every row of its selector, shows on its
+    # first row only (twelfth evaluation, desks 5: on every row, after-set too). JSON keeps
+    # it on each.
+    declared, said = set(_MEMBER_REASONS), set()
+
+    def unsettable(row):
+        reason = row.get("not_settable")
+        if not reason:
+            return ""
+        if java and reason in declared:
+            if (row["selector"], reason) in said:
+                return ""
+            said.add((row["selector"], reason))
+        return f"  [not settable: {reason}]"
+
     rows = [
         (
             str(row["hit"]),
@@ -5466,7 +5561,7 @@ def _table(result, short_names=True):
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [stale]" if row.get("stale") else "")
             + ("  [settable]" if row.get("settable") else "")
-            + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
+            + unsettable(row)
             + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
@@ -5482,18 +5577,19 @@ def _table(result, short_names=True):
     if left_out:
         # Only whole scalars are left out (eleventh evaluation: an aggregate's equal row
         # stayed under a line that said every equal row was left out). A Java String is an
-        # object, whose equal row stays too (twelfth evaluation's preparation).
-        kept_kinds = (
-            "a number, flag or char; object rows stay, a String's too: a Java String is an "
-            "object, and an equal text may be a new String"
-            if java
-            else "a number, flag or whole text; pointer, object and preview rows stay, as "
-            "they may hide a change"
-        )
+        # object, whose equal row stays too (twelfth evaluation's preparation). Short: it
+        # came under every probe with a change (twelfth evaluation, laps 6).
+        # A Java row left out is a primitive's, never null (review of PR #350: `None`,
+        # `null` and `nullptr` rows are left out too).
+        kinds = "number, flag or char" if java else "number, flag, null or text"
         lines.append(
-            f"after-set: {left_out} scalar row{'s' if left_out > 1 else ''} equal to the hit's "
-            f"observed value left out ({kept_kinds}; `--json` has every row)"
+            f"after-set: {left_out} {kinds} row{'s' if left_out > 1 else ''} equal to the "
+            "observed value left out"
+            + (" (a String stays: it is an object)" if java else "")
+            + "; `--json` has all"
         )
+    if note := _address_only_note(result):
+        lines.append(note)
     if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
@@ -5519,7 +5615,11 @@ def _table(result, short_names=True):
             where = f"{where}, one of {change['alike']} on the line the debugger names alike"
         # Which of the line's breakpoint locations the stop was at, where it has several.
         stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
-        hit = f", hit {change.get('hit')}" if change.get("all") else ""
+        hit = ""
+        if change.get("all"):
+            # Its own line's count, not the probe's hits (twelfth evaluation, rainfall 3).
+            hit = f", stop {change.get('hit')} of line {at.partition('@')[0]}"
+            stop = f" at location {change['stop']} of {change['stops']}" if stop else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + {"unchanged": ", no change", "alike": ", same text, not proven unchanged"}.get(
@@ -5537,12 +5637,14 @@ def _table(result, short_names=True):
     for (at, name), changes in more.items():
         numbers = [change.get("hit") for change in changes]
         known = [number for number in numbers if type(number) is int]
+        # Its own line's stops, as each change's line says (twelfth evaluation, rainfall 3).
+        own = at.partition("@")[0]
         span = (
             ""
             if len(known) != len(numbers)
-            else f", at hit {known[0]}"
+            else f", at stop {known[0]} of line {own}"
             if min(known) == max(known)
-            else f", at hits {min(known)} to {max(known)}"
+            else f", at stops {min(known)} to {max(known)} of line {own}"
         )
         # Changes, writes proven to change nothing, and writes of the same text not proven
         # unchanged, counted apart, as NO_STOP counts them (eleventh evaluation: 35 of 42

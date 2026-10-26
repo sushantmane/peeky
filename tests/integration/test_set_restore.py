@@ -117,7 +117,10 @@ def test_the_guard_flip_skips_the_move_with_two_set_ats(state, capsys, source):
         ("0", "-1", f"{guard}@3"),
     ]
     text = _table(result)
-    assert f"set trend: 0 -> -1  (restored, --set-at line {flat}@all, hit 3, in " in text, text
+    assert (
+        f"set trend: 0 -> -1  (restored, --set-at line {flat}@all, stop 3 of line {flat}, in "
+        in text
+    ), text
 
 
 @pytest.mark.timeout(240)

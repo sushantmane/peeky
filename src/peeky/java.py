@@ -249,7 +249,7 @@ _MEMBER_ROWS = {"it is final": "final", "it is static (shared by every instance)
 
 
 # Why no element is promised [settable] while other threads run (#261 review).
-_THREADS_RUNNING = "other threads are running; set checks again"
+_THREADS_RUNNING = "other threads, the JVM's own included, are running; set checks again"
 
 
 class Unproven(str):

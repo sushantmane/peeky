@@ -42,6 +42,7 @@ from peeky.probe import (
     candidate_line,
     combine_edits,
     debugger_diagnostics,
+    keeps_lines,
     parse_hits,
     parse_selector,
     parse_set_at,
@@ -881,6 +882,35 @@ def _describe_text(manifest):
     mutable = manifest["mutable_types"]
     if "root locals" in mutable and "fields" not in mutable:
         mutable += " (root locals: the stopped function's own variables, not fields)"
+    rust = manifest["language"] == "rust" and not manifest.get("optimized")
+    # #183: the root local types `--set` changes, as the build declares them.
+    settable = ("i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize")
+    settable += ("alloc::string::String",)
+
+    def roots(scope):
+        return [
+            name
+            for name in scope.get("names", ())
+            if (scope.get("types") or {}).get(name) in settable
+            and name not in (scope.get("never_settable") or {})
+            and name not in (scope.get("ambiguous") or {})
+            and not isinstance((scope.get("typed_spans") or {}).get(name), list)
+        ]
+
+    # Each function's root locals of those types (twelfth evaluation, laps 3: the line
+    # named fields and registers, never `start` or `total`).
+    with_roots = [
+        f"{scope['scope']}: {_shown_paths(names)}"
+        for scope in manifest.get("scopes", ())
+        if rust and (names := roots(scope))
+    ]
+    if with_roots:
+        mutable += (
+            ". Root locals of those types (a stop's rows and `inspect` mark which can change "
+            "there): "
+            + "; ".join(with_roots[:12])
+            + (f"; and {len(with_roots) - 12} more functions" if len(with_roots) > 12 else "")
+        )
     # The fields and elements of struct and array locals `set` may change, per function
     # (seventh evaluation, finding 16; #183: the paths, `board.entries`, not `board`).
     with_parts = [
@@ -932,11 +962,9 @@ def _describe_text(manifest):
                 + "; ".join(never[:12])
                 + (f"; and {len(never) - 12} more functions" if len(never) > 12 else "")
             )
-    if manifest["language"] == "rust" and not manifest.get("optimized"):
+    if rust:
         # #183: where nothing can change, the way around it (an edit that keeps a local in
         # memory, or changes what the program computes).
-        settable = ("i16", "i32", "i64", "u16", "u32", "u64", "isize", "usize")
-        settable += ("alloc::string::String",)
         nothing = [
             scope["scope"]
             for scope in manifest.get("scopes", ())
@@ -1255,6 +1283,8 @@ CANDIDATE_LOCATIONS = (
     "In the edited file, locations name the candidate's copy, since the line numbers are "
     "the candidate's"
 )
+# An edit that adds or removes no line (twelfth evaluation, playlist 5).
+CANDIDATE_SAME_LINES = "The edit keeps the line numbers: the candidate's lines are the original's"
 
 
 def _bind_candidate(result, original, edit, program):
@@ -1264,8 +1294,9 @@ def _bind_candidate(result, original, edit, program):
     (result.get("probe") or {}).pop("edit", None)
     info = result.setdefault("candidate", {})
     info["diff"] = _diff(original, candidate, program)
-    # Its frames, breakpoint and locations are the copy that ran (#252).
-    info["note"] = CANDIDATE_LOCATIONS
+    # Its frames, breakpoint and locations are the copy that ran (#252), whose numbers
+    # differ only where the edit adds or removes a line.
+    info["note"] = CANDIDATE_SAME_LINES if keeps_lines(original, edit) else CANDIDATE_LOCATIONS
     ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
     if info.get("sha256") != expected and (ran or info.get("sha256") is not None):
         from peeky.errors import classify
@@ -1369,18 +1400,49 @@ def _first_time(name):
     return True
 
 
-# More probe rows than this, of several selectors, get a pointer to `queries wide`.
-_WIDE_ROWS = 40
+def _runs_noted(store, runs):
+    """Whether a table showing short frame names of saved ``runs`` (run ids in the
+    evidence store at ``store``) adds the note on them: where one of them has not had it
+    yet, which marks them all; and for a table of no known runs, every time. Once per
+    saved run, not per state directory, which an earlier run of other code could use up
+    for good (review of PR #350; twelfth evaluation, laps 6: it came with every query)."""
+    if not runs:
+        return True
+    from peeky import evidence
+
+    try:
+        known = evidence.query(
+            Path(store),
+            "SELECT run_id, started_at FROM runs WHERE run_id IN ("
+            + ", ".join(str(int(run)) for run in runs)
+            + ")",
+        )["rows"]
+    except Exception:
+        return True
+    new = not known
+    for run in known:
+        # A store made again numbers its runs from 1: its start time tells them apart.
+        named = f"{os.path.abspath(store)}\0{run['run_id']}\0{run['started_at']}"
+        new = _first_time("short-names-" + hashlib.sha256(named.encode()).hexdigest()[:24]) or new
+    return new
+
+
+# More probe rows than this, of several selectors, get a pointer to `queries wide`; so do
+# this many selectors at 3 hits or more (twelfth evaluation, rainfall 5: 6 at 6 hits).
+_WIDE_ROWS, _WIDE_SELECTORS = 40, 4
 
 
 def _probe_text(result, quiet=False):
     from peeky.probe import _short_note
 
     # The note on short frame names and instance labels, once per state directory and
-    # never with --quiet (seventh evaluation, finding 8): `peeky sql --help`, `--schema`
-    # and query tables say it too.
+    # never with --quiet (seventh evaluation, finding 8): `peeky sql --help` and `--schema`
+    # say it too, and so does a query's table of a run that has not had it (`_runs_noted`).
     noted = not result.get("refused_before_launch") and _short_note(result) is not None
     short_names = not quiet and noted and _first_time("short-names")
+    if short_names and (saved := result.get("evidence")):
+        # Said with the run it is about: a query's table of that run leaves it out.
+        _runs_noted(saved.get("store"), [saved.get("run_id")])
     # A Python candidate's note on its copied root (eighth evaluation, L6): once per
     # root and state directory, never with --quiet; `--json` always has it.
     warnings = [
@@ -1420,7 +1482,11 @@ def _probe_text(result, quiet=False):
             "`peeky sql` (see `peeky sql --schema`)"
         )
         selectors = {row.get("selector") for row in result.get("rows", ())}
-        if len(result.get("rows", ())) > _WIDE_ROWS and len(selectors) > 1:
+        hits = {row.get("hit") for row in result.get("rows", ())}
+        if len(selectors) > 1 and (
+            len(result.get("rows", ())) > _WIDE_ROWS
+            or (len(selectors) >= _WIDE_SELECTORS and len(hits) >= 3)
+        ):
             # A long table, a row per selector per hit (debounce 3, tenth evaluation).
             text += (
                 f"\nevidence: one line per hit, a column per selector: "
@@ -1459,7 +1525,11 @@ def sql(args):
             "`peeky sql --schema` lists the tables"
         )
     result = evidence.query(path, args.query, evidence.parse_params(args.param), limit=args.limit)
-    _emit({**result, "store": str(path)}, args.json, evidence.table)
+    _emit(
+        {**result, "store": str(path)},
+        args.json,
+        lambda shown: evidence.table(shown, short_note=lambda runs: _runs_noted(path, runs)),
+    )
     return 0
 
 
@@ -1481,7 +1551,12 @@ def queries(args):
         return 0
     # The rows, their notes and the text table come from one snapshot of the store.
     result, text = evidence.canned(
-        path, args.name, evidence.parse_params(args.param), limit=args.limit, table=not args.json
+        path,
+        args.name,
+        evidence.parse_params(args.param),
+        limit=args.limit,
+        table=not args.json,
+        short_note=lambda runs: _runs_noted(path, runs),
     )
     _emit({**result, "query": args.name, "store": str(path)}, args.json, lambda _: text)
     return 0
@@ -1941,6 +2016,42 @@ def _step_onto_breakpoint(record, state):
     return "not a hit: hits count only the stops the debugger reports as the breakpoint's"
 
 
+def _step_line_note(record, state):
+    """What a step's stop on a line of only `continue`, `} else {` or `} else if …` means,
+    or None (twelfth evaluation, laps 7 and playlist 7: such a stop came with no word).
+    Steps land where the code jumps (AGENT_GUIDE rule 10): `continue` has not yet left the
+    pass; a `} else` line's code is often the jump that ends the branch above it, and an
+    `else if`'s holds its test too."""
+    path, _, line = str(state.get("location") or "").rpartition(":")
+    if state.get("state") != "stopped" or not path or not line.isdigit() or int(line) < 1:
+        return None
+    try:
+        source = Path(path)
+        if not source.is_absolute():
+            source = Path(str(record.get("root"))) / source
+        text = split_lines(source.read_text(errors="replace"))[int(line) - 1]
+    except (OSError, ValueError, IndexError):
+        return None
+    python = record.get("language") == "python"
+    code = re.sub(r"\s*#.*$" if python else r"\s*//.*$", "", text).strip()
+    if re.fullmatch(r"continue\s*;?", code):
+        return (
+            f"line {line} is `continue`, not run yet: the next step leaves this pass of the "
+            "loop, for its next pass or its end"
+        )
+    if not python and re.fullmatch(r"\}\s*else\s*\{?", code):
+        return (
+            f"line {line} is `{code}`: its code is often the jump that ends the branch above "
+            "it, past the `else` part; the next step shows where the program goes"
+        )
+    if not python and re.match(r"\}\s*else\s+if\b", code):
+        return (
+            f"line {line} starts `}} else if`: its code may be the jump that ends the branch "
+            "above it or the `else if` test; the next step shows which"
+        )
+    return None
+
+
 def _report_text(report, base=None):
     """`session report` text: the state, where the program is stopped, the session's hits
     and steps so far as its worker counted them (an older worker's report has neither),
@@ -2204,6 +2315,22 @@ def _repeats_shortened(rows):
     return [{**row, "error": errors[i]} if i in errors else row for i, row in enumerate(rows)]
 
 
+# `session get` lists an array's first elements in text, as a probe's preview does.
+_GET_ELEMENTS = 8
+
+
+def _element_count(row):
+    """An array's length where its type or value states it: C and C++ `Track[100]`, Rust
+    `[u32; 100]`, Java `int[100]@55 …`; else None."""
+    kind, value = str(row.get("type") or ""), str(row.get("value") or "")
+    found = (
+        re.fullmatch(r"[^\[\]]+\[([0-9]+)\]", kind)
+        or re.fullmatch(r"\[[^;\[\]]+; ([0-9]+)\]", kind)
+        or re.match(r"[\w.$]+\[([0-9]+)\]@[0-9]+ ", value)
+    )
+    return int(found[1]) if found else None
+
+
 def _get_lines(row, session="default"):
     """`session get` text: the value, then one level of children with their selectors."""
     if "value" not in row and not row.get("unavailable"):
@@ -2224,7 +2351,21 @@ def _get_lines(row, session="default"):
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
             + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
         ]
-    for child in row.get("children", []):
+    children = row.get("children", [])
+    # An array's elements past the first few, as a probe's preview shows them (twelfth
+    # evaluation, playlist 4: all 32 of `queue`'s, each with its hint). `--json` lists all.
+    elements = [
+        child
+        for child in children
+        if re.fullmatch(
+            re.escape(str(row.get("selector"))) + r"\[[0-9]+\]", str(child.get("selector"))
+        )
+    ]
+    options = (f" --name {shlex.quote(session)}" if session != "default" else "") + (
+        f" --frame {row['frame']}" if row.get("frame") else ""
+    )
+    hidden = elements[_GET_ELEMENTS:] if len(elements) == len(children) else []
+    for child in children[: len(children) - len(hidden)]:
         name = child.get("selector") or f"{child['name']} [not selectable]"
         more = (
             f" (children: peeky session get {_shell_word(child['selector'])}"
@@ -2256,7 +2397,25 @@ def _get_lines(row, session="default"):
             # Read through a local shown with a note, given below (#148).
             shown += "  [note]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
-    if row.get("children_truncated"):
+    if hidden and row.get("children_truncated"):
+        # The listing is one page of the debugger's (64): JSON has no more, and the count
+        # is of that page; the whole length only where the type gives it (review of PR
+        # #350).
+        first, last = hidden[0]["selector"], hidden[-1]["selector"]
+        size = _element_count(row)
+        lines.append(
+            f"  ... {len(hidden)} more listed, {first} to {last}, then more"
+            + (f" ({size} elements in all)" if size else "")
+            + f": `--json` has only the first {len(elements)}; read any element by index, "
+            f"as `peeky session get {_shell_word(first)}{options}`"
+        )
+    elif hidden:
+        first, last = hidden[0]["selector"], hidden[-1]["selector"]
+        lines.append(
+            f"  ... {len(hidden)} more elements, {first} to {last}: `peeky session get "
+            f"{_shell_word(first)}{options}` reads one; `--json` lists them all"
+        )
+    elif row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
     if row.get("children_grouped") and not row.get("children"):
         # Said only where nothing else is listed (ninth evaluation: on every dataclass,
@@ -2482,7 +2641,7 @@ def session(args):
         elif (
             kind != "out"
             and state.get("reason") == "step"
-            and (note := _step_onto_breakpoint(record, state))
+            and (note := _step_onto_breakpoint(record, state) or _step_line_note(record, state))
         ):
             state["note"] = note
         returned = None
