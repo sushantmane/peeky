@@ -155,7 +155,7 @@ Without the token, the reply is `401`:
 | preview | session ID, stop ID, child handle; optional `pointee` | the value's preview, as `inspect` shows it, or none |
 | set_variable | session ID, stop ID, scope reference, name, expression value (the innermost frame's only) | before/after |
 | breakpoints | session ID, program, complete replacement breakpoint list | verified locations |
-| continue | session ID, stop ID; optional `to_line` or `to_exit` | running |
+| continue | session ID, stop ID; optional `to_line` or `to_exit` | running, and `resumed`: false where another thread's breakpoint stop from the same all-threads stop is served next, and nothing was resumed |
 | step | session ID, stop ID; `kind`: `over`, `in` or `out`; optional `calls` (the step's own end is compared with this stop) | running |
 | report | session ID | bounded output and operation history |
 | close | session ID | idle; owned process teardown |

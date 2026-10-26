@@ -3020,7 +3020,8 @@ class DebugWorker:
                 self.forget_stop()
                 # Those threads keep their old stops in the debugger until a real resume.
                 self.co_served = True
-                return {"state": self.state}
+                # Nothing was resumed: the program did not go on (review of #348).
+                return {"state": self.state, "resumed": False}
             if args.get("to_exit"):
                 # Checked and applied under one lock: clear the launch breakpoints only
                 # while this exact stop is still current.
@@ -3051,7 +3052,7 @@ class DebugWorker:
                 self.cursor = max(self.cursor, consumed)
             self.mark_resumed()
             self.forget_stop()
-            return {"state": self.state}
+            return {"state": self.state, "resumed": True}
         if operation == "step":
             self.stopped(args)
             if self.capabilities.get("supports_stepping") is False:

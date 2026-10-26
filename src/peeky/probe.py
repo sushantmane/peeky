@@ -4489,9 +4489,10 @@ def run_probe(
                         _never_returned(call, f"the program stopped on {what} before it returned")
                     )
                 returning.clear()
-                worker.dispatch("continue", stop)
-                # Counted once the program was let go on from it.
-                passed[(what, filtered)] = passed.get((what, filtered), 0) + 1
+                # Counted only where the program went on: another thread's breakpoint stop
+                # from the same all-threads stop is served first, and nothing resumes.
+                if worker.dispatch("continue", stop).get("resumed") is True:
+                    passed[(what, filtered)] = passed.get((what, filtered), 0) + 1
                 continue
             again = (None, 0)
             if reason in CRASH_STOPS:

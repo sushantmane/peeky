@@ -138,6 +138,8 @@ class FakeWorker:
             }
         if operation == "report":
             return {"output": "", "output_truncated": False}
+        if operation == "continue":
+            return {"state": "running", "resumed": True}
         return {}
 
     def close(self):
@@ -2200,3 +2202,29 @@ def test_an_opaque_rust_enum_row_says_why_where_it_is_and_what_to_read():
     count.pop("opaque_reason")
     [row] = _capture(Worker({}), {}, ("count",), 0, "observed")
     assert "note" not in row, row
+
+
+def test_a_signal_stop_counts_as_let_go_on_only_where_the_program_resumed(monkeypatch):
+    # Review of #348: `continue` serves another thread's breakpoint stop from the same
+    # all-threads stop first, and resumes nothing; the warning said the probe let the
+    # program go on after the signal.
+    import peeky.probe as probe_module
+
+    class Queued(FakeWorker):
+        def __init__(self):
+            super().__init__(
+                reason="exception", seen={"kind": "signal", "description": "signal SIGINT"}
+            )
+            self.waits = 0
+
+        def dispatch(self, operation, args):
+            if operation == "continue":
+                self.calls.append(operation)
+                return {"state": "stopped", "resumed": False}
+            return super().dispatch(operation, args)
+
+    worker = Queued()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert "continue" in worker.calls and "inspect" not in worker.calls
+    assert not any("let the program go on" in w for w in result.get("warnings", ())), result

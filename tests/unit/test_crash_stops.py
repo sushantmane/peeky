@@ -244,3 +244,35 @@ def test_terminate_alone_or_a_crash_with_no_frame_of_the_program_says_so(worker,
         "signal SIGSEGV, outside the program's sources, with no frame of its code among the "
         "first 64"
     )
+
+
+class Events:
+    """A DAP whose all-threads stop also stopped thread 2 at a breakpoint (or didn't)."""
+
+    def __init__(self, queued):
+        self.queued, self.sent = queued, []
+
+    def event_cursor(self):
+        return 7
+
+    def events_between(self, start, end, kinds):
+        stops = [{"event": "stopped", "cursor": 6, "body": {"reason": "breakpoint", "threadId": 2}}]
+        return [e for e in (stops if self.queued else []) if e["event"] in kinds]
+
+    def request(self, command, arguments, timeout=None):
+        self.sent.append(command)
+        return {"allThreadsContinued": True}
+
+
+@pytest.mark.parametrize("queued", [True, False])
+def test_continue_says_whether_it_resumed_the_program(tmp_path, queued):
+    # Review of #348: a probe counts a signal stop as let go on only where it did.
+    worker = DebugWorker(tmp_path)
+    worker.runtime = SimpleNamespace(assert_current=lambda: None)
+    worker.dap = Events(queued)
+    worker.state, worker.stop_id, worker.thread_id, worker.cursor = "stopped", "s1", 1, 5
+    worker.stop_all_threads, worker.breakpoint_counts = True, {"main.c": 1}
+    result = worker._dispatch("continue", {"stop_id": "s1"})
+    # A queued stop of another thread is served next, and nothing is sent to resume.
+    assert result["resumed"] is (not queued), result
+    assert ("continue" in worker.dap.sent) is (not queued), worker.dap.sent
