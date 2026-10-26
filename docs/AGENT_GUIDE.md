@@ -201,10 +201,10 @@ the commands.
 ### Querying saved evidence (`peeky sql`, `peeky queries`)
 
 Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional.** For one
-probe, read its JSON. Saved runs help with large captures, comparisons and slow runs.
+probe, read its JSON.
 
-- `peeky sql --schema` lists the tables and views, a line each. `--schema captures` (any names, or
-  `all`) prints them in full (4.1). Read it before writing SQL.
+- `peeky sql --schema` lists the tables and views. `--schema captures` (any names, or `all`)
+  prints them in full (4.1). Read it before writing SQL.
 - `peeky queries` needs no SQL: `run`, `wide`, `hits`, `compare`, `join` (hits paired by values:
   `key=v` or `key=a,b`; its table drops selectors that agree at every paired hit), `diff` (what
   differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
@@ -212,10 +212,10 @@ probe, read its JSON. Saved runs help with large captures, comparisons and slow 
   last two); `run`, `wide`, `hits`, `set_effect` and `unreadable` take `run=3`. `queries --help`
   lists each one's parameters. `diff`, `compare` and `set_effect` tables show long values from
   where they differ (`--json`: whole).
-- Compare numbers with `num`; `value` is the debugger's text. Mask addresses with
-  `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to 4.8). `--label`
-  tags a run with free text, stored as given; it never changes which runs `diff` or `compare:`
-  pair.
+- Compare numbers with `num` and strings with `text(value, language)` (values keep quotes).
+  `elements(value, language)` reads a list (4.9). Mask addresses with `no_addresses(value)`.
+  `object_ref(value)` tells a Java object from a copy (4.3 to 4.8). `--label` tags a run with free
+  text, stored as given; it never changes which runs `diff` or `compare:` pair.
 - Queries are read-only and bounded; a failing one returns `INVALID_QUERY`. A new question about
   the program needs a new probe.
 

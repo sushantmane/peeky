@@ -73,6 +73,9 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - To tell the same object from a copy, compare `object_ref(value)` in SQL. Compare only within one
   run: across runs the numbers differ
   ([Java 4.6](java-cookbook.md#46-same-object-or-a-copy-java-python)).
+- An array's value keeps its type and number: `int[3]@55 [3, 0, 7]`. In SQL,
+  `elements(value, language)` gives its elements as JSON, and `text(value, language)` a String's
+  text ([4.9](../COOKBOOK.md#49-a-lists-elements-and-a-strings-text)).
 - Several methods can share a line, such as a lambda on its method's line. The line stops in only
   one of them, and the probe says which ([Java 7.3](java-cookbook.md#73-java-launched)).
 - Java rows have no `stop` number ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
