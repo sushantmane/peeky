@@ -29,6 +29,7 @@ The last column is the `retryable` field.
 | `BUDGET_EXHAUSTED` | A bounded read limit was reached. | Narrow the request. | no |
 | `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
+| `PROGRAM_CRASHED` (probe result) | A C or C++ program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
@@ -72,6 +73,16 @@ The last column is the `retryable` field.
 - A write with the same text, not proven to change nothing, is named too: `1 write by --set-at
   with the same text, not proven unchanged`. A Java String or a Python `1000`
   written alike may be a new object. Only writes proven to change nothing are left out.
+
+### PROGRAM_CRASHED
+
+- The program stopped on a fault or a signal, such as `abort` after an uncaught C++ exception or
+  a failed `assert`. The probe ends there, with `status: failed`, and Peeky ends the program.
+- The message says what the debugger says, such as `signal SIGABRT`, and where in your code the
+  crash came from. `crash` in JSON has the same. There is no exit status.
+- The output so far is kept. The C++ runtime and `assert` write the exception's type or the failed
+  condition to it.
+- See [C and C++ 5.1](lang/c-cpp-cookbook.md#when-the-program-crashes).
 
 ### BUILD_FAILED
 

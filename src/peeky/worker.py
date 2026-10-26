@@ -59,6 +59,12 @@ RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
 # Stops where a user's step left the thread, maybe outside the program's sources: its
 # end, or (LLDB) the point another thread's stop at the same time caught it (#162).
 STEP_STOPS = frozenset({"step", "interrupted"})
+# Stops where the program crashed (#342): a signal, a fault, or `abort` after an uncaught
+# C++ exception or a failed `assert`. lldb-dap calls them all `exception`.
+CRASH_STOPS = frozenset({"exception", "signal"})
+# The frames `inspect --frame N` and a crash's summary may list: `inspect` lists 10, or
+# up to frame N; a crash's nearest frame of the program's own code is looked for in these.
+MAX_FRAMES = 64
 STEPS = {"over": "next", "in": "stepIn", "out": "stepOut"}
 # The frames a step's start is compared by with the stop it returns to (#155).
 ORIGIN_LEVELS = 10
@@ -308,6 +314,9 @@ class DebugWorker:
         self.stop_outside = self.stop_returns = self.co_served = False
         # Why the stop's frame is not read: the debugger shows it in a macro's definition.
         self.stop_macro = None
+        # What a crash stop tells (#342): the debugger's description, and the nearest frame
+        # of the program's own code.
+        self.stop_crash = None
         # Where the last step started (#155): the function it may leave, and the stack
         # its return must come back to, to tell whose value a debugger lists after it;
         # and, while a step out runs, what watches its caller (NativeSession.watch_return).
@@ -777,6 +786,74 @@ class DebugWorker:
         except Exception:
             return None
 
+    def read_crash(self, runtime, body):
+        """What a crash stop tells (#342), for display; nothing of any frame is read.
+
+        ``description``: the debugger's ("signal SIGABRT"). ``outside_program``: whether
+        it stopped outside the program's sources (in libc, the C++ runtime, `abort`).
+        ``frame``, ``function`` and ``location``: the nearest frame of the program's own
+        code, among the first MAX_FRAMES. ``uncaught_exception``: the C++ runtime found no
+        handler for a thrown exception (`__cxa_throw` called `std::terminate`). That frame
+        is checked against the prepared build, as `inspect` checks one: a mismatch in the
+        program's own sources is provenance, and fails closed.
+        """
+        crash = {}
+        if isinstance(text := body.get("description"), str) and text.strip():
+            crash["description"] = text.strip()[:300]
+        try:
+            stack = self.dap.request(
+                "stackTrace", {"threadId": self.thread_id, "levels": MAX_FRAMES}, timeout=2
+            )
+            frames = [f for f in stack.get("stackFrames") or () if isinstance(f, dict)]
+        except Exception:
+            # Best effort, as the stop's location is: nothing more is said.
+            return crash
+        if not frames:
+            return crash
+        crash["outside_program"] = not _inside_program(runtime, frames[0])
+        names = [str(frame.get("name") or "") for frame in frames]
+        thrown = next((i for i, name in enumerate(names) if "__cxa_throw" in name), None)
+        if thrown is not None and any("terminate" in name for name in names[:thrown]):
+            # A `noexcept` function's terminate leaves no `__cxa_throw` on the stack.
+            crash["uncaught_exception"] = True
+        for index, frame in enumerate(frames[:MAX_FRAMES]):
+            if _inside_program(runtime, frame):
+                runtime.validate_stop(frame)
+                path = frame["source"]["path"]
+                crash.update(
+                    frame=index,
+                    function=str(frame.get("name") or "")[:300],
+                    location=f"{_display_path(runtime, path)}:{frame.get('line')}",
+                )
+                break
+        return crash
+
+    def crash_refusal(self, frame, index):
+        """Why nothing of ``frame``, outside the program's sources, is read at a crash
+        stop (#342), and which frame of the program's own code to read instead."""
+        crash = self.stop_crash or {}
+        what = crash.get("description") or f"reason: {self.stop_reason}"
+        text = (
+            f"Nothing in frame {index} ({str(frame.get('name') or '?')[:200]}) is read: it is "
+            "outside the program's sources, "
+            + ("where the program crashed" if index == 0 else "on the stack of its crash")
+            + f" ({what})"
+        )
+        if type(nearest := crash.get("frame")) is int:
+            where = str(crash.get("location"))
+            base = getattr(getattr(self.runtime, "prepared", None), "source_root", None)
+            if base is not None and where.startswith(f"{base}/"):
+                # As the program's sources are named: relative to its directory.
+                where = where[len(f"{base}/") :]
+            return (
+                f"{text}. Frame {nearest}, {display_function(crash.get('function'))} at "
+                f"{where}, is the nearest of your code: `session inspect --frame {nearest}`"
+            )
+        return (
+            f"{text}, and none of its first {MAX_FRAMES} frames is in your code: `session "
+            "report` shows its output"
+        )
+
     def call_origin(self):
         """Where a step starts (#155): the thread, the function it may leave, and the
         frames it would return to; None if the debugger does not list them."""
@@ -1148,6 +1225,9 @@ class DebugWorker:
         if self.stop_id and self.stop_macro:
             # Why `inspect` reads no value of the stop's frame (#326).
             where["macro_stop"] = self.stop_macro
+        if self.stop_id and self.stop_crash is not None:
+            # The program crashed (#342): what the debugger says, and where in its code.
+            where["crash"] = dict(self.stop_crash)
         if self.stop_id and self.call_change:
             # Another function or depth than where the session's step started (#262).
             where["call_change"] = dict(self.call_change)
@@ -1608,7 +1688,7 @@ class DebugWorker:
 
     def forget_stop(self):
         self.stop_outside = self.stop_returns = False
-        self.stop_macro = None
+        self.stop_macro = self.stop_crash = None
         self.step_origin = self.step_held = None
         self.forget_calls()
         self.stop_hit = self.stop_line = self.stop_place = None
@@ -2030,7 +2110,7 @@ class DebugWorker:
             self.loop_lines = {}
             # Nothing about an earlier session's stops carries over on a shared worker.
             self.co_served = self.stop_outside = self.stop_returns = False
-            self.stop_macro = None
+            self.stop_macro = self.stop_crash = None
             self.step_origin = self.return_watch = self.step_held = None
             self.reset_calls()
             self.stop_all_threads = False
@@ -2340,6 +2420,11 @@ class DebugWorker:
                     }
                 )
             self.stop_location = self.read_location() if self.stop_id else None
+            self.stop_crash = (
+                self.read_crash(runtime, event.get("body") or {})
+                if self.stop_id and self.stop_reason in CRASH_STOPS
+                else None
+            )
             # Counted like a probe's hits: every stop at the session's breakpoints,
             # including other threads' stops served one by one; never `--to` lines.
             self.classify_hit()
@@ -2383,12 +2468,15 @@ class DebugWorker:
             # reply drains, this inspection is read-only.
             drained = getattr(self.dap, "drained", None)
             quiescent = drained(1) if drained else True
-            stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10})
-            frames = stack.get("stackFrames", [])[:10]
+            # Ten frames, or up to the one asked for (a crash's nearest frame of the
+            # program's own code is often deeper, #342).
+            levels = min(max(10, args.get("frame", 0) + 1), MAX_FRAMES)
+            stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": levels})
+            frames = stack.get("stackFrames", [])[:levels]
             self.frames = {f["id"] for f in frames}
             # As listed, for rules that read what runs below a frame (a constructor), with
             # whether they are the whole stack.
-            self.listed_frames = StackPage(frames, 10, stack.get("totalFrames"))
+            self.listed_frames = StackPage(frames, levels, stack.get("totalFrames"))
             self.deeper_frames = None
             self.thread_count = None
             self.whole_frames = None
@@ -2403,7 +2491,7 @@ class DebugWorker:
                         f"Frame {args['frame']} is out of range: this stop lists "
                         f"{len(frames)} frame(s)"
                         + (f", 0 to {len(frames) - 1}" if frames else "")
-                        + " (0 is the innermost; at most 10 are listed)"
+                        + f" (0 is the innermost; at most {MAX_FRAMES} are listed)"
                     )
                 index = args["frame"]
             else:
@@ -2440,6 +2528,10 @@ class DebugWorker:
                         else "your code is no longer on the stack: `session continue`"
                     )
                 )
+            if self.stop_reason in CRASH_STOPS and not _inside_program(runtime, selected_frame):
+                # The program crashed in a library, or in `abort` (#342): nothing there is
+                # read, and the session is kept. Its own code's frames are read as callers.
+                raise ValueError(self.crash_refusal(selected_frame, index))
             try:
                 runtime.validate_stop(selected_frame)
             except RuntimeError as exc:

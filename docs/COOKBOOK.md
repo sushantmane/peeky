@@ -2839,8 +2839,8 @@ A probe's table does the same: `visible: as listed at hit 1`. JSON keeps every l
 #### Read a caller's frame
 
 `--frame N` reads frame N of the stack. Frame 0, the default, is where the program stopped. Frame 1
-is its caller. At most 10 frames are listed, and `session inspect --json` lists them under
-`frames`.
+is its caller. Ten frames are listed, or up to frame N where N is past them, at most 64.
+`session inspect --json` lists them under `frames`.
 
 ```sh
 peeky session start examples/corpus/mutable_default/program.py --at 3
@@ -2860,7 +2860,7 @@ frame 1: <module> (examples/corpus/mutable_default/program.py:7)
 add_tag.__defaults__: tuple = (['a'],)  [id 24]
   add_tag.__defaults__[0]: list = ['a']  [id 79] (children: peeky session get 'add_tag.__defaults__[0]' --frame 1)
   len() [not selectable]: int = 1
-peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 to 1 (0 is the innermost; at most 10 are listed)
+peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 to 1 (0 is the innermost; at most 64 are listed)
   hint: Fix the request arguments; see `peeky <command> --help`.
 ```
 

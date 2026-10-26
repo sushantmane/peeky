@@ -28,6 +28,8 @@ from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_prev
 from peeky.names import changes_named, display_function, function_labels, hits_named, shortened_note
 from peeky.textlines import split_lines
 from peeky.worker import (
+    CRASH_STOPS,
+    MAX_FRAMES,
     DebugWorker,
     load_java_target,
     load_native_target,
@@ -4145,6 +4147,8 @@ def run_probe(
     # None (a failure or the timeout); and the change being made when one failed: for
     # each request's outcome (`_set_outcomes`).
     finished, attempt = None, None
+    # What the debugger said of the program's crash, where it crashed (#342).
+    crash = None
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # Each --set-at, with its line in the build that runs (#137).
@@ -4420,8 +4424,23 @@ def run_probe(
                     say("all requested hits captured; ending the probe now")
                     break
                 continue
-            # Only the requested breakpoints count; a crash, signal or other stop fails
-            # closed before any capture or intervention.
+            if reason in CRASH_STOPS:
+                # The program crashed (#342): a fault, a signal, or `abort` after an
+                # uncaught C++ exception. Nothing more is read or changed: the worker's
+                # summary says where, and the probe ends with the program stopped there.
+                crash = state.get("crash") if isinstance(state.get("crash"), dict) else {}
+                if not crash.get("description") and isinstance(body.get("description"), str):
+                    crash = {**crash, "description": body["description"][:300]}
+                if "location" not in crash and state.get("location"):
+                    crash = {**crash, "stopped_at": str(state["location"])[:500]}
+                for call in reversed(returning):
+                    rows.extend(_never_returned(call, "the program crashed before it returned"))
+                returning.clear()
+                status = "failed"
+                say(f"the program crashed after {hits} hit(s)" if hits else "the program crashed")
+                break
+            # Only the requested breakpoints count; any other stop fails closed before any
+            # capture or intervention.
             # Every line placed counts: another thread's stop at a line whose breakpoint
             # was just removed may still be served (LLDB stops all threads together).
             expected = {number: _expected_line(placed[number], state, number) for number in lines}
@@ -4820,6 +4839,20 @@ def run_probe(
                     "retryable": False,
                     "session_closed": True,
                 }
+        if crash is not None:
+            result["crash"] = shown = crash
+            base = str(Path(root).resolve()) + "/"
+            if isinstance(at := crash.get("location"), str) and at.startswith(base):
+                # Named as the probe names its program: relative to the root.
+                shown = {**crash, "location": at[len(base) :]}
+            result["error"] = {
+                "code": "PROGRAM_CRASHED",
+                "message": crash_message(shown, hits, f"{probe.program}:{line}"),
+                "hint": "The program failed, not Peeky: its output may say why. Probe a line "
+                "before the crash to see the values that led to it.",
+                "retryable": False,
+                "session_closed": True,
+            }
         if status == "timeout":
             from peeky.errors import classify
 
@@ -5671,6 +5704,39 @@ def _table(result, short_names=True):
     return "\n".join(lines)
 
 
+def crash_text(crash):
+    """A crash's summary (#342), as the worker gave it: "signal SIGABRT, in
+    __pthread_kill (outside the program's sources) in a call from main at abort.cpp:12, a
+    C++ exception that was not caught"."""
+    text = str(crash.get("description") or "the debugger did not say what")
+    nearest = crash.get("location")
+    function = display_function(crash.get("function")) or "?"
+    if crash.get("outside_program") is True and nearest:
+        text += f", outside the program's sources, in a call from {function} at {nearest}"
+    elif nearest:
+        text += f", in {function} at {nearest}"
+    elif crash.get("outside_program") is True:
+        text += (
+            f", outside the program's sources, with no frame of its code among the first "
+            f"{MAX_FRAMES}"
+        )
+    elif crash.get("stopped_at"):
+        text += f", at {crash['stopped_at']}"
+    if crash.get("uncaught_exception") is True:
+        text += ", after a C++ exception that nothing caught"
+    return text
+
+
+def crash_message(crash, hits, where):
+    """A probe's error for a crash (#342): when it came, what it was, and that the program
+    was ended there, so it has no exit status."""
+    when = f"after hit {hits}" if hits else f"before it stopped at {where}"
+    return (
+        f"The program crashed {when}: {crash_text(crash)}. Peeky ended it there, so it has no "
+        "exit status"
+    )
+
+
 def _output_label(result):
     """What the output shown is (#203): whole, cut, or read before its end was proven."""
     complete = result.get("output_complete", True)
@@ -5696,6 +5762,8 @@ def _output_label(result):
         return "output (truncated: some of it was dropped):" if cut else "output:"
     if result.get("program_ended"):
         return "output so far (the program ended, but its output may still have been arriving):"
+    if result.get("crash") is not None:
+        return "output so far (the program was stopped at its crash):"
     if result.get("status") == "failed":
         return "output so far (the program was stopped when the probe failed):"
     return "output so far (the program was still running):"

@@ -134,7 +134,9 @@ the commands.
   `step --out` or `continue`.
 - **Continuing:** `continue` runs to the next stop; `--count N` to the Nth breakpoint stop.
   `session start --hit N` starts at the Nth stop. States show `hit N` at the session's breakpoint.
-  `--count` and `--hit` stop at anything else (a crash, a step, the exit) with a note. `--to LINE`
+  `--count` and `--hit` stop at anything else (a crash, a step, the exit) with a note. A C or
+  C++ crash's state has `crash`: what the debugger says, and the nearest frame of your code to
+  read with `--frame N`. `--to LINE`
   also stops once at LINE of the session's file (rule 9). `--to-exit` clears breakpoints and runs
   to the end.
 - **Candidates** (`--old`/`--new`) work on any target but an attached JVM. `--at` keeps the

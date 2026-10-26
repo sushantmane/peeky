@@ -27,6 +27,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Offsets from a pointer in each run](#offsets-from-a-pointer-in-each-run)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
   - [Read a caller's local](#read-a-callers-local)
+  - [When the program crashes](#when-the-program-crashes)
 - [7.1 C and C++](#71-c-and-c)
   - [Quick start: what you can read and change](#quick-start-what-you-can-read-and-change)
   - [Read structs, arrays and standard containers](#read-structs-arrays-and-standard-containers)
@@ -443,6 +444,47 @@ How Peeky reads the source:
 - Digraphs (`<% %> <: :>`) are brackets.
 - Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
   lone `\n` each end a line; `\n\r` is two line ends.
+
+### When the program crashes
+
+A crash is the program's failure, not Peeky's. It can be a fault, such as `strlen(NULL)`, or a
+signal. It can be `abort`, after an uncaught C++ exception, `std::terminate` or a failed `assert`.
+Most such crashes stop in libc, the C++ runtime or `abort`, outside your sources.
+
+A probe ends at the crash with `status: failed` and `PROGRAM_CRASHED`. The hits before it stand,
+and the output so far is kept:
+
+```
+status: failed  hits: 1 before it failed  seconds: 1.224  max pause: 117.3 ms
+error [PROGRAM_CRASHED]: The program crashed after hit 1: signal SIGABRT, outside the program's sources, in a call from main at abort.cpp:12, after a C++ exception that nothing caught. Peeky ended it there, so it has no exit status
+hint: The program failed, not Peeky: its output may say why. Probe a line before the crash to see the values that led to it.
+cleanup: terminated pids 20244, 20245
+output so far (the program was stopped at its crash):
+  before 1
+  before 2
+  libc++abi: terminating due to uncaught exception of type std::length_error: basic_string
+```
+
+- The message gives what the debugger says, such as `signal SIGABRT` or `EXC_BAD_ACCESS`. It
+  names the nearest frame of your code, among the first 64.
+- An uncaught exception is named where `__cxa_throw` called `std::terminate`. LLDB doesn't say
+  its type, but the C++ runtime writes it to the output.
+- JSON has `crash`: `description`, `outside_program`, `frame`, `function`, `location`, and
+  `uncaught_exception` where it applies.
+- Peeky ends the program at the crash, so there is no exit status. On macOS, a fault would stop
+  again at each `continue`.
+- An exception that the program catches never stops it.
+
+In a session, the state says the same, and `crash` is in its JSON. Nothing in a frame outside your
+sources is read. `session inspect` there is refused, and the session goes on:
+
+```
+peeky: [INVALID_REQUEST] Nothing in frame 0 (__pthread_kill) is read: it is outside the program's sources, where the program crashed (signal SIGABRT). Frame 12, main at abort.cpp:12, is the nearest of your code: `session inspect --frame 12`
+```
+
+`--frame N` reads that frame as any caller's, even past the 10 frames listed. Its values are
+never settable. A frame of your code whose line doesn't match the build still fails, with
+`DEBUGGER_ERROR`.
 
 ## 7.1 C and C++
 

@@ -157,6 +157,15 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
     result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("x", "2"),)))
     if ok:
         assert result["status"] == "completed" and result["hits"] == 1
+    elif fake.get("reason") in ("exception", "signal"):
+        # The program crashed (#342): nothing of its frames is read, and nothing changed.
+        assert result["status"] == "failed" and result["hits"] == 0
+        assert result["error"]["code"] == "PROGRAM_CRASHED", result["error"]
+        assert result["error"]["message"] == (
+            "The program crashed before it stopped at main.py:8: the debugger did not say "
+            "what. Peeky ended it there, so it has no exit status"
+        )
+        assert {"inspect", "set_variable"}.isdisjoint(worker.calls) and result["rows"] == []
     else:
         assert result["status"] == "failed" and result["hits"] == 0
         assert "not the requested" in result["error"]["message"]
