@@ -593,6 +593,98 @@ fn main() {
 """
 
 
+# A crate function named `spawn` that keeps nothing, beside the standard library's
+# `thread::spawn`; `mem::forget(r)` and a discarded `Box::leak`; and a stop before
+# `ptr::eq(r, q)`.
+KEPT = """use std::sync::Mutex;
+use std::time::Duration;
+
+#[inline(never)]
+fn other() -> u32 {
+    std::hint::black_box(1)
+}
+
+#[inline(never)]
+fn fresh() -> &'static Mutex<u32> {
+    Box::leak(Box::new(Mutex::new(0)))
+}
+
+#[inline(never)]
+fn lock_set(m: &Mutex<u32>, v: u32) {
+    *m.lock().unwrap() = v;
+}
+
+#[inline(never)]
+fn spawn(m: &Mutex<u32>) {
+    std::hint::black_box(m);
+}
+
+fn own_spawn(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    spawn(r);
+    let k = other(); // OWN_SPAWN
+    std::hint::black_box(&x);
+    k
+}
+
+fn std_spawn(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        println!("THREAD {}", *r.lock().unwrap());
+    });
+    let k = other(); // STD_SPAWN
+    std::hint::black_box(&x);
+    k
+}
+
+fn forgot(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    std::mem::forget(r);
+    let k = other(); // FORGOT
+    std::hint::black_box(&x);
+    k
+}
+
+fn leaked(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    lock_set(r, x);
+    let _ = Box::leak(Box::new(r));
+    let k = other(); // LEAKED
+    std::hint::black_box(&x);
+    k
+}
+
+fn compared(arg: u32) -> u32 {
+    let x = std::convert::identity(arg);
+    let r = fresh();
+    let q = fresh();
+    lock_set(r, x);
+    let k = other(); // COMPARED
+    std::hint::black_box(std::ptr::eq(r, q));
+    std::hint::black_box(&x);
+    k
+}
+
+fn main() {
+    let n: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    println!("OWN_SPAWN {}", own_spawn(n));
+    println!("STD_SPAWN {}", std_spawn(n));
+    println!("FORGOT {}", forgot(n));
+    println!("LEAKED {}", leaked(n));
+    println!("COMPARED {}", compared(n));
+    std::thread::sleep(Duration::from_millis(600));
+}
+"""
+
+
 def line_of(marker, text=SOURCE):
     return next(i for i, line in enumerate(text.splitlines(), 1) if line.endswith(f"// {marker}"))
 
@@ -633,6 +725,11 @@ def paths(tmp_path, monkeypatch):
 @pytest.fixture
 def keeps(tmp_path, monkeypatch):
     return make(tmp_path, monkeypatch, "keeps", KEEPS)
+
+
+@pytest.fixture
+def kept(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "kept", KEPT)
 
 
 def probe(capsys, root, marker, *argv, text=SOURCE):
@@ -800,3 +897,20 @@ def test_a_pointer_handed_to_a_thread_outlives_the_frame(keeps, capsys):
     assert code == 0, result.get("error")
     (row,) = [r for r in result["rows"] if r["selector"] == "x" and r["phase"] == "observed"]
     assert row.get("settable") is True, row
+
+
+@pytest.mark.timeout(600)
+def test_only_a_proven_keeping_call_or_a_use_beyond_the_address_withholds_the_local(kept, capsys):
+    # The crate's own `spawn(r)`, `mem::forget(r)`, `let _ = Box::leak(Box::new(r));`, and a
+    # stop before `black_box(std::ptr::eq(r, q))`: none hands on what `r` points at, nor uses
+    # it. Each was refused.
+    for marker in ("OWN_SPAWN", "FORGOT", "LEAKED", "COMPARED"):
+        code, result = probe(capsys, kept, marker, "--capture", "x", "--set", "x=100", text=KEPT)
+        assert code == 0, (marker, result.get("error"))
+        (row,) = [r for r in result["rows"] if r["selector"] == "x" and r["phase"] == "observed"]
+        assert row.get("settable") is True, (marker, row)
+    # The standard library's `thread::spawn`, beside the crate's `spawn`, keeps it.
+    message, _ = refused(*probe(capsys, kept, "STD_SPAWN", "--set", "x=100", text=KEPT), "STD")
+    assert "the program's own `r` (at lines 36 and 37) may point at a copy of `x`" in message, (
+        message
+    )

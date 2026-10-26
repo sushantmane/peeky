@@ -716,12 +716,19 @@ the local without reading the changed part, and uses the binding before or after
 - `_escapes` counts a call given the binding, or what is made from it, with another value that
   may hold a pointer, or one that may touch global state. It also counts a call that keeps what
   it is given past the call (review 2). That is the standard library's `thread::spawn`,
-  `Builder::spawn`, `Scope::spawn`, `mem::forget`, `Box::leak` and `Sender::send`, by path
-  (`_KEEPING_CALLS`, `_keeping_call`). rustc may print these without their module
-  (`spawn::<…>`). A function of the crate's counts if it may make such a call, however deep
-  (`OwnedLocals._keepers`, `Body.keepers`, by name), as does a call by a function pointer.
+  `Builder::spawn`, `Scope::spawn` and `Sender::send`, proven by path (`_KEEPING_CALLS`,
+  `_keeping_call`, review 3). The path must be under a proven root, or be one rustc printed
+  without its module, whose first name the crate defines nothing of (`OwnedLocals._shadows`,
+  `Body.shadows`). A function of the crate's counts if it may make such a call, however deep
+  (`OwnedLocals._keepers`, `Body.keepers`, by name), as does a call by a function pointer. So
+  the crate's own `spawn` counts by its body.
+- `mem::forget` and `Box::leak` keep nothing that counts here. What they are given is reached
+  afterwards only through what `leak` returns, which the copy and return analyses follow.
 - The standard library's `ptr::eq` and `addr_eq`, proven so (`_std_compares`, `Body.compares`),
   write nothing through the pointers they are given (`_copy_store`), nor keep them (`_escapes`).
+  They use what they are given for its address only (`Body._address_only`, review 3). So does
+  an assignment to a temporary only such calls are given (`_11 = &raw const (*_4)`).
+  `copy_kind` counts none of these as a use of a copy.
 - A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
   (`Block.unwinds`) is not followed. Std's panic (`Body._panics`) is neither a read nor an end, and
   its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count (review 4).

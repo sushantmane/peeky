@@ -472,34 +472,38 @@ _GLOBAL_VALUE = re.compile(
 )
 _CLOSURE_TYPE = re.compile(r"\{closure@[^{}]*\}")
 # The standard library's calls that keep what they are given past the call (#340 review 2): a
-# thread runs a moved closure after it, `forget` and `leak` never drop, and a channel hands a
-# sent value to its receiving end. By path, without generic arguments; rustc may leave out a
-# unique name's module (`spawn::<…>`, `Box::<T>::leak`), so the path may end any of these.
+# thread runs a moved closure after it, and a channel hands a sent value to its receiving end.
+# By path, without generic arguments; rustc may leave out a unique name's module
+# (`spawn::<…>`, `Builder::spawn`), so the path may end any of these. Not `mem::forget` or
+# `Box::leak` (review 3): what they are given is reached afterwards only through what the
+# leak returns, which the copy and return analyses follow.
 _KEEPING_CALLS = (
     "thread::spawn",
     "thread::Builder::spawn",
     "thread::Scope::spawn",
-    "mem::forget",
-    "boxed::Box::leak",
     "mpsc::Sender::send",
     "mpsc::SyncSender::send",
 )
 
 
-def _keeping_call(path):
-    """Whether the call path ``path`` may be one of ``_KEEPING_CALLS`` (#340 review 2): its
-    segments, past a root of the standard library's, end one of them. A function of the
-    crate's so spelled counts too, which only withholds more."""
+def _keeping_call(path, trusted=_STD_CRATES, shadows=None):
+    """Whether the call path ``path`` is proven one of ``_KEEPING_CALLS`` (#340 review 3):
+    under a root of the standard library's ``trusted`` proves (`std::thread::spawn`), or
+    without its module, where the crate defines nothing of its first name (``shadows``: the
+    names of its functions and types; `spawn::<…>`, `Builder::spawn`). A function of the
+    crate's so named is judged by its own body (``OwnedLocals._keepers``). None for
+    ``shadows`` proves no name, which takes each for the standard library's."""
     plain = _plain_path(path or "")
-    if not plain or plain.startswith("<"):
+    if not plain or (path or "").startswith("<"):
         return False
     segments = plain.split("::")
-    if segments[0] in _STD_CRATES and len(segments) > 1:
-        segments = segments[1:]
-    return any(
-        known.split("::")[-len(segments) :] == segments
-        or segments[-len(known.split("::")) :] == known.split("::")
-        for known in _KEEPING_CALLS
+    rooted = segments[0] in _STD_CRATES and len(segments) > 1
+    rest = segments[1:] if rooted else segments
+    known = [each.split("::") for each in _KEEPING_CALLS]
+    if rooted:
+        return segments[0] in trusted and any(rest[-len(each) :] == each for each in known)
+    return any(each[-len(rest) :] == rest for each in known) and (
+        shadows is None or rest[0] not in shadows
     )
 
 
@@ -2296,6 +2300,10 @@ class Body:
     # library's (``OwnedLocals._std_compares``).
     keepers: frozenset | None = None
     compares: frozenset = frozenset()
+    # The names of the crate's functions and types, which a path without its module may be
+    # (review 3: ``_keeping_call``); None until matched.
+    shadows: frozenset | None = None
+    _address_cache: frozenset | None = None
     # {pseudo-local (``_GLOBAL_BASE`` on): (the place that may store a copy in global state,
     # the globals' types, ``GlobalState``'s)}, found with ``_copy_parts``.
     global_holders: dict = field(default_factory=dict)
@@ -3002,7 +3010,10 @@ class Body:
                 used = (
                     used
                     or (stored and self.reads_global(copy, number, offset))
-                    or any(_event(text, each) == "use" for each in copies)
+                    or (
+                        (number, offset) not in self._address_only()
+                        and any(_event(text, each) == "use" for each in copies)
+                    )
                     # What it stands for outlives it: code after, or a caller, may read it.
                     or (ended and outlives)
                 )
@@ -3088,6 +3099,40 @@ class Body:
             copy, owners
         )
 
+    def _address_only(self):
+        """The places of statements that use what they mention for its address only (#340
+        review 3): a call of the standard library's `ptr::eq` or `addr_eq`, proven so
+        (``compares``), and each assignment to a temporary only such calls are given (`_11 =
+        &raw const (*_4)` of `ptr::eq(r, q)`). None of them uses a copy what it mentions
+        points at, nor makes one (``_copy_verdict``)."""
+        if self._address_cache is None:
+            calls, temporaries = set(), {}
+            named = self.named_locals()
+            for number, block in self.blocks.items():
+                for index, (text, _, _) in enumerate(block.statements):
+                    plain = _STRING.sub('""', text)
+                    compare = _comparison_root(plain)
+                    if compare and _trusts(self.compares, compare):
+                        calls.add((number, index))
+            found = set(calls)
+            if calls:
+                for number, block in self.blocks.items():
+                    for index, (text, _, _) in enumerate(block.statements):
+                        whole = _WHOLE_ASSIGNMENT.match(_STRING.sub('""', text))
+                        if whole and int(whole[1]) not in named:
+                            temporaries.setdefault(int(whole[1]), []).append((number, index))
+                for local, places in temporaries.items():
+                    uses = [
+                        (number, index)
+                        for number, block in self.blocks.items()
+                        for index, (text, _, _) in enumerate(block.statements)
+                        if (number, index) not in places and _event(text, local) == "use"
+                    ]
+                    if uses and set(uses) <= calls:
+                        found.update(places)
+            self._address_cache = frozenset(found)
+        return self._address_cache
+
     def _reachable_after(self, copy, owners):
         """Whether what the pointer binding ``copy``, made from ``owners``, stands for may be
         reached once the frame returns (#340 review): the caller's (an argument it was made
@@ -3112,10 +3157,9 @@ class Body:
         anything else, or given to a call with another value that may hold a pointer (it may
         store it there: `out.push(p)`), or to one that may touch global state. Also to a
         call that keeps what it is given past the call (review 2): the standard library's
-        `thread::spawn`, `forget`, `Box::leak` or `Sender::send` (``_keeping_call``), or a
-        function of the crate's that may make one (``keepers``). Not to the standard
-        library's `ptr::eq` or `addr_eq`, proven so (``compares``), which compare
-        addresses only."""
+        `thread::spawn` or `Sender::send`, proven so (``_keeping_call``), or a function of the
+        crate's that may make one (``keepers``). Not to the standard library's `ptr::eq` or
+        `addr_eq`, proven so (``compares``), which compare addresses only."""
         aliases = self._aliases(copy) | {copy}
         for (number, index), edge in self._global_edges().items():
             if edge[0] != "call":
@@ -3125,7 +3169,7 @@ class Body:
             if not operands & aliases:
                 continue
             _, name, _, path = edge
-            if _keeping_call(path):
+            if _keeping_call(path, self.std_paths, self.shadows):
                 return True
             compare = _comparison_root(_STRING.sub('""', text))
             if compare and _trusts(self.compares, compare):
@@ -8095,6 +8139,7 @@ class OwnedLocals:
             found.globals = self._globals()
             found.keepers = self._keepers()
             found.compares = self._std_compares()
+            found.shadows = self._shadows()
             found.sinks = (
                 frozenset(self.std_macros),
                 frozenset(each.path for each in self.bodies),
@@ -9611,11 +9656,25 @@ class OwnedLocals:
             self._droppers_known = found
         return self._droppers_known
 
+    def _shadows(self):
+        """The names of the crate's functions and types (#340 review 3), which a path the
+        MIR prints without its module may be (``_keeping_call``): each function's in the
+        dump, and each `struct`, `enum`, `union`, `type` or `trait` its sources name."""
+        if "_shadows_known" not in self.__dict__:
+            names = {body.name for body in self.bodies}
+            names |= {(_segments(path) or [""])[-1] for path in self.defined}
+            for text in self.texts.values():
+                names |= set(
+                    re.findall(r"\b(?:struct|enum|union|type|trait)\s+([A-Za-z_]\w*)", text)
+                )
+            self._shadows_known = frozenset(names)
+        return self._shadows_known
+
     def _keepers(self):
         """The names of the crate's functions that may keep what they are given past the
-        call (#340 review 2): one that calls the standard library's `thread::spawn`, `forget`,
-        `Box::leak` or `Sender::send` (``_keeping_call``), or a function of the crate's so
-        named, however deep. By name, so a namesake counts too. A closure's body counts for
+        call (#340 review 2): one that calls the standard library's `thread::spawn` or
+        `Sender::send`, proven so (``_keeping_call``), or a function of the crate's so named,
+        however deep. By name, so a namesake counts too. A closure's body counts for
         any call of a closure (`call`, `call_mut`, `call_once`), and a call by a function
         pointer (no name) for any function."""
         if "_keepers_known" not in self.__dict__:
@@ -9629,7 +9688,7 @@ class OwnedLocals:
                         if edge[0] != "call":
                             continue
                         _, name, _, path = edge
-                        if _keeping_call(path) or (
+                        if _keeping_call(path, self._std_crates(), self._shadows()) or (
                             not _std_callee(path, self._std_crates(), self._layouts())
                             and (name in grown or (not name and grown))
                         ):

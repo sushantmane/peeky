@@ -1716,8 +1716,10 @@ uses `p` again. That holds too for a `&'static` a call returned: `r` of `let r =
 Where nothing else can reach what the pointer points at, it ends with the function. An example
 is a leaked `Box` that `fresh()` returned. That changes once the pointer is handed to something
 that keeps it past the call: a thread the function spawns (`std::thread::spawn(move || …)`, its
-`JoinHandle` dropped), `mem::forget`, `Box::leak`, a channel's `send`, or a function of your crate
-that spawns one. The standard library's `ptr::eq` only compares the address, so it keeps nothing.
+`JoinHandle` dropped), a channel's `send`, or a function of your crate that spawns one. A function
+of your crate named `spawn` counts by what it does. `mem::forget` and a discarded `Box::leak` keep
+nothing anyone can reach. The standard library's `ptr::eq` only compares the address, so it
+neither keeps nor uses the copy, before or after the stop.
 
 To change the value, change it before the copy is made, or change the copy.
 
