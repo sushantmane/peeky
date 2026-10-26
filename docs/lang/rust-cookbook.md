@@ -1,8 +1,11 @@
 # Peeky Cookbook: Rust
 
-This cookbook covers what is different for Rust. Read the [COOKBOOK](../COOKBOOK.md) first: it
-has the recipes every language shares. Each section here has the number and title of the COOKBOOK
-section it adds to. For a one-page summary of the Rust rules, see [rust.md](rust.md).
+**[AGENT_GUIDE.md](../AGENT_GUIDE.md) and [rust.md](rust.md) cover most tasks.** This cookbook is
+for details, which they cite by section number.
+
+This cookbook covers what is different for Rust. The [COOKBOOK](../COOKBOOK.md) has the recipes
+every language shares. Each section here has the number and title of the COOKBOOK section it adds
+to. For a one-page summary of the Rust rules, see [rust.md](rust.md).
 
 Peeky debugs Rust with lldb-dap, LLVM's debugger. Words such as MIR, raw, `[memory]` and `[stale]`
 are explained in [rust.md](rust.md#words-these-pages-use).
@@ -382,7 +385,7 @@ set width: 10 -> 9
 output:
   ACCEPTED:0,1,10,11
 candidate: values are from a fresh build with this edit; your files are unchanged
-candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
+candidate: The edit keeps the line numbers: the candidate's lines are the original's
 ...
 ```
 

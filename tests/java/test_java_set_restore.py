@@ -137,7 +137,7 @@ def test_the_guard_flip_skips_the_move_with_two_set_ats(trail, capsys):
         ("0", "1", f"{guard}@2"),
         ("0", "-1", f"{guard}@3"),
     ]
-    assert f"(restored, --set-at line {flat}@all, hit 3, in " in _table(result)
+    assert f"(restored, --set-at line {flat}@all, stop 3 of line {flat}, in " in _table(result)
 
 
 @pytest.mark.timeout(300)

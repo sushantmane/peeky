@@ -144,9 +144,12 @@ def test_a_char_write_of_the_value_already_there_is_no_change(tmp_path, monkeypa
     assert len(changes) == 10, changes
     text = _table(result)
     for name in ("sign", "chars.mark"):
-        assert f"set {name}: + -> +, no change  (--set-at line {at}@all, hit 1, in " in text, text
         assert (
-            f"set {name}: 2 more writes by --set-at line {at}@all, at hits 4 to 5, each with no "
+            f"set {name}: + -> +, no change  (--set-at line {at}@all, stop 1 of line {at}, in "
+            in text
+        ), text
+        assert (
+            f"set {name}: 2 more writes by --set-at line {at}@all, at stops 4 to 5 of line {at}, each with no "
             "change"
         ) in text, text
     assert "more changes" not in text, text

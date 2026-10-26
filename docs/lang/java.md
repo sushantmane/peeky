@@ -164,7 +164,7 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   `[not settable: its array is in a list held by java.util.Collections$UnmodifiableList.list (the JDK's own state)]`.
 - A line breakpoint stops only its own thread. Another thread could make a JDK class hold the
   array before the change. So there, no element is promised:
-  `[maybe settable: other threads are running; set checks again]`
+  `[maybe settable: other threads, the JVM's own included, are running; set checks again]`
   ([Java 7.3](java-cookbook.md#arrays-the-jdk-holds)).
 - An element is marked `[settable]` only where every thread is suspended and nothing holds its
   array. Where the adapter can't tell in time, the row says `[maybe settable: …]`. So does a

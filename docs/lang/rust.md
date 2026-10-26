@@ -127,6 +127,9 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   runs. A call of `std::ptr::eq` or `std::ptr::addr_eq` doesn't count. Past that, it shows only its
   pointer, and its note names the call or drop and its line
   ([Rust 7.2](rust-cookbook.md#when-a-reference-reads)).
+- A reference to a crate's struct reads whole only as a reference parameter whose fields are all
+  plain scalars. Elsewhere its row shows the address, with a note. Read its fields by name, as
+  `entry.name`.
 - A raw pointer shows only its address, `[unproven]`. To see which element it points at in
   another run, join the runs on `address(value)` minus a base each run has
   ([Rust 4.8](rust-cookbook.md#48-compare-addresses-across-runs)).
@@ -169,6 +172,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
   ([Rust 7.2](rust-cookbook.md#where-a-change-is-allowed)).
 - `describe`'s `mutable:` line lists, per function, the fields and elements `set` may change:
   `board.entries`, `grid.cells[*].n` ([Rust 7.2](rust-cookbook.md#what---set-can-change)).
+- It lists each function's root locals of a type `set` changes too: `movavg::main: k, sum`.
+  A stop can still refuse one, as its row says.
 - The program's own copy can block a change. In `x = match x { n => … n }`, `let y = x;` …
   `x = y + 1;`, or `u.push(x);` … `x = t;` before `u` is read, the program goes on with the copy,
   `n`, `y` or `u` ([Rust 7.2](rust-cookbook.md#when-the-program-has-its-own-copy)).
