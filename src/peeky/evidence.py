@@ -122,9 +122,10 @@ TABLES = {
             "(Rust: `usize`, `Vec<u32>`, `&rota::Engineer` and `*const T`, where LLDB says "
             "`unsigned long` and `rota::Engineer *`)",
             "value": "Value as the debugger displays it, in the language's notation: a "
-            "Python string with its quotes (`'Évora'`), a Java array with its type "
-            "(`int[3]@55 [3, 0, 7]`). text(value, language, type) and elements(value, "
-            "language) read a string and a list's elements. NULL when there is none",
+            "Python string with its quotes (`'Évora'`: match it as value = '''Évora'''), a "
+            "Java array with its type (`int[3]@55 [3, 0, 7]`). text(value, language, type) "
+            "and elements(value, language) read a string and a list's elements, except "
+            "Python's. NULL when there is none",
             "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
             "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
             "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not). A hex "
@@ -3549,14 +3550,15 @@ def schema(path):
             "(COOKBOOK 4.9). language is the run's (evidence.language). Numbers, strings, "
             "chars, booleans, null and nested lists only; NULL unless Peeky reads every "
             "element exactly: a preview cut short (`…`, `...`) or holding an object, a struct "
-            "or a pointer gives NULL, and so does any Python list (debugpy shows each element "
-            "by its own __repr__, which a class may write as `1`)",
-            "text(value, language, type)": "A string's or char's text without its quotes and "
-            "escapes, by the row's language and type: Python's `'Évora'` of type str gives "
-            "`Évora` (COOKBOOK 4.9); a Java char its character; after a C or C++ pointer's "
-            "address, the text it points at. NULL for other values (a Python value whose "
-            "type is not str), and where Peeky can't decode the text exactly: cut short, or "
-            "bytes that are no text (`\\xff`)",
+            "or a pointer gives NULL, and so does any Python value (see text)",
+            "text(value, language, type)": "A Java, C, C++ or Rust string's or char's text "
+            "without its quotes and escapes, by the row's language and type: a C++ "
+            'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a Java char its '
+            "character. NULL for other values, and where Peeky can't decode the text exactly: "
+            "cut short, or bytes that are no text (`\\xff`). NULL for every Python value: "
+            "debugpy names a type by its __class__ and shows a value by its own __repr__, and "
+            "a class can set them to `str` and `'Évora'`. Match Python's text as stored: "
+            "value = '''Évora'''",
         },
         "examples": list(EXAMPLES),
         "rules": [

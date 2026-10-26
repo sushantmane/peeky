@@ -2507,7 +2507,7 @@ The program's output is not in `evidence`. Read it from `runs.output`.
 | `object_ref(value)` | The Java object a value is, such as `Balance$Worker@100`. Within one run, equal means the same object. |
 | `address(value)` | The first `0x` token in the value, as an integer, to compare addresses across runs ([4.8](#48-compare-addresses-across-runs)). Call it on a pointer's own selector. NULL where there is none, or it is zero. |
 | `elements(value, language)` | A Java, C, C++ or Rust list's or array's elements as a JSON array, for `json_each` ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL unless Peeky reads every element exactly. |
-| `text(value, language, type)` | A string's text without its quotes and escapes: `'Évora'` of type `str` gives `Évora` ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL for other values. |
+| `text(value, language, type)` | A Java, C, C++ or Rust string's text without its quotes and escapes ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL for other values, and for every Python value. |
 
 `object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element
 ([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)). Python records which
@@ -2730,9 +2730,9 @@ pointer, the row gives only an offset from it by address, in `offset_from` and `
 **What it answers:** How do I read an array's elements, or match a string's text, in SQL?
 
 Peeky stores each value as its language prints it. A Java array keeps its type and object number:
-`int[4]@61 [3, 0, 7, 2]`. A Python string keeps its quotes: `'Évora'`. So `value` is no JSON, and
-`value = 'Évora'` matches nothing. Two functions read such values back, by the run's language and
-the row's type. The `evidence` view has both.
+`int[4]@61 [3, 0, 7, 2]`. A C++ string reference keeps its address: `0x… "Évora"`. So `value` is
+no JSON, and `value = 'Évora'` matches nothing. Two functions read such values back, by the run's
+language and the row's type. The `evidence` view has both. Neither reads a Python value.
 
 ```sh
 peeky sql "SELECT v.hit, e.key AS i, e.value FROM evidence v, json_each(elements(v.value, v.language)) e WHERE v.run_id = 4 AND v.selector = 'counts' AND v.hit = 1"
@@ -2770,10 +2770,7 @@ It reads these values:
   enumerator, or an integer past 64 bits.
 - So does a decimal that a double doesn't hold as written, such as a `long double`'s `1e-4000`.
 - So does a string element that may have been cut. A Java one is cut after 37 characters, with `…`.
-- A Python list is always NULL. debugpy shows each element by its own `__repr__`, and a class can
-  write one that reads `1` or `'a'`. The store keeps no element's type.
-- To read a longer array, or a Python list, capture the elements you need by index, such as
-  `counts[9]`. Each row then has its own `type`.
+- To read a longer array, capture the elements you need by index, such as `counts[9]`.
 
 ```sh
 peeky sql "SELECT hit, value FROM evidence WHERE run_id = 5 AND selector = 'city' AND text(value, language, type) = 'Évora'"
@@ -2781,19 +2778,22 @@ peeky sql "SELECT hit, value FROM evidence WHERE run_id = 5 AND selector = 'city
 
 ```
 hit  value
-2    'Évora'
+2    0x000000016fdff2c8 "Évora"
 (1 row)
 ```
 
 - `text(value, language, type)` gives a string's or char's text, without its quotes and escapes.
-  Python's `'Évora'` gives `Évora`, and Rust's `"say \"hi\""` gives `say "hi"`.
-- A Python value gives text only where its `type` is `str`. debugpy shows any other value by its
-  own `__repr__`, which may read `'Évora'` too.
+  Rust's `"say \"hi\""` gives `say "hi"`.
 - A Java String is java-debug's text between quotes, unescaped. `text` drops the quotes.
 - A Java `char` shows bare, as `+`. Its `type` is `char`, and `text` gives the character.
 - After a C or C++ pointer's or reference's address, as in `0x… "Maya"`, it gives the text there.
 - It is NULL for any other value. It is NULL too where the text may be cut, as in C's `"abc"...`
   or Rust's `"abc" (first 3 of 9 bytes)`, or where its bytes are no text, as in C's `"\xff"`.
+- Both functions are NULL for every Python value. debugpy names a value's type by its `__class__`,
+  and shows it by its own `__repr__`. A class can set them to `str` and `'Évora'`, so nothing
+  stored proves a value is a string or a list.
+- So match a Python string as stored, quotes included: `value = '''Évora'''`. SQL writes a quote
+  inside a string as two. It matches the text debugpy showed, which such a class can imitate.
 - Neither function reads a value of 2000 characters or more. The worker keeps a value's first 2000
   characters, and marks no cut there.
 - Without the language or the type, SQLite says `wrong number of arguments`. Use the `evidence`

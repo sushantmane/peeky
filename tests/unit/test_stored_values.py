@@ -124,6 +124,7 @@ def test_elements_reads_each_languages_list_exactly(store, value, language, list
         # Python: debugpy shows each element by its own __repr__ (a NumberObject in a list
         # shows `[1]`), and the store keeps no element's type, so no list is read.
         ("[1]", "python"),
+        ("['Göteborg']", "python"),
         ("['Göteborg', 'Kraków']", "python"),
         ("[1.5, True, None]", "python"),
         ("(5, 6)", "python"),
@@ -165,6 +166,9 @@ def test_elements_reads_each_languages_list_exactly(store, value, language, list
         ("[3.14159265358979323851]", "c"),
         ("[1.18973149535723176502e+4932]", "c"),
         ("[2e-324]", "c"),
+        # An exponent past what Decimal compares.
+        pytest.param("[1e-" + "9" * 1900 + "]", "cpp", id="1900-digit-exponent"),
+        pytest.param("[1." + "9" * 1900 + "]", "c", id="1900-digit-mantissa"),
         # Not a list, or not this language's notation.
         ("{7}", "cpp"),
         ("490", "java"),
@@ -188,12 +192,6 @@ def test_elements_is_null_unless_every_element_is_read_exactly(store, value, lan
 @pytest.mark.parametrize(
     "value, language, kind, shown",
     [
-        # Python (rainfall: `'Göteborg'` is stored with its quotes), a `str` by its type.
-        ("'Göteborg'", "python", "str", "Göteborg"),
-        ('"Île-d\'Yeu"', "python", "str", "Île-d'Yeu"),
-        ("'a\\nb\\t\\\\'", "python", "str", "a\nb\t\\"),
-        ("'\\xe9\\u0142\\U0001f600'", "python", "str", "éł😀"),
-        ("''", "python", "str", ""),
         # Java: a String is java-debug's text between quotes, unescaped; a char is bare.
         ('"Málaga"', "java", "String", "Málaga"),
         ('"say "hi" \\n"', "java", "java.lang.String", 'say "hi" \\n'),
@@ -225,8 +223,11 @@ def test_text_decodes_each_languages_string(store, value, language, kind, shown)
 @pytest.mark.parametrize(
     "value, language, kind",
     [
-        # A Python value other than a `str`: debugpy shows it by its own __repr__, which a
-        # class may write as `'Göteborg'` (`return "'Göteborg'"`), and a str subclass too.
+        # Any Python value: debugpy names its type by its __class__ (`type(v).__name__`, or
+        # what a `__class__` property returns) and shows it by its own __repr__, so a class
+        # named `str` whose repr is `'Göteborg'` is stored as type str, value 'Göteborg'.
+        ("'Göteborg'", "python", "str"),
+        ("''", "python", "str"),
         ("'Göteborg'", "python", "City"),
         ("'Göteborg'", "python", "MyStr"),
         ("'Göteborg'", "python", None),
@@ -288,10 +289,14 @@ def _recorded(tmp_path):
         evidence.record(path, _run([(1, "start", "1")], "python"), language="python")
     counts = [(1, "counts", "int[4]@61 [3, 0, 7, 2]"), (2, "counts", "int[4]@61 [3, 4, 7, 2]")]
     evidence.record(path, _run(counts, "java"), language="java")
-    cities = [(hit, "city", repr(name), "str") for hit, name in enumerate(cities_shown, 1)]
-    # A class whose __repr__ reads like a str's: no match.
-    cities.append((4, "city", "'Évora'", "Place"))
-    evidence.record(path, _run(cities, "python"), language="python")
+    cities = [
+        (hit, "city", f'0x000000016fdff2{hit * 32 + 136:x} "{name}"', "const std::string &")
+        for hit, name in enumerate(cities_shown, 1)
+    ]
+    evidence.record(path, _run(cities, "cpp"), language="cpp")
+    # A Python str, and a class named `str` whose __repr__ reads like one.
+    spoofed = [(1, "city", "'Évora'", "str"), (2, "city", "'Évora'", "str")]
+    evidence.record(path, _run(spoofed, "python"), language="python")
     return path
 
 
@@ -312,9 +317,19 @@ def test_the_cookbooks_examples_read_elements_and_text(tmp_path):
         (1, 2, 7),
         (1, 3, 2),
     ]
-    assert evidence.query(path, matched)["rows"] == [{"hit": 2, "value": "'Évora'"}]
+    assert evidence.query(path, matched)["rows"] == [
+        {"hit": 2, "value": '0x000000016fdff2c8 "Évora"'}
+    ]
     # Where the value itself matches nothing.
     assert not evidence.query(path, "SELECT 1 FROM evidence WHERE value = 'Évora'")["rows"]
+    # Python: text() and elements() are NULL, and the stored text, quotes included, matches
+    # what debugpy showed, whatever the value is.
+    python = evidence.query(
+        path,
+        "SELECT hit, text(value, language, type) AS t, elements(value, language) AS e "
+        "FROM evidence WHERE run_id = 6 AND value = '''Évora'''",
+    )["rows"]
+    assert python == [{"hit": 1, "t": None, "e": None}, {"hit": 2, "t": None, "e": None}]
     totals = evidence.query(
         path,
         "SELECT v.hit, SUM(e.value) AS total FROM evidence v, "

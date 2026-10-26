@@ -210,9 +210,9 @@ probe, read its JSON. Saved runs help with large captures, comparisons and slow 
   differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
   `failures`. `compare`, `diff`, `outputs` and `join` take `--param a=1 --param b=5` (default: the
   last two); `run`, `wide`, `hits`, `set_effect` and `unreadable` take `run=3`. `queries --help`
-  lists each one's parameters. `diff`, `compare` and `set_effect` tables show long values from
+  lists their parameters. `diff`, `compare` and `set_effect` tables show long values from
   where they differ (`--json`: whole).
-- Compare numbers with `num`; `text()` and `elements()` read strings and lists (4.9). Mask
+- Compare numbers with `num`; non-Python strings and lists: `text()`, `elements()` (4.9). Mask
   addresses with `no_addresses(value)`. `object_ref(value)` tells a Java object from a copy (4.3 to
   4.8). `--label` tags a run with free text, stored as given; it never changes which runs `diff`
   or `compare:` pair.

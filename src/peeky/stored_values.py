@@ -14,17 +14,18 @@ exactly what the program holds; anything else is NULL, never a guess:
   byte `\\xff`, a lone surrogate);
 - an integer outside SQLite's 64 bits, or a decimal that a double does not hold exactly as
   written (a `long double`'s `1e-4000` or `1.0000000000000000001`);
-- a Python value other than a `str` (by the row's type): debugpy shows a value by its own
-  `__repr__`, which any class may write to look like `[1]` or `'Göteborg'`, so a list's
-  elements are never known to be what they look like;
+- any Python value: debugpy names a value's type by its `__class__` and shows it by its
+  own `__repr__`, and a class may set both (a class named `str`, or whose `__class__` is
+  `str`, with a repr of `'Göteborg'`; a list of such objects shows `['Göteborg']`), so
+  nothing Peeky stores proves a value is a builtin `str`, `int` or `list`;
 - a value of 2000 characters or more, as the worker keeps a value's first 2000 and marks no
   cut there.
 """
 
+import decimal
 import json
 import math
 import re
-from decimal import Decimal
 
 KEPT = 2000
 _DEPTH = 32
@@ -39,7 +40,6 @@ _SIZE = re.compile(r"size=(0|[1-9][0-9]{0,9}) (?=[\[{])")
 # A C or C++ reference's address before what it refers to (`0x… size=2 [1, 2]`, `0x… "Maya"`).
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{1,16} ")
 _FAMILIES = {
-    "python": "python",
     "java": "java",
     "java-attach": "java",
     "c": "c",
@@ -48,7 +48,6 @@ _FAMILIES = {
 }
 # Each family's escapes that stand for one character.
 _SIMPLE = {
-    "python": {"\\": "\\", "'": "'", '"': '"', "n": "\n", "r": "\r", "t": "\t"},
     "java": {"\\": "\\", "'": "'", '"': '"', "n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f"},
     "c": {
         "\\": "\\",
@@ -77,9 +76,8 @@ _SIMPLE = {
     },
 }
 # Each family's escapes that give a character's code by its hex digits: `\u00e9` (a
-# Java String's UTF-16 unit), Python's `\xe9` (a code point, unlike C's byte).
+# Java String's UTF-16 unit).
 _HEX = {
-    "python": {"x": 2, "u": 4, "U": 8},
     "java": {"u": 4},
     "c": {"u": 4, "U": 8},
     "rust": {"u": 4},
@@ -170,7 +168,7 @@ class _Reader:
             return None
         units, at = self._units(at + 1, quote)
         decoded = _joined(units, self.family)
-        if quote == "'" and self.family != "python" and len(decoded) != 1:
+        if quote == "'" and len(decoded) != 1:
             # A char literal holds one character.
             raise _Unsure()
         if inner and self.family == "java" and quote == '"':
@@ -244,8 +242,13 @@ def _number(found):
         return _Raw(token)
     number = float(token)
     digits = re.split("[eE]", token.lstrip("-"))[0].replace(".", "").lstrip("0")
-    if math.isinf(number) or Decimal(f"{number:.{max(len(digits), 1) - 1}e}") != Decimal(token):
-        raise _Unsure()
+    try:
+        held = decimal.Decimal(f"{number:.{max(len(digits), 1) - 1}e}")
+        if math.isinf(number) or held != decimal.Decimal(token):
+            raise _Unsure()
+    except (decimal.DecimalException, ValueError, OverflowError) as exc:
+        # An exponent past what Decimal compares (`1e-999…`).
+        raise _Unsure() from exc
     return _Raw(token)
 
 
@@ -260,10 +263,10 @@ def _json(item):
 def elements(value, language):
     """A list's or array's elements as a JSON array (`[490, 484, 497]`), where ``value``
     is a preview Peeky reads exactly for ``language`` (the run's: runs.language), else
-    None; never a Python list's (see the module's docstring). Registered as the SQL
+    None; never a Python value's (see the module's docstring). Registered as the SQL
     function elements(value, language)."""
     family = _family(value, language)
-    if family is None or family == "python":
+    if family is None:
         return None
     reader, count = _Reader(value, family), None
     if family == "java":
@@ -283,13 +286,12 @@ def elements(value, language):
 
 
 def text(value, language, kind):
-    """A string's or char's text without its quotes and escapes (`'Göteborg'` gives
-    `Göteborg`), where ``value`` is a literal Peeky decodes exactly for ``language`` and
-    ``kind`` (the row's type), else None. Registered as the SQL function text(value,
-    language, type)."""
+    """A string's or char's text without its quotes and escapes (`"say \\"hi\\""` gives
+    `say "hi"`), where ``value`` is a literal Peeky decodes exactly for ``language`` and
+    ``kind`` (the row's type), else None; never a Python value's (see the module's
+    docstring). Registered as the SQL function text(value, language, type)."""
     family = _family(value, language)
-    if family is None or (family == "python" and kind != "str"):
-        # debugpy shows any other Python value by its own __repr__.
+    if family is None:
         return None
     if family == "java":
         # java-debug shows a char bare (`+`), and a String's text between quotes, unescaped.
