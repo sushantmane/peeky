@@ -348,6 +348,9 @@ run_a  run_b  hit  phase     selector  value_a             value_b             d
 - Another element's address ranks first among the addresses that differ, after the real
   differences. It is an address fact. The program may have moved the pointer, or only the array
   moved under it: a stale pointer, storage reused, another layout.
+- Its row may be at an earlier hit than the first real difference. Then a note names that hit,
+  so you can read the hits in order: ``note: `now` holds a different element's address in each
+  run at hit 4, before the first real difference (hit 5); …``.
 - So read it with the program. Here `top` is computed from `level` (`level + peak(level, n)`), so
   `level[2]` against `level[1]` is the change.
 - Where the pointer's address reads the same in both runs and only the array moved, `diff` leaves

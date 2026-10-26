@@ -167,15 +167,20 @@ def debounce(store, side, *, after=(), edit=None):
 
 def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
     # debounce 1: the `(sets)` cell was about 120 characters, padding every line to about
-    # 230 columns, and the intervention rows came after about 70 effect rows.
+    # 230 columns, and the intervention rows came after about 70 effect rows. Twelfth
+    # evaluation: it showed one change, `…` for the rest; now as many as fit, then how
+    # many more.
     debounce(store, "a")
     debounce(store, "b", after=[(5, "db.count", "0"), (8, "db.count", "0")])
     shown = text(capsys, store, "diff")
     header, *table = [line for line in shown.splitlines() if not line.startswith(("note:", "("))]
     (sets,) = [line for line in table if " (sets) " in line]
-    assert "  none  " in sets and "6 changes: db.count=0 (requested at 80@5), …" in sets, sets
-    # Every line was padded to the (sets) cell's width before its `differs` column.
-    assert header.index("differs") < 110, header
+    cell = "6 changes: db.count=0 (80@5), db.count=0 (80@8), … (4 not shown)"
+    assert "  none  " in sets and f"  {cell}  " in sets, sets
+    assert len(cell) <= evidence._SETS_WIDTH
+    # Every line was padded to the (sets) cell's width before its `differs` column: now
+    # at most `_SETS_WIDTH`.
+    assert header.index("differs") - header.index("value_b") == len(cell) + 2, header
     rows = evidence.run_query(store, "diff")["rows"]
     assert [(r["selector"], r["hit"], r["note"]) for r in rows[2:4]] == [
         ("db.count", 5, "intervention only in run b"),
@@ -184,6 +189,76 @@ def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
     assert all(r["note"] != "intervention only in run b" for r in rows[4:])
     # --json keeps every requested change.
     assert len(json.loads(rows[1]["value_b"])) == 6
+
+
+def cells(shown, selector):
+    """The ``selector`` row's value_a and value_b in a `diff` text table: each column
+    starts where its header does."""
+    header, *table = shown.splitlines()
+    (line,) = [line for line in table if f"  {selector}  " in line]
+    a, b, differs = (header.index(name) for name in ("value_a", "value_b", "differs"))
+    return line[a:b].rstrip(), line[b:differs].rstrip()
+
+
+def test_the_sets_cell_shows_two_or_three_changes_whole(store, capsys):
+    # Twelfth evaluation, desks 3: `2 changes: desk=0 (requested at 58@4), …` hid the
+    # second change. Two or three are shown whole; more are cut where they no longer fit,
+    # saying how many are not shown.
+    hits = [{"desk": str(n % 3)} for n in range(9)]
+    saved(store, hits, line=58)
+    for count in (2, 3, 5):
+        at = [(58, hit, "desk", "0") for hit in (4, 7, 9, 2, 3)[:count]]
+        saved(store, hits, line=58, set_at=at)
+    want = {
+        2: "2 changes: desk=0 (58@4), desk=0 (58@7)",
+        3: "3 changes: desk=0 (58@4), desk=0 (58@7), desk=0 (58@9)",
+        5: "5 changes: desk=0 (58@4), desk=0 (58@7), desk=0 (58@9), … (2 not shown)",
+    }
+    for count, b in zip(want, (2, 3, 4)):
+        shown = text(capsys, store, "diff", "--param", "a=1", "--param", f"b={b}")
+        assert cells(shown, "(sets)") == ("none", want[count]), shown
+        assert len(want[count]) <= evidence._SETS_WIDTH
+    # --json keeps each.
+    rows = evidence.run_query(store, "diff", {"a": 1, "b": 4})["rows"]
+    (sets,) = [row for row in rows if row["selector"] == "(sets)"]
+    assert [entry[2] for entry in json.loads(sets["value_b"])] == [
+        f"requested at 58@{hit}" for hit in (4, 7, 9, 2, 3)
+    ]
+
+
+RAIN = (
+    "RAIN:Göteborg=20.8mm,wet 3,max 12.6@15,dry {}|Kraków=5.4mm,wet 2,max 3.3@7,dry {}|"
+    "Tromsø=5.1mm,wet 1,max 5.1@5,dry 3@2\n"
+)
+
+
+def test_the_output_cell_is_the_window_cookbook_names_in_both_runs(store, capsys):
+    # Twelfth evaluation, rainfall 1: the outputs (121 characters) differ at column 44,
+    # and the table cut both at 120, hiding their tails; COOKBOOK 3.1 says the `(output)`
+    # row shows up to 200 characters, from 60 before the first difference.
+    saved(store, [{"day": "1"}], output=RAIN.format("5@6", "5@2"))
+    saved(store, [{"day": "1"}], output=RAIN.format("4@1", "4@2"))
+    shown = text(capsys, store, "diff")
+    a, b = cells(shown, "(output)")
+    assert (a, b) == (
+        RAIN.format("5@6", "5@2").replace("\n", "\\n"),
+        RAIN.format("4@1", "4@2").replace("\n", "\\n"),
+    ), shown
+    # A longer output: 200 characters of each, from 60 before where they first differ,
+    # at the same place in both, whatever the table's cut of other values; --json alike.
+    head = "".join(f"line {n:03}: same in both runs\n" for n in range(12))
+    tail = "".join(f"row {n:03}: and after\n" for n in range(12))
+    saved(store, [{"day": "1"}], output=f"{head}RESULT=17 seats left|WAIT=3\n{tail}")
+    saved(store, [{"day": "1"}], output=f"{head}RESULT=21 seats left|WAIT=0\n{tail}")
+    shown = text(capsys, store, "diff", "--param", "a=3", "--param", "b=4")
+    a, b = cells(shown, "(output)")
+    rows = evidence.run_query(store, "diff", {"a": 3, "b": 4})["rows"]
+    assert (a, b) == tuple(rows[0][f"value_{x}"].replace("\n", "\\n") for x in "ab"), shown
+    start = len(head) + len("RESULT=") - 60
+    for cell, value in ((a, "17 seats left|WAIT=3"), (b, "21 seats left|WAIT=0")):
+        assert cell.startswith("…" + head[start:].replace("\n", "\\n")), cell
+        assert f"RESULT={value}\\n" in cell and cell.endswith("…"), cell
+        assert len(cell.replace("\\n", "\n")) == 202, cell
 
 
 def test_values_a_change_moved_tell_nothing_of_alignment(store):
@@ -236,17 +311,16 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
         "across these hits\n"
         "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
         "--param key=ms` would, but that does not prove the hits are the same moments\n"
-        "- runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 10 matches run 1's "
-        "hit 9: 1)\n"
-        "- that alternate alignment does not settle whether the calls were reordered: "
-        "`db.stable` may differ because of the interventions (run 2's on `db.count` in main), or "
-        "match by chance"
+        "- `db.stable` differs after the interventions (run 2's on `db.count` in main) and may "
+        "follow from them, so this check leaves it out"
     ]
 
 
 def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
     # Review of PR #269: with `call` left out after the edit, `key` alone said "the hits
-    # line up by `key`", though `call` shows the first two calls swapped.
+    # line up by `key`", though `call` shows the first two calls swapped. The note says the
+    # hits pair by `key`, which does not prove they are the same moments; `call`'s other
+    # order is not said beside it (twelfth evaluation: it read as a reorder).
     saved(store, [{"key": k, "call": c} for k, c in zip("123", ["'A'", "'B'", "'C'"])])
     saved(
         store,
@@ -260,10 +334,7 @@ def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
         "across these hits\n"
         "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
         "--param key=key` would, but that does not prove the hits are the same moments\n"
-        "- runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches "
-        "run 1's hit 2: 'B')\n"
-        "- that alternate alignment does not settle whether the calls were reordered: `call` "
-        "may differ because of the edit, or match by chance"
+        "- `call` differs after the edit and may follow from it, so this check leaves it out"
     )
 
 
