@@ -42,7 +42,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  page      int   1
 1    after-set  8     get_page  start     int   0
-after-set: 1 number, flag or text row equal to the observed value left out; `--json` has all
+after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.072  max pause: 14.1 ms
 output:
@@ -115,7 +115,7 @@ hit  phase      line  function                      selector  type  value
 1    observed   13    PaginationBug.main(String[])  start     int   3  [settable]
 1    observed   13    PaginationBug.main(String[])  pageSize  int   3  [settable]
 1    after-set  13    PaginationBug.main(String[])  start     int   0  [settable]
-after-set: 1 number, flag or text row equal to the observed value left out; `--json` has all
+after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.706  max pause: 117.5 ms
 output:

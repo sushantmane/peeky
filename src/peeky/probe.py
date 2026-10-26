@@ -272,13 +272,34 @@ def combine_edits(text, edit):
     return text[first : last + len(old_last)], "".join(pieces)
 
 
+def _edit_delta(text, start, old, new):
+    """The lines one edit at ``start`` adds (or, negative, removes), as lines are counted:
+    a last line without a newline is one, and a final newline starts none. Within the
+    file, the newlines it adds or removes; at its end, the lines of the file before and
+    after (review of PR #350: removing an unterminated last line, `b` of `a\\nb`, removes
+    a line but no newline)."""
+    if start + len(old) < len(text):
+        return new.count("\n") - old.count("\n")
+    return len(split_lines(text[:start] + new)) - len(split_lines(text))
+
+
+def keeps_lines(text, edit):
+    """Whether ``edit`` adds and removes no line anywhere, so that every line of the
+    candidate has the original's number."""
+    spans = _edit_spans(text, edit_pairs(edit))
+    candidate = text.replace(*combine_edits(text, edit), 1)
+    return all(_edit_delta(text, start, old, new) == 0 for start, old, new, _ in spans) and len(
+        split_lines(candidate)
+    ) == len(split_lines(text))
+
+
 def _through(text, start, old, new, line, head, which=""):
     """How one edit at ``start`` moves original line ``line``: None if the line is
     before it, else the lines it adds or removes. ``head`` is the edited text up to the
     edit's end. Lines inside an edit that changes the line count are refused."""
     first = text.count("\n", 0, start) + 1
     last = text.count("\n", 0, start + len(old) - 1) + 1
-    delta = new.count("\n") - old.count("\n")
+    delta = _edit_delta(text, start, old, new)
     if line < first:
         return None
     if line > last:
@@ -293,13 +314,20 @@ def _through(text, start, old, new, line, head, which=""):
         return delta
     if delta == 0:
         return 0
-    span = (
-        f"line {first}, which becomes" if first == last else f"lines {first}-{last}, which become"
-    )
     after = last + delta
-    became = f"line {first}" if after <= first else f"lines {first}-{after}"
+    if after < first:
+        # Every line of it goes (`b` of `a\nb`, or `b\n` of `a\nb\nc`).
+        span = f"line {first}" if first == last else f"lines {first}-{last}"
+        span += ", which the candidate removes"
+    else:
+        span = (
+            f"line {first}, which becomes"
+            if first == last
+            else f"lines {first}-{last}, which become"
+        ) + (f" line {first}" if after == first else f" lines {first}-{after}")
+        span += " of the candidate"
     raise ValueError(
-        f"Line {line} is inside the edit{which} ({span} {became} of the candidate). An edit "
+        f"Line {line} is inside the edit{which} ({span}). An edit "
         "that changes the number of lines has no matching line inside it: probe a line "
         "before or after the edit"
     )
@@ -5396,21 +5424,22 @@ def _restored(change):
     return "restored, "
 
 
-# A Rust reference to a crate's own struct or enum, as rows spell its type (`&laps::Read`).
+# A Rust reference to a crate's own type, as rows spell it (`&laps::Read`).
 _CRATE_REFERENCE = re.compile(r"&(?:mut )?(?!(?:std|core|alloc)::)[A-Za-z_]\w*(?:::[A-Za-z_]\w*)+")
 
 
 def _address_only_note(result):
-    """Why a Rust row of a reference to a crate's struct shows only its address, and what
-    to capture instead, or None (twelfth evaluation, laps 2: `read &laps::Read 0x…` beside
-    a `read.car` that read). A reference parameter's struct of plain scalar fields is the
-    only one previewed through a reference (`rust_symbols.struct_view`)."""
+    """Why a Rust row of a reference to a crate's type shows only its address, or None
+    (twelfth evaluation, laps 2: `read &laps::Read 0x…` beside a `read.car` that read). A
+    reference parameter's struct of plain scalar fields is the only one previewed through a
+    reference (`rust_symbols.struct_view`); a field to read instead is named only where
+    the probe read one (review of PR #350: `&app::State` may be an enum, with no field)."""
     if (result.get("target_identity") or {}).get("language") != "rust":
         return None
-    selectors = [str(row.get("selector")) for row in result.get("rows", ())]
+    rows = result.get("rows", ())
     bare = [
         row["selector"]
-        for row in result.get("rows", ())
+        for row in rows
         if _CRATE_REFERENCE.fullmatch(str(row.get("type") or ""))
         and re.fullmatch(r"0x[0-9a-fA-F]+", str(row.get("value") or ""))
         and not any(row.get(key) for key in ("view", "note", "error", "unproven_pointer"))
@@ -5418,12 +5447,28 @@ def _address_only_note(result):
     bare = list(dict.fromkeys(bare))
     if not bare:
         return None
-    field = next((s for s in selectors if s.startswith(f"{bare[0]}.")), f"{bare[0]}.<field>")
     shown = ", ".join(f"`{name}`" for name in bare[:3]) + (" and more" if len(bare) > 3 else "")
+    note = f"note: {shown} show{'s' if len(bare) == 1 else ''} only the address a reference holds"
+    # A field the probe read through one of them, as captured: its struct has fields.
+    read = next(
+        (
+            (name, row["selector"])
+            for name in bare
+            for row in rows
+            if str(row.get("selector")).startswith(f"{name}.")
+            and "value" in row
+            and not row.get("error")
+        ),
+        None,
+    )
+    if read is None:
+        one = len(bare) == 1
+        return note + (
+            "; its row reads nothing through it" if one else "; no row reads through them"
+        )
     return (
-        f"note: {shown} show{'s' if len(bare) == 1 else ''} only the address a reference holds: "
-        "Peeky previews a struct through a reference only for a reference parameter whose "
-        f"fields are all plain scalars; capture a field instead, as `{field}`"
+        note + ": Peeky previews a struct through a reference only for a reference parameter "
+        f"whose fields are all plain scalars; its fields read by name, as `{read[1]}`"
     )
 
 
@@ -5533,7 +5578,9 @@ def _table(result, short_names=True):
         # stayed under a line that said every equal row was left out). A Java String is an
         # object, whose equal row stays too (twelfth evaluation's preparation). Short: it
         # came under every probe with a change (twelfth evaluation, laps 6).
-        kinds = "number, flag or char" if java else "number, flag or text"
+        # A Java row left out is a primitive's, never null (review of PR #350: `None`,
+        # `null` and `nullptr` rows are left out too).
+        kinds = "number, flag or char" if java else "number, flag, null or text"
         lines.append(
             f"after-set: {left_out} {kinds} row{'s' if left_out > 1 else ''} equal to the "
             "observed value left out"

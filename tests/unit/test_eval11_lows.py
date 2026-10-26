@@ -59,7 +59,7 @@ def test_the_after_set_line_says_only_scalar_rows_are_left_out():
     assert "after-set  47    rota::plan  team" in text, text
     assert "after-set  47    rota::plan  week" not in text, text
     assert (
-        "after-set: 1 number, flag or text row equal to the observed value left out; `--json` "
+        "after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` "
         "has all"
     ) in text, text
 

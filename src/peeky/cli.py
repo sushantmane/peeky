@@ -41,7 +41,7 @@ from peeky.probe import (
     candidate_line,
     combine_edits,
     debugger_diagnostics,
-    edit_pairs,
+    keeps_lines,
     parse_hits,
     parse_selector,
     parse_set_at,
@@ -1266,8 +1266,7 @@ def _bind_candidate(result, original, edit, program):
     info["diff"] = _diff(original, candidate, program)
     # Its frames, breakpoint and locations are the copy that ran (#252), whose numbers
     # differ only where the edit adds or removes a line.
-    same = all(old.count("\n") == new.count("\n") for old, new in edit_pairs(edit))
-    info["note"] = CANDIDATE_SAME_LINES if same else CANDIDATE_LOCATIONS
+    info["note"] = CANDIDATE_SAME_LINES if keeps_lines(original, edit) else CANDIDATE_LOCATIONS
     ran = bool(result.get("hits") or result.get("rows") or result.get("output"))
     if info.get("sha256") != expected and (ran or info.get("sha256") is not None):
         from peeky.errors import classify
@@ -1371,10 +1370,31 @@ def _first_time(name):
     return True
 
 
-def _short_names_once():
-    """Whether a query table adds the note on short frame names: once per state directory,
-    shared with `peeky probe`'s (twelfth evaluation, laps 6: it came with every query)."""
-    return _first_time("short-names")
+def _runs_noted(store, runs):
+    """Whether a table showing short frame names of saved ``runs`` (run ids in the
+    evidence store at ``store``) adds the note on them: where one of them has not had it
+    yet, which marks them all; and for a table of no known runs, every time. Once per
+    saved run, not per state directory, which an earlier run of other code could use up
+    for good (review of PR #350; twelfth evaluation, laps 6: it came with every query)."""
+    if not runs:
+        return True
+    from peeky import evidence
+
+    try:
+        known = evidence.query(
+            Path(store),
+            "SELECT run_id, started_at FROM runs WHERE run_id IN ("
+            + ", ".join(str(int(run)) for run in runs)
+            + ")",
+        )["rows"]
+    except Exception:
+        return True
+    new = not known
+    for run in known:
+        # A store made again numbers its runs from 1: its start time tells them apart.
+        named = f"{os.path.abspath(store)}\0{run['run_id']}\0{run['started_at']}"
+        new = _first_time("short-names-" + hashlib.sha256(named.encode()).hexdigest()[:24]) or new
+    return new
 
 
 # More probe rows than this, of several selectors, get a pointer to `queries wide`; so do
@@ -1387,9 +1407,12 @@ def _probe_text(result, quiet=False):
 
     # The note on short frame names and instance labels, once per state directory and
     # never with --quiet (seventh evaluation, finding 8): `peeky sql --help` and `--schema`
-    # say it too, and query tables within the same once (twelfth evaluation, laps 6).
+    # say it too, and so does a query's table of a run that has not had it (`_runs_noted`).
     noted = not result.get("refused_before_launch") and _short_note(result) is not None
-    short_names = not quiet and noted and _short_names_once()
+    short_names = not quiet and noted and _first_time("short-names")
+    if short_names and (saved := result.get("evidence")):
+        # Said with the run it is about: a query's table of that run leaves it out.
+        _runs_noted(saved.get("store"), [saved.get("run_id")])
     # A Python candidate's note on its copied root (eighth evaluation, L6): once per
     # root and state directory, never with --quiet; `--json` always has it.
     warnings = [
@@ -1475,7 +1498,7 @@ def sql(args):
     _emit(
         {**result, "store": str(path)},
         args.json,
-        lambda shown: evidence.table(shown, short_note=_short_names_once),
+        lambda shown: evidence.table(shown, short_note=lambda runs: _runs_noted(path, runs)),
     )
     return 0
 
@@ -1503,7 +1526,7 @@ def queries(args):
         evidence.parse_params(args.param),
         limit=args.limit,
         table=not args.json,
-        short_note=_short_names_once,
+        short_note=lambda runs: _runs_noted(path, runs),
     )
     _emit({**result, "query": args.name, "store": str(path)}, args.json, lambda _: text)
     return 0
@@ -2266,6 +2289,18 @@ def _repeats_shortened(rows):
 _GET_ELEMENTS = 8
 
 
+def _element_count(row):
+    """An array's length where its type or value states it: C and C++ `Track[100]`, Rust
+    `[u32; 100]`, Java `int[100]@55 …`; else None."""
+    kind, value = str(row.get("type") or ""), str(row.get("value") or "")
+    found = (
+        re.fullmatch(r"[^\[\]]+\[([0-9]+)\]", kind)
+        or re.fullmatch(r"\[[^;\[\]]+; ([0-9]+)\]", kind)
+        or re.match(r"[\w.$]+\[([0-9]+)\]@[0-9]+ ", value)
+    )
+    return int(found[1]) if found else None
+
+
 def _get_lines(row, session="default"):
     """`session get` text: the value, then one level of children with their selectors."""
     if "value" not in row and not row.get("unavailable"):
@@ -2332,13 +2367,25 @@ def _get_lines(row, session="default"):
             # Read through a local shown with a note, given below (#148).
             shown += "  [note]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
-    if hidden:
+    if hidden and row.get("children_truncated"):
+        # The listing is one page of the debugger's (64): JSON has no more, and the count
+        # is of that page; the whole length only where the type gives it (review of PR
+        # #350).
+        first, last = hidden[0]["selector"], hidden[-1]["selector"]
+        size = _element_count(row)
+        lines.append(
+            f"  ... {len(hidden)} more listed, {first} to {last}, then more"
+            + (f" ({size} elements in all)" if size else "")
+            + f": `--json` has only the first {len(elements)}; read any element by index, "
+            f"as `peeky session get {_shell_word(first)}{options}`"
+        )
+    elif hidden:
         first, last = hidden[0]["selector"], hidden[-1]["selector"]
         lines.append(
             f"  ... {len(hidden)} more elements, {first} to {last}: `peeky session get "
             f"{_shell_word(first)}{options}` reads one; `--json` lists them all"
         )
-    if row.get("children_truncated"):
+    elif row.get("children_truncated"):
         lines.append("  ... more children; select one by name or index")
     if row.get("children_grouped") and not row.get("children"):
         # Said only where nothing else is listed (ninth evaluation: on every dataclass,

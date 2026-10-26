@@ -221,8 +221,10 @@ SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing. Ma
 `short_function(function) = 'trim_left'`, or with its whole name.
 
 - `peeky sql --help` says so every time.
-- A probe's or a query's table that shows short names says so in a note, once per state directory
-  for both. A probe with `--quiet` never says it.
+- A probe's table says it once per state directory, and never with `--quiet`.
+- A query's table says it once per saved run it shows: where the run's probe, or an earlier query,
+  hasn't said it. A table that names no run, such as one with no `run_id` column, says it each
+  time.
 
 `short_function` drops the parameters of every overload, and a Rust symbol's hash. So these share
 one name:
@@ -749,7 +751,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  items[1]  int   20
 1    after-set  8     get_page  start     int   0
-after-set: 1 number, flag or text row equal to the observed value left out; `--json` has all
+after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.004  max pause: 10.0 ms
 output:
@@ -857,12 +859,13 @@ can change (`register`). A Java element whose mark can't be promised either way 
 After a change, Peeky reads each selector again, in an `after-set` row. The table leaves out an
 `after-set` row equal to its hit's `observed` row only when both of these hold:
 
-- Its value is shown whole and holds nothing else: a number, a boolean, null, or a quoted text with
-  no `…` or `...` cut.
+- Its value is shown whole and holds nothing else: a number, a boolean, a null (`None`, `null`,
+  `nullptr`), or a quoted text with no `…` or `...` cut.
 - Its selector is neither a change's target nor holds one, as `s` holds `s.ninth`.
 
-`items[1]` above is such a row. A footer counts the rows left out, as number, flag or text rows,
-and `--json` has every row.
+`items[1]` above is such a row. A footer counts the rows left out, as number, flag, null or text
+rows, and `--json` has every row. A Java run's footer says number, flag or char rows: only a
+primitive's row is left out there.
 
 These rows stay, since they may hide a change:
 
@@ -1135,7 +1138,7 @@ hit  phase      line  function  selector  type         value
 4    observed   22    main      colon     size_t       5  [settable]
 4    observed   22    main      entry     std::string  "pear :1"  [settable]
 4    after-set  22    main      colon     size_t       4  [settable]
-after-set: 2 number, flag or text rows equal to the observed value left out; `--json` has all
+after-set: 2 number, flag, null or text rows equal to the observed value left out; `--json` has all
 set colon: 7 -> 6  (--set-at line 22@3, in main)
 set colon: 6 -> 7  (--set-at line 23@3, in main)
 set colon: 5 -> 4  (--set-at line 22@4, in main)
@@ -2811,6 +2814,9 @@ cleanup: nothing Peeky could identify was still running
 - An array, list or `Vec` lists its first 8 elements as children. A line then counts the rest and
   names the next one's selector: `... 24 more elements, levels[8] to levels[31]`. `--json` lists them
   all.
+- The debugger lists at most 64 children at a time. Past that, the line says `then more`, with the
+  whole length where the type gives it (`100 elements in all`). `--json` then has the first 64
+  only: read a later element by its index, as `levels[80]`.
 - A value 4 levels below a local, such as `self.history[-1][2]`, lists no children. That is the
   inspection's depth limit, and the row says so:
   `<children: none listed: this value is 4 levels below a local, …>`. Read the same object by a
@@ -3550,7 +3556,9 @@ candidate: In the edited file, locations name the candidate's copy, since the li
 In the edited file, locations, frames and the breakpoint name the candidate's copy, so that they
 agree with these line numbers. A compiled target's other files are shown as yours. A Python
 candidate's are in its copy of your tree. An edit that adds or removes no line says instead:
-`candidate: The edit keeps the line numbers: the candidate's lines are the original's`.
+`candidate: The edit keeps the line numbers: the candidate's lines are the original's`. Lines are
+counted as an editor counts them: removing a last line that no newline ends removes a line, and
+adding a final newline adds none.
 
 Some lines have no faithful match. Peeky refuses them before anything is built:
 

@@ -3670,11 +3670,12 @@ def _changes_text(row, changes, shown):
     return "; ".join(_change_text(change, shown) for change in made) if made else None
 
 
-def table(result, width=120, changes=None, short_note=None):
+def table(result, width=120, changes=None, short_note=None, runs=None):
     """A plain-text table of a query result. A `function` column shows each frame's
     short name (see ``names.function_labels``), with a note: the result keeps it whole.
-    ``short_note``, where given, is asked whether to add that note when one applies (the
-    CLI's says yes once per state directory: twelfth evaluation, laps 6).
+    ``short_note``, where given, is asked whether to add that note when one applies,
+    given the runs the table shows (``runs``, else its rows' run_id values, else None):
+    the CLI's says yes once per saved run (twelfth evaluation, laps 6; review of PR #350).
     For a canned query (``result["query"]``) that compares values, a long value shows
     from just before where it first differs from its pair (`_PAIRED`); `diff`'s
     `(sets)` row shows how many changes and the first; set_effect's `interventions`
@@ -3727,7 +3728,9 @@ def table(result, width=120, changes=None, short_note=None):
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
     ]
     count = result["row_count"]
-    if (note := shortened_note(shortened)) and (short_note is None or short_note()):
+    if runs is None and "run_id" in columns:
+        runs = sorted({row["run_id"] for row in result["rows"] if type(row["run_id"]) is int})
+    if (note := shortened_note(shortened)) and (short_note is None or short_note(runs)):
         lines.append(note)
     # A note of several lines (`diff`'s verdict on how hits pair, then its details) keeps
     # its details under its `note:`.
@@ -3796,7 +3799,8 @@ def query_table(path, result, params=None, short_note=None):
             {"run": params.get("run")},
             limit=MAX_ROWS,
         )["rows"]
-    return table(result, changes=changes, short_note=short_note)
+    named = [params[run] for run in ("a", "b", "run") if type(params.get(run)) is int]
+    return table(result, changes=changes, short_note=short_note, runs=named or None)
 
 
 # What `peeky sql --schema NAME` takes besides a table or view, in the whole text's order.

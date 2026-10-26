@@ -6,7 +6,7 @@ import json
 import pytest
 
 from peeky import cli, evidence
-from peeky.probe import _table
+from peeky.probe import _table, candidate_line, keeps_lines
 
 LONG_NAME = "laps::summary::h3ba6f5e90fc2267c"
 
@@ -69,20 +69,36 @@ def probe(tmp_path, monkeypatch):
     return run
 
 
-def test_a_query_table_notes_short_frame_names_once_per_state_directory(probe, capsys):
+def test_a_query_table_notes_short_frame_names_once_per_saved_run(probe, capsys):
     # laps 6: `note: function shows short frame names; …` came under every query's table.
+    # Review of PR #350: a state directory's one note, used up by an earlier unrelated
+    # run, left a later run's tables with none.
     note = "note: function shows short frame names"
+    assert probe(_probe_result(function="other::main::h0123456789abcdef")) == 0
+    assert note in capsys.readouterr().out  # run 1, of other code: its probe said it
     assert probe(_probe_result()) == 0
-    assert note in capsys.readouterr().out
-    for query in (["queries", "run"], ["sql", "SELECT * FROM last_run"], ["queries", "run"]):
+    assert note not in capsys.readouterr().out  # run 2: the probe's note is once only
+    # A query of run 2 says it, once; run 1's probe said it already.
+    for query, said in (
+        (["queries", "run"], True),
+        (["sql", "SELECT * FROM last_run"], False),
+        (["queries", "run", "--param", "run=2"], False),
+        (["queries", "run", "--param", "run=1"], False),
+    ):
         assert cli.main(query) == 0
         out = capsys.readouterr().out
-        assert note not in out and "laps::summary " in out, out
-    # The first query in a state directory says it, where no probe has yet.
-    assert evidence.table(
-        {"columns": ["function"], "rows": [{"function": LONG_NAME}], "row_count": 1}
-        | {"truncated": False}
-    ).count(note)
+        assert (note in out) == said, out
+    # A table of both runs, by run_id, says it only where one of them has not had it.
+    both = "SELECT run_id, function FROM evidence"
+    assert cli.main(["sql", both]) == 0 and note not in capsys.readouterr().out
+    assert probe(_probe_result(), "--quiet") == 0 and probe(_probe_result(), "--json") == 0
+    capsys.readouterr()
+    assert cli.main(["sql", both]) == 0 and note in capsys.readouterr().out
+    assert cli.main(["sql", both]) == 0 and note not in capsys.readouterr().out
+    # A table that names no run says it each time.
+    named = "SELECT DISTINCT function FROM captures"
+    for _ in range(2):
+        assert cli.main(["sql", named]) == 0 and note in capsys.readouterr().out
 
 
 def test_the_after_set_footer_is_short():
@@ -93,7 +109,7 @@ def test_the_after_set_footer_is_short():
         line for line in _table(_result(rows, [change])).splitlines() if line.startswith("after")
     ]
     assert footer == (
-        "after-set: 1 number, flag or text row equal to the observed value left out; `--json` "
+        "after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` "
         "has all"
     )
     rows = [_row("free", "3", type="int"), _row("free", "3", "after-set", type="int")]
@@ -237,6 +253,29 @@ def test_session_get_lists_an_arrays_first_elements():
         "one; `--json` lists them all"
     )
     assert "--name s --frame 1` reads one" in cli._get_lines(row | {"frame": 1}, "s")[-1]
+    # Review of PR #350: the debugger lists one page (64) of a longer array, and JSON has
+    # no more than that page.
+    page = {
+        **row,
+        "type": "Level[100]",
+        "children": [{**row["children"][0], "selector": f"levels[{i}]"} for i in range(64)],
+        "children_truncated": True,
+    }
+    lines = cli._get_lines(page)
+    assert lines[-1] == (
+        "  ... 56 more listed, levels[8] to levels[63], then more (100 elements in all): "
+        "`--json` has only the first 64; read any element by index, as `peeky session get "
+        "'levels[8]'`"
+    ), lines
+    assert "more children" not in "\n".join(lines) and len(lines) == 10
+    # The whole length only where the type or value gives it: Rust `[T; N]`, Java's value.
+    for kind, value, size in (
+        ("[u32; 70]", "[1, 2, …]", " (70 elements in all)"),
+        ("int[]", "int[90]@55 [1, 2, …]", " (90 elements in all)"),
+        ("Vec<u32>", "vec![1, 2, …]", ""),
+    ):
+        shown = cli._get_lines({**page, "type": kind, "value": value})[-1]
+        assert f"then more{size}: `--json` has only the first 64" in shown, shown
     # A struct's fields, or a short array, are listed whole.
     fields = {
         **row,
@@ -261,6 +300,31 @@ def test_a_candidate_that_moves_no_line_says_so():
     both = {"candidate": {}}
     cli._bind_candidate(both, original, (("a = 1\n", "a = 1\nz = 0\n"), ("c = 3\n", "")), "p.py")
     assert both["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
+    # Review of PR #350: removing a last line that no newline ends removes no newline.
+    unended = {"candidate": {}}
+    cli._bind_candidate(unended, "a = 1\nb = 2", ("b = 2", ""), "p.py")
+    assert unended["candidate"]["note"] == cli.CANDIDATE_LOCATIONS
+    # Ending the last line with a newline, or no longer, adds or removes no line.
+    for text, edit in (("a\nb", ("b", "c\n")), ("a\nb\n", ("b\n", "c"))):
+        assert keeps_lines(text, edit), (text, edit)
+        kept = {"candidate": {}}
+        cli._bind_candidate(kept, text, edit, "p.py")
+        assert kept["candidate"]["note"] == cli.CANDIDATE_SAME_LINES
+        assert candidate_line(text, edit, 2) == 2
+    assert not keeps_lines("a\nb", ("b", "")) and not keeps_lines("a\nb\n", ("b\n", ""))
+
+
+def test_a_line_an_edit_removes_at_the_files_end_is_refused():
+    # Review of PR #350: removing `b` from `a\nb` mapped line 2 to a line 2 the candidate
+    # does not have.
+    with pytest.raises(ValueError, match=r"Line 2 is inside the edit \(line 2, which the "):
+        candidate_line("a\nb", ("b", ""), 2)
+    assert candidate_line("a\nb", ("b", ""), 1) == 1
+    with pytest.raises(ValueError, match="Line 3 is inside the edit"):
+        candidate_line("a\nb\nc", ("b\nc", "b\n"), 3)
+    with pytest.raises(ValueError, match=r"\(line 2, which the candidate removes\)"):
+        candidate_line("a\nb\nc\n", ("b\n", ""), 2)
+    assert candidate_line("a\nb\nc", ("a", "z"), 3) == 3
 
 
 def test_describe_names_each_functions_settable_root_locals():
@@ -306,11 +370,22 @@ def test_a_rust_reference_to_a_struct_says_why_only_its_address_shows():
     assert (
         "note: `read` shows only the address a reference holds: Peeky previews a struct "
         "through a reference only for a reference parameter whose fields are all plain "
-        "scalars; capture a field instead, as `read.car`"
+        "scalars; its fields read by name, as `read.car`"
     ) in text, text
     assert text.count("note: ") == 1, text
-    shown = _table(_result([_row("lap", "0x1000", type="&mut tally::Lap")]))
-    assert "`lap` shows only" in shown and "as `lap.<field>`" in shown, shown
+    # Review of PR #350: `&app::State` may be an enum, with no field to name; a field
+    # selector is named only where one read.
+    for more in ([], [_row("state.mode", "", error="not found: 'mode'")]):
+        shown = _table(_result([_row("state", "0x1000", type="&mut app::State"), *more]))
+        assert (
+            "note: `state` shows only the address a reference holds; its row reads nothing "
+            "through it"
+        ) in shown, shown
+        assert "field" not in shown and "struct" not in shown, shown
+    two = [_row(name, "0x1000", type="&app::State") for name in ("a", "b")]
+    assert "`a`, `b` show only the address a reference holds; no row reads through them" in (
+        _table(_result(two))
+    )
     # A C pointer, a previewed reference, and a row with a note get none.
     assert "only the address" not in _table(_result(rows[:1], language="cpp"))
     previewed = _row("read", "Read { at: 7 }", type="&tally::Read", view="memory")

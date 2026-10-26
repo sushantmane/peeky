@@ -532,7 +532,7 @@ hit  phase      line  function  selector  type  value
 1    observed   25    main      page      int   1  [settable]
 1    observed   25    main      items[1]  int   20  [settable]
 1    after-set  25    main      start     int   0  [settable]
-after-set: 2 number, flag or text rows equal to the observed value left out; `--json` has all
+after-set: 2 number, flag, null or text rows equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.745
 output:
