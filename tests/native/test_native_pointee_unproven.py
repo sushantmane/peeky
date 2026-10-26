@@ -145,7 +145,8 @@ HEAP = (
 )
 IMAGE = (
     "it points into the program's loaded image, but no compatible global, static local or "
-    "proven string literal is there; read the global it should point at by name"
+    "proven string literal is there; check where it was assigned: if it should point at a "
+    "global, read that global by name; to prove a string literal, store it in a named char array"
 )
 BELOW = (
     "it points below the stack pointer, where no live call keeps its locals, as a pointer "

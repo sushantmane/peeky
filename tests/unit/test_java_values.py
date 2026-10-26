@@ -312,7 +312,10 @@ def test_while_other_threads_run_no_element_is_promised_settable():
     session.array_holders = True
     array = {"name": "target", "type": "int[]", "value": "int[2]@9", "variablesReference": 3}
     reason, settled = session.array_holder(Launcher({"allSuspended": False}), array)
-    assert reason == "other threads are running; set checks again" and reason.unproven is True
+    assert (
+        reason == "other threads, the JVM's own included, are running; set checks again"
+        and reason.unproven is True
+    )
     assert settled is False
     # A holder seen now is still why, but holds only for this listing.
     holder = "in a list held by java.util.Collections$UnmodifiableCollection.c"

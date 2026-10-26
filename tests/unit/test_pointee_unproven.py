@@ -757,10 +757,7 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     # #341: any address in a load segment passed).
     assert "unproven_read" not in expand("tp")
     assert "the address of `table[3]`, past the end of `table`" in expand("tpast")["unproven_read"]
-    assert expand("code")["unproven_read"].endswith(
-        "it points into the program's loaded image, but no compatible global, static local or "
-        "proven string literal is there; read the global it should point at by name"
-    )
+    assert expand("code")["unproven_read"].endswith(IMAGE)
     # A union's member, which no declaration proves holds a value.
     assert expand("pd")["unproven_read"].endswith(
         "it points into the union `uu`, and no declaration says which of its members holds a "
@@ -843,6 +840,23 @@ def test_the_locals_peeky_places_by_asking_are_bounded(stopped):
     assert shown["dup"]["note"].endswith(LIMIT)
     call(stopped, "expand", handle=shown["pn"]["variablesReference"], start=0)
     assert len(hovered) + asked(stopped, "&n") + asked(stopped, "&text") == PLACED_HOVERS
+
+
+IMAGE = (
+    "it points into the program's loaded image, but no compatible global, static local or "
+    "proven string literal is there; check where it was assigned: if it should point at a "
+    "global, read that global by name; to prove a string literal, store it in a named char array"
+)
+
+
+def test_the_loaded_image_note_guides_truly_for_code_and_literals():
+    # Review of PR #341: it said to read "the global it should point at", which a Linux
+    # string literal, or a deliberate code pointer, has none of. The guidance is a hint's
+    # length.
+    for text in (False, True):
+        note = unproven_text("s", {"kind": "image", "statics": True}, text=text)
+        assert note.endswith(IMAGE) and "read the global it should point at" not in note
+    assert len(IMAGE.split("; ", 1)[1]) <= 150
 
 
 LIMIT = (

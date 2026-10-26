@@ -54,12 +54,21 @@ HEADINGS = [
 ]
 
 
+def _tagged(table, column):
+    """A column's name as `--schema` shows it: `element_size [C, C++ only]`."""
+    only = evidence._COLUMN_LANGUAGES.get((table, column))
+    return f"{column} [{only} only]" if only else column
+
+
 def _main_schema_text(manifest):
-    """`peeky sql --schema` on main (8b8c2f2), verbatim: what `--schema all` must still print."""
+    """`peeky sql --schema` on main (8b8c2f2), verbatim: what `--schema all` must still print,
+    but for the languages that fill a column, beside its name (twelfth evaluation, desks 8)."""
     lines = [f"store: {manifest['store']} ({manifest['engine']})", ""]
     for name, info in manifest["tables"].items():
         lines.append(f"table {name}: {info['description']}")
-        lines.extend(f"  {column}: {meaning}" for column, meaning in info["columns"].items())
+        lines.extend(
+            f"  {_tagged(name, column)}: {meaning}" for column, meaning in info["columns"].items()
+        )
         lines.append("")
     lines.extend(f"view {name}: {meaning}" for name, meaning in manifest["views"].items())
     lines.append(f"joins: {manifest['joins']}")
@@ -231,7 +240,7 @@ def test_schema_names_print_those_tables_views_and_parts_in_full(store, capsys):
     assert _headings(text) == ["store:", "table captures:", "view last_run:", "rules:"]
     assert "table captures: One row per captured selector, per hit and phase." in text
     for column, meaning in manifest["tables"]["captures"]["columns"].items():
-        assert f"\n  {column}: {meaning}\n" in text + "\n", column
+        assert f"\n  {_tagged('captures', column)}: {meaning}\n" in text + "\n", column
     assert f"view last_run: {manifest['views']['last_run']}" in text
     assert "rules:\n  - Read-only: one SELECT" in text
     code, out = run(capsys, "sql", "--schema", "captures", "last_run", "--json", "--store", store)

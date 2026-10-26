@@ -1,5 +1,9 @@
 # Peeky Cookbook
 
+**[AGENT_GUIDE.md](AGENT_GUIDE.md) and your language's page cover most tasks:**
+[Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
+This cookbook is for details, which they cite by section number.
+
 Recipes for debugging running programs from your terminal. Agents use the same commands: see
 [AGENT_GUIDE.md](AGENT_GUIDE.md).
 
@@ -216,8 +220,11 @@ How C++ names are shortened: [C and C++ 1.1](lang/c-cpp-cookbook.md#how-a-c-func
 SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing. Match a frame with
 `short_function(function) = 'trim_left'`, or with its whole name.
 
-- A query's table that shows short names says so in a note. So does `peeky sql --help`.
+- `peeky sql --help` says so every time.
 - A probe's table says it once per state directory, and never with `--quiet`.
+- A query's table says it once per saved run it shows: where the run's probe, or an earlier query,
+  hasn't said it. A table that names no run, such as one with no `run_id` column, says it each
+  time.
 
 `short_function` drops the parameters of every overload, and a Rust symbol's hash. So these share
 one name:
@@ -506,7 +513,8 @@ status: completed  hits: 3 (all)  seconds: 1.07  max pause: 5.3 ms
 ```
 
 - A warning says when the cap was reached.
-- A table of more than 40 rows, of several selectors, ends with a pointer to one line per hit:
+- A table of more than 40 rows of several selectors, or of 4 selectors or more at 3 hits or more,
+  ends with a pointer to one line per hit:
   `` evidence: one line per hit, a column per selector: `peeky queries wide --param run=7` ``
   ([3.4](#34-one-row-per-hit)).
 - `all` needs the program to exit, so it can't be combined with `--until hits`. For an attached
@@ -743,7 +751,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  items[1]  int   20
 1    after-set  8     get_page  start     int   0
-after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
+after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.004  max pause: 10.0 ms
 output:
@@ -851,12 +859,13 @@ can change (`register`). A Java element whose mark can't be promised either way 
 After a change, Peeky reads each selector again, in an `after-set` row. The table leaves out an
 `after-set` row equal to its hit's `observed` row only when both of these hold:
 
-- Its value is shown whole and holds nothing else: a number, a boolean, null, or a quoted text with
-  no `…` or `...` cut.
+- Its value is shown whole and holds nothing else: a number, a boolean, a null (`None`, `null`,
+  `nullptr`), or a quoted text with no `…` or `...` cut.
 - Its selector is neither a change's target nor holds one, as `s` holds `s.ninth`.
 
-`items[1]` above is such a row. A footer counts the rows left out, as scalar rows, and `--json` has
-every row.
+`items[1]` above is such a row. A footer counts the rows left out, as number, flag, null or text
+rows, and `--json` has every row. A Java run's footer says number, flag or char rows: only a
+primitive's row is left out there.
 
 These rows stay, since they may hide a change:
 
@@ -865,8 +874,7 @@ These rows stay, since they may hide a change:
 - a cut value;
 - a row with a note;
 - a Java value other than a primitive: a String set through an alias is a new object with the same
-  text. A Java run's footer says so: `(a number, flag or char; object rows stay, a String's too: a
-  Java String is an object, and an equal text may be a new String; …)`;
+  text. A Java run's footer says so: `(a String stays: it is an object)`;
 - a Python value whose identity changed.
 
 #### Every change is read back
@@ -1130,7 +1138,7 @@ hit  phase      line  function  selector  type         value
 4    observed   22    main      colon     size_t       5  [settable]
 4    observed   22    main      entry     std::string  "pear :1"  [settable]
 4    after-set  22    main      colon     size_t       4  [settable]
-after-set: 2 scalar rows equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
+after-set: 2 number, flag, null or text rows equal to the observed value left out; `--json` has all
 set colon: 7 -> 6  (--set-at line 22@3, in main)
 set colon: 6 -> 7  (--set-at line 23@3, in main)
 set colon: 5 -> 4  (--set-at line 22@4, in main)
@@ -1201,14 +1209,18 @@ peeky probe debounce_main.c --at 18 --capture ms,db.count --hits all \
 
 ```
 ...
-set db.count: 0 -> 0, no change  (--set-at line 18@all, hit 1, in main)
-set db.count: 0 -> 0, no change  (--set-at line 18@all, hit 2, in main)
-set db.count: 1 -> 0  (--set-at line 18@all, hit 3, in main)
-set db.count: 13 more writes by --set-at line 18@all, at hits 4 to 16: 5 changes and 8 with no change (`--json` lists each)
+set db.count: 0 -> 0, no change  (--set-at line 18@all, stop 1 of line 18, in main)
+set db.count: 0 -> 0, no change  (--set-at line 18@all, stop 2 of line 18, in main)
+set db.count: 1 -> 0  (--set-at line 18@all, stop 3 of line 18, in main)
+set db.count: 13 more writes by --set-at line 18@all, at stops 4 to 16 of line 18: 5 changes and 8 with no change (`--json` lists each)
 status: completed  hits: 16 (all)  seconds: 1.498  max pause: 63.7 ms
 output:
   DEBOUNCE:P@9,R@20, quiet 16
 ```
+
+`stop 3 of line 18` counts that line's own stops, whichever line `--at` names: it is the probe's
+hit only where the two lines are the same. On a line with several breakpoint locations, the change
+adds which one: `stop 4 of line 9 at location 2 of 3`.
 
 In Java, `set` can change an eligible program-owned instance field through a Java local, parameter
 or `this` reference, subject to the holder and field checks
@@ -1287,12 +1299,12 @@ peeky probe trail.c --at 15 --capture trend --hits all \
 
 ```
 ...
-set trend: 1 -> 0  (--set-at line 15@all, hit 1, in find_turns)
-set trend: 0 -> 1  (restored, --set-at line 18@all, hit 1, in find_turns)
-set trend: 1 -> 0  (--set-at line 15@all, hit 2, in find_turns)
-set trend: 0 -> 1  (restored, --set-at line 18@all, hit 2, in find_turns)
-set trend: -1 -> 0  (--set-at line 15@all, hit 3, in find_turns)
-set trend: 0 -> -1  (restored, --set-at line 18@all, hit 3, in find_turns)
+set trend: 1 -> 0  (--set-at line 15@all, stop 1 of line 15, in find_turns)
+set trend: 0 -> 1  (restored, --set-at line 18@all, stop 1 of line 18, in find_turns)
+set trend: 1 -> 0  (--set-at line 15@all, stop 2 of line 15, in find_turns)
+set trend: 0 -> 1  (restored, --set-at line 18@all, stop 2 of line 18, in find_turns)
+set trend: -1 -> 0  (--set-at line 15@all, stop 3 of line 15, in find_turns)
+set trend: 0 -> -1  (restored, --set-at line 18@all, stop 3 of line 18, in find_turns)
 status: completed  hits: 3 (all)  seconds: 0.981  max pause: 63.6 ms
 output:
   TRAIL:T@200 455,B@700 400;FLAT=3
@@ -1382,7 +1394,7 @@ In JSON, the restore's entry in `unapplied` has three more keys:
 - `unrestored`: the latest one's `LINE@HIT`.
 
 Each restore is reported as a change, with `restored`. The line that counts an `@all`'s later
-writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`.
+writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at stops 4 to 8 of line 18`.
 Where the value it writes over isn't the one the change wrote, the restore says so: `set x: 6 ->
 1  (restored over the current 6, --set-at line 22@1, in main)`. The program wrote it since, or
 another change of the probe's did, through another name for the same storage (Java `c.n`, with
@@ -1403,8 +1415,8 @@ keeps a restore as any change, with more:
   what it reads from the warnings: `not made` where the line never stopped, the cap's count, or
   nothing else. It says nothing of the writes a restore made no restore for;
 - `set_effect` shows it as `trend: 0 -> 1 (restored from before 15@2)`;
-- the `(sets)` rows of `diff` and `compare` name each restore, which `…` would hide:
-  `2 requests: trend=0 (…), …; restore: trend=@before (requested at 18@all, …)`.
+- the `(sets)` rows of `diff` and `compare` name each restore, even where `…` stands for it:
+  `2 requests: trend=0 (…), …; restore: trend=@before (18@all, …)`.
 
 #### Where and when a change is made
 
@@ -1487,9 +1499,10 @@ lists each function's stops.
   `--until hits` ended it, differ in `(sets)`.
 - `diff` and `compare` start with a `(status)` row, with each run's error, where either run didn't
   complete. Two runs refused at different hits differ there too.
-- `diff`'s table shows its `(sets)` row short: how many changes, and the first that differs from the
-  other run's. `--json` has them all. With an `@all` among them, it counts requests:
-  `1 request: db.count=0 (requested at 18@all, made at 16 stops, to the program's end)`.
+- `diff`'s table shows its `(sets)` row short: how many changes, then each as `name=value
+  (LINE@HIT)` with how it went, as many as fit in 72 characters
+  ([3.1](#the-rows-diff-shows-in-order)). `--json` has them all. With an `@all` among them, it
+  counts requests: `1 request: db.count=0 (18@all, made at 16 stops, to the program's end)`.
 - `diff` shows more than 3 alike `intervention only in run b` rows as one, its first hit's. Its note
   says how many hits there were: `intervention only in run b, at 15 hits`.
 - The `interventions` table lists each change made: its `line`, `hit`, `capture_hit`, `function`
@@ -1782,16 +1795,22 @@ appears only where it applies:
 - `(sets)`: the runs requested or made different interventions. Each is
   `[name, value, "requested at LINE@HIT"]`, with how it went, as in
   [3.2](#32-inputs-outcomes-and-outputs-of-the-last-two-runs). The table shows how many each run
-  made, and the first that differs: `6 changes: db.count=0 (requested at 80@5), …`, or `none`.
-  `--json` has the whole list.
+  made, then each as `name=value (LINE@HIT)`: `2 changes: desk=0 (58@4), desk=0 (58@7)`, or
+  `none`. Two or three short changes fit in its 72 characters.
+  - Where they don't all fit, the list starts at the first change that differs from the other
+    run's. `…` marks each cut, and the count says how many are hidden:
+    `6 changes: db.count=0 (80@5), db.count=0 (80@8), … (4 not shown)`.
+  - A restore is named even where `…` stands for it. `--json` has the whole list.
 
 A candidate's `--at` keeps the original's line numbers. So `--at 33` is the same line, even where
 the candidate's rows show its line 34. It gives no `(line)` row.
 
-The `(output)` row shows up to 200 characters of each output. Each window starts 60 characters
-before the first character that differs. It starts at the beginning when the difference is within
-the first 60. `…` marks a cut. The note says where the outputs differ, counted from 1:
-`output differs at line 4, column 13`. So after a `--set`, this row shows the intervention's effect.
+The `(output)` row shows up to 200 characters of each output, in the table and in `--json`. Each
+window starts 60 characters before the first character that differs, at the same place in both
+runs. It starts at the beginning when the difference is within the first 60. `…` marks a cut. So
+both show the first difference, and at least 139 characters after it where the output has them.
+The note says where the outputs differ, counted from 1: `output differs at line 4, column 13`. So
+after a `--set`, this row shows the intervention's effect.
 
 **2. Values that only one run's `--set` changed** say `intervention only in run a` or
 `intervention only in run b`. They come before what may follow from them. Peeky leaves out an `after-set` row where, in each run that has one, it
@@ -1799,7 +1818,8 @@ equals that run's `observed` value at that hit. The intervention didn't touch it
 only `r.tail` was set. The `observed` row shows any difference.
 
 **3. Real differences** come in hit order, then in `--capture` order. The first of them is the first
-divergence.
+real divergence. A C or C++ pointer at another element's address can differ at an earlier hit. Its
+row stays in tier 4, and a note names its hit (tier 4).
 
 - A hit that one run never reached says `missing in run b`.
 - A value whose type changed says so, for example after an edit to `long long`:
@@ -1818,7 +1838,8 @@ divergence.
 **Long values.** The table cuts a value at 120 characters. Where the two runs' values first differ
 near or past that cut, both show from 40 characters before the difference instead. Both start at
 the same place, so the two windows line up. `…` marks every cut. `--json` keeps every value whole.
-The table never cuts a note, so a note always shows what to do.
+The `(output)` and `(sets)` rows have their own windows, above. The table never cuts a note, so a
+note always shows what to do.
 
 **4. Pointers whose addresses differ** say `addresses differ`. An address can be another element's
 in the other run, so such a row may be a real difference. A pointer into an array may point at
@@ -1828,6 +1849,10 @@ element 6 in one run and at element 4 in the other.
   hit order. Each says which, in each run: ``the address of `level[6]` in run a, of `level[4]` in
   run b``. That is an address fact: the pointer may have changed, or only the array moved
   ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)).
+- Such a row may be at an earlier hit than the first real difference. Then a note names that hit,
+  so you can still read the hits in order: ``note: `now` holds a different element's address in
+  each run at hit 4, before the first real difference (hit 5); …``. Other pointers whose addresses
+  differ aren't named there: most differ at every hit, since the stack moves.
 
 - Most are a pointer or a reference, by their type, such as `const int *` or
   `const std::string &`. They say `it may point at another element too`.
@@ -1924,7 +1949,7 @@ run_a  run_b  hit   phase     selector  value_a          value_b               d
 1      2      4     observed  v         NULL             8                     1        missing in run a
 1      2      4     observed  total     NULL             62                    1        missing in run a
 note: pair the hits by a value instead: `peeky queries join --param a=1 --param b=2 --param key=<selector>[,<selector>…]`. Run 1 stopped 3 times at its line and run 2 4, so a hit need not be the same moment in both, and pairing by hit number can show every later hit as a difference
-note: the first difference at a hit is at hit 1; 5 of the 6 rows at a hit come after it, where pairing by hit number may compare different calls: read those with `join`
+note: the first real difference at a hit is at hit 1; 5 of the 6 rows at a hit come after it, where pairing by hit number may compare different calls: read those with `join`
 (8 rows)
 ```
 
@@ -2010,7 +2035,8 @@ Only plain values count in these checks. Peeky checks each selector on its own.
 - It still counts where its values line up better at other hits. The change may account for that,
   so the note says it doesn't prove a reorder.
 - Where values that agree are unique across the hits, the verdict is that the hits pair by them.
-  Such a sign then comes last ([below](#when-values-agree-at-every-hit)).
+  They already pair every hit, so the note leaves such a sign out
+  ([below](#when-values-agree-at-every-hit)).
 - `after-set` rows never count.
 
 In this C example, `--set-at` resets a counter, `db.count`, in `main`. The probe stops in `settle`,
@@ -2091,10 +2117,10 @@ peeky queries diff --param a=3 --param b=6
 ```
 
 ```
-run_a  run_b  hit   phase      selector  value_a       value_b                               differs  note
-3      6      NULL  NULL       (output)  total: 36\n  total: 13\n                          1        output differs at line 1, column 8
-3      6      NULL  NULL       (sets)    none          1 change: total=5 (requested at 9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
-3      6      4     after-set  total     NULL          5                                     1        intervention only in run b
+run_a  run_b  hit   phase      selector  value_a      value_b                  differs  note
+3      6      NULL  NULL       (output)  total: 36\n  total: 13\n              1        output differs at line 1, column 8
+3      6      NULL  NULL       (sets)    none         1 change: total=5 (9@4)  1        the runs requested different interventions (--set, --set-at), or made different ones
+3      6      4     after-set  total     NULL         5                        1        intervention only in run b
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=6 --param key=i` would, but that does not prove the hits are the same moments
   - no single selector's values line up better at other hits
@@ -2118,19 +2144,19 @@ What the note says depends on the case:
   either way.
 - **The sign comes from a selector left out.** Its values may differ because of the change, or match
   by chance. Where values that agree are unique across the hits, the verdict is that the hits pair by
-  them, and the sign comes last. It doesn't settle whether the calls were reordered. A key may be a
-  counter, which agrees either way. Here an edit swaps the first two calls, and `key` agrees at every
-  hit:
+  them. Those values already pair every hit, so the note doesn't give the sign. It names the
+  selector with the others left out. Here an edit swaps the first two calls, and `key` agrees at
+  every hit:
 
   ```
   hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 --param key=key` would, but that does not prove the hits are the same moments
-  - runs 1 and 2 saw the same values of `call` in another order (run 2's hit 1 matches run 1's hit 2: 'B')
-  - that alternate alignment does not settle whether the calls were reordered: `call` may differ because of the edit, or match by chance
+  - `call` differs after the edit and may follow from it, so this check leaves it out
   ```
 
-  Where no value that agrees is unique across the hits, the sign is the verdict, as in the
-  `db.stable` example above.
+  A key may be a counter, which agrees even where calls were reordered. So the verdict's second
+  line says that pairing by it doesn't prove the hits are the same moments. Where no value that
+  agrees is unique across the hits, the sign is the verdict, as in the `db.stable` example above.
 
 - **Most hits differ.** Where values differ at more than half the hits, and at least 2, the note
   says so before anything that agrees. It says the values don't show that the hits are the same
@@ -2172,9 +2198,7 @@ What the note says depends on the case:
   ```
   hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 --param key=ms` would, but that does not prove the hits are the same moments
-  - `db.candidate`, `db.count` and `changes` differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
-  - runs 1 and 3 saw `db.stable`'s values at other hits (run 3's hit 11 matches run 1's hit 7: 1)
-  - that alternate alignment does not settle whether the calls were reordered: `db.stable` may differ because of the interventions, or match by chance
+  - `db.stable`, `db.candidate`, `db.count` and 1 more differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
   ```
 
 - **After an intervention that left nothing out,** the note says what agrees, what differs and which
@@ -2247,6 +2271,9 @@ run_id  label           args                 sets  status     error_code  output
 ```
 
 Both outputs say `private`. But `::ffff:8.8.8.8` is public, so its output is the bug.
+
+Run `a` comes first, so `--param a=3 --param b=2` lists run 3, then run 2. Both runs' `args` show
+whole up to 300 characters each. Past that, both show from where they first differ.
 
 `sets` lists each run's requested changes. Each is `[name, value, "requested at LINE@HIT"]`:
 
@@ -2465,6 +2492,8 @@ other parts:
 - `--schema` alone prints this index, under 2 KB. The whole schema is about 20 KB.
 - `--schema NAME` prints each table, view or other part it names in full: its columns, the joins,
   the canned queries, the functions, the examples or the rules. `--schema all` prints everything.
+- A column only some languages fill names them: `element_size [C, C++ only]`, `identity [Python
+  only]`, `instance [Rust only]`. Other languages' runs leave it NULL.
 - `--schema --json` gives the whole schema, as before. With names, it gives only those, in the
   same shape.
 - An unknown name is `INVALID_QUERY`. The message lists the names there are.
@@ -2797,6 +2826,12 @@ cleanup: nothing Peeky could identify was still running
 - `session get` on a list, dict or struct lists one level of children. Each child shows the
   selector that reads it.
 - A child that has children of its own shows `(children: ...)`.
+- An array, list or `Vec` lists its first 8 elements as children. A line then counts the rest and
+  names the next one's selector: `... 24 more elements, levels[8] to levels[31]`. `--json` lists them
+  all.
+- The debugger lists at most 64 children at a time. Past that, the line says `then more`, with the
+  whole length where the type gives it (`100 elements in all`). `--json` then has the first 64
+  only: read a later element by its index, as `levels[80]`.
 - A value 4 levels below a local, such as `self.history[-1][2]`, lists no children. That is the
   inspection's depth limit, and the row says so:
   `<children: none listed: this value is 4 levels below a local, …>`. Read the same object by a
@@ -2918,6 +2953,14 @@ state: terminated (program exited; `peeky session report` shows output)
 A step can land on a closing `}`, on a loop's header, or back on an `if`'s line
 ([1.1](#11-what-can-i-ask)). So read a block's locals before you step past it.
 
+A step that lands on a line of only `continue`, `} else {` or `} else if …` gets a note on what
+that line's code does:
+
+- `continue` hasn't run yet: the next step leaves this pass of the loop.
+- A `} else {` line's code is often the jump that ends the branch above it, past the `else` part.
+  It doesn't mean that the `else` part runs.
+- A `} else if …` line's code may be that jump or the `else if` test. The next step shows which.
+
 #### When a step lands in another function
 
 A step off a function's last line lands in its caller, where the function's names are not
@@ -2995,6 +3038,10 @@ removed at the next stop. Then the session's own breakpoint applies again.
 `--to` doesn't skip the session's breakpoint. If a stop there comes first, as in a loop, the state
 says so and the exit status is 3. Repeat the command: every stop is counted. There is no option to
 skip the session's breakpoint.
+
+Where a loop stops at the session's breakpoint on every pass before it reaches LINE, `--to` stops
+there each time. Then start a session at LINE itself: `session start … --at LINE`, with `--hit N`
+for its Nth stop. Or probe LINE with `--hits all`.
 
 For example, in `examples/corpus/running_max/program.py`, line 5 is in a loop and line 7 is after
 it:
@@ -3481,7 +3528,7 @@ status: completed  hits: 1  seconds: 0.99  max pause: 66.9 ms
 output:
   PAGE:[40, 50, 60]
 candidate: values are from a fresh build with this edit; your files are unchanged
-candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
+candidate: The edit keeps the line numbers: the candidate's lines are the original's
 --- pagination_bug.c
 +++ pagination_bug.c
 @@ -21,7 +21,7 @@
@@ -3523,7 +3570,10 @@ candidate: In the edited file, locations name the candidate's copy, since the li
 
 In the edited file, locations, frames and the breakpoint name the candidate's copy, so that they
 agree with these line numbers. A compiled target's other files are shown as yours. A Python
-candidate's are in its copy of your tree.
+candidate's are in its copy of your tree. An edit that adds or removes no line says instead:
+`candidate: The edit keeps the line numbers: the candidate's lines are the original's`. Lines are
+counted as an editor counts them: removing a last line that no newline ends removes a line, and
+adding a final newline adds none.
 
 Some lines have no faithful match. Peeky refuses them before anything is built:
 
@@ -3635,7 +3685,7 @@ status: completed  hits: 1  seconds: 1.639  max pause: 142.2 ms
 output:
   MERGED:1-10
 candidate: values are from a fresh build with this edit; your files are unchanged
-candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
+candidate: The edit keeps the line numbers: the candidate's lines are the original's
 ...
 ```
 
