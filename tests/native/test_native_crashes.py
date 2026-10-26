@@ -231,6 +231,10 @@ def test_cpp_a_session_at_the_crash_reads_only_the_programs_frames(cpp_dir, caps
         (row,) = json.loads(capsys.readouterr().out)
         assert (row["frame"], row["function"], row["value"]) == (nearest, "main", "104"), row
         assert row["settable"] is False, row
+        # Its value views and expansions find that frame again among as many frames.
+        assert main(["session", "get", "s", "--frame", str(nearest), "--json"]) == 0
+        (row, *_) = json.loads(capsys.readouterr().out)
+        assert (row["frame"], row["value"]) == (nearest, '""'), row
         assert main(["session", "report"]) == 0
         report = capsys.readouterr().out.replace("\r\n", "\n")
         assert "before 1\nbefore 2\n" in report, report

@@ -3224,10 +3224,16 @@ class DebugWorker:
             frame.get("instructionPointerReference"),
         )
 
+    def listed_levels(self):
+        """How many frames the stop's inspection listed: 10, or up to the frame it read
+        (#342), whose value views and expansions find that frame again among as many."""
+        return min(max(10, len(getattr(self, "listed_frames", None) or ())), MAX_FRAMES)
+
     def reacquire_scopes(self, runtime, frame, pending):
-        frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
+        levels = self.listed_levels()
+        frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": levels}).get(
             "stackFrames", []
-        )[:10]
+        )[:levels]
         matches = [f for f in frames if f.get("id") == frame.get("id")]
         if len(matches) != 1 or self.frame_identity(matches[0]) != self.frame_identity(frame):
             raise ValueError("Frame changed during value views; inspect again")
@@ -5144,9 +5150,10 @@ class DebugWorker:
         each step's name and type: (frame, scope identity, path, reference, indexed).
         ``trail``, if given, receives the debugger's variable for each step."""
         original_frame, scope_identity, ancestry = record
-        frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": 10}).get(
+        levels = self.listed_levels()
+        frames = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": levels}).get(
             "stackFrames", []
-        )[:10]
+        )[:levels]
         if listed := getattr(runtime, "frames_listed", None):
             listed(frames)
         matches = [f for f in frames if f.get("id") == original_frame.get("id")]
