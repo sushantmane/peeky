@@ -1796,7 +1796,7 @@ the candidate's rows show its line 34. It gives no `(line)` row.
 The `(output)` row shows up to 200 characters of each output, in the table and in `--json`. Each
 window starts 60 characters before the first character that differs, at the same place in both
 runs. It starts at the beginning when the difference is within the first 60. `…` marks a cut. So
-both show the first difference, and at least 140 characters after it where the output has them.
+both show the first difference, and at least 139 characters after it where the output has them.
 The note says where the outputs differ, counted from 1: `output differs at line 4, column 13`. So
 after a `--set`, this row shows the intervention's effect.
 
