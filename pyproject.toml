@@ -4,11 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peeky"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A debugger worker and runtime experimentation client for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Sushant Mane" }]
 dependencies = ["debugpy==1.8.22"]
+
+[project.urls]
+Homepage = "https://github.com/sushantmane/peeky"
+Source = "https://github.com/sushantmane/peeky"
 
 [project.optional-dependencies]
 dev = ["pytest==9.1.1", "pytest-timeout==2.4.0", "ruff==0.17.1", "build==1.6.1"]
@@ -18,6 +23,10 @@ peeky-worker = "peeky.worker:main"
 peeky-agent = "peeky.agent:main"
 peeky-probe = "peeky.probe:main"
 peeky = "peeky.cli:main"
+
+[tool.setuptools.dynamic]
+# The one source of the version: `peeky --version` and the package metadata both read it.
+version = { attr = "peeky.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

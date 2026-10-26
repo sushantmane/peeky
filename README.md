@@ -18,12 +18,37 @@ your checks.
 
 ## Install
 
-Python 3.11 or later is required. Its `sqlite3` module must have SQLite 3.30 or later, with the
-JSON functions, `json_each`, `json_tree` and window functions, for the evidence store.
+Python 3.11 or later is required. macOS's built-in `python3` is 3.9. There, `pip install` fails
+with `No matching distribution found for debugpy==1.8.22`, which doesn't name the cause: install
+Python 3.11 or later, from python.org or Homebrew, and make the virtual environment with it.
+
+Its `sqlite3` module must have SQLite 3.30 or later, with the JSON functions, `json_each`,
+`json_tree` and window functions, for the evidence store.
 `python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version. Before SQLite
 3.41, `peeky sql` can use only the JSON and pragma table-valued functions
-([COOKBOOK 4](docs/COOKBOOK.md#4-sql-over-saved-runs)). Run these, and every example, from the
-repository root:
+([COOKBOOK 4](docs/COOKBOOK.md#4-sql-over-saved-runs)).
+
+### From a release
+
+A release has a wheel, `peeky-0.1.0-py3-none-any.whl`, and a source archive,
+`peeky-0.1.0.tar.gz`. Install the wheel, with Python 3.11 or later:
+
+```sh
+python3.11 -m venv .venv && . .venv/bin/activate
+pip install peeky-0.1.0-py3-none-any.whl
+peeky --version
+```
+
+The wheel has the commands, but not the examples. They are in the source archive. Unpack it, and
+run every example from its top directory:
+
+```sh
+tar -xzf peeky-0.1.0.tar.gz && cd peeky-0.1.0
+```
+
+### From the repository
+
+Run these, and every example, from the repository root:
 
 ```sh
 pip install -e .
@@ -135,20 +160,22 @@ peeky sql --schema                  # a line per table and view; --schema captur
 ## Run Peeky on another machine
 
 The debugger runs in a worker, which a client calls over JSON HTTP. Start a worker with a secret
-token:
+token, from the repository root or the unpacked source archive:
 
 ```sh
 export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 peeky-worker --root "$PWD" --port 8765
 ```
 
-In a second terminal, set the same secret and use the SDK:
+In a second terminal, export the same `DEBUG_TOKEN` value, and run this with the Python Peeky is
+installed in:
 
 ```python
 import os
 from peeky.client import Client
 
-client = Client("http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"])
+url, token = "http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"]
+client = Client(url, token)
 launch = client.call("launch", program="examples/pagination_bug.py", breakpoints=[{"line": 8}])
 session = {"session_id": launch["session_id"]}
 stop = client.call("wait", **session, timeout=2)
@@ -160,10 +187,11 @@ print(client.call("report", **session))
 client.call("close", **session)
 ```
 
-A probe is one HTTP call ([ADR 0004](docs/adr/0004-stateless-probes.md)):
+A probe is one HTTP call ([ADR 0004](docs/adr/0004-stateless-probes.md)). Its path is inside the
+worker's `--root`:
 
 ```python
-Client(url, token).probe("pagination_bug.py:8", ["start"], {"start": "0"})
+print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
 ```
 
 For remote use, run the worker on the target, and forward its loopback port over SSH:

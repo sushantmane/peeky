@@ -17,6 +17,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 
+from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
@@ -5944,7 +5945,8 @@ def main():
     from peeky.processes import keep_children_waitable
 
     keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog="peeky-worker")
+    add_version(parser)
     parser.add_argument("--root", default=".")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(

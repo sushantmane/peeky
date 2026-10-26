@@ -194,7 +194,8 @@ For example, `examples/java/pagination.json`. The bundle path is relative to the
   empty. Embedded double quotes, CR or LF, and NUL are refused: the JDI connector's quoted-string
   contract can't carry them. Peeky takes at most 100 arguments, each at most 8,192 characters.
 
-Build the adapter bundle once, with JDK 17 and Python 3.11 or later:
+Build the adapter bundle once, with JDK 17 and Python 3.11 or later. Run it from the repository
+root or the unpacked source archive: the wheel doesn't have the script.
 
 ```sh
 python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"

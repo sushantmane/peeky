@@ -122,6 +122,10 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e .
 ```
 
+From a release, install the wheel instead: `pip install peeky-0.1.0-py3-none-any.whl`. The wheel
+has no examples or scripts. Run the recipes from the unpacked source archive,
+`peeky-0.1.0.tar.gz` ([README](../README.md#from-a-release)).
+
 ### What each language also needs
 
 | Language | Also needs | Peeky finds it from |
@@ -129,7 +133,17 @@ pip install -e .
 | Python | nothing | the interpreter running `peeky` |
 | C, C++ | clang (or GCC: set `PEEKY_NATIVE_CC` or `PEEKY_NATIVE_CXX`), lldb-dap and dwarfdump: on macOS the Command Line Tools, on Linux LLVM 18 | `xcrun` or `PATH`. Set `PEEKY_NATIVE_*` to override |
 | Rust | the rustup toolchain 1.96.0, and lldb-dap | `rustup which`. Set `PEEKY_RUST_*` to override |
-| Java | JDK 17, and the [adapter bundle](lang/java.md#words-used-here): `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"` | the target's `--config target.json` |
+| Java | JDK 17, and the [adapter bundle](lang/java.md#words-used-here): `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"`, run from the repository root or the unpacked source archive (the wheel doesn't have the script) | the target's `--config target.json` |
+
+- On Ubuntu 24.04, as in CI, `apt-get install clang-18 lldb-18 llvm-18` installs clang, lldb-dap
+  and llvm-dwarfdump for C, C++ and Rust. Other Debian and Ubuntu releases with LLVM 18 use the
+  same names.
+- A `PEEKY_*` tool variable takes a full path, or a program's name on `PATH`, such as
+  `PEEKY_NATIVE_CC=gcc`. For a name, Peeky prints the file it found: `peeky: PEEKY_NATIVE_CC=gcc:
+  using /usr/bin/gcc …`.
+- In a Docker container, the debugger needs ptrace. Start the container with
+  `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`. Otherwise Docker's default seccomp
+  profile refuses a call LLDB makes as it launches the program.
 
 ### Keep a task's runs apart
 

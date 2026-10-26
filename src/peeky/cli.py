@@ -27,6 +27,7 @@ import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from peeky import add_version
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
@@ -123,6 +124,33 @@ def _rustup(tool):
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
+_ON_PATH_SAID = set()
+
+
+def _env_tool(variable):
+    """A PEEKY_* tool variable's program. A bare name, such as `gcc`, is looked up on PATH
+    as a shell would, and Peeky says which file it found; any other value is a path."""
+    value = os.environ.get(variable)
+    if not value or "/" in value:
+        return value
+    found = shutil.which(value)
+    if not found:
+        raise FileNotFoundError(
+            f"{variable}={value}: no program named {value} on PATH; install it, or set "
+            f"{variable} to its full path"
+        )
+    path = str(Path(found).resolve())
+    if (variable, value) not in _ON_PATH_SAID:
+        _ON_PATH_SAID.add((variable, value))
+        link = f" (a link to {path})" if path != found else ""
+        print(
+            f"peeky: {variable}={value}: using {found}{link}, the first {value} on PATH",
+            file=sys.stderr,
+            flush=True,
+        )
+    return path
+
+
 def _required(label, value):
     if not value:
         raise ValueError(f"Cannot find {label}; set it with --config or PEEKY_* variables")
@@ -134,17 +162,19 @@ def rust_tools():
     env = os.environ.get
     darwin = sys.platform == "darwin"
     tools = {
-        "cargo": env("PEEKY_RUST_CARGO") or _rustup("cargo"),
-        "rustc": env("PEEKY_RUST_RUSTC") or _rustup("rustc"),
-        "adapter": env("PEEKY_RUST_DAP") or _xcrun("lldb-dap") or _which("lldb-dap", "lldb-dap-18"),
-        "dwarfdump": env("PEEKY_RUST_DWARFDUMP")
+        "cargo": _env_tool("PEEKY_RUST_CARGO") or _rustup("cargo"),
+        "rustc": _env_tool("PEEKY_RUST_RUSTC") or _rustup("rustc"),
+        "adapter": _env_tool("PEEKY_RUST_DAP")
+        or _xcrun("lldb-dap")
+        or _which("lldb-dap", "lldb-dap-18"),
+        "dwarfdump": _env_tool("PEEKY_RUST_DWARFDUMP")
         or ("/usr/bin/dwarfdump" if darwin else _which("llvm-dwarfdump", "llvm-dwarfdump-18")),
-        "linker": env("PEEKY_RUST_LINKER")
+        "linker": _env_tool("PEEKY_RUST_LINKER")
         or ("/usr/bin/clang" if darwin else _which("clang", "clang-18")),
     }
     result = {name: _required(f"Rust {name}", value) for name, value in tools.items()}
     if darwin:
-        result["dsymutil"] = env("PEEKY_RUST_DSYMUTIL") or "/usr/bin/dsymutil"
+        result["dsymutil"] = _env_tool("PEEKY_RUST_DSYMUTIL") or "/usr/bin/dsymutil"
     if env("PEEKY_RUST_SYSROOT"):
         result["sysroot"] = env("PEEKY_RUST_SYSROOT")
     return result
@@ -152,20 +182,20 @@ def rust_tools():
 
 def native_tools(language):
     env = os.environ.get
-    compiler = env("PEEKY_NATIVE_CXX" if language == "cpp" else "PEEKY_NATIVE_CC")
+    compiler = _env_tool("PEEKY_NATIVE_CXX" if language == "cpp" else "PEEKY_NATIVE_CC")
     name = "clang++" if language == "cpp" else "clang"
     result = {
         "compiler": compiler or _xcrun(name) or _which(name, name + "-18"),
-        "adapter": env("PEEKY_NATIVE_DAP")
+        "adapter": _env_tool("PEEKY_NATIVE_DAP")
         or _xcrun("lldb-dap")
         or _which("lldb-dap", "lldb-dap-18"),
-        "dwarfdump": env("PEEKY_NATIVE_DWARFDUMP")
+        "dwarfdump": _env_tool("PEEKY_NATIVE_DWARFDUMP")
         or _xcrun("llvm-dwarfdump")
         or _which("llvm-dwarfdump", "llvm-dwarfdump-18", "dwarfdump"),
     }
     result = {key: _required(f"native {key}", value) for key, value in result.items()}
     if sys.platform == "darwin":
-        result["dsymutil"] = env("PEEKY_NATIVE_DSYMUTIL") or _xcrun("dsymutil")
+        result["dsymutil"] = _env_tool("PEEKY_NATIVE_DSYMUTIL") or _xcrun("dsymutil")
         sdk = subprocess.run(
             ["xcrun", "--show-sdk-path"], capture_output=True, text=True, timeout=20, check=False
         )
@@ -3653,6 +3683,7 @@ def main(argv=None, _job=False, _edits=None):
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
     parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
+    add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
 
     def edit_options(sub):
