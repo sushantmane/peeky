@@ -206,7 +206,7 @@ probe, read its JSON. Saved runs help with large captures, comparisons and slow 
   `all`) prints them in full (4.1). Read it before writing SQL.
 - `peeky queries` needs no SQL: `run`, `wide`, `hits`, `compare`, `join` (hits paired by values:
   `key=v` or `key=a,b`; its table drops selectors that agree at every paired hit), `diff` (what
-  differs, first divergence first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
+  differs, real differences first: §3), `outputs`, `set_effect`, `values`, `unreadable`,
   `failures`. `compare`, `diff`, `outputs` and `join` take `--param a=1 --param b=5` (default: the
   last two); `run`, `wide`, `hits`, `set_effect` and `unreadable` take `run=3`. `queries --help`
   lists each one's parameters. `diff`, `compare` and `set_effect` tables show long values from

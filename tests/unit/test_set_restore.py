@@ -1107,8 +1107,8 @@ def test_the_evidence_links_each_restore_to_the_change_it_undid(monkeypatch, tmp
         ]
     )
     assert evidence._sets_text(sets) == (
-        "2 requests: x=0 (requested at 5@all, made at 2 stops, to the program's end), …; "
-        "restore: x=@before (requested at 8@all, made at 2 stops, to the program's end)"
+        "2 requests: x=0 (5@all, made at 2 stops, to the program's end), …; "
+        "restore: x=@before (8@all, made at 2 stops, to the program's end)"
     )
 
 

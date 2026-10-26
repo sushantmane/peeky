@@ -449,7 +449,7 @@ def test_diff_says_when_the_runs_hits_do_not_line_up(store, capsys):
     assert "peeky queries join --param a=1 --param b=2 --param key=<selector>" in note
     # #201: how many rows come after the first hit that differs (every row is kept).
     assert after.startswith(
-        "the first difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
+        "the first real difference at a hit is at hit 3; 3 of the 5 rows at a hit come after it"
     ), after
     assert len(result["rows"]) == 5
     assert main(["queries", "diff", "--store", str(store)]) == 0
