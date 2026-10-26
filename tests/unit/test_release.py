@@ -221,3 +221,75 @@ def test_a_run_on_a_worker_neither_looks_for_nor_names_this_hosts_tools(
     assert code != 0
     assert json.loads(out)["error"]["code"] == "UNREACHABLE", out
     assert "PEEKY_NATIVE" not in err and "Cannot find" not in out
+
+
+@pytest.mark.parametrize(
+    "variable, name, link",
+    [
+        ("CARGO", "rustfmt", "symbolic"),
+        ("CARGO", "rustfmt", "hard"),
+        ("RUSTC", "cargo", "symbolic"),
+        ("RUSTC", "cargo", "hard"),
+        ("RUSTC", "rustup", None),
+    ],
+)
+def test_only_cargo_and_rustc_proxies_stand_for_the_pinned_toolchain(
+    tmp_path, monkeypatch, capsys, link, variable, name
+):
+    # Review round 2: `PEEKY_RUST_CARGO=rustfmt`, another of rustup's proxies, became the
+    # pinned cargo. Only `cargo` and `rustc` are taken for the tools they name; any other
+    # stays as found, rustup itself, which the toolchain check refuses.
+    from peeky.rust import _toolchain
+
+    here = tmp_path.resolve()
+    (here / "bin").mkdir()
+    rustup = here / "bin" / "rustup"
+    rustup.write_text('#!/bin/sh\necho "should not be asked" >&2\nexit 1\n')
+    rustup.chmod(0o755)
+    if link:
+        if link == "symbolic":
+            (here / "bin" / name).symlink_to(rustup)
+        else:
+            (here / "bin" / name).hardlink_to(rustup)
+    tool = here / "tool"
+    tool.write_text("#!/bin/sh\n")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{here / 'bin'}:/usr/bin:/bin")
+    for other in ("CARGO", "RUSTC", "DAP", "DWARFDUMP", "LINKER", "DSYMUTIL"):
+        monkeypatch.setenv(f"PEEKY_RUST_{other}", str(tool))
+    monkeypatch.setenv(f"PEEKY_RUST_{variable}", name)
+    monkeypatch.setattr(cli, "_ON_PATH_SAID", set(), raising=False)
+    tools = cli.rust_tools()
+    assert Path(tools[variable.lower()]).samefile(rustup)  # rustup, by any of its names
+    err = capsys.readouterr().err
+    assert "proxy" not in err and "1.96.0" not in err, err
+    with pytest.raises(ValueError, match="must be the same real toolchain sysroot binaries"):
+        _toolchain(tools["cargo"], tools["rustc"])
+
+
+def test_a_run_on_a_worker_names_files_that_only_look_like_programs(tmp_path, monkeypatch, capsys):
+    # Review round 2: with no compiler run here, a main in a comment or an inactive #if
+    # branch was said to define main ("Several C/C++ programs define main here").
+    here = tmp_path.resolve()
+    (here / "app").mkdir()
+    (here / "app" / "main.c").write_text("int main(void) {\n  int x = 1;\n  return x;\n}\n")
+    (here / "app" / "old.c").write_text("#if 0\nint main(void) { return 1; }\n#endif\n")
+    (here / "app" / "notes.c").write_text("/*\nint main(void) { return 2; }\n*/\n")
+    monkeypatch.setenv("PATH", str(here))
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(here / "state"))
+    monkeypatch.setenv(cli.WORKER_TOKEN_ENV, "a-worker-token-of-some-length")
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        url = f"http://127.0.0.1:{unused.getsockname()[1]}"
+    argv = ["probe", str(here / "app"), "--capture", "x", "--worker", url, "--json", "--no-save"]
+    assert cli.main([*argv, "--at", "2"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert (error["code"], error["message"]) == (
+        "INVALID_REQUEST",
+        "Name the program with --at FILE:LINE, e.g. --at main.c:<line>: main.c, notes.c, old.c "
+        "each look like they may define main, and a run on a worker runs no compiler on this "
+        "host to tell which really do",
+    )
+    # Named, it goes to the worker (here, none answers).
+    cli.main([*argv, "--at", "main.c:2"])
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "UNREACHABLE"

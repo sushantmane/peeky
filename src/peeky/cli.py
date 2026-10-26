@@ -147,9 +147,10 @@ def _env_tool(variable):
     linked = any(part.is_symlink() for part in (shown, *shown.parents))
     said = f"using {shown} (a link to {path})" if linked else f"using {path}"
     said += f", the first {value} on PATH"
-    if variable in _RUSTUP_PROXIES and _is_rustup(shown):
-        # A proxy runs whichever toolchain rustup picks; Peeky builds with its pinned one,
-        # whose real binaries its checks require.
+    if _RUSTUP_PROXIES.get(variable) == value and _is_rustup(shown):
+        # `cargo` or `rustc` that is rustup's proxy runs whichever toolchain rustup picks;
+        # Peeky builds with its pinned one, whose real binaries its checks require. Any
+        # other name (`rustfmt`, `rustup`) stays as found, for the checks to refuse.
         tool = _RUSTUP_PROXIES[variable]
         path = _rustup(tool)
         if not path:
@@ -346,11 +347,15 @@ def _resolve(path, program, line, config, tools=True):
         suffixes = (".c",) if language == "c" else (".cpp", ".cc", ".cxx")
         headers = (".h",) if language == "c" else (".h", ".hpp", ".hh", ".hxx")
         root = path.parent
-        found = native_tools(language) if tools else {}
+        headers = tuple(sorted(p.name for p in root.iterdir() if p.suffix in headers))
+        if not tools:
+            # The worker's configuration names the sources it builds, and its tools.
+            return root, program or path.name, line, language, {"language": language}
+        found = native_tools(language)
         data = {
             "language": language,
             "sources": _native_sources(root, path.name, suffixes, found, language),
-            "headers": tuple(sorted(p.name for p in root.iterdir() if p.suffix in headers)),
+            "headers": headers,
             **found,
         }
         return root, program or path.name, line, language, data
@@ -405,17 +410,21 @@ def _native_program(directory, program, tools=True):
         and item.resolve().parent == directory
         and _MAIN.search(item.read_bytes()[:4_000_000])
     )[:20]
+    if len(mains) > 1 and not tools:
+        # A run on a worker runs no compiler here: the text alone can't rule out a main in
+        # a comment, an inactive #if branch or a declaration.
+        raise ValueError(
+            f"Name the program with --at FILE:LINE, e.g. --at {mains[0]}:<line>: "
+            f"{', '.join(mains)} each look like they may define main, and a run on a worker "
+            "runs no compiler on this host to tell which really do"
+        )
     if len(mains) > 1:
         # As for a file target: the preprocessor settles which really define main.
         languages = {name: "c" if name.endswith(".c") else "cpp" for name in mains}
         mains = [
             name
             for name in mains
-            if _defines_main(
-                directory / name,
-                native_tools(languages[name]) if tools else None,
-                languages[name],
-            )
+            if _defines_main(directory / name, native_tools(languages[name]), languages[name])
         ]
     if len(mains) > 1:
         raise ValueError(
