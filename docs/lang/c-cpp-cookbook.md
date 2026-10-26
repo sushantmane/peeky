@@ -1,9 +1,11 @@
 # Peeky Cookbook: C and C++
 
-This cookbook covers what is different for C and C++. Read the [COOKBOOK](../COOKBOOK.md) first:
-it has the recipes every language shares. Each section here has the number and title of the
-COOKBOOK section it adds to. For a one-page summary of the C and C++ rules, see
-[c-cpp.md](c-cpp.md).
+**[AGENT_GUIDE.md](../AGENT_GUIDE.md) and [c-cpp.md](c-cpp.md) cover most tasks.** This cookbook is
+for details, which they cite by section number.
+
+This cookbook covers what is different for C and C++. The [COOKBOOK](../COOKBOOK.md) has the recipes
+every language shares. Each section here has the number and title of the COOKBOOK section it adds
+to. For a one-page summary of the C and C++ rules, see [c-cpp.md](c-cpp.md).
 
 Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
 
@@ -349,6 +351,9 @@ run_a  run_b  hit  phase     selector  value_a             value_b             d
 - Another element's address ranks first among the addresses that differ, after the real
   differences. It is an address fact. The program may have moved the pointer, or only the array
   moved under it: a stale pointer, storage reused, another layout.
+- Its row may be at an earlier hit than the first real difference. Then a note names that hit,
+  so you can read the hits in order: ``note: `now` holds a different element's address in each
+  run at hit 4, before the first real difference (hit 5); …``.
 - So read it with the program. Here `top` is computed from `level` (`level + peak(level, n)`), so
   `level[2]` against `level[1]` is the change.
 - Where the pointer's address reads the same in both runs and only the array moved, `diff` leaves
@@ -594,7 +599,7 @@ hit  phase      line  function  selector  type  value
 1    observed   25    main      page      int   1  [settable]
 1    observed   25    main      items[1]  int   20  [settable]
 1    after-set  25    main      start     int   0  [settable]
-after-set: 2 scalar rows equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
+after-set: 2 number, flag, null or text rows equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 0.745
 output:

@@ -103,7 +103,10 @@ def test_set_changes_java_fields_and_array_elements_the_program_then_uses(fields
         "xs[0]": False,
     }
     for selector in ("arr[0]", "arr[2]"):
-        assert after[selector]["maybe_settable"] == "other threads are running; set checks again"
+        assert (
+            after[selector]["maybe_settable"]
+            == "other threads, the JVM's own included, are running; set checks again"
+        )
     # Evidence names the field as the selector that reached it.
     run = result["evidence"]["run_id"]
     store = root.parent / "state" / "evidence" / "evidence.db"

@@ -186,7 +186,10 @@ def test_the_guard_flip_skips_the_move_with_two_set_ats(native, capsys, name):
     ]
     text = _table(result)
     # (GCC's C++ names the static function `::find_turns`.)
-    assert f"set trend: 0 -> -1  (restored, --set-at line {flat}@all, hit 3, in " in text, text
+    assert (
+        f"set trend: 0 -> -1  (restored, --set-at line {flat}@all, stop 3 of line {flat}, in "
+        in text
+    ), text
     assert [o["complete"] for o in result["set_outcomes"]] == [True, True], result
 
 
