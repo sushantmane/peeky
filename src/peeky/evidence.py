@@ -1295,9 +1295,9 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         'Inputs, requested interventions (sets: each [name, value, "requested at '
         'LINE@HIT"], a --set\'s too, with how it went where recorded: ", not made: that hit '
         'never came", ", made at 6 stops; refused at hit 7", ", made at 1 stop before --until '
-        'hits ended the probe"), outcome and program output of two runs',
+        'hits ended the probe"), outcome and program output of two runs, run a first',
         f"SELECT run_id, label, args, {_requested('r')} AS sets, status, error_code, output "
-        f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id",
+        f"FROM runs r WHERE run_id IN ({_A}, {_B}) ORDER BY run_id IS NOT {_A}, run_id",
         _PAIR_PARAMS,
         (),
     ),
@@ -2664,13 +2664,17 @@ def run_query(path, name, params=None, *, limit=DEFAULT_ROWS):
         return _run(path, name, params, limit)[0]
 
 
-def canned(path, name, params=None, *, limit=DEFAULT_ROWS, table=False):
+def canned(path, name, params=None, *, limit=DEFAULT_ROWS, table=False, short_note=None):
     """(result, text): ``run_query``'s result and, with ``table``, its text table
-    (``query_table``), all read in one snapshot of the store."""
+    (``query_table``, given ``short_note``), all read in one snapshot of the store."""
     params = _checked(name, params)
     with _snapshot(path):
         result, params = _run(path, name, params, limit)
-        text = query_table(path, {**result, "query": name}, params) if table else None
+        text = (
+            query_table(path, {**result, "query": name}, params, short_note=short_note)
+            if table
+            else None
+        )
     return result, text
 
 
@@ -3587,6 +3591,8 @@ _PAIRED = {
 }
 # Characters shown before a long value's first difference.
 _LEAD = 40
+# `outputs` shows both runs' arguments whole up to this length.
+_ARGS_WHOLE = 300
 # A set_effect change's values in text: each at most this long, and from this many
 # characters before where they differ.
 _CHANGE_WIDTH, _CHANGE_LEAD = 50, 30
@@ -3722,9 +3728,12 @@ def _changes_text(row, changes, shown):
     return "; ".join(_change_text(change, shown) for change in made) if made else None
 
 
-def table(result, width=120, changes=None):
+def table(result, width=120, changes=None, short_note=None, runs=None):
     """A plain-text table of a query result. A `function` column shows each frame's
     short name (see ``names.function_labels``), with a note: the result keeps it whole.
+    ``short_note``, where given, is asked whether to add that note when one applies,
+    given the runs the table shows (``runs``, else its rows' run_id values, else None):
+    the CLI's says yes once per saved run (twelfth evaluation, laps 6; review of PR #350).
     For a canned query (``result["query"]``) that compares values, a long value shows
     from just before where it first differs from its pair (`_PAIRED`); `diff`'s
     `(sets)` row shows how many changes and the first; set_effect's `interventions`
@@ -3750,6 +3759,13 @@ def table(result, width=120, changes=None):
         value = row[column]
         if column == "function":
             return text(shortened.get(value, value))
+        if query_name == "outputs" and column == "args" and value is not None:
+            # Both runs' arguments whole where they are short enough (twelfth evaluation,
+            # laps 4: 12 reads were cut at 120 characters), else from where they differ.
+            others = [shown(other["args"]) for other in result["rows"] if other is not row]
+            if all(len(item) <= _ARGS_WHOLE for item in [shown(value), *others]):
+                return shown(value)
+            return _window(shown(value), others[0] if len(others) == 1 else None, width)
         if query_name in ("diff", "compare") and row.get("selector") == "(sets)":
             if column in paired and (summary := _sets_text(value, row.get(paired[column]))):
                 return text(summary)
@@ -3775,7 +3791,9 @@ def table(result, width=120, changes=None):
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
     ]
     count = result["row_count"]
-    if note := shortened_note(shortened):
+    if runs is None and "run_id" in columns:
+        runs = sorted({row["run_id"] for row in result["rows"] if type(row["run_id"]) is int})
+    if (note := shortened_note(shortened)) and (short_note is None or short_note(runs)):
         lines.append(note)
     # A note of several lines (`diff`'s verdict on how hits pair, then its details) keeps
     # its details under its `note:`.
@@ -3824,7 +3842,7 @@ def _compact_join(path, result, params):
     }
 
 
-def query_table(path, result, params=None):
+def query_table(path, result, params=None, short_note=None):
     """`table` for a canned query's ``result`` (``result["query"]`` names it), run with
     ``params`` from ``prepare``, which name its runs: read again by run id, never as "the
     newest", which a probe may have saved since. For set_effect, with the run's changes,
@@ -3844,7 +3862,8 @@ def query_table(path, result, params=None):
             {"run": params.get("run")},
             limit=MAX_ROWS,
         )["rows"]
-    return table(result, changes=changes)
+    named = [params[run] for run in ("a", "b", "run") if type(params.get(run)) is int]
+    return table(result, changes=changes, short_note=short_note, runs=named or None)
 
 
 # What `peeky sql --schema NAME` takes besides a table or view, in the whole text's order.
@@ -3857,13 +3876,41 @@ _VIEW_SUMMARIES = {
 }
 
 
+# The languages whose runs fill a column; any other's are NULL there. `peeky sql --schema`
+# says so beside its name (twelfth evaluation, desks 8: a Java store listed the C and C++
+# columns with the rest).
+_COLUMN_LANGUAGES = {
+    ("captures", "identity"): "Python",
+    ("captures", "scope"): "Python",
+    ("captures", "instance"): "Rust",
+    ("interventions", "instance"): "Rust",
+    ("captures", "stop"): "C, C++, Rust",
+    ("interventions", "stop"): "C, C++, Rust",
+    **{
+        ("captures", column): "C, C++"
+        for column in (
+            "element_size",
+            "at_element_of",
+            "element_index",
+            "offset_from",
+            "element_offset",
+        )
+    },
+}
+
+
 def _schema_lines(manifest, name):
     """The text of one table, view or other part (``SCHEMA_PARTS``) of ``manifest``."""
     if name in manifest.get("tables", {}):
         info = manifest["tables"][name]
         return [
             f"table {name}: {info['description']}",
-            *(f"  {column}: {meaning}" for column, meaning in info["columns"].items()),
+            *(
+                f"  {column}"
+                + (f" [{only} only]" if (only := _COLUMN_LANGUAGES.get((name, column))) else "")
+                + f": {meaning}"
+                for column, meaning in info["columns"].items()
+            ),
         ]
     if name in manifest.get("views", {}):
         return [f"view {name}: {manifest['views'][name]}"]

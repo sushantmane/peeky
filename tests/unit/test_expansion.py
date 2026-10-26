@@ -525,7 +525,7 @@ def test_a_verdict_made_while_other_threads_run_is_asked_again(member_worker):
     # wrapped the array's list in an unmodifiable view: `get` said settable, `set` refused.
     from peeky.java import Unproven
 
-    running = Unproven("other threads are running; set checks again")
+    running = Unproven("other threads, the JVM's own included, are running; set checks again")
     member_worker.dap = HolderBackend()
     member_worker.runtime = HolderRuntime(running, settled=False)
     for _ in range(2):

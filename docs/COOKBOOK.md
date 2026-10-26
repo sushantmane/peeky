@@ -1,5 +1,9 @@
 # Peeky Cookbook
 
+**[AGENT_GUIDE.md](AGENT_GUIDE.md) and your language's page cover most tasks:**
+[Python](lang/python.md), [Java](lang/java.md), [C and C++](lang/c-cpp.md), [Rust](lang/rust.md).
+This cookbook is for details, which they cite by section number.
+
 Recipes for debugging running programs from your terminal. Agents use the same commands: see
 [AGENT_GUIDE.md](AGENT_GUIDE.md).
 
@@ -216,8 +220,11 @@ How C++ names are shortened: [C and C++ 1.1](lang/c-cpp-cookbook.md#how-a-c-func
 SQL compares the whole name, so `WHERE function = 'trim_left'` finds nothing. Match a frame with
 `short_function(function) = 'trim_left'`, or with its whole name.
 
-- A query's table that shows short names says so in a note. So does `peeky sql --help`.
+- `peeky sql --help` says so every time.
 - A probe's table says it once per state directory, and never with `--quiet`.
+- A query's table says it once per saved run it shows: where the run's probe, or an earlier query,
+  hasn't said it. A table that names no run, such as one with no `run_id` column, says it each
+  time.
 
 `short_function` drops the parameters of every overload, and a Rust symbol's hash. So these share
 one name:
@@ -506,7 +513,8 @@ status: completed  hits: 3 (all)  seconds: 1.07  max pause: 5.3 ms
 ```
 
 - A warning says when the cap was reached.
-- A table of more than 40 rows, of several selectors, ends with a pointer to one line per hit:
+- A table of more than 40 rows of several selectors, or of 4 selectors or more at 3 hits or more,
+  ends with a pointer to one line per hit:
   `` evidence: one line per hit, a column per selector: `peeky queries wide --param run=7` ``
   ([3.4](#34-one-row-per-hit)).
 - `all` needs the program to exit, so it can't be combined with `--until hits`. For an attached
@@ -743,7 +751,7 @@ hit  phase      line  function  selector  type  value
 1    observed   8     get_page  start     int   3
 1    observed   8     get_page  items[1]  int   20
 1    after-set  8     get_page  start     int   0
-after-set: 1 scalar row equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
+after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.004  max pause: 10.0 ms
 output:
@@ -851,12 +859,13 @@ can change (`register`). A Java element whose mark can't be promised either way 
 After a change, Peeky reads each selector again, in an `after-set` row. The table leaves out an
 `after-set` row equal to its hit's `observed` row only when both of these hold:
 
-- Its value is shown whole and holds nothing else: a number, a boolean, null, or a quoted text with
-  no `…` or `...` cut.
+- Its value is shown whole and holds nothing else: a number, a boolean, a null (`None`, `null`,
+  `nullptr`), or a quoted text with no `…` or `...` cut.
 - Its selector is neither a change's target nor holds one, as `s` holds `s.ninth`.
 
-`items[1]` above is such a row. A footer counts the rows left out, as scalar rows, and `--json` has
-every row.
+`items[1]` above is such a row. A footer counts the rows left out, as number, flag, null or text
+rows, and `--json` has every row. A Java run's footer says number, flag or char rows: only a
+primitive's row is left out there.
 
 These rows stay, since they may hide a change:
 
@@ -865,8 +874,7 @@ These rows stay, since they may hide a change:
 - a cut value;
 - a row with a note;
 - a Java value other than a primitive: a String set through an alias is a new object with the same
-  text. A Java run's footer says so: `(a number, flag or char; object rows stay, a String's too: a
-  Java String is an object, and an equal text may be a new String; …)`;
+  text. A Java run's footer says so: `(a String stays: it is an object)`;
 - a Python value whose identity changed.
 
 #### Every change is read back
@@ -1130,7 +1138,7 @@ hit  phase      line  function  selector  type         value
 4    observed   22    main      colon     size_t       5  [settable]
 4    observed   22    main      entry     std::string  "pear :1"  [settable]
 4    after-set  22    main      colon     size_t       4  [settable]
-after-set: 2 scalar rows equal to the hit's observed value left out (a number, flag or whole text; pointer, object and preview rows stay, as they may hide a change; `--json` has every row)
+after-set: 2 number, flag, null or text rows equal to the observed value left out; `--json` has all
 set colon: 7 -> 6  (--set-at line 22@3, in main)
 set colon: 6 -> 7  (--set-at line 23@3, in main)
 set colon: 5 -> 4  (--set-at line 22@4, in main)
@@ -1201,14 +1209,18 @@ peeky probe debounce_main.c --at 18 --capture ms,db.count --hits all \
 
 ```
 ...
-set db.count: 0 -> 0, no change  (--set-at line 18@all, hit 1, in main)
-set db.count: 0 -> 0, no change  (--set-at line 18@all, hit 2, in main)
-set db.count: 1 -> 0  (--set-at line 18@all, hit 3, in main)
-set db.count: 13 more writes by --set-at line 18@all, at hits 4 to 16: 5 changes and 8 with no change (`--json` lists each)
+set db.count: 0 -> 0, no change  (--set-at line 18@all, stop 1 of line 18, in main)
+set db.count: 0 -> 0, no change  (--set-at line 18@all, stop 2 of line 18, in main)
+set db.count: 1 -> 0  (--set-at line 18@all, stop 3 of line 18, in main)
+set db.count: 13 more writes by --set-at line 18@all, at stops 4 to 16 of line 18: 5 changes and 8 with no change (`--json` lists each)
 status: completed  hits: 16 (all)  seconds: 1.498  max pause: 63.7 ms
 output:
   DEBOUNCE:P@9,R@20, quiet 16
 ```
+
+`stop 3 of line 18` counts that line's own stops, whichever line `--at` names: it is the probe's
+hit only where the two lines are the same. On a line with several breakpoint locations, the change
+adds which one: `stop 4 of line 9 at location 2 of 3`.
 
 In Java, `set` can change an eligible program-owned instance field through a Java local, parameter
 or `this` reference, subject to the holder and field checks
@@ -1287,12 +1299,12 @@ peeky probe trail.c --at 15 --capture trend --hits all \
 
 ```
 ...
-set trend: 1 -> 0  (--set-at line 15@all, hit 1, in find_turns)
-set trend: 0 -> 1  (restored, --set-at line 18@all, hit 1, in find_turns)
-set trend: 1 -> 0  (--set-at line 15@all, hit 2, in find_turns)
-set trend: 0 -> 1  (restored, --set-at line 18@all, hit 2, in find_turns)
-set trend: -1 -> 0  (--set-at line 15@all, hit 3, in find_turns)
-set trend: 0 -> -1  (restored, --set-at line 18@all, hit 3, in find_turns)
+set trend: 1 -> 0  (--set-at line 15@all, stop 1 of line 15, in find_turns)
+set trend: 0 -> 1  (restored, --set-at line 18@all, stop 1 of line 18, in find_turns)
+set trend: 1 -> 0  (--set-at line 15@all, stop 2 of line 15, in find_turns)
+set trend: 0 -> 1  (restored, --set-at line 18@all, stop 2 of line 18, in find_turns)
+set trend: -1 -> 0  (--set-at line 15@all, stop 3 of line 15, in find_turns)
+set trend: 0 -> -1  (restored, --set-at line 18@all, stop 3 of line 18, in find_turns)
 status: completed  hits: 3 (all)  seconds: 0.981  max pause: 63.6 ms
 output:
   TRAIL:T@200 455,B@700 400;FLAT=3
@@ -1382,7 +1394,7 @@ In JSON, the restore's entry in `unapplied` has three more keys:
 - `unrestored`: the latest one's `LINE@HIT`.
 
 Each restore is reported as a change, with `restored`. The line that counts an `@all`'s later
-writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at hits 4 to 8`.
+writes counts restores: `set trend: 5 more restores by --set-at line 18@all, at stops 4 to 8 of line 18`.
 Where the value it writes over isn't the one the change wrote, the restore says so: `set x: 6 ->
 1  (restored over the current 6, --set-at line 22@1, in main)`. The program wrote it since, or
 another change of the probe's did, through another name for the same storage (Java `c.n`, with
@@ -2259,6 +2271,9 @@ run_id  label           args                 sets  status     error_code  output
 
 Both outputs say `private`. But `::ffff:8.8.8.8` is public, so its output is the bug.
 
+Run `a` comes first, so `--param a=3 --param b=2` lists run 3, then run 2. Both runs' `args` show
+whole up to 300 characters each. Past that, both show from where they first differ.
+
 `sets` lists each run's requested changes. Each is `[name, value, "requested at LINE@HIT"]`:
 
 - A `--set` is at its `--at` line's `--set-hit`: `["gap", "20", "requested at 34@4"]`.
@@ -2476,6 +2491,8 @@ other parts:
 - `--schema` alone prints this index, under 2 KB. The whole schema is about 20 KB.
 - `--schema NAME` prints each table, view or other part it names in full: its columns, the joins,
   the canned queries, the functions, the examples or the rules. `--schema all` prints everything.
+- A column only some languages fill names them: `element_size [C, C++ only]`, `identity [Python
+  only]`, `instance [Rust only]`. Other languages' runs leave it NULL.
 - `--schema --json` gives the whole schema, as before. With names, it gives only those, in the
   same shape.
 - An unknown name is `INVALID_QUERY`. The message lists the names there are.
@@ -2806,6 +2823,12 @@ cleanup: nothing Peeky could identify was still running
 - `session get` on a list, dict or struct lists one level of children. Each child shows the
   selector that reads it.
 - A child that has children of its own shows `(children: ...)`.
+- An array, list or `Vec` lists its first 8 elements as children. A line then counts the rest and
+  names the next one's selector: `... 24 more elements, levels[8] to levels[31]`. `--json` lists them
+  all.
+- The debugger lists at most 64 children at a time. Past that, the line says `then more`, with the
+  whole length where the type gives it (`100 elements in all`). `--json` then has the first 64
+  only: read a later element by its index, as `levels[80]`.
 - A value 4 levels below a local, such as `self.history[-1][2]`, lists no children. That is the
   inspection's depth limit, and the row says so:
   `<children: none listed: this value is 4 levels below a local, …>`. Read the same object by a
@@ -2927,6 +2950,14 @@ state: terminated (program exited; `peeky session report` shows output)
 A step can land on a closing `}`, on a loop's header, or back on an `if`'s line
 ([1.1](#11-what-can-i-ask)). So read a block's locals before you step past it.
 
+A step that lands on a line of only `continue`, `} else {` or `} else if …` gets a note on what
+that line's code does:
+
+- `continue` hasn't run yet: the next step leaves this pass of the loop.
+- A `} else {` line's code is often the jump that ends the branch above it, past the `else` part.
+  It doesn't mean that the `else` part runs.
+- A `} else if …` line's code may be that jump or the `else if` test. The next step shows which.
+
 #### When a step lands in another function
 
 A step off a function's last line lands in its caller, where the function's names are not
@@ -3004,6 +3035,10 @@ removed at the next stop. Then the session's own breakpoint applies again.
 `--to` doesn't skip the session's breakpoint. If a stop there comes first, as in a loop, the state
 says so and the exit status is 3. Repeat the command: every stop is counted. There is no option to
 skip the session's breakpoint.
+
+Where a loop stops at the session's breakpoint on every pass before it reaches LINE, `--to` stops
+there each time. Then start a session at LINE itself: `session start … --at LINE`, with `--hit N`
+for its Nth stop. Or probe LINE with `--hits all`.
 
 For example, in `examples/corpus/running_max/program.py`, line 5 is in a loop and line 7 is after
 it:
@@ -3490,7 +3525,7 @@ status: completed  hits: 1  seconds: 0.99  max pause: 66.9 ms
 output:
   PAGE:[40, 50, 60]
 candidate: values are from a fresh build with this edit; your files are unchanged
-candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
+candidate: The edit keeps the line numbers: the candidate's lines are the original's
 --- pagination_bug.c
 +++ pagination_bug.c
 @@ -21,7 +21,7 @@
@@ -3532,7 +3567,10 @@ candidate: In the edited file, locations name the candidate's copy, since the li
 
 In the edited file, locations, frames and the breakpoint name the candidate's copy, so that they
 agree with these line numbers. A compiled target's other files are shown as yours. A Python
-candidate's are in its copy of your tree.
+candidate's are in its copy of your tree. An edit that adds or removes no line says instead:
+`candidate: The edit keeps the line numbers: the candidate's lines are the original's`. Lines are
+counted as an editor counts them: removing a last line that no newline ends removes a line, and
+adding a final newline adds none.
 
 Some lines have no faithful match. Peeky refuses them before anything is built:
 
@@ -3644,7 +3682,7 @@ status: completed  hits: 1  seconds: 1.639  max pause: 142.2 ms
 output:
   MERGED:1-10
 candidate: values are from a fresh build with this edit; your files are unchanged
-candidate: In the edited file, locations name the candidate's copy, since the line numbers are the candidate's
+candidate: The edit keeps the line numbers: the candidate's lines are the original's
 ...
 ```
 

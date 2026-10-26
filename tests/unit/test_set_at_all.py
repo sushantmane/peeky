@@ -127,7 +127,7 @@ def test_an_all_is_made_at_every_stop_of_its_line(monkeypatch):
     assert worker.placed == [[8, 9], [9]] and worker.calls.count("set_variable") == 3
     assert probe_exit_code(result) == 0
     text = probe_module._table(result)
-    assert "set x: 1 -> 5  (--set-at line 9@all, hit 2, in main)" in text
+    assert "set x: 1 -> 5  (--set-at line 9@all, stop 2 of line 9, in main)" in text
     assert "more change" not in text and "status: completed  hits: 1" in text
 
 
@@ -181,10 +181,10 @@ def test_an_all_stops_at_the_cap_and_says_so(monkeypatch):
     assert probe_exit_code(result) == 4
     text = probe_module._table(result)
     # The first three changes, then one line for the rest.
-    assert "set x: 1 -> 5  (--set-at line 9@all, hit 3, in main)" in text
+    assert "set x: 1 -> 5  (--set-at line 9@all, stop 3 of line 9, in main)" in text
     assert "hit 4," not in text
     assert (
-        f"set x: {MAX_HITS - 3} more changes by --set-at line 9@all, at hits 4 to {MAX_HITS} "
+        f"set x: {MAX_HITS - 3} more changes by --set-at line 9@all, at stops 4 to {MAX_HITS} of line 9 "
         "(`--json` lists each)" in text
     )
     assert "status: completed (1 --set-at @all cut short at the cap)  hits: 1" in text
