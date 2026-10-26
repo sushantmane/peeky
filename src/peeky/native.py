@@ -3412,6 +3412,87 @@ def elf_executable_ranges(binary):
         return headers[0], tuple(ranges)
 
 
+# A variable the build places at one fixed address (#339).
+_FIXED_ADDRESS = re.compile(r"\(?\s*DW_OP_addr\s+(0x[0-9a-fA-F]{1,16})\s*\)?\s*")
+# How many of the program's variables in static storage are read (#339).
+MAX_STATICS = 4096
+
+
+def static_variables(dies, limit=MAX_STATICS):
+    """The program's variables in static storage, from the build's debug information
+    (#339): [(name, address before any slide, type offset)], at most ``limit``: globals,
+    `static` locals and C++ class statics, each at one `DW_OP_addr`. Never a
+    thread-local one, whose address is the thread's."""
+    from peeky.fields import _target
+
+    found = []
+    for offset, die in dies.items():
+        if die.get("tag") != "DW_TAG_variable":
+            continue
+        placed = _FIXED_ADDRESS.fullmatch(die["attrs"].get("DW_AT_location") or "")
+        if placed is None:
+            continue
+        chain = _chain(dies, offset)
+        kind = _target(_first(dies, chain, "DW_AT_type"))
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        if kind is not None and name and int(placed[1], 16) > 0:
+            found.append((name, int(placed[1], 16), kind))
+            if len(found) >= limit:
+                break
+    return tuple(found)
+
+
+def string_sections(binary):
+    """[(start, end, file offset)] of an executable's sections of C strings, before any
+    slide (#339): a Mach-O's `__TEXT,__cstring`, which holds only string literals, and an
+    ELF's `.rodata` sections, where the linker puts them among other constants."""
+    with Path(binary).open("rb") as stream:
+        header = stream.read(64)
+        if len(header) >= 32 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+            count, size = struct.unpack_from("<II", header, 16)
+            if not 0 < count <= 4096 or not 0 < size <= 1 << 20:
+                raise ValueError("Invalid Mach-O load commands")
+            stream.seek(32)
+            commands = stream.read(size)
+            cursor, found = 0, []
+            for _ in range(count):
+                if cursor + 8 > len(commands):
+                    raise ValueError("Truncated Mach-O load command")
+                kind, length = struct.unpack_from("<II", commands, cursor)
+                if length < 8 or cursor + length > len(commands):
+                    raise ValueError("Invalid Mach-O load command size")
+                if kind == 0x19 and length >= 72:  # LC_SEGMENT_64
+                    sections = struct.unpack_from("<I", commands, cursor + 64)[0]
+                    for index in range(min(sections, (length - 72) // 80)):
+                        at = cursor + 72 + index * 80
+                        name, segment = commands[at : at + 16], commands[at + 16 : at + 32]
+                        address, extent, offset = struct.unpack_from("<QQI", commands, at + 32)
+                        if (name.rstrip(b"\0"), segment.rstrip(b"\0")) == (b"__cstring", b"__TEXT"):
+                            found.append((address, address + extent, offset))
+                cursor += length
+            return tuple(found)
+        if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01":
+            raise ValueError("Expected a 64-bit little-endian executable")
+        table = struct.unpack_from("<Q", header, 40)[0]
+        entry, count, names = struct.unpack_from("<HHH", header, 58)
+        if entry != 64 or not 0 < count <= 4096 or names >= count:
+            raise ValueError("Invalid ELF section header table")
+        stream.seek(table)
+        raw = stream.read(entry * count)
+        if len(raw) != entry * count:
+            raise ValueError("Truncated ELF section header table")
+        headers = [struct.unpack_from("<IIQQQQIIQQ", raw, i * entry) for i in range(count)]
+        stream.seek(headers[names][4])
+        strings = stream.read(min(headers[names][5], 1 << 20))
+        found = []
+        for name, kind, _, address, offset, size, *_ in headers:
+            label = strings[name : strings.find(b"\0", name)] if name < len(strings) else b""
+            # SHT_PROGBITS, with no write and no exec flag.
+            if label.startswith(b".rodata") and kind == 1 and address and size:
+                found.append((address, address + size, offset))
+        return tuple(found)
+
+
 def image_ranges(binary):
     """[(start, end)] of what a 64-bit executable maps from its file, before any slide
     (#339): an ELF's loadable segments, or a Mach-O's segments but `__PAGEZERO` and
@@ -3720,7 +3801,7 @@ class NativeTarget:
                 self.sources + self.headers,
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
-            code = None
+            code, statics = None, ()
             try:
                 info = _metadata(
                     dwarfdump,
@@ -3761,7 +3842,10 @@ class NativeTarget:
                     if declarations is not None:
                         from peeky.fields import CPP_LIBRARIES, type_graph
 
-                        # The types field and element changes walk (#105).
+                        # The program's variables in static storage, which prove what a
+                        # pointer at one points at live (#339).
+                        statics = static_variables(_dies(info))
+                        # The types field and element changes walk (#105), and theirs.
                         fields = type_graph(
                             _dies(info),
                             {
@@ -3769,7 +3853,8 @@ class NativeTarget:
                                 for function in declarations
                                 for kinds in (function["types"] or {}).values()
                                 for kind, _, _ in kinds
-                            },
+                            }
+                            | {kind for _, _, kind in statics},
                             CPP_LIBRARIES,
                         )
                         # And, one level down, what their pointers and references reach:
@@ -3790,6 +3875,7 @@ class NativeTarget:
                 # note that its initialization is not judged (and no field or element
                 # can be changed).
                 declarations, fields, prologues, code = None, None, None, None
+                statics = ()
                 unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
             session = NativeSession(
                 self,
@@ -3807,6 +3893,7 @@ class NativeTarget:
                 returns_twice=returns_twice,
                 prologues=prologues,
                 code=code,
+                statics=statics,
             )
             session.assert_current()
             return session
@@ -4598,6 +4685,7 @@ class NativeSession:
         returns_twice=None,
         prologues=None,
         code=None,
+        statics=(),
     ):
         self.target, self.prepared = target, prepared
         # local_declarations of the build; None (unknown) never withholds a value, and
@@ -4616,6 +4704,9 @@ class NativeSession:
         self.returns_twice = returns_twice
         # fields.type_graph of the locals' types; None (unknown) changes no field.
         self.fields = fields
+        # static_variables of the build (#339): what a pointer into static storage may be
+        # proven to point at.
+        self.static_variables = tuple(statics or ())
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -5265,6 +5356,56 @@ class NativeSession:
             self.__dict__["image_segments"] = found
         return [(start + bias, end + bias) for start, end in found] or None
 
+    def static_bases(self):
+        """The arrays and objects of the program's variables in static storage, at their
+        slid addresses (#339), as ``held_extents`` gives a local's: [(selector, extent)],
+        at most 16384. Each global is exactly its type's extent, so a pointer past one or
+        into code proves nothing. None where Peeky can't tell (the load address, or the
+        build's debug information, not read)."""
+        from peeky.native_previews import Typed
+
+        bias = getattr(self, "load_bias", None)
+        if type(bias) is not int or getattr(self, "fields", None) is None:
+            return None
+        found = self.__dict__.get("static_held")
+        if found is None or found[0] != bias:
+            held = []
+            for name, address, kind in getattr(self, "static_variables", ()):
+                if len(held) >= 16384:
+                    break
+                part = []
+                self._held(name, Typed(self.fields, kind), address + bias, part, 0)
+                held += part
+            found = self.__dict__["static_held"] = (bias, held)
+        return found[1]
+
+    def literal_range(self, address):
+        """(start, end) of the C string at ``address`` in the program's string literals
+        (#339: ``string_sections``), from it to its NUL, read from the executable's file;
+        None where the address is in none, or no NUL ends it there within 4096 bytes."""
+        bias, binary = getattr(self, "load_bias", None), getattr(self, "binary", None)
+        if type(bias) is not int or binary is None:
+            return None
+        sections = self.__dict__.get("literal_sections")
+        if sections is None:
+            try:
+                sections = string_sections(binary)
+            except (OSError, ValueError, struct.error):
+                sections = ()
+            self.__dict__["literal_sections"] = sections
+        for start, end, offset in sections:
+            if start + bias <= address < end + bias:
+                at = address - bias - start
+                try:
+                    with Path(binary).open("rb") as stream:
+                        stream.seek(offset + at)
+                        data = stream.read(min(4096, end - start - at))
+                except OSError:
+                    return None
+                ends = data.find(b"\0")
+                return None if ends < 0 else (address, address + ends + 1)
+        return None
+
     def stack_pointer(self, dap, frame_id):
         """The stack pointer of the frame ``frame_id`` names, as LLDB recovers it (#339:
         below it, no live call keeps its locals), or None."""
@@ -5351,10 +5492,19 @@ class NativeSession:
             self._held(name, found[0], address, held, 0)
         return held
 
-    def _held(self, selector, typed, address, held, depth, own=True):
+    def _held(self, selector, typed, address, held, depth, own=True, in_union=False):
         """``held_extents`` of the value ``typed`` at ``address``, added to ``held``;
         ``own``: whether the value itself is listed (an array's element is not: the array
-        names each element's address)."""
+        names each element's address). What a union holds is marked `union` (#339):
+        which member is live, no declaration says, so none proves a pointer at it; the
+        union itself, marked `union_object`, does."""
+        start = len(held)
+        self._held_into(selector, typed, address, held, depth, own)
+        if in_union:
+            held[start:] = [(name, {**extent, "union": True}) for name, extent in held[start:]]
+
+    def _held_into(self, selector, typed, address, held, depth, own=True):
+        """``_held``'s walk, which marks nothing of its own as a union's."""
         if len(held) >= HELD_EXTENTS:
             return
         sort = typed.kind()
@@ -5385,7 +5535,7 @@ class NativeSession:
                     at, place = address + index * size, ""
                     for count in reversed(dims):
                         place, index = f"[{index % count}]{place}", index // count
-                    self._held(f"{selector}{place}", element, at, held, depth + 1, own=False)
+                    self._held_into(f"{selector}{place}", element, at, held, depth + 1, own=False)
             return
         if sort not in ("record", "union", "scalar", "library", "pointer"):
             return
@@ -5393,13 +5543,23 @@ class NativeSession:
         if kind is None or size is None:
             return
         if own:
-            held.append((selector, {"address": address, "element": kind, "element_size": size}))
+            extent = {"address": address, "element": kind, "element_size": size}
+            held.append(
+                (selector, {**extent, **({"union_object": True} if sort == "union" else {})})
+            )
         if sort in ("record", "union") and depth < 3:
             # A base class is an object of its own where the build places it (#339: a
             # `Shape *` at a `Circle`), named as LLDB names it, by its class.
             for member, inner, offset in [*typed.placed_bases(), *typed.placed_members()]:
                 if offset + (inner.byte_size() or 0) <= size:
-                    self._held(f"{selector}.{member}", inner, address + offset, held, depth + 1)
+                    self._held(
+                        f"{selector}.{member}",
+                        inner,
+                        address + offset,
+                        held,
+                        depth + 1,
+                        in_union=sort == "union",
+                    )
 
     def _string_class(self, kind):
         """``cxx_strings.string_class`` of a type, also through a typedef the build's

@@ -113,8 +113,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   marked `[unproven]`, with a note that says why: into a call that returned, a heap block, or past
   an array. A live heap block and a freed one read alike
   ([C and C++ 2.1](c-cpp-cookbook.md#when-what-a-pointer-points-at-is-unproven)).
-- It is proven live inside a local, an array, a struct or a base class of a listed frame, of its
-  type, or in the program's static storage. The pointer's own row is its address, unmarked, but a `char *`'s
+- It is proven live inside a local, an array, a struct or a base class of a listed frame, or a
+  global, of its type. A `char *` may also point into a string literal or `main`'s arguments. A
+  union's member is never proven, only the union. The pointer's own row is its address, unmarked, but a `char *`'s
   text is marked. `queries diff` ranks such values as qualified.
 - Where the array is a pointer, such as a parameter, a pointer says how far it is from it by
   address alone: `[level + 6 by address; same array not proven]`. It names no element

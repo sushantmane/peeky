@@ -125,9 +125,9 @@ _CHARACTER_SIZES = {
 
 # What the rule on reading through a C or C++ pointer (#339) reads at most per stop: how
 # many of the listed frames' locals it asks the debugger to place (`&name`), and how many
-# bytes from `main`'s argument and environment vectors their strings take.
+# of `main`'s argument and environment strings (`argv[N]`).
 PLACED_HOVERS = 32
-ARGUMENTS = 1 << 20
+ARGUMENT_STRINGS = 64
 # How far above the stack pointer a local Peeky didn't place may be (#339): only for
 # which locals it asks to place, never for what a note says.
 STACK_NEAR = 8 << 20
@@ -149,6 +149,22 @@ def _selector_path(names):
         else:
             path += f".{name}"
     return path
+
+
+def _string_span(result):
+    """(start, end) of the C string a hover of `argv[N]` gives (`(char *) argv[1] =
+    0x… "text"` from lldb-dap 18, `0x… "text"` from later ones), from its first byte to
+    its NUL, or to the last byte shown where LLDB cut the text (#339). None for NULL, or
+    a value with no text."""
+    from peeky.cxx_strings import summary_units
+
+    value = result.split(" = ", 1)[1] if result.startswith("(") and " = " in result else result
+    held = _NONZERO_ADDRESS.match(value)
+    units = summary_units(value[held.end() :].strip(), 1, "") if held else None
+    if units is None:
+        return None
+    start = int(held[0], 16)
+    return start, start + units[0] + (0 if units[1] else 1)
 
 
 def _through_this(selector):
@@ -4073,11 +4089,14 @@ class DebugWorker:
                     ):
                         self.held_frames[identity] = None
                         continue
+                    cut = False
                     if variables is None:
                         scanned = True
-                        variables, whole = self.frame_locals(listed)
-                    held = self.frame_held(variables, listed)
+                        variables, whole, cut = self.frame_locals(listed)
+                    held, bounded = self.frame_held(variables, listed)
                     extras = self.frame_unplaced(variables, listed)
+                    # Whether a bound left some of its locals unplaced (#339).
+                    extras["cut"] = extras["cut"] or cut or bounded
                     self.held_extras[identity] = {**extras, "index": index}
                     if whole:
                         self.held_frames[identity] = held
@@ -4104,25 +4123,32 @@ class DebugWorker:
         return bases
 
     def frame_held(self, variables, frame):
-        """``held_extents`` of a frame's locals, at most 512."""
-        held = []
+        """``held_extents`` of a frame's locals, at most 512, and whether a bound cut it
+        short (#339): more than 256 locals, 512 in all, or a local's own bound."""
+        from peeky.native import HELD_EXTENTS
+
+        held, cut = [], len(variables) > 256
         for variable in variables[:256]:
             if len(held) >= 512:
+                cut = True
                 break
             if isinstance(variable, dict) and isinstance(variable.get("name"), str):
                 try:
-                    held += self.runtime.held_extents(variable, frame, variable["name"])
+                    found = self.runtime.held_extents(variable, frame, variable["name"])
                 except (KeyError, TypeError, ValueError):
                     continue
-        return held[:512]
+                cut = cut or len(found) >= HELD_EXTENTS
+                held += found
+        return held[:512], cut or len(held) > 512
 
     def frame_unplaced(self, variables, frame):
         """What ``held_extents`` can't place of a frame's locals (#339): those the debugger
         gave no address for (lldb-dap 18: a number, a `char` array, a pointer), which a
         `&name` hover can place, [(name, variable)], at most 64, each named once in the
-        frame; and in `main`, where its argument and environment vectors point, whose
-        strings last the whole run: [(start, end)]. With the frame and its function."""
-        runtime, unplaced, regions, counts = self.runtime, [], [], {}
+        frame, and whether that bound cut them short (`cut`); and in `main`, the names of
+        its argument and environment vectors (`vectors`), whose strings last the whole
+        run. With the frame and its function."""
+        runtime, unplaced, vectors, counts, cut = self.runtime, [], [], {}, False
         named = [
             variable
             for variable in variables[:256]
@@ -4139,17 +4165,30 @@ class DebugWorker:
                 if (
                     unplace
                     and counts[name] == 1
-                    and len(unplaced) < 64
                     and _PLAIN_NAME.fullmatch(name)
                     and unplace(variable, frame, name)
                 ):
-                    unplaced.append((name, variable))
-                if main and vector and type(start := vector(variable, frame, name)) is int:
-                    regions.append((start, start + ARGUMENTS))
+                    if len(unplaced) >= 64:
+                        cut = True
+                    else:
+                        unplaced.append((name, variable))
+                if (
+                    main
+                    and vector
+                    and _PLAIN_NAME.fullmatch(name)
+                    and vector(variable, frame, name)
+                ):
+                    vectors.append(name)
             except (KeyError, TypeError, ValueError):
                 continue
         function = str(frame.get("name") or "")[:300]
-        return {"frame": frame, "function": function, "unplaced": unplaced, "regions": regions}
+        return {
+            "frame": frame,
+            "function": function,
+            "unplaced": unplaced,
+            "vectors": vectors,
+            "cut": cut,
+        }
 
     def pointee_state(self):
         """What the rule on reading through a C or C++ pointer learned at this stop
@@ -4195,35 +4234,103 @@ class DebugWorker:
         return state["judged"][key]
 
     def judge_pointee(self, address, pointer, frame):
-        """``pointee_unproven`` of an address (#339): proven in the program's static
-        storage, in `main`'s arguments, or in an array or object a listed frame holds
-        (``stop_bases``; never one only C++'s `this` reaches, which may be gone itself);
-        else, near the stack pointer, the locals the debugger gave no address for are
-        placed (``placed_locals``) and asked again. Then why not: below the stack
-        pointer, outside an array, in the listed frames' stack, or nowhere Peeky placed."""
+        """``pointee_unproven`` of an address (#339). Proven inside an array or object a
+        listed frame holds (``stop_bases``; never one only C++'s `this` reaches, which
+        may be gone itself, nor a union's member), or one of the program's variables in
+        static storage, of its type; for a character pointer, also in a string literal
+        or one of `main`'s argument strings, from it to its NUL. Else, near the stack
+        pointer, the locals the debugger gave no address for are placed
+        (``placed_locals``) and asked again. Then why not: below the stack pointer,
+        outside an array, in a union, in the program's static storage, in the listed
+        frames' stack, or nowhere Peeky placed; or, where a bound left some local
+        unplaced, only that ("limit")."""
         from peeky.probe import RED_ZONE, pointee_past, pointee_place, pointee_proven
 
-        ranges = getattr(self.runtime, "static_ranges", None)
-        statics = ranges() if callable(ranges) else None
-        bases = [entry for entry in self.stop_bases(frame) if not _through_this(entry[0])]
-        regions = [
-            region for extras in self.held_extras.values() for region in extras.get("regions", ())
+        runtime = self.runtime
+        ranges, held = (
+            getattr(runtime, "static_ranges", None),
+            getattr(runtime, "static_bases", None),
+        )
+        segments = ranges() if callable(ranges) else None
+        globals_ = [
+            (name, extent, {}) for name, extent in (held() if callable(held) else None) or ()
         ]
-        if pointee_proven(address, pointer, bases, statics, regions):
+        bases = [entry for entry in self.stop_bases(frame) if not _through_this(entry[0])]
+        strings, cut = [], False
+        if pointer.get("character") is True:
+            literal = getattr(runtime, "literal_range", None)
+            if callable(literal) and (found := literal(address)) is not None:
+                strings.append(found)
+        if pointee_proven(address, pointer, bases + globals_, strings):
             return None
+        if pointer.get("character") is True:
+            strings, cut = self.argument_strings()
+            if pointee_proven(address, pointer, [], strings):
+                return None
         sp, placed, settled = self.stop_stack_pointer(), [], True
         if type(sp) is not int or sp - RED_ZONE <= address < sp + STACK_NEAR:
-            placed, settled = self.placed_locals(
+            placed, settled, bounded = self.placed_locals(
                 pointer, frame, red=type(sp) is int and address < sp
             )
+            cut = cut or bounded
             if placed and pointee_proven(address, pointer, bases + placed):
                 return None
+        cut = cut or any(extras.get("cut") for extras in self.held_extras.values())
         kind = pointee_place(address, sp, bases + placed, settled)
         # Below the stack pointer, a whole number of elements before some array above it
         # says less than where it is.
-        if kind != "below" and (past := pointee_past(address, pointer, bases + placed)):
+        if kind != "below" and (past := pointee_past(address, pointer, bases + placed + globals_)):
             return past
-        return {"kind": kind, "statics": statics is not None}
+        for selector, extent, place in bases + placed + globals_:
+            start = extent.get("address")
+            if extent.get("union_object") and type(start) is int:
+                if start <= address < start + extent.get("element_size", 0):
+                    # Which of its members holds a value, no declaration says.
+                    return {"kind": "union", "selector": selector, **place}
+        if segments and any(start <= address < end for start, end in segments):
+            kind = "static"
+        elif cut:
+            # A local Peeky didn't place may be there: it says no more than that.
+            kind = "limit"
+        return {"kind": kind, "statics": segments is not None}
+
+    def argument_strings(self):
+        """Each of `main`'s argument and environment strings, from its first byte to its
+        NUL (#339): [(start, end)], read once per stop by asking the debugger for
+        `argv[N]` as a hover (it reads the variable, and runs nothing), at most
+        ``ARGUMENT_STRINGS``; and whether that bound cut them short."""
+        state = self.pointee_state()
+        if "strings" in state:
+            return state["strings"]
+        found, cut, asked = [], False, 0
+        for identity, extras in self.held_extras.items():
+            for name in extras.get("vectors", ()):
+                for index in range(ARGUMENT_STRINGS + 1):
+                    if asked >= ARGUMENT_STRINGS:
+                        cut = True
+                        break
+                    asked += 1
+                    self.frame_scans += 1
+                    arguments = {
+                        "expression": f"{name}[{index}]",
+                        "frameId": identity,
+                        "context": "hover",
+                    }
+                    try:
+                        reply = self.dap.request("evaluate", arguments, timeout=2)
+                    except TimeoutError:
+                        # Asked again at the next inspection of this stop.
+                        self.view_timed_out = self.pointee_partial = True
+                        return found, True
+                    except (RuntimeError, OSError):
+                        break
+                    span = _string_span(str(reply.get("result") or ""))
+                    if span is None:
+                        # NULL ends the vector.
+                        break
+                    found.append(span)
+        state["strings"] = (found, cut)
+        return state["strings"]
 
     def stop_stack_pointer(self):
         """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or
@@ -4252,9 +4359,10 @@ class DebugWorker:
         and runs nothing. Only those that may hold what ``pointer`` points at, and with
         ``red`` all of the innermost frame's, at most ``PLACED_HOVERS`` per stop. The
         arrays and objects they hold, as ``stop_bases`` gives them (``frame``'s with no
-        place), and whether every local of the innermost frame is placed."""
+        place), whether every local of the innermost frame is placed, and whether the
+        bound left one that may hold it unplaced."""
         state, runtime = self.pointee_state(), self.runtime
-        placed, settled = [], True
+        placed, settled, cut = [], True, False
         for identity, extras in self.held_extras.items():
             listed, innermost = extras["frame"], identity == self.innermost_frame
             place = (
@@ -4268,6 +4376,7 @@ class DebugWorker:
                     wanted = (red and innermost) or self.may_hold(variable, listed, name, pointer)
                     if not wanted or state["hovers"] >= PLACED_HOVERS:
                         settled = settled and not innermost
+                        cut = cut or bool(wanted)
                         continue
                     state["hovers"] += 1
                     try:
@@ -4281,7 +4390,7 @@ class DebugWorker:
                     settled = settled and not innermost
                     continue
                 placed += [(selector, extent, place) for selector, extent in found]
-        return placed, settled
+        return placed, settled, cut
 
     def may_hold(self, variable, frame, name, pointer):
         """Whether a local Peeky has no address for may hold what ``pointer`` points at
@@ -4388,24 +4497,29 @@ class DebugWorker:
         return unproven_text(None, why, text=True)
 
     def frame_locals(self, frame):
-        """A caller frame's locals as the debugger lists them, and whether they all came
-        (``stop_bases``): none where the debugger refuses or doesn't answer in time; a
-        request that times out leaves the inspection read-only."""
-        variables = []
+        """A caller frame's locals as the debugger lists them, whether they all came
+        (``stop_bases``), and whether a bound cut them short (#339: 4 scopes of 256): none
+        where the debugger refuses or doesn't answer in time; a request that times out
+        leaves the inspection read-only."""
+        variables, cut = [], False
         try:
             scopes = self.dap.request("scopes", {"frameId": frame["id"]}, timeout=5)
-            for scope in self.runtime.local_scopes(scopes.get("scopes", []))[:4]:
+            listed = self.runtime.local_scopes(scopes.get("scopes", []))
+            cut = len(listed) > 4
+            for scope in listed[:4]:
                 reply = self.dap.request(
                     "variables", {"variablesReference": scope["variablesReference"]}, timeout=5
                 )
-                variables += reply.get("variables", [])[:256]
+                found = reply.get("variables", [])
+                cut = cut or len(found) > 256
+                variables += found[:256]
         except TimeoutError:
             # Its reply may still come: no change is made until the next inspection.
             self.view_timed_out = True
-            return [], False
+            return [], False, False
         except (RuntimeError, OSError, KeyError, TypeError, AttributeError):
-            return [], False
-        return variables, True
+            return [], False, False
+        return variables, True, cut
 
     def named_children(self, reference, indexed, name, runtime):
         """The children named ``name`` of the value ``reference`` names. An element LLDB

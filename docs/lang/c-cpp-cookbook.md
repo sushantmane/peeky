@@ -174,18 +174,28 @@ What a pointer points at is proven live where its address is in one of these:
 - An element of an array such a frame holds, or a member or base class of a struct it holds.
   These are the arrays and objects listed [below](#a-pointer-one-past-an-arrays-end), and
   number, `char` array and pointer locals too. A `Shape *` at a `Circle` local's `Shape` counts.
-- The program's own static storage: a global, a `static` local or a string literal. It lasts the
-  whole run.
-- `main`'s argument and environment strings.
+- A global or `static` local of the pointer's type, inside its own extent, as the build's debug
+  information places it. Past its end, or elsewhere in the program's image, such as its code,
+  isn't proven.
 
-A `char *` may point at any byte of such an object, as C allows. Otherwise, the note says what
-Peeky knows of the address:
+A `char *` may point at any byte of such an object, as C allows. It may also point into a string
+literal, or one of `main`'s argument strings, from the pointer to the string's NUL. Environment
+strings count where `main` declares `envp`.
+
+A union's member is never proven, only the union itself: no declaration says which member holds a
+value. Nor does a declaration in scope say which object a storage holds after placement `new`.
+Where the types differ, what is read is marked.
+
+Otherwise, the note says what Peeky knows of the address:
 
 - ``it holds the address of `cells[4]`, past the end of `cells`, which has 3 elements``, or an
   address some elements before an array's start.
 - `it points below the stack pointer`: no live call keeps its locals there.
 - `it points into the stack of the frames Peeky lists`, but at no local, member or element of its
   type.
+- ``it points into the union `un` ``, and no declaration says which of its members holds a value.
+- `it points into the program's static storage`, but at no global, `static` local or string
+  literal of its type.
 - `its address is in no local, member or element that Peeky could place`, such as a heap
   block's. A live block and a freed one read alike.
 
@@ -204,8 +214,6 @@ Peeky checks addresses, not where a pointer came from:
 
 - A pointer into a call that returned reads as live where a later call's local of its type is at
   that address now.
-- A pointer past a global array's end reads the next global, with no mark. Peeky doesn't check
-  which global an address is in.
 - A pointer to a member Peeky doesn't list is marked. It lists a struct's members three levels
   deep, and the members of an array's first 16 elements.
 - In a method of a C++ object made with `new`, what `this` points at is marked: it is a heap
@@ -217,8 +225,13 @@ Peeky checks addresses, not where a pointer came from:
   ([7.1](#values-peeky-withholds-or-cant-vouch-for)).
 
 lldb-dap 18 gives no address for a number, `char` array or pointer local, or a `std::string`.
-Peeky then asks for `&name`, as a hover that reads the variable and runs nothing. It asks at most
-32 times per stop, and only for locals that may hold what the pointer points at.
+Peeky then asks for `&name`, as a hover that reads the variable and runs nothing. It asks only for
+locals that may hold what the pointer points at. It reads `argv[N]` the same way.
+
+Peeky bounds what it reads per stop: 32 locals asked for, 256 locals of a frame, 64 that need
+asking, and 64 argument strings. Where a bound left a local unplaced, the note says only that:
+`Peeky didn't place every local at this stop: the per-stop limit was reached`. It never says the
+pointer points at no local then, or below the stack pointer.
 
 ### Which element's address a pointer holds
 

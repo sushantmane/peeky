@@ -2050,6 +2050,8 @@ def _held_where(place):
     )
 
 
+# How many elements before or past an array a pointer's note names it by (#339).
+PAST_CAP = 64
 # How far below the stack pointer a pointer is said to point where a call that has
 # returned kept its locals (#339); further down is other memory (the heap, on Linux).
 BELOW_STACK = 1 << 16
@@ -2066,26 +2068,28 @@ def _base_bounds(base):
     return start, start + length * size
 
 
-def pointee_proven(address, pointer, bases, statics=None, regions=()):
+def pointee_proven(address, pointer, bases, strings=()):
     """Whether what a C or C++ pointer holding ``address`` points at is proven to be a
     live object (#339). ``pointer``: what it points at (``NativeSession.pointee_of``:
     "pointee", "element_size", "count", and "character" for a byte-sized character
     type, which C lets read any object's bytes); ``bases``: the arrays and objects the
-    stop's frames hold, [(selector, extent, place)] (``held_extents``). Proven where it
-    is in the program's static storage (``statics``, [(start, end)]: globals, string
-    literals), in a region that lasts the whole run (``regions``: `main`'s arguments), or
-    inside an array or object a listed frame holds, of its pointee type and size, at a
-    whole element, with all it points at inside (a pointer to a character type: any
-    byte of it). One past an array's end is no element (#336)."""
+    stop's frames and the program's static storage hold, [(selector, extent, place)]
+    (``held_extents``, ``static_bases``). Proven inside one of them, of its pointee type
+    and size, at a whole element, with all it points at inside (a pointer to a character
+    type: any byte of it); never through a union's member, as no declaration says which
+    one holds a value (the union itself proves it). For a character pointer, also inside
+    one of ``strings``: C strings, [(start, end)] from the first byte to the NUL (a
+    string literal, `main`'s arguments). One past an array's end is no element (#336)."""
     size, count = pointer.get("element_size"), pointer.get("count", 1)
     if type(address) is not int or type(size) is not int or type(count) is not int:
         return False
-    for start, end in [*(statics or ()), *(regions or ())]:
-        if start <= address < end:
-            return True
+    if pointer.get("character") is True and size == 1:
+        for start, end in strings or ():
+            if start <= address and address + count <= end:
+                return True
     for _, base, _ in bases:
         bounds = _base_bounds(base)
-        if bounds is None or not bounds[0] <= address < bounds[1]:
+        if base.get("union") or bounds is None or not bounds[0] <= address < bounds[1]:
             continue
         if pointer.get("character") is True:
             return True
@@ -2105,8 +2109,8 @@ def pointee_past(address, pointer, bases):
     frames hold (#339), by a whole number of its elements: two or more past its end
     ({"kind": "past", "selector", "index", "length"}), or before its start ({"kind":
     "before", "selector", "elements"}), with the array's place (``past_end``'s). The
-    array nearest by elements, the pointer's own frame's first; within ``OFFSET_CAP``
-    elements; never a 2-D one, whose element no single index names. One past the end is
+    array nearest by elements, the pointer's own frame's first; within ``PAST_CAP``
+    elements (further off, where it is says more); never a 2-D one, whose element no single index names. One past the end is
     ``past_end``'s (#336). None otherwise."""
     size, found = pointer.get("element_size"), None
     for selector, base, place in bases:
@@ -2123,10 +2127,10 @@ def pointee_past(address, pointer, bases):
         ):
             continue
         index, length = (address - bounds[0]) // size, base["length"]
-        if length < index <= length + OFFSET_CAP:
+        if length < index <= length + PAST_CAP:
             distance = index - length
             why = {"kind": "past", "selector": selector, "index": index, "length": length}
-        elif -OFFSET_CAP <= index < 0:
+        elif -PAST_CAP <= index < 0:
             distance = -index
             why = {"kind": "before", "selector": selector, "elements": -index}
         else:
@@ -2159,8 +2163,9 @@ def pointee_place(address, sp, bases, settled=True):
 def unproven_text(pointer, why, text=False):
     """The note on what is read through the C or C++ pointer named ``pointer``, which
     Peeky can't show points at a live object (#339): the rule, why, then what to do.
-    ``why``: ``pointee_past``'s, or {"kind": ``pointee_place``'s, "statics": whether
-    Peeky knew where the program's static memory is}. ``text``: the note of the
+    ``why``: ``pointee_past``'s, {"kind": "union", "selector", place}, or {"kind":
+    ``pointee_place``'s, "static" or "limit", "statics": whether Peeky knew where the
+    program's static memory is}. ``text``: the note of the
     pointer's own row, whose text LLDB read through it (a `char *`'s); with ``pointer``
     None, of the one a function returned."""
     kind = why.get("kind")
@@ -2189,6 +2194,25 @@ def unproven_text(pointer, why, text=False):
             "it points into the stack of the frames Peeky lists, but at no local, member or "
             "element of its type that Peeky could place there; read the local it should "
             "point at by name"
+        )
+    elif kind == "union":
+        base = why.get("selector")
+        where, how = _held_where(why)
+        reason = (
+            f"it points into the union `{base}`{where}, and no declaration says which of "
+            f"its members holds a value; read `{base}` {how}, and the member the program "
+            "last stored"
+        )
+    elif kind == "static":
+        reason = (
+            "it points into the program's static storage, but at no global, `static` "
+            "local or string literal of its type that Peeky placed; read the global it "
+            "should point at by name"
+        )
+    elif kind == "limit":
+        reason = (
+            "Peeky didn't place every local at this stop: the per-stop limit was reached; "
+            "read the local it should point at by name"
         )
     else:
         static = ", nor in the program's static memory" if why.get("statics") else ""

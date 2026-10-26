@@ -16,7 +16,7 @@ import pytest
 
 from peeky import evidence
 from peeky.cli import _get_lines, _returned_text, _variables_text
-from peeky.native import NativeSession, image_ranges
+from peeky.native import NativeSession, image_ranges, static_variables, string_sections
 from peeky.native_previews import Typed
 from peeky.probe import (
     BELOW_STACK,
@@ -29,7 +29,7 @@ from peeky.probe import (
     pointee_proven,
     unproven_text,
 )
-from peeky.worker import DebugWorker, _selector_path
+from peeky.worker import DebugWorker, _selector_path, _string_span
 
 LONG, CELL, CHAR = (
     "base long DW_ATE_signed 8",
@@ -41,6 +41,16 @@ ARR = ("arr", {"address": 0x1000, "length": 4, "element": LONG, "element_size": 
 CELLS = ("cells", {"address": 0x2000, "length": 3, "element": CELL, "element_size": 16}, {})
 X = ("x", {"address": 0x3000, "element": LONG, "element_size": 8}, {})
 CALLER = {"frame": 1, "function": "main"}
+DOUBLE = "base double DW_ATE_float 8"
+CHARS = {"pointee": CHAR, "element_size": 1, "count": 1, "character": True}
+# A global `long table[2]` (static_bases), and a union `u` whose `d` is a member.
+TABLE = ("table", {"address": 0x8000, "length": 2, "element": LONG, "element_size": 8}, {})
+UNION = (
+    "u",
+    {"address": 0x4000, "element": "union u 8 ab", "element_size": 8, "union_object": True},
+    {},
+)
+UNION_D = ("u.d", {"address": 0x4000, "element": DOUBLE, "element_size": 8, "union": True}, {})
 
 
 def at(address):
@@ -67,19 +77,31 @@ def at(address):
         (0x1010, {**POINTS_LONG, "count": 2}, True),
         (0x1018, {**POINTS_LONG, "count": 2}, False),
         # A character type reads any byte of an object Peeky placed (C lets it alias).
-        (0x1003, {"pointee": CHAR, "element_size": 1, "count": 1, "character": True}, True),
-        (0x1020, {"pointee": CHAR, "element_size": 1, "count": 1, "character": True}, False),
-        # The program's static storage, and `main`'s arguments.
+        (0x1003, CHARS, True),
+        (0x1020, CHARS, False),
+        # A global is exactly its type's extent: past it, or another type, proves nothing
+        # (review of PR #341: a whole load segment did).
         (0x8008, POINTS_LONG, True),
-        (0x9FF0, POINTS_LONG, True),
-        (0xA000, POINTS_LONG, False),
+        (0x8010, POINTS_LONG, False),
+        (0x8000, {**POINTS_LONG, "pointee": DOUBLE}, False),
+        (0x800C, CHARS, True),
+        # A C string (a literal, `main`'s arguments) proves only a character pointer,
+        # from its first byte to its NUL.
+        (0x9F00, CHARS, True),
+        (0x9F04, CHARS, True),
+        (0x9F05, CHARS, False),
+        (0x9F00, POINTS_LONG, False),
+        (0x9F00, {**CHARS, "count": 8}, False),
+        # A union's member proves nothing (which one holds a value, no declaration says);
+        # the union itself does, for its own type and a character pointer.
+        (0x4000, {**POINTS_LONG, "pointee": DOUBLE}, False),
+        (0x4000, {"pointee": "union u 8 ab", "element_size": 8, "count": 1}, True),
+        (0x4003, CHARS, True),
     ],
 )
 def test_a_pointee_is_proven_live_only_where_peeky_places_it(address, pointer, proven):
-    found = pointee_proven(
-        address, pointer, [ARR, X], statics=[(0x8000, 0x9000)], regions=[(0x9F00, 0xA000)]
-    )
-    assert found is proven
+    bases = [ARR, X, TABLE, UNION, UNION_D]
+    assert pointee_proven(address, pointer, bases, strings=[(0x9F00, 0x9F05)]) is proven
 
 
 def test_outside_an_array_says_how_far():
@@ -101,7 +123,7 @@ def test_outside_an_array_says_how_far():
     assert pointee_past(0x1030, {**POINTS_LONG, "pointee": CHAR}, [ARR]) is None
     assert pointee_past(0x1034, POINTS_LONG, [ARR]) is None
     assert pointee_past(0x3010, POINTS_LONG, [X]) is None
-    assert pointee_past(0x1000 + 8 * (4 + (1 << 20) + 1), POINTS_LONG, [ARR]) is None
+    assert pointee_past(0x1000 + 8 * (4 + 64 + 1), POINTS_LONG, [ARR]) is None
     # The nearest array by elements.
     near = ("near", {**ARR[1], "address": 0x1040}, {})
     assert pointee_past(0x1068, POINTS_LONG, [ARR, near])["selector"] == "near"
@@ -235,6 +257,95 @@ def test_a_struct_with_a_summary_is_where_its_members_are():
     assert session(10).address_from_members({}, "s", [hider, moved]) is None
     assert session(10).address_from_members({}, "s", [length]) is None
     assert session(1).address_from_members({}, "n", [hider]) is None
+
+
+def test_the_programs_variables_in_static_storage_are_its_globals_exactly():
+    def die(location, name='"table"', kind="0x00000010"):
+        attrs = {"DW_AT_name": name, "DW_AT_type": kind, "DW_AT_location": location}
+        return {"tag": "DW_TAG_variable", "attrs": attrs}
+
+    dies = {
+        1: die("(DW_OP_addr 0x100008000)"),
+        2: die("(DW_OP_fbreg -20)", '"local"'),
+        3: die("(DW_OP_const8u 0x10, DW_OP_GNU_push_tls_address)", '"tls"'),
+        4: {"tag": "DW_TAG_base_type", "attrs": {"DW_AT_name": '"long"'}},
+    }
+    assert static_variables(dies) == (("table", 0x100008000, 0x10),)
+    # Each at its slid address, exactly its type's extent (a `long[2]`).
+    graph = {1: ("base", "long", "DW_ATE_signed", 8), 0x10: ("array", "", 1, (2,), False)}
+    native = NativeSession.__new__(NativeSession)
+    native.fields, native.load_bias = graph, 0x4000
+    native.static_variables = static_variables(dies)
+    (table,) = native.static_bases()
+    assert table == (
+        "table",
+        {"address": 0x10000C000, "length": 2, "element": LONG, "element_size": 8},
+    )
+    native.load_bias = None
+    assert native.static_bases() is None
+
+
+def test_a_string_literal_is_from_the_pointer_to_its_nul(tmp_path):
+    import struct
+
+    # An ELF64 whose `.rodata` (at 0x400, file offset 0x200) holds "ab\0cd\0".
+    names = b"\0.rodata\0.shstrtab\0"
+    data = b"ab\0cd\0"
+    header = bytearray(64)
+    header[:6] = b"\x7fELF\x02\x01"
+    struct.pack_into("<Q", header, 40, 0x300)
+    struct.pack_into("<HHH", header, 58, 64, 3, 2)
+    body = bytearray(0x300 - 64)
+    body[0x200 - 64 : 0x200 - 64 + len(data)] = data
+    body[0x280 - 64 : 0x280 - 64 + len(names)] = names
+    sections = struct.pack("<IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    sections += struct.pack("<IIQQQQIIQQ", 1, 1, 2, 0x400, 0x200, len(data), 0, 0, 1, 0)
+    sections += struct.pack("<IIQQQQIIQQ", 9, 3, 0, 0, 0x280, len(names), 0, 0, 1, 0)
+    (tmp_path / "elf").write_bytes(bytes(header) + bytes(body) + sections)
+    assert string_sections(tmp_path / "elf") == ((0x400, 0x400 + len(data), 0x200),)
+    native = NativeSession.__new__(NativeSession)
+    native.binary, native.load_bias = tmp_path / "elf", 0x1000
+    assert native.literal_range(0x1401) == (0x1401, 0x1403)
+    assert native.literal_range(0x1403) == (0x1403, 0x1406)
+    assert native.literal_range(0x1406) is None
+
+
+def test_mains_argument_strings_are_read_with_their_nul():
+    assert _string_span(f'(char *) argv[1] = {at(0x7F05)} "Maya"') == (0x7F05, 0x7F0A)
+    assert _string_span(f'{at(0x7F05)} "a\\tb"') == (0x7F05, 0x7F09)
+    # Cut by LLDB's length limit: to the last byte shown.
+    assert _string_span(f'{at(0x7F05)} "abc"...') == (0x7F05, 0x7F08)
+    assert _string_span(f"(char *) argv[2] = {at(0)}") is None
+    assert _string_span(f"{at(0x7F05)} <no text>") is None
+
+
+def test_a_unions_members_are_held_but_marked():
+    graph = {
+        1: ("base", "long", "DW_ATE_signed", 8),
+        2: ("base", "double", "DW_ATE_float", 8),
+        3: (
+            "record",
+            "u",
+            "union",
+            8,
+            None,
+            (("i", 1, None, False, None, None), ("d", 2, None, False, None, None)),
+            (1, 2),
+            False,
+            False,
+            None,
+            (),
+            "u",
+            (),
+        ),
+        4: record("box", [("u", 3, 0), ("n", 1, 8)], 16),
+    }
+    native = NativeSession.__new__(NativeSession)
+    native._typed = lambda frame, steps, walked=False: (Typed(graph, 4), False)
+    found = dict(native.held_extents({"value": "box @ 0x1000", "type": "box"}, {}, "b"))
+    assert found["b.u"].get("union_object") is True and "union" not in found["b.u"]
+    assert found["b.u.i"]["union"] is True and found["b.u.d"]["union"] is True
+    assert "union" not in found["b.n"]
 
 
 def test_a_2d_arrays_rows_and_their_members_are_placed():
@@ -394,6 +505,14 @@ class Backend:
                 pointer("ps", "std::string *", f"{at(0x9300)} <no text: lldb-dap 18>", 14),
                 pointer("text", "std::string", '"local"', 15),
                 pointer("pt", "std::string *", f'{at(0x1200)} "local"', 16),
+                pointer("uu", "u", "u @ 0x1300", 22),
+                pointer("pd", "double *", at(0x1300), 23),
+                pointer("tp", "long *", at(0x2808), 24),
+                pointer("tpast", "long *", at(0x2818), 25),
+                pointer("code", "long *", at(0x2F00), 26),
+                pointer("argv", "char **", at(0x7EF0), 27),
+                pointer("arg", "char *", f'{at(0x7F06)} "aya"', 28),
+                pointer("larg", "long *", at(0x7F06), 29),
                 pointer("pn", "long *", at(0x1100), 11),
                 pointer("two", "long *", at(0x1030), 12),
                 pointer("gap", "int *", at(0x1040), 13),
@@ -409,6 +528,14 @@ class Backend:
             11: [pointer("*pn", "long", "7", 0)],
             12: [pointer("*two", "long", "99", 0)],
             13: [pointer("*gap", "int", "98", 0)],
+            22: [pointer("i", "long", "5", 0), pointer("d", "double", "2.5e-323", 0)],
+            23: [pointer("*pd", "double", "2.5e-323", 0)],
+            24: [pointer("*tp", "long", "2", 0)],
+            25: [pointer("*tpast", "long", "0", 0)],
+            26: [pointer("*code", "long", "-1", 0)],
+            27: [pointer("*argv", "char *", f'{at(0x7F00)} "prog"', 0)],
+            28: [pointer("*arg", "char", "'a'", 0)],
+            29: [pointer("*larg", "long", "97", 0)],
             16: [pointer("hider", "hider", "hider @ 0x1200", 17)],
             20: [pointer("hider", "hider", "hider @ 0x1200", 21)],
         }
@@ -433,6 +560,11 @@ class Backend:
         if operation == "evaluate" and args["expression"] == "&text":
             # lldb-dap 18: a type with a summary shows it in place of the address.
             return {"result": '(std::string *) &text = "local"', "variablesReference": 20}
+        if operation == "evaluate" and args["expression"].startswith("argv["):
+            # lldb-dap 18 names the type and the path; NULL ends the vector.
+            strings = {"argv[0]": (0x7F00, '"prog"'), "argv[1]": (0x7F05, '"Maya"')}
+            address, text = strings.get(args["expression"], (0, ""))
+            return {"result": f"(char *) {args['expression']} = {at(address)} {text}".strip()}
         raise AssertionError((operation, args))
 
 
@@ -447,6 +579,12 @@ class Runtime:
         ("dup",): {"pointee": CHAR, "element_size": 1, "count": 1},
         ("ps",): {"pointee": "struct string 32 def", "element_size": 32, "count": 1},
         ("pt",): {"pointee": "struct string 32 def", "element_size": 32, "count": 1},
+        ("pd",): {"pointee": DOUBLE, "element_size": 8, "count": 1},
+        ("tp",): POINTS_LONG,
+        ("tpast",): POINTS_LONG,
+        ("code",): POINTS_LONG,
+        ("arg",): {"pointee": CHAR, "element_size": 1, "count": 1},
+        ("larg",): POINTS_LONG,
         ("pn",): POINTS_LONG,
         ("two",): POINTS_LONG,
         ("gap",): {"pointee": "base int DW_ATE_signed 4", "element_size": 4, "count": 1},
@@ -475,6 +613,12 @@ class Runtime:
     def static_ranges(self):
         return [(0x2000, 0x3000)]
 
+    def static_bases(self):
+        return [("table", {"address": 0x2800, "length": 2, "element": LONG, "element_size": 8})]
+
+    def literal_range(self, address):
+        return (address, 0x2008) if 0x2000 <= address < 0x2008 else None
+
     def stack_pointer(self, dap, frame_id):
         from peeky.native import _stack_pointer
 
@@ -488,6 +632,10 @@ class Runtime:
         if name == "text" and address is not None:
             string = {"address": address, "element": "struct string 32 def", "element_size": 32}
             return [("text", string)]
+        if name == "uu":
+            whole = {"address": 0x1300, "element": "union u 8 ab", "element_size": 8}
+            member = {"address": 0x1300, "element": DOUBLE, "element_size": 8, "union": True}
+            return [("uu", {**whole, "union_object": True}), ("uu.d", member)]
         return []
 
     def address_from_members(self, frame, name, children):
@@ -498,7 +646,7 @@ class Runtime:
         return name in ("n", "text")
 
     def argument_vector(self, variable, frame, name):
-        return None
+        return name == "argv"
 
     def settable(self, variable, frame):
         return False
@@ -543,6 +691,12 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert "view" not in shown["lit"]
     # Where no text was read through it, only why there is none: nothing to mark.
     assert "view" not in shown["ps"]
+    # A `char *` into one of `main`'s argument strings: no mark; read through it as a
+    # `long *`, it is (review of PR #341: the vector's address plus 1 MiB proved any type).
+    assert "view" not in shown["arg"]
+    assert [a["expression"] for op, a in stopped.dap.calls if op == "evaluate"].count(
+        "argv[2]"
+    ) == 1
     # At `text`, which lldb-dap 18 places only by its members: no mark.
     assert "view" not in shown["pt"] and asked(stopped, "&text") == 1
     # After those reads, the scopes are bound for changes afresh, as after a caller's.
@@ -572,6 +726,21 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert "below the stack pointer" in expand("dang")["variables"][0]["note"]
     assert "the address of `arr[6]`, past the end of `arr`" in expand("two")["unproven_read"]
     assert "into the stack of the frames Peeky lists" in expand("gap")["unproven_read"]
+    # A global's element: no mark; two past its end, or into code: marked (review of PR
+    # #341: any address in a load segment passed).
+    assert "unproven_read" not in expand("tp")
+    assert "the address of `table[3]`, past the end of `table`" in expand("tpast")["unproven_read"]
+    assert expand("code")["unproven_read"].endswith(
+        "it points into the program's static storage, but at no global, `static` local or "
+        "string literal of its type that Peeky placed; read the global it should point at by "
+        "name"
+    )
+    # A union's member, which no declaration proves holds a value.
+    assert expand("pd")["unproven_read"].endswith(
+        "it points into the union `uu`, and no declaration says which of its members holds a "
+        "value; read `uu` by name, and the member the program last stored"
+    )
+    assert "view" in expand("larg")["variables"][0]
     # The stack pointer is asked once per stop, a local's address once.
     assert asked(stopped, "$sp") == 1 and asked(stopped, "&n") == 1
     stopped.stop_id = "next"
@@ -642,9 +811,47 @@ def test_the_locals_peeky_places_by_asking_are_bounded(stopped):
     shown = {v["name"]: v for v in call(stopped, "inspect", frame_id=1)["scopes"][0]["variables"]}
     # `dup`'s text: a `char *` may point into any local, so each is asked for, up to the
     # bound; nothing more at this stop.
-    assert len(hovered) + asked(stopped, "&n") == PLACED_HOVERS
+    assert len(hovered) + asked(stopped, "&n") + asked(stopped, "&text") == PLACED_HOVERS
+    # A local left unplaced may be where it points: the note says only that (review of PR
+    # #341: it said "no local … Peeky could place").
+    assert shown["dup"]["note"].endswith(LIMIT)
     call(stopped, "expand", handle=shown["pn"]["variablesReference"], start=0)
-    assert len(hovered) + asked(stopped, "&n") == PLACED_HOVERS
+    assert len(hovered) + asked(stopped, "&n") + asked(stopped, "&text") == PLACED_HOVERS
+
+
+LIMIT = (
+    "Peeky didn't place every local at this stop: the per-stop limit was reached; read the "
+    "local it should point at by name"
+)
+
+
+def test_a_bound_on_locals_leaves_only_the_limit_note(stopped):
+    assert unproven_text("p", {"kind": "limit", "statics": True}) == (
+        "read through `p`: Peeky can't show that `p` points at a live object, so this value may "
+        f"be left over: {LIMIT}"
+    )
+    many = [{"name": f"v{i}", "type": "long", "value": "0"} for i in range(300)]
+    # More than 256 locals, more than 64 the debugger gives no address for, or a caller's
+    # scope longer than 256 (review of PR #341: `whole` said they all came): cut short.
+    assert stopped.frame_held(many, {"id": 1})[1] is True
+    assert stopped.frame_held(many[:3], {"id": 1})[1] is False
+    stopped.runtime.unplaced_local = lambda variable, frame, name: True
+    assert stopped.frame_unplaced(many[:65], {"id": 1, "name": "f"})["cut"] is True
+    assert stopped.frame_unplaced(many[:64], {"id": 1, "name": "f"})["cut"] is False
+    stopped.dap.variables[1] = many
+    variables, whole, cut = stopped.frame_locals({"id": 1})
+    assert len(variables) == 256 and whole is True and cut is True
+    # Then what a pointer at the stop may point at is said only so, never "below the
+    # stack pointer" or "no local".
+    dang = {"name": "dang", "type": "long *", "value": at(SP - 400), "variablesReference": 7}
+    stopped.dap.variables[1] = [dang, *many]
+    stopped.runtime.unplaced_local = lambda variable, frame, name: False
+    shown = {v["name"]: v for v in call(stopped, "inspect", frame_id=1)["scopes"][0]["variables"]}
+    assert expand_note(stopped, shown["dang"]).endswith(LIMIT)
+
+
+def expand_note(worker, variable):
+    return call(worker, "expand", handle=variable["variablesReference"], start=0)["unproven_read"]
 
 
 class Stop:

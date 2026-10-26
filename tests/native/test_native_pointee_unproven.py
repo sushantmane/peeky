@@ -16,12 +16,16 @@ import pytest
 
 from peeky.cli import main
 
-SOURCE = """#include <stdio.h>
+SOURCE = """#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 struct cell { long a; long b; };
 struct holder { long *p; int n; };
+union num { long i; double d; };
+
+static long table[3] = {1, 2, 3};
 
 static long *gone(void) {
   long local[2] = {41, 42};
@@ -42,7 +46,7 @@ static long peek(const long *v, int n) {
   return s; /* PEEK */
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   long x = 7;
   long *px = &x;
   long arr[4] = {1, 2, 3, 4};
@@ -69,8 +73,18 @@ int main(void) {
   strcpy(dup, "heap");
   char *old = word();
   long total = peek(arr, 4);
+  union num un;
+  un.i = 5;
+  double *pd = &un.d;
+  long *tp = table + 1;
+  long *tpast = table + 5;
+  long *code = (long *)(uintptr_t)&main;
+  const char *arg = argc > 1 ? argv[1] : "none";
+  long *la = (long *)argv;
   printf("%ld %ld %ld %ld %s %s %s %s %d %ld %p %p %p %p\\n", *px, *pa, total, live[0], pn, row,
-         lit, dup, h.n, hc->a, (void *)two, (void *)dang, (void *)old, (void *)freed); /* MAIN */
+         lit, dup, h.n, hc->a, (void *)two, (void *)dang, (void *)old, (void *)freed);
+  printf("%ld %p %ld %p %p %s %p\\n", un.i, (void *)pd, *tp, (void *)tpast, (void *)code, arg,
+         (void *)la); /* MAIN */
   free(live);
   free(hc);
   free(dup);
@@ -140,9 +154,9 @@ def unproven(row, pointer, why, text=False):
 def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program, capsys):
     selectors = (
         "px[0],pa[0],pn,pn[0],row,lit,h,two[0],two.a,dang[0],live[0],freed[0],hc.a,hc[0],h.p[0],"
-        "dup,old"
+        "dup,old,pd[0],tp[0],tpast[0],code[0],arg,la[0]"
     )
-    result = probed(capsys, program, f"pointees.c:{line_of('MAIN')}", selectors)
+    result = probed(capsys, program, f"pointees.c:{line_of('MAIN')}", selectors, "--", "Maya")
     rows = {row["selector"]: row for row in result["rows"]}
     # A local, an array element, a `char` array's text, a 2-D array's row, a string literal
     # (the program's own image), and a struct whose pointer member shows only its address:
@@ -171,6 +185,18 @@ def test_what_is_read_through_a_pointer_is_marked_unless_peeky_places_it(program
     assert rows["dup"]["value"].endswith('"heap"'), rows
     unproven(rows["dup"], "dup", HEAP, text=True)
     unproven(rows["old"], "old", BELOW, text=True)
+    # A union's other member, which a declaration doesn't prove holds a value.
+    unproven(rows["pd[0]"], "pd", "read `un` by name, and the member the program last stored")
+    # A global's element; past its end; into the program's code (review of PR #341: any
+    # address in a load segment counted).
+    assert rows["tp[0]"]["value"] == "2" and "view" not in rows["tp[0]"], rows
+    past = "it holds the address of `table[5]`, past the end of `table`, which has 3 elements"
+    unproven(rows["tpast[0]"], "tpast", f"{past}; read `table` by name")
+    unproven(rows["code[0]"], "code", "read the global it should point at by name")
+    assert "the program's static storage, but at no global" in rows["code[0]"]["note"], rows
+    # `main`'s argument string, read through a `char *`; the vector itself as `long`s.
+    assert rows["arg"]["value"].endswith('"Maya"') and "view" not in rows["arg"], rows
+    assert rows["la[0]"]["view"] == "unproven", rows
 
     # The table marks them; the notes say why, once each.
     at = f"pointees.c:{line_of('MAIN')}"
