@@ -5601,7 +5601,7 @@ def _signal_dispositions(pid):
         try:
             fields = dict(
                 line.split(":", 1)
-                for line in Path(f"/proc/{pid}/status").read_text().splitlines()
+                for line in Path(f"/proc/{pid}/status").read_text().split("\n")
                 if ":" in line
             )
             return int(fields["SigCgt"].strip(), 16), int(fields["SigIgn"].strip(), 16)
