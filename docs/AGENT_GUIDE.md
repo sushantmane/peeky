@@ -49,8 +49,9 @@ the commands.
    proves it, never after `step --out`. Rows mark what can change `[settable]` on paths that don't
    panic or loop forever. A change the build rules out is refused before launch (exit 2; 2.3, 7).
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another; other hits only observe.
-   `--set-at LINE@HIT` changes at any line's hit, `--at`'s too; `@all`: each stop while the probe
-   runs, at most 100; `x=@before` undoes an earlier change (2.8).
+   `--set-at LINE@HIT NAME=VALUE` changes at any line's hit, `--at`'s too. Repeat it per change:
+   `--set-at 9@2 n=0 --set-at 9@5 n=0`. `@all`: each stop while the probe runs, at most 100.
+   `x=@before` undoes a change, as to skip a statement (2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can
    stop several times per pass. Read `warnings`, and each row's `stop` and `function`. A loop
    header may stop only before its loop: probe the body's first line (2.2).
@@ -72,7 +73,7 @@ the commands.
 8. **Members need `this.`** in C++ and Java (`this.head_`: 7.1, 7.3). Python dict entries are
    `d['key']` (2.1).
 9. **`continue --to LINE` doesn't skip the session's breakpoint.** A stop there comes first (exit
-   3, with a note): repeat the command (5.2).
+   3, with a note): repeat it. If a loop stops there each pass, start the session `--at LINE` (5.2).
 10. **Steps land where the code jumps:** a closing `}`, a loop header, an `if`'s line, or a caller.
     A `note` says when a step's stop is in another function or depth. Read a block's locals
     before stepping past its last statement (1.1, 5.2).
@@ -179,13 +180,11 @@ the commands.
   states and `inspect` name the stopped function. A line shared by a function and a closure or
   lambda can stop in each (Java: in one; 7.3).
 - `output_complete: false`: `output` isn't proven whole (2.6). `program_ended: true`: the program
-  ended. `--until hits` (for slow exits) adds `output_after_last_hit: true`: the program ran on
-  past its last hit.
-- `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`. A
-  failed selector shows `{"error": ...}`. `rows` holds the same, one entry per hit, phase and
-  selector. `phase` is `observed`, `after-set` (after your intervention) or `returned`. `line` is
-  the stop's actual line.
-- How each language shows structs, objects and containers: your language's page.
+  ended. `--until hits` (for slow exits) adds `output_after_last_hit: true`: it ran past its last
+  hit.
+- `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`.
+  `rows` has one per hit, phase (`observed`, `after-set`, `returned`) and selector. `line` is the
+  stop's actual line.
 - A missing selector's error lists the visible names, or the children of the value read.
   `describe` lists each function's lines and the names it can see (`scopes`; types except in
   Python). `scopes_unavailable` says why its debug information could not be read.

@@ -83,7 +83,9 @@ def test_the_short_name_note_is_said_once_per_state_directory(cli, capsys):
     assert cli(probe_result()) == 0
     again = capsys.readouterr().out
     assert note not in again and "trim_left " in again, again
-    # The SQL text says it where SQL is used: `peeky sql --help` and query tables.
+    # The SQL text says it where SQL is used: `peeky sql --help` always, and a query's
+    # table once per state directory, the same once as a probe's (twelfth evaluation,
+    # laps 6: it came under every query).
     from peeky.cli import main
 
     with pytest.raises(SystemExit):
@@ -91,7 +93,7 @@ def test_the_short_name_note_is_said_once_per_state_directory(cli, capsys):
     help_text = " ".join(capsys.readouterr().out.split())
     assert "short_function(function) = 'trim_left'" in help_text, help_text
     assert main(["queries", "run"]) == 0
-    assert note in capsys.readouterr().out
+    assert note not in capsys.readouterr().out
 
 
 def test_the_instance_note_follows_the_same_rule(cli, capsys):

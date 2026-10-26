@@ -5396,6 +5396,41 @@ def _restored(change):
     return "restored, "
 
 
+# A Rust reference to a crate's own struct or enum, as rows spell its type (`&laps::Read`).
+_CRATE_REFERENCE = re.compile(r"&(?:mut )?(?!(?:std|core|alloc)::)[A-Za-z_]\w*(?:::[A-Za-z_]\w*)+")
+
+
+def _address_only_note(result):
+    """Why a Rust row of a reference to a crate's struct shows only its address, and what
+    to capture instead, or None (twelfth evaluation, laps 2: `read &laps::Read 0x…` beside
+    a `read.car` that read). A reference parameter's struct of plain scalar fields is the
+    only one previewed through a reference (`rust_symbols.struct_view`)."""
+    if (result.get("target_identity") or {}).get("language") != "rust":
+        return None
+    selectors = [str(row.get("selector")) for row in result.get("rows", ())]
+    bare = [
+        row["selector"]
+        for row in result.get("rows", ())
+        if _CRATE_REFERENCE.fullmatch(str(row.get("type") or ""))
+        and re.fullmatch(r"0x[0-9a-fA-F]+", str(row.get("value") or ""))
+        and not any(row.get(key) for key in ("view", "note", "error", "unproven_pointer"))
+    ]
+    bare = list(dict.fromkeys(bare))
+    if not bare:
+        return None
+    field = next((s for s in selectors if s.startswith(f"{bare[0]}.")), f"{bare[0]}.<field>")
+    shown = ", ".join(f"`{name}`" for name in bare[:3]) + (" and more" if len(bare) > 3 else "")
+    return (
+        f"note: {shown} show{'s' if len(bare) == 1 else ''} only the address a reference holds: "
+        "Peeky previews a struct through a reference only for a reference parameter whose "
+        f"fields are all plain scalars; capture a field instead, as `{field}`"
+    )
+
+
+# The short reasons a Java field's row gives that hold at every stop (java._MEMBER_ROWS).
+_MEMBER_REASONS = ("final", "static")
+
+
 def _table(result, short_names=True):
     """A probe result as text; ``short_names``: with the note on short frame names
     (`_short_note`), which `peeky probe` gives once per state directory."""
@@ -5447,6 +5482,21 @@ def _table(result, short_names=True):
     ]
     left_out = len(result["rows"]) - len(kept)
     errors = repeated_visible(kept, lambda row: f"at hit {row['hit']}")
+    # A Java field's `final` or `static`, true of every row of its selector, shows on its
+    # first row only (twelfth evaluation, desks 5: on every row, after-set too). JSON keeps
+    # it on each.
+    declared, said = set(_MEMBER_REASONS), set()
+
+    def unsettable(row):
+        reason = row.get("not_settable")
+        if not reason:
+            return ""
+        if java and reason in declared:
+            if (row["selector"], reason) in said:
+                return ""
+            said.add((row["selector"], reason))
+        return f"  [not settable: {reason}]"
+
     rows = [
         (
             str(row["hit"]),
@@ -5465,7 +5515,7 @@ def _table(result, short_names=True):
             + (f"  [{row['view']}]" if row.get("view") else "")
             + ("  [stale]" if row.get("stale") else "")
             + ("  [settable]" if row.get("settable") else "")
-            + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
+            + unsettable(row)
             + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
@@ -5481,18 +5531,17 @@ def _table(result, short_names=True):
     if left_out:
         # Only whole scalars are left out (eleventh evaluation: an aggregate's equal row
         # stayed under a line that said every equal row was left out). A Java String is an
-        # object, whose equal row stays too (twelfth evaluation's preparation).
-        kept_kinds = (
-            "a number, flag or char; object rows stay, a String's too: a Java String is an "
-            "object, and an equal text may be a new String"
-            if java
-            else "a number, flag or whole text; pointer, object and preview rows stay, as "
-            "they may hide a change"
-        )
+        # object, whose equal row stays too (twelfth evaluation's preparation). Short: it
+        # came under every probe with a change (twelfth evaluation, laps 6).
+        kinds = "number, flag or char" if java else "number, flag or text"
         lines.append(
-            f"after-set: {left_out} scalar row{'s' if left_out > 1 else ''} equal to the hit's "
-            f"observed value left out ({kept_kinds}; `--json` has every row)"
+            f"after-set: {left_out} {kinds} row{'s' if left_out > 1 else ''} equal to the "
+            "observed value left out"
+            + (" (a String stays: it is an object)" if java else "")
+            + "; `--json` has all"
         )
+    if note := _address_only_note(result):
+        lines.append(note)
     if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
@@ -5518,7 +5567,11 @@ def _table(result, short_names=True):
             where = f"{where}, one of {change['alike']} on the line the debugger names alike"
         # Which of the line's breakpoint locations the stop was at, where it has several.
         stop = f", stop {change['stop']} of {change['stops']}" if change.get("stops") else ""
-        hit = f", hit {change.get('hit')}" if change.get("all") else ""
+        hit = ""
+        if change.get("all"):
+            # Its own line's count, not the probe's hits (twelfth evaluation, rainfall 3).
+            hit = f", stop {change.get('hit')} of line {at.partition('@')[0]}"
+            stop = f" at location {change['stop']} of {change['stops']}" if stop else ""
         lines.append(
             f"set {change['name']}: {change['before']} -> {change['after']}"
             + {"unchanged": ", no change", "alike": ", same text, not proven unchanged"}.get(
@@ -5536,12 +5589,14 @@ def _table(result, short_names=True):
     for (at, name), changes in more.items():
         numbers = [change.get("hit") for change in changes]
         known = [number for number in numbers if type(number) is int]
+        # Its own line's stops, as each change's line says (twelfth evaluation, rainfall 3).
+        own = at.partition("@")[0]
         span = (
             ""
             if len(known) != len(numbers)
-            else f", at hit {known[0]}"
+            else f", at stop {known[0]} of line {own}"
             if min(known) == max(known)
-            else f", at hits {min(known)} to {max(known)}"
+            else f", at stops {min(known)} to {max(known)} of line {own}"
         )
         # Changes, writes proven to change nothing, and writes of the same text not proven
         # unchanged, counted apart, as NO_STOP counts them (eleventh evaluation: 35 of 42

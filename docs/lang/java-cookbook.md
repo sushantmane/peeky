@@ -1,8 +1,11 @@
 # Peeky Cookbook: Java
 
-This cookbook covers what is different for Java. Read the [COOKBOOK](../COOKBOOK.md) first: it has
-the recipes every language shares. Each section here has the number and title of the COOKBOOK
-section it adds to. For a one-page summary of the Java rules, see [java.md](java.md).
+**[AGENT_GUIDE.md](../AGENT_GUIDE.md) and [java.md](java.md) cover most tasks.** This cookbook is
+for details, which they cite by section number.
+
+This cookbook covers what is different for Java. The [COOKBOOK](../COOKBOOK.md) has the recipes
+every language shares. Each section here has the number and title of the COOKBOOK section it adds
+to. For a one-page summary of the Java rules, see [java.md](java.md).
 
 Peeky debugs Java with java-debug, Microsoft's Java debugger. java-debug reads and changes the JVM
 through JDI, the JDK's debugger API. For these words and a few more, see
@@ -261,7 +264,8 @@ changed there, says why instead:
   ([rule](#locals-the-program-never-reads-again));
 - `[not settable: a constant javac compiles into its uses]`;
 - `[not settable: declared Object, not String]` ([rule](#the-declared-type-decides));
-- `[not settable: final]`;
+- `[not settable: final]`, or `static`: a probe's table shows it on each selector's first row
+  only, since it holds at every stop. `--json` has it on every row;
 - `[not settable: in a caller's frame]`: only the stopped frame's values change;
 - `[not settable: declared by java.lang.String (the JDK's own state)]`
   ([rule](#fields-the-jdk-declares));
@@ -269,8 +273,11 @@ changed there, says why instead:
 
 An element that Peeky can't promise either way says `[maybe settable: …]`. Then `set` checks again
 when the change is made ([rule](#arrays-the-jdk-holds)). At a line breakpoint, that is every
-element that no JDK class holds: `[maybe settable: other threads are running; set checks again]`.
-An object or array row has no mark: its type says it can't be set.
+element that no JDK class holds:
+`[maybe settable: other threads, the JVM's own included, are running; set checks again]`. A
+program with one thread of its own gets it too: the JVM runs service threads of its own, such as
+the finalizer and the signal dispatcher. An object or array row has no mark: its type says it
+can't be set.
 
 ### Change a local
 
@@ -438,7 +445,7 @@ peeky: [MUTATION_REJECTED] The debugger refused to change `ranking[1]` (Peeky ex
 ```
 
 The program's own array, such as `choice`, can be changed. But at a line breakpoint its elements
-read `[maybe settable: other threads are running; set checks again]`:
+read `[maybe settable: other threads, the JVM's own included, are running; set checks again]`:
 
 - java-debug stops only the thread that hit the breakpoint. The JVM's other threads run on.
 - One of them could put the array in a list that a JDK class holds before the change is made.

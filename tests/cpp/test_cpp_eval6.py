@@ -201,7 +201,8 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     assert main(["queries", "run"]) == 0
     text = capsys.readouterr().out
     assert "trim_left " in text and "basic_string" not in text, text
-    assert "note: function shows short frame names" in text, text
+    # Once per state directory, the probe's included (twelfth evaluation, laps 6).
+    assert "note: function shows short frame names" not in text, text
     query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'trim_left'"
     assert main(["sql", query, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["rows"] == [{"n": 2}]
@@ -213,11 +214,13 @@ def test_a_cpp_frames_signature_does_not_widen_the_table(cpp, cxx, capsys):
     assert "twice(int)" in text and by_text in text, text
     assert "basic_string" not in text, text
     # A probe's table says the note once per state directory (seventh evaluation,
-    # finding 8); a query's table always does. Its example is what short_function
-    # gives: both overloads' rows.
+    # finding 8), and so does a query's (twelfth evaluation, laps 6). Its example is
+    # what short_function gives: both overloads' rows.
     assert "note: function shows short frame names" not in text, text
-    assert main(["queries", "run"]) == 0
-    text = capsys.readouterr().out
+    from peeky import evidence
+
+    assert main(["queries", "run", "--json"]) == 0
+    text = evidence.table(json.loads(capsys.readouterr().out))
     # GCC's `::twice(int)` shows as `twice(int)`, as clang's does: the note says so.
     assert "short_function(function) = 'twice'" in text, text
     query = "SELECT count(*) AS n FROM last_run WHERE short_function(function) = 'twice'"
