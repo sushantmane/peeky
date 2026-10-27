@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from peeky import stored_values
+
 SCHEMA_VERSION = 20
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
@@ -119,7 +121,11 @@ TABLES = {
             "type": "Type as Peeky shows it: the debugger's, or as the language spells it "
             "(Rust: `usize`, `Vec<u32>`, `&rota::Engineer` and `*const T`, where LLDB says "
             "`unsigned long` and `rota::Engineer *`)",
-            "value": "Value as the debugger displays it; NULL when there is none",
+            "value": "Value as the debugger displays it, in the language's notation: a "
+            "Python string with its quotes (`'Évora'`: match it as value = '''Évora'''), a "
+            "Java array with its type (`int[3]@55 [3, 0, 7]`). text(value, language, type) "
+            "and elements(value, language) read a string and a list's elements, except "
+            "Python's. NULL when there is none",
             "num": "value as a number when it is one, else NULL (use for >, <, AVG): an exact "
             "INTEGER for an integer that fits 64 bits, else REAL. Integer division truncates "
             "(write num * 1.0 / k), and SUM fails past 64 bits (TOTAL(num) does not). A hex "
@@ -2040,6 +2046,8 @@ def _reader(path, *, snapshot=False):
     connection.create_function("object_ref", 1, bounded(_object_ref), deterministic=True)
     connection.create_function("set_outcome", 4, bounded(_set_outcome), deterministic=True)
     connection.create_function("address", 1, bounded(_address), deterministic=True)
+    connection.create_function("elements", 2, bounded(stored_values.elements), deterministic=True)
+    connection.create_function("text", 3, bounded(stored_values.text), deterministic=True)
     connection.create_function(
         "difference_position", 2, bounded(_difference_position), deterministic=True
     )
@@ -2150,6 +2158,25 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
                 f"{', '.join(_TABLE_FUNCTIONS)}; this Python's sqlite3 module has SQLite "
                 f"{sqlite3.sqlite_version}, so use those, or a Python with SQLite 3.41 or newer)"
             )
+        elif "malformed JSON" in message:
+            message += (
+                " (a stored value is the debugger's text, not JSON: elements(value, language) "
+                "gives a list's elements as JSON, COOKBOOK 4.9)"
+            )
+        elif re.search(r"wrong number of arguments to function (?:elements|text)\(", message):
+            message += (
+                " (write elements(value, language) and text(value, language, type): the "
+                "evidence view has those columns)"
+            )
+        elif (
+            (column := re.search(r"ambiguous column name: (?:\w+\.)?(\w+)", message))
+            and column[1].lower() in _JSON_EACH_COLUMNS
+            and re.search(r"\bjson_(?:each|tree)\b", sql, re.I)
+        ):
+            message += (
+                f" (json_each has its own {column[1]} column: alias the table, as in FROM "
+                f"evidence v, and write v.{column[1]})"
+            )
         elif "ambiguous column name" in message:
             message += (
                 " (the evidence and last_run views already carry their run's columns: "
@@ -2171,6 +2198,8 @@ def query(path, sql, params=None, *, limit=DEFAULT_ROWS, seconds=QUERY_SECONDS):
     return shaped
 
 
+# The columns json_each and json_tree give each element.
+_JSON_EACH_COLUMNS = ("key", "value", "type", "atom", "id", "parent", "fullkey", "path")
 _PAIRS = ("compare", "diff", "outputs")
 
 
@@ -3562,6 +3591,20 @@ def schema(path):
             "minus a base, the same element's address in each run (COOKBOOK 4.8). From 2^63 on "
             "it is the two's complement, a negative INTEGER: printf('0x%x', address(value)) "
             "gives its hex back (and 0x0 for NULL)",
+            "elements(value, language)": "A Java, C, C++ or Rust list's or array's elements "
+            "as a JSON array, for json_each: `int[3]@55 [3, 0, 7]` gives `[3, 0, 7]` "
+            "(COOKBOOK 4.9). language is the run's (evidence.language). Numbers, strings, "
+            "chars, booleans, null and nested lists only; NULL unless Peeky reads every "
+            "element exactly: a preview cut short (`…`, `...`) or holding an object, a struct "
+            "or a pointer gives NULL, and so does any Python value (see text)",
+            "text(value, language, type)": "A Java, C, C++ or Rust string's or char's text "
+            "without its quotes and escapes, by the row's language and type: a C++ "
+            'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a Java char its '
+            "character. NULL for other values, and where Peeky can't decode the text exactly: "
+            "cut short, or bytes that are no text (`\\xff`). NULL for every Python value: "
+            "debugpy names a type by its __class__ and shows a value by its own __repr__, and "
+            "a class can set them to `str` and `'Évora'`. Match Python's text as stored: "
+            "value = '''Évora'''",
         },
         "examples": list(EXAMPLES),
         "rules": [
