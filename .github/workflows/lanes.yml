@@ -1,0 +1,22 @@
+name: Linux lanes
+
+# Every lane of scripts/ci_linux/run_lanes.sh (quality, unit, integration, C, C++ with clang and
+# GCC, LLVM 18 and 20, Rust, GDB, Java and the wheel) in the CI image, as a laptop runs them.
+# Buildkite runs this workflow on its hosted agents through its GitHub Actions compatibility,
+# while GitHub Actions is paused by the account's billing limit.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lanes:
+    name: every Linux lane in Docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: scripts/ci_linux/docker_lanes.sh

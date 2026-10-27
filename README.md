@@ -264,10 +264,11 @@ covers and its known gaps. Twelve rounds of live agent evaluation shaped it
 
 - CI covers Linux, with Python 3.11 and 3.13 and a separate Java 17 lane. macOS is used for local
   development, but isn't in the CI matrix yet.
-- GitHub Actions is paused by the account's billing limit. Meanwhile, Buildkite's free hosted
-  Linux agents run the quality, unit and integration tests and the 14 Linux lanes
-  (`scripts/ci_linux/run_lanes.sh`) on every push ([.buildkite/pipeline.yml](.buildkite/pipeline.yml)).
-  Each change also passes those lanes in Docker locally, with the results in the pull request.
+- GitHub Actions is paused by the account's billing limit. Meanwhile, Buildkite runs the same
+  workflow files on its free hosted Linux agents, through its GitHub Actions compatibility. One of
+  them, [lanes.yml](.github/workflows/lanes.yml), runs every Linux lane in Docker
+  (`scripts/ci_linux/docker_lanes.sh`), as a laptop does. Each change also passes those lanes
+  locally, with the results in the pull request.
 - Required CI runs parallel quality, unit, integration and packaging lanes, each with a
   four-minute cutoff.
 - The target is under five minutes from jobs starting to required checks completing. Hosted-runner

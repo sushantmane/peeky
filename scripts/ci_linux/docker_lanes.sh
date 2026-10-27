@@ -1,5 +1,6 @@
 #!/bin/bash
-# Every Linux lane, as on a laptop: build the CI image, then run scripts/ci_linux/run_lanes.sh in it.
+# Every Linux lane, as on a laptop: build the CI image, then run run_lanes.sh in it.
+# Run from the repository root. Needs Docker that allows ptrace in a container.
 set -euo pipefail
 echo "--- build the CI image"
 docker build --progress=plain -t peeky-ci-linux scripts/ci_linux
