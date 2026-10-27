@@ -79,6 +79,11 @@ Every message is read before deciding. These are fatal instead:
 - Preparation, for Rust, C, C++ and Java, gets only the time that remains. So does every DAP launch
   step: initialize, the launch write, the `initialized` event, breakpoints, `configurationDone`
   and the launch response.
+- So do the launch's questions to LLDB: where each breakpoint was placed, and which lines are loop
+  headers. No step has a shorter wait of its own, save the launch write's 5 s. A program slow to
+  start on a loaded machine has the whole deadline, and a slow answer never drops a note.
+- At a stop, its frame is read with the 15 s that `inspect` has. A stall shorter than that keeps
+  the stop's line, function and `stop` number.
 - A compile failure, and `close`, remove the workspace and its parent. A removal that fails is
   raised, or attached to the original error, never ignored.
 
