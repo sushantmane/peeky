@@ -27,6 +27,7 @@ import time
 from dataclasses import asdict, replace
 from pathlib import Path
 
+from peeky import add_version
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION
@@ -124,6 +125,61 @@ def _rustup(tool):
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
+_ON_PATH_SAID = set()
+# The tools rustup's proxies stand for, by the variable that names them.
+_RUSTUP_PROXIES = {"PEEKY_RUST_CARGO": "cargo", "PEEKY_RUST_RUSTC": "rustc"}
+
+
+def _env_tool(variable):
+    """A PEEKY_* tool variable's program. A bare name, such as `gcc`, is looked up on PATH
+    as a shell would, and Peeky says which file it found; any other value is a path."""
+    value = os.environ.get(variable)
+    if not value or "/" in value:
+        return value
+    found = shutil.which(value)
+    if not found:
+        raise FileNotFoundError(
+            f"{variable}={value}: no program named {value} on PATH; install it, or set "
+            f"{variable} to its full path"
+        )
+    shown = Path(found).absolute()
+    path = str(shown.resolve())
+    linked = any(part.is_symlink() for part in (shown, *shown.parents))
+    said = f"using {shown} (a link to {path})" if linked else f"using {path}"
+    said += f", the first {value} on PATH"
+    if _RUSTUP_PROXIES.get(variable) == value and _is_rustup(shown):
+        # `cargo` or `rustc` that is rustup's proxy runs whichever toolchain rustup picks;
+        # Peeky builds with its pinned one, whose real binaries its checks require. Any
+        # other name (`rustfmt`, `rustup`) stays as found, for the checks to refuse.
+        tool = _RUSTUP_PROXIES[variable]
+        path = _rustup(tool)
+        if not path:
+            raise FileNotFoundError(
+                f"{variable}={value}: {shown} is rustup's proxy, and rustup gave no "
+                f"{RUST_VERSION} {tool}; run `rustup toolchain install {RUST_VERSION}`, or set "
+                f"{variable} to a toolchain's {tool}"
+            )
+        said = (
+            f"using {path}, rustup's {RUST_VERSION} {tool}: the first {value} on PATH, "
+            f"{shown}, is rustup's proxy"
+        )
+    if (variable, value) not in _ON_PATH_SAID:
+        _ON_PATH_SAID.add((variable, value))
+        print(f"peeky: {variable}={value}: {said}", file=sys.stderr, flush=True)
+    return path
+
+
+def _is_rustup(path):
+    """Whether ``path`` is rustup itself: a proxy is a link to it, or a hard link."""
+    if path.resolve().name in ("rustup", "rustup-init"):
+        return True
+    beside = path.parent / "rustup"
+    try:
+        return beside.is_file() and os.path.samefile(path, beside)
+    except OSError:
+        return False
+
+
 def _required(label, value):
     if not value:
         raise ValueError(f"Cannot find {label}; set it with --config or PEEKY_* variables")
@@ -135,17 +191,19 @@ def rust_tools():
     env = os.environ.get
     darwin = sys.platform == "darwin"
     tools = {
-        "cargo": env("PEEKY_RUST_CARGO") or _rustup("cargo"),
-        "rustc": env("PEEKY_RUST_RUSTC") or _rustup("rustc"),
-        "adapter": env("PEEKY_RUST_DAP") or _xcrun("lldb-dap") or _which("lldb-dap", "lldb-dap-18"),
-        "dwarfdump": env("PEEKY_RUST_DWARFDUMP")
+        "cargo": _env_tool("PEEKY_RUST_CARGO") or _rustup("cargo"),
+        "rustc": _env_tool("PEEKY_RUST_RUSTC") or _rustup("rustc"),
+        "adapter": _env_tool("PEEKY_RUST_DAP")
+        or _xcrun("lldb-dap")
+        or _which("lldb-dap", "lldb-dap-18"),
+        "dwarfdump": _env_tool("PEEKY_RUST_DWARFDUMP")
         or ("/usr/bin/dwarfdump" if darwin else _which("llvm-dwarfdump", "llvm-dwarfdump-18")),
-        "linker": env("PEEKY_RUST_LINKER")
+        "linker": _env_tool("PEEKY_RUST_LINKER")
         or ("/usr/bin/clang" if darwin else _which("clang", "clang-18")),
     }
     result = {name: _required(f"Rust {name}", value) for name, value in tools.items()}
     if darwin:
-        result["dsymutil"] = env("PEEKY_RUST_DSYMUTIL") or "/usr/bin/dsymutil"
+        result["dsymutil"] = _env_tool("PEEKY_RUST_DSYMUTIL") or "/usr/bin/dsymutil"
     if env("PEEKY_RUST_SYSROOT"):
         result["sysroot"] = env("PEEKY_RUST_SYSROOT")
     return result
@@ -153,20 +211,20 @@ def rust_tools():
 
 def native_tools(language):
     env = os.environ.get
-    compiler = env("PEEKY_NATIVE_CXX" if language == "cpp" else "PEEKY_NATIVE_CC")
+    compiler = _env_tool("PEEKY_NATIVE_CXX" if language == "cpp" else "PEEKY_NATIVE_CC")
     name = "clang++" if language == "cpp" else "clang"
     result = {
         "compiler": compiler or _xcrun(name) or _which(name, name + "-18"),
-        "adapter": env("PEEKY_NATIVE_DAP")
+        "adapter": _env_tool("PEEKY_NATIVE_DAP")
         or _xcrun("lldb-dap")
         or _which("lldb-dap", "lldb-dap-18"),
-        "dwarfdump": env("PEEKY_NATIVE_DWARFDUMP")
+        "dwarfdump": _env_tool("PEEKY_NATIVE_DWARFDUMP")
         or _xcrun("llvm-dwarfdump")
         or _which("llvm-dwarfdump", "llvm-dwarfdump-18", "dwarfdump"),
     }
     result = {key: _required(f"native {key}", value) for key, value in result.items()}
     if sys.platform == "darwin":
-        result["dsymutil"] = env("PEEKY_NATIVE_DSYMUTIL") or _xcrun("dsymutil")
+        result["dsymutil"] = _env_tool("PEEKY_NATIVE_DSYMUTIL") or _xcrun("dsymutil")
         sdk = subprocess.run(
             ["xcrun", "--show-sdk-path"], capture_output=True, text=True, timeout=20, check=False
         )
@@ -181,8 +239,11 @@ def _cargo_root(path):
     return None
 
 
-def resolve(target, at=None, config=None):
-    """Return (root, program, line, language, trusted target config dict or None)."""
+def resolve(target, at=None, config=None, *, tools=True):
+    """Return (root, program, line, language, trusted target config dict or None).
+
+    ``tools=False`` for a run on a worker: its configuration names the tools, so this
+    host's are neither looked for nor named (the config has no tool paths then)."""
     path = Path(target).resolve(strict=True)
     program, line = None, None
     if at:
@@ -196,7 +257,7 @@ def resolve(target, at=None, config=None):
             program, line = location, int(number)
         else:
             program = text
-    root, program, line, language, data = _resolve(path, program, line, config)
+    root, program, line, language, data = _resolve(path, program, line, config, tools)
     program = _confined(root, program)
     if language == "python" and program:
         # A Python candidate runs a copy whose files keep their stored names, and the
@@ -230,7 +291,7 @@ def _stored_name(root, program):
     return Path(*parts).as_posix()
 
 
-def _resolve(path, program, line, config):
+def _resolve(path, program, line, config, tools=True):
     if config is not None:
         data = json.loads(Path(config).read_text())
         if not isinstance(data, dict):
@@ -276,9 +337,9 @@ def _resolve(path, program, line, config):
             raise ValueError("Rust targets support at most 64 source files; use --config")
         if path.is_file() and path.suffix == ".rs":
             program = program or path.relative_to(crate).as_posix()
-        data = {"sources": sources, "tests": tests, **rust_tools()}
+        data = {"sources": sources, "tests": tests, **(rust_tools() if tools else {})}
         return crate, program or binary, line, "rust", data
-    if path.is_dir() and (native := _native_program(path, program)):
+    if path.is_dir() and (native := _native_program(path, program, tools)):
         # A directory names its program by --at (`ring.cpp:16`), or holds exactly one.
         path, program = native
     if path.is_file() and path.suffix in (".c", ".cpp", ".cc", ".cxx"):
@@ -286,12 +347,16 @@ def _resolve(path, program, line, config):
         suffixes = (".c",) if language == "c" else (".cpp", ".cc", ".cxx")
         headers = (".h",) if language == "c" else (".h", ".hpp", ".hh", ".hxx")
         root = path.parent
-        tools = native_tools(language)
+        headers = tuple(sorted(p.name for p in root.iterdir() if p.suffix in headers))
+        if not tools:
+            # The worker's configuration names the sources it builds, and its tools.
+            return root, program or path.name, line, language, {"language": language}
+        found = native_tools(language)
         data = {
             "language": language,
-            "sources": _native_sources(root, path.name, suffixes, tools, language),
-            "headers": tuple(sorted(p.name for p in root.iterdir() if p.suffix in headers)),
-            **tools,
+            "sources": _native_sources(root, path.name, suffixes, found, language),
+            "headers": headers,
+            **found,
         }
         return root, program or path.name, line, language, data
     if (
@@ -318,7 +383,7 @@ _JAVA_NEEDS_CONFIG = (
 )
 
 
-def _native_program(directory, program):
+def _native_program(directory, program, tools=True):
     """(file, program) for a C/C++ program in ``directory``, or None.
 
     `--at ring.cpp[:16]` names it; with only a line (or nothing), the directory must
@@ -337,24 +402,31 @@ def _native_program(directory, program):
         if not candidate.is_relative_to(directory) or not candidate.is_file():
             raise ValueError(f"No C/C++ file {program} inside {directory}")
         return candidate, candidate.name
-    mains = sorted(
+    files = sorted(
         item.name
         for item in directory.iterdir()
-        if item.suffix in _NATIVE_SUFFIXES
-        and item.is_file()
-        and item.resolve().parent == directory
-        and _MAIN.search(item.read_bytes()[:4_000_000])
-    )[:20]
+        if item.suffix in _NATIVE_SUFFIXES and item.is_file() and item.resolve().parent == directory
+    )
+    if not tools:
+        # A run on a worker runs no compiler here, and the text alone can't tell a main
+        # in an inactive #if branch from one a macro makes: only a sole file is the program.
+        if len(files) > 1:
+            listed = ", ".join(files[:20]) + (f" and {len(files) - 20} more" if files[20:] else "")
+            raise ValueError(
+                f"Name the program with --at FILE:LINE, e.g. --at {files[0]}:<line>: this "
+                f"directory holds {listed}, and a run on a worker runs no compiler on this "
+                "host to tell which defines main"
+            )
+        return ((directory / files[0]).resolve(), files[0]) if files else None
+    mains = [name for name in files if _MAIN.search((directory / name).read_bytes()[:4_000_000])]
+    mains = mains[:20]
     if len(mains) > 1:
         # As for a file target: the preprocessor settles which really define main.
+        languages = {name: "c" if name.endswith(".c") else "cpp" for name in mains}
         mains = [
             name
             for name in mains
-            if _defines_main(
-                directory / name,
-                native_tools(language := "c" if name.endswith(".c") else "cpp"),
-                language,
-            )
+            if _defines_main(directory / name, native_tools(languages[name]), languages[name])
         ]
     if len(mains) > 1:
         raise ValueError(
@@ -1115,7 +1187,9 @@ def _probe_request(args):
     `peeky probe`'s arguments."""
     if args.label is not None and len(args.label) > 200:
         raise ValueError("--label is at most 200 characters")
-    root, program, line, language, data = resolve(args.target, args.at, args.config)
+    root, program, line, language, data = resolve(
+        args.target, args.at, args.config, tools=args.worker is None
+    )
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
     edit, original = _probe_edit(args, root, program, line, language)
@@ -3043,7 +3117,9 @@ def _stop_worker(process):
 
 
 def _start(args):
-    root, program, line, language, data = resolve(args.target, args.at, args.config)
+    root, program, line, language, data = resolve(
+        args.target, args.at, args.config, tools=args.worker is None
+    )
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
     _seconds(args.timeout)
@@ -3831,6 +3907,7 @@ def main(argv=None, _job=False, _edits=None):
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
     parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
+    add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
 
     def edit_options(sub):

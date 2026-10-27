@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from unicodedata import is_normalized
 
+from peeky import add_version
 from peeky.adapters import PythonAdapter
 from peeky.errors import Refused, UnplacedStop, classify
 from peeky.identifiers import invisible, is_name, name_end, twin_hint
@@ -6193,6 +6194,7 @@ def main(argv=None):
         "change locals, run to completion and report. Example: peeky-probe --root examples "
         "--at pagination_bug.py:7 --capture page,page_size --set page=0",
     )
+    add_version(parser)
     parser.add_argument("--root", default=".", help="Source root containing the program")
     parser.add_argument("--at", required=True, help="Probe location <path>:<line>")
     parser.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c")
