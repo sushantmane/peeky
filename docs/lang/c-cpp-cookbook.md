@@ -20,6 +20,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Which element's address a pointer holds](#which-elements-address-a-pointer-holds)
   - [A pointer one past an array's end](#a-pointer-one-past-an-arrays-end)
   - [How far a pointer is from a pointer parameter](#how-far-a-pointer-is-from-a-pointer-parameter)
+  - [A value read at another pointer's address](#a-value-read-at-another-pointers-address)
   - [Read a C++ map or set](#read-a-c-map-or-set)
 - [2.2 Every Iteration of a Loop](#22-every-iteration-of-a-loop)
   - [Loop headers in a GCC build](#loop-headers-in-a-gcc-build)
@@ -383,6 +384,9 @@ names no element, and Peeky reads nothing there. A row says it only where all of
 - Their addresses are a whole number of elements apart, at most 2^20 of them. Pointers further
   apart, such as one into the stack and one into the heap, say nothing.
 - A pointer that is before the base says so: `[level - 2 by address; same array not proven]`.
+- A pointer at the base's own address says ``[same address as `level`]``. An equal address claims
+  nothing about any array, so nothing is doubted. With both one past an array's end, the row adds
+  `at the address one past queue's end`.
 
 Every pointer of one type is counted from one base. It is the first of them that is a parameter
 of the function, such as `level`, else the first you capture. The base itself says nothing. A
@@ -392,6 +396,40 @@ pointer at an element's address of a captured array says that instead
 `--json` rows have `offset_from`, such as `{"selector": "level", "offset": 2}`. The store keeps
 it in `offset_from` and `element_offset`, apart from `at_element_of`, so SQL never takes one for
 the other ([4.8](#offsets-from-a-pointer-in-each-run)).
+
+### A value read at another pointer's address
+
+A value read straight through a pointer names the other captured pointers of its type that hold
+the same address. At `peak`'s first pass, `p`, `top` and `level` are equal:
+
+```sh
+peeky probe levels.c --at levels.c:8 --capture 'top,p,level,p[0]' --hits 1 -- 1 5 5 2
+```
+
+```
+hit  phase     line  function  selector  type         value
+1    observed  8     peak      top       const int *  0x000000016b30f220  [same address as `level`]
+1    observed  8     peak      p         const int *  0x000000016b30f220  [same address as `level`]
+1    observed  8     peak      level     const int *  0x000000016b30f220
+1    observed  8     peak      p[0]      const int    1  [read through `p`, which holds the same address as `top` and `level`]
+```
+
+It is an address fact, as above. Peeky can't know how many elements the program still counts, so
+it never calls a value left over. Where a program keeps a pointer one past its last element in
+use, a value read at that pointer's address is not one of them. Capture both pointers to see it.
+
+- It is said of `p[0]`, `node.qty` and `node[0].qty`, read at the pointer's own address.
+- It names the nearest captured pointer the value is read through. `node.next.qty` says it of
+  `node.next` where you capture `node.next` too, never of `node`.
+- It isn't said through a pointer you didn't capture: with `Item **pp`, `pp[0].qty` says it only
+  where `pp[0]` is captured. Nor is it said at another element, as in `p[1]`.
+- Both pointers are read at one stop, in one frame: one probe hit, or one `session get`. They
+  point at the same type, and neither is null.
+- `session get p top` says it of the members it lists under each pointer too. Only the pointers
+  you name count.
+
+`--json` rows, and `session get`'s children, have `read_through`, such as `{"selector": "p", "same_address_as": ["top",
+"level"]}`, with at most three names. The store doesn't keep it.
 
 ### Read a C++ map or set
 
@@ -731,6 +769,12 @@ status: completed  hits: 1  seconds: 0.745
 output:
   PAGE:[10, 20, 30]
 ```
+
+On Linux with LLVM 18, the output is labelled `output so far (the program ended, but its output
+may still have been arriving):`. A last line says that the debugger sent more text. Both are
+true: lldb-dap 18 crashes as Peeky closes the session (`free(): invalid pointer`). So Peeky can't
+prove that it sent all of the program's output. LLVM 20's lldb-dap ends cleanly, and the label is
+`output:`.
 
 #### Where and when to change
 

@@ -118,11 +118,16 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   union's member is never proven, only the union. The pointer's own row is its address, unmarked, but a `char *`'s
   text is marked. `queries diff` ranks such values as qualified.
 - Where the array is a pointer, such as a parameter, a pointer says how far it is from it by
-  address alone: `[level + 6 by address; same array not proven]`. It names no element
+  address alone: `[level + 6 by address; same array not proven]`. It names no element. At the
+  same address, it says ``[same address as `level`]``
   ([C and C++ 2.1](c-cpp-cookbook.md#how-far-a-pointer-is-from-a-pointer-parameter)).
+- A value read straight through a pointer, such as `p[0]` or `node.qty`, names the other captured
+  pointers of its type at that address: ``[read through `p`, which holds the same address as `top`]``.
+  Peeky can't know which elements the program still counts, so it never calls a value left over
+  ([C and C++ 2.1](c-cpp-cookbook.md#a-value-read-at-another-pointers-address)).
 - `--json` rows and the store give `at_element_of` and its element's index, or `offset_from` and
   its offset, in columns of their own. Pointer and array rows give `element_size`, the bytes of
-  one element.
+  one element. `--json` rows also give `read_through`.
 - `address(value)` reads that address as an integer. To see which element's address a pointer holds
   in another run, join the runs on it minus a base each run has
   ([4.8](../COOKBOOK.md#48-compare-addresses-across-runs)).

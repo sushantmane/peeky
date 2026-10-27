@@ -5276,9 +5276,10 @@ class NativeSession:
         """What a C or C++ value's address can tell (#302), from the build's debug
         information (``_typed`` of ``steps`` in ``frame``) and the debugger's own address
         of the value (``own_address``). A pointer: {"pointee": the type it points at,
-        "element_size": that type's size}, and "parameter": true for a root that is only
-        ever a parameter of the frame's function (the array a caller passed, which a
-        pointer's offset is counted from first). An array of a constant length: {"address",
+        "element_size": that type's size}, "indirect": true where that type is a pointer
+        too, and "parameter": true for a root that is only ever a parameter of the frame's
+        function (the array a caller passed, which a pointer's offset is counted from
+        first). An array of a constant length: {"address",
         "length", "element": its elements' type, "element_size"}; another object (a
         struct, a scalar): the same without "length". A type is its offset in the debug
         information under typedefs and qualifiers, so two are the same type only within
@@ -5297,6 +5298,9 @@ class NativeSession:
             if pointee is None or size is None:
                 return None
             found = {"pointee": pointee, "element_size": size}
+            if target.kind() == "pointer":
+                # What it points at is a pointer: `pp[0].x` reads through that one too.
+                found["indirect"] = True
             if len(steps) == 1 and self._storages(frame, {"name": steps[0]}) == {"parameter"}:
                 found["parameter"] = True
             return found
