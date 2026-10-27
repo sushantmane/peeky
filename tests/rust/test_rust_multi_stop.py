@@ -5,6 +5,8 @@ pass, and `--hits`/`--set-hit` counted stops where the agent counted passes."""
 
 import json
 import os
+import signal
+import threading
 
 import pytest
 
@@ -125,6 +127,57 @@ def test_a_for_header_has_two_locations_both_before_the_loop(movavg, capsys):
     result = probe(movavg, capsys, at("PUSH"), "--hits", "all")
     assert result["hits"] == 4 and not per_pass(result)
     assert not any("stop" in row for row in result["rows"])
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize("stall", ["launch", "stop"])
+def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
+    movavg, capsys, monkeypatch, stall
+):
+    # #356: a loaded machine can stall the debugger for seconds. Peeky gave it 5 s to say
+    # where the breakpoint's locations are at launch, and 2 s for the stop's frame, then
+    # left out the loop note, or each hit's stop, without a word. Here lldb-dap is frozen
+    # (SIGSTOP) past each of those waits: everything else still had time.
+    from peeky.dap import DAP
+
+    timers = []
+
+    def resume(pid):
+        try:
+            os.kill(pid, signal.SIGCONT)
+        except ProcessLookupError:
+            pass
+
+    def freeze(dap, seconds):
+        os.kill(dap.process.pid, signal.SIGSTOP)
+        timers.append(threading.Timer(seconds, resume, (dap.process.pid,)))
+        timers[-1].start()
+
+    accept, send = DAP._accept, DAP.send
+
+    def accepted(self, body):
+        if stall == "stop" and not timers and isinstance(body, dict):
+            if body.get("type") == "event" and body.get("event") == "stopped":
+                freeze(self, 2.5)
+        return accept(self, body)
+
+    def sent(self, command, arguments=None, *args, **kwargs):
+        text = (arguments or {}).get("expression", "") if command == "evaluate" else ""
+        if stall == "launch" and not timers and text.startswith("`breakpoint list"):
+            freeze(self, 5.5)
+        return send(self, command, arguments, *args, **kwargs)
+
+    monkeypatch.setattr(DAP, "_accept", accepted)
+    monkeypatch.setattr(DAP, "send", sent)
+    try:
+        result = probe(movavg, capsys, at("FOR"), "--hits", "all")
+    finally:
+        for timer in timers:
+            timer.join()
+    assert len(timers) == 1
+    assert result["hits"] == 2 and not per_pass(result)
+    assert [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
+    assert [(row["stop"], row["stops"]) for row in result["rows"]] == [(1, 2), (2, 2)]
 
 
 SHAPES = """#[inline(never)]
