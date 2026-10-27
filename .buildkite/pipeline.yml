@@ -1,11 +1,11 @@
 # Buildkite: CI while GitHub Actions is paused by the account's billing limit.
 #
-# Every push runs the quick checks on a Buildkite hosted Linux agent. The free plan has only the
-# small size (2 vCPU, 4 GB) and 2,000 vCPU minutes a month; these checks take about 10 minutes.
-#
-# The full lanes (scripts/ci_linux/run_lanes.sh: C, C++, Rust, GDB, Java and the wheel) would take
-# an estimated 2 hours on that size, so they run only when asked: start a build with
-# PEEKY_FULL_LANES=1, or from a schedule.
+# Both steps run on every build, in parallel, on Buildkite hosted Linux agents. The free plan has
+# only the small size (2 vCPU, 4 GB) and 2,000 vCPU minutes a month.
+# - quick: quality, unit and integration, about 10 minutes.
+# - full: every Linux lane (scripts/ci_linux/run_lanes.sh: C, C++, Rust, GDB, Java and the wheel),
+#   an estimated 2 hours on that size, so the free minutes cover only a few builds a month.
+#   To save minutes, add `if: build.env("PEEKY_FULL_LANES") == "1"` to it.
 steps:
   - label: ":python: quality, unit and integration"
     key: quick
@@ -14,6 +14,5 @@ steps:
 
   - label: ":docker: full Linux lanes"
     key: full
-    if: build.env("PEEKY_FULL_LANES") == "1" || build.source == "schedule"
-    timeout_in_minutes: 240
+    timeout_in_minutes: 300
     command: .buildkite/full.sh
