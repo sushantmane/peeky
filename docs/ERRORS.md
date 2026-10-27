@@ -1,4 +1,4 @@
-# Error codes (protocol 5)
+# Error codes (protocol 6)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -145,8 +145,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 4, this client 5`,
-  or, from the worker, `Client speaks protocol 4, this worker 5`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 5, this client 6`,
+  or, from the worker, `Client speaks protocol 5, this worker 6`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -489,4 +489,8 @@ HTTP response carries `X-Peeky-Protocol: 5`.
 - **Protocol 5** withholds what a C or C++ pointer one past an array's end points at. The
   worker's values give `past_end`, and a protocol 4 worker would read `end[0]` there as a value
   ([C and C++ 2.1](lang/c-cpp-cookbook.md#a-pointer-one-past-an-arrays-end)).
+- **Protocol 6** marks what is read through a C or C++ pointer `unproven`, with why, where Peeky
+  can't show the pointer points at a live object. The worker's values give `unproven_read`. A
+  protocol 5 worker shows such a value with no mark
+  ([C and C++ 2.1](lang/c-cpp-cookbook.md#read-through-a-pointer)).
 - A client and a worker of different protocols refuse each other before anything runs.

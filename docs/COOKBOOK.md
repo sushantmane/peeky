@@ -80,7 +80,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [3.4 One Row per Hit](#34-one-row-per-hit): `queries wide`: a row per hit, a column per selector
    - [3.5 Joining Two Runs by a Value](#35-joining-two-runs-by-a-value): `queries join`: pair two runs' hits by a value
 4. [SQL over Saved Runs](#4-sql-over-saved-runs): your own SQL over saved runs
-   - [4.1 What Is in the Store?](#41-what-is-in-the-store): tables, views and SQL functions (`no_addresses`, `object_ref`, `address`)
+   - [4.1 What Is in the Store?](#41-what-is-in-the-store): tables, views and SQL functions (`no_addresses`, `object_ref`, `address`, `elements`, `text`)
    - [4.2 The Newest Run](#42-the-newest-run): `last_run`
    - [4.3 Numeric Filters](#43-numeric-filters): `num`: numbers, not text
    - [4.4 Values Seen Across All Runs](#44-values-seen-across-all-runs): `queries values`, and counts across runs
@@ -88,6 +88,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [4.6 Same Object, or a Copy? (Java, Python)](#46-same-object-or-a-copy-java-python): Java object numbers and Python identities
    - [4.7 C++ References and Pointers in SQL](#47-c-references-and-pointers-in-sql): addresses in C++ references and pointers
    - [4.8 Compare Addresses Across Runs](#48-compare-addresses-across-runs): `address(value)`, and offsets from a base each run has
+   - [4.9 A List's Elements and a String's Text](#49-a-lists-elements-and-a-strings-text): `elements(value, language)` and `text(value, language, type)`
 5. [Step-by-Step Sessions](#5-step-by-step-sessions): several looks at one stop
    - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish): `start`, `inspect`, `get`, `set`, `close`; caller frames
    - [5.2 Stepping and Running to a Line](#52-stepping-and-running-to-a-line): `step`, its notes, `continue --to`, `--count`, `--hit`
@@ -1875,7 +1876,8 @@ element 6 in one run and at element 4 in the other.
 note says `qualified (run a: note, run b: note): not evidence by itself`.
 
 - Examples are a C local's leftovers on a `do` body's first line, or a moved Rust local's bytes
-  (`stale`).
+  (`stale`). So is a C or C++ value read through a pointer that Peeky can't show points at a
+  live object (`unproven`: [C and C++ 2.1](lang/c-cpp-cookbook.md#when-what-a-pointer-points-at-is-unproven)).
 - Two runs' leftovers can differ because of anything that touched the stack before. So such a row is
   not a divergence of the program.
 - Whatever else the row says, its note says the value is qualified, and the row ranks here:
@@ -2534,6 +2536,8 @@ The program's output is not in `evidence`. Read it from `runs.output`.
 | `no_addresses(value, language)` | The same, and it also masks Java object numbers in Java runs. `evidence` has `language`. |
 | `object_ref(value)` | The Java object a value is, such as `Balance$Worker@100`. Within one run, equal means the same object. |
 | `address(value)` | The first `0x` token in the value, as an integer, to compare addresses across runs ([4.8](#48-compare-addresses-across-runs)). Call it on a pointer's own selector. NULL where there is none, or it is zero. |
+| `elements(value, language)` | A Java, C, C++ or Rust list's or array's elements as a JSON array, for `json_each` ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL unless Peeky reads every element exactly. |
+| `text(value, language, type)` | A Java, C, C++ or Rust string's text without its quotes and escapes ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL for other values, and for every Python value. |
 
 `object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element
 ([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)). Python records which
@@ -2730,6 +2734,8 @@ Read an address with its row's view and note, as you read the value:
 
 - `[unproven]` on a raw pointer is about what it points at. Its address is the pointer's own value.
   So `diff` and the other queries don't count a Rust raw pointer's address as qualified.
+- In C and C++, `[unproven]` is on what is read through a pointer, never on the pointer's own
+  address. A pointer read through another one is marked, since its address was read there.
 - `[stale]` bytes are leftovers, not what the variable holds now.
 
 SQLite's integers are signed. So an address at or above 2^63 comes back negative, as its 64-bit
@@ -2750,6 +2756,80 @@ which element's address the pointer holds, its row says `[at level[6]'s address]
 keeps it in `at_element_of` and `element_index`, and `diff` compares it
 ([C and C++ 4.8](lang/c-cpp-cookbook.md#48-compare-addresses-across-runs)). Where the array is a
 pointer, the row gives only an offset from it by address, in `offset_from` and `element_offset`.
+
+### 4.9 A List's Elements and a String's Text
+
+**What it answers:** How do I read an array's elements, or match a string's text, in SQL?
+
+Peeky stores each value as its language prints it. A Java array keeps its type and object number:
+`int[4]@61 [3, 0, 7, 2]`. A C++ string reference keeps its address: `0x… "Évora"`. So `value` is
+no JSON, and `value = 'Évora'` matches nothing. Two functions read such values back, by the run's
+language and the row's type. The `evidence` view has both. Neither reads a Python value.
+
+```sh
+peeky sql "SELECT v.hit, e.key AS i, e.value FROM evidence v, json_each(elements(v.value, v.language)) e WHERE v.run_id = 4 AND v.selector = 'counts' AND v.hit = 1"
+```
+
+```
+hit  i  value
+1    0  3
+1    1  0
+1    2  7
+1    3  2
+(4 rows)
+```
+
+- `elements(value, language)` gives a list's or array's elements as a JSON array, `[3, 0, 7, 2]`.
+  `json_each` makes a row of each element.
+- `json_each` has its own `key` and `value` columns. Alias the view, as in `FROM evidence v`, and
+  write `v.value`.
+- `SUM(e.value)` with `GROUP BY v.hit` adds up each hit's elements.
+- `json_each(value)` fails with `malformed JSON`, since a value is the debugger's text.
+
+It reads these values:
+
+| Language | Value | `elements(value, language)` |
+| --- | --- | --- |
+| Java | `int[4]@61 [3, 0, 7, 2]`, `ArrayList@142 size=2 ["a", "b"]` | `[3, 0, 7, 2]`, `["a", "b"]` |
+| C, C++ | `[5, 6, 7]`, `size=2 [1, 2]` (a `std::vector`), `size=1 {7}` (a `std::set`) | `[5, 6, 7]`, `[1, 2]`, `[7]` |
+| Rust | `[1, 2]`, `['x', 'é']` | `[1, 2]`, `["x", "é"]` |
+
+- An element may be a number, a string, a char, a boolean, null or a nested list. A number keeps
+  its text: `1.0E10` stays `1.0E10`.
+- It is NULL unless Peeky reads every element exactly. A preview cut short is NULL: Java, C and C++
+  show at most 8 elements, then `…`. Rust ends `...] (first 40 of 300)`.
+- Any other element makes it NULL too: a Java object (`Seat@71`), a struct, a pointer, an
+  enumerator, or an integer past 64 bits.
+- So does a decimal that a double doesn't hold as written, such as a `long double`'s `1e-4000`.
+- So does a string element that may have been cut. A Java one is cut after 37 characters, with `…`.
+- To read a longer array, capture the elements you need by index, such as `counts[9]`.
+
+```sh
+peeky sql "SELECT hit, value FROM evidence WHERE run_id = 5 AND selector = 'city' AND text(value, language, type) = 'Évora'"
+```
+
+```
+hit  value
+2    0x000000016fdff2c8 "Évora"
+(1 row)
+```
+
+- `text(value, language, type)` gives a string's or char's text, without its quotes and escapes.
+  Rust's `"say \"hi\""` gives `say "hi"`.
+- A Java String is java-debug's text between quotes, unescaped. `text` drops the quotes.
+- A Java `char` shows bare, as `+`. Its `type` is `char`, and `text` gives the character.
+- After a C or C++ pointer's or reference's address, as in `0x… "Maya"`, it gives the text there.
+- It is NULL for any other value. It is NULL too where the text may be cut, as in C's `"abc"...`
+  or Rust's `"abc" (first 3 of 9 bytes)`, or where its bytes are no text, as in C's `"\xff"`.
+- Both functions are NULL for every Python value. debugpy names a value's type by its `__class__`,
+  and shows it by its own `__repr__`. A class can set them to `str` and `'Évora'`, so nothing
+  stored proves a value is a string or a list.
+- So match a Python string as stored, quotes included: `value = '''Évora'''`. SQL writes a quote
+  inside a string as two. It matches the text debugpy showed, which such a class can imitate.
+- Neither function reads a value of 2000 characters or more. The worker keeps a value's first 2000
+  characters, and marks no cut there.
+- Without the language or the type, SQLite says `wrong number of arguments`. Use the `evidence`
+  view, which has both.
 
 ---
 
