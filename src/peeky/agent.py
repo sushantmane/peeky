@@ -20,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 
+from peeky import add_version
 from peeky.client import Client
 from peeky.errors import PeekyError
 from peeky.textlines import read_source, source_lines, split_lines
@@ -538,7 +539,8 @@ def main():
     from peeky.processes import keep_children_waitable
 
     keep_children_waitable()  # #170: an inherited ignored SIGCHLD reaps adapters
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog="peeky-agent")
+    add_version(parser)
     parser.add_argument("--model", help="Model override; otherwise uses saved Codex model")
     parser.add_argument("--program", default="examples/pagination_bug.py")
     parser.add_argument("--check", default="examples/verify_pagination.py")

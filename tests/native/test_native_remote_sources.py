@@ -111,3 +111,21 @@ def test_a_header_changed_between_the_check_and_the_build_is_refused(remote, mon
         "page.h (the copy on the worker host differs from your checkout)"
         in (refused.value.payload["message"])
     )
+
+
+@pytest.mark.timeout(120)
+def test_a_remote_probe_runs_with_the_workers_tools_whatever_the_clients_are(
+    remote, capsys, monkeypatch
+):
+    # Review of the PATH lookup: the client looked for its own compiler, adapter and
+    # dwarfdump, and failed (or said `using …`) for tools the worker never runs.
+    host, local, url = remote
+    for name in ("CC", "DAP", "DWARFDUMP"):
+        monkeypatch.setenv(f"PEEKY_NATIVE_{name}", f"no-such-{name.lower()}-on-this-host")
+    argv = ["probe", str(local), "--at", "main.c:5", "--capture", "start", "--worker", url]
+    code = main([*argv, "--json", "--no-save"])
+    out, err = capsys.readouterr()
+    result = json.loads(out)
+    assert code == 0, result.get("error")
+    assert [row["value"] for row in result["rows"]] == ["3"] and "START:3" in result["output"]
+    assert "PEEKY_NATIVE" not in err

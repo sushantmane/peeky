@@ -1,8 +1,11 @@
 include requirements-dev.txt CONTRIBUTING.md AGENTS.md
-recursive-include examples *.py
-recursive-include examples *.java *.json
+recursive-include examples *.py *.java *.json *.md
+recursive-include examples *.c *.h *.cpp *.hpp *.cu *.rs *.toml *.lock
+recursive-include skills *.md
 recursive-include tests *.py
 recursive-include scripts *.py
 recursive-include docs *.md
 recursive-include docs/benchmarks *.json
 recursive-include adapters *.java *.json *.md
+# A crate's build output never ships.
+prune examples/rust/target

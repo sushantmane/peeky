@@ -770,6 +770,12 @@ output:
   PAGE:[10, 20, 30]
 ```
 
+On Linux with LLVM 18, the output is labelled `output so far (the program ended, but its output
+may still have been arriving):`. A last line says that the debugger sent more text. Both are
+true: lldb-dap 18 crashes as Peeky closes the session (`free(): invalid pointer`). So Peeky can't
+prove that it sent all of the program's output. LLVM 20's lldb-dap ends cleanly, and the label is
+`output:`.
+
 #### Where and when to change
 
 - Change a value only at a statement's first instruction. A breakpoint on the statement's first
