@@ -4139,6 +4139,16 @@ _LOOP_WORD = re.compile(r"(?i:for|each|while|loop|repeat|iter|\bdo\b)|\b[A-Z][A-
 MAX_LOOP_PLACES = 8
 
 
+def _until(deadline, default):
+    """A request's wait: until ``deadline`` (monotonic seconds) where one is given, else
+    ``default`` seconds. TimeoutError, before anything is asked, once it has passed."""
+    if deadline is None:
+        return default
+    if (remaining := deadline - time.monotonic()) <= 0:
+        raise TimeoutError("Launch exceeded its deadline")
+    return remaining
+
+
 def breakpoint_locations(text, ids):
     """Where LLDB placed the breakpoints ``ids`` (#157), from its `breakpoint list` text:
     [{"id", "line", "address", "function", "place", "resolved"}], each location with the
@@ -4780,25 +4790,26 @@ class NativeSession:
             "enableAutoVariableSummaries": False,
         }
 
-    def breakpoint_locations(self, dap, ids):
+    def breakpoint_locations(self, dap, ids, deadline=None):
         """Where LLDB placed the breakpoints ``ids`` (see ``breakpoint_locations``): a
         line can have several locations in one function (a macro's or a block's own
         code, a loop header's), and it stops at each (#157). Asked with lldb-dap's
-        command escape, as a read-only `breakpoint list`; None where it cannot say."""
+        command escape, as a read-only `breakpoint list`; None where it cannot say. The
+        answer has until ``deadline`` (the launch's), else 15 s, as `setBreakpoints` has."""
         ids = sorted({number for number in ids if type(number) is int and number > 0})[:64]
         if not ids:
             return None
         reply = dap.request(
             "evaluate",
             {"expression": "`breakpoint list " + " ".join(map(str, ids)), "context": "repl"},
-            timeout=5,
+            timeout=_until(deadline, 15),
         )
         text = reply.get("result") if isinstance(reply, dict) else None
         if not isinstance(text, str) or len(text) > MAX_METADATA:
             return None
         return breakpoint_locations(text, set(ids))
 
-    def loop_header_stops(self, dap, source, line, groups, cache):
+    def loop_header_stops(self, dap, source, line, groups, cache, deadline=None):
         """(stops, exact): how many times ``line`` of ``source`` stops each time its loop
         starts, before its first pass (at most, unless ``exact``), where it is that
         loop's header alone in each function holding it (#161: `for (int i = 0; ...)`
@@ -4808,7 +4819,8 @@ class NativeSession:
         read-only and kept in ``cache`` for the launch; see ``loop_headers``. Only a line
         that may hold a loop is analysed (a loop keyword, a name with one in it such as
         `list_for_each`, or a macro's capitals: `REPEAT(3) {`), in at most
-        MAX_LOOP_PLACES functions or inlined copies."""
+        MAX_LOOP_PLACES functions or inlined copies. Each answer has until ``deadline``
+        (the launch's), else 15 s."""
         from peeky.loop_headers import disassembly, line_table, stops_before_loop
 
         path = str(source)
@@ -4829,7 +4841,9 @@ class NativeSession:
 
         def command(text):
             reply = dap.request(
-                "evaluate", {"expression": "`" + text, "context": "repl"}, timeout=5
+                "evaluate",
+                {"expression": "`" + text, "context": "repl"},
+                timeout=_until(deadline, 15),
             )
             result = reply.get("result") if isinstance(reply, dict) else None
             return result if isinstance(result, str) and len(result) <= MAX_METADATA else None

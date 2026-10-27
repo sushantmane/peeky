@@ -832,9 +832,9 @@ class DebugWorker:
         """
         try:
             levels = 20 if self.stop_reason in STEP_STOPS else 1
-            stack = self.dap.request(
-                "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=2
-            )
+            # As long as `inspect`'s read of the same frames (#356): a stall past a
+            # shorter wait dropped the stop's place, line and function without a word.
+            stack = self.dap.request("stackTrace", {"threadId": self.thread_id, "levels": levels})
             frames = stack.get("stackFrames") or [{}]
             frame = frames[0]
             self.stop_outside = self.stop_reason in STEP_STOPS and not _in_program_sources(
@@ -1565,11 +1565,13 @@ class DebugWorker:
         # #160): the first stop asks again.
         self.places_unresolved = False
 
-    def note_places(self, runtime, requested, placed):
+    def note_places(self, runtime, requested, placed, deadline=None):
         """Ask the runtime where the debugger placed the session program's breakpoints
         (#157): a line can have several locations in one function (a macro's or a
         block's own code, a loop header's), and it stops at each. Best effort: none
-        known means no warning and no `place`, never a failure."""
+        known means no warning and no `place`, never a failure. ``deadline`` (monotonic
+        seconds): the launch's, which the debugger's answer has until; else the runtime's
+        own wait."""
         self.forget_places()
         self.places_asked = (runtime, list(requested), placed)
         hook = getattr(runtime, "breakpoint_locations", None)
@@ -1584,7 +1586,7 @@ class DebugWorker:
         if hook is None or not ids or self.dap is None:
             return
         try:
-            found = hook(self.dap, ids)
+            found = hook(self.dap, ids, **({} if deadline is None else {"deadline": deadline}))
         except Exception:
             return
         groups = {}
@@ -1597,13 +1599,14 @@ class DebugWorker:
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
 
-    def loop_headers(self, runtime):
+    def loop_headers(self, runtime, deadline=None):
         """{line: stops} of the session's breakpoint lines that are loop headers whose
         every location runs once each time the loop starts, before it (#161): a C, C++
         `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
         runtime once, at launch, before the program runs (the debugger's disassembly and
-        line table, kept for the launch); never again when breakpoints are set again or
-        their places asked again (review of #166). Best effort."""
+        line table, kept for the launch), within the launch's ``deadline``; never again
+        when breakpoints are set again or their places asked again (review of #166). Best
+        effort."""
         hook = getattr(runtime, "loop_header_stops", None)
         if hook is None or self.dap is None or not self.places:
             return {}
@@ -1612,10 +1615,11 @@ class DebugWorker:
         except Exception:
             return {}
         found, cache = {}, {}
+        within = {} if deadline is None else {"deadline": deadline}
         for line in sorted(self.places)[:8]:
             groups = [addresses for _, addresses in self.places[line]]
             try:
-                count = hook(self.dap, source, line, groups, cache)
+                count = hook(self.dap, source, line, groups, cache, **within)
             except Exception:
                 count = None
             if count:
@@ -2230,11 +2234,14 @@ class DebugWorker:
             self.auto_resumed = []
             deadline = time.monotonic() + self.launch_deadline_s
 
-            def left(limit=15):
+            def left(limit=None):
+                # Every launch step gets what remains of the one deadline (#356): a step
+                # capped below it (15 s) failed a debuggee slow to start on a loaded
+                # machine while most of the launch's time was left.
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Launch exceeded its deadline; session discarded")
-                return min(limit, remaining)
+                return remaining if limit is None else min(limit, remaining)
 
             try:
                 staging = {"edit": edit} if edit else {}
@@ -2340,9 +2347,11 @@ class DebugWorker:
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
-                self.note_places(runtime, args.get("breakpoints", []), points)
+                # Within the launch's deadline, as its other steps (#356): a stall past a
+                # shorter wait of their own left out their notes without a word.
+                self.note_places(runtime, args.get("breakpoints", []), points, deadline=deadline)
                 # Once, before the program runs (#161): breakpoints set again later keep it.
-                self.loop_lines = self.loop_headers(runtime)
+                self.loop_lines = self.loop_headers(runtime, deadline=deadline)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
