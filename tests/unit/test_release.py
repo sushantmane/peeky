@@ -286,10 +286,42 @@ def test_a_run_on_a_worker_names_files_that_only_look_like_programs(tmp_path, mo
     error = json.loads(capsys.readouterr().out)["error"]
     assert (error["code"], error["message"]) == (
         "INVALID_REQUEST",
-        "Name the program with --at FILE:LINE, e.g. --at main.c:<line>: main.c, notes.c, old.c "
-        "each look like they may define main, and a run on a worker runs no compiler on this "
-        "host to tell which really do",
+        "Name the program with --at FILE:LINE, e.g. --at main.c:<line>: this directory holds "
+        "main.c, notes.c, old.c, and a run on a worker runs no compiler on this host to tell "
+        "which defines main",
     )
     # Named, it goes to the worker (here, none answers).
     cli.main([*argv, "--at", "main.c:2"])
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "UNREACHABLE"
+
+
+@pytest.mark.parametrize(
+    "files, program",
+    [
+        # Review round 3: one inactive textual `main`, and a main a macro makes: the text
+        # match picked old.c, which defines no main.
+        ({"old.c": "#if 0\nint main(void) { return 1; }\n#endif\n", "gen.c": "MAKE_MAIN"}, None),
+        ({"gen.c": "MAKE_MAIN", "util.c": "int helper(void) { return 0; }\n"}, None),
+        # A sole file is the program, whatever its text.
+        ({"gen.c": "MAKE_MAIN"}, "gen.c"),
+    ],
+)
+def test_a_run_on_a_worker_infers_no_program_among_several_files(
+    tmp_path, monkeypatch, files, program
+):
+    macro = "#define MAKE_MAIN int main(void) { return 0; }\n"
+    for name, text in files.items():
+        (tmp_path / name).write_text(macro + text + "\n" if text == "MAKE_MAIN" else text)
+    monkeypatch.setattr(cli, "native_tools", lambda language: pytest.fail("looked for tools"))
+    if program:
+        assert cli.resolve(tmp_path, "2", tools=False)[1] == program
+        return
+    with pytest.raises(ValueError) as refused:
+        cli.resolve(tmp_path, "2", tools=False)
+    listed = ", ".join(sorted(files))
+    assert str(refused.value) == (
+        f"Name the program with --at FILE:LINE, e.g. --at {sorted(files)[0]}:<line>: this "
+        f"directory holds {listed}, and a run on a worker runs no compiler on this host to "
+        "tell which defines main"
+    )
+    assert cli.resolve(tmp_path, "gen.c:2", tools=False)[1] == "gen.c"

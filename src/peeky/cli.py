@@ -402,22 +402,24 @@ def _native_program(directory, program, tools=True):
         if not candidate.is_relative_to(directory) or not candidate.is_file():
             raise ValueError(f"No C/C++ file {program} inside {directory}")
         return candidate, candidate.name
-    mains = sorted(
+    files = sorted(
         item.name
         for item in directory.iterdir()
-        if item.suffix in _NATIVE_SUFFIXES
-        and item.is_file()
-        and item.resolve().parent == directory
-        and _MAIN.search(item.read_bytes()[:4_000_000])
-    )[:20]
-    if len(mains) > 1 and not tools:
-        # A run on a worker runs no compiler here: the text alone can't rule out a main in
-        # a comment, an inactive #if branch or a declaration.
-        raise ValueError(
-            f"Name the program with --at FILE:LINE, e.g. --at {mains[0]}:<line>: "
-            f"{', '.join(mains)} each look like they may define main, and a run on a worker "
-            "runs no compiler on this host to tell which really do"
-        )
+        if item.suffix in _NATIVE_SUFFIXES and item.is_file() and item.resolve().parent == directory
+    )
+    if not tools:
+        # A run on a worker runs no compiler here, and the text alone can't tell a main
+        # in an inactive #if branch from one a macro makes: only a sole file is the program.
+        if len(files) > 1:
+            listed = ", ".join(files[:20]) + (f" and {len(files) - 20} more" if files[20:] else "")
+            raise ValueError(
+                f"Name the program with --at FILE:LINE, e.g. --at {files[0]}:<line>: this "
+                f"directory holds {listed}, and a run on a worker runs no compiler on this "
+                "host to tell which defines main"
+            )
+        return ((directory / files[0]).resolve(), files[0]) if files else None
+    mains = [name for name in files if _MAIN.search((directory / name).read_bytes()[:4_000_000])]
+    mains = mains[:20]
     if len(mains) > 1:
         # As for a file target: the preprocessor settles which really define main.
         languages = {name: "c" if name.endswith(".c") else "cpp" for name in mains}
