@@ -200,7 +200,8 @@ Sanitizer, Nsight profiling and support for ML workloads.
 GCC's C++ builds withhold what LLDB misreads ([gaps](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 Reading it would take about 2 weeks:
 
-- read an unordered container's entries from its own nodes;
+- read more of an unordered container's entries from its own nodes: floating-point numbers,
+  characters, enums and nested containers;
 - read a lambda's captures through `__closure`;
 - set a text in a string's own buffer, which LLDB reads as `char[0]`;
 - tell when a caller's aggregate is stored, from its elements' lines.

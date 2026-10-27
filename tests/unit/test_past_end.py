@@ -586,7 +586,7 @@ def test_a_container_one_past_an_arrays_end_has_its_count_never_read(stopped):
     # one past an array's end.
     counted = []
 
-    def unlisted_container(variable, frame, path, raw):
+    def unlisted_container(variable, frame, path, raw, **_):
         counted.append(variable["name"])
 
     stopped.runtime.unlisted_container = unlisted_container

@@ -12,7 +12,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 **GCC's C++ builds have known gaps.** Peeky withholds what LLDB misreads, and the row says why
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
-- unordered containers show no entries, unless LLDB's count is the container's own;
+- unordered containers are read from their own nodes, where they hold integers, `bool`s and
+  strings, in pairs and structs;
 - a lambda's captures can't be read: they are `not found` in the lambda;
 - a one-line function's parameters can show `no value yet` at a stop on its line;
 - a `const` local aggregate GCC builds at compile time is in read-only data, and `not found`;

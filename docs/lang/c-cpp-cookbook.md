@@ -904,16 +904,35 @@ That is the case for:
 - A set (`std::set`, `std::multiset`, `std::unordered_set`, `std::unordered_multiset`) shows its
   elements: `size=2 {1, 3}`.
 - A `std::multimap` keeps its summary, `size=2`: its keys repeat.
-- An unordered container (`std::unordered_map`, `std::unordered_set` and their multi forms) shows
-  its entries only where LLDB's count of them equals the container's own `_M_element_count`.
-  LLDB's libstdc++ formatter counts one as empty when the debug information doesn't name its
-  element type. That happens in a GCC build, and with LLDB 18 for one named by a typedef
-  (`using Ids = std::unordered_set<long>`). Such a row has no value, and no key, position or
-  listing is read in it:
+- An unordered container (`std::unordered_map`, `std::unordered_set` and their multi forms) can
+  be misread by LLDB's libstdc++ formatter. It counts one as empty when the debug information
+  doesn't name its element type. That happens in a GCC build, and with LLDB 18 for one named by
+  a typedef (`using Ids = std::unordered_set<long>`). It can also decode the entries as another
+  type, or from the wrong place (see below).
+
+  So Peeky checks LLDB's count against the container's own `_M_element_count`, and the type and
+  place LLDB decodes. Where either is wrong, Peeky reads the entries from the container's own
+  nodes instead. The row shows them as any container's, with `view: memory`:
+  `ids  Ids  size=1 {9}`. Keys, positions, previews and listings read them too.
+
+  Peeky reads the nodes only where all of these hold:
+
+  - the debug information gives the nodes' type, and where each node holds its entry;
+  - the entries hold integers, `bool`s and `std::string`s, in pairs and structs. A struct with a
+    base class or a bitfield doesn't count;
+  - the container holds at most 256 entries, and its chain of nodes ends after exactly
+    `_M_element_count` of them;
+  - nothing may be changing the container
+    ([A container that something may be changing](#a-container-that-something-may-be-changing));
+  - with a debugger that can't read memory, such as lldb-dap 18, each string's text is in the
+    node: 15 bytes or fewer. lldb-dap 20 reads longer ones.
+
+  Otherwise the row has no value, and no key, position or listing is read in it. For example, in
+  a GCC build:
 
   ```
-  ids  Ids  <not listed: the debugger cannot list this build's unordered containers: it counts 0 entries, but the container's own count (`_M_element_count`) is 1; print its entries from the program>
-  ids[#0]   <[#0] not read: ids is not listed: the debugger cannot list this build's unordered containers: …>
+  ratios  std::unordered_map<int, double>  <not listed: the debugger cannot list this build's unordered containers: it counts 0 entries, but the container's own count (`_M_element_count`) is 1; print its entries from the program>
+  ratios[1]   <[1] not read: ratios is not listed: the debugger cannot list this build's unordered containers: …>
   ```
 
   Inside a preview it shows `<not listed>`: `{us = <not listed>, n = 2}`. A pointer to one is
@@ -921,8 +940,9 @@ That is the case for:
   too, and says so. That happens for one reached through a base class or an anonymous member.
 
   A right count isn't enough. LLDB decodes each entry as the allocator's first template
-  argument, at a fixed place in each node. So a non-empty one is listed only where the debug
-  information proves that type and place right. These are withheld, each with why:
+  argument, at a fixed place in each node. So Peeky uses LLDB's listing only where the debug
+  information proves that type and place right. These are read from the nodes instead, or
+  withheld, each with why:
 
   - an allocator whose first template argument is another type, such as
     `WeirdAlloc<double, int>` for `int` entries;
@@ -1061,9 +1081,10 @@ To fix it, set `PEEKY_NATIVE_CXX` to a clang++ or a g++.
 GCC's debug information differs from clang's, and LLDB misreads some of it. Where Peeky can't
 prove a value, it withholds it, and the row says why. These are the known gaps:
 
-- **Unordered containers** show no entries. LLDB finds no element type in GCC's `std::allocator`,
-  so it counts each one as empty. Peeky withholds the container's entries, keys and positions,
-  unless LLDB's count is the container's own ([details](#standard-containers)).
+- **Unordered containers** are read from their own nodes. LLDB finds no element type in GCC's
+  `std::allocator`, so it counts each one as empty. Peeky reads the entries itself where it can
+  prove how. It withholds the rest, such as entries that hold a `double`, an enum or a
+  container, or more than 256 entries ([details](#standard-containers)).
 - **A lambda's captures** can't be read. GCC passes them through `__closure`, which lldb-dap
   doesn't list. So a captured name is `not found` in the lambda, and the row says so:
   ``not found: 'grade' is a capture of this lambda, which GCC passes through `__closure` …``. To

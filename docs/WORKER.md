@@ -260,7 +260,7 @@ Both operations are read-only.
 | `statics` | a stop | The names the frame's function keeps in static storage: a `static` local, or a `const` local GCC places in read-only data. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none |
 | `closure_captures` | a stop | The captures a GCC lambda's call operator reads through `__closure`. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none, and for clang's lambdas |
 | `string_length` | a variable | A libstdc++ string's length, checked against its `_M_string_length`. A map key matches only a string shown whole and of its length, or one read from memory |
-| `view: memory` | a variable | Peeky read the string's text from memory |
+| `view: memory` | a variable | Peeky read the string's text from memory, or an unordered container's entries from its own nodes |
 | `text: true` | a variable | A standard string shown as its text, or as Peeky's reason it has none. It gets no handle, as Rust's text views get none |
 | `aliased_type` | a variable | The class behind a typedef's name, such as a map under another name |
 | `pointee_aliased_type` | a variable | The same, for what a pointer points at: `IntSet *` |

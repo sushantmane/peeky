@@ -33,6 +33,10 @@ VIEW_SECONDS = 10
 # they never take the one value views and string checks use (#128).
 PREVIEW_FETCHES = 256
 PREVIEW_SECONDS = 3
+# Reads of an unordered container's nodes (#360): their own budget per inspection or
+# expansion, within the value view's time. Without `readMemory` (lldb-dap 18), each node
+# costs a read per 8 bytes, each well under a millisecond.
+NODE_READS = 4096
 MAX_HISTORY_BYTES = 4_000_000
 MAX_HISTORY_ENTRY_BYTES = 256_000
 
@@ -3370,6 +3374,7 @@ class DebugWorker:
     def reset_views(self):
         """A fresh value-view budget, for one inspection or expansion."""
         self.view_fetches = self.view_items = self.view_bytes = 0
+        self.node_reads = self.node_bytes = 0
         self.view_waited = 0.0
         self.view_deadline = time.monotonic() + VIEW_SECONDS
 
@@ -3393,12 +3398,13 @@ class DebugWorker:
         finally:
             self.view_waited += time.monotonic() - started
 
-    def raw_value(self, frame, path):
+    def raw_value(self, frame, path, nodes=False):
         """The debugger's text for the variable path ``path`` in ``frame`` (#167: an
         unordered container's own count, `us._M_h._M_element_count`), asked as a hover:
         lldb-dap then reads the path's variables and members as they are, past any
         formatter, and never evaluates it as an expression, so nothing runs in the
-        program. Cached for the stop; counted against the value-view budget."""
+        program. Cached for the stop; counted against the value-view budget, or with
+        ``nodes`` against the node-read budget (#360: a word of a container's node)."""
         cache = getattr(self, "raw_values", None)
         if cache is None or cache[0] != self.stop_id:
             cache = self.raw_values = (self.stop_id, {})
@@ -3406,9 +3412,14 @@ class DebugWorker:
         if key in cache[1]:
             return cache[1][key]
         remaining = self.view_deadline - time.monotonic()
-        if self.view_fetches >= 128 or remaining <= 0:
+        if nodes:
+            if getattr(self, "node_reads", 0) >= NODE_READS or remaining <= 0:
+                raise ViewBudgetExhausted(f"Node read budget exhausted ({NODE_READS} reads)")
+            self.node_reads = getattr(self, "node_reads", 0) + 1
+        elif self.view_fetches >= 128 or remaining <= 0:
             raise self.view_exhausted()
-        self.view_fetches += 1
+        else:
+            self.view_fetches += 1
         arguments = {"expression": path, "frameId": frame.get("id"), "context": "hover"}
         try:
             reply = self.view_request("evaluate", arguments, remaining)
@@ -3515,6 +3526,62 @@ class DebugWorker:
         self.view_bytes += count
         return data
 
+    def type_keys(self, kind):
+        """What a C or C++ row's type names, where a typedef hides it: "typedef_kind" (a
+        pointer indexes as C does, a reference as its referent, #102), "pointee_type",
+        "aliased_type" (the class behind it: a C++ map by another name, #119) and
+        "pointee_aliased_type" (behind what a pointer points at: `IntSet *`)."""
+        keys = {}
+        resolve = getattr(self.runtime, "typedef_kind", None)
+        if resolve and (resolved := resolve(kind)) is not None:
+            keys["typedef_kind"], pointee = resolved
+            if resolved[0] == "pointer":
+                keys["pointee_type"] = pointee
+        alias = getattr(self.runtime, "aliased_type", None)
+        if alias and (aliased := alias(kind)) is not None:
+            keys["aliased_type"] = aliased[:2000]
+        pointed = getattr(self.runtime, "pointee_aliased_type", None)
+        if pointed and (aliased := pointed(kind, keys.get("pointee_type"))) is not None:
+            keys["pointee_aliased_type"] = aliased[:2000]
+        return keys
+
+    def node_memory(self, reference, count):
+        """A memory read of an unordered container's nodes (#360), on the node-read
+        budget (NODE_READS requests and 4 MiB per inspection or expansion)."""
+        remaining = self.view_deadline - time.monotonic()
+        if getattr(self, "node_reads", 0) >= NODE_READS or remaining <= 0:
+            raise ViewBudgetExhausted(f"Node read budget exhausted ({NODE_READS} reads)")
+        self.node_reads = getattr(self, "node_reads", 0) + 1
+        if not isinstance(reference, str) or not re.fullmatch(r"0x[0-9A-Fa-f]{1,16}", reference):
+            raise ValueError("Invalid memory reference")
+        if type(count) is not int or not 0 < count <= 4096:
+            raise ValueError("Memory read exceeds limit")
+        if getattr(self, "node_bytes", 0) + count > 4 * 1024 * 1024:
+            raise ViewBudgetExhausted("Node read budget exhausted (4 MiB)")
+        try:
+            reply = self.view_request(
+                "readMemory", {"memoryReference": reference, "count": count}, remaining
+            )
+        except ResponseTimeout as exc:
+            self.view_timed_out = True
+            raise self.view_exhausted("the debugger did not answer in the time left") from exc
+        except RequestFailed as exc:
+            raise ValueError(f"The debugger refused the memory read: {exc}") from None
+        try:
+            data = base64.b64decode(reply.get("data") or "", validate=True)
+        except ValueError:
+            raise ValueError("Malformed memory read reply") from None
+        if len(data) != count or reply.get("unreadableBytes"):
+            raise ValueError("Partial memory read")
+        self.node_bytes = getattr(self, "node_bytes", 0) + count
+        return data
+
+    def node_reader(self, frame):
+        """How a runtime reads an unordered container's nodes in ``frame`` (#360):
+        (a variable path's text, a memory read or None without `readMemory`)."""
+        reads = self.node_memory if self.capabilities.get("supports_read_memory") else None
+        return (lambda path: self.raw_value(frame, path, nodes=True)), reads
+
     def expose_variables(
         self,
         variables,
@@ -3588,11 +3655,16 @@ class DebugWorker:
                     frame,
                     [*ancestry, (name, kind)],
                     lambda path: self.raw_value(frame, path),
+                    nodes=self.node_reader(frame),
+                    **self.preview_stack(),
                 )
                 if unlisted_container and past is None
                 else None
             )
-            changing = changing or unlisted
+            # Or its entries as Peeky read them from its own nodes (#360): shown, as a
+            # value view.
+            listed = getattr(unlisted, "view", None)
+            changing = changing or (unlisted if listed is None else None)
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
                 if not ancestry:
                     raise RuntimeError("Debugger variable identity exceeds limit")
@@ -3606,10 +3678,12 @@ class DebugWorker:
                     **({"type": kind if len(kind) <= 2000 else kind[:200] + "…"} if kind else {}),
                     "identity_truncated": True,
                 }
-                if changing:
-                    shown.update(value=None, unavailable=True, reason=changing[:300])
+                # Shown without a view: never the debugger's miscount of an unordered
+                # container, even one Peeky read from its nodes (#360).
+                if held := changing or unlisted:
+                    shown.update(value=None, unavailable=True, reason=held[:300])
                     shown.update(withheld=True, settable=False)
-                    if isinstance(label := getattr(changing, "label", None), str):
+                    if isinstance(label := getattr(held, "label", None), str):
                         shown["withheld_as"] = label[:100]
                 elif view_variable:
                     # Values that need a qualified view (Rust enums) are never shown raw.
@@ -3715,7 +3789,7 @@ class DebugWorker:
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
-            view = (
+            view = listed or (
                 view_variable(
                     variable,
                     self.view_fetch,
@@ -3763,6 +3837,10 @@ class DebugWorker:
                         else None
                     )
                     self.children[handle] = ("view", list(view["children"][:512]), source)
+                    if isinstance(view.get("pointee"), str):
+                        # What a pointer points at, shown whole where a selector reads it
+                        # (`p[0]`, #360).
+                        self.children[handle] += (None, view["pointee"][:2000])
                     if carried:
                         self.notes[handle] = carried
                 output = {
@@ -3788,6 +3866,10 @@ class DebugWorker:
                     output["stale"] = True
                 if kind is not None:
                     output["type"] = kind
+                if listed is not None:
+                    # An unordered container read from its nodes (#360): what its type
+                    # names, as for a row the debugger lists (a map by another name).
+                    output.update(self.type_keys(kind))
                 shown = getattr(self.runtime, "display_type", None)
                 if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                     # A reference parameter's Rust type (`&mut Window`), as for plain rows.
@@ -4033,6 +4115,7 @@ class DebugWorker:
                         steps=steps,
                         kinds=[step for _, step in ancestry] + [kind],
                         raw=lambda path: self.raw_value(frame, path),
+                        nodes=self.node_reader(frame),
                         **self.preview_stack(),
                     )
                 except ValueError:
@@ -4072,21 +4155,7 @@ class DebugWorker:
                 output["note"] = marked[:1000]
             if kind is not None:
                 output["type"] = kind
-            resolve = getattr(self.runtime, "typedef_kind", None)
-            if resolve and (resolved := resolve(kind)) is not None:
-                # A C/C++ type named by a typedef: a pointer indexes as C does, a reference
-                # as its referent (#102).
-                output["typedef_kind"], pointee = resolved
-                if resolved[0] == "pointer":
-                    output["pointee_type"] = pointee
-            alias = getattr(self.runtime, "aliased_type", None)
-            if alias and (aliased := alias(kind)) is not None:
-                # The class behind a typedef'd type: a C++ map by another name (#119).
-                output["aliased_type"] = aliased[:2000]
-            pointed = getattr(self.runtime, "pointee_aliased_type", None)
-            if pointed and (aliased := pointed(kind, output.get("pointee_type"))) is not None:
-                # Or behind what a pointer points at (`IntSet *`).
-                output["pointee_aliased_type"] = aliased[:2000]
+            output.update(self.type_keys(kind))
             shown = getattr(self.runtime, "display_type", None)
             if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                 # The language's own name; the debugger's stays alongside.
@@ -4838,7 +4907,11 @@ class DebugWorker:
         if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         hook = getattr(runtime, "preview_value", None)
-        if hook is None or record[0] == "view":
+        if record[0] == "view":
+            # What a pointer whose entries Peeky read from memory points at (#360).
+            held = record[4] if len(record) > 4 else None
+            return {"value": held} if args.get("pointee") is True and held else {}
+        if hook is None:
             return {}
         trail = []
         frame, _, ancestry, _, _ = self.walk(record, runtime, trail)
@@ -4864,6 +4937,7 @@ class DebugWorker:
                 steps=steps,
                 kinds=[kind for _, kind in ancestry],
                 raw=lambda path: self.raw_value(frame, path),
+                nodes=self.node_reader(frame),
                 **self.preview_stack(),
             )
         except ValueError:
