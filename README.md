@@ -260,4 +260,6 @@ revised after two adversarial reviews.
 - [Threat model](docs/THREAT_MODEL.md): trusted-code assumptions and remote constraints.
 - [Adversarial review](docs/reviews/INITIAL_REVIEW.md): findings and dispositions.
 - [Decision record](docs/adr/0001-mvp-boundaries.md): why Python, DAP and SSH came first.
+- [Presentation](docs/presentation/Peeky.pdf): why Peeky exists, what it is and how it works, for
+  executives and engineers. The [PowerPoint](docs/presentation/Peeky.pptx) opens in Keynote too.
 - [Contributing](CONTRIBUTING.md): local checks and the change process.

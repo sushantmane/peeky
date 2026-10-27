@@ -1127,6 +1127,8 @@ _ONLY_POINTS = " only point"
 # what such a binding's type can't hold a copy in, only what was computed from it.
 _HIDDEN_COPY = ", which may be out of Peeky's reach ("
 _DERIVED = " state derived from "
+# And of global state a call may have stored a copy in (#329), which no change reaches.
+_GLOBAL_COPY = "a static or thread-local"
 # The ``copy_hazards`` readings a refusal weighs (#300: ``_copy_reason``).
 _READINGS = (
     "any",
@@ -1192,14 +1194,16 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
         clause(f"may have read {target}", held["any"])
         return "may", _either(clauses), places, None
     copied = held["taken"] | held["copied"]
+    # #329: global state a place may have stored a copy in.
+    stored = getattr(proofs, "global_holders", lambda *args: frozenset())(hashed, copied)
     # A binding itself, not what a statement computed from one: the program goes on with
     # it, whether or not the statement under way uses it (`pause();` before `x = y;`).
-    bound = frozenset(local for local in copied if proofs.copy_names(hashed, {local}))
+    bound = frozenset(local for local in copied - stored if proofs.copy_names(hashed, {local}))
     read = held["explicit"] | (held["value"] - copied)
     other = held["whole"] - read - copied
     if read:
         clause(f"reads {target} into a temporary", read)
-    if derived := copied - bound:
+    if derived := copied - bound - stored:
         among = held["bindings"] | held["sources"]
         if named := proofs.copy_sources(hashed, derived, among):
             names = _names(proofs.copy_names(hashed, named))
@@ -1212,12 +1216,42 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
     if given := held["traced"] - read - other - copied:
         clause(f"uses a pointer that may point into {target}", given)
     rest = held["any"] - held["traced"] - read - other - copied
-    if rest or not (clauses or bound):
+    if rest or not (clauses or bound or stored):
         text, lines = _untraced(proofs, hashed, rest, home, target)
         places |= lines
         clauses.append(text)
-    if not bound:
+    if not bound and not stored:
         return "may", _either(clauses), places, None
+    owned, at = [], set()
+    if bound:
+        own, lines = _own_copies(proofs, hashed, found, home, target, kind, bound)
+        owned.append(own)
+        at |= lines
+    if stored:
+        # #329: a `static` or `thread_local!` a call stored a copy in, which a later call
+        # may read; no change Peeky makes reaches it.
+        lines = proofs.copy_lines(hashed, stored)
+        levels = proofs.global_levels(hashed, stored, kind)
+        what = (
+            f"a copy of {target}"
+            if kind is not None and levels and set(levels.values()) == {"copy"}
+            else f"state derived from {target}"
+        )
+        owned.append(
+            f"{_GLOBAL_COPY} may hold {what}"
+            + (f" (from {_line_list(lines, home)})" if lines else "")
+            + " that the program may go on with"
+        )
+        at |= lines
+    own = ", and ".join(owned)
+    if not clauses:
+        return "kept", own, at, None
+    return "may", _either(clauses), places | at, own
+
+
+def _own_copies(proofs, hashed, found, home, target, kind, bound):
+    """What ``_copy_reason`` says of the program's own bindings ``bound`` that may hold a
+    copy of ``target`` it goes on with (#192, #320 review, #321), and their lines."""
     at = proofs.copy_lines(hashed, bound, True)
     made = _line_list(at, home)
     # A pointer of the program's own stands for what it points at (#311 review: `p` of
@@ -1255,9 +1289,7 @@ def _copy_reason(proofs, hashed, found, home, target="it", kind=None):
             if unsure
             else "hold" + ("s)" if len(bound) == 1 else ")")
         )
-    if not clauses:
-        return "kept", own, at, None
-    return "may", _either(clauses), places | at, own
+    return own, at
 
 
 # A `for` loop's item from a standard slice iterator's `next()` (`for e in expenses`,
@@ -3093,7 +3125,7 @@ class RustSession(NativeSession):
             elif kind == "absent":
                 parts.append((function, f"{FUNCTION} {detail}"))
             elif kind == "statement":
-                kept = "that it goes on with" in detail
+                kept = "that it goes on with" in detail or _GLOBAL_COPY in detail
                 statements = (
                     "derived"
                     if kept and _DERIVED in detail and "statement under way" not in detail
@@ -3104,6 +3136,7 @@ class RustSession(NativeSession):
                         and "statement under way" not in detail
                         and _ONLY_POINTS not in detail
                         and _HIDDEN_COPY not in detail
+                        and _GLOBAL_COPY not in detail
                     )
                     else "holds"
                     if kept or "already holds a copy" in detail
@@ -3409,16 +3442,18 @@ class RustSession(NativeSession):
                     # #321 review: what was computed from it, not a copy.
                     else "Change it before the program uses it (a stop on an earlier line)"
                     if _DERIVED in detail
-                    # #321: a copy no change reaches has nothing to change instead.
+                    # #321: a copy no change reaches has nothing to change instead; nor has
+                    # one in a static or thread-local (#329).
                     else "Change it before the program copies it (a stop on an earlier line)"
-                    if _HIDDEN_COPY in detail
+                    if _HIDDEN_COPY in detail or _GLOBAL_COPY in detail
                     else "Change it before the program copies it (a stop on an earlier line), "
                     "or change the copy instead",
                     (
-                        "the program may hold state derived from it"
-                        if _DERIVED in detail
-                        else "the program may hold a copy"
+                        f"{_GLOBAL_COPY} may hold"
+                        if detail.startswith(_GLOBAL_COPY)
+                        else "the program may hold"
                     )
+                    + (" state derived from it" if _DERIVED in detail else " a copy")
                     + (f" ({made})" if made else ""),
                 )
             if kind == "may" and kept:

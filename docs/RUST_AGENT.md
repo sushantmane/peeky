@@ -706,6 +706,29 @@ the local without reading the changed part, and uses the binding before or after
 - The frame's exit ends every local and argument (`Body._frame_exit`, `_diverges`): a `return`,
   or a call that never returns other than std's panic (`process::exit`, `abort`, a function of the
   crate's that returns `!`). An argument has no `StorageDead`.
+- What a pointer binding stands for, where nothing of the frame does (`_pointees`), outlives the
+  binding and the frame (`Body._outlives_frame`, #329): its end and the frame's `return` use it,
+  as a caller may read it. That is an argument `p` of `*p = x;`, or `r` of `let r = slot();`
+  returning a `&'static Mutex<u32>`. Something else must reach it (`_reachable_after`, #340
+  review): an argument, a constant address, a call that may return global state, or a call or
+  store it was handed to (`_escapes`). So `r` of `let r = fresh();`, a leaked `Box`, doesn't.
+  Global state does too ([Global state](#global-state)).
+- `_escapes` counts a call given the binding, or what is made from it, with another value that
+  may hold a pointer, or one that may touch global state. It also counts a call that keeps what
+  it is given past the call (review 2). That is the standard library's `thread::spawn`,
+  `Builder::spawn`, `Scope::spawn` and `Sender::send`, proven by path (`_KEEPING_CALLS`,
+  `_keeping_call`, review 3). The path must be under a proven root, or be one rustc printed
+  without its module, whose first name the crate defines nothing of (`OwnedLocals._shadows`,
+  `Body.shadows`). A function of the crate's counts if it may make such a call, however deep
+  (`OwnedLocals._keepers`, `Body.keepers`, by name), as does a call by a function pointer. So
+  the crate's own `spawn` counts by its body.
+- `mem::forget` and `Box::leak` keep nothing that counts here. What they are given is reached
+  afterwards only through what `leak` returns, which the copy and return analyses follow.
+- The standard library's `ptr::eq` and `addr_eq`, proven so (`_std_compares`, `Body.compares`),
+  write nothing through the pointers they are given (`_copy_store`), nor keep them (`_escapes`).
+  They use what they are given for its address only (`Body._address_only`, review 3). So does
+  an assignment to a temporary only such calls are given (`_11 = &raw const (*_4)`).
+  `copy_kind` counts none of these as a use of a copy.
 - A mark of settable covers the paths that don't panic (#330 review 3). An edge only a panic takes
   (`Block.unwinds`) is not followed. Std's panic (`Body._panics`) is neither a read nor an end, and
   its cleanup isn't followed: a `Drop` that reads the part while unwinding doesn't count (review 4).
@@ -759,6 +782,86 @@ the local without reading the changed part, and uses the binding before or after
   message isn't one either, because a hook may never format it.
 - A borrow given to anything else is unknown, and the path goes on. A write to another part reads
   nothing, and one that covers the part assigns it.
+
+### Global state
+
+A call may keep a copy in the crate's global state with interior mutability (#329): a `static`
+holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_local!`.
+
+- `Body.global_roots` finds where a body names one: a local assigned a constant that stands for
+  global memory (`_GLOBAL_VALUE`) and may be written through (`_may_write`). That is a static's
+  address (`const {alloc30: &std::sync::Mutex<u32>}`), a `static mut`'s (`*mut u32`), a promoted
+  `&SLOT` (`const local::promoted[1]`, a `&LocalKey<Cell<u32>>`), or a thread-local static
+  (`&/*tls*/ …`). A static of plain numbers (`&u32`) and a `LocalKey<u32>` don't count.
+- `global_state` gives what each function may touch of it, however deep (`GlobalState`). A
+  function touches what it names, and what each call and drop in it may (`_global_edges`), found
+  again until nothing grows. `OwnedLocals._globals` sets it as `Body.globals` at match time. It is
+  None where the crate names no such state, and then nothing changes.
+- A call reaches the crate's functions by its path (`GlobalState.resolve`, #340 review). A
+  function's key is its path without generic arguments (`clean::note`). A method's is its module's,
+  its type's from the `impl` header (`_impl_self`) and its own (`clean::Wrap::keep`), and
+  `Wrap::keep` too. A call path matches a key exactly, or as its last segments (rustc leaves out a
+  unique name's module), or by a method's type and name. Where the path doesn't tell (a trait's
+  method, `<Wrap as Tr>::keep`, or a method whose `impl` header Peeky can't read), every function
+  of that last segment counts (`names`). If there is more than one, the kinds gain `_ANY_GLOBAL`,
+  so the refusal says "state derived from". The standard library's code names none of the crate's statics. It reaches the crate's
+  code only through what it is given (`GlobalState.carried`): a closure's body, by its type; a
+  trait `impl` of a type of the crate's (`GlobalState.impls`), as a derived `Debug`'s `fmt`; or
+  anything, for a function pointer, `dyn Fn`, `impl`, a type parameter or a type not known. A
+  trait object of another trait runs only an `impl` of it. So does a standard type that holds
+  such code (`_ERASED_CODE`: a `Waker`'s wake).
+- `fmt::Arguments`, which `_print` is given, an `Argument` and a `Formatter` hold only what
+  formatting runs (`_FORMAT_CODE`): an `impl` of a formatting trait (`_FORMAT_TRAITS`: `Display`,
+  `Debug`, the other formats and `Write`), or of a trait not known (`GlobalState.formats`). So
+  `println!("{}", x)` touches nothing where none of those does.
+- Peeky builds crates without dependencies, so the standard library's is the only other code.
+  Another crate's could run a trait `impl` through state it keeps (`log`'s logger), which these
+  rules would have to count, were dependencies allowed.
+- `impls` leaves out an inherent `impl` (`_inherent`) and one of a trait the crate defines
+  (`_impl_trait`, `_own_trait`): no other crate can name that trait, so only the crate's code
+  calls its functions, by their names. The trait's name must be one the crate's sources define
+  (`_crate_traits`), with no `use` of a path outside the crate naming it, and no glob one for a
+  bare name. A prelude trait's name (`_PRELUDE_TRAITS`) and a derive's never count as the
+  crate's. A derive of another crate's, other than the standard library's, may give a formatting
+  trait's `impl` (`_STD_DERIVES`).
+- A promoted `&SLOT` in an `impl` prints its path with spaces
+  (`const <Shown as std::fmt::Display>::fmt::promoted[0]`); `_GLOBAL_VALUE` reads it too.
+- The types a call's path names count too (`_path_types`): `Wrap` of `<u32 as Into<Wrap>>::into`,
+  and `fn(u32) {direct_set}` of `for_each::<…, fn(u32) {direct_set}>`. There a function item counts
+  by its name, and a name that is no type of the crate's is taken for the standard library's: a
+  generic function's own type parameter shows as the instance where it is called.
+- A trait `impl` is found by the segment before the function's name (`<impl at …>`), at the root
+  or in a module.
+- A drop reaches a `drop` of the crate's, unless its type is a standard one of primitives.
+- A function the dump has but Peeky can't read (`unknown`), or can't analyze, may touch anything.
+  Past `_GLOBAL_ROUNDS` (64) rounds, every function may touch any of it, of a type not known
+  (`_ANY_GLOBAL`): the search fails closed.
+- `_copy_parts` gives each place that may store a value there a pseudo-local of its own, numbered
+  from `_GLOBAL_BASE` (`Body.global_holders`: the place, the globals' types). That is a call given a
+  pointer into it (`_made_from` reaches a root), a call `global_touch` says may touch it, a store
+  through such a pointer, and a drop that may. A pointer a call returned counts as one into global
+  state where that call may return one (`Body._returned_kinds`, `GlobalState.returned`): `slot()`
+  of `lock_set(slot(), x)`, not `fresh()` returning a leaked `Box`.
+- `global_state` also finds what each function's return may point into
+  (`Body.returned_globals`, the `GlobalState.returns` view). That is nothing where its type holds
+  no pointer. Else it is a global it names that the return is made from, what a call it is made
+  from may return, and any global it touches, which may keep the pointer. What else the place is given counts whole, the pointer
+  too: `Job { a: &A, v: x }` carries both. It holds what else the place is given, as
+  `_copy_store` judges it: a copy, a pointer into the local, or what holds a copy.
+- `copies_at` never counts it as a temporary. `copy_kind` judges it as a binding. It is used by a
+  statement that may read a global it may be (`Body.reads_global`): `Body.global_use` gives the
+  types of the globals a statement may read, through a pointer into one or a call or drop
+  `global_touch` names. Globals are told apart by type only, so two statics of one type count as
+  one. The frame's `return` uses it too, after which a caller may read it. It never ends.
+- `Body.global_level` says "copy" only where each global the place may reach holds a value of the
+  local's very type (`_copy_level`; a `static mut`'s value as a `Cell` of its type). Otherwise, and
+  for a global not known, it says "derived".
+- `_copy_reason` names it apart from the program's bindings (`OwnedLocals.global_holders`,
+  `global_levels`): ``a static or thread-local may hold a copy of `x` (from line 72) that the
+  program may go on with``. The advice offers no copy to change, since Peeky changes no static.
+- What a function stores in global state isn't followed: a counter it bumps, or a flag it only
+  reads, counts as a place that may hold `x`. State outside the program's memory, an environment variable or a file, isn't
+  followed at all.
 
 ### Values no path reads again
 

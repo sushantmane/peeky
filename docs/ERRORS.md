@@ -26,9 +26,10 @@ The last column is the `retryable` field.
 | `STALE_HANDLE` | An expansion handle was revoked, or the frame or scope changed. | `inspect` again. | yes |
 | `NOT_FOUND` | A name or selector isn't visible ([details](#not_found)). | Use a name from the message's `visible:` or `children:` list. | no |
 | `MUTATION_REJECTED` | Peeky can't make that change there. Nothing was written. | Follow the hint: it names the one way around the rule ([the rules](#when-a-change-is-refused-mutation_rejected)). | no |
-| `BUDGET_EXHAUSTED` | A bounded read limit was reached. | Narrow the request. | no |
+| `BUDGET_EXHAUSTED` | A bounded read limit was reached, or a probe's limit of signal stops in a row ([details](#budget_exhausted)). | Narrow the request. | no |
 | `INVALID_BREAKPOINT` | The line isn't executable, or a breakpoint field isn't supported. | Use a line that `peeky describe` lists. | no |
 | `NO_STOP` (probe result) | The program ended without reaching the line ([details](#no_stop)). | Pick a line that runs. | no |
+| `PROGRAM_CRASHED` (probe result) | A C, C++ or Rust program crashed: a fault, a signal, or `abort` ([details](#program_crashed)). | Read its output, and probe a line before the crash. | no |
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
@@ -72,6 +73,29 @@ The last column is the `retryable` field.
 - A write with the same text, not proven to change nothing, is named too: `1 write by --set-at
   with the same text, not proven unchanged`. A Java String or a Python `1000`
   written alike may be a new object. Only writes proven to change nothing are left out.
+
+### PROGRAM_CRASHED
+
+- The program stopped on a fault or a signal, such as `abort` after an uncaught C++ exception or
+  a failed `assert`. The probe ends there, with `status: failed`, and Peeky ends the program.
+- It is a crash only for SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE, where the program neither
+  handles nor ignores the signal. At any other signal stop, the probe lets the program go on.
+- The message says what the debugger says, such as `signal SIGABRT`, and where in your code the
+  crash came from. `crash` in JSON has the same. There is no exit status.
+- The output so far is kept. The C++ runtime and `assert` write the exception's type or the failed
+  condition to it.
+- See [C and C++ 5.1](lang/c-cpp-cookbook.md#when-the-program-crashes).
+
+### BUDGET_EXHAUSTED
+
+- A read went past one of Peeky's bounds, such as on the children it lists. Read a narrower
+  selector.
+- A probe ended at the 100th stop in a row on the same signal, or C++ throw or catch filter, at
+  one place in a call from one line of your code. Peeky let the program go on after each of the
+  first 99, and doesn't take them for a crash.
+- The program may raise that signal again and again, or LLDB may stop there without letting it
+  past. Peeky can't tell which. Probe a line before those stops, or use an input that doesn't
+  raise them.
 
 ### BUILD_FAILED
 
@@ -194,6 +218,9 @@ message says `cannot be changed here`.
   scope, before reading it. The copy may be used before or after that:
   ``the program has already copied `x` into `n` ``. Where a call given `&mut x` since may have
   changed `x`: ``the program's own `n` (at line 34) may hold a copy of `x` that it goes on with``.
+  Where a call may have kept it in a `static` or a `thread_local!` that a later call reads:
+  ``a static or thread-local may hold a copy of `x` (from line 72) that the program may go on
+  with``.
   Where every path then panics or exits first: ``every path from here panics or exits before
   reading `x` ``. Where a path never leaves a loop: ``on a path from here the program loops
   forever without reading `x` ``.
