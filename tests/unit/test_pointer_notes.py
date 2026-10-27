@@ -373,11 +373,24 @@ def test_session_get_says_it_of_the_children_it_lists():
                     "value": at(address),
                     "type": "Track *",
                 },
+                # Review round 2 of PR #354: a child not read keeps a placeholder value.
+                {
+                    "name": "lost",
+                    "selector": f"{name}.lost",
+                    "value": "<error: cannot read>",
+                    "type": "int",
+                    "unavailable": True,
+                    "reason": "cannot read",
+                },
+                {"name": "held", "selector": f"{name}.held", "value": "", "withheld": True},
             ],
         )
 
     rows = stop((listed("now", 0x1060), TRACK), (listed("end", 0x1060), TRACK))
     children = {child["selector"]: child for each in rows.values() for child in each["children"]}
+    for unread in ("now.lost", "now.held", "end.lost"):
+        assert "read_through" not in children[unread], children[unread]
+    assert "  now.lost: int = <no readable value: cannot read>" in _get_lines(rows["now"])
     assert children["now.title"]["read_through"] == {"selector": "now", "same_address_as": ["end"]}
     assert children["end.plays"]["read_through"] == {"selector": "end", "same_address_as": ["now"]}
     assert children["now.self"]["read_through"] == {"selector": "now", "same_address_as": ["end"]}

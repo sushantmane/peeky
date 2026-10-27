@@ -27,7 +27,7 @@ debug server. It writes memory only to set a text
 ## Compare the sources from another host
 
 A client on another host must show that its sources are the worker's. Protocol 3 added this, and
-protocols 4 to 6 keep it.
+protocols 4 to 7 keep it.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a

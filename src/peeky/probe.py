@@ -2420,8 +2420,11 @@ def _read_at(row, paths):
     straight, `slots[0]` for `slots[0].uses`, else `now` for `now[0].title`. `p[0]` is at
     `p`'s address; a member is there only where `p` points at no pointer, as `pp[0].uses`
     of an `Item **pp` reads through `pp[0]`. None otherwise: through a pointer not
-    captured, at another element (`p[1]`), or inside a member (`now.title.size`)."""
+    captured, at another element (`p[1]`), or inside a member (`now.title.size`); nor for
+    a value not read, which may keep a placeholder `value` (`unavailable`, `withheld`)."""
     if "value" not in row or not isinstance(row.get("selector"), str):
+        return None
+    if any(row.get(key) for key in ("unavailable", "withheld", "error")):
         return None
     try:
         steps = parse_selector(row["selector"])
