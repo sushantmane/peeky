@@ -35,7 +35,7 @@ protocols 4 to 7 keep it.
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 
    Its `root` is the worker's `--root`.
-2. With `launch` or `probe`, send `protocol`: 6, `expect_sha256` (`program`, and `entry` for a
+2. With `launch` or `probe`, send `protocol`: 7, `expect_sha256` (`program`, and `entry` for a
    `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
    one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
