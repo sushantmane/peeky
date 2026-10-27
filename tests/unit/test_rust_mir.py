@@ -2814,17 +2814,18 @@ def test_the_standard_librarys_ptr_eq_reads_no_pointee_so_it_withholds_no_local(
     # `&raw const (*e)` reads through `e`, which Peeky does not follow, so the pointer may
     # point anywhere. The standard library's `ptr::eq` compares the two addresses only.
     owned = raw_eq_owned()
-    # But past the call, the branch uses `_9`, which the flow lets hold what `e` may (a
-    # reference Peeky does not follow), and the frame's return then ends `last`, `e`, `l`
-    # and `team` unread (#330 and its review; this MIR leaves out the `StorageDead`s a
-    # build has, which end the first three there too). That is said only as a hedge, never
-    # as a read the call made; `week` and `pick` are not withheld.
+    # But past the call, the branch uses `_9`, what the call returned given a pointer into
+    # it, and the frame's return then ends `last`, `e`, `l` and `team` unread (#330 and its
+    # review; this MIR leaves out the `StorageDead`s a build has, which end the first three
+    # there too). That is said only as a hedge, never as a read the call made; `week` and
+    # `pick` are not withheld. The call writes nothing either, so it leaves no copy where
+    # `e` points, which would outlive the frame (#329).
     past_team = [False, False, True, True, True, True]
     assert withheld(owned) == past_team
     owned._positions = lambda site, line, facts, block=None: [(3, 0)]
     assert raw_eq_session(owned)("last") == (
-        "a statement under way at the stop uses `e` (at lines 34 and 39), which may hold the "
-        "program's own copy of it, so it may hold a copy of it, which it uses after the stop"
+        "a statement under way at the stop uses what may be the program's own copy of it (at "
+        "line 39), so it may hold a copy of it, which it uses after the stop"
     )
     # Whatever else the crate holds: the call is still the standard library's.
     owned = raw_eq_owned()
@@ -2880,13 +2881,21 @@ def test_a_refusal_says_a_call_given_a_pointer_into_the_local_may_have_read_it()
     owned = raw_eq_owned(source=SHADOWED_SOURCE)
     owned.unsafe_code = UNSAFE_CODE
     why = raw_eq_session(owned)
-    # `last`: `l` points into it, and the call is given a pointer made from `l`.
-    assert why("last") == (
-        "a statement under way at the stop uses a pointer that may point into it (at line 39), so it "
-        "may hold a copy of it, which it uses after the stop"
+    # `last`: `l` points into it, and the call is given a pointer made from `l`. The call,
+    # given `&raw const *e` too, may store a copy where `e` points, in `team`, which a caller
+    # may read once the frame returns (#329).
+    read = (
+        "a statement under way at the stop uses a pointer that may point into it (at line 39), "
+        "so it may hold a copy of it, which it uses after the stop"
     )
-    assert why("last").row == "a statement under way may hold a copy (line 39)"
-    assert why("e") == why("last")
+    assert why("last") == (
+        read + ", or the program's own `e` and `team` (at lines 34 and 39) may point at a "
+        "copy of it that it goes on with"
+    )
+    assert (
+        why("last").row == "a statement under way or the program may hold a copy (lines 34 and 39)"
+    )
+    assert why("e") == read
     # `week`: only through `e` and `l`, which Peeky does not follow.
     assert why("week") == (
         "a statement under way at the stop uses `e` and `l` (at line 39), references Peeky "
@@ -3572,7 +3581,14 @@ def test_a_refusal_states_a_read_only_where_every_path_to_the_stop_makes_it():
     # program's own copy, not `weeks`; only `e` may have reached it. And `weeks`, an
     # argument, ends unread at the return, after line 44 reads `week` (#330).
     shifts = line_39("_17 = copy ((*_13).1: u32);", "_10 = &raw const (*_13);")
-    assert why("same(copy _4, move _17)", shifts, name="weeks") == (
+    # `_17` a `u32`, which holds no pointer `same` could write through (#329: what `e`
+    # points at would outlive the frame).
+    typed = (
+        "    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20",
+        "    let mut _15: u32;                    // in scope 0 at src/main.rs:44:16: 44:20\n"
+        "    let mut _17: u32;                    // in scope 0 at src/main.rs:39:20: 39:33",
+    )
+    assert why("same(copy _4, move _17)", shifts, typed, name="weeks") == (
         "a statement under way at the stop uses `e` (at line 39), a reference Peeky can't "
         "trace that may point at it" + maybe + ", or the program's own `week` (at line 32) "
         "may hold a copy of it that it goes on with"

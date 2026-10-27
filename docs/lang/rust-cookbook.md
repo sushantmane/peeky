@@ -1517,6 +1517,12 @@ read only on a panic's path, as by a `Drop` that runs while it unwinds, doesn't 
   `bump(&c, x)`, with `c = Counter::new()` and a `Cell` field in `Counter`, refuses `x` after it.
   A struct of numbers and `Vec`s, lent by `&`, leaves `x` settable
   ([Copies behind a cell or a channel](#copies-behind-a-cell-or-a-channel)).
+- A call may also store a copy in a `static` or a `thread_local!` that a later call reads. That
+  is a call given `&SLOT`, or a function of the crate's that names the static itself, however
+  deep. After it, `x` is refused:
+  ``a static or thread-local may hold a copy of `x` (from line 72) that the program may go on
+  with``. A call that touches no such state leaves `x` settable
+  ([Copies in a static or a thread-local](#copies-in-a-static-or-a-thread-local)).
 
 Peeky follows the MIR in the order the code runs. A temporary made before the local took its
 current value holds an older value, so it doesn't block a change. For example, in
@@ -1705,6 +1711,19 @@ Where no local of the function stands for what the pointer points at, the pointe
 That is so for an argument `p`, or one `Box::into_raw` returned. After `*p = x;`, the refusal says
 ``the program's own `p` (at line 49) may point at a copy of `x` that it goes on with``.
 
+What such a pointer points at outlives the pointer and the function. Code after `p` ends, or a
+caller after the return, may read it. So the copy blocks a change even where the function never
+uses `p` again. That holds too for a `&'static` a call returned: `r` of `let r = slot();`, with
+`fn slot() -> &'static Mutex<u32>`, after `lock_set(r, x)`.
+
+Where nothing else can reach what the pointer points at, it ends with the function. An example
+is a leaked `Box` that `fresh()` returned. That changes once the pointer is handed to something
+that keeps it past the call: a thread the function spawns (`std::thread::spawn(move || …)`, its
+`JoinHandle` dropped), a channel's `send`, or a function of your crate that spawns one. A function
+of your crate named `spawn` counts by what it does. `mem::forget` and a discarded `Box::leak` keep
+nothing anyone can reach. The standard library's `ptr::eq` only compares the address, so it
+neither keeps nor uses the copy, before or after the stop.
+
 To change the value, change it before the copy is made, or change the copy.
 
 #### Copies behind a cell or a channel
@@ -1766,9 +1785,80 @@ hint: Change it before the program copies it (a stop on an earlier line, or `--s
 A `--set x=100` at line 55, before `send(&tx, x)` runs, reaches the program: `rx.recv()` returns
 100.
 
-A call can also keep a copy in a `static` or a `thread_local!` that a later call reads. Peeky
-doesn't follow that, so `x` stays `[settable]` there. Look for such state before you trust a
-change.
+#### Copies in a static or a thread-local
+
+A call can also keep a copy in a `static` or a `thread_local!` that a later call reads. After
+`local_set(&SLOT, x)`, with `SLOT` a `thread_local!` `Cell<u32>`, `SLOT.with(|c| c.get())`
+returns the copy. So `x` is refused after such a call:
+
+```
+error [MUTATION_REJECTED]: `x` cannot be changed at src/main.rs:73, at any stop of this build: in globals::local, at every place line 73 can stop at, a static or thread-local may hold a copy of `x` (from line 72) that the program may go on with, so a change there may never be seen: …
+hint: Change it before the program copies it (a stop on an earlier line, or `--set-at` there).
+```
+
+- The global state that counts is your crate's: a `static` with a cell, a lock, an atomic or a
+  once-cell inside, however deep; a `static mut`; and a `thread_local!`. Peeky finds each one the
+  MIR names. A `static` of plain numbers only reads, so it holds no copy.
+- A call stores there where it is given a pointer to such state, as `&SLOT` or `&S` of a
+  `static S: Mutex<u32>`. A store in place counts too: `A.store(x, Ordering::Relaxed)`, or
+  `*LAZY.lock().unwrap() = x`.
+- So does a pointer a call returned, where that function may return one into such state:
+  `lock_set(slot(), x)` with `fn slot() -> &'static Mutex<u32> { &S }`, or
+  `registry().lock().unwrap().push(x)`. A function may also keep the pointer it returns in such
+  state. A `Mutex` the function owns is no global state. Nor is a leaked `Box`:
+  `lock_set(fresh(), x)` with `fn fresh() -> &'static Mutex<u32>` returning
+  `Box::leak(Box::new(Mutex::new(0)))` leaves `x` settable.
+- A value given to the call may carry both the pointer and the copy: `run(Job { a: &A, v: x })`,
+  or a closure that captures `&A` and `x`.
+- A function of your crate's that names such state itself stores there what it is given:
+  `direct_set(x)`, with `fn direct_set(v: u32) { A.store(v, Ordering::Relaxed); }`. So does a
+  function that calls one, however deep, and a closure or method that names one.
+- Peeky tells functions apart by their paths. `clean::note(x)` stays settable where only
+  `dirty::note` stores in a static. Where the MIR's path doesn't tell which function a call is,
+  as for a trait's method, every function of that name counts. Then the refusal says only
+  ``may hold state derived from `x` ``.
+- The standard library's code names none of your statics. It can only call back into your code: a
+  closure or a function it is given, as `direct_set` in `once(x).for_each(direct_set)`, or a trait
+  `impl` of your type, such as a `Display` it formats. Such a call counts where that code may
+  touch global state.
+- The type may show only in the call's path: `x.into()` is `<u32 as Into<Wrap>>::into`, which
+  runs your `From<u32> for Wrap`.
+- Peeky doesn't tell your trait `impl`s apart by type. Where one of them touches global state,
+  a standard call given any of your types counts, as `items.push(Item(x))` does.
+- Formatting, as in `println!`, runs only `impl`s of formatting traits, such as `Display` and
+  `Debug`. So `println!("{}", x)` counts only where one of those touches global state. That
+  holds for `println!("{}", Shown(x))`, with a `Display` of `Shown` that stores `self.0` in a
+  thread-local.
+- The standard library can't name a trait your crate defines, so it never runs an `impl` of
+  one. Only your code calls it, by its name: `s.put(x)` with `s: &dyn Sink` counts where an
+  `impl` of `Sink` touches global state. Where a `use` of a path outside your crate may name
+  another trait of that name, Peeky can't tell them apart, so the `impl` counts everywhere.
+- A call to a function Peeky can't read may touch any of it. So may a call through a function
+  pointer, a closure behind `dyn Fn`, or a value of a type parameter.
+- Peeky follows calls through the whole crate. Past 64 rounds of that search, it treats every
+  function as one that may touch any global state.
+- The copy is the program's own until something may read it: a later call that may touch that
+  global state, a use of a pointer to it, or the function's return, after which a caller may read
+  it. Where the program reads `x` again first, it sees the change, and `x` stays `[settable]`.
+- Peeky tells global state apart only by its type. A call that reads another `static` of the
+  same type counts as reading the copy too. One of another type doesn't.
+- A `static` or `thread_local!` holds "a copy" only where each one the call may reach holds a value
+  of `x`'s very type. Otherwise the refusal says ``may hold state derived from `x` ``. That is so
+  for a `static BIG: AtomicU64` given `u64::from(x) * 2`.
+- A call that touches no global state stores nothing there, and `x` stays `[settable]`. That holds
+  for a function of your crate's that names no such state and is given no pointer to one, nor a
+  value that holds one, however deep. It holds too for the standard library's own calls, such as
+  `println!` of a type with a derived `Debug`. A call given `&SLOT` touches `SLOT`, though it
+  names no static itself.
+- A function that names global state counts even where it stores something else there, such as
+  a counter it bumps, or only reads it. Peeky doesn't follow what it stores, so the refusal says
+  only that the state may hold a copy.
+
+Peeky changes no static, so the advice is only a change before the call. A `--set x=100` there
+reaches the program: `SLOT.with(|c| c.get())` returns 100.
+
+The program's state outside its memory isn't followed. An environment variable that
+`env::set_var` sets, or a file a call writes, may hold a copy that a later call reads back.
 
 #### What counts as reading it again
 
