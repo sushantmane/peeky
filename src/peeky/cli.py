@@ -2442,8 +2442,11 @@ def _get_lines(row, session="default"):
             else child.get("value")
         )
         shown = f"  [id {child['identity']}]" if child.get("identity") else ""
-        if child.get("past_end") and (pointed := pointed_text(child)):
-            # One past an array's end: nothing it points at is read (#336).
+        if (child.get("past_end") or child.get("read_through")) and (
+            pointed := pointed_text(child)
+        ):
+            # One past an array's end: nothing it points at is read (#336). Or read at
+            # the address another pointer `session get` was given holds.
             shown += f"  [{pointed}]"
         if child.get("view") == "unproven":
             shown += "  [unproven]"

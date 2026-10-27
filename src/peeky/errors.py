@@ -20,7 +20,10 @@ from peeky.textlines import split_lines
 # 6 (#339): what is read through a C or C++ pointer Peeky can't show points at a live
 # object is marked `unproven`, with why (`unproven_read`); a protocol 5 worker shows it
 # as a plain value, and a protocol 5 client would take the mark for a Rust pointer's.
-PROTOCOL_VERSION = 6
+# 7 (#344): a C or C++ pointer's value extent says `indirect` where it points at a
+# pointer; a protocol 6 worker leaves it out, so `pp[0].uses` of an `Item **pp` would be
+# said to be read at the address `pp`'s alias holds.
+PROTOCOL_VERSION = 7
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (

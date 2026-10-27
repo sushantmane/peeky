@@ -133,8 +133,10 @@ def test_pointers_walking_a_parameter_say_how_far_they_are_from_it(program, caps
     command = ["probe", str(program), "--at", at, "--capture", "top,p,level", "--hits", "1"]
     assert main([*command, *ARGS]) == 0
     table = capsys.readouterr().out
-    assert "  [level + 0 by address; same array not proven]" in table, table
-    assert "'s address]" not in table, table
+    # An equal address is said plainly, never as `level + 0` doubted as one array (twelfth
+    # evaluation, playlist 2).
+    assert "  [same address as `level`]" in table, table
+    assert "+ 0 by address" not in table and "'s address]" not in table, table
     sql = "SELECT selector, offset_from, element_offset, at_element_of FROM last_run"
     assert main(["sql", sql, "--json"]) == 0
     stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
@@ -156,6 +158,29 @@ def test_pointers_walking_a_parameter_say_how_far_they_are_from_it(program, caps
         "addresses differ: by address, `level + 2` in run a and `level + 1` in run b; nothing "
         "proves they point into one array, so it may or may not be another element"
     ), rows
+
+
+@pytest.mark.timeout(240)
+def test_a_value_read_through_a_pointer_names_the_others_at_its_address(program, capsys):
+    # Twelfth evaluation, playlist 3: `now.title` read `"Coda"` while `now` held `end`'s
+    # address, and nothing tied the read to `end`. Here `p`, `top` and `level` are equal
+    # at the first pass, and apart at the second.
+    result = probed(capsys, program, "WALK", "top,p,level,p[0],top[0]", "--hits", "2")
+    rows = [row for row in result["rows"] if row["selector"] in ("p[0]", "top[0]")]
+    assert [row.get("read_through") for row in rows] == [
+        {"selector": "p", "same_address_as": ["top", "level"]},
+        {"selector": "top", "same_address_as": ["p", "level"]},
+        None,
+        {"selector": "top", "same_address_as": ["level"]},
+    ], result["rows"]
+    assert [row["value"] for row in rows] == ["1", "1", "5", "1"], rows
+    at = f"levels.c:{line_of('WALK')}"
+    command = ["probe", str(program), "--at", at, "--capture", "top,p,level,p[0]", "--hits", "1"]
+    assert main([*command, *ARGS]) == 0
+    table = capsys.readouterr().out
+    assert "  1  [read through `p`, which holds the same address as `top` and `level`]" in table, (
+        table
+    )
 
 
 @pytest.mark.timeout(240)
