@@ -1996,6 +1996,18 @@ def _state_text(state, name="default", base=None):
             " [the step was interrupted here: another thread stopped at the same time; "
             "`session continue` serves its stop]"
         )
+    elif isinstance(crash := state.get("crash"), dict):
+        from peeky.probe import crash_text
+
+        # The program crashed (#342): what the debugger says, and where in its code.
+        if isinstance(crash.get("location"), str):
+            crash = {**crash, "location": _relative_location(crash["location"], base)}
+        nearest = crash.get("frame")
+        where += f" [the program crashed: {crash_text(crash)}; " + (
+            f"`session inspect --frame {nearest}` reads that frame of your code]"
+            if type(nearest) is int and nearest > 0
+            else "not auto-resumed: inspect it, or `session report` for its output]"
+        )
     elif reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
@@ -2265,6 +2277,8 @@ def _variables_text(snapshot, name="default", base=None):
         # What the function the step left returned (#155), apart from the locals.
         lines.append("[Returned]")
         lines.append(f"  {_returned_text(returned)}  (session get return)")
+        if returned.get("view") == "unproven" and isinstance(returned.get("note"), str):
+            lines.append(f"    note: {returned['note']}")
     if snapshot.get("library_frame"):
         lines.append(f"note: {snapshot['library_frame']}")
     if str(snapshot.get("globals", "listed")) != "listed":
@@ -2296,6 +2310,9 @@ def _returned_text(returned):
     if returned.get("unavailable"):
         return f"{who} returned: <withheld: {returned.get('reason')}>"
     pointed = f"  [{pointed_text(returned)}]" if returned.get("past_end") else ""
+    if returned.get("view") == "unproven" and isinstance(returned.get("note"), str):
+        # Text read through a pointer Peeky can't show points at a live object (#339).
+        pointed += "  [unproven]"
     return f"{who} returned: {returned.get('type') or ''} = {returned.get('value')}{pointed}"
 
 
@@ -2388,6 +2405,7 @@ def _get_lines(row, session="default"):
             + (f"  [{pointed}]" if (pointed := pointed_text(row)) else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
+            + ("  [unproven]" if row.get("view") == "unproven" else "")
             + ("  [stale]" if row.get("stale") else "")
             + ("  [settable]" if row.get("settable") else "")
             + (f"  [not settable: {row['not_settable']}]" if row.get("not_settable") else "")
@@ -2435,8 +2453,9 @@ def _get_lines(row, session="default"):
             shown += f"  [not settable: {child['not_settable']}]"
         elif child.get("maybe_settable"):
             shown += f"  [maybe settable: {child['maybe_settable']}]"
-        if child.get("note") and not child.get("unavailable"):
-            # Read through a local shown with a note, given below (#148).
+        if child.get("note") and not child.get("unavailable") and child.get("view") != "unproven":
+            # Read through a local shown with a note, given below (#148); `[unproven]`
+            # says it for one read through a pointer (#339).
             shown += "  [note]"
         lines.append(f"  {name}: {child.get('type') or ''} = {value}{shown}{more}")
     if hidden and row.get("children_truncated"):
@@ -4142,7 +4161,7 @@ def main(argv=None, _job=False, _edits=None):
             default=0,
             metavar="N",
             help="Read stack frame N: 0 is where the program stopped (default), 1 its caller, "
-            "... as `session inspect --json` lists `frames` (at most 10)",
+            "... as `session inspect --json` lists `frames` (10, or up to N; at most 64)",
         )
     actions.choices["set"].add_argument(
         "assignment",

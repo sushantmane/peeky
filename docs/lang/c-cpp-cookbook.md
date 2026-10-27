@@ -16,6 +16,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [How a C++ function's name is shown](#how-a-c-functions-name-is-shown)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
   - [Read through a pointer](#read-through-a-pointer)
+  - [When what a pointer points at is unproven](#when-what-a-pointer-points-at-is-unproven)
   - [Which element's address a pointer holds](#which-elements-address-a-pointer-holds)
   - [A pointer one past an array's end](#a-pointer-one-past-an-arrays-end)
   - [How far a pointer is from a pointer parameter](#how-far-a-pointer-is-from-a-pointer-parameter)
@@ -29,6 +30,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Offsets from a pointer in each run](#offsets-from-a-pointer-in-each-run)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
   - [Read a caller's local](#read-a-callers-local)
+  - [When the program crashes](#when-the-program-crashes)
 - [7.1 C and C++](#71-c-and-c)
   - [Quick start: what you can read and change](#quick-start-what-you-can-read-and-change)
   - [Read structs, arrays and standard containers](#read-structs-arrays-and-standard-containers)
@@ -121,10 +123,124 @@ refuses it, naming that selector.
 - A NULL or unreadable pointer is refused: `p is NULL`.
 - A pointer one past an array's end is refused, since nothing there belongs to the array
   ([below](#a-pointer-one-past-an-arrays-end)).
+- What any other pointer points at is read. Where Peeky can't show it is a live object, it is
+  marked `[unproven]`, with why ([below](#when-what-a-pointer-points-at-is-unproven)).
 
-Peeky reads what any other pointer points at as the debugger does. It can't tell whether that
-memory is still the object. A pointer into a call that returned, or into a freed heap block,
-shows what is there now.
+### When what a pointer points at is unproven
+
+A C or C++ pointer can outlive what it points at, and nothing in the program marks it. So Peeky
+checks where each pointer you read through points. It still reads what is there, since you may
+need it. But where it can't show that a live object is there, the value is marked `[unproven]`,
+with a note that says why.
+
+This `main` keeps items in an array, gets one from a call that returns its own local, and
+allocates another:
+
+```c
+static struct item *newest(void) {
+  struct item made = {7, 3};
+  struct item *p = &made;
+  return p;
+}
+
+int main(void) {
+  struct item stock[2] = {{1, 5}, {2, 8}};
+  struct item *first = &stock[0];
+  struct item *last = newest();
+  struct item *kept = malloc(sizeof *kept);
+  kept->id = 9;
+  kept->qty = 4;
+  printf("%ld %ld %ld\n", first->qty, last->qty, kept->qty); /* line 19 */
+```
+
+```sh
+peeky probe pick.c --at pick.c:19 --capture first.qty,last.qty,kept.qty,kept
+```
+
+```
+hit  phase     line  function  selector   type    value
+1    observed  19    main      first.qty  long    5
+1    observed  19    main      last.qty   long    4334437632  [unproven]
+1    observed  19    main      kept.qty   long    4  [unproven]
+1    observed  19    main      kept       item *  0x00000001025d5360
+status: completed  hits: 1  seconds: 1.006  max pause: 56.1 ms
+warning: last.qty: Peeky can't show that `last` points at a live object, so this value may be left over: it points below the stack pointer, where no live call keeps its locals, as a pointer into a call that has returned does; read the value before that call returns.
+warning: kept.qty: Peeky can't show that `kept` points at a live object, so this value may be left over: its address is in no local, member or element that Peeky could place in the frames it lists, nor in the program's static memory; if it is a heap block, Peeky can't tell whether that block is still allocated, so check where the program frees it.
+```
+
+`last.qty` reads what `newest`'s returned call left. `kept.qty` reads a live block, but Peeky
+can't ask the allocator, so a freed block would read the same way.
+
+What a pointer points at is proven live where its address is in one of these:
+
+- A local or parameter of a frame Peeky lists, at most ten, of the pointer's type.
+- An element of an array such a frame holds, or a member or base class of a struct it holds.
+  These are the arrays and objects listed [below](#a-pointer-one-past-an-arrays-end), and
+  number, `char` array and pointer locals too. A `Shape *` at a `Circle` local's `Shape` counts.
+- A global or `static` local of the pointer's type, inside its own extent, as the build's debug
+  information places it. Past its end, or elsewhere in the program's image, such as its code,
+  isn't proven.
+
+A `char *` may point at any byte of such an object, as C allows. It may also point into a string
+literal, or one of `main`'s argument strings, from the pointer to the string's NUL. Environment
+strings count where `main` declares `envp`. A literal counts only in a section that holds nothing
+but strings, as macOS's `__cstring` does. Linux linkers merge literals into `.rodata`, among other
+constants, so there a literal's text is marked.
+
+A union's member is never proven, only the union itself: no declaration says which member holds a
+value. An element of an array of unions is a union too. Nor does a declaration in scope say which object a storage holds after placement `new`.
+Where the types differ, what is read is marked.
+
+Otherwise, the note says what Peeky knows of the address:
+
+- ``it holds the address of `cells[4]`, past the end of `cells`, which has 3 elements``, or an
+  address some elements before an array's start.
+- `it points below the stack pointer`: no live call keeps its locals there.
+- `it points into the stack of the frames Peeky lists`, but at no local, member or element of its
+  type.
+- ``it points into the union `un` ``, and no declaration says which of its members holds a value.
+- `it points into the program's loaded image, but no compatible global, static local or proven
+  string literal is there`, as a pointer into the program's code does. It says to check where the
+  pointer was assigned. A string literal is proven where it is stored in a named `char` array,
+  such as `static const char name[] = "Maya";`, and the pointer points at that.
+- `its address is in no local, member or element that Peeky could place`, such as a heap
+  block's. A live block and a freed one read alike.
+
+The mark is on what is read through the pointer: `last.qty`, `last[0]`, a struct read whole, and
+`session get last`'s children. `session get` gives the note once, below them. The pointer's own
+row is its address, with no mark. A `char *`'s text is read through it, so that row is marked
+too: `dup  char *  0x… "heap"  [unproven]`. So is a C string a function returns, in
+`--capture return` and `session step --out`.
+
+`--json` rows and the store keep `view: unproven` and the note. `queries diff` ranks such a value
+with the qualified ones, after the real differences
+([COOKBOOK 3.1](../COOKBOOK.md#31-two-inputs-side-by-side)). Two runs' leftovers can differ for
+any reason.
+
+Peeky checks addresses, not where a pointer came from:
+
+- A pointer into a call that returned reads as live where a later call's local of its type is at
+  that address now.
+- A pointer to a member Peeky doesn't list is marked. It lists a struct's members three levels
+  deep, and the members of an array's first 16 elements.
+- In a method of a C++ object made with `new`, what `this` points at is marked: it is a heap
+  block.
+- A pointer into a library's own memory, such as `stdout`, is marked.
+- A C++ reference, and a smart pointer's object, aren't checked.
+- A pointer with a `note` already, such as a local on a `do` body's first line, keeps that note
+  on what is read through it. It may hold leftovers itself
+  ([7.1](#values-peeky-withholds-or-cant-vouch-for)).
+
+lldb-dap 18 gives no address for a number, `char` array or pointer local, or a `std::string`.
+Peeky then asks for `&name`, as a hover that reads the variable and runs nothing. It asks only for
+locals that may hold what the pointer points at. It reads `argv[N]` the same way.
+
+Peeky bounds what it reads per stop: 32 locals asked for, 256 locals of a frame, 64 that need
+asking, and 64 argument strings. Where a bound left a local unplaced, the note says only that:
+`Peeky didn't place every local at this stop: the per-stop limit was reached`. It never says the
+pointer points at no local then, or below the stack pointer. Where only the argument strings were
+cut short, it says so: ``Peeky didn't read every one of `main`'s argument and environment
+strings``.
 
 ### Which element's address a pointer holds
 
@@ -202,6 +318,8 @@ Peeky looks for the array in the locals of each frame it lists, at most ten:
   elements of an array of structs (`rs[1].buf`).
 - In C++, an array member of the object `this` points at (`this.buf_`). A `std::array` counts as
   an array.
+- A 2-D array counts as one array of its innermost elements, row after row: `char names[4][16]`
+  holds 64 `char`s.
 - The pointer points at the array's element type, of its size, as for an element
   ([above](#which-elements-address-a-pointer-holds)).
 - In another source file, a struct, class or union is that type only with the same layout: its
@@ -224,17 +342,20 @@ such as `{"selector": "queue", "length": 4}`. Where another frame holds the arra
 that frame's index and function: `"frame": 1, "function": "main"`. The store keeps the pointer's
 address, and the reason in place of what it points at.
 
-Peeky can't tell in these cases, so it reads what the pointer points at, as for any pointer:
+Peeky can't tell in these cases, so it reads what the pointer points at, as for any pointer. It
+marks it `[unproven]` unless the address is in an object it places
+([above](#when-what-a-pointer-points-at-is-unproven)):
 
 - One past a single object, such as `&x + 1`. Locals of one type often sit side by side, so a
   pointer to the second would be refused too.
-- An array Peeky doesn't list: a global or `static` one, a heap block, a 2-D array, or one held
-  deeper than above.
+- An array Peeky doesn't list: a global or `static` one, a heap block, or one held deeper than
+  above.
 - An array whose address lldb-dap doesn't give. lldb-dap 18 gives none for a `char` array or a
   `std::array`, and lldb-dap 20 and later give every value's.
 - An address two or more elements past the end, or before the start.
 - An array of an enum, or of a struct whose layout Peeky didn't read whole, in another source
-  file than the pointer's function.
+  file than the pointer's function. A pointer to an enum local in another file is marked
+  `[unproven]` for the same reason.
 
 ### How far a pointer is from a pointer parameter
 
@@ -449,6 +570,72 @@ How Peeky reads the source:
 - Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
   lone `\n` each end a line; `\n\r` is two line ends.
 
+### When the program crashes
+
+A crash is the program's failure, not Peeky's. It can be a fault, such as `strlen(NULL)`, or a
+signal. It can be `abort`, after an uncaught C++ exception, `std::terminate` or a failed `assert`.
+Most such crashes stop in libc, the C++ runtime or `abort`, outside your sources.
+
+LLDB stops on other signals too, and on a C++ throw or catch filter. So Peeky calls a stop a crash
+only with proof:
+
+- The signal is SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE. On macOS, that includes a Mach
+  exception that becomes one, such as `EXC_BAD_ACCESS`. It also includes LLDB's `hit program
+  assert`.
+- The program neither handles nor ignores that signal. Peeky reads the program's signal masks, and
+  runs nothing in it: Linux's `/proc/PID/status`, or macOS's process information.
+
+Any other such stop isn't a crash. Examples are a SIGINT or SIGPIPE the program handles, and a
+filter's stop. Where Peeky can't read the masks, it doesn't call the stop a crash either.
+
+A probe ends at the crash with `status: failed` and `PROGRAM_CRASHED`. The hits before it stand,
+and the output so far is kept:
+
+```
+status: failed  hits: 1 before it failed  seconds: 1.224  max pause: 117.3 ms
+error [PROGRAM_CRASHED]: The program crashed after hit 1: signal SIGABRT, outside the program's sources, in a call from main at abort.cpp:12, after a C++ exception that nothing caught. Peeky ended it there, so it has no exit status
+hint: The program failed, not Peeky: its output may say why. Probe a line before the crash to see the values that led to it.
+cleanup: terminated pids 20244, 20245
+output so far (the program was stopped at its crash):
+  before 1
+  before 2
+  libc++abi: terminating due to uncaught exception of type std::length_error: basic_string
+```
+
+- The message gives what the debugger says, such as `signal SIGABRT` or `EXC_BAD_ACCESS`. It
+  names the nearest frame of your code, among the first 64.
+- An uncaught exception is named where `__cxa_throw` called `std::terminate`. LLDB doesn't say
+  its type, but the C++ runtime writes it to the output.
+- JSON has `crash`: `description`, `outside_program`, `frame`, `function`, `location`, and
+  `uncaught_exception` where it applies.
+- Peeky ends the program at the crash, so there is no exit status. On macOS, a fault would stop
+  again at each `continue`.
+- An exception that the program catches never stops it.
+
+At a stop that isn't a crash, a probe reads nothing and lets the program go on, with a warning.
+For a signal, the warning adds that LLDB may not deliver it to the program. So the run after it can
+differ from one without Peeky.
+
+At the 100th such stop in a row, the probe ends with `BUDGET_EXHAUSTED`. The same stop means the
+same description, place, and nearest frame of your code. A loop may raise a signal that often, or
+LLDB may stop there again without letting the program past. On
+macOS, a fault that the program handles does that. Peeky can't tell which, and the message says
+so. Probe a line before those stops, or use an input that doesn't raise them.
+
+In a session, the state says the same, and `crash` is in its JSON. At any other signal stop, or a
+C++ throw or catch filter's, the JSON has `signal_stop` instead. It has the same fields, and
+`kind`: `signal`, `exception` (a macOS Mach exception), or the filter's name, such as
+`cpp_throw`. Nothing in a frame outside your sources is read, at a crash or any other such stop.
+`session inspect` there is refused, and the session goes on:
+
+```
+peeky: [INVALID_REQUEST] Nothing in frame 0 (__pthread_kill) is read: it is outside the program's sources, where the program crashed (signal SIGABRT). Frame 12, main at abort.cpp:12, is the nearest of your code: `session inspect --frame 12`
+```
+
+`--frame N` reads that frame as any caller's, even past the 10 frames listed. Its values are
+never settable. A frame of your code whose line or module doesn't match the build still fails,
+with `DEBUGGER_ERROR`.
+
 ## 7.1 C and C++
 
 This section shows what Peeky reads and changes in C and C++. Start with the quick start. The
@@ -485,6 +672,9 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   ``read through `q`: …``. The note is in captures, in `session get` children (marked `[note]`) and
   in the evidence. Don't trust a value marked with a `note`, or anything read through that value.
   `--set` refuses them wherever it refuses the local.
+- **`[unproven]`** marks a value read through a pointer that Peeky can't show points at a live
+  object: into a call that returned, a heap block, or past an array. Its note says why. Don't
+  trust it as the object's value ([details](#when-what-a-pointer-points-at-is-unproven)).
 - On a line a loop returns to, such as a `do` body's first line, read the value on the next line.
 - Below a `setjmp` call, a local declared at or below the stop shows a `note` instead of
   `no value yet`. It reads plainly below its declaration.

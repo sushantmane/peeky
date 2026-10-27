@@ -371,9 +371,12 @@ def test_a_local_holds_its_arrays_and_their_members_where_the_debug_information_
     found = held(10, "size=4", "arr", kind="std::array<long, 4>", reference="0x5000")
     assert found == [("arr", {"address": 0x5000, "length": 4, **long8})]
     assert held(10, "size=4", "arr", kind="std::array<long, 4>") == []
-    # No address, a 2-D array, or a local reached through a reference: none.
+    # A 2-D array is an array of its innermost elements, row after row (#339).
+    assert held(11, "long[2][2] @ 0x1000", "grid") == [
+        ("grid", {"address": 0x1000, "length": 4, **long8, "dims": [2, 2]})
+    ]
+    # No address, or a local reached through a reference: none.
     assert held(3, "[1, 2, 3, 4]", "queue") == []
-    assert held(11, "long[2][2] @ 0x1000", "grid") == []
     assert held(4, "two @ 0x1000", "t", reached=True) == []
 
 

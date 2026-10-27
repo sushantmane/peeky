@@ -17,7 +17,10 @@ from peeky.textlines import split_lines
 # `target`, and returns `restore`. A protocol 3 worker would take `@before` for a value.
 # 5 (#336): the worker withholds what a C or C++ pointer one past an array's end points
 # at (`past_end`); a protocol 4 worker reads `end[0]` and LLDB's text there as values.
-PROTOCOL_VERSION = 5
+# 6 (#339): what is read through a C or C++ pointer Peeky can't show points at a live
+# object is marked `unproven`, with why (`unproven_read`); a protocol 5 worker shows it
+# as a plain value, and a protocol 5 client would take the mark for a Rust pointer's.
+PROTOCOL_VERSION = 6
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -342,6 +345,16 @@ _MUTATION_HINTS = (
         r"[Tt]he debugger refused to change",
         "Observe the value, or edit the source (`--old`/`--new`) and verify it. The debugger "
         "itself refused this write, which no [settable] mark can promise.",
+    ),
+    (
+        # #329: a static or thread-local may keep what was computed from it, out of reach.
+        r"a static or thread-local may hold state derived from",
+        "Change it before the program uses it (a stop on an earlier line, or `--set-at` there).",
+    ),
+    (
+        # #329: a static or thread-local may keep the copy, which no change Peeky makes reaches.
+        r"a static or thread-local may hold a copy of",
+        "Change it before the program copies it (a stop on an earlier line, or `--set-at` there).",
     ),
     (
         # #320 review: a binding a call returned may hold a copy or only point into it.
