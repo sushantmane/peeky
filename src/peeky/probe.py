@@ -2195,14 +2195,15 @@ def pointee_place(address, sp, bases, settled=True):
     return "unplaced"
 
 
-def unproven_text(pointer, why, text=False):
+def unproven_text(pointer, why, text=False, reference=False):
     """The note on what is read through the C or C++ pointer named ``pointer``, which
     Peeky can't show points at a live object (#339): the rule, why, then what to do.
     ``why``: ``pointee_past``'s, {"kind": "union", "selector", place}, or {"kind":
     ``pointee_place``'s, "image" or "limit" (with `limits`: "locals", "arguments"),
     "statics": whether Peeky knew where the program's image is}. ``text``: the note of the
     pointer's own row, whose text LLDB read through it (a `char *`'s); with ``pointer``
-    None, of the one a function returned."""
+    None, of the one a function returned. ``reference``: ``pointer`` is a reference (a GCC
+    lambda's capture by reference, #361), which refers to what it reads."""
     kind = why.get("kind")
     if kind in ("past", "before"):
         base = why.get("selector")
@@ -2272,8 +2273,8 @@ def unproven_text(pointer, why, text=False):
     what = "its text" if text else "this value"
     named = f"`{pointer}`" if pointer else "the pointer it returned"
     note = (
-        f"Peeky can't show that {named} points at a live object, so {what} may be left over: "
-        f"{reason}"
+        f"Peeky can't show that {named} {'refers to' if reference else 'points at'} a live "
+        f"object, so {what} may be left over: {reason}"
     )
     return note if text else f"read through `{pointer}`: {note}"
 

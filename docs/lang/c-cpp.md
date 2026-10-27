@@ -13,7 +13,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
 - unordered containers show no entries, unless LLDB's count is the container's own;
-- a lambda's captures can't be read: they are `not found` in the lambda;
+- a lambda's captures are read through `__closure`, but are `not found` in an optimized build, and
+  at a one-line lambda's first stop
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-a-lambdas-captures)); none can be changed;
 - a one-line function's parameters can show `no value yet` at a stop on its line;
 - a `const` local aggregate GCC builds at compile time is in read-only data, and `not found`;
 - GDB's DAP isn't supported.

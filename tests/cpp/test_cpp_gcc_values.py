@@ -737,3 +737,211 @@ def test_an_optimized_pair_binding_never_shows_its_elements_address(cpp, optimiz
         if row.get("value") is not None:
             # The element, or nothing: never its address.
             assert row["value"] == {"r": str(1001 + row["hit"] - 1), "s": "2"}[row["selector"]]
+
+
+CAPTURES = """#include <algorithm>
+#include <cstdio>
+#include <vector>
+
+struct Pt { long x, y; };
+
+int main() {
+    std::vector<long> sizes{3, 1, 2};
+    int bonus = 2;
+    long count = 7;
+    Pt pt{3, 4};
+    long *heap = new long(40);
+    long &held = *heap;
+    char *word = new char[5]{'h', 'e', 'a', 'p', 0};
+    auto m = [bonus, &count, pt, n = count + 1]() mutable {
+        bonus += 1; // IN_MUTABLE
+        count += n + pt.x;
+        return bonus;
+    };
+    m();
+    auto refs = [&](int k) {
+        count += k + bonus + held + word[4]; // IN_REFS
+        return count;
+    };
+    refs(2);
+    std::sort(sizes.begin(), sizes.end(), [&sizes, bonus](long a, long b) {
+        return a + bonus > b + (long)sizes.size(); // IN_SORT
+    });
+    auto one = [bonus](int k) { return k + bonus; }; // ONE_LINE
+    long total = one(4);
+    std::printf("CAPS:%d %ld %ld %ld\\n", bonus, count, total, sizes[0]);
+    delete heap;
+    delete[] word;
+    return 0;
+}
+"""
+
+
+def capture_rows(source, marker, names, capsys, hits="1"):
+    code, result = probe(source, line_of(CAPTURES, f"// {marker}"), names, capsys, "--hits", hits)
+    assert code == 0 and "CAPS:2 62 6 3" in result["output"], result
+    return {(row["hit"], row["selector"]): row for row in result["rows"]}
+
+
+@pytest.mark.timeout(300)
+def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, capsys):
+    # #361: GCC passes a lambda's captures through `__closure`, which lldb-dap doesn't
+    # list, so each was `not found` in the lambda. clang lists them as members of `this`.
+    compiler, root = cpp
+    source = root / "caps.cpp"
+    source.write_text(CAPTURES)
+    mutable = capture_rows(source, "IN_MUTABLE", "bonus,count,pt,pt.x,n", capsys)
+    refs = capture_rows(source, "IN_REFS", "bonus,count,held,word,k", capsys)
+    sort = capture_rows(source, "IN_SORT", "bonus,sizes", capsys)
+    # A one-line lambda's first stop is in `main`; its second, before the lambda stores
+    # `__closure`, where no capture is read.
+    one = capture_rows(source, "ONE_LINE", "bonus", capsys, "all")
+    if compiler == "clang":
+        # Unchanged: a capture is a member of the lambda's `this`, which a selector names.
+        for rows in (mutable, sort):
+            assert all(
+                row["error"].startswith("not found")
+                and f"this has a member '{name}'" in row["error"]
+                for (_, name), row in rows.items()
+                if "." not in name
+            ), rows
+        assert "__closure" not in json.dumps([list(r.values()) for r in (mutable, refs, sort, one)])
+        return
+    # By value: the lambda's copy; by reference: what it refers to, the reference's type
+    # kept as the debugger's. Never settable: the lambda's object holds them.
+    assert {name: row["value"] for (_, name), row in mutable.items()} == {
+        "bonus": "2",
+        "count": "7",
+        "pt": "{x = 3, y = 4}",
+        "pt.x": "3",
+        "n": "8",
+    }, mutable
+    assert (mutable[1, "count"]["type"], mutable[1, "count"]["debugger_type"]) == (
+        "long",
+        "long &",
+    )
+    for row in mutable.values():
+        assert row["settable"] is False and row["not_settable"] == "capture", row
+        assert "view" not in row and "note" not in row, row
+    # The lambda's object is `refs` in `main`, and what `count` and `bonus` refer to are
+    # `main`'s locals: proven. `held` refers to a heap block, which Peeky can't prove.
+    assert [refs[1, name]["value"] for name in ("bonus", "count", "held")] == ["2", "18", "40"]
+    assert "view" not in refs[1, "count"] and "view" not in refs[1, "bonus"], refs
+    assert refs[1, "held"]["view"] == "unproven", refs
+    assert refs[1, "held"]["note"].startswith(
+        "read through `held`: Peeky can't show that `held` refers to a live object, so this "
+        "value may be left over: its address is in no local, member or element"
+    ), refs
+    # A pointer captured by reference shows its value: its text is read through it.
+    assert refs[1, "word"]["type"] == "char *" and refs[1, "word"]["view"] == "unproven", refs
+    assert refs[1, "word"]["value"].endswith('"heap"'), refs
+    assert refs[1, "word"]["note"].startswith(
+        "Peeky can't show that `word` points at a live object, so its text may be left over"
+    ), refs
+    assert refs[1, "k"]["value"] == "2" and refs[1, "k"]["settable"] is True, refs
+    # `std::sort` calls a copy of the lambda's object, which no frame Peeky lists holds.
+    assert sort[1, "bonus"]["value"] == "2", sort
+    assert sort[1, "sizes"]["type"] == "std::vector<long>", sort
+    for row in sort.values():
+        assert row["view"] == "unproven", row
+        assert row["note"].startswith(
+            "read through `__closure`: Peeky can't show that `__closure` points at a live "
+            "object, so this value may be left over: it points into the stack"
+        ), row
+    assert one[1, "bonus"]["value"] == "2" and one[1, "bonus"]["function"] == "main", one
+    assert one[2, "bonus"]["error"].startswith(
+        "not found: 'bonus' is a capture of this lambda, which GCC passes through "
+        "`__closure`, and lldb-dap doesn't list it"
+    ), one
+
+
+@pytest.mark.timeout(240)
+def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
+    # #361: a capture, or a member of one, is reached through `__closure`: refused before
+    # the program runs, and at a stop, saying so.
+    compiler, root = cpp
+    source = root / "caps.cpp"
+    source.write_text(CAPTURES)
+    line = line_of(CAPTURES, "// IN_MUTABLE")
+    code, result = probe(source, line, "bonus", capsys, "--set", "bonus=5")
+    assert code != 0 and result["status"] == "failed", result
+    if compiler == "gcc":
+        assert result["error"]["code"] == "MUTATION_REJECTED", result
+        assert (
+            "is reached through a pointer or reference (a C++ structured binding of a "
+            "reference, or of a pair or tuple, a GCC lambda's capture" in result["error"]["message"]
+        )
+    assert main(["session", "start", str(source), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        refused = []
+        for change in ("n=9", "pt.x=9"):
+            assert main(["session", "set", change]) != 0
+            refused.append(capsys.readouterr().err)
+        main(["session", "get", "n", "pt.x", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    if compiler == "clang":
+        assert all("not" in text for text in refused), refused
+        return
+    assert (
+        "MUTATION_REJECTED" in refused[0]
+        and (
+            "'n' cannot be changed: `n` is a capture of this lambda, so it is reached through a "
+            "pointer or reference: GCC keeps it in the lambda's object"
+        )
+        in refused[0]
+    ), refused
+    assert "`pt.x` cannot be changed: `pt` is a capture of this lambda" in refused[1], refused
+    # Nothing changed.
+    assert [rows["n"]["value"], rows["pt.x"]["value"]] == ["8", "3"], rows
+
+
+OPTIMIZED_CAPTURES = """#include <cstdio>
+int main(int argc, char **) {
+    int bonus = argc + 1;
+    long count = argc * 7;
+    auto f = [bonus, &count](int k) __attribute__((noinline)) {
+        count += k + bonus; // IN_OPT
+        std::printf("OPT:%ld\\n", count);
+        return count;
+    };
+    long a = f(1);
+    long b = f(2);
+    std::printf("%ld %ld\\n", a, b);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_an_optimized_lambdas_captures_are_not_read(cpp, optimization):
+    # #361: optimized, a `mutable` lambda may keep a capture in a register while its
+    # object holds an older value: no capture is read through `__closure` there.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "opt.cpp").write_text(OPTIMIZED_CAPTURES)
+    adapter = NativeTarget(
+        sources=("opt.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    line = line_of(OPTIMIZED_CAPTURES, "// IN_OPT")
+    result = run_probe(
+        root, Probe("opt.cpp", line, ("bonus", "count"), hits="all"), adapter=adapter
+    )
+    assert result["status"] == "completed", result.get("error")
+    for row in result["rows"]:
+        assert row.get("not_settable") != "capture" and "__closure" not in row.get("note", ""), row
+        if row.get("function", "").startswith("operator()"):
+            assert row.get("value") is None, row

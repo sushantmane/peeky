@@ -2097,6 +2097,8 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 ),
                 # The names a GCC lambda reads through `__closure` (_gcc_captures).
                 "captures": _gcc_captures(dies, entry),
+                # Which member of the lambda's object holds each (_gcc_capture_members).
+                "capture_members": _gcc_capture_members(dies, entry),
             }
         )
     return table
@@ -2124,6 +2126,102 @@ def _gcc_captures(dies, entry):
                 and name != "this"
             }
         )
+    )
+
+
+def _type_at(value):
+    """The DIE offset a DW_AT_type (`0x0000b343 "long &"`) names, or None."""
+    found = _REFERENCE.fullmatch(value or "")
+    return int(found[1], 16) if found else None
+
+
+def _offset_text(text):
+    """A number dwarfdump writes as hex (`0x08`) or decimal (`8`), or None."""
+    text = (text or "").strip()
+    if re.fullmatch(r"0x[0-9a-fA-F]+", text):
+        return int(text, 16)
+    return int(text) if re.fullmatch(r"[0-9]+", text) else None
+
+
+def _pointed_record(dies, value):
+    """The class or struct DIE a pointer type (``value``, a DW_AT_type) points at, past
+    qualifiers and typedefs on either side of the pointer; None for any other type."""
+    found, pointer = dies.get(_type_at(value)), False
+    for _ in range(16):
+        if found is None:
+            return None
+        if found["tag"] == "DW_TAG_pointer_type" and not pointer:
+            pointer = True
+        elif found["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type"):
+            return found if pointer else None
+        elif found["tag"] not in ("DW_TAG_const_type", "DW_TAG_volatile_type", "DW_TAG_typedef"):
+            return None
+        found = dies.get(_type_at(found["attrs"].get("DW_AT_type")))
+    return None
+
+
+def _gcc_capture_members(dies, entry):
+    """((capture, member, type offset), ...) of a GCC lambda's call operator (``entry``):
+    for each capture _gcc_captures names, the member of the lambda's object that holds
+    it, in the object's order (#361). GCC places each capture's artificial variable at a
+    member's offset in what `__closure` points at (`DW_OP_fbreg -24, DW_OP_deref,
+    DW_OP_plus_uconst 0x8`), of that member's type, made `const` where the lambda is not
+    `mutable`. A capture is given only where all of that holds, with exactly one member
+    at its offset: the debugger lists the object's members by their own names (GCC 13's
+    `__bonus`), and lists neither `__closure` nor the variables among the frame's locals.
+    The type is the variable's (`const int`, `long &`)."""
+    at = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
+    pointer = int(at[1], 16) if at else None
+    if pointer not in dies or _text(dies[pointer]["attrs"].get("DW_AT_name")) != "__closure":
+        return ()
+    location = (dies[pointer]["attrs"].get("DW_AT_location") or "").strip()
+    record = _pointed_record(dies, _first(dies, _chain(dies, pointer), "DW_AT_type"))
+    if record is None or not re.fullmatch(r"DW_OP_fbreg -?[0-9]+", location):
+        return ()
+    members = {}
+    for child in record["children"]:
+        die = dies[child]
+        offset = _offset_text(die["attrs"].get("DW_AT_data_member_location"))
+        if die["tag"] == "DW_TAG_member" and offset is not None:
+            name = _text(die["attrs"].get("DW_AT_name"))
+            members.setdefault(offset, []).append((name, _type_at(die["attrs"].get("DW_AT_type"))))
+    read = re.compile(
+        re.escape(location) + r", DW_OP_deref(?:, DW_OP_plus_uconst (0x[0-9a-fA-F]+|[0-9]+))?"
+    )
+    found, seen = {}, set()
+    for body in entry["bodies"]:
+        for child in dies[body]["children"]:
+            die = dies[child]
+            name = _text(die["attrs"].get("DW_AT_name"))
+            if (
+                die["tag"] != "DW_TAG_variable"
+                or "DW_AT_artificial" not in die["attrs"]
+                or not name
+                or name == "this"
+            ):
+                continue
+            if name in seen:
+                # Declared twice: which one the code names is not told.
+                found.pop(name, None)
+                continue
+            seen.add(name)
+            place = read.fullmatch((die["attrs"].get("DW_AT_location") or "").strip())
+            offset = (_offset_text(place[1]) if place[1] else 0) if place else None
+            held = members.get(offset) if offset is not None else None
+            if not held or len(held) != 1 or not held[0][0] or held[0][1] is None:
+                continue
+            kind = _type_at(die["attrs"].get("DW_AT_type"))
+            qualified = dies.get(kind)
+            if kind != held[0][1] and not (
+                qualified is not None
+                and qualified["tag"] == "DW_TAG_const_type"
+                and _type_at(qualified["attrs"].get("DW_AT_type")) == held[0][1]
+            ):
+                continue
+            found[name] = (offset, held[0][0], kind)
+    return tuple(
+        (name, member, kind)
+        for name, (_, member, kind) in sorted(found.items(), key=lambda item: item[1][0])
     )
 
 
@@ -2347,9 +2445,9 @@ def _not_framed(name, storages):
     if "through" in storages:
         return (
             f"`{name}` is reached through a pointer or reference (a C++ structured binding "
-            "of a reference, or of a pair or tuple, a named return value or a C `__block` "
-            "variable). Change the value where it is owned: Peeky changes only values the "
-            "frame holds itself"
+            "of a reference, or of a pair or tuple, a GCC lambda's capture, a named return "
+            "value or a C `__block` variable). Change the value where it is owned: Peeky "
+            "changes only values the frame holds itself"
         )
     return (
         f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
@@ -4270,6 +4368,26 @@ def _pointer_type(kind):
 # What an element of an array, or what a pointer points at, can be for an offset into an
 # array to be proven (#302): never an incomplete type, a reference or a map entry.
 _ELEMENTS = frozenset({"record", "union", "scalar", "pointer", "library"})
+
+
+def _pointee(target):
+    """What a pointer or reference to ``target`` (a ``native_previews.Typed``) reads, for
+    the rule on reading through it (#339): {"pointee": its type's ``Typed.identity``,
+    "element_size", "count": how many, more than one for an array}. None where the
+    build's debug information doesn't say: a `void`, a function, an incomplete type."""
+    count = 1
+    if target is not None and target.kind() == "array":
+        count, target = target.count(), target.element()
+        if type(count) is not int or count < 1 or target.dims:
+            return None
+    if target is None or target.kind() not in _ELEMENTS:
+        return None
+    identity, size = target.identity(), target.byte_size()
+    if identity is None or type(size) is not int or size < 1:
+        return None
+    return {"pointee": identity, "element_size": size, "count": count}
+
+
 # How many arrays and objects one local holds that ``held_extents`` lists (#336).
 HELD_EXTENTS = 64
 # lldb-dap's text for a value with neither a value nor a summary: its type and address.
@@ -4657,6 +4775,73 @@ class NativeSession:
         cannot place it."""
         function = self._function_at(frame)
         return list((function or {}).get("captures") or ())[:50]
+
+    def capture_members(self, frame):
+        """[(capture, member)] of the GCC lambda a frame runs (_gcc_capture_members): the
+        worker reads each capture as that member of what `__closure` points at (#361).
+        Empty for any other frame, or where Peeky cannot place it. A capture whose name
+        the lambda also declares with another type is left out: the rules that read a
+        value's type by its name couldn't tell which one it is."""
+        function = self._function_at(frame) or {}
+        types = function.get("types") or {}
+        return [
+            (name, member)
+            for name, member, _ in function.get("capture_members") or ()
+            if len({kind for kind, _, _ in types.get(name) or ()}) == 1
+        ][:50]
+
+    def captures_unread(self, frame):
+        """Why the worker reads no capture of the GCC lambda ``frame`` runs, or None
+        (#361): an optimized build, where a `mutable` lambda may keep a capture in a
+        register while its object holds an older value; or a stop where `__closure` may
+        hold leftovers, before the lambda's prologue stores it (a one-line lambda's first
+        instruction). There a capture stays `not found`, saying why it isn't listed."""
+        if getattr(getattr(self, "target", None), "optimization", "O0") != "O0":
+            return "the build is optimized"
+        if self._prologue_unstored({"name": "__closure"}, frame) is not None:
+            return "the lambda has not stored `__closure` at this stop"
+        return None
+
+    def _capture_type(self, frame, name):
+        """``native_previews.Typed`` of the GCC lambda capture ``name`` of ``frame``: its
+        artificial variable's type (`const int`, `long &`), or None."""
+        from peeky.native_previews import Typed
+
+        if getattr(self, "fields", None) is None:
+            return None
+        function = self._function_at(frame) or {}
+        kinds = {kind for each, _, kind in function.get("capture_members") or () if each == name}
+        return Typed(self.fields, kinds.pop()) if len(kinds) == 1 else None
+
+    def capture_referent(self, frame, name):
+        """What the GCC lambda capture ``name`` of ``frame`` refers to, where the lambda
+        captures it by reference, as pointee_of gives a pointer's (#361): the rule on
+        reading through a pointer (#339) judges it. None for a capture by value, or what
+        the build's debug information doesn't size."""
+        typed = self._capture_type(frame, name)
+        if typed is None or typed.kind() != "reference":
+            return None
+        return _pointee(typed.target())
+
+    def captured_pointer(self, frame, name):
+        """What the pointer a GCC lambda capture ``name`` of ``frame`` refers to points at,
+        where the lambda captures a pointer by reference (#361), as pointee_of gives a
+        pointer's: a `char *`'s text is read through it. None otherwise."""
+        typed = self._capture_type(frame, name)
+        target = typed.target() if typed is not None and typed.kind() == "reference" else None
+        if target is None or target.kind() != "pointer":
+            return None
+        return _pointee(target.target())
+
+    def capture_refusal(self, name):
+        """Why a change to the GCC lambda capture ``name`` (or what it holds) is refused
+        (#361), as _not_framed says it of a structured binding of a reference."""
+        return (
+            f"`{name}` is a capture of this lambda, so it is reached through a pointer or "
+            "reference: GCC keeps it in the lambda's object, which this frame reads through "
+            "`__closure`. Change the value where it is owned: Peeky changes only values the "
+            "frame holds itself"
+        )
 
     def static_locals(self, frame):
         """The names the function a frame runs declares in static storage (a fixed
@@ -5335,17 +5520,7 @@ class NativeSession:
         typed = self._typed(frame, list(steps))
         if typed is None or typed.bits is not None or typed.entry or typed.kind() != "pointer":
             return None
-        target, count = typed.target(), 1
-        if target is not None and target.kind() == "array":
-            count, target = target.count(), target.element()
-            if type(count) is not int or count < 1 or target.dims:
-                return None
-        if target is None or target.kind() not in _ELEMENTS:
-            return None
-        identity, size = target.identity(), target.byte_size()
-        if identity is None or type(size) is not int or size < 1:
-            return None
-        return {"pointee": identity, "element_size": size, "count": count}
+        return _pointee(typed.target())
 
     def static_ranges(self):
         """Where the program's own image is loaded (#339): [(start, end)] of each segment
@@ -5885,6 +6060,9 @@ class NativeSession:
         long> >::type`, as the binding is declared, where LLDB names the reference (`…
         &&`). None for any other value, whose type stays LLDB's."""
         bare = re.fullmatch(r"(.*?\S)\s*&{1,2}\s*", str(variable.get("type") or ""))
+        if top and bare is not None and variable.get("peekyCapture") is True:
+            # A GCC lambda's capture by reference, shown as what it refers to (#361).
+            return bare[1]
         if not top or bare is None or not isinstance(self._element_binding(variable, frame), tuple):
             return None
         return bare[1]
@@ -5903,7 +6081,12 @@ class NativeSession:
         - {"strip": True} for a struct, class, array or standard container, whose
           members the debugger lists as the reference's own: element_text shows it.
 
-        ``fetch(reference, count)``: the first children the debugger lists for a value."""
+        ``fetch(reference, count)``: the first children the debugger lists for a value.
+
+        A GCC lambda's capture by reference (#361) is shown so too, as what it refers to:
+        the code names that object by the capture's name."""
+        if variable.get("peekyCapture") is True:
+            return self._captured_element(variable, frame, fetch)
         found = self._element_binding(variable, frame)
         if found is False:
             return None
@@ -5921,7 +6104,48 @@ class NativeSession:
         base = shown[0] if shown else name
         if (dead := self._bound_alive(frame, base, found[2], found[3])) is not None:
             return dead
-        target = found[1]
+        unread = (
+            f"`{base}` is a structured binding the build holds as a reference to its "
+            "element, which the debugger shows as an address, and the debugger listed no "
+            "element through it{}; print it from the program"
+        )
+        return self._referred(variable, found[1], fetch, unread)
+
+    def _captured_element(self, variable, frame, fetch):
+        """bound_element of a GCC lambda's capture (#361): None for one by value, which
+        shows as the debugger lists it; one by reference as what it refers to
+        (_referred); withheld where the build's debug information doesn't type it."""
+        name = str(variable.get("name") or "")
+        if not str(variable.get("type") or "").rstrip().endswith("&"):
+            return None
+        typed = self._capture_type(frame, name)
+        if typed is None or typed.kind() != "reference":
+            return Withholding(
+                f"`{name}` is a capture of this lambda by reference, and Peeky can't read its "
+                "type in the build's debug information to show what it refers to; print it "
+                "from the program",
+                "not shown",
+                None,
+            )
+        unread = (
+            f"`{name}` is a capture of this lambda by reference, which the debugger shows as "
+            "an address, and the debugger listed nothing through it{}; print it from the "
+            "program"
+        )
+        found = self._referred(variable, typed.target(), fetch, unread)
+        if isinstance(found, dict) and isinstance(found.get("variable"), dict):
+            found["variable"]["peekyCapture"] = True
+        return found
+
+    @staticmethod
+    def _referred(variable, target, fetch, unread):
+        """What a reference ``variable`` refers to, as bound_element shows it: {"strip":
+        True} for a struct, class, array or standard container (``target``, the
+        ``Typed`` it refers to), whose members the debugger lists as the reference's own;
+        else {"variable": the debugger's one child under it, named as the row and listing
+        nothing}; or a Withholding (``unread``, with a `{}` for why) where the debugger
+        lists no such child."""
+        name = str(variable.get("name") or "")
         if target is not None and target.kind() in (
             "record",
             "union",
@@ -5930,11 +6154,6 @@ class NativeSession:
             "incomplete",
         ):
             return {"strip": True}
-        unread = (
-            f"`{base}` is a structured binding the build holds as a reference to its "
-            "element, which the debugger shows as an address, and the debugger listed no "
-            "element through it{}; print it from the program"
-        )
         reference = variable.get("variablesReference")
         try:
             children = fetch(reference, 2) if type(reference) is int and reference > 0 else []
@@ -5962,10 +6181,15 @@ class NativeSession:
         located = re.fullmatch(r"(0x[0-9a-fA-F]{1,16})(?: (.+))?", str(value or ""), re.S)
         if located is None:
             name = split_located(str(variable.get("name") or ""))
+            what = (
+                "a capture of this lambda by reference"
+                if variable.get("peekyCapture") is True
+                else "a structured binding the build holds as a reference to its element"
+            )
             return Withholding(
-                f"`{name[0] if name else variable.get('name')}` is a structured binding the "
-                "build holds as a reference to its element, and the debugger shows it as "
-                f"{str(value)[:60]!r}, not that element's address; print it from the program",
+                f"`{name[0] if name else variable.get('name')}` is {what}, and the debugger "
+                f"shows it as {str(value)[:60]!r}, not the address of what it refers to; "
+                "print it from the program",
                 "not shown",
                 None,
             )
@@ -5988,7 +6212,16 @@ class NativeSession:
         element (#291) is withheld instead: until its declaration runs on this pass, that
         reference may point anywhere, and nothing is read through it. So is one at a stop
         on its declaration's lines in an optimized build, where whether that has run on
-        this pass cannot be told."""
+        this pass cannot be told.
+
+        A GCC lambda's capture the worker reads through `__closure` (#361) has no
+        declaration in the lambda: the lambda's object holds it from before the call. It
+        is withheld only where that object may be under construction, as clang's `this`
+        is there (_under_construction)."""
+        if variable.get("peekyCapture") is True:
+            if (unread := self.captures_unread(frame)) is not None:
+                return f"Peeky reads no capture of this lambda here: {unread}"
+            return self._under_construction(frame, stack, deeper, captured=True)
         reason = self._not_yet_declared(variable, frame, innermost, stack, deeper, siblings, stop)
         if reason is not None and not isinstance(reason, ValueNote):
             return reason
@@ -6610,12 +6843,14 @@ class NativeSession:
             return None
         return self._statements(found) if found != str(source) else None
 
-    def _under_construction(self, frame, stack, deeper=None):
+    def _under_construction(self, frame, stack, deeper=None, captured=False):
         """Why `this` in ``frame`` (C++) may point to an object still being built, or
         None: the frame runs its constructor, a constructor runs below the frame
         (``stack``, innermost first; ``deeper()`` lists up to 64 frames when the ten
         listed do not reach the bottom, and beyond that it is unknown), or the frame runs
-        a lambda defined where what it captures may be under construction."""
+        a lambda defined where what it captures may be under construction. With
+        ``captured``, the same of a GCC lambda's capture (#361), read through its object
+        as clang's are through `this`."""
         if getattr(self.target, "language", None) != "cpp" or not isinstance(frame, dict):
             return None
         frames = [listed for listed in stack or () if isinstance(listed, dict)]
@@ -6627,6 +6862,10 @@ class NativeSession:
             "its members may not be initialized yet and may hold leftovers; read them once "
             "it returns"
         )
+        pointing = "`this` may point to the object it is building"
+        if captured:
+            unread = "it may not be initialized yet and may hold leftovers; read it once it returns"
+            pointing = "what this lambda captures may be part of the object it is building"
         if self._constructs(frame):
             return f"the object this constructor ({frame.get('name')}) is building: {unread}"
         if (self._function_at(frame) or {}).get("initializer"):
@@ -6643,7 +6882,7 @@ class NativeSession:
                 if self._constructs(caller):
                     return (
                         f"a constructor ({caller.get('name')}) called this frame, directly "
-                        f"or not, so `this` may point to the object it is building: {unread}"
+                        f"or not, so {pointing}: {unread}"
                     )
             if complete or attempt or deeper is None:
                 break
@@ -6657,16 +6896,17 @@ class NativeSession:
         if not complete:
             return (
                 "Peeky cannot list every frame below this one, so a constructor may be "
-                f"running there and `this` may point to the object it is building: {unread}"
+                f"running there and {pointing}: {unread}"
             )
         entry = self._function_at(frame)
         if entry is None or entry.get("enclosing") is None:
             return None
         if (outer := self._lambda_scope(entry, callers, complete)) is not None:
+            held = ("it", "it") if captured else ("its members", "them")
             return (
                 f"this lambda is defined {outer}, which may still be running, so what it "
-                "captures may be under construction: its members may not be initialized "
-                "yet and may hold leftovers; read them once that has run"
+                f"captures may be under construction: {held[0]} may not be initialized "
+                f"yet and may hold leftovers; read {held[1]} once that has run"
             )
         return None
 
@@ -9222,6 +9462,9 @@ class NativeSession:
         to the stop (the debugger writes a register), as is an optimized build, where
         every change is refused."""
         target = getattr(self, "target", None)
+        if variable.get("peekyCapture") is True:
+            # A GCC lambda's capture (#361), which its object holds: never changed.
+            return "capture"
         if not member or self.fields is None or getattr(target, "optimization", "O0") != "O0":
             return None
         function = self._function_at(frame)

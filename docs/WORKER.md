@@ -258,7 +258,9 @@ Both operations are read-only.
 | --- | --- | --- |
 | `whole_string_summaries` | a stop | `true` when LLDB's summary of a `std::string` is all of it: libc++, known by `std::__1` in the debug information. libstdc++ (`std::__cxx11`) gets no such field |
 | `statics` | a stop | The names the frame's function keeps in static storage: a `static` local, or a `const` local GCC places in read-only data. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none |
-| `closure_captures` | a stop | The captures a GCC lambda's call operator reads through `__closure`. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none, and for clang's lambdas |
+| `closure_captures` | a stop | The captures a GCC lambda's call operator reads through `__closure`. lldb-dap lists none of them among the frame's locals. The worker reads them in a `Captures` scope; one it doesn't read there is `not found`, and says why. Absent where there are none, and for clang's lambdas |
+| A `Captures` scope | a stop | A GCC lambda's captures, read as members of what `__closure` points at. A capture by reference shows what it refers to, with LLDB's reference type as `debugger_type`. What is read through `__closure`, or through such a reference, is checked as through a pointer (`view: unproven`). Not in an optimized build, nor before the lambda stores `__closure`. Its `reference` changes nothing |
+| `not_settable: capture` | a variable | A GCC lambda's capture, or a member of one: its object holds it, so no stop changes it |
 | `string_length` | a variable | A libstdc++ string's length, checked against its `_M_string_length`. A map key matches only a string shown whole and of its length, or one read from memory |
 | `view: memory` | a variable | Peeky read the string's text from memory |
 | `text: true` | a variable | A standard string shown as its text, or as Peeky's reason it has none. It gets no handle, as Rust's text views get none |
