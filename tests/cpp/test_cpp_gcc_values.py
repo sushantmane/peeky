@@ -573,6 +573,10 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     )
     assert "U=8041" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
+    # A local of this frame: read through. So is `one(argc)`'s result, which `auto &&`
+    # keeps alive for its scope (#297).
+    for selector, value in (("a", "5"), ("b", "6"), ("g", "31"), ("h", "41")):
+        assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
     # Never `poison`'s elements, nor any value, through a temporary the line destroyed.
     bound = {
         "t": "make(0)[0]",
@@ -587,10 +591,6 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
         assert row.get("value") is None, row
         if not hidden(compiler, row):
             assert row["error"] == DEAD.format(selector, initializer), row
-    # A local of this frame: read through. So is `one(argc)`'s result, which `auto &&`
-    # keeps alive for its scope (#297).
-    for selector, value in (("a", "5"), ("b", "6"), ("g", "31"), ("h", "41")):
-        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
     # The code's own reference, though GCC types it as a binding's: a reference's row.
     assert rows["r"]["type"].endswith("&") and "debugger_type" not in rows["r"], rows["r"]
     assert re.fullmatch(r"0x[0-9a-f]+", rows["r"]["value"]), rows["r"]
@@ -647,16 +647,16 @@ def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(c
     code, result = probe(source, line_of(BOUNDARIES, "// AFTER"), capture, capsys, "--hits", "1")
     assert "U=90" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
+    # A struct's member, and a local reassigned after the binding: what it holds now. And
+    # since #297, an element of a local vector nothing changes later: `v[0]`.
+    shown = {"c": "31", "d": "32", "e": "41", "f": "51", "g": "11", "k": "12"}
+    for selector, value in shown.items():
+        assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
     withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p"}
     for selector, initializer in withheld.items():
         row = rows[selector]
         assert row.get("value") is None, row
         assert hidden(compiler, row) or row["error"] == DEAD.format(selector, initializer), row
-    # A struct's member, and a local reassigned after the binding: what it holds now. And
-    # since #297, an element of a local vector nothing changes later: `v[0]`.
-    shown = {"c": "31", "d": "32", "e": "41", "f": "51", "g": "11", "k": "12"}
-    for selector, value in shown.items():
-        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
     # A map's entry in a range `for` whose body leaves the map alone (#297): each pass's.
     code, result = probe(
         source, line_of(BOUNDARIES, "// MAP_READ"), "key,value", capsys, "--hits", "all"
