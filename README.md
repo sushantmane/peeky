@@ -235,8 +235,9 @@ peeky-agent --model YOUR_MODEL --output runs/first-investigation
 
 ## Project status
 
-This private repository is an MVP foundation. It was migrated from a working prototype, and
-revised after two adversarial reviews.
+The first version, 0.1.0, is a private GitHub release. [CHANGELOG.md](CHANGELOG.md) lists what it
+covers and its known gaps. Twelve rounds of live agent evaluation shaped it
+([docs/evaluations](docs/evaluations)).
 
 - **Languages:** the minimum scope is Python, Java, C, C++ and Rust, delivered in that order in
   incremental releases. All five have experimental investigation loops, with independent candidate
@@ -263,6 +264,9 @@ revised after two adversarial reviews.
 
 - CI covers Linux, with Python 3.11 and 3.13 and a separate Java 17 lane. macOS is used for local
   development, but isn't in the CI matrix yet.
+- Hosted CI is paused by the account's billing limit. Until it runs again, each change is checked
+  by the same 14 Linux lanes in Docker (`scripts/ci_linux/run_lanes.sh`), with the results in the
+  pull request.
 - Required CI runs parallel quality, unit, integration and packaging lanes, each with a
   four-minute cutoff.
 - The target is under five minutes from jobs starting to required checks completing. Hosted-runner
@@ -270,8 +274,9 @@ revised after two adversarial reviews.
 - A cutoff is not evidence of speed. The measurements are in [TESTING.md](docs/TESTING.md).
 - The current GitHub plan doesn't allow enforced branch protection for this private repository.
   CI runs, but merge gating must be checked by hand. TESTING.md has the API result.
-- Delivery builds wheels and source archives as private GitHub Actions artifacts. There is no PyPI
-  publishing, public release or deployment.
+- Delivery builds wheels and source archives as private GitHub Actions artifacts, and a tagged
+  version attaches them to a private GitHub release. There is no PyPI publishing, public release
+  or deployment.
 
 ## Design documents
 
