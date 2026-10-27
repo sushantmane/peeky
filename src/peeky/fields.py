@@ -346,7 +346,7 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             graph[offset] = ("array", name, target, tuple(counts) if known else None, variable)
             pending.append(target)
         elif tag in _RECORDS:
-            members, holds, variant, bases, parameters = [], [], False, [], []
+            members, holds, variant, bases, parameters, based = [], [], False, [], [], []
             for child in die["children"]:
                 member = dies[child]
                 if member["tag"] == "DW_TAG_variant_part":
@@ -368,6 +368,8 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 if member["tag"] == "DW_TAG_inheritance":
                     holds.append(_target(member["attrs"].get("DW_AT_type")))
                     bases.append(holds[-1])
+                    # Where it is in the object; None for a virtual base (an expression).
+                    based.append(_number(member["attrs"].get("DW_AT_data_member_location")))
                     continue
                 if member["tag"] != "DW_TAG_member":
                     continue
@@ -406,6 +408,8 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
                 # Its template arguments: ("type", name, type offset, None) or ("value",
                 # name, type offset, constant) (#181).
                 tuple(parameters),
+                # Each base class's byte offset in the object, or None (#339).
+                tuple(based),
             )
             pending.extend(kind for kind in holds if kind is not None)
             if graph[offset][9] and CXX_CONTAINER.match(graph[offset][11]):

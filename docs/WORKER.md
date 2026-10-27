@@ -27,7 +27,7 @@ debug server. It writes memory only to set a text
 ## Compare the sources from another host
 
 A client on another host must show that its sources are the worker's. Protocol 3 added this, and
-protocols 4 and 5 keep it.
+protocols 4 to 6 keep it.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
@@ -35,7 +35,7 @@ protocols 4 and 5 keep it.
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 
    Its `root` is the worker's `--root`.
-2. With `launch` or `probe`, send `protocol`: 5, `expect_sha256` (`program`, and `entry` for a
+2. With `launch` or `probe`, send `protocol`: 6, `expect_sha256` (`program`, and `entry` for a
    `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
    one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
@@ -265,3 +265,5 @@ Both operations are read-only.
 | `aliased_type` | a variable | The class behind a typedef's name, such as a map under another name |
 | `pointee_aliased_type` | a variable | The same, for what a pointer points at: `IntSet *` |
 | `past_end` | a variable, or a stop's `returned` | A pointer that holds the address one past the end of an array a listed frame holds: `{"selector": "queue", "length": 4}`, with `frame` and `function` where another frame holds it, and `also`, what of its type starts there too. Its value is its address alone, and it gets no handle: nothing there belongs to the array. A returned value says it only for a character pointer one past a character array's end |
+| `view: unproven`, `unproven_read: true` | a variable, or a stop's `returned` | Read through a pointer that Peeky can't show points at a live object, or a pointer whose text LLDB read through it (a `char *`). Its `note` says why and what to do. The value is still shown. Anything read through it is marked too |
+| `unproven_read` | an `expand` reply | The note its values carry, where they are read through such a pointer. A client reading the pointee whole (`p[0]`) marks it with it |

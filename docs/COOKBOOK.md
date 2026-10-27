@@ -1876,7 +1876,8 @@ element 6 in one run and at element 4 in the other.
 note says `qualified (run a: note, run b: note): not evidence by itself`.
 
 - Examples are a C local's leftovers on a `do` body's first line, or a moved Rust local's bytes
-  (`stale`).
+  (`stale`). So is a C or C++ value read through a pointer that Peeky can't show points at a
+  live object (`unproven`: [C and C++ 2.1](lang/c-cpp-cookbook.md#when-what-a-pointer-points-at-is-unproven)).
 - Two runs' leftovers can differ because of anything that touched the stack before. So such a row is
   not a divergence of the program.
 - Whatever else the row says, its note says the value is qualified, and the row ranks here:
@@ -2733,6 +2734,8 @@ Read an address with its row's view and note, as you read the value:
 
 - `[unproven]` on a raw pointer is about what it points at. Its address is the pointer's own value.
   So `diff` and the other queries don't count a Rust raw pointer's address as qualified.
+- In C and C++, `[unproven]` is on what is read through a pointer, never on the pointer's own
+  address. A pointer read through another one is marked, since its address was read there.
 - `[stale]` bytes are leftovers, not what the variable holds now.
 
 SQLite's integers are signed. So an address at or above 2^63 comes back negative, as its 64-bit

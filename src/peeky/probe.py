@@ -989,7 +989,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 # pointee and p[1] the one after it, which no pointer's length tells.
                 _readable(variable, path, pointee, listed)
                 if _first_index(segment):
-                    variable = _dereferenced(variable, pointee, path == segments[0])
+                    variable = _dereferenced(variable, pointee, path == segments[0], first)
                     path += segment
                     continue
                 raise ValueError(_beyond_pointee(variable, path, pointee, segment, listed))
@@ -1023,13 +1023,13 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                     f"(4 levels below a local)"
                 )
             value = variable.get("value")
-            if "view" not in variable and value in ("null", "None"):
+            # A C or C++ value read through a pointer is still a value (#339).
+            view = None if variable.get("unproven_read") else variable.get("view")
+            if view is None and value in ("null", "None"):
                 # Java's null and Python's None have no members.
                 raise ValueError(f"{variable['name']!r} is {value}: it has no members to select")
-            shown = (
-                f"; value {value[:80]}" if isinstance(value, str) and "view" not in variable else ""
-            )
-            if variable.get("view") == "unproven":
+            shown = f"; value {value[:80]}" if isinstance(value, str) and view is None else ""
+            if view == "unproven":
                 raise ValueError(f"cannot expand {variable['name']!r}: {_unproven_text(variable)}")
             keyed = (
                 f"; {path} is the value for that key, as in C++ (an entry's key and value are "
@@ -1038,8 +1038,7 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
                 else ""
             )
             raise ValueError(
-                f"cannot expand {variable['name']!r} ({variable.get('view', 'leaf')}{shown})"
-                + keyed
+                f"cannot expand {variable['name']!r} ({view or 'leaf'}{shown})" + keyed
             )
         if pointers and segment.startswith("["):
             # #119: LLDB lists a C++ map's or set's entries as [0], [1], ... in iteration
@@ -1854,7 +1853,7 @@ def _capture(
                     if shown:
                         row["value"] = shown
                 owned_type = "view" not in variable and _lldb_type(variable) in _OWNED_RUST_TYPES
-                if variable.get("view") == "unproven":
+                if variable.get("view") == "unproven" and not variable.get("unproven_read"):
                     row["note"] = _unproven_note(variable)
                 elif variable.get("view") == "opaque" and isinstance(
                     reason := variable.get("opaque_reason"), str
@@ -1880,7 +1879,8 @@ def _capture(
                     row["note"] = _composite_note(variable, selector)
                 elif isinstance(variable.get("note"), str):
                     # A value the runtime shows but cannot vouch for (C, C++: a line a loop
-                    # returns to; initialization not judged), or one read through it (#148).
+                    # returns to; initialization not judged), or one read through it (#148),
+                    # or through a pointer Peeky can't show points at a live object (#339).
                     row["note"] = variable["note"]
             if "view" in variable:
                 row["view"] = variable["view"]
@@ -1943,7 +1943,13 @@ def _capture(
                     # (ninth evaluation: `<children: … exceeds bounded expansion limit>`).
                 listed = row.get("children", ())
                 unproven = [c for c in listed if c.get("view") == "unproven"]
-                if "note" not in row and unproven:
+                read = [c["note"] for c in unproven if _UNPROVEN_C.match(str(c.get("note")))]
+                if "note" not in row and read:
+                    # Read through a C or C++ pointer Peeky can't show points at a live
+                    # object, or a `char *` member's text (#339): each why, once, for the
+                    # children marked.
+                    row["note"] = "; ".join(dict.fromkeys(read[:3]))
+                elif "note" not in row and unproven:
                     # A caller's struct reads, but not what its pointers reach (#108); a
                     # live one, but not what its raw pointers do (#255).
                     row["note"] = _held_unproven_note(unproven)
@@ -2036,13 +2042,7 @@ def past_end_text(pointer, past):
     ``past_end`` (#336), whose `frame` is there only where another frame than the
     pointer's holds the array: why, then what to read instead."""
     base = past.get("selector")
-    where, how = "", "by name"
-    if type(past.get("frame")) is int:
-        from peeky.names import short_function
-
-        function = short_function(str(past.get("function") or "")) or "a caller"
-        where = f" in {function} (frame {past['frame']})"
-        how = f"in {function} (`session get --frame {past['frame']}`)"
+    where, how = _held_where(past)
     text = (
         f"`{pointer}` holds the address one past the end of `{base}`{where}, and nothing "
         f"there belongs to `{base}`"
@@ -2061,6 +2061,214 @@ def past_end_text(pointer, past):
 # How many elements apart two pointers may be for their offset to be said (#302): past
 # that, they are unrelated (the stack against the heap), and the row says nothing.
 OFFSET_CAP = 1 << 20
+
+
+def _held_where(place):
+    """(" in main (frame 1)", "in main (`session get --frame 1`)") for an array another
+    frame than the pointer's holds (``place``'s `frame` and `function`), else ("", "by
+    name"): where it is, and how to read it."""
+    if type(place.get("frame")) is not int:
+        return "", "by name"
+    from peeky.names import short_function
+
+    function = short_function(str(place.get("function") or "")) or "a caller"
+    return (
+        f" in {function} (frame {place['frame']})",
+        f"in {function} (`session get --frame {place['frame']}`)",
+    )
+
+
+# How many elements before or past an array a pointer's note names it by (#339).
+PAST_CAP = 64
+# How far below the stack pointer a pointer is said to point where a call that has
+# returned kept its locals (#339); further down is other memory (the heap, on Linux).
+BELOW_STACK = 1 << 16
+# How many bytes below the stack pointer a function that calls nothing may keep its own
+# locals (the x86-64 and Apple arm64 red zone).
+RED_ZONE = 128
+
+
+def _base_bounds(base):
+    """(first address, end) of an array or object ``held_extents`` lists, or None."""
+    start, size, length = base.get("address"), base.get("element_size"), base.get("length", 1)
+    if any(type(number) is not int or number < 1 for number in (start, size, length)):
+        return None
+    return start, start + length * size
+
+
+def pointee_proven(address, pointer, bases, strings=()):
+    """Whether what a C or C++ pointer holding ``address`` points at is proven to be a
+    live object (#339). ``pointer``: what it points at (``NativeSession.pointee_of``:
+    "pointee", "element_size", "count", and "character" for a byte-sized character
+    type, which C lets read any object's bytes); ``bases``: the arrays and objects the
+    stop's frames and the program's static storage hold, [(selector, extent, place)]
+    (``held_extents``, ``static_bases``). Proven inside one of them, of its pointee type
+    and size, at a whole element, with all it points at inside (a pointer to a character
+    type: any byte of it); never through a union's member, as no declaration says which
+    one holds a value (the union itself proves it). For a character pointer, also inside
+    one of ``strings``: C strings, [(start, end)] from the first byte to the NUL (a
+    string literal, `main`'s arguments). One past an array's end is no element (#336)."""
+    size, count = pointer.get("element_size"), pointer.get("count", 1)
+    if type(address) is not int or type(size) is not int or type(count) is not int:
+        return False
+    if pointer.get("character") is True and size == 1:
+        for start, end in strings or ():
+            if start <= address and address + count <= end:
+                return True
+    for _, base, _ in bases:
+        bounds = _base_bounds(base)
+        if base.get("union") or bounds is None or not bounds[0] <= address < bounds[1]:
+            continue
+        if pointer.get("character") is True:
+            return True
+        if (
+            pointer.get("pointee") is not None
+            and pointer.get("pointee") == base.get("element")
+            and size == base.get("element_size")
+            and (address - bounds[0]) % size == 0
+            and address + size * count <= bounds[1]
+        ):
+            return True
+    return False
+
+
+def pointee_past(address, pointer, bases):
+    """Where a C or C++ pointer holding ``address`` is outside an array the stop's
+    frames hold (#339), by a whole number of its elements: two or more past its end
+    ({"kind": "past", "selector", "index", "length"}), or before its start ({"kind":
+    "before", "selector", "elements"}), with the array's place (``past_end``'s). The
+    array nearest by elements, the pointer's own frame's first; within ``PAST_CAP``
+    elements (further off, where it is says more); never a 2-D one, whose element no single index names. One past the end is
+    ``past_end``'s (#336). None otherwise."""
+    size, found = pointer.get("element_size"), None
+    for selector, base, place in bases:
+        bounds = _base_bounds(base)
+        if (
+            bounds is None
+            or "length" not in base
+            or "dims" in base
+            or type(size) is not int
+            or size != base.get("element_size")
+            or pointer.get("pointee") is None
+            or pointer.get("pointee") != base.get("element")
+            or (address - bounds[0]) % size
+        ):
+            continue
+        index, length = (address - bounds[0]) // size, base["length"]
+        if length < index <= length + PAST_CAP:
+            distance = index - length
+            why = {"kind": "past", "selector": selector, "index": index, "length": length}
+        elif -PAST_CAP <= index < 0:
+            distance = -index
+            why = {"kind": "before", "selector": selector, "elements": -index}
+        else:
+            continue
+        if found is None or distance < found[0]:
+            found = (distance, {**why, **place})
+    return found[1] if found else None
+
+
+def pointee_place(address, sp, bases, settled=True):
+    """Where a C or C++ pointer Peeky can't prove points at a live object points, for
+    its note (#339): "below" the stack pointer ``sp`` (by at most ``BELOW_STACK``),
+    where no live call keeps its locals; "stack", from the stack pointer (or the first
+    local Peeky placed) to the end of the last local it placed in the frames it lists;
+    else "unplaced". Within ``RED_ZONE`` below the stack pointer, the innermost call may
+    keep locals of its own: "below" there only where Peeky placed all of them
+    (``settled``)."""
+    if type(sp) is int and address < sp:
+        if sp - address <= BELOW_STACK and (settled or sp - address > RED_ZONE):
+            return "below"
+        return "unplaced"
+    placed = [bounds for _, base, _ in bases if (bounds := _base_bounds(base)) is not None]
+    low = sp if type(sp) is int else min((start for start, _ in placed), default=None)
+    high = max((end for _, end in placed), default=None)
+    if low is not None and high is not None and low <= address < high:
+        return "stack"
+    return "unplaced"
+
+
+def unproven_text(pointer, why, text=False):
+    """The note on what is read through the C or C++ pointer named ``pointer``, which
+    Peeky can't show points at a live object (#339): the rule, why, then what to do.
+    ``why``: ``pointee_past``'s, {"kind": "union", "selector", place}, or {"kind":
+    ``pointee_place``'s, "image" or "limit" (with `limits`: "locals", "arguments"),
+    "statics": whether Peeky knew where the program's image is}. ``text``: the note of the
+    pointer's own row, whose text LLDB read through it (a `char *`'s); with ``pointer``
+    None, of the one a function returned."""
+    kind = why.get("kind")
+    if kind in ("past", "before"):
+        base = why.get("selector")
+        where, how = _held_where(why)
+        if kind == "past":
+            reason = (
+                f"it holds the address of `{base}[{why.get('index')}]`, past the end of "
+                f"`{base}`{where}, which has {why.get('length')} elements; read `{base}` {how}"
+            )
+        else:
+            count = why.get("elements")
+            reason = (
+                f"it holds an address {count} element{'' if count == 1 else 's'} before the "
+                f"start of `{base}`{where}; read `{base}` {how}"
+            )
+    elif kind == "below":
+        reason = (
+            "it points below the stack pointer, where no live call keeps its locals, as a "
+            "pointer into a call that has returned does; read the value before that call "
+            "returns"
+        )
+    elif kind == "stack":
+        reason = (
+            "it points into the stack of the frames Peeky lists, but at no local, member or "
+            "element of its type that Peeky could place there; read the local it should "
+            "point at by name"
+        )
+    elif kind == "union":
+        base = why.get("selector")
+        where, how = _held_where(why)
+        reason = (
+            f"it points into the union `{base}`{where}, and no declaration says which of "
+            f"its members holds a value; read `{base}` {how}, and the member the program "
+            "last stored"
+        )
+    elif kind == "image":
+        reason = (
+            "it points into the program's loaded image, but no compatible global, static "
+            "local or proven string literal is there; check where it was assigned: if it "
+            "should point at a global, read that global by name; to prove a string literal, "
+            "store it in a named char array"
+        )
+    elif kind == "limit" and why.get("limits") == ["arguments"]:
+        reason = (
+            "Peeky didn't read every one of `main`'s argument and environment strings at "
+            "this stop: the per-stop limit was reached; read the string it should point at "
+            "by name"
+        )
+    elif kind == "limit" and "arguments" in (why.get("limits") or ()):
+        reason = (
+            "Peeky reached a per-stop proof limit: it didn't place every local, nor read "
+            "every one of `main`'s argument and environment strings; read what it should "
+            "point at by name"
+        )
+    elif kind == "limit":
+        reason = (
+            "Peeky didn't place every local at this stop: the per-stop limit was reached; "
+            "read the local it should point at by name"
+        )
+    else:
+        static = ", nor in the program's static memory" if why.get("statics") else ""
+        reason = (
+            "its address is in no local, member or element that Peeky could place in the "
+            f"frames it lists{static}; if it is a heap block, Peeky can't tell whether that "
+            "block is still allocated, so check where the program frees it"
+        )
+    what = "its text" if text else "this value"
+    named = f"`{pointer}`" if pointer else "the pointer it returned"
+    note = (
+        f"Peeky can't show that {named} points at a live object, so {what} may be left over: "
+        f"{reason}"
+    )
+    return note if text else f"read through `{pointer}`: {note}"
 
 
 def pointer_offset(value, pointer, base_value, base):
@@ -2209,6 +2417,9 @@ DEPTH_LIMITED_CHILDREN = (
 
 # How the worker prefixes the note of what is read through a local shown with one (#148).
 _THROUGH = re.compile(r"^read through `[^`\n]+`: ")
+# The note of a C or C++ value read through a pointer Peeky can't show points at a live
+# object, or of a pointer's own text read so (#339: ``unproven_text``).
+_UNPROVEN_C = re.compile(r"^(?:read through `[^`\n]+`: )?Peeky can't show that ")
 
 
 def _resume(worker, stop, returning, rows):
@@ -2456,6 +2667,9 @@ def _returned_row(row, snapshot):
     if isinstance(returned.get("past_end"), dict):
         # One past a character array's end (#336): its address alone.
         row["past_end"] = returned["past_end"]
+    elif returned.get("view") == "unproven" and isinstance(returned.get("note"), str):
+        # Text read through a pointer Peeky can't show points at a live object (#339).
+        row.update(view="unproven", note=returned["note"])
     return {**row, "value": returned.get("value"), "type": returned.get("type")}
 
 
@@ -2784,10 +2998,12 @@ def _first_index(segment):
     return segment[1] != "-" and int(segment[1:-1]) == 0
 
 
-def _dereferenced(variable, pointee, root=False):
+def _dereferenced(variable, pointee, root=False, page=None):
     """`*p` for a C/C++ pointer whose children the debugger lists from its pointee; it
     carries the pointer's note (#148), said as read through it where the pointer is a
-    ``root`` local."""
+    ``root`` local. Read through a pointer Peeky can't show points at a live object
+    (#339: the pointer's own text was, or ``page``, its children's listing, says), it is
+    marked so, with why."""
     value = str(variable.get("value") or "")
     address = re.match(r"0x[0-9a-fA-F]+", value)
     # The debugger's summary of the pointee follows the address (`0x… size=3`).
@@ -2811,8 +3027,17 @@ def _dereferenced(variable, pointee, root=False):
     for key in ("indexedVariables", "namedVariables", "string_length"):
         if type(variable.get(key)) is int:
             shown[key] = variable[key]
-    if isinstance(note := variable.get("note"), str):
+    if isinstance(note := variable.get("note"), str) and not variable.get("unproven_read"):
         shown["note"] = f"read through `{variable['name']}`: {note}" if root else note
+    if variable.get("unproven_read") and isinstance(note, str):
+        # What the pointer's own text was read through, it is too.
+        shown.update(view="unproven", unproven_read=True, note=note)
+    elif isinstance(through := (page or {}).get("unproven_read"), str):
+        shown.update(
+            view="unproven",
+            unproven_read=True,
+            note=f"{through}; {shown['note']}" if shown.get("note") else through,
+        )
     return shown
 
 
@@ -5564,7 +5789,15 @@ def _table(result, short_names=True):
             + (f"  [maybe settable: {row['maybe_settable']}]" if row.get("maybe_settable") else "")
             + (f"  [id {row['identity']}]" if row.get("identity") else "")
             + ("  [module global]" if row.get("scope") == "globals" else "")
-            + ("  [note]" if row.get("note") and not _rust_note_kind(row["note"]) else ""),
+            # A value read through a pointer Peeky can't show points at a live object
+            # says why among the notes below its `[unproven]` (#339).
+            + (
+                "  [note]"
+                if row.get("note")
+                and not _rust_note_kind(row["note"])
+                and row.get("view") != "unproven"
+                else ""
+            ),
         )
         for index, row in enumerate(kept)
     ]
