@@ -113,7 +113,8 @@ def test_an_array_says_where_it_is_its_length_and_its_element():
 def test_a_pointer_says_what_it_points_at_and_its_size():
     # `const int *`: the type under its qualifier, as an `int` array's element is.
     assert extent(4, "0x000000016d26b040") == {"pointee": 1, "element_size": 4}
-    assert extent(20, "0x000000016d26b040") == {"pointee": 4, "element_size": 8}
+    # A pointer to a pointer says so: a member read through it goes through the second.
+    assert extent(20, "0x000000016d26b040") == {"pointee": 4, "element_size": 8, "indirect": True}
     # A parameter (the array a caller passed) is the first pointer offsets count from; a
     # name also declared as a local, or a field, is not one.
     assert extent(4, "0x1000", storages={"parameter"})["parameter"] is True

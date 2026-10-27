@@ -289,3 +289,106 @@ def test_only_another_pointer_of_its_type_at_a_nonzero_address_counts():
         (row("node.next", at(0x1060)), TRACK),
     )
     assert "read_through" not in node["node.next"]
+
+
+ITEM_POINTER = {"pointee": 99, "element_size": 8, "indirect": True}
+
+
+def test_the_nearest_captured_pointer_is_the_one_read_through():
+    # Review of PR #354: `slots[0].uses` said nothing, as only `slots` (an array) was
+    # looked for; and `pp[0].uses` was tied to `pp`, whose alias `qq` holds another
+    # address than the `Item` read.
+    slots = {"address": 0x2000, "length": 3, "element": 99, "element_size": 8}
+    rows = stop(
+        (row("slots", "[…]", "Item *[3]"), slots),
+        (row("slots[0]", at(0x1060)), TRACK),
+        (row("end", at(0x1060)), TRACK),
+        (row("slots[0].uses", "0", "int"), None),
+        (row("slots[1].uses", "0", "int"), None),
+    )
+    assert rows["slots[0].uses"]["read_through"] == {
+        "selector": "slots[0]",
+        "same_address_as": ["end"],
+    }
+    assert "read_through" not in rows["slots[1].uses"]
+    pp = (row("pp", at(0x2000), "Item **"), ITEM_POINTER)
+    qq = (row("qq", at(0x2000), "Item **"), ITEM_POINTER)
+    rows = stop(
+        pp,
+        qq,
+        (row("pp[0]", at(0x1060)), TRACK),
+        (row("end", at(0x1060)), TRACK),
+        (row("pp[0].uses", "0", "int"), None),
+    )
+    assert rows["pp[0].uses"]["read_through"] == {"selector": "pp[0]", "same_address_as": ["end"]}
+    # `pp[0]` not captured: the `Item` is read through it, at no captured pointer's address.
+    rows = stop(pp, qq, (row("end", at(0x1060)), TRACK), (row("pp[0].uses", "0", "int"), None))
+    assert "read_through" not in rows["pp[0].uses"]
+    # `pp[0]` itself is at `pp`'s address, which `qq` holds; a member of `*pp`, there.
+    rows = stop(pp, qq, (row("pp[0]", at(0x1060)), None), (row("pp.uses", "0", "int"), None))
+    assert rows["pp[0]"]["read_through"] == {"selector": "pp", "same_address_as": ["qq"]}
+    assert "read_through" not in rows["pp.uses"]
+
+
+def test_a_value_read_through_a_captured_second_pointer_says_so():
+    # `node.next.qty` reads through `node.next`: said where it is captured and another
+    # captured pointer holds its address; never `node`'s.
+    rows = stop(
+        (row("node", at(0x1000)), TRACK),
+        (row("node.next", at(0x1060)), TRACK),
+        (row("other", at(0x1060)), TRACK),
+        (row("head", at(0x1000)), TRACK),
+        (row("node.next.qty", "3", "int"), None),
+    )
+    assert rows["node.next.qty"]["read_through"] == {
+        "selector": "node.next",
+        "same_address_as": ["other"],
+    }
+    rows = stop(
+        (row("node", at(0x1000)), TRACK),
+        (row("head", at(0x1000)), TRACK),
+        (row("node.next.qty", "3", "int"), None),
+    )
+    assert "read_through" not in rows["node.next.qty"]
+
+
+def test_session_get_says_it_of_the_children_it_lists():
+    # Review of PR #354: `session get now end` listed `now.title` under `now` with nothing.
+    def listed(name, address):
+        return row(
+            name,
+            at(address),
+            children=[
+                {
+                    "name": "title",
+                    "selector": f"{name}.title",
+                    "value": '"Coda"',
+                    "type": "std::string",
+                },
+                {"name": "plays", "selector": f"{name}.plays", "value": "0", "type": "int"},
+                # A pointer member at the same address is no candidate: only what was given.
+                {
+                    "name": "self",
+                    "selector": f"{name}.self",
+                    "value": at(address),
+                    "type": "Track *",
+                },
+            ],
+        )
+
+    rows = stop((listed("now", 0x1060), TRACK), (listed("end", 0x1060), TRACK))
+    children = {child["selector"]: child for each in rows.values() for child in each["children"]}
+    assert children["now.title"]["read_through"] == {"selector": "now", "same_address_as": ["end"]}
+    assert children["end.plays"]["read_through"] == {"selector": "end", "same_address_as": ["now"]}
+    assert children["now.self"]["read_through"] == {"selector": "now", "same_address_as": ["end"]}
+    lines = _get_lines(rows["now"])
+    assert (
+        '  now.title: std::string = "Coda"  '
+        "[read through `now`, which holds the same address as `end`]"
+    ) in lines, lines
+    assert "  now.plays: int = 0  [read through `now`, which holds the same address as `end`]" in (
+        lines
+    )
+    # Apart, nothing.
+    rows = stop((listed("now", 0x1060), TRACK), (listed("end", 0x1080), TRACK))
+    assert not any("read_through" in child for each in rows.values() for child in each["children"])

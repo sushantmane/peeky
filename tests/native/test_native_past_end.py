@@ -347,7 +347,10 @@ int main() {
   Item *cur = items + 4;
   Item *last = items + 3;
   Item *pick = items + 3;
-  std::printf("%d %d\\n", (int)(end - cur), pick->uses + last->uses); /* MAIN */
+  Item *slots[2] = {items + 3, items};
+  Item **pp = slots;
+  Item **qq = slots;
+  std::printf("%d %d %d\\n", (int)(end - cur), pick->uses + last->uses, pp[0]->uses + qq[1]->uses); /* MAIN */
   return 0;
 }
 """
@@ -382,3 +385,35 @@ def test_cpp_pointers_at_one_address_say_so_plainly(tmp_path, monkeypatch, cxx, 
     assert "  [same address as `cur`; at the address one past items's end]" in table, table
     assert "  0  [read through `pick`, which holds the same address as `last`]" in table, table
     assert "same array not proven" in table and "+ 0 by address" not in table, table
+    # Review of PR #354: the nearest captured pointer is the one read through. `pp[0].uses`
+    # reads through `pp[0]`, never at `pp`'s address, which `qq` holds.
+    rows = probed(capsys, target, at, "pp,qq,last,slots[0],slots[0].uses,pp[0].uses")
+    rows = {row["selector"]: row for row in rows}
+    assert rows["slots[0].uses"]["read_through"] == {
+        "selector": "slots[0]",
+        "same_address_as": ["last"],
+    }, rows
+    assert "read_through" not in rows["pp[0].uses"], rows
+    rows = probed(capsys, target, at, "pp,qq,pp[0],last,pp[0].uses")
+    rows = {row["selector"]: row for row in rows}
+    assert rows["pp[0].uses"]["read_through"] == {
+        "selector": "pp[0]",
+        "same_address_as": ["last"],
+    }, rows
+    assert rows["pp[0]"]["read_through"] == {"selector": "pp", "same_address_as": ["qq"]}, rows
+    # `session get` says it of the children it lists under each pointer.
+    assert main(["session", "start", str(target), "--at", at]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "pick", "last"]) == 0
+        out = capsys.readouterr().out
+        assert (
+            "  pick.uses: int = 0  [read through `pick`, which holds the same address as `last`]"
+            in out
+        ), out
+        assert "  last.uses: int = 0  [read through `last`, which holds the same address as " in (
+            out
+        ), out
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

@@ -419,12 +419,16 @@ it never calls a value left over. Where a program keeps a pointer one past its l
 use, a value read at that pointer's address is not one of them. Capture both pointers to see it.
 
 - It is said of `p[0]`, `node.qty` and `node[0].qty`, read at the pointer's own address.
-- It isn't said through a second pointer, as in `node.next.qty`, or at another element, as in
-  `p[1]`.
+- It names the nearest captured pointer the value is read through. `node.next.qty` says it of
+  `node.next` where you capture `node.next` too, never of `node`.
+- It isn't said through a pointer you didn't capture: with `Item **pp`, `pp[0].qty` says it only
+  where `pp[0]` is captured. Nor is it said at another element, as in `p[1]`.
 - Both pointers are read at one stop, in one frame: one probe hit, or one `session get`. They
   point at the same type, and neither is null.
+- `session get p top` says it of the members it lists under each pointer too. Only the pointers
+  you name count.
 
-`--json` rows have `read_through`, such as `{"selector": "p", "same_address_as": ["top",
+`--json` rows, and `session get`'s children, have `read_through`, such as `{"selector": "p", "same_address_as": ["top",
 "level"]}`, with at most three names. The store doesn't keep it.
 
 ### Read a C++ map or set

@@ -2380,8 +2380,8 @@ def _read_through(rows, pointers):
     (`read_through`: {selector, same_address_as}; twelfth evaluation, playlist 3: `now`
     equal to `end`, the program's one past its last track, read `"Coda"`, an element the
     program no longer counts, with nothing to say so). Peeky can't know the program's
-    count, so it never says the value is left over; only where it was read. Not through a
-    second pointer (`now.next.title`), which reads elsewhere."""
+    count, so it never says the value is left over; only where it was read. Of the rows,
+    and of the children `session get` lists under them, against the rows' pointers only."""
     held, paths = {}, {}
     for index, extent in pointers:
         found = _HELD.match(rows[index]["value"])
@@ -2392,20 +2392,14 @@ def _read_through(rows, pointers):
         if found and int(found[1], 16):
             selector = rows[index]["selector"]
             held[selector] = (int(found[1], 16), extent["pointee"], extent.get("element_size"))
-            paths[path] = selector
+            paths[path] = (selector, extent.get("indirect") is True)
     if len(held) < 2:
         return
-    for row in rows:
-        try:
-            steps = parse_selector(row["selector"]) if "value" in row else []
-        except ValueError:
-            continue
-        if len(steps) > 2 and steps[-2] == "[0]" and not steps[-1].startswith("["):
-            pointer = paths.get(tuple(steps[:-2]))
-        elif len(steps) > 1 and (steps[-1] == "[0]" or not steps[-1].startswith("[")):
-            pointer = paths.get(tuple(steps[:-1]))
-        else:
-            continue
+    listed = [
+        child for row in rows for child in row.get("children") or () if isinstance(child, dict)
+    ]
+    for row in [*rows, *listed]:
+        pointer = _read_at(row, paths)
         if pointer is None:
             continue
         same = [
@@ -2418,6 +2412,31 @@ def _read_through(rows, pointers):
                 "selector": pointer,
                 "same_address_as": same[:_SAME_ADDRESS_CAP],
             }
+
+
+def _read_at(row, paths):
+    """The captured pointer (of ``paths``: {selector's steps: (selector, whether it points
+    at a pointer)}) at whose address ``row``'s value is read: the nearest that reads it
+    straight, `slots[0]` for `slots[0].uses`, else `now` for `now[0].title`. `p[0]` is at
+    `p`'s address; a member is there only where `p` points at no pointer, as `pp[0].uses`
+    of an `Item **pp` reads through `pp[0]`. None otherwise: through a pointer not
+    captured, at another element (`p[1]`), or inside a member (`now.title.size`)."""
+    if "value" not in row or not isinstance(row.get("selector"), str):
+        return None
+    try:
+        steps = parse_selector(row["selector"])
+    except ValueError:
+        return None
+    last = steps[-1]
+    if len(steps) < 2 or (last.startswith("[") and last != "[0]"):
+        return None
+    near = paths.get(tuple(steps[:-1]))
+    if near is not None:
+        return near[0] if last == "[0]" or not near[1] else None
+    outer = paths.get(tuple(steps[:-2])) if len(steps) > 2 and steps[-2] == "[0]" else None
+    if outer is not None and not last.startswith("[") and not outer[1]:
+        return outer[0]
+    return None
 
 
 def pointed_text(row):
