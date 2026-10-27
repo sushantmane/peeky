@@ -3448,8 +3448,9 @@ def call_results(dies):
     their `<`) returns a class by value, which holds no reference, nor anything that
     does, by value. `auto &&[a, b] = f();` or `const auto &[a, b] = f();` binds such a
     call's result, a temporary the binding keeps alive for its scope, and each name an
-    element of it. A name the build also gives a variable, a member or a parameter is
-    False: a call through one may give anything. Operators are left out."""
+    element of it. A name the build also gives a variable outside a function (a global,
+    a class's static) or a data member is False: a call through one may give anything (a
+    function's own locals are its frame's to tell). Operators are left out."""
     from peeky.fields import _RECORDS as records
     from peeky.fields import _definitions, _target
 
@@ -3502,12 +3503,15 @@ def call_results(dies):
     found = {}
     for offset, die in dies.items():
         tag = die.get("tag")
-        if tag not in (
-            "DW_TAG_subprogram",
-            "DW_TAG_variable",
-            "DW_TAG_member",
-            "DW_TAG_formal_parameter",
-        ):
+        if tag == "DW_TAG_variable":
+            # Outside a function: a global, a namespace's or a class's static.
+            if (dies.get(die.get("parent")) or {}).get("tag") not in (
+                "DW_TAG_compile_unit",
+                "DW_TAG_namespace",
+                *records,
+            ):
+                continue
+        elif tag not in ("DW_TAG_subprogram", "DW_TAG_member"):
             continue
         chain = _chain(dies, offset)
         name = (_text(_first(dies, chain, "DW_AT_name")) or "").split("<", 1)[0].strip()

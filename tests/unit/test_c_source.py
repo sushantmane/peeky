@@ -1431,6 +1431,105 @@ def test_a_binding_says_how_it_binds_and_what():
     assert statements.binding(9, "w") is None and statements.binding(2, "x") is None
 
 
+LOOP_OVER_M = """int main() {
+    std::map<long, long> m{{1, 2}};
+    BEFORE
+    for (const auto &[k, v] : m) {
+        BODY
+    }
+    AFTER
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "before, body, after, kept",
+    [
+        ("", "", "", True),
+        # In the loop, a call that neither adds nor removes an element.
+        ("", "use(m.size() + m.count(k));", "", True),
+        ("", "use(m.find(k)->second);", "", True),
+        ("", "m.at(k) = 3;", "", True),
+        ("", "use(o.m + ::m);", "", True),
+        # Before or after it, a member's use, an assignment, another loop's range.
+        ("m.insert({3, 4});", "", "", True),
+        ("m = {};", "", "m.clear();", True),
+        ("for (auto &e : m) use(e.first);", "", "", True),
+        # In the loop: anything that may add or remove one, or pass `m` on.
+        ("", "m.erase(k);", "", False),
+        ("", "use(m[k]);", "", False),
+        ("", "m.swap(o);", "", False),
+        ("", "use(m);", "", False),
+        ("", "use(sizeof(m));", "", False),
+        ("", "for (auto &[a, b] : m) use(a);", "", False),
+        ("", "use(c ? m : n);", "", False),
+        # Anywhere in its scope: a pointer or reference to it kept, or `m` passed on.
+        ("auto *pm = &m;", "", "", False),
+        ("auto &am = m;", "", "", False),
+        ("fill(m);", "", "", False),
+        ("auto &r = (m = {});", "", "", False),
+        ("m.operator=({});", "", "", False),
+        ("for (auto &e : get(m)) use(e.first);", "", "", False),
+        ("", "", "keep(&m);", False),
+        ("", "", "auto z = std::move(m);", False),
+        # A lambda's or a local class's body may run in the loop; a directive may hide code.
+        ("auto f = [&] { return m.size(); };", "", "", False),
+        ("auto f = [&m] { return 1; };", "", "", False),
+        ("struct L { void f() { m.clear(); } };", "", "", False),
+        ("#define X 1", "", "", False),
+    ],
+)
+def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(before, body, after, kept):
+    # #297: a range `for` over a local container binds each element by reference; the code
+    # must leave its elements in place while the binding is in scope.
+    source = LOOP_OVER_M.replace("BEFORE", before).replace("BODY", body).replace("AFTER", after)
+    statements = Statements(source, raw_strings=True)
+    scope, region = statements.scope_lines(2, "m"), statements.scope_lines(4, "k")
+    assert scope == (2, 8) and region == (4, 6)
+    assert statements.leaves_elements("m", scope, region, 4, "k") is kept
+
+
+@pytest.mark.parametrize(
+    "initializer, before, after, kept",
+    [
+        ("v[0]", "", "", True),
+        ("v[v.size() - 1]", "", "", True),
+        ("v[0]", "v.push_back({});", "", True),
+        # One subscript of the local, nothing else.
+        ("v[0].x", "", "", False),
+        ("v[0][1]", "", "", False),
+        ("v", "", "", False),
+        ("w[0]", "", "", False),
+        ("v[g(v)]", "", "", False),
+        # Anything in the binding's scope that may add or remove one.
+        ("v[0]", "", "v.push_back({});", False),
+        ("v[0]", "", "v.reserve(9);", False),
+    ],
+)
+def test_a_subscripts_binding_is_proven_only_where_the_code_leaves_it(
+    initializer, before, after, kept
+):
+    source = (
+        "int main() {\n    std::vector<P> v{{1, 2}};\n    "
+        + before
+        + f"\n    auto &[r, s] = {initializer};\n    use(r);\n    "
+        + after
+        + "\n}\n"
+    )
+    statements = Statements(source, raw_strings=True)
+    scope, region = statements.scope_lines(2, "v"), statements.scope_lines(4, "r")
+    assert statements.leaves_elements("v", scope, region, 4, "r") is kept
+    # A parameter's scope is its function's; one the code passes on is not proven.
+    declared = "void f(std::vector<P> v) {\n    auto &[r, s] = v[0];\n    use(r);\n}\n"
+    statements = Statements(declared, raw_strings=True)
+    assert statements.leaves_elements("v", (1, 4), (2, 4), 2, "r")
+    statements = Statements(declared.replace("use(r)", "use(v)"), raw_strings=True)
+    assert not statements.leaves_elements("v", (1, 4), (2, 4), 2, "r")
+    # Unknown lines: never proven.
+    assert not statements.leaves_elements("v", (None, 4), (2, 4), 2, "r")
+    assert not statements.leaves_elements("v", (1, 4), (2, 4), 3, "r")
+
+
 RANGE_LAMBDA_SOURCE = """int f() {
     long t = 1;
     for (auto [t, u] : make([&] { long t = 40; return id(t); })) {

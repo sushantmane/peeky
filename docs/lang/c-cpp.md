@@ -94,8 +94,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   `auto [t, u] = p;`. GCC and newer clang hold each name as a reference. The row's `type` is the
   binding's, and `debugger_type` is LLDB's reference
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
-- A binding by reference, such as `auto &[t, u]`, is read only where it names a local of the frame,
-  or a member of one. Otherwise its row is `not shown`, because what it refers to may be gone
+- A binding by reference, such as `auto &[t, u]`, is read only where Peeky proves that what it
+  refers to is alive. That is a local of the frame or a member of one, an element of a local
+  vector, map or set the code leaves in place, or a call's own result. Otherwise its row is `not
+  shown`, because what it refers to may be gone
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 - A pointer captured with an array at the same stop says which element's address it holds, where
   Peeky proves it: `[at level[6]'s address]`, or `[at the address one past level's end]`. The

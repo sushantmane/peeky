@@ -2847,11 +2847,13 @@ class Statements:
             for number in range(scope[0], scope[1] + 1)
         ):
             return False
-        # Bodies in its scope that run anywhere: a lambda's, a local class's functions'.
+        # Bodies in its scope that run anywhere: a lambda's, a local class's functions'. Not
+        # the one the binding is in (a parameter's scope holds its function's body).
         bodies = [
             (opened, closed)
             for opened, closed in pairs.items()
             if within[0] <= opened < within[1]
+            and not opened < own < closed
             and code.startswith(("{", "<%"), opened)
             and self._brace(opened) in ("function", "lambda")
         ]

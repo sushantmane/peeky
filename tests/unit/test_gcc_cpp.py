@@ -1038,9 +1038,8 @@ def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
     assert isinstance(dangling, Withholding) and dangling.label == "not shown", dangling
     assert dangling == (
         "the binding refers to an object Peeky can't prove is still alive: `d` binds "
-        "`make(0)[0]` by reference, and only an object of this frame, or a member of one, is "
-        "proven. Read it where the code names that object, or bind by value (`auto [...]`, no "
-        "`&`)"
+        "`make(0)[0]` by reference, and Peeky proves only a local or its non-union member, or "
+        "a call's result. Read it where the code names that object, or bind by value (no `&`)"
     )
     assert len(dangling) <= 300
     # A local object in scope, or a member of one: read through.
@@ -1146,3 +1145,650 @@ def test_a_member_chain_through_a_union_is_never_proven():
     assert _member_object(_member_object(holder, "u"), "p") is None
     assert _member_object(union, "p") is None and _member_object(library, "v") is None
     assert _member_object(holder, "missing") is None and _member_object(None, "p") is None
+
+
+# #297: bindings by reference into a local container, or of a call's result, which GCC
+# holds as references to `std::tuple_element<I, E>::type` (as BOUND's).
+HELD = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000024:     DW_TAG_structure_type
+                  DW_AT_name\t("tuple_element<0, std::pair<long int, long int> >")
+
+0x00000028:       DW_TAG_typedef
+                    DW_AT_name\t("type")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000030:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x00000034:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000038:       DW_TAG_member
+                    DW_AT_name\t("second")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x08)
+
+0x00000040:     DW_TAG_class_type
+                  DW_AT_name\t("vector<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
+                  DW_AT_byte_size\t(0x18)
+
+0x00000044:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x00000048:       DW_TAG_member
+                    DW_AT_name\t("_M_impl")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000050:     DW_TAG_class_type
+                  DW_AT_name\t("map<long int, long int, std::less<long int>, std::allocator<std::pair<long int const, long int> > >")
+                  DW_AT_byte_size\t(0x30)
+
+0x00000054:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Key")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000058:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000060:     DW_TAG_class_type
+                  DW_AT_name\t("deque<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
+                  DW_AT_byte_size\t(0x50)
+
+0x00000064:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x00000070:     DW_TAG_namespace
+                  DW_AT_name\t("__1")
+
+0x00000074:       DW_TAG_class_type
+                    DW_AT_name\t("vector<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
+                    DW_AT_byte_size\t(0x18)
+
+0x00000078:         DW_TAG_template_type_parameter
+                      DW_AT_name\t("_Tp")
+                      DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x0000007c:         DW_TAG_member
+                      DW_AT_name\t("__begin_")
+                      DW_AT_type\t(0x00000010 "long int")
+                      DW_AT_data_member_location\t(0x00)
+
+0x00000080:         DW_TAG_member
+                      DW_AT_name\t("__end_")
+                      DW_AT_type\t(0x00000010 "long int")
+                      DW_AT_data_member_location\t(0x08)
+
+0x00000090:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000094:   DW_TAG_rvalue_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000098:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x000000a0:   DW_TAG_subprogram
+                DW_AT_name\t("one")
+                DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x000000a4:   DW_TAG_subprogram
+                DW_AT_name\t("pick")
+                DW_AT_type\t(0x00000098 "std::pair<long int, long int> &")
+
+0x000000b0:   DW_TAG_subprogram
+                DW_AT_name\t("main")
+
+0x000000b4:     DW_TAG_variable
+                  DW_AT_name\t("m")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(3)
+                  DW_AT_type\t(0x00000050 "std::map<long int, long int>")
+                  DW_AT_location\t(DW_OP_fbreg -48)
+
+0x000000b8:     DW_TAG_variable
+                  DW_AT_name\t("v")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(4)
+                  DW_AT_type\t(0x00000040 "std::vector<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -72)
+
+0x000000bc:     DW_TAG_variable
+                  DW_AT_name\t("k")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(5)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -80)
+
+0x000000c0:     DW_TAG_variable
+                  DW_AT_name\t("x")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(5)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -88)
+
+0x000000c4:     DW_TAG_variable
+                  DW_AT_name\t("r")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(8)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -96)
+
+0x000000c8:     DW_TAG_variable
+                  DW_AT_name\t("p")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -104)
+
+0x000000cc:     DW_TAG_variable
+                  DW_AT_name\t("a")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -112)
+
+0x000000d0:     DW_TAG_variable
+                  DW_AT_name\t("w")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(11)
+                  DW_AT_type\t(0x00000040 "std::vector<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -136)
+
+0x000000d4:     DW_TAG_variable
+                  DW_AT_name\t("c")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(12)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -144)
+
+0x000000d8:     DW_TAG_variable
+                  DW_AT_name\t("dq")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(14)
+                  DW_AT_type\t(0x00000060 "std::deque<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -224)
+
+0x000000dc:     DW_TAG_variable
+                  DW_AT_name\t("e")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(15)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -232)
+
+0x000000e0:     DW_TAG_variable
+                  DW_AT_name\t("lv")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(16)
+                  DW_AT_type\t(0x00000074 "std::__1::vector<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -256)
+
+0x000000e4:     DW_TAG_variable
+                  DW_AT_name\t("g")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(17)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -264)
+"""
+HELD_SOURCE = """#include <map>
+int main(int argc, char **) {
+    std::map<long, long> m{{21, 22}, {23, 24}};
+    std::vector<P> v{{11, 12}, {13, 14}};
+    for (const auto &[k, x] : m) {
+        use(k + x + (long)m.size());
+    }
+    auto &[r, s] = v[0];
+    auto &&[p, q] = one(argc);
+    auto &&[a, b] = pick(*held);
+    std::vector<P> w{{1, 2}};
+    auto &[c, d] = w[0];
+    w.push_back({3, 4});
+    std::deque<P> dq{{5, 6}};
+    for (auto &[e, f] : dq) use(e);
+    std::vector<P> lv{{7, 8}};
+    auto &[g, h] = lv[0];
+    return 0;
+}
+"""
+ENTRY = "std::pair<const long, long>"
+
+
+def held(optimization="O0", preprocessed=None):
+    """A NativeSession over HELD's `main`, its source HELD_SOURCE; ``preprocessed``: the
+    Statements of its translation unit as the compiler preprocessed it (else the same)."""
+    from peeky.c_source import Statements
+    from peeky.fields import CPP_LIBRARIES, local_types, type_graph
+    from peeky.native import _parse_dies, call_results
+
+    dies = _parse_dies(HELD)
+    types = local_types(dies, [0xB0], through=True)
+    kinds = {kind for declared in types.values() for kind, _, _ in declared}
+    function = {"types": types, "source": "src/t.cpp", "span": (2, 19)}
+    graph = type_graph(dies, kinds, CPP_LIBRARIES)
+    # As the build's: one level down through references too.
+    aimed = {node[2] for node in graph.values() if node[0] == "reference"}
+    for offset, node in type_graph(dies, aimed, CPP_LIBRARIES).items():
+        graph.setdefault(offset, node)
+    session = native(optimization=optimization, function=function, fields=graph)
+    statements = Statements(HELD_SOURCE, True)
+    session._statements = lambda path: statements if path == "src/t.cpp" else None
+    session._shown_where = lambda name, pc: None
+    session._unslid = lambda frame: 0x1000
+    session._units = lambda source: ["src/t.cpp"]
+    unit = SimpleNamespace(files={"src/t.cpp"}, line=lambda source, number: number)
+    session._preprocessed = lambda name: (unit, preprocessed or statements)
+    session.call_results = call_results(dies)
+    return session
+
+
+def unproven(base, what, why):
+    return (
+        f"the binding refers to an object Peeky can't prove is still alive: `{base}` binds "
+        f"{what} by reference, {why}. Read it where the code names that object, or bind by "
+        "value (no `&`)"
+    )
+
+
+def test_a_binding_into_a_local_container_is_read_where_it_holds_that_element():
+    # #297: `for (const auto &[k, x] : m)` over a local map and `auto &[r, s] = v[0];` were
+    # `not shown`, though nothing changes either container while the binding refers to it.
+    session, frame = held(), {"id": 1}
+    entries = [
+        {"name": f"[{i}]", "type": ENTRY, "value": f"{ENTRY} @ {at:#x}", "variablesReference": 30}
+        for i, at in enumerate((0xAAAAAAAD32D0, 0xAAAAAAAD3310))
+    ]
+    asked = []
+
+    def fetch(reference, count, start=0):
+        asked.append((reference, count, start))
+        if reference == 9:
+            return entries[start : start + count]
+        return [{"name": "&k", "type": ELEMENT, "value": "21", "variablesReference": 0}]
+
+    m = {"name": "m", "type": "std::map<long, long>", "value": "size=2", "variablesReference": 9}
+    k = variable("k", f"{ELEMENT} &", "0x0000aaaaaaad32d0", 4)
+    x = variable("x", f"{ELEMENT} &", "0x0000aaaaaaad3318", 5)
+    # In one of the map's entries, as the debugger lists them: read through.
+    for row in (k, x):
+        assert session.bound_element(row, frame, fetch, siblings=[m])["variable"]["value"] == "21"
+    assert asked[:2] == [(9, 2, 0), (4, 2, 0)], asked
+    element = ("an element of `m`", "k")
+
+    def withheld(row, why, **kwargs):
+        found = session.bound_element(row, frame, fetch, **kwargs)
+        assert found == unproven(element[1], element[0], why) and found.label == "not shown"
+        assert len(found) <= 300, found
+
+    # In none of them (an entry erased, whose memory is reused): withheld.
+    gone = variable("k", f"{ELEMENT} &", "0x0000aaaaaaad3400", 4)
+    withheld(gone, "but it points into none of `m`'s entries now", siblings=[m])
+    # An entry's last byte is no room for the element's eight.
+    withheld(
+        variable("k", f"{ELEMENT} &", "0x0000aaaaaaad32dc", 4),
+        "but it points into none of `m`'s entries now",
+        siblings=[m],
+    )
+    unread = "and Peeky could not read `m`'s elements to check where it points"
+    # The entries not all listed, or listed with no place, or no one `m` among the locals.
+    withheld(gone, unread, siblings=[{**m, "value": "size=3"}])
+    entries[1]["value"] = "{first = 23, second = 24}"
+    withheld(gone, unread, siblings=[m])
+    withheld(gone, unread, siblings=[])
+    withheld(gone, unread, siblings=[m, {**m, "name": "m @ t.cpp:30"}])
+    withheld(gone, unread, siblings=[{**m, "value": "size=2 {...}"}])
+    many = "and `m` has more than 256 entries, more than Peeky checks"
+    withheld(gone, many, siblings=[{**m, "value": "size=257"}])
+    # Its pages, past the first 64 entries.
+    entries[:] = [
+        {"name": f"[{i}]", "type": ENTRY, "value": f"{ENTRY} @ {0x1000 + 32 * i:#x}"}
+        for i in range(100)
+    ]
+    del asked[:]
+    far = variable("k", f"{ELEMENT} &", f"{0x1000 + 32 * 99:#x}", 4)
+    assert session.bound_element(far, frame, fetch, siblings=[{**m, "value": "size=100"}])
+    assert asked == [(9, 64, 0), (9, 36, 64), (4, 2, 0)], asked
+
+    # A vector's element: between where its elements start and end, as its own members say.
+    def ends(start, finish, prefix="v._M_impl._M_"):
+        return Counts({f"{prefix}start": start, f"{prefix}finish": finish})
+
+    v = {"name": "v", "type": "std::vector<P>", "value": "size=2", "variablesReference": 8}
+    raw = ends("(pointer) _M_start = 0x0000aaaaaaad3740", "0x0000aaaaaaad3760")
+    r = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3758", 6)
+    assert session.bound_element(r, frame, fetch, siblings=[v], raw=raw)["variable"]
+    element = ("an element of `v`", "r")
+    past = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3760", 6)
+    withheld(past, "but it points outside `v`'s elements now", siblings=[v], raw=raw)
+    unread = "and Peeky could not read `v`'s elements to check where it points"
+    withheld(r, unread, siblings=[v], raw=ends("0x0000aaaaaaad3740", "<invalid>"))
+    withheld(r, unread, siblings=[v], raw=Counts({}))
+    withheld(r, unread, siblings=[v])
+    # libc++'s own members.
+    lv = {**v, "name": "lv"}
+    g = variable("g", f"{ELEMENT} &", "0x0000000100649350", 6)
+    raw = ends("0x0000000100649350", "0x0000000100649360", "lv.__")
+    raw.counts = {"lv.__begin_": raw.counts["lv.__start"], "lv.__end_": raw.counts["lv.__finish"]}
+    assert session.bound_element(g, frame, fetch, siblings=[lv], raw=raw)["variable"]
+    # The code may add or remove one while it is in scope: never read, whatever its place.
+    element = ("an element of `w`", "c")
+    w = {**v, "name": "w"}
+    c = variable("c", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
+    withheld(
+        c,
+        "and code in its scope may add or remove its elements, or pass `w` on or capture it",
+        siblings=[w],
+        raw=ends("0x0000aaaaaaad3740", "0x0000aaaaaaad3760", "w._M_impl._M_"),
+    )
+    # Neither a vector nor a map nor a set: a deque's element.
+    element = ("an element of `dq`", "e")
+    withheld(
+        variable("e", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6),
+        "and Peeky proves an element alive only in a local vector, or in a local map or set "
+        "a range `for` walks",
+    )
+    # Optimized: the debugger's view of either may be stale.
+    element = ("an element of `m`", "k")
+    found = held("O1").bound_element(k, frame, fetch, siblings=[m])
+    assert found == unproven(
+        "k", "an element of `m`", "and in an optimized build Peeky can't check it"
+    )
+
+
+def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
+    # #297: `auto &&[p, q] = one(argc);` binds the call's result, a temporary C++ keeps
+    # alive for the binding's scope, in the frame's stack; it was `not shown`.
+    from peeky.c_source import Statements
+
+    session, frame = held(), {"id": 1}
+
+    def fetch(reference, count, start=0):
+        return [{"name": "&p", "type": ELEMENT, "value": "31", "variablesReference": 0}]
+
+    p = variable("p", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
+    stack = (0xFFFFFFFFFA00, 0xFFFFFFFFFB80)
+    assert session.bound_element(p, frame, fetch, extent=lambda: stack)["variable"]["value"]
+
+    def withheld(row, why, what="`one(argc)`", session=session, **kwargs):
+        found = session.bound_element(row, frame, fetch, **kwargs)
+        assert found == unproven(row["name"], what, why) and found.label == "not shown"
+
+    outside = "but it points outside this frame's stack, where that call's result would be"
+    withheld(p, outside, extent=lambda: (0xFFFFFFFFFA60, 0xFFFFFFFFFB80))
+    withheld(p, outside, extent=lambda: (0xFFFFFFFFFA00, 0xFFFFFFFFFA5C))
+    unread = "and Peeky could not read this frame's stack bounds to check where it points"
+    withheld(p, unread, extent=lambda: None)
+    withheld(p, unread)
+
+    def timeout():
+        raise TimeoutError("no reply")
+
+    withheld(p, unread, extent=timeout)
+    withheld(
+        {**p, "value": "<invalid>"},
+        "and the debugger shows no address for it to check",
+        extent=lambda: stack,
+    )
+    # A call that returns a reference (`pick`), a local functor's, a macro that changes it.
+    withheld(
+        variable("a", f"{ELEMENT} &&", "0x0000fffffffffa58", 4),
+        "and Peeky can't prove the call returns a new object, holding no reference, that the "
+        "binding keeps alive",
+        what="`pick(*held)`",
+        extent=lambda: stack,
+    )
+    shadowed = held()
+    shadowed.call_results = {**shadowed.call_results, "one": True}
+    types = dict(shadowed._function_at(frame)["types"])
+    types["one"] = types["m"]
+    shadowed._function_at = lambda frame: {"types": types, "source": "src/t.cpp", "span": (2, 19)}
+    withheld(
+        p,
+        "and Peeky can't prove the call returns a new object, holding no reference, that the "
+        "binding keeps alive",
+        session=shadowed,
+        extent=lambda: stack,
+    )
+    expanded = Statements(
+        HELD_SOURCE.replace("one(argc);", "one(argc) ;").replace(
+            "auto &&[p, q] = one(argc) ;", "auto &&[p, q] = one(argc + 1);"
+        ),
+        True,
+    )
+    withheld(
+        p,
+        "and Peeky can't read that call as the compiler does (a macro may change it)",
+        session=held(preprocessed=expanded),
+        extent=lambda: stack,
+    )
+    withheld(
+        p,
+        "and in an optimized build Peeky can't check it",
+        session=held("O2"),
+        extent=lambda: stack,
+    )
+
+
+CALLS = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_structure_type
+                DW_AT_name\t("Pair")
+                DW_AT_byte_size\t(0x10)
+
+0x00000018:     DW_TAG_member
+                  DW_AT_name\t("first")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x0000001c:     DW_TAG_member
+                  DW_AT_name\t("both")
+                  DW_AT_type\t(0x00000060 "long int[2]")
+                  DW_AT_data_member_location\t(0x08)
+
+0x00000020:   DW_TAG_structure_type
+                DW_AT_name\t("Refs")
+                DW_AT_byte_size\t(0x08)
+
+0x00000024:     DW_TAG_member
+                  DW_AT_name\t("a")
+                  DW_AT_type\t(0x00000048 "long int &")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000028:   DW_TAG_structure_type
+                DW_AT_name\t("Outer")
+                DW_AT_byte_size\t(0x08)
+
+0x0000002c:     DW_TAG_inheritance
+                  DW_AT_type\t(0x00000020 "Refs")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000030:   DW_TAG_structure_type
+                DW_AT_name\t("Later")
+                DW_AT_declaration\t(true)
+
+0x00000034:   DW_TAG_structure_type
+                DW_AT_name\t("Later")
+                DW_AT_byte_size\t(0x08)
+
+0x00000038:     DW_TAG_member
+                  DW_AT_name\t("n")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000040:   DW_TAG_typedef
+                DW_AT_name\t("PairT")
+                DW_AT_type\t(0x00000044 "const Pair")
+
+0x00000044:   DW_TAG_const_type
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x00000048:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x0000004c:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x00000050:   DW_TAG_union_type
+                DW_AT_name\t("U")
+                DW_AT_byte_size\t(0x08)
+
+0x00000060:   DW_TAG_array_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x00000064:     DW_TAG_subrange_type
+                  DW_AT_count\t(0x02)
+
+0x00000080:   DW_TAG_subprogram
+                DW_AT_name\t("one")
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x00000084:   DW_TAG_subprogram
+                DW_AT_name\t("alias")
+                DW_AT_type\t(0x00000040 "PairT")
+
+0x00000088:   DW_TAG_subprogram
+                DW_AT_name\t("later")
+                DW_AT_type\t(0x00000030 "Later")
+
+0x0000008c:   DW_TAG_subprogram
+                DW_AT_name\t("make<long>")
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x00000090:   DW_TAG_subprogram
+                DW_AT_name\t("make<int>")
+                DW_AT_type\t(0x00000040 "PairT")
+
+0x00000094:   DW_TAG_subprogram
+                DW_AT_name\t("pick")
+                DW_AT_type\t(0x0000004c "Pair &")
+
+0x00000098:   DW_TAG_subprogram
+                DW_AT_name\t("refs")
+                DW_AT_type\t(0x00000020 "Refs")
+
+0x0000009c:   DW_TAG_subprogram
+                DW_AT_name\t("outer")
+                DW_AT_type\t(0x00000028 "Outer")
+
+0x000000a0:   DW_TAG_subprogram
+                DW_AT_name\t("number")
+                DW_AT_type\t(0x00000010 "long int")
+
+0x000000a1:     DW_TAG_formal_parameter
+                  DW_AT_name\t("one")
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x000000a2:     DW_TAG_variable
+                  DW_AT_name\t("alias")
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x000000a4:   DW_TAG_subprogram
+                DW_AT_name\t("nothing")
+
+0x000000a8:   DW_TAG_subprogram
+                DW_AT_name\t("twice<long>")
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x000000ac:   DW_TAG_subprogram
+                DW_AT_name\t("twice<int>")
+                DW_AT_type\t(0x0000004c "Pair &")
+
+0x000000b0:   DW_TAG_subprogram
+                DW_AT_name\t("fn")
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x000000b4:   DW_TAG_variable
+                DW_AT_name\t("fn")
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x000000b8:   DW_TAG_subprogram
+                DW_AT_name\t("operator()")
+                DW_AT_type\t(0x00000014 "Pair")
+
+0x000000bc:   DW_TAG_subprogram
+                DW_AT_name\t("joined")
+                DW_AT_type\t(0x00000050 "U")
+"""
+
+
+def test_a_call_gives_a_new_object_only_where_every_function_of_its_name_returns_one():
+    # #297: `auto &&[p, q] = one(i);` keeps `one`'s result alive for its scope only where
+    # that is a new object: a class by value, holding no reference by value.
+    from peeky.native import _parse_dies, call_results
+
+    found = call_results(_parse_dies(CALLS))
+    # A member's name too; another function's parameter or local is no name a call here
+    # may mean (`one`, `alias`).
+    assert [found.pop(name) for name in ("first", "both", "a", "n")] == [False] * 4
+    assert found == {
+        "one": True,
+        # Through a typedef and `const`, or a declaration the definition completes.
+        "alias": True,
+        "later": True,
+        # Every instance of a template, by its name before `<`.
+        "make": True,
+        "twice": False,
+        # A reference, a class holding one (or a base holding one), no class, no type.
+        "pick": False,
+        "refs": False,
+        "outer": False,
+        "number": False,
+        "nothing": False,
+        "joined": False,
+        # A variable's name: a call through it may give anything.
+        "fn": False,
+    }
+
+
+def test_the_worker_reads_a_frames_stack_and_a_listings_later_pages(tmp_path):
+    # #297: a binding of a call's result is checked against its frame's stack, from its
+    # stack pointer to its caller's; a map's entries are listed in pages.
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    worker.stop_id = "stop1"
+    pointers = {1: 0x1000, 2: 0x1400, 3: 0x1800}
+    asked = []
+
+    def stack_pointer(dap, identity):
+        asked.append(identity)
+        return pointers.get(identity)
+
+    worker.runtime = SimpleNamespace(stack_pointer=stack_pointer)
+    worker.listed_frames = [{"id": 1}, {"id": 2}]
+    worker.deeper_stack = lambda levels=64: [{"id": 1}, {"id": 2}, {"id": 3}]
+    assert worker.frame_extent({"id": 1}) == (0x1000, 0x1400)
+    # Its caller is past the listed frames: read from more of the stack.
+    assert worker.frame_extent({"id": 2}) == (0x1400, 0x1800)
+    # Once a stop.
+    assert worker.frame_extent({"id": 1}) == (0x1000, 0x1400) and asked == [1, 2, 2, 3]
+    worker.stop_id, pointers[2] = "stop2", 0x0F00
+    assert worker.frame_extent({"id": 1}) is None
+    assert worker.frame_extent({"id": 3}) is None and worker.frame_extent({"id": 9}) is None
+    worker.dap = Listing({5: [{"name": "[64]", "value": "1"}]})
+    worker.reset_previews()
+    assert worker.preview_fetch(5, 1, start=64) == [{"name": "[64]", "value": "1"}]
+    assert worker.dap.requests[-1][1] == {"variablesReference": 5, "start": 64, "count": 1}
+    with pytest.raises(ValueError):
+        worker.preview_fetch(5, 1, start=-1)

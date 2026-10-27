@@ -1112,13 +1112,26 @@ Some things only look different:
   - An element that is a pointer shows its value, but Peeky doesn't follow it: `p[0]` can't be
     read. Read what it points at where the pair is made.
   - It can't be changed, nor can its fields: a change would write through the reference.
-  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where it names an
-    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A union's
-    member doesn't count, since another member may become active. Anything else may be gone by
-    the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
-    line destroys. So a binding of a call, a subscript, a range `for`'s element, `*p` or a global
-    shows `not shown: the binding refers to an object Peeky can't prove is still alive`. Read it
-    where the code names that object, or bind by value.
+  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where Peeky proves
+    that what it refers to is still alive. That is one of these:
+    - an object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A
+      union's member doesn't count, since another member may become active.
+    - an element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`: `for (const
+      auto &[k, v] : m)`, or `auto &[r, s] = v[0];` for a vector. While the binding is in scope,
+      the code may only call members that add or remove no element, such as `m.size()`.
+      Anywhere in the container's scope, the code must not pass it on, take its address or name it
+      in a lambda. At the stop, the binding must point into the vector's elements, or into one of
+      the map's entries as the debugger lists them (at most 256).
+    - a call's own result: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`. Every
+      function of that name must return a class by value that holds no reference. C++ keeps that
+      result alive until the binding's scope ends. At the stop, the binding must point into the
+      frame's stack.
+  - Peeky reads that code as the compiler preprocessed it, so a macro counts as what it expands
+    to. In an optimized build, only an object of the frame is read.
+  - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary
+    that its line destroys. Such a row shows `not shown: the binding refers to an object Peeky
+    can't prove is still alive`, and why. Read it where the code names that object, or bind by
+    value.
   - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
     tell whether that pass has set its reference yet.
   - Peeky reads the binding's line to tell it from a reference the code declares with the

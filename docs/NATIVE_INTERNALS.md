@@ -242,10 +242,24 @@ shows that reference's address as the variable's value.
   (`std::tuple_element<0, P>::type &r`) fails that check, so it stays a reference. A GCC
   candidate whose line Peeky can't read is withheld.
 - `Statements.binding` says whether the binding is by reference, and what it binds.
-  `NativeSession._bound_alive` follows one by reference only where that is an object of the
-  frame, or a member of one (`_local_object`): a local or by-value parameter in scope there,
-  reached through no reference, pointer or union (`_member_object`). Anything else is `not
-  shown`, since it may be gone.
+  `NativeSession._bound_alive` follows one by reference only where it proves what that refers to
+  is still alive. Anything else is `not shown`, with why, since it may be gone.
+  - An object of the frame, or a member of one (`_local_object`): a local or by-value parameter in
+    scope there, reached through no reference, pointer or union (`_member_object`).
+  - An element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`, by a range
+    `for` over it or one subscript of a vector (`_held_element`). `Statements.leaves_elements`
+    reads each translation unit as the compiler preprocessed it.
+  - In the binding's scope, the container may only call a member that adds or removes no element
+    (`_KEEPING`). In its own scope, no pointer or reference to it may be kept, and no lambda or
+    local class may name it.
+  - A call's own result (`_kept_result`). `call_results` proves the call's name from the debug
+    information: every function of that name returns a class by value that holds no reference,
+    and no global, static or data member has that name.
+  - `bound_element` then checks the address the reference holds (`_bound_place`). It must be in
+    the vector's elements (its own `_M_start` and `_M_finish`, or libc++'s `__begin_` and
+    `__end_`). Or it must be in one of the map's entries as the debugger lists them. Or it must be
+    in the frame's stack, from its stack pointer to its caller's (`frame_extent`).
+  - In an optimized build, only an object of the frame is read.
 - `NativeSession.bound_element` gives the worker the element in the variable's place. For a
   number, a character or a pointer, that is the debugger's one child under the reference, with
   nothing listed under it. For a struct, a string or a container, `element_text` keeps the text
@@ -415,7 +429,7 @@ required test calls a model.
 | `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
-| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, and a pair's or tuple's bindings, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, and a pair's or tuple's bindings (by reference too: into a local container, or of a call's result), built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
 | `tests/cpp/test_cpp_landing_pads.py` | A local declared on the stop line, after clang's landing pad, is withheld; built by clang and by g++ | macOS (Apple clang); Linux (clang 18 and g++, lldb-dap 18 and 20) |
 | The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |
