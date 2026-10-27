@@ -1528,6 +1528,11 @@ def test_a_subscripts_binding_is_proven_only_where_the_code_leaves_it(
     # Unknown lines: never proven.
     assert not statements.leaves_elements("v", (None, 4), (2, 4), 2, "r")
     assert not statements.leaves_elements("v", (1, 4), (2, 4), 3, "r")
+    # Initialized in parentheses or braces, as with `=`.
+    for initialized, kept in (("(v[0])", True), ("{v[1]}", True), ("(v)", False)):
+        source = f"int main() {{\n    std::vector<P> v;\n    auto &[r, s]{initialized};\n}}\n"
+        statements = Statements(source, raw_strings=True)
+        assert statements.leaves_elements("v", (2, 4), (3, 4), 3, "r") is kept, initialized
 
 
 RANGE_LAMBDA_SOURCE = """int f() {

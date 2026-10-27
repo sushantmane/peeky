@@ -2800,7 +2800,7 @@ class Statements:
         binding's (Statements.scope_lines).
 
         The binding's own initializer is ``name`` alone, a range `for`'s range (`for
-        (auto &[k, v] : m)`), or one subscript of it (`= v[0]`). In ``region``, ``name``
+        (auto &[k, v] : m)`), or one subscript of it (`= v[0]`, `(v[0])`). In ``region``, ``name``
         is only that, or a call of a member that neither adds nor removes an element
         (`m.size()`, `m.find(k)`: ``_KEEPING``). Elsewhere in ``scope`` it is only its
         declaration, a member's use (`m.insert(…)`, `v[1]`), an assignment statement
@@ -2834,10 +2834,10 @@ class Statements:
             return False
         _, low, high, mark = found
         whole = re.compile(rf"\s*({re.escape(name)})(?!{_ID})\s*").match(code, low, high)
-        if whole is None or mark not in (":", "=") or (mark == ":" and whole.end() != high):
+        if whole is None or (mark == ":" and whole.end() != high):
             return False
         own = whole.start(1)
-        if mark == "=":
+        if mark != ":":
             # One subscript, nothing after it: `v[i]`, not `v[i].x`, `v[i][j]` or `v`.
             closing = self._closing_bracket(whole.end()) if code[whole.end()] == "[" else None
             if closing is None or closing >= high or code[closing + 1 : high].strip():
