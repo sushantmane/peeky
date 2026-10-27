@@ -2569,7 +2569,43 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
+def _stored_before(function, source, at, end, line, address):
+    """Whether all the code of a declaration on lines ``at``-``end`` of ``source`` has run
+    in a caller frame of ``function`` on ``line``, whose call returns to ``address``
+    (unslid), by the line table of a build that lays code out in source order (-O0).
+
+    The frame's line is below the declaration's end, and each of the function's rows of
+    those lines runs (to the function's next row, or the end of its code there) before
+    the call does, at ``address`` less one; at least one does. A loop around both runs
+    the declaration again before the call on each pass. Above the declaration (a loop's
+    next pass), within it, with a row of its lines after the call (a loop's code placed
+    there), or with anything unknown: False. A jump past the declaration is judged
+    after (declared_skipped)."""
+    if address is None or end is None or line <= end:
+        return False
+    call, ranges = address - 1, function.get("ranges", ())
+    # Every row the function runs, by address.
+    order = function.get("order") or ()
+    if not any(low <= call < high for low, high in ranges):
+        return False
+    found = False
+    for start, file, number in order:
+        if file != source or not at <= number <= end:
+            continue
+        holding = [high for low, high in ranges if low <= start < high]
+        if not holding:
+            return False
+        following = bisect.bisect_right(order, (start, "\U0010ffff", 1 << 62))
+        finish = holding[0]
+        if following < len(order):
+            finish = min(finish, order[following][0])
+        if finish > call:
+            return False
+        found = True
+    return found
+
+
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, in_order=False):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2584,13 +2620,16 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
     Declared at or above the frame's line: the frame's own line always counts, and so
     does a line the function still has code of at or after ``address`` (`long r =` /
     `f(x);` stores `r` on the declaration's line after the call returns, and so does a
-    designated initializer over several lines). Declared anywhere on a line with no code
-    of its own: an array of structs, a nested struct or a 2-D array is stored element by
-    element on its elements' lines, so nothing places it. With the address or its
-    function unknown, every declaration at or above the line counts. And so does one whose
-    statement, as the source writes it (``ends``), still runs on the frame's line:
-    `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
-    it before the call.
+    designated initializer over several lines). Declared on a line with no code of its
+    own: an array of structs, a nested struct or a 2-D array is stored element by
+    element on its elements' lines (GCC's C++ does so for `struct trio t = { seed,`), so
+    only the code of the statement's lines (``ends``) places it: it counts unless the
+    build lays code out in source order (``in_order``: -O0) and that code has all run
+    before the call (_stored_before). With the address or its function unknown, every
+    declaration at or above the line counts. And so does one whose statement, as the
+    source writes it (``ends``), still runs on the frame's line: `struct trio t = {
+    seed,` / `{ twice(3), ... } };` has code of its first line, all of it before the
+    call.
 
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
@@ -2622,6 +2661,9 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
                 return at, "file", declared_in
             span = function["rows"].get((source, at))
             if span is None:
+                end = ends(at, base) if in_order and ends is not None else None
+                if _stored_before(function, source, at, end, line, address):
+                    continue
                 return at, "no code", None
             if at <= line and (at == line or address is None or span[1] >= address):
                 return at, "unfinished", None
@@ -6098,6 +6140,7 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
+                in_order=getattr(self.target, "optimization", "O0") == "O0",
             )
         ):
             at, why, detail = unfinished

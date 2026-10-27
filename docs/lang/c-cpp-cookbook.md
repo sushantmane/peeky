@@ -577,7 +577,10 @@ In C and C++, a caller's local is withheld while its declaration's code hasn't f
   the next.
 - **A declaration line with no code of its own:** the local is stored element by element, on its
   elements' lines. Examples are an array of structs, a nested struct, or a 2-D array initialized
-  over several lines.
+  over several lines. Peeky goes by the code of the declaration's lines instead. It shows the
+  local once the caller's line is below the declaration, and all of that code comes before the
+  call. A loop's next pass, above the declaration, still withholds it. So does an optimized
+  build.
 - **A declaration still running on the caller's line:** Peeky reads the declaration from the source
   up to its `;`. In `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's
   code runs before the calls, and `t.p` is stored after them.
@@ -1080,9 +1083,10 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
 - **A text change** to a `std::string` that holds its text in its own buffer is refused with
   lldb-dap 20. LLDB reads that buffer as `char[0]`, so Peeky can't set its characters one by one.
   The refusal says so ([details](#change-a-text)).
-- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, is
-  withheld in a caller frame. GCC gives its declaration's first line no code of its own, so Peeky
-  can't tell when it is stored.
+- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
+  no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
+  once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
+  build, it stays withheld in a caller frame.
 - **GDB's DAP** isn't supported. Peeky debugs GCC's builds with lldb-dap.
 
 Some things only look different:

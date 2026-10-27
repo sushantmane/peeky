@@ -151,6 +151,20 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
 
+## A caller's local whose declaration line has no code
+
+- `declared_unfinished` withholds a caller frame's local whose declaration line has no row of
+  its own. GCC's C++ does this to `struct trio t = { seed,`, and clang to an array of structs.
+- `_stored_before` lifts that at `-O0`. The frame's line must be below the statement's end, from
+  `Statements.end`.
+- Each row of the statement's lines, from the function's `order`, must end before the call.
+  A row ends at the function's next row, or at the end of its code there. The call is the
+  return address less one.
+- A row after the call, such as a loop's code placed there, keeps it withheld. So does anything
+  unknown.
+- A loop around both runs the declaration again before the call on each pass. A jump past the
+  declaration is judged after it, by `declared_skipped`.
+
 ## Preview bounds and types
 
 - `native_previews` sets the bounds: 8 members or elements per level, two levels, 40 characters

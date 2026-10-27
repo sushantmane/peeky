@@ -983,6 +983,57 @@ def test_a_caller_frame_inside_a_locals_declaration_statement_withholds_it():
     assert unknown == (21, "statement", None)
 
 
+def test_a_callers_aggregate_with_no_code_on_its_line_reads_once_its_lines_have_run():
+    from peeky.c_source import Statements
+    from peeky.native import declared_unfinished
+
+    # GCC gives `struct trio t = { seed,` no code of its own: `t.x = seed` runs at line
+    # 23's address, then line 22's call, then line 23's. Line 24 calls `use(t)`; line 20
+    # is above, as a loop's next pass would be.
+    statements = Statements(
+        "\n" * 19 + "f();\nstruct trio t = { seed,\n    { twice(3),\n      twice(4) } };\nuse(t);\n"
+    )
+    order = ((90, "a.c", 20), (100, "a.c", 23), (104, "a.c", 22), (112, "a.c", 23))
+    order += ((130, "a.c", 24),)
+    run = {"source": "a.c", "jumps": False, "ranges": [(80, 150)], "order": order}
+    run["rows"] = rows({20: (90, 90), 22: (104, 104), 23: (100, 112), 24: (130, 130)}, "a.c")
+    run["locals"] = {"t": {("a.c", 21, True)}}
+
+    def judge(line, address, function=run, ends=statements.end, in_order=True):
+        return declared_unfinished(
+            [function], "t", "a.c", line, address, ends=ends, in_order=in_order
+        )
+
+    # Past every address of lines 21-23 (line 23's last row runs to 130): read.
+    assert judge(24, 140) is None
+    # Inside the declaration, or before its code ends: withheld, as before.
+    assert judge(22, 110) == (21, "no code", None)
+    assert judge(23, 120) == (21, "no code", None)
+    assert judge(24, 130) == (21, "no code", None)
+    # Within or above its lines, wherever the address is: withheld.
+    assert judge(23, 140) == (21, "no code", None)
+    assert judge(20, 140) == (21, "no code", None)
+    # Unknown: the statement's end, the return address, the function's rows, or code laid
+    # out out of source order (an optimized build).
+    assert judge(24, 140, ends=lambda at, name: None) == (21, "no code", None)
+    assert judge(24, None) == (21, "no code", None)
+    assert judge(24, 140, function={**run, "order": ()}) == (21, "no code", None)
+    assert judge(24, 140, in_order=False) == (21, "no code", None)
+    # A row of the declaration's lines after the call (a loop's code there, which runs
+    # again after it): withheld.
+    looped = {**run, "order": (*order, (145, "a.c", 22))}
+    assert judge(24, 140, function=looped) == (21, "no code", None)
+    # The last row runs to the end of the function's code there.
+    split = {**run, "order": order[:4], "ranges": [(80, 124), (128, 150)]}
+    assert judge(24, 140, function=split) is None
+    assert judge(24, 140, function={**split, "ranges": [(80, 150)]}) == (21, "no code", None)
+    # Another line's row at the same address as one of its lines' leaves that one's code
+    # running to the next address.
+    shared = {**run, "order": (*order[:4], (112, "a.c", 30), (130, "a.c", 24))}
+    assert judge(24, 126, function=shared) == (21, "no code", None)
+    assert judge(24, 131, function=shared) is None
+
+
 def test_a_caller_frame_in_another_file_than_a_locals_declaration_withholds_it():
     from peeky.native import declared_unfinished
 
