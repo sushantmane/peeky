@@ -30,6 +30,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Offsets from a pointer in each run](#offsets-from-a-pointer-in-each-run)
 - [5.1 Stop, Look, Change, Finish](#51-stop-look-change-finish)
   - [Read a caller's local](#read-a-callers-local)
+  - [When the program crashes](#when-the-program-crashes)
 - [7.1 C and C++](#71-c-and-c)
   - [Quick start: what you can read and change](#quick-start-what-you-can-read-and-change)
   - [Read structs, arrays and standard containers](#read-structs-arrays-and-standard-containers)
@@ -568,6 +569,72 @@ How Peeky reads the source:
 - Digraphs (`<% %> <: :>`) are brackets.
 - Lines are counted as the compiler's debug information counts them. `\r\n`, a lone `\r` and a
   lone `\n` each end a line; `\n\r` is two line ends.
+
+### When the program crashes
+
+A crash is the program's failure, not Peeky's. It can be a fault, such as `strlen(NULL)`, or a
+signal. It can be `abort`, after an uncaught C++ exception, `std::terminate` or a failed `assert`.
+Most such crashes stop in libc, the C++ runtime or `abort`, outside your sources.
+
+LLDB stops on other signals too, and on a C++ throw or catch filter. So Peeky calls a stop a crash
+only with proof:
+
+- The signal is SIGABRT, SIGSEGV, SIGBUS, SIGILL or SIGFPE. On macOS, that includes a Mach
+  exception that becomes one, such as `EXC_BAD_ACCESS`. It also includes LLDB's `hit program
+  assert`.
+- The program neither handles nor ignores that signal. Peeky reads the program's signal masks, and
+  runs nothing in it: Linux's `/proc/PID/status`, or macOS's process information.
+
+Any other such stop isn't a crash. Examples are a SIGINT or SIGPIPE the program handles, and a
+filter's stop. Where Peeky can't read the masks, it doesn't call the stop a crash either.
+
+A probe ends at the crash with `status: failed` and `PROGRAM_CRASHED`. The hits before it stand,
+and the output so far is kept:
+
+```
+status: failed  hits: 1 before it failed  seconds: 1.224  max pause: 117.3 ms
+error [PROGRAM_CRASHED]: The program crashed after hit 1: signal SIGABRT, outside the program's sources, in a call from main at abort.cpp:12, after a C++ exception that nothing caught. Peeky ended it there, so it has no exit status
+hint: The program failed, not Peeky: its output may say why. Probe a line before the crash to see the values that led to it.
+cleanup: terminated pids 20244, 20245
+output so far (the program was stopped at its crash):
+  before 1
+  before 2
+  libc++abi: terminating due to uncaught exception of type std::length_error: basic_string
+```
+
+- The message gives what the debugger says, such as `signal SIGABRT` or `EXC_BAD_ACCESS`. It
+  names the nearest frame of your code, among the first 64.
+- An uncaught exception is named where `__cxa_throw` called `std::terminate`. LLDB doesn't say
+  its type, but the C++ runtime writes it to the output.
+- JSON has `crash`: `description`, `outside_program`, `frame`, `function`, `location`, and
+  `uncaught_exception` where it applies.
+- Peeky ends the program at the crash, so there is no exit status. On macOS, a fault would stop
+  again at each `continue`.
+- An exception that the program catches never stops it.
+
+At a stop that isn't a crash, a probe reads nothing and lets the program go on, with a warning.
+For a signal, the warning adds that LLDB may not deliver it to the program. So the run after it can
+differ from one without Peeky.
+
+At the 100th such stop in a row, the probe ends with `BUDGET_EXHAUSTED`. The same stop means the
+same description, place, and nearest frame of your code. A loop may raise a signal that often, or
+LLDB may stop there again without letting the program past. On
+macOS, a fault that the program handles does that. Peeky can't tell which, and the message says
+so. Probe a line before those stops, or use an input that doesn't raise them.
+
+In a session, the state says the same, and `crash` is in its JSON. At any other signal stop, or a
+C++ throw or catch filter's, the JSON has `signal_stop` instead. It has the same fields, and
+`kind`: `signal`, `exception` (a macOS Mach exception), or the filter's name, such as
+`cpp_throw`. Nothing in a frame outside your sources is read, at a crash or any other such stop.
+`session inspect` there is refused, and the session goes on:
+
+```
+peeky: [INVALID_REQUEST] Nothing in frame 0 (__pthread_kill) is read: it is outside the program's sources, where the program crashed (signal SIGABRT). Frame 12, main at abort.cpp:12, is the nearest of your code: `session inspect --frame 12`
+```
+
+`--frame N` reads that frame as any caller's, even past the 10 frames listed. Its values are
+never settable. A frame of your code whose line or module doesn't match the build still fails,
+with `DEBUGGER_ERROR`.
 
 ## 7.1 C and C++
 

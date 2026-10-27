@@ -220,9 +220,16 @@ def test_errors_md_lists_every_code_with_the_retryable_flag_peeky_sends():
     expected = {}
     for _, code, _, retryable in _RULES:
         expected.setdefault(code, set()).add(retryable)
-    # Sent outside the rules: a build's failure, a probe's no-stop, the worker's token check,
+    # Sent outside the rules: a build's failure, a probe's no-stop or crash, the worker's token check,
     # and the fallbacks for an unexpected exception.
-    for code in ("BUILD_FAILED", "NO_STOP", "UNAUTHORIZED", "INTERNAL_ERROR", "DEBUGGER_ERROR"):
+    for code in (
+        "BUILD_FAILED",
+        "NO_STOP",
+        "PROGRAM_CRASHED",
+        "UNAUTHORIZED",
+        "INTERNAL_ERROR",
+        "DEBUGGER_ERROR",
+    ):
         expected.setdefault(code, set()).add(False)
     assert set(rows) == set(expected)
     for code, flags in expected.items():

@@ -90,8 +90,11 @@ def test_probe_requests_are_bounded_and_typed(change):
 class FakeWorker:
     """Scripted worker: one stop with a given reason/location, then termination."""
 
-    def __init__(self, reason="breakpoint", path="/w/main.py", line=8, update=None):
+    def __init__(
+        self, reason="breakpoint", path="/w/main.py", line=8, update=None, crash=None, seen=None
+    ):
         self.reason, self.path, self.line, self.update = reason, path, line, update
+        self.crash, self.seen = crash, seen
         self.calls = []
         self.stopped = False
 
@@ -116,6 +119,10 @@ class FakeWorker:
             }
             if self.update:
                 result["breakpoint_events"] = [{"breakpoint": {"id": 1, "line": self.update}}]
+            if self.crash is not None:
+                result["crash"] = self.crash
+            if self.seen is not None:
+                result["signal_stop"] = self.seen
             return result
         if operation == "inspect":
             frame = {"source": {"path": self.path}, "line": self.line}
@@ -131,6 +138,8 @@ class FakeWorker:
             }
         if operation == "report":
             return {"output": "", "output_truncated": False}
+        if operation == "continue":
+            return {"state": "running", "resumed": True}
         return {}
 
     def close(self):
@@ -144,6 +153,13 @@ class FakeWorker:
         ({"update": 9, "line": 9}, True),
         ({"reason": "exception"}, False),
         ({"reason": "signal"}, False),
+        ({"reason": "exception", "seen": {"kind": "cpp_throw", "description": "C++ Throw"}}, False),
+        (
+            {"reason": "exception", "seen": {"kind": "signal", "description": "signal SIGINT"}},
+            False,
+        ),
+        ({"reason": "exception", "crash": {}}, False),
+        ({"reason": "signal", "crash": {"description": "signal SIGSEGV"}}, False),
         ({"line": 12}, False),
         ({"path": "/w/other.py"}, False),
         ({"path": "/w/notmain.py"}, False),
@@ -157,6 +173,37 @@ def test_only_the_requested_breakpoint_counts_as_a_hit(monkeypatch, fake, ok):
     result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",), (("x", "2"),)))
     if ok:
         assert result["status"] == "completed" and result["hits"] == 1
+    elif "crash" in fake:
+        # The program crashed (#342): nothing of its frames is read, and nothing changed.
+        assert result["status"] == "failed" and result["hits"] == 0
+        assert result["error"]["code"] == "PROGRAM_CRASHED", result["error"]
+        what = fake["crash"].get("description", "the debugger did not say what")
+        assert result["error"]["message"] == (
+            f"The program crashed before it stopped at main.py:8: {what}. Peeky ended it "
+            "there, so it has no exit status"
+        )
+        assert {"inspect", "set_variable", "continue"}.isdisjoint(worker.calls)
+        assert result["rows"] == []
+    elif fake.get("reason") in ("exception", "signal"):
+        # No proven crash (review of #342): a signal the program may handle, or a C++
+        # throw filter's stop. Nothing is read, and the program goes on to its end.
+        assert result["status"] == "no-stop" and result["hits"] == 0, result
+        assert "crash" not in result and result["error"]["code"] == "NO_STOP"
+        seen = fake.get("seen") or {}
+        what = seen.get("description", f"reason: {fake['reason']}")
+        # A C++ throw or catch filter's stop is no signal: nothing about delivering one.
+        assert result["warnings"][0] == (
+            f"The probe let the program go on after it stopped on {what}, which Peeky "
+            "doesn't take for a crash."
+            + (
+                ""
+                if seen.get("kind") == "cpp_throw"
+                else " The debugger may not deliver a signal to the program, so its run after "
+                "that stop can differ from one without Peeky."
+            )
+        ), result["warnings"]
+        assert {"inspect", "set_variable"}.isdisjoint(worker.calls) and result["rows"] == []
+        assert "continue" in worker.calls
     else:
         assert result["status"] == "failed" and result["hits"] == 0
         assert "not the requested" in result["error"]["message"]
@@ -2155,3 +2202,29 @@ def test_an_opaque_rust_enum_row_says_why_where_it_is_and_what_to_read():
     count.pop("opaque_reason")
     [row] = _capture(Worker({}), {}, ("count",), 0, "observed")
     assert "note" not in row, row
+
+
+def test_a_signal_stop_counts_as_let_go_on_only_where_the_program_resumed(monkeypatch):
+    # Review of #348: `continue` serves another thread's breakpoint stop from the same
+    # all-threads stop first, and resumes nothing; the warning said the probe let the
+    # program go on after the signal.
+    import peeky.probe as probe_module
+
+    class Queued(FakeWorker):
+        def __init__(self):
+            super().__init__(
+                reason="exception", seen={"kind": "signal", "description": "signal SIGINT"}
+            )
+            self.waits = 0
+
+        def dispatch(self, operation, args):
+            if operation == "continue":
+                self.calls.append(operation)
+                return {"state": "stopped", "resumed": False}
+            return super().dispatch(operation, args)
+
+    worker = Queued()
+    monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
+    result = probe_module.run_probe("/w", Probe("main.py", 8, ("x",)))
+    assert "continue" in worker.calls and "inspect" not in worker.calls
+    assert not any("let the program go on" in w for w in result.get("warnings", ())), result

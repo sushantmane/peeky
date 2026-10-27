@@ -28,6 +28,8 @@ from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_prev
 from peeky.names import changes_named, display_function, function_labels, hits_named, shortened_note
 from peeky.textlines import split_lines
 from peeky.worker import (
+    CRASH_STOPS,
+    MAX_FRAMES,
     DebugWorker,
     load_java_target,
     load_native_target,
@@ -36,6 +38,10 @@ from peeky.worker import (
 )
 
 MAX_SELECTORS = 32
+# How many times in a row a probe lets the program go on from the same `exception` or
+# `signal` stop that is no crash. A loop may raise a signal it handles that often; or LLDB
+# stops at a macOS fault the program handles again each time: Peeky can't tell which.
+REPEATED_STOPS = 100
 MAX_SETS = 8
 MAX_HITS = 100
 # The highest hit a --set-at may name: its line's stops are counted, not captured.
@@ -4398,6 +4404,10 @@ def run_probe(
     # None (a failure or the timeout); and the change being made when one failed: for
     # each request's outcome (`_set_outcomes`).
     finished, attempt = None, None
+    # What the debugger said of the program's crash, where it crashed (#342); and the
+    # other `exception` or `signal` stops the probe let the program go on from, by what
+    # the debugger said, with how many came in a row at one place.
+    crash, passed, again, repeated = None, {}, (None, 0), None
     # The breakpoint line in the build that runs: the candidate's numbering with an edit.
     line = probe.line
     # Each --set-at, with its line in the build that runs (#137).
@@ -4673,8 +4683,61 @@ def run_probe(
                     say("all requested hits captured; ending the probe now")
                     break
                 continue
-            # Only the requested breakpoints count; a crash, signal or other stop fails
-            # closed before any capture or intervention.
+            if reason in CRASH_STOPS and not isinstance(state.get("crash"), dict):
+                # Not a proven crash (review of #342): a signal the program may handle
+                # (SIGINT, SIGPIPE), a C++ throw or catch filter's stop, or a fatal one
+                # whose handlers can't be read. Nothing is read; the program goes on.
+                seen = state.get("signal_stop")
+                seen = seen if isinstance(seen, dict) else {}
+                what = str(
+                    seen.get("description") or body.get("description") or f"reason: {reason}"
+                )[:300]
+                # A C++ throw or catch filter's stop is no signal (`kind`: exceptionInfo's).
+                filtered = seen.get("kind") not in (None, "signal", "exception")
+                # The same stop: the same text, place, and nearest frame of the program's code
+                # (a loop raising from two lines reaches one place in libc from each).
+                place = (what, state.get("location"), seen.get("function"), seen.get("location"))
+                again = (place, again[1] + 1 if again[0] == place else 1)
+                if again[1] >= REPEATED_STOPS:
+                    # A bound, not a proof: the program may make progress between them.
+                    repeated = {**seen, "description": what}
+                    if "location" not in repeated and place[1]:
+                        repeated["stopped_at"] = str(place[1])[:500]
+                    for call in reversed(returning):
+                        rows.extend(_never_returned(call, "the probe ended before it returned"))
+                    returning.clear()
+                    status = "failed"
+                    say(f"ending the probe at the {again[1]}th such stop in a row")
+                    break
+                for call in reversed(returning):
+                    rows.extend(
+                        _never_returned(call, f"the program stopped on {what} before it returned")
+                    )
+                returning.clear()
+                # Counted only where the program went on: another thread's breakpoint stop
+                # from the same all-threads stop is served first, and nothing resumes.
+                if worker.dispatch("continue", stop).get("resumed") is True:
+                    passed[(what, filtered)] = passed.get((what, filtered), 0) + 1
+                continue
+            again = (None, 0)
+            if reason in CRASH_STOPS:
+                # The program crashed (#342): a fatal signal it neither handles nor
+                # ignores, from a fault or `abort` (after an uncaught C++ exception).
+                # Nothing more is read or changed: the worker's summary says where, and
+                # the probe ends with the program stopped there.
+                crash = dict(state["crash"])
+                if not crash.get("description") and isinstance(body.get("description"), str):
+                    crash = {**crash, "description": body["description"][:300]}
+                if "location" not in crash and state.get("location"):
+                    crash = {**crash, "stopped_at": str(state["location"])[:500]}
+                for call in reversed(returning):
+                    rows.extend(_never_returned(call, "the program crashed before it returned"))
+                returning.clear()
+                status = "failed"
+                say(f"the program crashed after {hits} hit(s)" if hits else "the program crashed")
+                break
+            # Only the requested breakpoints count; any other stop fails closed before any
+            # capture or intervention.
             # Every line placed counts: another thread's stop at a line whose breakpoint
             # was just removed may still be served (LLDB stops all threads together).
             expected = {number: _expected_line(placed[number], state, number) for number in lines}
@@ -5035,6 +5098,18 @@ def run_probe(
             for call in reversed(returning):
                 rows.extend(_never_returned(call, "the probe timed out before it returned"))
             returning.clear()
+        for (what, filtered), count in passed.items():
+            warnings.append(
+                f"The probe let the program go on after it stopped on {what}"
+                + (f" ({count} times)" if count > 1 else "")
+                + ", which Peeky doesn't take for a crash."
+                + (
+                    ""
+                    if filtered
+                    else " The debugger may not deliver a signal to the program, so its run "
+                    "after that stop can differ from one without Peeky."
+                )
+            )
         report = reported = worker.dispatch("report", session)
         at_hits = probe.until == "hits" and status == "completed" and hits >= probe.limit
         result.update(
@@ -5073,6 +5148,36 @@ def run_probe(
                     "retryable": False,
                     "session_closed": True,
                 }
+        if crash is not None:
+            result["crash"] = shown = crash
+            base = str(Path(root).resolve()) + "/"
+            if isinstance(at := crash.get("location"), str) and at.startswith(base):
+                # Named as the probe names its program: relative to the root.
+                shown = {**crash, "location": at[len(base) :]}
+            result["error"] = {
+                "code": "PROGRAM_CRASHED",
+                "message": crash_message(shown, hits, f"{probe.program}:{line}"),
+                "hint": "The program failed, not Peeky: its output may say why. Probe a line "
+                "before the crash to see the values that led to it.",
+                "retryable": False,
+                "session_closed": True,
+            }
+        if repeated is not None:
+            shown = repeated
+            base = str(Path(root).resolve()) + "/"
+            if isinstance(at := repeated.get("location"), str) and at.startswith(base):
+                shown = {**repeated, "location": at[len(base) :]}
+            result["error"] = {
+                "code": "BUDGET_EXHAUSTED",
+                "message": f"The probe ended at the program's {REPEATED_STOPS}th stop in a row on "
+                f"{crash_text(shown, crashed=False)}. It let the program go on after each of the "
+                f"first {REPEATED_STOPS - 1}. The program may cause that stop again and again, "
+                "or the debugger may stop there without letting it past: Peeky can't tell which",
+                "hint": "Probe a line the program reaches before these stops, or run it with "
+                "input that doesn't raise them.",
+                "retryable": False,
+                "session_closed": True,
+            }
         if status == "timeout":
             from peeky.errors import classify
 
@@ -6006,6 +6111,39 @@ def _table(result, short_names=True):
     return "\n".join(lines)
 
 
+def crash_text(crash, crashed=True):
+    """A crash's summary (#342), as the worker gave it: "signal SIGABRT, outside the
+    program's sources, in a call from main at abort.cpp:12, after a C++ exception that
+    nothing caught"."""
+    text = str(crash.get("description") or "the debugger did not say what")
+    nearest = crash.get("location")
+    function = display_function(crash.get("function")) or "?"
+    if crash.get("outside_program") is True and nearest:
+        text += f", outside the program's sources, in a call from {function} at {nearest}"
+    elif nearest:
+        text += f", in {function} at {nearest}"
+    elif crash.get("outside_program") is True:
+        text += (
+            f", outside the program's sources, with no frame of its code among the first "
+            f"{MAX_FRAMES}"
+        )
+    elif crash.get("stopped_at"):
+        text += f", at {crash['stopped_at']}"
+    if crashed and crash.get("uncaught_exception") is True:
+        text += ", after a C++ exception that nothing caught"
+    return text
+
+
+def crash_message(crash, hits, where):
+    """A probe's error for a crash (#342): when it came, what it was, and that the program
+    was ended there, so it has no exit status."""
+    when = f"after hit {hits}" if hits else f"before it stopped at {where}"
+    return (
+        f"The program crashed {when}: {crash_text(crash)}. Peeky ended it there, so it has no "
+        "exit status"
+    )
+
+
 def _output_label(result):
     """What the output shown is (#203): whole, cut, or read before its end was proven."""
     complete = result.get("output_complete", True)
@@ -6031,6 +6169,8 @@ def _output_label(result):
         return "output (truncated: some of it was dropped):" if cut else "output:"
     if result.get("program_ended"):
         return "output so far (the program ended, but its output may still have been arriving):"
+    if result.get("crash") is not None:
+        return "output so far (the program was stopped at its crash):"
     if result.get("status") == "failed":
         return "output so far (the program was stopped when the probe failed):"
     return "output so far (the program was still running):"

@@ -1924,6 +1924,18 @@ def _state_text(state, name="default", base=None):
             " [the step was interrupted here: another thread stopped at the same time; "
             "`session continue` serves its stop]"
         )
+    elif isinstance(crash := state.get("crash"), dict):
+        from peeky.probe import crash_text
+
+        # The program crashed (#342): what the debugger says, and where in its code.
+        if isinstance(crash.get("location"), str):
+            crash = {**crash, "location": _relative_location(crash["location"], base)}
+        nearest = crash.get("frame")
+        where += f" [the program crashed: {crash_text(crash)}; " + (
+            f"`session inspect --frame {nearest}` reads that frame of your code]"
+            if type(nearest) is int and nearest > 0
+            else "not auto-resumed: inspect it, or `session report` for its output]"
+        )
     elif reason and reason not in ("breakpoint", "step"):
         where += f" [reason: {reason}; not auto-resumed, inspect it or `session report`]"
     text = f"state: {state['state']}{where}{_pause_text(state)}{hint}"
@@ -4074,7 +4086,7 @@ def main(argv=None, _job=False, _edits=None):
             default=0,
             metavar="N",
             help="Read stack frame N: 0 is where the program stopped (default), 1 its caller, "
-            "... as `session inspect --json` lists `frames` (at most 10)",
+            "... as `session inspect --json` lists `frames` (10, or up to N; at most 64)",
         )
     actions.choices["set"].add_argument(
         "assignment",
