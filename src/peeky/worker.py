@@ -3455,11 +3455,11 @@ class DebugWorker:
         self.preview_fetches = 0
         self.preview_deadline = time.monotonic() + PREVIEW_SECONDS
 
-    def preview_fetch(self, reference, count):
-        """The first ``count`` children of a raw debugger value, for a runtime's preview
-        (#136). Bounded per inspection or expansion (PREVIEW_FETCHES requests within
-        PREVIEW_SECONDS), apart from the value-view budget; exhaustion leaves the
-        remaining values as the debugger shows them."""
+    def preview_fetch(self, reference, count, start=0):
+        """The first ``count`` children of a raw debugger value (from ``start``), for a
+        runtime's preview (#136). Bounded per inspection or expansion (PREVIEW_FETCHES
+        requests within PREVIEW_SECONDS), apart from the value-view budget; exhaustion
+        leaves the remaining values as the debugger shows them."""
         remaining = self.preview_deadline - time.monotonic()
         if self.preview_fetches >= PREVIEW_FETCHES or remaining <= 0:
             raise ViewBudgetExhausted("Preview budget exhausted")
@@ -3468,10 +3468,12 @@ class DebugWorker:
             raise ValueError("Variable is not expandable")
         if type(count) is not int or not 0 < count <= 64:
             raise ValueError("Preview read exceeds limit")
+        if type(start) is not int or not 0 <= start <= 65536:
+            raise ValueError("Preview read exceeds limit")
         try:
             values = self.dap.request(
                 "variables",
-                {"variablesReference": reference, "start": 0, "count": count},
+                {"variablesReference": reference, "start": start, "count": count},
                 timeout=remaining,
             ).get("variables", [])
         except ResponseTimeout as exc:
@@ -3673,7 +3675,16 @@ class DebugWorker:
                 else None
             )
             element = (
-                bound(variable, frame, self.preview_fetch, note=note)
+                bound(
+                    variable,
+                    frame,
+                    self.preview_fetch,
+                    note=note,
+                    # Where what it binds is kept, to check it there (#297).
+                    siblings=variables,
+                    raw=lambda path: self.raw_value(frame, path),
+                    extent=lambda: self.frame_extent(frame),
+                )
                 if bound and not (self.placeholders() and is_unavailable(variable.get("value")))
                 else None
             )
@@ -4480,6 +4491,34 @@ class DebugWorker:
                     found.append(span)
         state["strings"] = (found, cut)
         return state["strings"]
+
+    def frame_extent(self, frame):
+        """(``frame``'s stack pointer, its caller's): the stack its locals and temporaries
+        are kept in (#297), as LLDB recovers both; None where either is not given, or a
+        caller is not listed. Asked once per frame and stop."""
+        cache = getattr(self, "stack_extents", None)
+        if cache is None or cache[0] != self.stop_id:
+            cache = self.stack_extents = (self.stop_id, {})
+        identity = frame.get("id")
+        if identity not in cache[1]:
+            listed = list(getattr(self, "listed_frames", None) or ())
+            index = next((i for i, each in enumerate(listed) if each.get("id") == identity), None)
+            if index is not None and index + 1 >= len(listed):
+                listed = list(self.deeper_stack())
+            caller = listed[index + 1] if index is not None and index + 1 < len(listed) else None
+            read = getattr(self.runtime, "stack_pointer", None)
+            found = None
+            if caller is not None and callable(read):
+                # As for a caller's locals: scopes are bound for changes only afresh after.
+                self.frame_scans += 1
+                try:
+                    low, high = read(self.dap, identity), read(self.dap, caller.get("id"))
+                except (TimeoutError, RuntimeError, OSError, KeyError, TypeError, ValueError):
+                    low = high = None
+                if type(low) is int and type(high) is int and 0 < low < high:
+                    found = (low, high)
+            cache[1][identity] = found
+        return cache[1][identity]
 
     def stop_stack_pointer(self):
         """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or

@@ -31,6 +31,60 @@ _IDENTIFIER = re.compile(f"(?<!{_ID}){_NAME}")
 # What leads a structured binding's `[`: `auto`, `const auto`, `auto const`, and its `&` or
 # `&&` (group 1).
 _BINDING_LEAD = re.compile(r"\bauto(?:\s+(?:const|volatile)\b)*\s*(&{0,2})\s*$")
+# The members of a standard container whose call neither adds nor removes an element, nor
+# moves one (#297): what code may call while a structured binding refers to an element.
+_KEEPING = frozenset(
+    {
+        "at",
+        "back",
+        "begin",
+        "capacity",
+        "cbegin",
+        "cend",
+        "contains",
+        "count",
+        "crbegin",
+        "crend",
+        "data",
+        "empty",
+        "end",
+        "equal_range",
+        "find",
+        "front",
+        "get_allocator",
+        "key_comp",
+        "lower_bound",
+        "max_size",
+        "rbegin",
+        "rend",
+        "size",
+        "upper_bound",
+        "value_comp",
+    }
+)
+# A member's use after a name: `.find(` (group 1 the member, group 2 its call's `(`).
+_MEMBER_USE = re.compile(r"\s*\.\s*([A-Za-z_][A-Za-z_0-9]*)(\s*\()?")
+# Words before a name that make it no declaration's: it is an expression's.
+_NOT_TYPES = frozenset(
+    {
+        "alignof",
+        "case",
+        "co_await",
+        "co_return",
+        "co_yield",
+        "decltype",
+        "delete",
+        "do",
+        "else",
+        "goto",
+        "new",
+        "operator",
+        "return",
+        "sizeof",
+        "throw",
+        "typeid",
+    }
+)
 # A GNU `asm goto` (`asm volatile goto`, `__asm__ goto`, `__asm goto`): it may jump to
 # any label it lists as an operand.
 _ASM_GOTO = re.compile(rf"(?<!{_ID})(?:asm|__asm__|__asm)(?!{_ID})[^(;]*?(?<!{_ID})goto(?!{_ID})")
@@ -2671,6 +2725,17 @@ class Statements:
         `auto &[t, u] = make(0)[0];`, `p` in `auto [t, u](p)`, the range `m` of `for (const
         auto &[k, v] : m)`), and whether it is a range-`for`'s. None where no binding names
         it there, or its initializer does not end."""
+        found = self._initializer(line, name)
+        if found is None:
+            return None
+        reference, low, high, mark = found
+        return reference, " ".join(self.blanked[low:high].split()), mark == ":"
+
+    def _initializer(self, line, name):
+        """``(reference, start, end, mark)`` of the structured binding naming ``name`` on
+        ``line`` (``binding``'s): whether it binds by reference, where the text of what it
+        binds starts and ends in ``blanked``, and the mark before it (`=`, `:`, `(` or
+        `{`); None as for ``binding``."""
         if not self.binds(line, name):
             return None
         blanked = self.blanked
@@ -2687,14 +2752,15 @@ class Statements:
                 mark = blanked[lead : lead + 1]
                 if mark in ("(", "{"):
                     shut = self._closing_bracket(lead)
-                    text = None if shut is None else blanked[lead + 1 : shut]
+                    span = None if shut is None else (lead + 1, shut)
                 elif mark in ("=", ":"):
                     text = self._expression(lead + 1)
+                    span = None if text is None else (lead + 1, lead + 1 + len(text))
                 else:
-                    text = None
-                if text is None:
+                    span = None
+                if span is None:
                     return None
-                return bool(reference), " ".join(text.split()), mark == ":"
+                return bool(reference), *span, mark
         return None
 
     def _closing_bracket(self, opened):
@@ -2725,6 +2791,110 @@ class Statements:
             elif char == ";" and depth == 0:
                 return blanked[start:at]
         return None
+
+    def leaves_elements(self, name, scope, region, line, bound, declared=True):
+        """Whether the code leaves the elements of the standard container local ``name``
+        in place while the structured binding ``bound``, declared on ``line``, refers to
+        one of them (#297): ``scope`` is the lines the local is in scope on (from its
+        declaration, if ``declared``; a parameter's, the function's body), ``region`` the
+        binding's (Statements.scope_lines).
+
+        The binding's own initializer is ``name`` alone, a range `for`'s range (`for
+        (auto &[k, v] : m)`), or one subscript of it (`= v[0]`). In ``region``, ``name``
+        is only that, or a call of a member that neither adds nor removes an element
+        (`m.size()`, `m.find(k)`: ``_KEEPING``). Elsewhere in ``scope`` it is only its
+        declaration, a member's use (`m.insert(…)`, `v[1]`), an assignment statement
+        (`m = …;`) or another range `for`'s range, none of which leaves a pointer or a
+        reference to it for code in ``region`` to change it through. Never in the body
+        of a lambda or of a local class's function, which may run anywhere, and with no
+        directive or `#include` in ``scope``. False where any of that may not hold, or
+        Peeky cannot tell."""
+        key = ("leaves", name, tuple(scope), tuple(region), line, bound, declared)
+        if key not in self._ends:
+            self._ends[key] = self._leaves_elements(name, scope, region, line, bound, declared)
+        return self._ends[key]
+
+    def _leaves_elements(self, name, scope, region, line, bound, declared):
+        found = self._initializer(line, bound) if type(line) is int else None
+        code, pairs = self._code()
+        if found is None or pairs is None or not name or None in (*scope, *region):
+            return False
+        starts, blanked = self.starts, self.blanked
+
+        def offsets(lines):
+            low, high = lines
+            if not 1 <= low <= high <= len(starts):
+                return None
+            return starts[low - 1], (starts[high] if high < len(starts) else len(code))
+
+        within, binding = offsets(scope), offsets(region)
+        if within is None or binding is None or not within[0] <= binding[0] <= binding[1]:
+            return False
+        if binding[1] > within[1]:
+            return False
+        _, low, high, mark = found
+        whole = re.compile(rf"\s*({re.escape(name)})(?!{_ID})\s*").match(code, low, high)
+        if whole is None or mark not in (":", "=") or (mark == ":" and whole.end() != high):
+            return False
+        own = whole.start(1)
+        if mark == "=":
+            # One subscript, nothing after it: `v[i]`, not `v[i].x`, `v[i][j]` or `v`.
+            closing = self._closing_bracket(whole.end()) if code[whole.end()] == "[" else None
+            if closing is None or closing >= high or code[closing + 1 : high].strip():
+                return False
+        if any(
+            _DIRECTIVE.match(blanked, starts[number - 1])
+            for number in range(scope[0], scope[1] + 1)
+        ):
+            return False
+        # Bodies in its scope that run anywhere: a lambda's, a local class's functions'.
+        bodies = [
+            (opened, closed)
+            for opened, closed in pairs.items()
+            if within[0] <= opened < within[1]
+            and code.startswith(("{", "<%"), opened)
+            and self._brace(opened) in ("function", "lambda")
+        ]
+        first = True
+        for word in _IDENTIFIER.finditer(code, *within):
+            if word[0] != name:
+                continue
+            at, follows = word.start(), word.end()
+            before = self._before(at)
+            if before is not None and before[0] in (".", "->", "::", ".*", "->*"):
+                continue  # a member's or another scope's name
+            if any(opened < at < closed for opened, closed in bodies):
+                return False
+            declaration, first = first and declared, False
+            if at == own:
+                continue
+            member = _MEMBER_USE.match(code, follows)
+            if binding[0] <= at < binding[1]:
+                if member is not None and member[1] in _KEEPING and member[2]:
+                    continue
+                return False
+            if (
+                declaration
+                and bisect.bisect_right(starts, at) == scope[0]
+                and before is not None
+                and (before[0] in (">", ">>") or _WORD.fullmatch(before[0]))
+                and before[0] not in _NOT_TYPES
+            ):
+                continue
+            if member is not None and member[1] != "operator":
+                continue
+            if code.startswith("[", re.compile(r"\s*").match(code, follows).end()):
+                continue
+            if before is not None and before[0] in (";", "{", "}", "<%", "%>"):
+                if re.compile(r"\s*=(?!=)").match(code, follows):
+                    continue
+            closing = re.compile(r"\s*\)").match(code, follows)
+            if before is not None and before[0] == ":" and closing is not None:
+                opening = self.closes.get(closing.end() - 1)
+                if opening is not None and self._word_before(opening) == "for":
+                    continue
+            return False
+        return True
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;

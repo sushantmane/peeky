@@ -16,7 +16,8 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
 - A structured binding of a bitfield, which GCC gives no location: a true note.
 - A structured binding of a pair or tuple, which GCC (and Apple clang 21) hold as a
   reference to the element: the element, never its address (#291). By reference, only
-  where it names an object the frame keeps alive; optimized, never on its own line.
+  where it names an object the frame keeps alive, an element of a local container the
+  code leaves in place, or a call's own result (#297); optimized, never on its own line.
 
 The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
 C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
@@ -555,8 +556,8 @@ int main(int argc, char **argv) {
 """
 DEAD = (
     "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
-    "`{}` by reference, and only an object of this frame, or a member of one, is proven. Read "
-    "it where the code names that object, or bind by value (`auto [...]`, no `&`)"
+    "`{}` by reference, and Peeky proves only a local or its non-union member, or a call's "
+    "result. Read it where the code names that object, or bind by value (no `&`)"
 )
 
 
@@ -572,9 +573,7 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     )
     assert "U=8041" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    # Never `poison`'s elements, nor any value, through a temporary the line destroyed;
-    # nor through `one(argc)`'s, which `auto &&` keeps alive, but only by a rule Peeky
-    # does not prove (a call).
+    # Never `poison`'s elements, nor any value, through a temporary the line destroyed.
     bound = {
         "t": "make(0)[0]",
         "u": "make(0)[0]",
@@ -582,16 +581,15 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
         "d": "make(0)[1]",
         "e": "make(0)[0]",
         "f": "make(0)[0]",
-        "g": "one(argc)",
-        "h": "one(argc)",
     }
     for selector, initializer in bound.items():
         row = rows[selector]
         assert row.get("value") is None, row
         if not hidden(compiler, row):
             assert row["error"] == DEAD.format(selector, initializer), row
-    # A local of this frame: read through.
-    for selector, value in (("a", "5"), ("b", "6")):
+    # A local of this frame: read through. So is `one(argc)`'s result, which `auto &&`
+    # keeps alive for its scope (#297).
+    for selector, value in (("a", "5"), ("b", "6"), ("g", "31"), ("h", "41")):
         assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
     # The code's own reference, though GCC types it as a binding's: a reference's row.
     assert rows["r"]["type"].endswith("&") and "debugger_type" not in rows["r"], rows["r"]
@@ -600,7 +598,7 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
 
 # Round 2 of the #296 review: a union's member, whose life ends when another becomes
 # active, and the boundaries checked by hand: a local reassigned, a vector's element, and a
-# map's entries in a range `for`.
+# map's entries in a range `for` (read since #297: the code leaves both in place).
 BOUNDARIES = """#include <cstdio>
 #include <map>
 #include <new>
@@ -639,7 +637,7 @@ int main(int argc, char **argv) {
 
 
 @pytest.mark.timeout(180)
-def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys):
+def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(cpp, capsys):
     # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then a placement new made `u.q`
     # the union's active member: `a = 7, b = 8`, with no note.
     compiler, root = cpp
@@ -649,25 +647,135 @@ def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys)
     code, result = probe(source, line_of(BOUNDARIES, "// AFTER"), capture, capsys, "--hits", "1")
     assert "U=90" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p", "g": "v[0]", "k": "v[0]"}
+    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p"}
     for selector, initializer in withheld.items():
         row = rows[selector]
         assert row.get("value") is None, row
         assert hidden(compiler, row) or row["error"] == DEAD.format(selector, initializer), row
-    # A struct's member, and a local reassigned after the binding: what it holds now.
-    shown = {"c": "31", "d": "32", "e": "41", "f": "51"}
+    # A struct's member, and a local reassigned after the binding: what it holds now. And
+    # since #297, an element of a local vector nothing changes later: `v[0]`.
+    shown = {"c": "31", "d": "32", "e": "41", "f": "51", "g": "11", "k": "12"}
     for selector, value in shown.items():
         assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
-    # A map's entry in a range `for`: an element of `m`, which the body may erase.
+    # A map's entry in a range `for` whose body leaves the map alone (#297): each pass's.
     code, result = probe(
         source, line_of(BOUNDARIES, "// MAP_READ"), "key,value", capsys, "--hits", "all"
     )
     assert len(result["rows"]) == 4, result["rows"]
+    entries = {(1, "key"): "21", (1, "value"): "22", (2, "key"): "23", (2, "value"): "24"}
+    for row in result["rows"]:
+        expected = entries[(row["hit"], row["selector"])]
+        assert hidden(compiler, row) or row.get("value") == expected, row
+
+
+# #297: bindings by reference of an element of a local container the code leaves in place
+# (a range `for` over a map, a vector or a set; `v[1]`), and of a call's own result, which
+# the binding keeps alive; and the same forms where the code may change the container, or
+# the call returns a reference.
+HELD = """#include <cstdio>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
+using P = std::pair<long, long>;
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) P one(long v) { return {v + 30, v + 40}; }
+__attribute__((noinline)) const P &pick(const P &p) { return p; }
+__attribute__((noinline)) void fill(std::map<long, long> &m) { m[99] = 100; }
+int main(int argc, char **argv) {
+    std::map<long, long> m{{21, 22}, {23, 24}};
+    for (const auto &[k, x] : m) {
+        use(k * x + (long)m.size()); // MAP_READ
+    }
+    std::vector<P> v{{11, 12}, {13, 14}};
+    for (auto &[a, b] : v) {
+        b += 1;
+        use(a * b); // VECTOR_READ
+    }
+    std::set<P> ps{{5, 6}, {7, 8}};
+    for (const auto &[i, j] : ps) {
+        use(i * j); // SET_READ
+    }
+    auto &[r, s] = v[1];
+    auto &&[p, q] = one(argc);
+    const auto &[y, z] = one(argc + 1);
+    use(r + s + p + q + y + z); // READ
+    std::vector<P> w{{51, 52}};
+    auto &[c, d] = w[0];
+    long first = c;
+    w.push_back({53, 54});
+    w.push_back({55, 56});
+    auto &&[e, f] = pick(w[1]);
+    std::map<long, long> n{{61, 62}};
+    fill(n);
+    for (auto &[g, h] : n) {
+        use(g + h + first + e); // CHANGED
+    }
+    return 0;
+}
+"""
+HELD_ROWS = {
+    "MAP_READ": ("k,x", {1: {"k": "21", "x": "22"}, 2: {"k": "23", "x": "24"}}),
+    "VECTOR_READ": ("a,b", {1: {"a": "11", "b": "13"}, 2: {"a": "13", "b": "15"}}),
+    "SET_READ": ("i,j", {1: {"i": "5", "j": "6"}, 2: {"i": "7", "j": "8"}}),
+    "READ": (
+        "r,s,p,q,y,z",
+        {1: {"r": "13", "s": "15", "p": "31", "q": "41", "y": "32", "z": "42"}},
+    ),
+}
+UNPROVEN = (
+    "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
+    "{} by reference, {}. Read it where the code names that object, or bind by value (no `&`)"
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_binding_into_a_local_container_or_a_calls_result_reads_where_proven(cpp, capsys):
+    # #297: these were all `not shown` (only a local, or a member of one, was proven), under
+    # GCC and Apple clang alike: a range `for` over a local map, `v[1]` of a local vector,
+    # and `auto &&[p, q] = one(argc);`, whose result C++ keeps alive for the scope.
+    compiler, root = cpp
+    source = root / "held.cpp"
+    source.write_text(HELD)
+    for marker, (capture, passes) in HELD_ROWS.items():
+        found = bound_rows_of(source, HELD, marker, capture, capsys)
+        assert len(found) == sum(len(each) for each in passes.values()), found
+        for row in found:
+            if hidden(compiler, row):
+                continue
+            assert row.get("value") == passes[row["hit"]][row["selector"]], row
+            assert row.get("settable") is not True and "debugger_type" in row, row
+    # Where the code may change the container, or the call returns a reference: withheld.
+    changed = {
+        "c": (
+            "an element of `w`",
+            "and code in its scope may add or remove its elements, or pass `w` on or capture it",
+        ),
+        "e": (
+            "`pick(w[1])`",
+            "and Peeky can't prove the call returns a new object, holding "
+            "no reference, that the binding keeps alive",
+        ),
+        "g": (
+            "an element of `n`",
+            "and code in its scope may add or remove its elements, or pass `n` on or capture it",
+        ),
+    }
+    code, result = probe(source, line_of(HELD, "// CHANGED"), "c,d,e,f,g,h", capsys, "--hits", "1")
+    assert "U=" in result["output"], result
     for row in result["rows"]:
         assert row.get("value") is None, row
-        assert hidden(compiler, row) or row["error"] == DEAD.format(row["selector"], "m").replace(
-            "binds `m`", "binds an element of `m`"
-        ), row
+        if hidden(compiler, row):
+            continue
+        what, why = changed[{"d": "c", "f": "e", "h": "g"}.get(row["selector"], row["selector"])]
+        assert row["error"] == UNPROVEN.format(row["selector"], what, why), row
+
+
+def bound_rows_of(source, text, marker, capture, capsys):
+    """The rows of ``capture`` at every stop of ``marker``'s line of ``text``."""
+    code, result = probe(source, line_of(text, f"// {marker}"), capture, capsys, "--hits", "all")
+    assert result["status"] == "completed", result
+    return result["rows"]
 
 
 @pytest.mark.timeout(300)
