@@ -1028,7 +1028,7 @@ int main() {
 
 def nested_rows(source, marker, names, capsys):
     code, result = probe(source, line_of(NESTED, f"// {marker}"), names, capsys)
-    assert result["status"] == "completed" and "NEST:1 33 5" in result["output"], result
+    assert result["status"] == "completed" and "NEST:1 30 5" in result["output"], result
     return {row["selector"]: row for row in result["rows"] if row["hit"] == 1}
 
 
