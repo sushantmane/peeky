@@ -12,9 +12,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 **GCC's C++ builds have known gaps.** Peeky withholds what LLDB misreads, and the row says why
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
-- unordered containers are read from their own nodes, where they hold integers, `bool`s and
-  strings, in pairs and structs;
-- a lambda's captures can't be read: they are `not found` in the lambda;
+- unordered containers are read from their own nodes, except entries that hold floating-point
+  numbers, characters, enums, pointers or other containers;
 - a one-line function's parameters can show `no value yet` at a stop on its line;
 - GDB's DAP isn't supported.
 
@@ -48,6 +47,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - Read C++ members through `this`: `this.head_`. Read a map's value by its key, `m[1]`, and its
   first entry as `m[#0]` ([C and C++ 2.1](c-cpp-cookbook.md#21-fields-and-indexes),
   [C and C++ 7.1](c-cpp-cookbook.md#71-c-and-c)).
+- Read a lambda's capture by its name in a GCC build, and as `this.count` in a clang build. None
+  can be changed ([C and C++ 7.1](c-cpp-cookbook.md#read-a-lambdas-captures)).
 - Write a name as Clang keeps it, non-ASCII too: `größe.zähler`, `--set ñ=3`. `größe` in NFC and
   in NFD are two different locals, each selected by its own spelling. When two names are equal
   under NFKC, `inspect` marks each row with how it is written
