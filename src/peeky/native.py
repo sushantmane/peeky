@@ -3442,19 +3442,59 @@ def static_variables(dies, limit=MAX_STATICS):
     return tuple(found)
 
 
+# A class template of the standard library whose structured binding names its own
+# subobjects (`std::get<I>`): a pair, a tuple, an array (#297 review).
+_TUPLE_LIKE = re.compile(r"std::(?:__\w+::)*(?:pair|tuple|array)<")
+# Qualifiers a type is read under (#297).
+_QUALIFYING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type")
+
+
+def _named_calls(dies):
+    """(offset, name, chain) of each function of the build, and of each variable outside a
+    function (a global, a namespace's or a class's static) and data member, by its name
+    before any `<`: what a call by that name may mean. Operators are left out."""
+    from peeky.fields import _RECORDS as records
+
+    for offset, die in dies.items():
+        tag = die.get("tag")
+        if tag == "DW_TAG_variable":
+            if (dies.get(die.get("parent")) or {}).get("tag") not in (
+                "DW_TAG_compile_unit",
+                "DW_TAG_namespace",
+                *records,
+            ):
+                continue
+        elif tag not in ("DW_TAG_subprogram", "DW_TAG_member"):
+            continue
+        chain = _chain(dies, offset)
+        name = (_text(_first(dies, chain, "DW_AT_name")) or "").split("<", 1)[0].strip()
+        if name and not name.startswith("operator"):
+            yield offset, name, chain
+
+
 def call_results(dies):
-    """{a function's name: whether a call by that name gives a new object (#297)}: every
-    function of the name the build describes (a template's instances by the name before
-    their `<`) returns a class by value, which holds no reference, nor anything that
-    does, by value. `auto &&[a, b] = f();` or `const auto &[a, b] = f();` binds such a
-    call's result, a temporary the binding keeps alive for its scope, and each name an
-    element of it. A name the build also gives a variable outside a function (a global,
-    a class's static) or a data member is False: a call through one may give anything (a
-    function's own locals are its frame's to tell). Operators are left out."""
+    """{a function's name: whether a call by that name gives a new object whose
+    structured binding names its own elements (#297)}: every function of the name the
+    build describes (a template's instances by the name before their `<`) returns a
+    `std::pair`, `std::tuple` or `std::array` by value, of numbers, characters, pointers
+    to them or other such standard types, holding no reference. `auto &&[a, b] = f();`
+    binds such a call's result, a temporary the binding keeps alive for its scope, and
+    `std::get` gives each name its own element: no type of the program's is involved
+    that could give a `get` of its own (#297 review: a `View` whose `get<I>` returns what
+    a pointer in it points at). A name the build also gives a variable outside a function
+    or a data member is False: a call through one may give anything."""
     from peeky.fields import _RECORDS as records
     from peeky.fields import _definitions, _target
 
-    kept, definitions = {}, []
+    kept, standard, definitions = {}, {}, []
+
+    def under(offset):
+        for _ in range(64):
+            die = dies.get(offset)
+            if die is None or die["tag"] not in _QUALIFYING:
+                return offset
+            offset = _target(die["attrs"].get("DW_AT_type"))
+        return None
 
     def complete(offset):
         die = dies.get(offset)
@@ -3468,15 +3508,7 @@ def call_results(dies):
 
     def holds_no_reference(offset, depth=0):
         # Under typedefs and qualifiers: no reference, and none in a class or array.
-        for _ in range(64):
-            die = dies.get(offset)
-            if die is None or die["tag"] not in (
-                "DW_TAG_typedef",
-                "DW_TAG_const_type",
-                "DW_TAG_volatile_type",
-            ):
-                break
-            offset = _target(die["attrs"].get("DW_AT_type"))
+        offset = under(offset)
         die = dies.get(offset)
         if die is None or depth > 16:
             return False
@@ -3500,40 +3532,100 @@ def call_results(dies):
             )
         return kept[offset]
 
+    def standard_type(offset, depth=0):
+        # A number or a character, a pointer to one, or a standard library class of
+        # such arguments: no namespace of the program's, whose `get` a call may find.
+        offset = under(offset)
+        die = dies.get(offset)
+        if die is None or depth > 16:
+            return False
+        if die["tag"] == "DW_TAG_base_type":
+            return True
+        if die["tag"] == "DW_TAG_pointer_type":
+            pointee = _target(die["attrs"].get("DW_AT_type"))
+            return pointee is None or standard_type(pointee, depth + 1)
+        if die["tag"] not in records:
+            return False
+        offset = complete(offset)
+        if offset is None or not (_qualified(dies, offset) or "").startswith("std::"):
+            return False
+        if offset not in standard:
+            standard[offset] = False
+            arguments, pending = [], list(dies[offset]["children"])
+            while pending:
+                child = dies[pending.pop()]
+                if child["tag"] == "DW_TAG_GNU_template_parameter_pack":
+                    pending.extend(child["children"])
+                elif child["tag"] == "DW_TAG_template_type_parameter":
+                    arguments.append(_target(child["attrs"].get("DW_AT_type")))
+            standard[offset] = all(
+                kind is not None and standard_type(kind, depth + 1) for kind in arguments
+            )
+        return standard[offset]
+
     found = {}
-    for offset, die in dies.items():
-        tag = die.get("tag")
-        if tag == "DW_TAG_variable":
-            # Outside a function: a global, a namespace's or a class's static.
-            if (dies.get(die.get("parent")) or {}).get("tag") not in (
-                "DW_TAG_compile_unit",
-                "DW_TAG_namespace",
-                *records,
-            ):
-                continue
-        elif tag not in ("DW_TAG_subprogram", "DW_TAG_member"):
-            continue
-        chain = _chain(dies, offset)
-        name = (_text(_first(dies, chain, "DW_AT_name")) or "").split("<", 1)[0].strip()
-        if not name or name.startswith("operator"):
-            continue
-        if tag != "DW_TAG_subprogram":
+    for offset, name, chain in _named_calls(dies):
+        if dies[offset]["tag"] != "DW_TAG_subprogram":
             found[name] = False
             continue
         returned = _target(_first(dies, chain, "DW_AT_type"))
-        die = dies.get(returned)
-        while die is not None and die["tag"] in (
-            "DW_TAG_typedef",
-            "DW_TAG_const_type",
-            "DW_TAG_volatile_type",
-        ):
-            die = dies.get(_target(die["attrs"].get("DW_AT_type")))
+        record = complete(under(returned)) if under(returned) in dies else None
         value = (
-            die is not None
-            and die["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type")
-            and holds_no_reference(returned)
+            record is not None
+            and dies[record]["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type")
+            and bool(_TUPLE_LIKE.match(_qualified(dies, record) or ""))
+            and standard_type(record)
+            and holds_no_reference(record)
         )
         found[name] = found.get(name, True) and value
+    return found
+
+
+def call_arguments(dies):
+    """{a function's name: [(for each argument it names, whether it takes it by value as
+    a number, a character, an enumerator or a pointer; whether it takes more, `...`, which
+    are by value) for each function of that name the build describes]}, or None for a
+    name the build also gives a variable outside a function or a data member (#297
+    review): whether passing a structured binding's name to a call by that name copies
+    it, or may let the call keep a reference to it. A member function's `this` is left
+    out, as its object comes before the call's parentheses."""
+    from peeky.fields import _target
+
+    def by_value(value):
+        offset = _target(value)
+        for _ in range(64):
+            die = dies.get(offset)
+            if die is None or die["tag"] not in (
+                *_QUALIFYING,
+                "DW_TAG_restrict_type",
+                "DW_TAG_atomic_type",
+            ):
+                break
+            offset = _target(die["attrs"].get("DW_AT_type"))
+        die = dies.get(offset)
+        return die is not None and die["tag"] in (
+            "DW_TAG_base_type",
+            "DW_TAG_enumeration_type",
+            "DW_TAG_pointer_type",
+        )
+
+    found = {}
+    for offset, name, _ in _named_calls(dies):
+        if dies[offset]["tag"] != "DW_TAG_subprogram":
+            found[name] = None
+            continue
+        if name in found and found[name] is None:
+            continue
+        kinds, variadic = [], False
+        for child in dies[offset]["children"]:
+            tag = dies[child]["tag"]
+            if tag == "DW_TAG_formal_parameter":
+                chain = _chain(dies, child)
+                if _first(dies, chain, "DW_AT_artificial") is None:
+                    kinds.append(by_value(_first(dies, chain, "DW_AT_type")))
+            elif tag == "DW_TAG_unspecified_parameters":
+                variadic = True
+        found.setdefault(name, []).append((tuple(kinds), variadic))
     return found
 
 
@@ -3899,7 +3991,7 @@ class NativeTarget:
                 self.sources + self.headers,
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
-            code, statics, results = None, (), {}
+            code, statics, results = None, (), None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -3944,7 +4036,8 @@ class NativeTarget:
                         # pointer at one points at live (#339).
                         statics = static_variables(_dies(info))
                         # Which calls give a new object a binding keeps alive (#297).
-                        results = call_results(_dies(info)) if self.language == "cpp" else {}
+                        if self.language == "cpp":
+                            results = (call_results(_dies(info)), call_arguments(_dies(info)))
                         # The types field and element changes walk (#105), and theirs.
                         fields = type_graph(
                             _dies(info),
@@ -3975,7 +4068,7 @@ class NativeTarget:
                 # note that its initialization is not judged (and no field or element
                 # can be changed).
                 declarations, fields, prologues, code = None, None, None, None
-                statics, results = (), {}
+                statics, results = (), None
                 unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
             session = NativeSession(
                 self,
@@ -4842,7 +4935,9 @@ class NativeSession:
         self.static_variables = tuple(statics or ())
         # call_results of the build (#297): {a function's name: whether its call gives a
         # new object}; {} (unknown) proves none.
-        self.call_results = dict(results or {})
+        self.call_results = dict((results or ({}, {}))[0])
+        # call_arguments of the build (#297 review): which calls take an argument by value.
+        self.call_arguments = dict((results or ({}, {}))[1])
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -6026,14 +6121,70 @@ class NativeSession:
             )
         if getattr(self.target, "optimization", "O0") != "O0":
             return _unproven(base, what, "and in an optimized build Peeky can't check it")
+        if (scalar := self._scalar_names(frame, base, place)) is not None:
+            return _unproven(base, what, scalar)
         if not self._leaves_elements(frame, container, located, place, base):
             return _unproven(
                 base,
                 what,
-                f"and code in its scope may add or remove its elements, or pass `{container}` "
-                "on or capture it",
+                f"and while it is in scope the code may change `{container}` or keep a "
+                "pointer or reference into it",
             )
         return ("elements", what, container, sort, size)
+
+    def _scalar_names(self, frame, base, place):
+        """Why Peeky can't follow the names of the structured binding ``base`` declared on
+        ``place`` through the code (#297 review), or None: each must refer to a number, a
+        character or a pointer (``_scalar_bound``), whose every use Peeky can read."""
+        function = self._function_at(frame) or {}
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+        names = statements.bound_names(place[1], base) if statements is not None else []
+        if names and all(self._scalar_bound(function, name, place) for name in names):
+            return None
+        return "and Peeky follows only names of numbers, characters or pointers through the code"
+
+    def _scalar_bound(self, function, name, origin):
+        """Whether each local ``name`` of ``function`` declared on ``origin`` (a file and
+        line) is, or refers to, a number, a character or a pointer (#297 review)."""
+        from peeky.native_previews import Typed
+
+        if not origin or self.fields is None:
+            return False
+        place = (Path(str(origin[0])).name, origin[1])
+        declared = [
+            kind
+            for kind, _, where in (function.get("types") or {}).get(name) or ()
+            if where == place
+        ]
+        for kind in declared:
+            typed = Typed(self.fields, kind)
+            typed = typed.target() if typed.kind() == "reference" else typed
+            if typed is None or typed.kind() not in ("scalar", "pointer"):
+                return False
+        return bool(declared)
+
+    def _passes(self, function, callee, index):
+        """Whether every function ``callee`` may name takes its argument ``index`` by value
+        (call_arguments, #297 review), and no local of ``function`` has that name."""
+        if callee in (function.get("types") or {}):
+            return False
+        signatures = (getattr(self, "call_arguments", None) or {}).get(callee)
+        return bool(signatures) and all(
+            kinds[index] if index < len(kinds) else variadic for kinds, variadic in signatures
+        )
+
+    def _callbacks(self, function, preprocessed):
+        """Statements' ``scalar(name, line)`` and ``passes(function, index)`` for the
+        translation unit ``preprocessed`` (#297 review): its lines read back onto the
+        source's."""
+        origins = getattr(preprocessed, "origins", ())
+
+        def scalar(name, line):
+            origin = origins[line - 1] if type(line) is int and 0 < line <= len(origins) else None
+            return self._scalar_bound(function, name, origin)
+
+        return scalar, lambda callee, index: self._passes(function, callee, index)
 
     def _entry_size(self, typed):
         """How many bytes an entry of a standard map, set or multiset ``typed`` takes: a
@@ -6117,18 +6268,23 @@ class NativeSession:
             ]
             if _ASSEMBLY.search(text) or _ADDRESSES.search(text):
                 return False
-            verdicts.add(statements.leaves_elements(container, scope, region, line, base))
+            scalar, passes = self._callbacks(function, preprocessed)
+            verdicts.add(
+                statements.leaves_elements(container, scope, region, line, base, scalar, passes)
+            )
         return verdicts == {True}
 
     def _kept_result(self, frame, base, place, read):
         """For a binding by reference of a call's result (#297: `auto &&[p, q] = one(i);`,
         `const auto &[x, y] = ns::two();`, not a member or subscript of one): where every
-        function the call's name may be returns a class by value holding no reference
-        (call_results), so the binding keeps that new object alive for its scope, the name
-        is no local's of the function, a macro does not change the call (each translation
-        unit as preprocessed reads the same), in an unoptimized build: the check the stop
-        must pass, ("result", what it binds, None, None, None). A Withholding where any of
-        that fails; None for any other binding."""
+        function the call's name may be returns a standard pair, tuple or array by value,
+        whose `std::get` names its own elements (call_results), so the binding keeps that
+        new object alive for its scope; the name is no local's of the function; a macro
+        does not change the call (each translation unit as preprocessed reads the same);
+        each of the binding's names refers to a number, a character or a pointer, and the
+        code keeps no pointer or reference to one (Statements.kept_names); in an
+        unoptimized build: the check the stop must pass, ("result", what it binds, None,
+        None, None). A Withholding where any of that fails; None for any other binding."""
         call = (
             None if read[2] else re.match(r"(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(", read[1])
         )
@@ -6144,13 +6300,15 @@ class NativeSession:
             return _unproven(
                 base,
                 what,
-                "and Peeky can't prove the call returns a new object, holding no reference, "
+                "and Peeky can't prove the call returns a new standard pair, tuple or array "
                 "that the binding keeps alive",
             )
         if getattr(self.target, "optimization", "O0") != "O0":
             return _unproven(base, what, "and in an optimized build Peeky can't check it")
+        if (scalar := self._scalar_names(frame, base, place)) is not None:
+            return _unproven(base, what, scalar)
         source = function.get("source")
-        same = set()
+        same, kept = set(), set()
         for unit in self._units(source) if isinstance(source, str) else ():
             found = self._preprocessed(unit)
             if isinstance(found, str):
@@ -6160,11 +6318,20 @@ class NativeSession:
             if source in preprocessed.files:
                 line = preprocessed.line(source, place[1])
                 same.add(bool(line) and statements.binding(line, base) == read)
+                scalar, passes = self._callbacks(function, preprocessed)
+                kept.add(bool(line) and statements.kept_names(line, base, scalar, passes))
         if same != {True}:
             return _unproven(
                 base,
                 what,
                 "and Peeky can't read that call as the compiler does (a macro may change it)",
+            )
+        if kept != {True}:
+            return _unproven(
+                base,
+                what,
+                "and the code may keep a pointer or reference to what it names while it is "
+                "in scope",
             )
         return ("result", what, None, None, None)
 

@@ -96,8 +96,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 - A binding by reference, such as `auto &[t, u]`, is read only where Peeky proves that what it
   refers to is alive. That is a local of the frame or a member of one, an element of a local
-  vector, map or set the code leaves in place, or a call's own result. Otherwise its row is `not
-  shown`, because what it refers to may be gone
+  vector, map or set the code leaves in place, or a standard pair, tuple or array a call returns.
+  Otherwise its row is `not shown`, because what it refers to may be gone
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 - A pointer captured with an array at the same stop says which element's address it holds, where
   Peeky proves it: `[at level[6]'s address]`, or `[at the address one past level's end]`. The

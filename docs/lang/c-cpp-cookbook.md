@@ -1118,14 +1118,20 @@ Some things only look different:
       union's member doesn't count, since another member may become active.
     - an element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`: `for (const
       auto &[k, v] : m)`, or `auto &[r, s] = v[0];` for a vector. While the binding is in scope,
-      the code may only call members that add or remove no element, such as `m.size()`.
-      Anywhere in the container's scope, the code must not pass it on, take its address or name it
-      in a lambda. At the stop, the binding must point into the vector's elements, or into one of
-      the map's entries as the debugger lists them (at most 256).
+      the code may only call members that give a value, such as `m.size()`. Anywhere in the
+      container's scope, the code must keep no pointer, iterator or reference into it: no
+      `v.data()`, `m.begin()` or `&v[0]`, and it must not pass the container on or name it in a
+      lambda. At the stop, the binding must point into the vector's elements, or into one of the
+      map's entries as the debugger lists them (at most 256).
     - a call's own result: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`. Every
-      function of that name must return a class by value that holds no reference. C++ keeps that
-      result alive until the binding's scope ends. At the stop, the binding must point into the
-      frame's stack.
+      function of that name must return a `std::pair`, `std::tuple` or `std::array` by value, of
+      numbers, characters or other standard types, so each name is that result's own element. A
+      type of the program's with its own `get` doesn't count. C++ keeps that result alive until
+      the binding's scope ends. At the stop, the binding must point into the frame's stack.
+  - For both, each of the binding's names must refer to a number, a character or a pointer. The
+    code may read or assign it, but not take its address, bind a reference to it, or pass it to
+    a call that may take it by reference. A call whose every function takes that argument by
+    value, as `use(long)` or `printf`'s `...` do, is fine.
   - Peeky reads that code as the compiler preprocessed it, so a macro counts as what it expands
     to. In an optimized build, only an object of the frame is read.
   - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary

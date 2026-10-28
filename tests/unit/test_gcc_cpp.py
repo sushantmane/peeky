@@ -1345,6 +1345,41 @@ HELD = """0x0000000b: DW_TAG_compile_unit
                   DW_AT_decl_line\t(17)
                   DW_AT_type\t(0x00000090 "type &")
                   DW_AT_location\t(DW_OP_fbreg -264)
+
+0x000000e8:     DW_TAG_variable
+                  DW_AT_name\t("s")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(8)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -272)
+
+0x000000ec:     DW_TAG_variable
+                  DW_AT_name\t("q")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -280)
+
+0x000000f0:     DW_TAG_variable
+                  DW_AT_name\t("b")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -288)
+
+0x000000f4:     DW_TAG_variable
+                  DW_AT_name\t("d")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(12)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -296)
+
+0x000000f8:     DW_TAG_variable
+                  DW_AT_name\t("h")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(17)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -304)
 """
 HELD_SOURCE = """#include <map>
 int main(int argc, char **) {
@@ -1374,7 +1409,7 @@ def held(optimization="O0", preprocessed=None):
     Statements of its translation unit as the compiler preprocessed it (else the same)."""
     from peeky.c_source import Statements
     from peeky.fields import CPP_LIBRARIES, local_types, type_graph
-    from peeky.native import _parse_dies, call_results
+    from peeky.native import _parse_dies, call_arguments, call_results
 
     dies = _parse_dies(HELD)
     types = local_types(dies, [0xB0], through=True)
@@ -1391,9 +1426,14 @@ def held(optimization="O0", preprocessed=None):
     session._shown_where = lambda name, pc: None
     session._unslid = lambda frame: 0x1000
     session._units = lambda source: ["src/t.cpp"]
-    unit = SimpleNamespace(files={"src/t.cpp"}, line=lambda source, number: number)
+    unit = SimpleNamespace(
+        files={"src/t.cpp"},
+        line=lambda source, number: number,
+        origins=[("src/t.cpp", number) for number in range(1, HELD_SOURCE.count("\n") + 2)],
+    )
     session._preprocessed = lambda name: (unit, preprocessed or statements)
     session.call_results = call_results(dies)
+    session.call_arguments = call_arguments(dies)
     return session
 
 
@@ -1491,7 +1531,7 @@ def test_a_binding_into_a_local_container_is_read_where_it_holds_that_element():
     c = variable("c", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
     withheld(
         c,
-        "and code in its scope may add or remove its elements, or pass `w` on or capture it",
+        "and while it is in scope the code may change `w` or keep a pointer or reference into it",
         siblings=[w],
         raw=ends("0x0000aaaaaaad3740", "0x0000aaaaaaad3760", "w._M_impl._M_"),
     )
@@ -1547,7 +1587,7 @@ def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
     # A call that returns a reference (`pick`), a local functor's, a macro that changes it.
     withheld(
         variable("a", f"{ELEMENT} &&", "0x0000fffffffffa58", 4),
-        "and Peeky can't prove the call returns a new object, holding no reference, that the "
+        "and Peeky can't prove the call returns a new standard pair, tuple or array that the "
         "binding keeps alive",
         what="`pick(*held)`",
         extent=lambda: stack,
@@ -1559,7 +1599,7 @@ def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
     shadowed._function_at = lambda frame: {"types": types, "source": "src/t.cpp", "span": (2, 19)}
     withheld(
         p,
-        "and Peeky can't prove the call returns a new object, holding no reference, that the "
+        "and Peeky can't prove the call returns a new standard pair, tuple or array that the "
         "binding keeps alive",
         session=shadowed,
         extent=lambda: stack,
@@ -1584,6 +1624,60 @@ def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
     )
 
 
+def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
+    # Review of #368: `P *p = v.data(); auto &[r, s] = v[0]; std::destroy_at(p);` and a
+    # stop before `new (p) P{13, 14}` read dead bytes; the container's own uses were
+    # checked, not the pointers and references they give, nor the binding's names.
+    from peeky.c_source import Statements
+
+    frame = {"id": 1}
+
+    def fetch(reference, count, start=0):
+        return [{"name": "&r", "type": ELEMENT, "value": "11", "variablesReference": 0}]
+
+    v = {"name": "v", "type": "std::vector<P>", "value": "size=2", "variablesReference": 8}
+    raw = Counts(
+        {"v._M_impl._M_start": "0x0000aaaaaaad3740", "v._M_impl._M_finish": "0x0000aaaaaaad3760"}
+    )
+    r = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
+    assert held().bound_element(r, frame, fetch, siblings=[v], raw=raw)["variable"]
+    changed = (
+        "and while it is in scope the code may change `v` or keep a pointer or reference into it"
+    )
+    for edit in (
+        # A pointer into it from before the binding, through which code may end the
+        # element's life; its name's address, a call that may take it by reference.
+        ("    }\n    auto &[r", "    } P *alias = v.data();\n    auto &[r"),
+        ("    return 0;", "    std::destroy_at(&r); return 0;"),
+        ("    return 0;", "    keep(s); return 0;"),
+    ):
+        expanded = Statements(HELD_SOURCE.replace(*edit), True)
+        found = held(preprocessed=expanded).bound_element(r, frame, fetch, siblings=[v], raw=raw)
+        assert found == unproven("r", "an element of `v`", changed), edit
+    # A name of a struct, whose uses Peeky can't follow: withheld, saying so.
+    session = held()
+    types = dict(session._function_at(frame)["types"])
+    types["s"] = frozenset({(0x98, "through", ("t.cpp", 8))})
+    session._function_at = lambda frame: {"types": types, "source": "src/t.cpp", "span": (2, 19)}
+    found = session.bound_element(r, frame, fetch, siblings=[v], raw=raw)
+    assert found == unproven(
+        "r",
+        "an element of `v`",
+        "and Peeky follows only names of numbers, characters or pointers through the code",
+    )
+    # A call's result whose name the code passes on by reference.
+    p = variable("p", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
+    expanded = Statements(HELD_SOURCE.replace("    return 0;", "    keep(q); return 0;"), True)
+    found = held(preprocessed=expanded).bound_element(
+        p, frame, fetch, extent=lambda: (0xFFFFFFFFFA00, 0xFFFFFFFFFB80)
+    )
+    assert found == unproven(
+        "p",
+        "`one(argc)`",
+        "and the code may keep a pointer or reference to what it names while it is in scope",
+    )
+
+
 CALLS = """0x0000000b: DW_TAG_compile_unit
               DW_AT_name\t("t.cpp")
 
@@ -1593,172 +1687,326 @@ CALLS = """0x0000000b: DW_TAG_compile_unit
                 DW_AT_byte_size\t(0x08)
 
 0x00000014:   DW_TAG_structure_type
-                DW_AT_name\t("Pair")
-                DW_AT_byte_size\t(0x10)
-
-0x00000018:     DW_TAG_member
-                  DW_AT_name\t("first")
-                  DW_AT_type\t(0x00000010 "long int")
-                  DW_AT_data_member_location\t(0x00)
-
-0x0000001c:     DW_TAG_member
-                  DW_AT_name\t("both")
-                  DW_AT_type\t(0x00000060 "long int[2]")
-                  DW_AT_data_member_location\t(0x08)
-
-0x00000020:   DW_TAG_structure_type
-                DW_AT_name\t("Refs")
+                DW_AT_name\t("Pt")
                 DW_AT_byte_size\t(0x08)
 
-0x00000024:     DW_TAG_member
-                  DW_AT_name\t("a")
-                  DW_AT_type\t(0x00000048 "long int &")
-                  DW_AT_data_member_location\t(0x00)
-
-0x00000028:   DW_TAG_structure_type
-                DW_AT_name\t("Outer")
-                DW_AT_byte_size\t(0x08)
-
-0x0000002c:     DW_TAG_inheritance
-                  DW_AT_type\t(0x00000020 "Refs")
-                  DW_AT_data_member_location\t(0x00)
-
-0x00000030:   DW_TAG_structure_type
-                DW_AT_name\t("Later")
-                DW_AT_declaration\t(true)
-
-0x00000034:   DW_TAG_structure_type
-                DW_AT_name\t("Later")
-                DW_AT_byte_size\t(0x08)
-
-0x00000038:     DW_TAG_member
+0x00000016:     DW_TAG_member
                   DW_AT_name\t("n")
                   DW_AT_type\t(0x00000010 "long int")
                   DW_AT_data_member_location\t(0x00)
 
-0x00000040:   DW_TAG_typedef
-                DW_AT_name\t("PairT")
-                DW_AT_type\t(0x00000044 "const Pair")
+0x00000018:   DW_TAG_base_type
+                DW_AT_name\t("char")
+                DW_AT_encoding\t(DW_ATE_signed_char)
+                DW_AT_byte_size\t(0x01)
 
-0x00000044:   DW_TAG_const_type
-                DW_AT_type\t(0x00000014 "Pair")
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("std")
 
-0x00000048:   DW_TAG_reference_type
-                DW_AT_type\t(0x00000010 "long int")
+0x00000024:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int, long int>")
+                  DW_AT_byte_size\t(0x10)
 
-0x0000004c:   DW_TAG_reference_type
-                DW_AT_type\t(0x00000014 "Pair")
+0x00000028:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000010 "long int")
 
-0x00000050:   DW_TAG_union_type
-                DW_AT_name\t("U")
+0x0000002c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000030:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000034:       DW_TAG_member
+                    DW_AT_name\t("second")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x08)
+
+0x00000038:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<Pt, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000003c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000014 "Pt")
+
+0x00000040:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000044:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000014 "Pt")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000048:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int const&, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000004c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000090 "const long int &")
+
+0x00000050:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000090 "const long int &")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000054:     DW_TAG_class_type
+                  DW_AT_name\t("tuple<long int, char>")
+                  DW_AT_byte_size\t(0x10)
+
+0x00000058:       DW_TAG_GNU_template_parameter_pack
+                    DW_AT_name\t("_Elements")
+
+0x0000005c:         DW_TAG_template_type_parameter
+                      DW_AT_type\t(0x00000010 "long int")
+
+0x00000060:         DW_TAG_template_type_parameter
+                      DW_AT_type\t(0x00000018 "char")
+
+0x00000068:     DW_TAG_structure_type
+                  DW_AT_name\t("array<long int, 2>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000006c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000070:       DW_TAG_template_value_parameter
+                    DW_AT_name\t("_Nm")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_const_value\t(2)
+
+0x00000074:     DW_TAG_class_type
+                  DW_AT_name\t("vector<long int, std::allocator<long int> >")
+                  DW_AT_byte_size\t(0x18)
+
+0x00000078:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000080:   DW_TAG_structure_type
+                DW_AT_name\t("View")
                 DW_AT_byte_size\t(0x08)
 
-0x00000060:   DW_TAG_array_type
+0x00000084:     DW_TAG_member
+                  DW_AT_name\t("p")
+                  DW_AT_type\t(0x00000088 "Pt *")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000088:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000014 "Pt")
+
+0x00000090:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000094 "const long int")
+
+0x00000094:   DW_TAG_const_type
                 DW_AT_type\t(0x00000010 "long int")
 
-0x00000064:     DW_TAG_subrange_type
-                  DW_AT_count\t(0x02)
+0x00000098:   DW_TAG_typedef
+                DW_AT_name\t("P")
+                DW_AT_type\t(0x00000024 "std::pair<long int, long int>")
 
-0x00000080:   DW_TAG_subprogram
+0x0000009c:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000024 "std::pair<long int, long int>")
+
+0x000000a0:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x000000a4:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int, long int>")
+                  DW_AT_declaration\t(true)
+
+0x000000a8:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x000000ac:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000018 "char")
+
+0x000000c0:   DW_TAG_subprogram
                 DW_AT_name\t("one")
-                DW_AT_type\t(0x00000014 "Pair")
+                DW_AT_type\t(0x00000024 "t")
 
-0x00000084:   DW_TAG_subprogram
+0x000000c4:   DW_TAG_subprogram
                 DW_AT_name\t("alias")
-                DW_AT_type\t(0x00000040 "PairT")
+                DW_AT_type\t(0x00000098 "t")
 
-0x00000088:   DW_TAG_subprogram
+0x000000c8:   DW_TAG_subprogram
                 DW_AT_name\t("later")
-                DW_AT_type\t(0x00000030 "Later")
+                DW_AT_type\t(0x000000a4 "t")
 
-0x0000008c:   DW_TAG_subprogram
+0x000000cc:   DW_TAG_subprogram
                 DW_AT_name\t("make<long>")
-                DW_AT_type\t(0x00000014 "Pair")
+                DW_AT_type\t(0x00000024 "t")
 
-0x00000090:   DW_TAG_subprogram
+0x000000d0:   DW_TAG_subprogram
                 DW_AT_name\t("make<int>")
-                DW_AT_type\t(0x00000040 "PairT")
+                DW_AT_type\t(0x00000098 "t")
 
-0x00000094:   DW_TAG_subprogram
+0x000000d4:   DW_TAG_subprogram
+                DW_AT_name\t("tuple3")
+                DW_AT_type\t(0x00000054 "t")
+
+0x000000d8:   DW_TAG_subprogram
+                DW_AT_name\t("arr")
+                DW_AT_type\t(0x00000068 "t")
+
+0x000000dc:   DW_TAG_subprogram
                 DW_AT_name\t("pick")
-                DW_AT_type\t(0x0000004c "Pair &")
+                DW_AT_type\t(0x0000009c "t")
 
-0x00000098:   DW_TAG_subprogram
+0x000000e0:   DW_TAG_subprogram
+                DW_AT_name\t("user")
+                DW_AT_type\t(0x00000038 "t")
+
+0x000000e4:   DW_TAG_subprogram
                 DW_AT_name\t("refs")
-                DW_AT_type\t(0x00000020 "Refs")
+                DW_AT_type\t(0x00000048 "t")
 
-0x0000009c:   DW_TAG_subprogram
-                DW_AT_name\t("outer")
-                DW_AT_type\t(0x00000028 "Outer")
+0x000000e8:   DW_TAG_subprogram
+                DW_AT_name\t("view")
+                DW_AT_type\t(0x00000080 "t")
 
-0x000000a0:   DW_TAG_subprogram
+0x000000ec:   DW_TAG_subprogram
+                DW_AT_name\t("vec")
+                DW_AT_type\t(0x00000074 "t")
+
+0x000000f0:   DW_TAG_subprogram
                 DW_AT_name\t("number")
-                DW_AT_type\t(0x00000010 "long int")
+                DW_AT_type\t(0x00000010 "t")
 
-0x000000a1:     DW_TAG_formal_parameter
+0x000000f4:   DW_TAG_subprogram
+                DW_AT_name\t("nothing")
+
+0x000000f8:   DW_TAG_subprogram
+                DW_AT_name\t("twice<long>")
+                DW_AT_type\t(0x00000024 "t")
+
+0x000000fc:   DW_TAG_subprogram
+                DW_AT_name\t("twice<int>")
+                DW_AT_type\t(0x0000009c "t")
+
+0x00000100:   DW_TAG_subprogram
+                DW_AT_name\t("fn")
+                DW_AT_type\t(0x00000024 "t")
+
+0x00000104:   DW_TAG_subprogram
+                DW_AT_name\t("operator()")
+                DW_AT_type\t(0x00000024 "t")
+
+0x00000108:   DW_TAG_variable
+                DW_AT_name\t("fn")
+                DW_AT_type\t(0x00000024 "P")
+
+0x0000010c:   DW_TAG_subprogram
+                DW_AT_name\t("use")
+
+0x00000110:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x00000114:   DW_TAG_subprogram
+                DW_AT_name\t("keep")
+
+0x00000118:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x000000a8 "long int &")
+
+0x0000011c:   DW_TAG_subprogram
+                DW_AT_name\t("printf")
+
+0x00000120:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x000000ac "const char *")
+
+0x00000124:     DW_TAG_unspecified_parameters
+
+0x00000128:   DW_TAG_subprogram
+                DW_AT_name\t("over")
+
+0x0000012c:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x00000130:   DW_TAG_subprogram
+                DW_AT_name\t("over")
+
+0x00000134:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x000000a8 "long int &")
+
+0x00000138:   DW_TAG_subprogram
+                DW_AT_name\t("member")
+
+0x0000013c:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000088 "Pt *")
+                  DW_AT_artificial\t(true)
+
+0x00000140:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x00000144:   DW_TAG_subprogram
+                DW_AT_name\t("number2")
+
+0x00000148:     DW_TAG_formal_parameter
                   DW_AT_name\t("one")
                   DW_AT_type\t(0x00000010 "long int")
 
-0x000000a2:     DW_TAG_variable
+0x0000014c:     DW_TAG_variable
                   DW_AT_name\t("alias")
                   DW_AT_type\t(0x00000010 "long int")
-
-0x000000a4:   DW_TAG_subprogram
-                DW_AT_name\t("nothing")
-
-0x000000a8:   DW_TAG_subprogram
-                DW_AT_name\t("twice<long>")
-                DW_AT_type\t(0x00000014 "Pair")
-
-0x000000ac:   DW_TAG_subprogram
-                DW_AT_name\t("twice<int>")
-                DW_AT_type\t(0x0000004c "Pair &")
-
-0x000000b0:   DW_TAG_subprogram
-                DW_AT_name\t("fn")
-                DW_AT_type\t(0x00000014 "Pair")
-
-0x000000b4:   DW_TAG_variable
-                DW_AT_name\t("fn")
-                DW_AT_type\t(0x00000014 "Pair")
-
-0x000000b8:   DW_TAG_subprogram
-                DW_AT_name\t("operator()")
-                DW_AT_type\t(0x00000014 "Pair")
-
-0x000000bc:   DW_TAG_subprogram
-                DW_AT_name\t("joined")
-                DW_AT_type\t(0x00000050 "U")
 """
 
 
 def test_a_call_gives_a_new_object_only_where_every_function_of_its_name_returns_one():
-    # #297: `auto &&[p, q] = one(i);` keeps `one`'s result alive for its scope only where
-    # that is a new object: a class by value, holding no reference by value.
-    from peeky.native import _parse_dies, call_results
+    # #297: `auto &&[p, q] = one(i);` keeps `one`'s result alive for its scope. Review of
+    # #368: only where `std::get` names that result's own elements: a standard pair, tuple
+    # or array of numbers, characters or other standard types, never a type of the
+    # program's (a `View` whose `get<I>` returns what a pointer in it points at).
+    from peeky.native import _parse_dies, call_arguments, call_results
 
-    found = call_results(_parse_dies(CALLS))
+    dies = _parse_dies(CALLS)
+    found = call_results(dies)
     # A member's name too; another function's parameter or local is no name a call here
     # may mean (`one`, `alias`).
-    assert [found.pop(name) for name in ("first", "both", "a", "n")] == [False] * 4
-    assert found == {
+    assert [found.pop(name) for name in ("first", "second", "n", "p")] == [False] * 4
+    assert {name: found[name] for name in ("use", "keep", "printf", "over", "member")} == {
+        name: False for name in ("use", "keep", "printf", "over", "member")
+    }
+    assert {
+        name: verdict
+        for name, verdict in found.items()
+        if name not in ("use", "keep", "printf", "over", "member", "number2")
+    } == {
         "one": True,
-        # Through a typedef and `const`, or a declaration the definition completes.
+        # Through a typedef, or a declaration its definition completes.
         "alias": True,
         "later": True,
         # Every instance of a template, by its name before `<`.
         "make": True,
         "twice": False,
-        # A reference, a class holding one (or a base holding one), no class, no type.
+        # A tuple (its elements a template parameter pack) and an array.
+        "tuple3": True,
+        "arr": True,
+        # A reference; a pair of the program's type, or of a reference; the program's
+        # tuple-like `View`; a vector; no class; no type.
         "pick": False,
+        "user": False,
         "refs": False,
-        "outer": False,
+        "view": False,
+        "vec": False,
         "number": False,
         "nothing": False,
-        "joined": False,
         # A variable's name: a call through it may give anything.
         "fn": False,
     }
+    arguments = call_arguments(dies)
+    assert arguments["use"] == [((True,), False)]
+    assert arguments["keep"] == [((False,), False)]
+    assert arguments["printf"] == [((True,), True)]
+    assert arguments["over"] == [((True,), False), ((False,), False)]
+    assert arguments["member"] == [((True,), False)]
+    assert arguments["fn"] is None and arguments["first"] is None
+    assert arguments["one"] == [((), False)]
 
 
 def test_the_worker_reads_a_frames_stack_and_a_listings_later_pages(tmp_path):

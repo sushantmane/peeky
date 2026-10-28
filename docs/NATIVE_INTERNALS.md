@@ -249,12 +249,18 @@ shows that reference's address as the variable's value.
   - An element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`, by a range
     `for` over it or one subscript of a vector (`_held_element`). `Statements.leaves_elements`
     reads each translation unit as the compiler preprocessed it.
-  - In the binding's scope, the container may only call a member that adds or removes no element
-    (`_KEEPING`). In its own scope, no pointer or reference to it may be kept, and no lambda or
-    local class may name it.
+  - In the binding's scope, the container may only call a member that gives a value
+    (`_VALUES`). In its own scope, nothing may keep a pointer, iterator or reference into it: a
+    call's result is dropped (`m.insert(…);`), an element is only assigned (`v[1] = x;`), and
+    another binding over it keeps its names. No lambda or local class may name it.
   - A call's own result (`_kept_result`). `call_results` proves the call's name from the debug
-    information: every function of that name returns a class by value that holds no reference,
-    and no global, static or data member has that name.
+    information: every function of that name returns a `std::pair`, `std::tuple` or
+    `std::array` of standard types, so `std::get` names its own elements. No global, static or
+    data member has that name.
+  - For both, `Statements._names_kept` follows each of the binding's names, which must be numbers,
+    characters or pointers (`_scalar_bound`). A use may read or assign it, never take its address,
+    bind a reference to it, or pass it to a call. A call whose every function takes that argument
+    by value is fine (`call_arguments`).
   - `bound_element` then checks the address the reference holds (`_bound_place`). It must be in
     the vector's elements (its own `_M_start` and `_M_finish`, or libc++'s `__begin_` and
     `__end_`). Or it must be in one of the map's entries as the debugger lists them. Or it must be

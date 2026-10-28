@@ -749,16 +749,18 @@ def test_a_binding_into_a_local_container_or_a_calls_result_reads_where_proven(c
     changed = {
         "c": (
             "an element of `w`",
-            "and code in its scope may add or remove its elements, or pass `w` on or capture it",
+            "and while it is in scope the code may change `w` or keep a pointer or reference "
+            "into it",
         ),
         "e": (
             "`pick(w[1])`",
-            "and Peeky can't prove the call returns a new object, holding "
-            "no reference, that the binding keeps alive",
+            "and Peeky can't prove the call returns a new standard pair, tuple or array that "
+            "the binding keeps alive",
         ),
         "g": (
             "an element of `n`",
-            "and code in its scope may add or remove its elements, or pass `n` on or capture it",
+            "and while it is in scope the code may change `n` or keep a pointer or reference "
+            "into it",
         ),
     }
     code, result = probe(source, line_of(HELD, "// CHANGED"), "c,d,e,f,g,h", capsys, "--hits", "1")
@@ -769,6 +771,86 @@ def test_a_binding_into_a_local_container_or_a_calls_result_reads_where_proven(c
             continue
         what, why = changed[{"d": "c", "f": "e", "h": "g"}.get(row["selector"], row["selector"])]
         assert row["error"] == UNPROVEN.format(row["selector"], what, why), row
+
+
+# Review of #368: a pointer into the container made before the binding, through which the
+# element is destroyed before the stop and made again after it; a tuple-like type of the
+# program's whose `get<I>` returns what a pointer in it points at; and names passed by value.
+REVIEWED = """#include <cstddef>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <new>
+#include <tuple>
+#include <utility>
+#include <vector>
+using P = std::pair<long, long>;
+struct Pair { long x, y; };
+struct View {
+    Pair *p;
+    template <std::size_t I> long &get() const { return I == 0 ? p->x : p->y; }
+};
+namespace std {
+template <> struct tuple_size<View> : std::integral_constant<std::size_t, 2> {};
+template <std::size_t I> struct tuple_element<I, View> { using type = long; };
+}
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) View view(Pair *p) { return View{p}; }
+int main(int argc, char **argv) {
+    std::vector<P> v{{11, 12}};
+    P *p = v.data();
+    auto &[a, b] = v[0];
+    std::destroy_at(p);
+    use(argc); // DESTROYED
+    new (p) P{13, 14};
+    use(a + b);
+    Pair held{41, 42};
+    auto &&[vx, vy] = view(&held);
+    use(vx + vy); // PROXY
+    std::map<long, long> m{{71, 72}};
+    for (const auto &[k, x] : m) {
+        use(k);
+        std::printf("%ld\\n", x); // PASSED
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(cpp, capsys):
+    # Review of #368: `P *p = v.data(); auto &[a, b] = v[0]; std::destroy_at(p);` showed
+    # `a = 11, b = 12` at a stop before `new (p) P{13, 14}`: the element was dead. And
+    # `auto &&[vx, vy] = view(&held);` showed `held`'s members: `View`'s own `get<I>` names
+    # what a pointer in the call's result points at, not that result's elements.
+    compiler, root = cpp
+    source = root / "reviewed.cpp"
+    source.write_text(REVIEWED)
+    reasons = {
+        "DESTROYED": (
+            "a,b",
+            "an element of `v`",
+            "and while it is in scope the code may change `v` or keep a pointer or reference "
+            "into it",
+        ),
+        "PROXY": (
+            "vx,vy",
+            "`view(&held)`",
+            "and Peeky can't prove the call returns a new standard pair, tuple or array that "
+            "the binding keeps alive",
+        ),
+    }
+    for marker, (capture, what, why) in reasons.items():
+        found = bound_rows_of(source, REVIEWED, marker, capture, capsys)
+        assert len(found) == 2, found
+        for row in found:
+            assert row.get("value") is None, row
+            assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+                row["selector"], what, why
+            ), row
+    # Passed by value (`use(long)`, `printf`'s `...`): still read.
+    for row in bound_rows_of(source, REVIEWED, "PASSED", "k,x", capsys):
+        assert hidden(compiler, row) or row.get("value") == {"k": "71", "x": "72"}[row["selector"]]
 
 
 def bound_rows_of(source, text, marker, capture, capsys):

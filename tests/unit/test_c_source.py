@@ -1442,59 +1442,113 @@ LOOP_OVER_M = """int main() {
 """
 
 
+def scalar(name, line):
+    return True
+
+
+def by_value(function, index):
+    """`use(long)` and `printf(const char *, ...)` take their arguments by value."""
+    return function in ("use", "printf")
+
+
+def kept(source, container, declared, line, bound):
+    statements = Statements(source, raw_strings=True)
+    scope, region = statements.scope_lines(declared, container), statements.scope_lines(line, bound)
+    return statements.leaves_elements(container, scope, region, line, bound, scalar, by_value)
+
+
 @pytest.mark.parametrize(
-    "before, body, after, kept",
+    "before, body, after, expected",
     [
         ("", "", "", True),
-        # In the loop, a call that neither adds nor removes an element.
+        # In the loop: a call of the container's that gives a value, and reads of the names.
         ("", "use(m.size() + m.count(k));", "", True),
-        ("", "use(m.find(k)->second);", "", True),
-        ("", "m.at(k) = 3;", "", True),
-        ("", "use(o.m + ::m);", "", True),
-        # Before or after it, a member's use, an assignment, another loop's range.
-        ("m.insert({3, 4});", "", "", True),
+        ("", 'use(k); std::printf("%ld", v);', "", True),
+        ("", "if (k > 1) total += v; long w = k; w += v; k = 3; arr[k] = v;", "", True),
+        ("", "switch (k) { case 1: break; } use((long)k); use(k++);", "", True),
+        # Before or after it: a call whose result the statement drops, an assignment, a copy.
+        ("m.insert({3, 4}); m[5] = 6;", "", "", True),
         ("m = {};", "", "m.clear();", True),
-        ("for (auto &e : m) use(e.first);", "", "", True),
-        # In the loop: anything that may add or remove one, or pass `m` on.
+        ("for (auto e : m) use(e.first);", "", "", True),
+        ("for (auto &[a, b] : m) use(a + b);", "", "", True),
+        ("auto [a, b] = *m.begin(); keep(a);", "", "", False),
+        # In the loop: anything that may add or remove an element, or alias one.
         ("", "m.erase(k);", "", False),
         ("", "use(m[k]);", "", False),
-        ("", "m.swap(o);", "", False),
-        ("", "use(m);", "", False),
-        ("", "use(sizeof(m));", "", False),
+        ("", "use(m.find(k)->second);", "", False),
+        ("", "m.at(k) = 3;", "", False),
         ("", "for (auto &[a, b] : m) use(a);", "", False),
-        ("", "use(c ? m : n);", "", False),
-        # Anywhere in its scope: a pointer or reference to it kept, or `m` passed on.
+        # A pointer or reference to a name: its address, a reference bound to it, an
+        # argument a call may take by reference, a branch of `?:`, a lambda's.
+        ("", "keep(k);", "", False),
+        ("", "auto &r = k;", "", False),
+        ("", "const long &r = v;", "", False),
+        ("", "decltype(auto) r = (k);", "", False),
+        ("", "auto *p = &k;", "", False),
+        ("", "std::destroy_at(&v);", "", False),
+        ("", "use(std::addressof(v));", "", False),
+        ("", "use(c ? k : v);", "", False),
+        ("", "use(static_cast<long>(k));", "", False),
+        ("", "use((long &)k);", "", False),
+        ("", "use(k = 3);", "", False),
+        ("", "use(++k);", "", False),
+        ("", "P pair{k, v};", "", False),
+        ("", "auto f = [&] { return k; };", "", False),
+        ("", "auto f = [&k] { return 1; };", "", False),
+        # Anywhere in its scope: an iterator, pointer or reference into it, or `m` passed on.
+        ("auto it = m.begin();", "", "", False),
+        ("long *p = &m[1];", "", "", False),
+        ("use(m[5]);", "", "", False),
+        ("for (auto &e : m) use(e.first);", "", "", False),
+        ("for (auto &[a, b] : m) keep(a);", "", "", False),
         ("auto *pm = &m;", "", "", False),
         ("auto &am = m;", "", "", False),
         ("fill(m);", "", "", False),
         ("auto &r = (m = {});", "", "", False),
         ("m.operator=({});", "", "", False),
-        ("for (auto &e : get(m)) use(e.first);", "", "", False),
         ("", "", "keep(&m);", False),
         ("", "", "auto z = std::move(m);", False),
-        # A lambda's or a local class's body may run in the loop; a directive may hide code.
         ("auto f = [&] { return m.size(); };", "", "", False),
-        ("auto f = [&m] { return 1; };", "", "", False),
         ("struct L { void f() { m.clear(); } };", "", "", False),
         ("#define X 1", "", "", False),
     ],
 )
-def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(before, body, after, kept):
+def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(
+    before, body, after, expected
+):
     # #297: a range `for` over a local container binds each element by reference; the code
-    # must leave its elements in place while the binding is in scope.
+    # must leave that element alive while the binding is in scope. Review of #368: nor may
+    # it keep a pointer, iterator or reference to one, through the container or a name.
     source = LOOP_OVER_M.replace("BEFORE", before).replace("BODY", body).replace("AFTER", after)
+    assert kept(source, "m", 2, 4, "k") is expected
+    # A name that may not be a number, a character or a pointer is never followed.
     statements = Statements(source, raw_strings=True)
     scope, region = statements.scope_lines(2, "m"), statements.scope_lines(4, "k")
-    assert scope == (2, 8) and region == (4, 6)
-    assert statements.leaves_elements("m", scope, region, 4, "k") is kept
+    assert not statements.leaves_elements(
+        "m", scope, region, 4, "k", lambda name, line: name != "v", by_value
+    )
+    assert not statements.leaves_elements("m", scope, region, 4, "k")
+
+
+SUBSCRIPT = """int main() {
+    std::vector<P> v{{11, 12}};
+    BEFORE
+    auto &[a, b] = INITIAL;
+    use(a);
+    AFTER
+}
+"""
 
 
 @pytest.mark.parametrize(
-    "initializer, before, after, kept",
+    "initial, before, after, expected",
     [
         ("v[0]", "", "", True),
         ("v[v.size() - 1]", "", "", True),
-        ("v[0]", "v.push_back({});", "", True),
+        ("v[0]", "v.push_back({1, 2});", "", True),
+        ("v[0]", "auto &[c, d] = v[1]; use(c);", "", True),
+        ("v[0]", "auto [c, d] = v[1]; keep(c);", "", True),
+        ("v[0]", "for (auto &[c, d] : v) d += 1;", "", True),
         # One subscript of the local, nothing else.
         ("v[0].x", "", "", False),
         ("v[0][1]", "", "", False),
@@ -1504,35 +1558,53 @@ def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(before,
         # Anything in the binding's scope that may add or remove one.
         ("v[0]", "", "v.push_back({});", False),
         ("v[0]", "", "v.reserve(9);", False),
+        # Review of #368: an alias made before the binding, through which code may end
+        # the element's life: `std::destroy_at(p)`, then `new (p) P{13, 14}`.
+        ("v[0]", "P *p = v.data();", "std::destroy_at(p);", False),
+        ("v[0]", "P *p = v.data();", "", False),
+        ("v[0]", "{ long *q = &v[0].first; }", "", False),
+        ("v[0]", "auto &[c, d] = v[1]; keep(c);", "", False),
+        ("v[0]", "for (auto &[c, d] : v) keep(d);", "", False),
+        ("v[0]", "", "std::destroy_at(&a);", False),
     ],
 )
 def test_a_subscripts_binding_is_proven_only_where_the_code_leaves_it(
-    initializer, before, after, kept
+    initial, before, after, expected
 ):
-    source = (
-        "int main() {\n    std::vector<P> v{{1, 2}};\n    "
-        + before
-        + f"\n    auto &[r, s] = {initializer};\n    use(r);\n    "
-        + after
-        + "\n}\n"
-    )
-    statements = Statements(source, raw_strings=True)
-    scope, region = statements.scope_lines(2, "v"), statements.scope_lines(4, "r")
-    assert statements.leaves_elements("v", scope, region, 4, "r") is kept
+    source = SUBSCRIPT.replace("INITIAL", initial).replace("BEFORE", before)
+    assert kept(source.replace("AFTER", after), "v", 2, 4, "a") is expected
     # A parameter's scope is its function's; one the code passes on is not proven.
     declared = "void f(std::vector<P> v) {\n    auto &[r, s] = v[0];\n    use(r);\n}\n"
     statements = Statements(declared, raw_strings=True)
-    assert statements.leaves_elements("v", (1, 4), (2, 4), 2, "r")
+    assert statements.leaves_elements("v", (1, 4), (2, 4), 2, "r", scalar, by_value)
     statements = Statements(declared.replace("use(r)", "use(v)"), raw_strings=True)
-    assert not statements.leaves_elements("v", (1, 4), (2, 4), 2, "r")
+    assert not statements.leaves_elements("v", (1, 4), (2, 4), 2, "r", scalar, by_value)
     # Unknown lines: never proven.
-    assert not statements.leaves_elements("v", (None, 4), (2, 4), 2, "r")
-    assert not statements.leaves_elements("v", (1, 4), (2, 4), 3, "r")
+    assert not statements.leaves_elements("v", (None, 4), (2, 4), 2, "r", scalar, by_value)
+    assert not statements.leaves_elements("v", (1, 4), (2, 4), 3, "r", scalar, by_value)
     # Initialized in parentheses or braces, as with `=`.
-    for initialized, kept in (("(v[0])", True), ("{v[1]}", True), ("(v)", False)):
+    for initialized, proven in (("(v[0])", True), ("{v[1]}", True), ("(v)", False)):
         source = f"int main() {{\n    std::vector<P> v;\n    auto &[r, s]{initialized};\n}}\n"
         statements = Statements(source, raw_strings=True)
-        assert statements.leaves_elements("v", (2, 4), (3, 4), 3, "r") is kept, initialized
+        found = statements.leaves_elements("v", (2, 4), (3, 4), 3, "r", scalar, by_value)
+        assert found is proven, initialized
+
+
+def test_a_calls_bindings_names_are_kept_only_where_nothing_aliases_them():
+    # Review of #368: a binding of a call's result names that result's elements; only a
+    # pointer or reference made through a name could end one's life while it is in scope.
+    source = """int main() {
+    auto &&[p, q] = one(1);
+    use(p + q);
+    LATER
+}
+"""
+    for later, expected in (("", True), ("keep(q);", False), ("auto *r = &p;", False)):
+        statements = Statements(source.replace("LATER", later), raw_strings=True)
+        assert statements.kept_names(2, "p", scalar, by_value) is expected, later
+        assert statements.bound_names(2, "q") == ["p", "q"]
+    assert not statements.kept_names(2, "p") and not statements.kept_names(3, "p", scalar)
+    assert statements.bound_names(3, "p") == []
 
 
 RANGE_LAMBDA_SOURCE = """int f() {
