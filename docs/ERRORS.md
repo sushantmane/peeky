@@ -1,4 +1,4 @@
-# Error codes (protocol 7)
+# Error codes (protocol 8)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -152,8 +152,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 6, this client 7`,
-  or, from the worker, `Client speaks protocol 6, this worker 7`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 7, this client 8`,
+  or, from the worker, `Client speaks protocol 7, this worker 8`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -506,4 +506,7 @@ HTTP response carries `X-Peeky-Protocol: 5`.
 - **Protocol 7** says which C or C++ pointers point at a pointer. A value read through
   `pp[0]` of an `Item **pp` is then never said to be at `pp`'s address. A protocol 6 worker
   doesn't say it ([C and C++ 2.1](lang/c-cpp-cookbook.md#a-value-read-at-another-pointers-address)).
+- **Protocol 8** reads a GCC lambda's captures in a `Captures` scope. A stop says why each one
+  it doesn't read isn't read (`closure_unread`). A protocol 7 worker reads none
+  ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-lambdas-captures)).
 - A client and a worker of different protocols refuse each other before anything runs.

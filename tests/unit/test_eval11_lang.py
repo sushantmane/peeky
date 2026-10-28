@@ -386,8 +386,8 @@ def test_a_gcc_lambdas_capture_says_why_it_is_not_found():
         _root(None, {}, snapshot, "grade")
     assert str(raised.value) == (
         "not found: 'grade' is a capture of this lambda, which GCC passes through `__closure`, "
-        "and lldb-dap doesn't list it, so Peeky cannot read it here; read it where the lambda "
-        "is created, or print it from the program; visible: a, b, ga, gb"
+        "and Peeky didn't read it here; read it where the lambda is created, or print it from "
+        "the program; visible: a, b, ga, gb"
     )
     with pytest.raises(ValueError) as raised:
         _root(None, {}, snapshot, "nosuch")
@@ -403,8 +403,14 @@ def test_a_gcc_lambdas_captures_are_its_artificial_variables():
         3: die("DW_TAG_formal_parameter", 2, DW_AT_name='"__closure"', DW_AT_artificial="(true)"),
         4: die("DW_TAG_formal_parameter", 2, DW_AT_name='"a"'),
         5: die("DW_TAG_variable", 2, DW_AT_name='"grade"', DW_AT_artificial="(true)"),
-        # lldb-dap lists GCC's `this`.
-        6: die("DW_TAG_variable", 2, DW_AT_name='"this"', DW_AT_artificial="(true)"),
+        # lldb-dap lists GCC's `this` of `[this]`, which it reads through `__closure`.
+        6: die(
+            "DW_TAG_variable",
+            2,
+            DW_AT_name='"this"',
+            DW_AT_artificial="(true)",
+            DW_AT_location="DW_OP_fbreg -24, DW_OP_deref",
+        ),
         7: die("DW_TAG_variable", 2, DW_AT_name='"ga"'),
         # clang names a lambda's object pointer `this`, and declares no such variables.
         8: die("DW_TAG_subprogram", 1, (9,), DW_AT_object_pointer="0x00000009"),
@@ -412,3 +418,6 @@ def test_a_gcc_lambdas_captures_are_its_artificial_variables():
     }
     assert _gcc_captures(dies, {"chain": [2], "bodies": [2]}) == ("grade",)
     assert _gcc_captures(dies, {"chain": [8], "bodies": [8]}) == ()
+    # `[*this]`'s `this` GCC gives no location: its copy is the lambda's (#361).
+    del dies[6]["attrs"]["DW_AT_location"]
+    assert _gcc_captures(dies, {"chain": [2], "bodies": [2]}) == ("grade", "this")

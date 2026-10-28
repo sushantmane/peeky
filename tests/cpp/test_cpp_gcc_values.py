@@ -1081,3 +1081,421 @@ def test_an_optimized_pair_binding_never_shows_its_elements_address(cpp, optimiz
         if row.get("value") is not None:
             # The element, or nothing: never its address.
             assert row["value"] == {"r": str(1001 + row["hit"] - 1), "s": "2"}[row["selector"]]
+
+
+CAPTURES = """#include <algorithm>
+#include <cstdio>
+#include <vector>
+
+struct Pt { long x, y; };
+
+int main() {
+    std::vector<long> sizes{3, 1, 2};
+    int bonus = 2;
+    long count = 7;
+    Pt pt{3, 4};
+    long *heap = new long(40);
+    long &held = *heap;
+    char *word = new char[5]{'h', 'e', 'a', 'p', 0};
+    auto m = [bonus, &count, pt, n = count + 1]() mutable {
+        bonus += 1; // IN_MUTABLE
+        count += n + pt.x;
+        return bonus;
+    };
+    m();
+    auto refs = [&](int k) {
+        count += k + bonus + held + word[4]; // IN_REFS
+        return count;
+    };
+    refs(2);
+    std::sort(sizes.begin(), sizes.end(), [&sizes, bonus](long a, long b) {
+        return a + bonus > b + (long)sizes.size(); // IN_SORT
+    });
+    auto one = [bonus](int k) { return k + bonus; }; // ONE_LINE
+    long total = one(4);
+    std::printf("CAPS:%d %ld %ld %ld\\n", bonus, count, total, sizes[0]);
+    delete heap;
+    delete[] word;
+    return 0;
+}
+"""
+
+
+def capture_rows(source, marker, names, capsys, hits="1"):
+    code, result = probe(source, line_of(CAPTURES, f"// {marker}"), names, capsys, "--hits", hits)
+    assert code == 0 and "CAPS:2 62 6 3" in result["output"], result
+    return {(row["hit"], row["selector"]): row for row in result["rows"]}
+
+
+@pytest.mark.timeout(300)
+def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, capsys):
+    # #361: GCC passes a lambda's captures through `__closure`, which lldb-dap doesn't
+    # list, so each was `not found` in the lambda. clang lists them as members of `this`.
+    compiler, root = cpp
+    source = root / "caps.cpp"
+    source.write_text(CAPTURES)
+    mutable = capture_rows(source, "IN_MUTABLE", "bonus,count,pt,pt.x,n", capsys)
+    refs = capture_rows(source, "IN_REFS", "bonus,count,held,word,k", capsys)
+    sort = capture_rows(source, "IN_SORT", "bonus,sizes", capsys)
+    # A one-line lambda's first stop is in `main`; its second, before the lambda stores
+    # `__closure`, where no capture is read.
+    one = capture_rows(source, "ONE_LINE", "bonus", capsys, "all")
+    if compiler == "clang":
+        # Unchanged: a capture is a member of the lambda's `this`, which a selector names.
+        for rows in (mutable, sort):
+            assert all(
+                row["error"].startswith("not found")
+                and f"this has a member '{name}'" in row["error"]
+                for (_, name), row in rows.items()
+                if "." not in name
+            ), rows
+        assert "__closure" not in json.dumps([list(r.values()) for r in (mutable, refs, sort, one)])
+        return
+    # By value: the lambda's copy; by reference: what it refers to, the reference's type
+    # kept as the debugger's. Never settable: the lambda's object holds them.
+    assert {name: row["value"] for (_, name), row in mutable.items()} == {
+        "bonus": "2",
+        "count": "7",
+        "pt": "{x = 3, y = 4}",
+        "pt.x": "3",
+        "n": "8",
+    }, mutable
+    assert (mutable[1, "count"]["type"], mutable[1, "count"]["debugger_type"]) == (
+        "long",
+        "long &",
+    )
+    for row in mutable.values():
+        assert row["settable"] is False and row["not_settable"] == "capture", row
+        assert "view" not in row and "note" not in row, row
+    # The lambda's object is `refs` in `main`, and what `count` and `bonus` refer to are
+    # `main`'s locals: proven. `held` refers to a heap block, which Peeky can't prove.
+    assert [refs[1, name]["value"] for name in ("bonus", "count", "held")] == ["2", "18", "40"]
+    assert "view" not in refs[1, "count"] and "view" not in refs[1, "bonus"], refs
+    assert refs[1, "held"]["view"] == "unproven", refs
+    assert refs[1, "held"]["note"].startswith(
+        "read through `held`: Peeky can't show that `held` refers to a live object, so this "
+        "value may be left over: its address is in no local, member or element"
+    ), refs
+    # A pointer captured by reference shows its value: its text is read through it.
+    assert refs[1, "word"]["type"] == "char *" and refs[1, "word"]["view"] == "unproven", refs
+    assert refs[1, "word"]["value"].endswith('"heap"'), refs
+    assert refs[1, "word"]["note"].startswith(
+        "Peeky can't show that `word` points at a live object, so its text may be left over"
+    ), refs
+    assert refs[1, "k"]["value"] == "2" and refs[1, "k"]["settable"] is True, refs
+    # `std::sort` calls a copy of the lambda's object, which no frame Peeky lists holds.
+    assert sort[1, "bonus"]["value"] == "2", sort
+    assert sort[1, "sizes"]["type"] == "std::vector<long>", sort
+    for row in sort.values():
+        assert row["view"] == "unproven", row
+        assert row["note"].startswith(
+            "read through `__closure`: Peeky can't show that `__closure` points at a live "
+            "object, so this value may be left over: it points into the stack"
+        ), row
+    assert one[1, "bonus"]["value"] == "2" and one[1, "bonus"]["function"] == "main", one
+    # Why, as the worker says it (review of #361: not that lldb-dap doesn't list it).
+    assert one[2, "bonus"]["error"] == (
+        "not found: 'bonus' is a capture of this lambda, which GCC passes through "
+        "`__closure`, and Peeky can't read it here: the stop is at the lambda's start, "
+        "before the prologue stores `__closure`, so `__closure` holds leftovers (the build "
+        "marks no prologue end, as GCC's never do, so LLDB stops a one-line function here); "
+        "read it where the lambda is created, or print it from the program; visible: k"
+    ), one
+
+
+@pytest.mark.timeout(240)
+def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
+    # #361: a capture, or a member of one, is reached through `__closure`: refused before
+    # the program runs, and at a stop, saying so.
+    compiler, root = cpp
+    source = root / "caps.cpp"
+    source.write_text(CAPTURES)
+    line = line_of(CAPTURES, "// IN_MUTABLE")
+    code, result = probe(source, line, "bonus", capsys, "--set", "bonus=5")
+    assert code != 0 and result["status"] == "failed", result
+    if compiler == "gcc":
+        assert result["error"]["code"] == "MUTATION_REJECTED", result
+        assert (
+            "is reached through a pointer or reference (a C++ structured binding of a "
+            "reference, or of a pair or tuple, a GCC lambda's capture" in result["error"]["message"]
+        )
+    assert main(["session", "start", str(source), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        refused = []
+        for change in ("n=9", "pt.x=9"):
+            assert main(["session", "set", change]) != 0
+            refused.append(capsys.readouterr().err)
+        main(["session", "get", "n", "pt.x", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    if compiler == "clang":
+        assert all("not" in text for text in refused), refused
+        return
+    assert (
+        "MUTATION_REJECTED" in refused[0]
+        and (
+            "'n' cannot be changed: `n` is a capture of this lambda, so it is reached through a "
+            "pointer or reference: GCC keeps it in the lambda's object"
+        )
+        in refused[0]
+    ), refused
+    assert "`pt.x` cannot be changed: `pt` is a capture of this lambda" in refused[1], refused
+    # Nothing changed.
+    assert [rows["n"]["value"], rows["pt.x"]["value"]] == ["8", "3"], rows
+
+
+OPTIMIZED_CAPTURES = """#include <cstdio>
+int main(int argc, char **) {
+    int bonus = argc + 1;
+    long count = argc * 7;
+    auto f = [bonus, &count](int k) __attribute__((noinline)) {
+        count += k + bonus; // IN_OPT
+        std::printf("OPT:%ld\\n", count);
+        return count;
+    };
+    long a = f(1);
+    long b = f(2);
+    std::printf("%ld %ld\\n", a, b);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_an_optimized_lambdas_captures_are_not_read(cpp, optimization):
+    # #361: optimized, a `mutable` lambda may keep a capture in a register while its
+    # object holds an older value: no capture is read through `__closure` there.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "opt.cpp").write_text(OPTIMIZED_CAPTURES)
+    adapter = NativeTarget(
+        sources=("opt.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    line = line_of(OPTIMIZED_CAPTURES, "// IN_OPT")
+    result = run_probe(
+        root, Probe("opt.cpp", line, ("bonus", "count"), hits="all"), adapter=adapter
+    )
+    assert result["status"] == "completed", result.get("error")
+    said = 0
+    for row in result["rows"]:
+        assert row.get("not_settable") != "capture" and "__closure" not in row.get("note", ""), row
+        if row.get("function", "").startswith("operator()"):
+            assert row.get("value") is None, row
+        if "is a capture of this lambda" in row.get("error", ""):
+            # Why, as the worker says it (review of #361).
+            said += 1
+            assert (
+                "and Peeky can't read it here: Peeky reads no capture in an optimized build, "
+                "where a `mutable` lambda may keep one in a register while its object holds "
+                "an older value; read it where the lambda is created"
+            ) in row["error"], row
+    if compiler == "gcc" and optimization == "O1":
+        assert said, result["rows"]
+
+
+NESTED = """#include <cstdio>
+
+struct T { long a, b; };
+struct Acc {
+    long total = 5;
+    long add(long v) {
+        auto by_pointer = [this, v](long w) {
+            return total + v + w; // BY_POINTER
+        };
+        auto by_copy = [*this, v](long w) {
+            return total + v + w; // BY_COPY
+        };
+        auto named = [self = *this, v](long w) {
+            return self.total + v + w; // NAMED
+        };
+        return by_pointer(1) + by_copy(2) + named(3);
+    }
+};
+
+__attribute__((noinline)) static long id(long v) { return v; }
+static void use(long v) { std::printf("USE:%ld\\n", v); }
+
+int main() {
+    T t{1, [&] {
+        return [&] {
+            return [&] {
+                return [&] {
+                    return [&] {
+                        return id(t.b); // DEEPEST
+                    }();
+                }();
+            }();
+        }();
+    }()};
+    Acc acc;
+    long r = acc.add(3);
+    int x = 7;
+    auto other = [x]() {
+        use(x); // OTHER_OUTSIDE_BEFORE
+        {
+            use(x); // OTHER_INSIDE_BEFORE
+            long x = 9;
+            use(x); // OTHER_INSIDE_AFTER
+        }
+        use(x); // OTHER_OUTSIDE_AFTER
+    };
+    auto same = [x]() {
+        use(x); // SAME_OUTSIDE_BEFORE
+        {
+            use(x); // SAME_INSIDE_BEFORE
+            int x = 9;
+            use(x); // SAME_INSIDE_AFTER
+        }
+        use(x); // SAME_OUTSIDE_AFTER
+        { use(x); int x = 11; use(x); } // SAME_ONE_LINE
+    };
+    other();
+    same();
+    std::printf("NEST:%ld %ld %ld\\n", t.a, r, acc.total);
+    return 0;
+}
+"""
+
+
+def nested_rows(source, marker, names, capsys):
+    code, result = probe(source, line_of(NESTED, f"// {marker}"), names, capsys)
+    assert result["status"] == "completed" and "NEST:1 30 5" in result["output"], result
+    return {row["selector"]: row for row in result["rows"] if row["hit"] == 1}
+
+
+@pytest.mark.timeout(240)
+def test_a_lambda_nested_five_deep_in_a_running_initializer_is_withheld(cpp, capsys):
+    # Review of #361: only 4 functions around a lambda were read, then it counted as
+    # finished: the fifth `[&]` inside `T t{1, …}` read `t.b` before `t` was built (GCC's
+    # capture, and clang's `this` too).
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    rows = nested_rows(source, "DEEPEST", "t,t.b,this", capsys)
+    why = (
+        f"this lambda is defined in the declaration of `t` (line {line_of(NESTED, 'T t{')}), "
+        "which may still be running, so what it captures may be under construction"
+    )
+    for name in ("t", "t.b") if compiler == "gcc" else ("this",):
+        assert "value" not in rows[name] and why in rows[name]["error"], rows
+
+
+@pytest.mark.timeout(300)
+def test_a_capture_and_a_local_of_its_name_are_told_apart_by_scope(cpp, capsys):
+    # Review of #361: the capture was dropped wherever the lambda also declared its name
+    # with another type, and hidden wherever lldb-dap listed a local of its name, as in
+    # the local's block above its declaration, where the code names the capture.
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    shown = {}
+    for kind in ("OTHER", "SAME"):
+        for place in ("OUTSIDE_BEFORE", "INSIDE_BEFORE", "INSIDE_AFTER", "OUTSIDE_AFTER"):
+            shown[kind, place] = nested_rows(source, f"{kind}_{place}", "x", capsys)["x"]
+    one = nested_rows(source, "SAME_ONE_LINE", "x", capsys)["x"]
+    if compiler == "clang":
+        # Unchanged: the capture is `this.x`; the local reads where the debugger lists it.
+        assert all("__closure" not in json.dumps(row) for row in (*shown.values(), one))
+        assert shown["SAME", "INSIDE_AFTER"]["value"] == "9", shown
+        return
+    for kind, local in (("OTHER", "long"), ("SAME", "int")):
+        for place in ("OUTSIDE_BEFORE", "INSIDE_BEFORE", "OUTSIDE_AFTER"):
+            row = shown[kind, place]
+            assert (row["value"], row["type"], row["not_settable"]) == ("7", "int", "capture"), (
+                kind,
+                place,
+                row,
+            )
+        row = shown[kind, "INSIDE_AFTER"]
+        assert (row["value"], row["type"]) == ("9", local) and "not_settable" not in row, row
+    # A use of the capture and its declaration on one line: Peeky can't tell which.
+    assert "value" not in one and one["error"] == (
+        "not shown: this lambda also declares a local `x` on line "
+        f"{line_of(NESTED, '// SAME_ONE_LINE')}, and Peeky can't tell whether the code at this "
+        "stop names that local or the capture; print it from the program"
+    ), one
+
+
+@pytest.mark.timeout(240)
+def test_this_of_a_lambda_that_copies_the_object_is_its_copy(cpp, capsys):
+    # Review of #361: GCC gives `[*this]`'s `this` no location, so it had no value; the
+    # copy is the lambda's member `__this`. `[this]` and `[self = *this]` read as before.
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    by_pointer = nested_rows(source, "BY_POINTER", "this.total,v", capsys)
+    by_copy = nested_rows(source, "BY_COPY", "this,this.total,v", capsys)
+    named = nested_rows(source, "NAMED", "self.total,v", capsys)
+    if compiler == "clang":
+        # Unchanged: clang's `this` is the lambda's object, which holds the copy as `this`.
+        assert by_pointer["this.total"]["error"].startswith("'total' not found in 'this'")
+        assert by_copy["this.total"]["error"].startswith("'total' not found in 'this'")
+        assert "__closure" not in json.dumps([by_pointer, by_copy, named])
+        return
+    assert by_pointer["this.total"]["value"] == "5" and by_pointer["v"]["value"] == "3"
+    assert (by_copy["this"]["value"], by_copy["this"]["type"]) == ("{total = 5}", "Acc")
+    for row in (by_copy["this"], by_copy["this.total"], named["self.total"]):
+        assert row["not_settable"] == "capture" and "view" not in row, row
+    assert by_copy["this.total"]["value"] == "5" and named["self.total"]["value"] == "5"
+
+
+SCOPED = """#include <cstdio>
+#define DECLARE(n) if (int n = 9) use(n)
+static void use(long v) { std::printf("USE:%ld\\n", v); }
+int main() {
+    int x = 7;
+    auto macro = [x]() {
+        DECLARE(x);
+        use(x); // MACRO_AFTER
+    };
+    auto line = [x]() {
+        use(x); { int x = 11; use(x); } // ONE_LINE_BLOCK
+        use(x); // LINE_AFTER
+    };
+    macro();
+    line();
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_local_hides_a_capture_only_where_its_block_runs(cpp, capsys):
+    # Review round 2 of #361: a macro's `if (int x = 9) use(x)` read, by its text, as in
+    # scope to the lambda's end, though its block had ended: the capture was said hidden.
+    # A line holding code before a block and the block itself stops in each.
+    compiler, root = cpp
+    source = root / "scoped.cpp"
+    source.write_text(SCOPED)
+    rows = {}
+    for marker in ("MACRO_AFTER", "ONE_LINE_BLOCK", "LINE_AFTER"):
+        code, result = probe(source, line_of(SCOPED, f"// {marker}"), "x", capsys, "--hits", "all")
+        assert result["status"] == "completed", result
+        rows[marker] = [row for row in result["rows"] if row["selector"] == "x"]
+    if compiler == "clang":
+        assert "__closure" not in json.dumps(rows), rows
+        return
+    for marker in ("MACRO_AFTER", "LINE_AFTER"):
+        [row] = rows[marker]
+        assert (row["value"], row["not_settable"]) == ("7", "capture"), (marker, row)
+    # The line's first stop runs `use(x)` before the block: the capture. Its second is in
+    # the block, on its declaration's line: Peeky can't tell.
+    before, inside = rows["ONE_LINE_BLOCK"]
+    assert (before["value"], before["not_settable"]) == ("7", "capture"), before
+    assert "value" not in inside and inside["error"].startswith(
+        "not shown: this lambda also declares a local `x` on line "
+        f"{line_of(SCOPED, '// ONE_LINE_BLOCK')}, and Peeky can't tell"
+    ), inside

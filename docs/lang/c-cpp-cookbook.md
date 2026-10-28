@@ -42,6 +42,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Why a local shows `no value yet`](#why-a-local-shows-no-value-yet)
   - [Read a `static` local](#read-a-static-local)
   - [Read C++ members](#read-c-members)
+  - [Read a lambda's captures](#read-a-lambdas-captures)
   - [Read a C++ string that holds a NUL byte](#read-a-c-string-that-holds-a-nul-byte)
   - [Change a text](#change-a-text)
   - [Read a C++ map or set by key](#read-a-c-map-or-set-by-key)
@@ -228,7 +229,8 @@ Peeky checks addresses, not where a pointer came from:
 - In a method of a C++ object made with `new`, what `this` points at is marked: it is a heap
   block.
 - A pointer into a library's own memory, such as `stdout`, is marked.
-- A C++ reference, and a smart pointer's object, aren't checked.
+- A C++ reference, and a smart pointer's object, aren't checked. A GCC lambda's capture by
+  reference is ([details](#read-a-lambdas-captures)).
 - A pointer with a `note` already, such as a local on a `do` body's first line, keeps that note
   on what is read through it. It may hold leftovers itself
   ([7.1](#values-peeky-withholds-or-cant-vouch-for)).
@@ -1074,23 +1076,21 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
 - **Unordered containers** show no entries. LLDB finds no element type in GCC's `std::allocator`,
   so it counts each one as empty. Peeky withholds the container's entries, keys and positions,
   unless LLDB's count is the container's own ([details](#standard-containers)).
-- **A lambda's captures** can't be read. GCC passes them through `__closure`, which lldb-dap
-  doesn't list. So a captured name is `not found` in the lambda, and the row says so:
-  ``not found: 'grade' is a capture of this lambda, which GCC passes through `__closure` …``. To
-  see a by-value capture, stop in the declaring function on the line that creates the lambda, or
-  print it inside the lambda. Later, the outer variable may no longer match the copy the lambda
-  holds.
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).
-- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
-  no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
-  once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
-  build, or above an inlined call, it stays withheld in a caller frame.
 - **GDB's DAP** isn't supported. Peeky debugs GCC's builds with lldb-dap.
 
 Some things only look different:
 
+- **A lambda's captures** are read through `__closure`, which lldb-dap doesn't list
+  ([details](#read-a-lambdas-captures)). In an optimized build, and at a one-line lambda's first
+  stop, a captured name is `not found`, and the row says why. To see a by-value capture there,
+  stop on the line that creates the lambda, or print it inside the lambda.
+- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
+  no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
+  once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
+  build, or above an inlined call, it stays withheld in a caller frame.
 - **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
   is in read-only data, not in the frame. It reads as a `static` local does, and is never changed
   ([details](#read-a-static-local)).
@@ -1503,11 +1503,13 @@ In C++, `this` is withheld while its object is being built:
 - in any frame a constructor called. Peeky reads up to 64 frames to tell; past that, it
   withholds;
 - in a lambda defined inside a declaration or a constructor that may still be running. The note
-  names that declaration;
+  names that declaration. Peeky follows every function around a nested lambda, up to 256 of
+  them, and withholds `this` past that;
 - in a lambda that a class's default member initializer defines: `long b = [this] { ... }();`. A
   class with no constructor runs its initializers where the object is built.
 
-An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too.
+An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too. In a GCC build, a
+lambda's captures are withheld in the same places ([captures](#read-a-lambdas-captures)).
 
 ### Read a `static` local
 
@@ -1561,6 +1563,49 @@ hit  phase     line  function  selector  type        value
 - Peeky never reads a member in place of a local. The debugger's list of locals can be
   incomplete, for example for statics or classes built without local-variable tables. So a missing
   local doesn't mean that the code uses the member.
+
+### Read a lambda's captures
+
+Inside a lambda, select a capture by its name in a GCC build. In a clang build, select it as a
+member of `this`:
+
+| Build | Selector | Row |
+| --- | --- | --- |
+| GCC | `count` | `count  long  25  [not settable: capture]` |
+| clang | `this.count` | `this.count  long &  0x…` |
+
+- clang lists the lambda's object as `this`. A bare `count` there says to select `this.count`.
+- GCC passes the lambda's object as `__closure`, which lldb-dap doesn't list. Peeky reads it as a
+  hover, which runs nothing. `session inspect` lists the captures under `[Captures]`.
+- A capture by value shows the lambda's copy. The program may have changed the outer variable
+  since the lambda was made.
+- A capture by reference shows what it refers to: `count  long  25`. The `type` is that value's,
+  and `debugger_type` keeps LLDB's `long &`. A struct, a string or a container shows its text
+  with no address, and its members stay listed.
+- A pointer captured by reference shows its value, and its text is checked as a pointer local's
+  is. Peeky doesn't follow it: `word[0]` can't be read there.
+- Peeky checks the lambda's object as it checks what a pointer points at
+  ([unproven](#when-what-a-pointer-points-at-is-unproven)). `std::sort` calls a copy of the lambda
+  that no listed frame holds. So its captures are marked `[unproven]`, with a note that names
+  `__closure`.
+- It checks what a capture by reference refers to the same way. A capture of a heap value is
+  marked: ``read through `held`: Peeky can't show that `held` refers to a live object …``.
+- A capture is withheld where clang's `this` would be, such as in a lambda that a running
+  declaration defines ([`this` in C++](#this-in-c)).
+- In `[*this]`, `this` is the lambda's copy of the object: `this  Acc  {total = 5}`, and
+  `this.total` reads the copy's member. `[this]` shows the pointer, as before.
+- The lambda's own local of a capture's name hides the capture from its declaration to the end of
+  its block, as C++ reads it. Above it in the block, and after the block, the name reads the
+  capture. So does a stop whose code isn't the block's, as after a macro's `if (int x = 9) …`.
+  Where Peeky can't tell, as in the block on the declaration's own line, the row says why.
+- No capture can be changed, by value or by reference. The lambda's object holds it, which the
+  frame reaches through a pointer. A `--set` is refused before the program runs. Change the outer
+  variable before the lambda is made, or edit the source.
+- Peeky reads no capture in an optimized build, where a `mutable` lambda may keep one in a
+  register. Nor at a one-line lambda's first stop, before it stores `__closure`. There a capture
+  is `not found`, and the row says why: ``not found: 'bonus' is a capture of this lambda, which
+  GCC passes through `__closure`, and Peeky can't read it here: the stop is at the lambda's start
+  …``.
 
 ### Read a C++ string that holds a NUL byte
 

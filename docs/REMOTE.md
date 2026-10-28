@@ -273,19 +273,20 @@ packages, any directory holding a pyvenv.cfg, the standard library, and compiled
 A probe that fails one is discarded: `PROVENANCE_CHANGED`, `results_discarded: true`, no rows and
 no output. A session that fails one is closed, and its record is dropped.
 
-**Protocol 7.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
+**Protocol 8.** These checks, and the [paths in results](#paths-in-results), came with protocol 3.
 Protocol 4 adds restores (`@before`). Protocol 5 withholds what a C or C++ pointer one past an
 array's end points at, which a protocol 4 worker reads as a value. Protocol 6 marks what is read
 through a C or C++ pointer `unproven` where Peeky can't show it points at a live object. A
 protocol 5 worker shows it unmarked. Protocol 7 says which C or C++ pointers point at a pointer,
-for the note on a value read through one. Both hosts need the same protocol. A client and a worker of
+for the note on a value read through one. Protocol 8 reads a GCC lambda's captures, and says why
+it doesn't read one. Both hosts need the same protocol. A client and a worker of
 different protocols refuse each other:
 
-- A client refuses a worker of another protocol before sending anything: `Worker speaks protocol 6,
-  this client 7: install the same Peeky version on both hosts`. That holds for a probe and a
+- A client refuses a worker of another protocol before sending anything: `Worker speaks protocol 7,
+  this client 8: install the same Peeky version on both hosts`. That holds for a probe and a
   `session start`.
-- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 7: `Client
-  speaks protocol 6, this worker 7: install the same Peeky version on both hosts`.
+- A worker refuses a `launch` or `probe` that sends `expect_inputs` without protocol 8: `Client
+  speaks protocol 7, this worker 8: install the same Peeky version on both hosts`.
 - A worker refuses a request that sends the program's hash without the others, or an empty list.
 - A remote session keeps its protocol and its sources' digest. Every later `session` command checks
   the worker's protocol again. A session started with another protocol is refused: start it again.

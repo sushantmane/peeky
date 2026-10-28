@@ -446,8 +446,48 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   change through a pointer under a `const` as a pointer's, not as a const object's
   (`_pointer_under`).
 - **A lambda's captures.** GCC passes them through `__closure`, and describes each one as an
-  artificial variable read through it. lldb-dap lists neither, so a capture is `not found` in the
-  lambda. Peeky doesn't read them yet.
+  artificial variable read through it. lldb-dap lists neither, so the worker reads them itself
+  (`DebugWorker.read_captures`).
+  - `_gcc_capture_members` matches each variable to the member of the lambda's object at its
+    offset: `DW_OP_fbreg -24, DW_OP_deref, DW_OP_plus_uconst 0x8` is the member at 8. The
+    member's type must be the variable's, or the variable's without its `const`.
+  - lldb-dap lists the members by GCC's names (`__bonus`). The offset, not the name, tells which
+    member holds a capture.
+  - The worker asks for `__closure` as a hover, which reads the frame's variable and runs
+    nothing. It lists what it points at, and shows each capture by its own name in a `Captures`
+    scope. An expansion finds the member again the same way (`walk_capture`).
+  - What is read through `__closure` is judged as through any pointer (#339): its type is the
+    lambda's object. A capture by reference is judged as a pointer to what it refers to
+    (`capture_referent`), and shown as that value, as a pair's binding is (`bound_element`). A
+    pointer captured by reference shows its value; its text is judged as a pointer local's
+    (`captured_pointer`).
+  - `capture_plan` says how each capture reads at the stop. Where the lambda also declares
+    its name, `_capture_scope` decides by scope. A stop whose code is outside the declaration's
+    block (its DWARF ranges) names the capture, whatever the text says: a macro's declaration
+    ends where its line doesn't. Else it reads the source as C++ does
+    (`Statements.scope_lines`): a stop above the declaration, or past its scope, names the
+    capture, and one past its statement in its scope names the local. Anything else, such as
+    a stop in the block on the declaration's own line, withholds the capture, saying so.
+  - `closure_members` says which read failed: the hover of `__closure` or the listing of
+    what it points at (no answer in time, an error, malformed, past 512 members).
+  - A capture the worker reads replaces any row of its name lldb-dap lists: a local whose scope
+    hasn't begun, whose storage is no live object. `_typed` types a capture's root by the
+    capture's type there (`_capture_root`).
+  - `[*this]`: GCC gives `this` no location, and the copy is the member `__this`, of the class
+    `this` points at (`_copied_this`). The worker reads it as `this`, in place of lldb-dap's row
+    with no value. `[this]`'s `this` lldb-dap lists itself.
+  - A capture with no row says why in `closure_unread`, which `probe._capture_hint` gives.
+  - A `static` of a capture's name gets no `Statics` row where the worker reads the capture in
+    its place: the worker passes the capture's name to `static_rows` with the frame's locals.
+  - `not_yet_declared` withholds a capture where `_under_construction` would withhold clang's
+    `this`. No declaration rule applies to it: the object holds it from before the call.
+  - A capture's local storage is `through` in `fields.local_types`, so a `--set` is refused
+    before the run. At a stop, the scope's handle and its children's refuse it too
+    (`capture_refusal`).
+  - `captures_unread` reads none in an optimized build, where a `mutable` lambda may keep a
+    capture in a register, nor in a prologue window, before the lambda stores `__closure`.
+  - `_lambda_scope` follows every function around a lambda, up to `LAMBDA_NESTING` (256).
+    Past that, one may still be running, so it never counts as finished.
 
 ## Static locals
 
@@ -515,7 +555,7 @@ required test calls a model.
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/native/test_native_statics.py`, `tests/cpp/test_cpp_statics.py` | `static` locals, and GCC's `const` aggregate in read-only data: read where the code names them, a C++ one once its guard says it is initialized, and never changed | macOS (Apple clang); Linux (clang 18, gcc and g++, lldb-dap 18 and 20) |
-| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, and a pair's or tuple's bindings (by reference too: into a local container, or of a call's result), built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, a pair's or tuple's bindings (by reference too: into a local container, or of a call's result), and a lambda's captures, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
 | `tests/cpp/test_cpp_landing_pads.py` | A local declared on the stop line, after clang's landing pad, is withheld; built by clang and by g++ | macOS (Apple clang); Linux (clang 18 and g++, lldb-dap 18 and 20) |
 | The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |

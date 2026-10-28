@@ -27,7 +27,7 @@ debug server. It writes memory only to set a text
 ## Compare the sources from another host
 
 A client on another host must show that its sources are the worker's. Protocol 3 added this, and
-protocols 4 to 7 keep it.
+protocols 4 to 8 keep it.
 
 1. Call `version`. Its `sources` says which files to hash:
    - `{"kind": "python"}`: every `.py` file under the root, except in virtual environments (a
@@ -35,7 +35,7 @@ protocols 4 to 7 keep it.
    - `{"kind": "declared", "names": [...]}`: the files listed, relative to the root.
 
    Its `root` is the worker's `--root`.
-2. With `launch` or `probe`, send `protocol`: 7, `expect_sha256` (`program`, and `entry` for a
+2. With `launch` or `probe`, send `protocol`: 8, `expect_sha256` (`program`, and `entry` for a
    `--run` script) and `expect_inputs`: `{path: sha256}` for every one of those files, at least
    one.
 3. The worker refuses with `PROVENANCE_CHANGED`, naming the first file that differs or is on one
@@ -260,7 +260,10 @@ Both operations are read-only.
 | `statics` | a stop | The names the frame's function keeps in static storage, and Peeky doesn't read here: a `static` local, or a `const` local GCC places in read-only data. A selector rooted at one is `not found`, and says why. Absent where there are none |
 | `static_notes` | a stop | Why Peeky doesn't read each of `statics` here, by name: the stop is above its declaration or past its block, or Peeky can't tell which one the code names. A client shows it after `declares it in static storage`. An earlier worker gives none, and reads no static local |
 | `static_storage: true` | a scope | The `Statics` scope: the frame's variables in static storage that the code at the stop names, which lldb-dap lists apart from its locals. They are read, and never changed: `set_variable` on its reference is refused (`MUTATION_REJECTED`) |
-| `closure_captures` | a stop | The captures a GCC lambda's call operator reads through `__closure`. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none, and for clang's lambdas |
+| `closure_captures` | a stop | The captures a GCC lambda's call operator reads through `__closure`. lldb-dap lists none of them among the frame's locals. The worker reads them in a `Captures` scope. Absent where there are none, and for clang's lambdas |
+| `closure_unread` | a stop | `{capture: why}` for each of `closure_captures` with no row in the `Captures` scope: an optimized build, a stop before the lambda stores `__closure`, the lambda's own local of that name in scope there, what the build doesn't say, or which read of the debugger's failed (the hover of `__closure`, or the listing of what it points at: no answer in time, an error, malformed, past 512 members). A selector of one is `not found`, with that reason. Protocol 8 |
+| A `Captures` scope | a stop | A GCC lambda's captures, read as members of what `__closure` points at. A capture by reference shows what it refers to, with LLDB's reference type as `debugger_type`. `[*this]`'s `this` is the lambda's copy of the object. What is read through `__closure`, or through such a reference, is checked as through a pointer (`view: unproven`). A capture listed here replaces any row of its name the debugger lists: a local of the lambda's whose scope hasn't begun, or `[*this]`'s `this`, which it gives no value. Its `reference` changes nothing |
+| `not_settable: capture` | a variable | A GCC lambda's capture, or a member of one: its object holds it, so no stop changes it |
 | `string_length` | a variable | A libstdc++ string's length, checked against its `_M_string_length`. A map key matches only a string shown whole and of its length, or one read from memory |
 | `view: memory` | a variable | Peeky read the string's text from memory |
 | `text: true` | a variable | A standard string shown as its text, or as Peeky's reason it has none. It gets no handle, as Rust's text views get none |

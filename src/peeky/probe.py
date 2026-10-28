@@ -673,13 +673,19 @@ def _static_hint(snapshot, name):
 
 def _capture_hint(snapshot, name):
     """Why a GCC lambda's capture is not found (eleventh evaluation, prep 8): GCC passes
-    it through the lambda's `__closure`, which lldb-dap does not list."""
+    it through the lambda's `__closure`, which lldb-dap does not list, and the worker
+    reads it there except where ``closure_unread`` says why not (#361)."""
     if name not in (snapshot.get("closure_captures") or ()):
         return ""
+    why = (snapshot.get("closure_unread") or {}).get(name)
     return (
         f": {name!r} is a capture of this lambda, which GCC passes through `__closure`, and "
-        "lldb-dap doesn't list it, so Peeky cannot read it here; read it where the lambda "
-        "is created, or print it from the program"
+        + (
+            f"Peeky can't read it here: {why[:400]}"
+            if isinstance(why, str) and why
+            else "Peeky didn't read it here"
+        )
+        + "; read it where the lambda is created, or print it from the program"
     )
 
 
@@ -2203,14 +2209,15 @@ def pointee_place(address, sp, bases, settled=True):
     return "unplaced"
 
 
-def unproven_text(pointer, why, text=False):
+def unproven_text(pointer, why, text=False, reference=False):
     """The note on what is read through the C or C++ pointer named ``pointer``, which
     Peeky can't show points at a live object (#339): the rule, why, then what to do.
     ``why``: ``pointee_past``'s, {"kind": "union", "selector", place}, or {"kind":
     ``pointee_place``'s, "image" or "limit" (with `limits`: "locals", "arguments"),
     "statics": whether Peeky knew where the program's image is}. ``text``: the note of the
     pointer's own row, whose text LLDB read through it (a `char *`'s); with ``pointer``
-    None, of the one a function returned."""
+    None, of the one a function returned. ``reference``: ``pointer`` is a reference (a GCC
+    lambda's capture by reference, #361), which refers to what it reads."""
     kind = why.get("kind")
     if kind in ("past", "before"):
         base = why.get("selector")
@@ -2280,8 +2287,8 @@ def unproven_text(pointer, why, text=False):
     what = "its text" if text else "this value"
     named = f"`{pointer}`" if pointer else "the pointer it returned"
     note = (
-        f"Peeky can't show that {named} points at a live object, so {what} may be left over: "
-        f"{reason}"
+        f"Peeky can't show that {named} {'refers to' if reference else 'points at'} a live "
+        f"object, so {what} may be left over: {reason}"
     )
     return note if text else f"read through `{pointer}`: {note}"
 
