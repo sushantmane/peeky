@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from peeky.text_sets import Memory, change, parse_char, parse_text, text_kind
+from peeky.text_sets import Memory, change, held_in_place, parse_char, parse_text, text_kind
 
 
 def char_shown(byte):
@@ -18,9 +18,12 @@ class Fake:
     """A debugger over a dict of {address: byte}: ``rows`` builds each variable's
     children from memory at every listing, so a re-listing sees every write."""
 
-    def __init__(self, reads=True, writes=True):
+    def __init__(self, reads=True, writes=True, pokes=False):
         self.memory, self.trees, self.sets, self.writes = {}, {}, [], []
         self.reads, self.can_write, self.echo = reads, writes, None
+        # ``pokes``: LLDB's `memory write` command (lldb-dap 20); ``poke_fails``: how
+        # many bytes it writes before it fails; ``poke_garbles``: it writes other bytes.
+        self.pokes, self.poked, self.poke_fails, self.poke_garbles = pokes, [], None, False
 
     def put(self, address, data):
         for offset, byte in enumerate(data):
@@ -35,6 +38,7 @@ class Fake:
             self.set,
             self.read if self.reads else None,
             self.write if self.can_write else None,
+            **({"poke": self.poke} if self.pokes else {}),
         )
 
     def children(self, reference, count=None):
@@ -47,6 +51,13 @@ class Fake:
     def write(self, address, data):
         self.writes.append((address, bytes(data)))
         self.put(address, data)
+
+    def poke(self, address, data):
+        self.poked.append((address, bytes(data)))
+        if self.poke_fails is not None:
+            self.put(address, data[: self.poke_fails])
+            raise RuntimeError(f"error: Memory write to 0x{address:x} failed")
+        self.put(address, data[::-1] if self.poke_garbles else data)
 
     def set(self, reference, name, value):
         self.sets.append((reference, name, value))
@@ -291,6 +302,114 @@ def test_a_buffer_the_debugger_misreads_is_sized_by_the_debug_information():
     with pytest.raises(ValueError, match="reads its buffer as char\\[16\\], and the build"):
         change(listed(), "renamed", fake.interface(), listed, "std", {"local_buf": 8})
     assert not fake.writes
+
+
+def test_a_buffer_the_debugger_misreads_is_written_with_its_memory_command():
+    # LLDB 20 reads GCC's `_M_local_buf` as `char[0]` and lists none of its characters,
+    # and has no writeMemory request: the set was refused. Its own `memory write` command
+    # writes the text and NUL there, the length is set as a member, and all reads back.
+    layout = {"local_buf": 16}
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    changed = change(listed(), "renamed", fake.interface(), listed, "std", layout)
+    assert changed == {"before": '"named"', "after": '"renamed"'}
+    assert fake.poked == [(0x2010, b"renamed\0")] and not fake.writes
+    assert fake.sets == [(10, "_M_string_length", "7")]
+    assert fake.get(0x2000, 8) == (0x2010).to_bytes(8, "little")
+    assert fake.get(0x2008, 8) == (7).to_bytes(8, "little")
+    # Exactly full: 15 bytes and the NUL; bytes the debugger shows otherwise, a NUL too,
+    # as memory reads them back exactly.
+    text = "tab\there\0nul..."
+    changed = change(listed(), text, fake.interface(), listed, "std", layout)
+    assert fake.get(0x2010, 16) == text.encode() + b"\0" and fake.get(0x2008, 1) == b"\x0f"
+    assert changed["after"] == '"tab\\there\\0nul..."'
+    fake.poked.clear(), fake.sets.clear()
+    with pytest.raises(ValueError, match="its own buffer, with room for 15 bytes, and the text"):
+        change(listed(), "x" * 16, fake.interface(), listed, "std", layout)
+    # Without the debug information's size, nothing tells how much the buffer holds.
+    with pytest.raises(ValueError, match="cannot tell how much text it holds"):
+        change(listed(), "pear", fake.interface(), listed, "std")
+    assert not fake.poked and not fake.sets and fake.get(0x2010, 16) == text.encode() + b"\0"
+    # Its text on the heap: still refused, as without writeMemory.
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"a heap string of some length", heap=0x9000, capacity=40)
+    with pytest.raises(ValueError, match="on the heap, and this debugger cannot write memory"):
+        change(listed(), "short", fake.interface(), listed, "std", layout)
+    assert not fake.poked and not fake.sets
+    # A buffer the debugger lists (clang's build) is still set character by character.
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"named")
+    change(listed(), "pear", fake.interface(), listed, "std", layout)
+    assert not fake.poked and fake.get(0x2010, 5) == b"pear\0"
+    names = [name for _, name, _ in fake.sets]
+    assert names == [f"[{index}]" for index in range(5)] + ["_M_string_length"]
+
+
+def test_a_memory_command_that_fails_is_refused_only_where_nothing_changed():
+    layout = {"local_buf": 16}
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    fake.poke_fails = 0
+    with pytest.raises(ValueError) as refused:
+        change(listed(), "renamed", fake.interface(), listed, "std", layout)
+    assert str(refused.value) == (
+        "`s` cannot be changed: the debugger refused to write its memory: error: Memory "
+        "write to 0x2010 failed"
+    )
+    assert fake.get(0x2010, 6) == b"named\0" and not fake.sets
+    # Part of it written: the program's state is unknown.
+    fake.poke_fails = 3
+    with pytest.raises(RuntimeError, match="partly made and then failed"):
+        change(listed(), "renamed", fake.interface(), listed, "std", layout)
+    assert not fake.sets
+    # Written, but other bytes than asked: the session is closed.
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    fake.poke_garbles = True
+    with pytest.raises(RuntimeError, match="did not read back as asked \\(its bytes\\)"):
+        change(listed(), "renamed", fake.interface(), listed, "std", layout)
+
+
+def test_a_misread_buffer_is_marked_settable_only_where_its_command_writes_it():
+    layout = {"local_buf": 16}
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"named", buffer="char[0]")
+    assert held_in_place(listed(), fake.interface(), layout) is True
+    # No memory command, or no size from the debug information: not marked.
+    fake.pokes = False
+    assert held_in_place(listed(), fake.interface(), layout) is False
+    fake.pokes = True
+    assert held_in_place(listed(), fake.interface()) is False
+    # A heap string is not marked; nor is anything written to tell.
+    fake = Fake(writes=False, pokes=True)
+    listed = libstdcxx(fake, b"a heap string of some length", heap=0x9000, capacity=40)
+    assert held_in_place(listed(), fake.interface(), layout) is False
+    assert not fake.poked and not fake.sets
+
+
+def test_the_memory_command_is_lldbs_memory_write(tmp_path):
+    from peeky.worker import DebugWorker
+
+    class Dap:
+        def __init__(self, said):
+            self.said, self.requests = said, []
+
+        def request(self, command, arguments, timeout=None):
+            self.requests.append((command, arguments))
+            return {"result": self.said.replace("CMD", arguments["expression"][1:])}
+
+    worker = DebugWorker(tmp_path)
+    worker.dap = Dap("(lldb) CMD\n")
+    worker.memory_command(0xFFFFFFFFFB78, b"ok\0")
+    command = "memory write -f x -s 1 0xfffffffffb78 0x6f 0x6b 0x00"
+    assert worker.dap.requests == [("evaluate", {"expression": f"`{command}", "context": "repl"})]
+    # Anything else LLDB prints is its failure.
+    worker.dap = Dap("(lldb) CMD\nerror: Memory write to 0x10 failed: memory write failed.\n")
+    with pytest.raises(RuntimeError, match="^error: Memory write to 0x10 failed"):
+        worker.memory_command(0x10, b"o")
+    for address, data in ((0x10, b""), (0x10, b"x" * 65), (0, b"x")):
+        with pytest.raises(ValueError, match="exceeds limit"):
+            worker.memory_command(address, data)
 
 
 def test_a_buffer_larger_than_its_string_is_never_written():
