@@ -22,7 +22,14 @@ from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
-from peeky.identifiers import changeable, is_located, is_name, member_name, reachable
+from peeky.identifiers import (
+    changeable,
+    is_located,
+    is_name,
+    member_name,
+    reachable,
+    split_located,
+)
 from peeky.names import display_function, short_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
@@ -299,6 +306,9 @@ class DebugWorker:
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
         self.global_handles = set()
+        # Scope handles of a frame's variables in static storage (C, C++, #364), with the
+        # frame: read, never changed.
+        self.static_handles = {}
         self.launched_at = None
         # Whether the current launch has asked the debugger to start (or attach to) the
         # program: an error before that is one before launch (#190).
@@ -2681,8 +2691,12 @@ class DebugWorker:
             pending, own, proof, given = [], [], None, None
             # Why a rule left roots unmarked (a stop part-way through a statement).
             self.unsettable_reasons, roots = [], []
+            in_statics = getattr(runtime, "static_scope", None)
             for scope in listed:
                 module = bool(is_global) and is_global(scope)
+                # The frame's variables in static storage, which lldb-dap lists apart from
+                # its locals, among its unit's globals (C, C++, #364).
+                static = callable(in_statics) and in_statics(scope, selected_frame)
                 if module and not wanted:
                     continue
                 if module and isinstance(wanted, list):
@@ -2694,7 +2708,12 @@ class DebugWorker:
                 ).get("variables", [])
                 if validate_children:
                     validate_children(variables)
-                if (taken := self.take_returned(runtime, variables)) is not None:
+                if static:
+                    # Only those the code at the stop names, with no local of their name.
+                    variables = runtime.static_rows(
+                        variables, selected_frame, own, command=self.debugger_command
+                    )
+                elif (taken := self.take_returned(runtime, variables)) is not None:
                     # Shown apart, as `returned`, and only if it is the function's (#155).
                     variables, found = taken
                     if index == 0 and given is None:
@@ -2715,7 +2734,8 @@ class DebugWorker:
                         and isinstance(v.get("name"), str)
                         and v["name"] not in groups
                     ]
-                    self.frame_variables.setdefault(selected, []).extend(variables)
+                    if not static:
+                        self.frame_variables.setdefault(selected, []).extend(variables)
                 self.reference_counter += 1
                 handle = self.reference_counter
                 shown = variables[: min(50, 512 - self.inspection_nodes)]
@@ -2751,13 +2771,18 @@ class DebugWorker:
                 # Bind mutation authority only to freshly re-acquired, identical scopes.
                 references = self.reacquire_scopes(runtime, selected_frame, pending)
             result = []
-            self.global_handles = set()
+            self.global_handles, self.static_handles = set(), {}
             for (handle, scope, exposed, total), reference in zip(pending, references):
                 entry = {"name": scope["name"], "reference": handle, "variables": exposed}
                 if is_global and is_global(scope):
                     # The module's globals are read, never changed.
                     entry["globals"] = True
                     self.global_handles.add(handle)
+                elif callable(in_statics) and in_statics(scope, selected_frame):
+                    # The frame's variables in static storage, read and never changed
+                    # (#364): named apart from the globals lldb-dap lists with them.
+                    entry.update(name="Statics", static_storage=True)
+                    self.static_handles[handle] = selected_frame
                 elif writable:
                     self.references.add(handle)
                     self.reference_frames[handle] = selected_frame
@@ -2803,11 +2828,17 @@ class DebugWorker:
                     else {}
                 ),
                 # What the function keeps in static storage, which lldb-dap does not list
-                # among a frame's locals (C, C++).
+                # among a frame's locals (C, C++), and is not read here; and why (#364).
                 **(
                     {"statics": statics}
                     if (lister := getattr(runtime, "static_locals", None))
                     and (statics := lister(selected_frame))
+                    else {}
+                ),
+                **(
+                    {"static_notes": notes}
+                    if (noter := getattr(runtime, "static_notes", None))
+                    and (notes := noter(selected_frame))
                     else {}
                 ),
                 # The captures a GCC lambda reads through `__closure`, which lldb-dap
@@ -2922,6 +2953,15 @@ class DebugWorker:
             if ref in self.global_handles:
                 raise ValueError(
                     "Module globals cannot be changed: only the stopped function's own locals can"
+                )
+            if ref in self.static_handles:
+                # A C or C++ variable in static storage (#364).
+                raise ValueError(
+                    _STATIC_SET.format(
+                        name=repr((split_located(str(args["name"])) or (args["name"],))[0]),
+                        function=display_function(self.static_handles[ref].get("name"))
+                        or "this function",
+                    )
                 )
             if ref not in self.references:
                 raise ValueError("Inspect the scope before changing variables")
@@ -3252,12 +3292,16 @@ class DebugWorker:
 
     @staticmethod
     def frame_scopes(runtime, frame, scopes):
-        """The scopes an inspection of ``frame`` lists, at most 16."""
+        """The scopes an inspection of ``frame`` lists, at most 16: and, in C and C++,
+        lldb-dap's list of static storage where the frame's function declares a variable
+        there (#364)."""
         listed = runtime.local_scopes(scopes)
         is_global = getattr(runtime, "global_scope", None)
         if is_global and frame.get("name") == "<module>":
             # Module code runs with its globals as its locals: they are listed once.
             listed = [scope for scope in listed if not is_global(scope)]
+        if callable(statics := getattr(runtime, "static_scope", None)):
+            listed += [scope for scope in scopes if scope not in listed and statics(scope, frame)]
         return listed[:16]
 
     def preview_stack(self):
@@ -4491,6 +4535,22 @@ class DebugWorker:
                     found.append(span)
         state["strings"] = (found, cut)
         return state["strings"]
+
+    def debugger_command(self, text):
+        """The text of a read-only LLDB command, run through lldb-dap's command escape
+        (#364: `memory read` of a C++ `static` local's guard variable); counted as one
+        of the frame's scans, so scopes are bound for changes only afresh after."""
+        self.frame_scans += 1
+        try:
+            reply = self.dap.request(
+                "evaluate", {"expression": f"`{text}", "context": "repl"}, timeout=2
+            )
+        except TimeoutError:
+            # Its reply may still come: no change is made until the next inspection.
+            self.view_timed_out = True
+            raise
+        result = reply.get("result") if isinstance(reply, dict) else None
+        return result if isinstance(result, str) else None
 
     def stop_stack_pointer(self):
         """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or
@@ -5764,6 +5824,7 @@ class DebugWorker:
         self.held_extras, self.pointee_stop, self.past_incomplete = {}, None, False
         self.references.clear()
         self.global_handles.clear()
+        self.static_handles.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
         self.children.clear()
@@ -5929,6 +5990,12 @@ def member_selector(ancestry, name):
     return text
 
 
+# A C or C++ variable in static storage (#364).
+_STATIC_SET = (
+    "{name} cannot be changed: {function} keeps it in the program's static storage, not in "
+    "its frame's own memory, and Peeky changes only values a frame holds itself; edit the "
+    "source and run verify instead"
+)
 _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"

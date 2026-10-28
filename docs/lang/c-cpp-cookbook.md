@@ -40,6 +40,7 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Name the tools in a config](#name-the-tools-in-a-config)
   - [What Peeky checks about a build](#what-peeky-checks-about-a-build)
   - [Why a local shows `no value yet`](#why-a-local-shows-no-value-yet)
+  - [Read a `static` local](#read-a-static-local)
   - [Read C++ members](#read-c-members)
   - [Read a C++ string that holds a NUL byte](#read-a-c-string-that-holds-a-nul-byte)
   - [Change a text](#change-a-text)
@@ -577,7 +578,14 @@ In C and C++, a caller's local is withheld while its declaration's code hasn't f
   the next.
 - **A declaration line with no code of its own:** the local is stored element by element, on its
   elements' lines. Examples are an array of structs, a nested struct, or a 2-D array initialized
-  over several lines.
+  over several lines. Peeky goes by the code of the declaration's lines instead. It shows the
+  local once the caller's line is below the declaration, and all of that code comes before the
+  call. A loop's next pass, above the declaration, still withholds it.
+  - So does an optimized build, or one with an `optimize` attribute or `#pragma GCC optimize`
+    in any of its files. Either may lay a function's code out of source order.
+  - So does the caller of an inlined call, such as an `always_inline` function's. Its address
+    is where that call's code starts, not where a call returns. A frame the debugger rebuilds
+    for a tail call's caller is withheld too.
 - **A declaration still running on the caller's line:** Peeky reads the declaration from the source
   up to its `;`. In `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's
   code runs before the calls, and `t.p` is stored after them.
@@ -688,6 +696,8 @@ parts after it give the details.
   `this`: `this.head_`.
 - A `std::string` reads whole. A `std::vector` reads by index, and a `std::map` by key: `m[1]`,
   `ages["al"]`.
+- A `static` local reads where the code at the stop names it, and is never changed
+  ([details](#read-a-static-local)).
 - Structs, arrays and most standard containers show their members, in probes, `inspect` and
   `session get`. `bins` reads `[{lo = 0, hi = 2, count = 0}, …]`, `bins[3]` reads
   `{lo = 6, hi = 7, count = 0}`, and a `std::vector<std::string>` reads
@@ -1073,17 +1083,17 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).
-- **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
-  is placed in read-only data. lldb-dap lists no static storage among a frame's locals. So `cs` is
-  `not found`, and the row says that `main` declares it in static storage. A `static` local gets
-  the same note, in C too.
-- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, is
-  withheld in a caller frame. GCC gives its declaration's first line no code of its own, so Peeky
-  can't tell when it is stored.
+- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
+  no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
+  once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
+  build, or above an inlined call, it stays withheld in a caller frame.
 - **GDB's DAP** isn't supported. Peeky debugs GCC's builds with lldb-dap.
 
 Some things only look different:
 
+- **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
+  is in read-only data, not in the frame. It reads as a `static` local does, and is never changed
+  ([details](#read-a-static-local)).
 - **Function names:** LLDB names a `static` function from its declaration, from the global scope:
   `::trim_left(const std::string &)`, where clang's build gives `trim_left(std::string const&)`.
   Tables and messages drop that leading `::`, so the column reads `trim_left` in both. The store
@@ -1496,6 +1506,50 @@ In C++, `this` is withheld while its object is being built:
   class with no constructor runs its initializers where the object is built.
 
 An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too.
+
+### Read a `static` local
+
+lldb-dap lists a function's static storage apart from its locals. That holds a `static` local,
+and a `const` aggregate GCC builds at compile time. Peeky reads the one the code at the stop
+names. `inspect` lists it under `[Statics]`. Here `tick` declares `static long calls` at line 7,
+and again in a block, at line 13:
+
+```sh
+peeky probe tick.c --at 15 --capture calls,cs --hits 2
+```
+
+```
+hit  phase     line  function  selector  type        value
+1    observed  15    tick      calls     long        101  [not settable: static]
+1    observed  15    tick      cs        const span  {start = 8, end = 9}  [not settable: static]
+2    observed  15    tick      calls     long        102  [not settable: static]
+2    observed  15    tick      cs        const span  {start = 8, end = 9}  [not settable: static]
+```
+
+- The code names a `static` local from below its declaration to the end of its block. An inner
+  block's declaration hides an outer one. Peeky reads that from the source, as the compiler
+  preprocesses it, and from the debug information.
+- Above its declaration, on its line, or past its block, the selector is `not found`, and says
+  why: ``tick declares 'count' in static storage (…), at line 18, in a block this stop is outside
+  of, so the code here doesn't name it; read it in that block, below line 18``.
+- Where Peeky can't tell which declaration the code names, the note says why, and it isn't read.
+- Where the frame has a local of that name, the name selects the local, as before
+  ([A name a block declares again](#a-name-a-block-declares-again)).
+- Where lldb-dap lists several of one name, the row is `calls @ tick.c:13`. One a C++ symbol
+  names may read `Acc::run()::calls`. Select either as `calls`.
+- A template's instances share the declaration's file and line. Peeky reads only the stopped
+  instance's, as `long tick<int>(int)::calls` names it, or as its address proves it.
+- An inlined or copied function's `static` is one declaration in every copy. lldb-dap lists none
+  for an inlined call's frame, so there the note says the debugger doesn't list it.
+- In an optimized build, the row carries a note. Optimized code may reorder stores and keep
+  values in registers, so the value it uses may differ from what the declared address holds.
+- C++ runs a `static` local's initializer the first time control passes its declaration, unless
+  it is a constant. Until then the row is `no value yet`. Peeky reads the guard variable the
+  compiler gives it (`_ZGVZ4tickE1w`), and shows the value only once that says it has run.
+- A `static` local is never changed: Peeky changes only values a frame holds itself. Its rows say
+  `[not settable: static]`. `--set calls=5` is refused before the program runs. A `const` one's
+  fields are refused as const.
+- A lambda is a function of its own: a `static` of the function around it isn't read there.
 
 ### Read C++ members
 
