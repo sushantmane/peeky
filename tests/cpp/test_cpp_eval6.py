@@ -297,11 +297,6 @@ def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, cxx, capsys):
         # lldb-dap 18 cannot tell whether a libstdc++ string's text is in the string.
         assert code == 1 and "cannot read memory" in result["error"]["message"], result
         return
-    if cxx == "gcc" and sys.platform != "darwin":
-        # LLDB 20 reads GCC's string buffer as char[0], and cannot write memory (#167).
-        misread = "the debugger misreads this build's string buffer as char[0]"
-        assert code == 1 and misread in result["error"]["message"], result["error"]
-        return
     assert code == 0, result.get("error")
     assert "STOCK:apple=7,pear=3" in result["output"], result["output"]
     assert [
