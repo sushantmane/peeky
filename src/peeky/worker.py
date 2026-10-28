@@ -365,6 +365,8 @@ class DebugWorker:
         self.max_pause = None
         self.stopped_at = None
         self.auto_resumed = []
+        # While auto_resume takes the stops queued behind one it resumes.
+        self.resuming = False
         self.cursor = 0
         self.resumed_at = 0.0
         self.liveness_checked = 0.0
@@ -864,10 +866,14 @@ class DebugWorker:
             self.stop_line = frame.get("line")
             self.stop_place = self.place_of(frame)
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
-        except TimeoutError:
+        except TimeoutError as exc:
             if self.pause_spent():
                 return None
-            raise
+            raise TimeoutError(
+                "A stop is never shown without its line, function and place: the debugger "
+                f"did not give them within {STOP_READ_S} s, so the session was closed. Start "
+                "again once the machine is less busy"
+            ) from exc
         except Exception:
             return None
 
@@ -896,31 +902,49 @@ class DebugWorker:
 
     def resume_spent(self):
         """Resume a stop that outlived its pause budget while it was read, or while the
-        guard waited for the lock (#356), as the guard would have; True if it did."""
-        if not self.pause_spent():
+        guard waited for the lock (#356), as the guard would have; True if the program
+        runs again. Not while ``auto_resume`` takes the stops queued behind one."""
+        if self.resuming or not self.pause_spent():
             return False
-        self.auto_resume()
-        return True
+        return self.auto_resume()
 
     def auto_resume(self):
-        """Resume the current stop past its pause budget, and keep the record of it."""
-        entry = {
-            "stop_id": self.stop_id,
-            "reason": self.stop_reason,
-            "location": self.stop_location,
-            "paused_s": round(time.monotonic() - self.stopped_at, 2),
-        }
-        self._dispatch("continue", {"stop_id": self.stop_id})
-        self.auto_resumed.append(entry)
+        """Resume the current stop past its pause budget, and keep the record of it; True
+        if the program runs again. Where another thread's stop from the same all-threads
+        stop is queued, `continue` serves it next and resumes nothing (review of #367):
+        that stop, made at the same time, is past the budget too, so it is taken (none of
+        it is read) and resumed in turn, until a `continue` resumes the program. Only then
+        is each recorded as auto-resumed; else none is, and the guard tries again."""
+        entries, self.resuming = [], True
+        try:
+            while self.state == "stopped" and self.pause_spent() and len(entries) < 64:
+                entries.append(
+                    {
+                        "stop_id": self.stop_id,
+                        "reason": self.stop_reason,
+                        "location": self.stop_location,
+                        "paused_s": round(time.monotonic() - self.stopped_at, 2),
+                    }
+                )
+                if self._dispatch("continue", {"stop_id": self.stop_id}).get("resumed") is True:
+                    break
+                self._dispatch("wait", {"timeout": 0.1})
+            else:
+                return False
+        finally:
+            self.resuming = False
+        for entry in entries:
+            self.auto_resumed.append(entry)
+            self.record(
+                {
+                    "time": time.time(),
+                    "operation": "auto_resume",
+                    "arguments": {"stop_id": entry["stop_id"]},
+                    "result": {**entry, "max_pause": self.max_pause},
+                }
+            )
         self.auto_resumed = self.auto_resumed[-100:]
-        self.record(
-            {
-                "time": time.time(),
-                "operation": "auto_resume",
-                "arguments": {"stop_id": entry["stop_id"]},
-                "result": {**entry, "max_pause": self.max_pause},
-            }
-        )
+        return True
 
     def read_crash(self, runtime, body):
         """What an `exception` or `signal` stop tells (#342), for display; nothing of any
@@ -2622,6 +2646,7 @@ class DebugWorker:
                 # The one-shot `continue --to` line served its purpose (or another stop
                 # came first): only the session's own breakpoints remain.
                 self.set_points(runtime, self.points)
+            served = self.stop_id
             if self.stop_id and self.resume_spent():
                 # The stop outlived its pause budget while it was read (#356): resumed, as
                 # the pause guard would have, and never returned as a live stop.
@@ -2634,7 +2659,8 @@ class DebugWorker:
             return {
                 "state": self.state,
                 "stop_id": self.stop_id,
-                "event": event,
+                # Not where a stop queued behind this one became current, unresumed.
+                **({"event": event} if self.stop_id == served else {}),
                 **({"exit_inferred": True} if self.exit_inferred else {}),
                 **({"unreported_stop": self.unreported} if self.unreported else {}),
                 **self.location(),

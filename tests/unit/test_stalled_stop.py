@@ -118,6 +118,8 @@ def test_a_stop_the_debugger_does_not_describe_in_time_fails_and_is_never_shown_
         worker.dispatch("wait", {"session_id": "session", "timeout": 1})
     error = classify(caught.value)
     assert error["code"] == "TIMEOUT" and error["session_closed"] is True, error
+    assert error["message"].startswith("A stop is never shown without its line, function and")
+    assert error["hint"].startswith("The debugger stalled at a stop. Start again"), error
     assert worker.dap is None and dap.closed == {"terminate": True}
     (asked,) = [timeout for command, timeout, _ in dap.calls if command == "stackTrace"]
     assert asked == STOP_READ_S == 15
@@ -158,3 +160,34 @@ def test_a_stalled_read_never_holds_a_stop_past_its_pause_budget(tmp_path):
     from peeky.cli import _state_text
 
     assert "latest at a place not read in time, after" in _state_text(state)
+
+
+@pytest.mark.parametrize("by", ["wait", "guard"])
+def test_a_stop_with_another_threads_queued_is_auto_resumed_only_once_the_program_runs(
+    tmp_path, by
+):
+    # Review 2 of #367: two threads stopped at breakpoints in one all-threads stop. The
+    # first's `continue` serves the second and resumes nothing, yet it was recorded as
+    # auto-resumed and `wait` said "running" while every thread stayed paused. The second,
+    # made at the same time, is past the budget too: it is resumed in turn, and only then
+    # are both recorded.
+    dap = StalledDap(stall=False)
+    worker = stopped(tmp_path, dap, max_pause=None if by == "guard" else 0.3)
+    dap.add("stopped", reason="breakpoint", threadId=8, allThreadsStopped=True)
+    for event in dap.events:
+        event["received"] -= 1.0
+    worker.breakpoint_counts = {"main.rs": 1}
+    if by == "guard":
+        first = worker.dispatch("wait", {"session_id": "session", "timeout": 1})
+        assert first["state"] == "stopped" and first["stop_id"] == worker.stop_id
+        worker.max_pause = 0.3
+        worker.guard_pause()
+    else:
+        state = worker.dispatch("wait", {"session_id": "session", "timeout": 1})
+        assert state["state"] == "running" and state["auto_resumed"] == 2, state
+    # One `continue`, the one that resumed the program, after the second stop was taken.
+    assert [command for command, _, _ in dap.calls if command == "continue"] == ["continue"]
+    assert worker.state == "running" and worker.hits == 2 and len(worker.auto_resumed) == 2
+    stops = [entry["stop_id"] for entry in worker.auto_resumed]
+    assert len(set(stops)) == 2 and all(entry["paused_s"] >= 1 for entry in worker.auto_resumed)
+    assert [entry["operation"] for entry in worker.audit].count("auto_resume") == 2

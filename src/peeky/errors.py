@@ -254,6 +254,13 @@ _RULES = (
         False,
     ),
     (
+        r"^A stop is never shown without its line",
+        "TIMEOUT",
+        "The debugger stalled at a stop. Start again once the machine is less busy; nothing "
+        "of that stop was shown.",
+        False,
+    ),
+    (
         r"^The debuggee did not start",
         "TIMEOUT",
         "Retry once it can read its path and every directory above it: a hung disk or macOS "

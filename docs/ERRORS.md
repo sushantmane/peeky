@@ -111,6 +111,11 @@ The last column is the `retryable` field.
   launch.
 - Then check that the program can read its own path and every directory above it. A hung file
   system, or a pending macOS privacy prompt, blocks it. Then retry.
+- `A stop is never shown without its line, function and place` means that the debugger
+  stopped but didn't describe the stop within 15 s. A very busy machine can stall it.
+  The session was closed, and nothing of that stop was shown. Start again once the load has passed.
+- A debugger that refuses that read, as it may at a crash, doesn't end the session. The stop then
+  has no location.
 
 ### DEBUGGER_ERROR
 
