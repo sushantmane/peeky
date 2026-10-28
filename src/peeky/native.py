@@ -5139,6 +5139,8 @@ class NativeSession:
             return 0
         file = Path(str(source)).name
         function = str((frame or {}).get("name") or "").rpartition("`")[2]
+        # Apple's LLDB marks an optimized frame's name `… [opt]`.
+        function = function[: -len(" [opt]")] if function.endswith(" [opt]") else function
         found = []
         for variable in variables:
             if not isinstance(variable, dict):

@@ -5,6 +5,7 @@ information's declaration, and never changes one."""
 
 import json
 import os
+import re
 import shutil
 
 import pytest
@@ -211,8 +212,10 @@ def test_a_static_of_an_inlined_function_is_never_refused_for_another_copy(
             assert row["value"] in ("0", "1", "3", "6"), row
             assert row["note"].startswith(f"the build is optimized ({optimization})"), row
         else:
-            assert row["error"].startswith(
-                f"not found: bump declares 'hits' in static storage (a `static` local, or a "
-                f"`const` one the compiler placed there), at line {declared}, but the "
-                "debugger doesn't list it for this frame"
+            # Apple's LLDB names an optimized frame `bump [opt]`.
+            assert re.match(
+                r"not found: bump(?: \[opt\])? declares 'hits' in static storage \(a `static` "
+                r"local, or a `const` one the compiler placed there\), at line "
+                rf"{declared}, but the debugger doesn't list it for this frame",
+                row["error"],
             ), row

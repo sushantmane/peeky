@@ -1498,6 +1498,11 @@ hit  phase     line  function  selector  type        value
   ([A name a block declares again](#a-name-a-block-declares-again)).
 - Where lldb-dap lists several of one name, the row is `calls @ tick.c:13`. One a C++ symbol
   names may read `Acc::run()::calls`. Select either as `calls`.
+- A template's instances share the declaration's file and line. Peeky reads only the stopped
+  instance's, as `long tick<int>(int)::calls` names it, or as its address proves it.
+- An inlined or copied function's `static` is one declaration in every copy. lldb-dap lists none
+  for an inlined call's frame, so there the note says the debugger doesn't list it.
+- In an optimized build, the row carries a note: the code may hold a newer value in a register.
 - C++ runs a `static` local's initializer the first time control passes its declaration, unless
   it is a constant. Until then the row is `no value yet`. Peeky reads the guard variable the
   compiler gives it (`_ZGVZ4tickE1w`), and shows the value only once that says it has run.

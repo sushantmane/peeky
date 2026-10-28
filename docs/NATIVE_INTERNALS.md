@@ -402,9 +402,15 @@ among its locals. Each has `$__lldb_extensions.declaration`: its file and line.
 - It reads `Statements.scope_lines`, and `block_storage` for a later declaration that hides it.
   The stop must be below the declaration, in its scope, and in its block's code where the debug
   information gives one. Of several, the innermost counts.
+- Copies of one function (inlined, or cloned) may each declare it again. GCC declares it in an
+  abstract block, whose code is each copy's block's. `_static_named` takes one declaration per
+  origin, holding the stop where any copy's block does.
 - `_static_entry` matches it to lldb-dap's row by name, file and line. The name may be plain,
   `calls @ f.c:9`, or a symbol's `Acc::run()::calls`. An address lldb-dap gives must be the
   declaration's, slid.
+- A symbol's name must be the frame's function, as LLDB names it: `long tick<int>(int)::calls`,
+  never another instance's, at the same file and line. Else its address must prove it.
+- In an optimized build, a row carries a note: its storage may lag a register.
 - A row keeps lldb-dap's name; `selected_as` gives the plain one. `_static_declared` gives the
   row's `name @ file:line` to `fields.local_types` lookups, for its type.
 - In C++, `_static_guard` finds the `_ZZ…` symbol at its address (`object_symbols`). Its guard

@@ -239,6 +239,9 @@ def test_the_debuggers_row_of_a_static_is_its_declaration_and_address(tmp_path):
     there = frame(tmp_path, 7, name="long f<long>(long)")
     assert native.static_rows(instances, there, []) == instances[1:]
     # Named otherwise than the frame, it isn't proven its own, unless by its address.
+    # Apple's LLDB marks an optimized frame's name.
+    marked = frame(tmp_path, 7, name="long f<int>(int) [opt]")
+    assert native.static_rows(instances, marked, []) == instances[:1]
     elsewhere = frame(tmp_path, 7, name="f<int>(int)")
     assert native.static_rows(instances, elsewhere, []) == []
     placed = [instance("long f<int>(int)", 0x14008), instance("long f<long>(long)", 0x14018)]
