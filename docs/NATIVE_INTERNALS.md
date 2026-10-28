@@ -429,6 +429,9 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
   - A preview reads nested containers' nodes under the same rule: none below a note, or
     through such a pointer.
+  - A GCC lambda's capture is read through `__closure`. Where `__closure`, or what a capture
+    by reference refers to, isn't proven live, its note withholds the nodes too. Its count
+    is the capture's own, not that of a global it shadows.
   - Nothing is read in an optimized build, nor where a unit's preprocessed text may optimize
     a function (`c_source.optimizes`). That is any `optimize(` or `__optimize__(` outside
     comments and literals, in any attribute form (`[[using gnu: optimize("O2")]]`), also

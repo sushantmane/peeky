@@ -1671,6 +1671,56 @@ def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
     assert [rows["n"]["value"], rows["pt.x"]["value"]] == ["8", "3"], rows
 
 
+CAPTURED_CONTAINERS = """#include <cstdio>
+#include <unordered_map>
+std::unordered_map<int, int> um;
+static void touch() { um[7] = 8; um[9] = 10; um[11] = 12; }
+int main() {
+    touch();
+    std::unordered_map<int, int> local{{1, 2}};
+    std::unordered_map<int, int> copy{{3, 4}, {5, 6}};
+    // `um` is a global of three entries too: a capture's name may shadow one.
+    auto f = [&um = local, copy]() {
+        return (int)um.size() + (int)copy.size(); // IN_LAMBDA
+    };
+    std::printf("F:%d %zu\\n", f(), um.size());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_lambdas_capture_of_an_unordered_container_reads_or_withholds_truthfully(cpp, capsys):
+    # #360 with #361: a GCC lambda's capture of an unordered container, by reference and
+    # by value, is its own container: read whole, or withheld with its own count (never
+    # the shadowed global's 3), and never from nodes Peeky can't show are live.
+    compiler, root = cpp
+    source = root / "captured.cpp"
+    source.write_text(CAPTURED_CONTAINERS)
+    line = line_of(CAPTURED_CONTAINERS, "// IN_LAMBDA")
+    # Clang's lambda reads its captures as members of its object, `this.um`.
+    at = "this." if compiler == "clang" else ""
+    names = ["um", "um[1]", "copy", "copy[3]"]
+    code, result = probe(source, line, ",".join(at + name for name in names), capsys)
+    assert "F:3 3" in result["output"], result
+    rows = {row["selector"].removeprefix(at): row for row in result["rows"]}
+    expected = {"um": ("size=1 {1: 2}", 1), "um[1]": ("2", 1), "copy[3]": ("4", 2)}
+    for selector, (value, count) in expected.items():
+        row = rows[selector]
+        shown = row.get("value")
+        assert shown is None or shown == value or shown.endswith(" " + value), (selector, row)
+        if shown is None:
+            assert withheld(row, count), (selector, row)
+    copy = rows["copy"]
+    if copy.get("value") is None:
+        assert withheld(copy, 2), copy
+    else:
+        assert re.search(r"size=2 \{(3: 4, 5: 6|5: 6, 3: 4)\}$", copy["value"]), copy
+    if compiler == "gcc":
+        # LLDB counts GCC's as empty: whatever shows is Peeky's own read, never `size=0`.
+        assert all("size=0" not in str(row.get("value")) for row in rows.values()), rows
+
+
 OPTIMIZED_CAPTURES = """#include <cstdio>
 int main(int argc, char **) {
     int bonus = argc + 1;
