@@ -550,7 +550,7 @@ def test_no_node_is_read_in_a_build_that_may_be_optimized():
     cases = (("O1", False), ("O2", False), ("O0", True), ("O0", None), ("O0", False))
     for optimization, optimizing in cases:
         session.target = SimpleNamespace(language="cpp", optimization=optimization)
-        session.optimizing = optimizing
+        session.optimized = optimizing
         listing = session._node_listing(
             {"type": "std::unordered_set<int>"},
             {"id": 1},

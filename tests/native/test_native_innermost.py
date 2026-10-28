@@ -1742,16 +1742,15 @@ int main(void) {
 
 
 @pytest.mark.timeout(300)
-def test_a_static_local_says_why_the_debugger_does_not_list_it(directory, capsys):
+def test_a_static_local_is_read_though_the_debugger_does_not_list_it(directory, capsys):
     # #167 (B4): lldb-dap lists no frame's static storage, so a function's `static` read
-    # "not found; visible: a", as if main had no `q`.
+    # "not found; visible: a", as if main had no `q`. #364: it is read where the code
+    # names it, and never changed.
     path = directory / "statics.c"
     path.write_text(STATICS)
     rows = shown_at(capsys, path, line_of(STATICS, "// HERE"), "q", "a")
     assert rows["a"]["value"] == "1", rows
-    error = rows["q"]["error"]
-    assert error.startswith("not found: main declares 'q' in static storage"), error
-    assert error.endswith("Peeky cannot read it here; print it from the program; visible: a")
+    assert rows["q"]["value"] == "5" and rows["q"]["not_settable"] == "static", rows
 
 
 @pytest.mark.cpp

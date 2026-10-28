@@ -151,6 +151,30 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
 
+## A caller's local whose declaration line has no code
+
+- `declared_unfinished` withholds a caller frame's local whose declaration line has no row of
+  its own. GCC's C++ does this to `struct trio t = { seed,`, and clang to an array of structs.
+- `_stored_before` lifts that. The frame's line must be below the statement's end, from
+  `Statements.end`.
+- Each row of the statement's lines, from the function's `order`, must end before the call.
+  A row ends at the function's next row, or at the end of its code there. The call is the
+  return address less one.
+- `NativeSession._resume` gives that return address only where it is proven a physical call's,
+  in code laid out in source order. The build must be `-O0`. And no unit may optimize a function
+  on its own: `c_source.optimizes` finds an `optimize` attribute or pragma in a unit's `-E` text.
+- The frame must be above the innermost one, and no signal interrupted it. No inlined call's
+  code may hold its address or the one before. LLDB gives the caller of an inlined call the
+  address where that call's code starts.
+- Nor may it be a frame LLDB rebuilt for a tail call's caller, which has no frame of its own
+  left. LLDB rebuilds one only from a call site marked as a tail call. So the build's debug
+  information must mark none (`has_tail_calls`), and the frame's `presentationHint` must not
+  be lldb-dap 20's "subtle".
+- A row after the call, such as a loop's code placed there, keeps it withheld. So does anything
+  unknown.
+- A loop around both runs the declaration again before the call on each pass. A jump past the
+  declaration is judged after it, by `declared_skipped`.
+
 ## Preview bounds and types
 
 - `native_previews` sets the bounds: 8 members or elements per level, two levels, 40 characters
@@ -449,15 +473,52 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   no stop can follow.
 - **Static storage.** GCC places a `const` local aggregate it can build at compile time in
   read-only data (`DW_OP_addr`). lldb-dap lists no static storage among a frame's locals, a
-  `static` local's neither. `NativeSession.static_locals` names the function's locals with a fixed
-  address (`fields.local_types`' storage `static`), and the worker's `inspect` passes them as
-  `statics`. A selector rooted at one says so (`probe._static_hint`).
+  `static` local's neither. Peeky reads them as [Static locals](#static-locals) says.
 - **A const pointer.** GCC types `this` as `Widget *const`. `fields.settable_member` refuses a
   change through a pointer under a `const` as a pointer's, not as a const object's
   (`_pointer_under`).
 - **A lambda's captures.** GCC passes them through `__closure`, and describes each one as an
   artificial variable read through it. lldb-dap lists neither, so a capture is `not found` in the
   lambda. Peeky doesn't read them yet.
+
+## Static locals
+
+lldb-dap lists a frame's `static` locals in its "Globals" scope, with its unit's globals, never
+among its locals. Each has `$__lldb_extensions.declaration`: its file and line.
+
+- `_static_locals` gives each function entry its `statics`: the variables of its bodies at one
+  `DW_OP_addr`, with their file, line, address, type and block's code. Clang declares a block's
+  `static` in the function's scope, so its block is the function's.
+- `NativeSession.static_scope` lists "Globals" for a C or C++ frame whose function has one. The
+  worker reads it as the `Statics` scope (`static_storage`).
+- `_static_named` picks the declaration the code at the stop names. `_static_scope` reads where
+  the stop stands to each, from the source as the compiler preprocesses it.
+- It reads `Statements.scope_lines`, and `block_storage` for a later declaration that hides it.
+  The stop must be below the declaration, in its scope, and in its block's code where the debug
+  information gives one. Of several, the innermost counts.
+- Copies of one function (inlined, or cloned) may each declare it again, even at another
+  address. GCC declares it in an abstract block, whose code is each copy's block's.
+- `_static_placed` takes one declaration per origin, file, line and type. Its placement is the
+  copy whose block holds the stop. Copies at several addresses that hold it are unsure.
+- `_static_entry` matches it to lldb-dap's row by name, file and line. The name may be plain,
+  `calls @ f.c:9`, or a symbol's `Acc::run()::calls`. An address lldb-dap gives must be the
+  declaration's, slid.
+- A symbol's name must be the frame's function, as LLDB names it: `long tick<int>(int)::calls`,
+  never another instance's, at the same file and line. Else its address must prove it.
+- In an optimized build, a row carries a note. Stores and register updates may be reordered,
+  so the code may use a value other than what the declared address holds.
+- A row keeps lldb-dap's name; `selected_as` gives the plain one. `_static_declared` gives the
+  row's `name @ file:line` to `fields.local_types` lookups, for its type.
+- In C++, `_static_guard` finds the `_ZZ…` symbol at its address (`object_symbols`). Its guard
+  `_ZGV…`'s first byte is read with LLDB's `memory read`. Zero means its initializer hasn't run:
+  `no value yet`.
+- No guard, or a symbol of another mangling (GCC's `cs.0`), needs no wait. A guard Peeky can't
+  read, or no symbol, is `not shown`.
+- Rows are never settable: `settable` says no, and `never_settable_row` says `static`. The
+  worker refuses `set_variable` on the scope's reference. A member is refused by
+  `validate_member` (`_not_framed`), or as const. A probe's `--set` of one is refused before
+  launch.
+- Why one isn't read is in `static_notes`, which `probe._static_hint` shows.
 
 ## Which tests check what
 
@@ -485,6 +546,7 @@ required test calls a model.
 | `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
+| `tests/native/test_native_statics.py`, `tests/cpp/test_cpp_statics.py` | `static` locals, and GCC's `const` aggregate in read-only data: read where the code names them, a C++ one once its guard says it is initialized, and never changed | macOS (Apple clang); Linux (clang 18, gcc and g++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, also read from their nodes (types, strings, a call under way), a string's text, LLDB's errors in the output, a bitfield's binding, and a pair's or tuple's bindings, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
 | `tests/unit/test_hashed_nodes.py` | Reading an unordered container's nodes: the layout proof, the chain's length, the types read, words through variable paths, and the worker's value view | Unit |
 | `tests/cpp/test_cpp_landing_pads.py` | A local declared on the stop line, after clang's landing pad, is withheld; built by clang and by g++ | macOS (Apple clang); Linux (clang 18 and g++, lldb-dap 18 and 20) |
