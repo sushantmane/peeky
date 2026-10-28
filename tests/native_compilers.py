@@ -23,6 +23,14 @@ def gxx():
     return None
 
 
+def gcc():
+    """A gcc on the path that is GCC, or None."""
+    for name in ("gcc", "gcc-13", "gcc-14"):
+        if (found := shutil.which(name)) and is_gcc(found):
+            return found
+    return None
+
+
 def default_cxx():
     """The C++ compiler a case builds with unless it says otherwise: PEEKY_NATIVE_CXX, else
     the one Peeky picks (`clang++` or `clang++-18` on the path, xcrun's on macOS), or None."""

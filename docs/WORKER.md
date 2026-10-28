@@ -257,7 +257,9 @@ Both operations are read-only.
 | Field | On | Meaning |
 | --- | --- | --- |
 | `whole_string_summaries` | a stop | `true` when LLDB's summary of a `std::string` is all of it: libc++, known by `std::__1` in the debug information. libstdc++ (`std::__cxx11`) gets no such field |
-| `statics` | a stop | The names the frame's function keeps in static storage: a `static` local, or a `const` local GCC places in read-only data. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none |
+| `statics` | a stop | The names the frame's function keeps in static storage, and Peeky doesn't read here: a `static` local, or a `const` local GCC places in read-only data. A selector rooted at one is `not found`, and says why. Absent where there are none |
+| `static_notes` | a stop | Why Peeky doesn't read each of `statics` here, by name: the stop is above its declaration or past its block, or Peeky can't tell which one the code names. A client shows it after `declares it in static storage`. An earlier worker gives none, and reads no static local |
+| `static_storage: true` | a scope | The `Statics` scope: the frame's variables in static storage that the code at the stop names, which lldb-dap lists apart from its locals. They are read, and never changed: `set_variable` on its reference is refused (`MUTATION_REJECTED`) |
 | `closure_captures` | a stop | The captures a GCC lambda's call operator reads through `__closure`. lldb-dap lists none of them among the frame's locals, so a selector rooted at one is `not found`, and says why. Absent where there are none, and for clang's lambdas |
 | `string_length` | a variable | A libstdc++ string's length, checked against its `_M_string_length`. A map key matches only a string shown whole and of its length, or one read from memory |
 | `view: memory` | a variable | Peeky read the string's text from memory |

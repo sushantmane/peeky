@@ -484,6 +484,25 @@ def _balanced(body):
 # starting with `#` is a directive the output keeps (`#pragma`).
 _MARKER = re.compile(rb'[ \t]*#[ \t]*(?:line[ \t]+)?([0-9]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?')
 _DIRECTIVE_LINE = re.compile(r"[ \t]*(?:#|%:)")
+# What can optimize one function beyond the build's level: an attribute
+# (`__attribute__((optimize("O2")))`, `[[gnu::__optimize__("O2")]]`), or a pragma line
+# naming it (`#pragma GCC optimize "O1"`, a `_Pragma`'s as `-E` writes it).
+_OPTIMIZE_ATTRIBUTE = re.compile(r"(?<![\w$])(?:optimize|__optimize__)\s*\(")
+_OPTIMIZE_PRAGMA = re.compile(
+    r"^[ \t]*(?:#|%:)[ \t]*pragma(?![\w$])[^\n]*(?<![\w$])(?:optimize|__optimize__)(?![\w$])",
+    re.MULTILINE,
+)
+
+
+def optimizes(output, raw_strings=True):
+    """Whether a translation unit, as the compiler's `-E` gives it (``output``, bytes),
+    may optimize a function beyond the build's level: an `optimize` attribute or a
+    pragma naming `optimize` (`#pragma GCC optimize`, `#pragma clang optimize`), outside
+    its comments and literals. A function of that name, called, counts too."""
+    if b"optimize" not in output:
+        return False
+    text = blank(output.decode("utf-8", errors="replace"), raw_strings)
+    return bool(_OPTIMIZE_ATTRIBUTE.search(text) or _OPTIMIZE_PRAGMA.search(text))
 
 
 class Preprocessed:

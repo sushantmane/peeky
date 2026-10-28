@@ -41,7 +41,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
+from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -2097,9 +2097,83 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 ),
                 # The names a GCC lambda reads through `__closure` (_gcc_captures).
                 "captures": _gcc_captures(dies, entry),
+                # Its variables in static storage, which lldb-dap lists among no frame's
+                # locals (_static_locals, #364).
+                "statics": _static_locals(dies, (*entry["bodies"], root), files, workspace),
             }
         )
     return table
+
+
+# The most variables in static storage one function's entry keeps (#364).
+MAX_STATIC_LOCALS = 256
+
+
+def _static_locals(dies, bodies, files, workspace):
+    """((name, source, line, address, type offset, block, origin), ...) for each variable
+    of one function's bodies (their nested blocks too, not calls inlined into them) that
+    the build places at one fixed address, `DW_OP_addr`: a `static` local, or a `const`
+    one GCC builds at compile time, in read-only data (#364). ``address``: before any
+    slide; ``block``: the code ranges of the block declaring it, the function's own where
+    that is its body (clang declares a block's `static` there too). An abstract block's
+    (GCC's, of a function inlined or copied, review of PR #370) are those of each
+    concrete copy of it, or () where there is none. ``origin``: the DIE the variable
+    completes (its abstract origin), or its own: one declaration, whatever copy of the
+    function declares it again. Never a thread-local one, whose address is the thread's."""
+    from peeky.fields import _target
+
+    inputs, cache = files
+    found, seen, pending = [], set(), []
+    for body in dict.fromkeys(bodies):
+        if body in dies:
+            pending += [(child, body) for child in dies[body]["children"]]
+    function = sorted(
+        {span for body in bodies if body in dies for span in _code_ranges(dies[body])}
+    )
+    # Each abstract block's concrete copies' code (`DW_AT_abstract_origin`).
+    copies, walk = (
+        {},
+        [
+            child
+            for body in dict.fromkeys(bodies)
+            if body in dies
+            for child in dies[body]["children"]
+        ],
+    )
+    while walk and len(copies) < 4096:
+        offset = walk.pop()
+        if offset not in dies or dies[offset]["tag"] != "DW_TAG_lexical_block":
+            continue
+        walk += dies[offset]["children"]
+        for abstract in _chain(dies, offset)[1:]:
+            copies.setdefault(abstract, set()).update(_code_ranges(dies[offset]))
+    while pending and len(found) < MAX_STATIC_LOCALS:
+        child, scope = pending.pop()
+        if child in seen or child not in dies:
+            continue
+        seen.add(child)
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending += [(inner, child) for inner in die["children"]]
+            continue
+        if die["tag"] != "DW_TAG_variable":
+            continue
+        placed = _FIXED_ADDRESS.fullmatch(die["attrs"].get("DW_AT_location") or "")
+        if placed is None or int(placed[1], 16) == 0:
+            continue
+        chain = _chain(dies, child)
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        line = _first(dies, chain, "DW_AT_decl_line")
+        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
+        if not name or not line or not line.isdigit() or source is None:
+            continue
+        if scope in bodies:
+            block = tuple(function)
+        else:
+            block = tuple(sorted({*_code_ranges(dies[scope]), *copies.get(scope, ())}))
+        kind = _target(_first(dies, chain, "DW_AT_type"))
+        found.append((name, source, int(line), int(placed[1], 16), kind, block, chain[-1]))
+    return tuple(sorted(found, key=lambda each: (each[0], each[2], each[3], each[6])))
 
 
 def _gcc_captures(dies, entry):
@@ -2263,6 +2337,17 @@ def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
     return False
 
 
+_TAIL_CALL = re.compile(r"\bDW_AT_(?:call_tail_call|GNU_tail_call)\b")
+
+
+def has_tail_calls(info):
+    """Whether the build's debug information (dwarfdump's `--debug-info` text) describes a
+    tail call (a call site's `DW_AT_call_tail_call`, or GCC's `DW_AT_GNU_tail_call`). LLDB
+    rebuilds a frame from one for a caller that has none of its own left (an artificial
+    frame), whose address is no physical call's return."""
+    return _TAIL_CALL.search(info) is not None
+
+
 def has_nonlocal_jumps(binary):
     """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
     (its imports), wherever the call is hidden (a TRY macro in a library header)."""
@@ -2340,6 +2425,57 @@ def _short_frame(name):
     return bare if len(bare) <= 80 else bare[:79] + "…"
 
 
+# A row read from a fixed address in an optimized build (#364 review).
+_STATIC_OPTIMIZED = (
+    "the build is optimized ({level}): it may reorder stores and keep values in registers, "
+    "so the value its code is using may differ from what its fixed address holds; this is "
+    "what the declared address holds"
+)
+
+
+def _static_placed(declared, pc):
+    """[(declaration, held)] for the variables in static storage ``declared`` (one name's
+    ``_static_locals``) at the stop ``pc``, one per declaration, whatever copies of the
+    function declare it again (an inlined call's, a clone's; review of PR #370): those of
+    one origin, file, line and type. Each copy is placed by its address and its block's
+    code; the declaration is the copy whose block holds the stop, held True. Copies at
+    several addresses that hold it: held None. None holds it: held False, unless a copy's
+    block is unknown (an abstract one with no concrete copy), which may: True, where they
+    are at one address."""
+    groups = {}
+    for each in declared:
+        groups.setdefault((each[6], each[1], each[2], each[4]), []).append(each)
+    found = []
+    for copies in groups.values():
+        holding = [each for each in copies if any(low <= pc < high for low, high in each[5])]
+        unknown = [each for each in copies if not each[5]]
+        chosen = holding or unknown
+        addresses = {each[3] for each in chosen}
+        if not chosen:
+            found.append((copies[0], False))
+        elif len(addresses) > 1:
+            found.append((chosen[0], None))
+        else:
+            block = (
+                () if not holding else tuple(sorted({span for each in holding for span in each[5]}))
+            )
+            found.append(((*chosen[0][:5], block, *chosen[0][6:]), True))
+    return found
+
+
+def _line_list(lines):
+    """`7 and 12`, `3, 7 and 12`: lines for a message."""
+    shown = [str(line) for line in lines]
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " and " + shown[-1]
+
+
+def _frame_key(frame):
+    """What tells one listed frame at a stop from another: its id and address."""
+    if not isinstance(frame, dict):
+        return None
+    return frame.get("id"), frame.get("instructionPointerReference")
+
+
 def _not_framed(name, storages):
     """Why a local outside the frame's own memory is not changed: one the frame reaches
     through a pointer or reference ("through", fields.local_types), or a static or a
@@ -2350,6 +2486,11 @@ def _not_framed(name, storages):
             "of a reference, or of a pair or tuple, a named return value or a C `__block` "
             "variable). Change the value where it is owned: Peeky changes only values the "
             "frame holds itself"
+        )
+    if storages == {"static"}:
+        return (
+            f"`{name}` is a `static` local, kept in the program's static storage, not in this "
+            "frame's own memory: Peeky changes only values a frame holds itself"
         )
     return (
         f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
@@ -2569,7 +2710,44 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
+def _stored_before(function, source, at, end, line, resume):
+    """Whether all the code of a declaration on lines ``at``-``end`` of ``source`` has run
+    in a caller frame of ``function`` on ``line``, whose call returns to ``resume``
+    (unslid: a physical call's, in a function laid out in source order; see
+    NativeSession._resume), by the line table.
+
+    The frame's line is below the declaration's end, and each of the function's rows of
+    those lines runs (to the function's next row, or the end of its code there) before
+    the call does, at ``resume`` less one; at least one does. A loop around both runs
+    the declaration again before the call on each pass. Above the declaration (a loop's
+    next pass), within it, with a row of its lines after the call (a loop's code placed
+    there), or with anything unknown: False. A jump past the declaration is judged
+    after (declared_skipped)."""
+    if resume is None or end is None or line <= end:
+        return False
+    call, ranges = resume - 1, function.get("ranges", ())
+    # Every row the function runs, by address.
+    order = function.get("order") or ()
+    if not any(low <= call < high for low, high in ranges):
+        return False
+    found = False
+    for start, file, number in order:
+        if file != source or not at <= number <= end:
+            continue
+        holding = [high for low, high in ranges if low <= start < high]
+        if not holding:
+            return False
+        following = bisect.bisect_right(order, (start, "\U0010ffff", 1 << 62))
+        finish = holding[0]
+        if following < len(order):
+            finish = min(finish, order[following][0])
+        if finish > call:
+            return False
+        found = True
+    return found
+
+
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, resume=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2584,13 +2762,17 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
     Declared at or above the frame's line: the frame's own line always counts, and so
     does a line the function still has code of at or after ``address`` (`long r =` /
     `f(x);` stores `r` on the declaration's line after the call returns, and so does a
-    designated initializer over several lines). Declared anywhere on a line with no code
-    of its own: an array of structs, a nested struct or a 2-D array is stored element by
-    element on its elements' lines, so nothing places it. With the address or its
-    function unknown, every declaration at or above the line counts. And so does one whose
-    statement, as the source writes it (``ends``), still runs on the frame's line:
-    `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
-    it before the call.
+    designated initializer over several lines). Declared on a line with no code of its
+    own: an array of structs, a nested struct or a 2-D array is stored element by
+    element on its elements' lines (GCC's C++ does so for `struct trio t = { seed,`), so
+    only the code of the statement's lines (``ends``) places it: it counts unless that
+    code has all run before the call (_stored_before), which needs ``resume``: the
+    frame's return address where Peeky proves it a physical call's in a function laid
+    out in source order (NativeSession._resume), else None. With the address or its function unknown, every
+    declaration at or above the line counts. And so does one whose statement, as the
+    source writes it (``ends``), still runs on the frame's line: `struct trio t = {
+    seed,` / `{ twice(3), ... } };` has code of its first line, all of it before the
+    call.
 
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
@@ -2622,6 +2804,9 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
                 return at, "file", declared_in
             span = function["rows"].get((source, at))
             if span is None:
+                end = ends(at, base) if resume is not None and ends is not None else None
+                if _stored_before(function, source, at, end, line, resume):
+                    continue
                 return at, "no code", None
             if at <= line and (at == line or address is None or span[1] >= address):
                 return at, "unfinished", None
@@ -3496,6 +3681,95 @@ def string_sections(binary):
         return tuple(found)
 
 
+# How many symbols, and bytes of symbol and string tables, `object_symbols` reads.
+MAX_SYMBOLS = 1 << 20
+MAX_SYMBOL_BYTES = 64 << 20
+
+
+def object_symbols(binary):
+    """{name: {address, ...}} of a 64-bit executable's symbols for data, before any
+    slide (#364): an ELF's `STT_OBJECT` symbols from `.symtab`, or a Mach-O's symbols
+    defined in a section (`N_SECT`, no debugging entry), less the leading `_` Mach-O adds.
+    A C++ `static` local's own (`_ZZ4tickE1w`) and its guard's (`_ZGVZ4tickE1w`) are
+    among them. Raises ValueError where the tables can't be read."""
+    found = {}
+
+    def add(name, address):
+        if name and address and len(found) < MAX_SYMBOLS:
+            found.setdefault(name, set()).add(address)
+
+    with Path(binary).open("rb") as stream:
+        header = stream.read(64)
+        if len(header) >= 32 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+            count, size = struct.unpack_from("<II", header, 16)
+            if not 0 < count <= 4096 or not 0 < size <= 1 << 20:
+                raise ValueError("Invalid Mach-O load commands")
+            stream.seek(32)
+            commands = stream.read(size)
+            cursor = 0
+            for _ in range(count):
+                if cursor + 8 > len(commands):
+                    raise ValueError("Truncated Mach-O load command")
+                kind, length = struct.unpack_from("<II", commands, cursor)
+                if length < 8 or cursor + length > len(commands):
+                    raise ValueError("Invalid Mach-O load command size")
+                if kind == 0x2 and length >= 24:  # LC_SYMTAB
+                    offset, entries, strings, extent = struct.unpack_from(
+                        "<IIII", commands, cursor + 8
+                    )
+                    if entries > MAX_SYMBOLS or max(entries * 16, extent) > MAX_SYMBOL_BYTES:
+                        raise ValueError("Mach-O symbol table too large")
+                    stream.seek(offset)
+                    table = stream.read(entries * 16)
+                    stream.seek(strings)
+                    names = stream.read(extent)
+                    if len(table) != entries * 16 or len(names) != extent:
+                        raise ValueError("Truncated Mach-O symbol table")
+                    for index in range(entries):
+                        start, kind, _, _, value = struct.unpack_from("<IBBHQ", table, index * 16)
+                        # N_SECT, and no N_STAB debugging entry.
+                        end = names.find(b"\0", start) if start < extent else -1
+                        if kind & 0xE0 or kind & 0x0E != 0x0E or end < 0:
+                            continue
+                        name = names[start:end].decode("latin-1")
+                        add(name[1:] if name.startswith("_") else name, value)
+                cursor += length
+            return found
+        if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01":
+            raise ValueError("Expected a 64-bit little-endian executable")
+        table = struct.unpack_from("<Q", header, 40)[0]
+        entry, count = struct.unpack_from("<HH", header, 58)
+        if entry != 64 or not 0 < count <= 4096:
+            raise ValueError("Invalid ELF section header table")
+        stream.seek(table)
+        raw = stream.read(entry * count)
+        if len(raw) != entry * count:
+            raise ValueError("Truncated ELF section header table")
+        headers = [struct.unpack_from("<IIQQQQIIQQ", raw, i * entry) for i in range(count)]
+        for _, kind, _, _, offset, size, link, _, _, entry_size in headers:
+            if kind != 2 or entry_size != 24 or link >= count:  # SHT_SYMTAB
+                continue
+            strings, extent = headers[link][4], headers[link][5]
+            if size > MAX_SYMBOL_BYTES or extent > MAX_SYMBOL_BYTES:
+                raise ValueError("ELF symbol table too large")
+            stream.seek(offset)
+            symbols = stream.read(size)
+            stream.seek(strings)
+            names = stream.read(extent)
+            if len(symbols) != size or len(names) != extent:
+                raise ValueError("Truncated ELF symbol table")
+            for index in range(size // 24):
+                start, info, _, section, value, _ = struct.unpack_from(
+                    "<IBBHQQ", symbols, index * 24
+                )
+                # STT_OBJECT, defined in a section.
+                end = names.find(b"\0", start) if start < extent else -1
+                if info & 0xF != 1 or section == 0 or end < 0:
+                    continue
+                add(names[start:end].decode("latin-1"), value)
+        return found
+
+
 def image_ranges(binary):
     """[(start, end)] of what a 64-bit executable maps from its file, before any slide
     (#339): an ELF's loadable segments, or a Mach-O's segments but `__PAGEZERO` and
@@ -3743,6 +4017,9 @@ class NativeTarget:
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
 
+        # Whether each unit may optimize a function beyond the build's level (`optimizes`).
+        optimized = {}
+
         def before_command(workspace, results, command):
             if command == compiles[0]:
                 for source, unit in zip(self.sources, units):
@@ -3756,7 +4033,9 @@ class NativeTarget:
                         )
                         refused.before_launch = True
                         raise refused
-                    refused = c_refusal(path.read_bytes(), self.language == "cpp")
+                    output = path.read_bytes()
+                    refused = c_refusal(output, self.language == "cpp")
+                    optimized[source] = optimizes(output, self.language == "cpp")
                     path.unlink()
                     if refused is not None:
                         raise refused
@@ -3804,6 +4083,7 @@ class NativeTarget:
                 self.sources + self.headers,
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
+            tail_calls = None
             code, statics = None, ()
             try:
                 info = _metadata(
@@ -3814,6 +4094,7 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
+                tail_calls = has_tail_calls(info)
                 with _reusing_dies():
                     typedefs = typedef_kinds(info)
                     nonlocal_jumps = (
@@ -3897,6 +4178,10 @@ class NativeTarget:
                 prologues=prologues,
                 code=code,
                 statics=statics,
+                optimized=(
+                    any(optimized.values()) if set(optimized) == set(self.sources) else None
+                ),
+                tail_calls=tail_calls,
             )
             session.assert_current()
             return session
@@ -4671,15 +4956,384 @@ class NativeSession:
     def static_locals(self, frame):
         """The names the function a frame runs declares in static storage (a fixed
         address): a `static` local, or a `const` local GCC places in read-only data
-        (#167). lldb-dap lists none of them among a frame's locals. Empty where Peeky
-        cannot place the function."""
+        (#167), less those ``static_rows`` shows as rows at this stop (#364). Empty where
+        Peeky cannot place the function."""
         function = self._function_at(frame)
         types = (function or {}).get("types") or {}
-        return sorted(
+        shown = {found[0][0] for found in self._static_seen(frame).get("rows", {}).values()}
+        names = {
             name
             for name, declared in types.items()
             if any(storage == "static" for _, storage, _ in declared)
-        )[:50]
+        }
+        # And those an inlined function declares in its abstract instance (GCC's).
+        names |= {each[0] for each in (function or {}).get("statics") or ()}
+        return sorted(names - shown)[:50]
+
+    def static_notes(self, frame):
+        """{name: why} for each name ``static_locals`` gives that ``static_rows`` judged
+        at this stop (#364): why Peeky doesn't read it here, said after "declares it in
+        static storage"."""
+        return dict(list(self._static_seen(frame).get("notes", {}).items())[:50])
+
+    def static_scope(self, scope, frame):
+        """Whether ``scope`` is lldb-dap's "Globals" and the function ``frame`` runs
+        declares a variable in static storage (#364): lldb-dap lists that function's
+        statics there, among its unit's globals, and Peeky reads the ones the code at
+        the stop names (``static_rows``)."""
+        if (
+            getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp")
+            or not isinstance(scope, dict)
+            or scope.get("name") != "Globals"
+            or scope.get("presentationHint") not in (None, "globals")
+            or scope.get("expensive")
+        ):
+            return False
+        return bool((self._function_at(frame) or {}).get("statics"))
+
+    def _static_seen(self, frame):
+        seen = self.__dict__.get("static_seen") or {}
+        return seen.get(_frame_key(frame), {})
+
+    def static_rows(self, variables, frame, listed, command=None):
+        """The rows of the variables in static storage that the code at ``frame``'s stop
+        names (#364), taken from lldb-dap's "Globals" ``variables``, as it names them:
+        `calls`, or `calls @ tick.c:9` where it lists several of the name (a selector
+        reads that one as `calls`: ``selected_as``).
+        ``listed``: the names the frame's own locals take, which a static never does
+        here (the existing rules judge which one the code names). A row is the
+        declaration ``_static_named`` finds, matched to the debugger's variable by its
+        name, where it is declared, and its address where the debugger gives one. A C++
+        `static` initialized at run time shows only once its guard variable says that
+        has run (``_static_guard``; ``command`` runs a read-only LLDB command). Why any
+        other is not read is kept for ``static_notes``."""
+        rows, notes, shown = [], {}, {}
+        listed = {(split_located(str(name)) or (name,))[0] for name in listed}
+        for name, (chosen, why) in self._static_named(frame).items():
+            if name in listed:
+                continue
+            if chosen is None:
+                notes[name] = why
+                continue
+            entry = self._static_entry(variables, chosen, frame)
+            if not isinstance(entry, dict):
+                notes[name] = (
+                    f"at line {chosen[2]}, but the debugger "
+                    + (
+                        "lists several values it may be, and Peeky can't tell which one is it"
+                        if entry
+                        else "doesn't list it for this frame"
+                    )
+                    + ", so Peeky can't read it here; print it from the program"
+                )
+                continue
+            reason = self._static_guard(chosen, command)
+            if reason is None and getattr(self.target, "optimization", "O0") != "O0":
+                # What its fixed address holds may differ from what the code uses.
+                why = _STATIC_OPTIMIZED.format(level=self.target.optimization)
+                reason = ValueNote(why, why, True)
+            shown[entry["name"]] = (chosen, reason)
+            rows.append(entry)
+            if len(rows) >= 50:
+                break
+        seen = self.__dict__.setdefault("static_seen", {})
+        if len(seen) >= 64:
+            # Only the frames of this inspection's stop are asked about.
+            seen.clear()
+        seen[_frame_key(frame)] = {"rows": shown, "notes": notes}
+        return rows
+
+    def _static_row(self, variable, frame):
+        """(declaration, reason) of a row ``static_rows`` made for ``frame``, or None."""
+        name = variable.get("name") if isinstance(variable, dict) else None
+        return self._static_seen(frame).get("rows", {}).get(name)
+
+    def _static_where(self, frame, name):
+        """(source, line, False) of the declaration a row ``static_rows`` made for
+        ``frame``, listed as ``name``, is, or None: what ``_shown_where`` gives for a
+        local."""
+        found = self._static_row({"name": name}, frame)
+        return (found[0][1], found[0][2], False) if found else None
+
+    def _static_declared(self, frame, name):
+        """The name ``fields.local_types`` gives the declaration a row ``static_rows``
+        made for ``frame``, listed as ``name``, is: `calls @ tick.c:9`, where the debugger
+        may name it `calls` or, from its symbol, `Acc::run()::calls`. Else ``name``."""
+        found = self._static_row({"name": name}, frame)
+        if found is None:
+            return name
+        return f"{found[0][0]} @ {Path(str(found[0][1])).name}:{found[0][2]}"
+
+    def _static_named(self, frame):
+        """{name: (declaration, None) or (None, why)} for each name of the variables in
+        static storage the function ``frame`` runs declares (``_static_locals``, #364):
+        the declaration the code at the stop names, or why Peeky reads none there, said
+        after "declares it in static storage". The C rule: a declaration names it from
+        there to the end of its block, and an inner block's hides an outer one. So of the
+        declarations whose scope (``_static_scope``) holds the stop's line, below their
+        own, the innermost (the one declared last); none where the debug information's
+        block for it doesn't hold the stop either (GCC's), or where Peeky can't tell."""
+        function = self._function_at(frame)
+        grouped = {}
+        for each in (function or {}).get("statics") or ():
+            grouped.setdefault(each[0], []).append(each)
+        place, pc = self._place(frame), self._block_pc(frame)
+        found = {}
+        for name, declared in list(grouped.items())[:50]:
+            lines = sorted({each[2] for each in declared})
+            at = f"at line {lines[0]}" if len(lines) == 1 else f"at lines {_line_list(lines)}"
+            if place is None or pc is None or type(getattr(self, "load_bias", None)) is not int:
+                found[name] = (
+                    None,
+                    f"{at}, and Peeky can't place this stop in its function's code, so it "
+                    "can't tell whether the code here names it; print it from the program",
+                )
+                continue
+            verdicts = {}
+            for each, placed in _static_placed(declared, pc):
+                verdict = self._static_scope(frame, function, each, place)
+                if placed is None and verdict[0] in ("in", "hidden"):
+                    verdict = (
+                        "unsure",
+                        "copies of it at several addresses hold this stop, as the debug "
+                        "information gives their blocks' code",
+                    )
+                held = bool(placed)
+                if not held and verdict[0] in ("in", "hidden"):
+                    # The source says the code names it, but the debug information's
+                    # block for it doesn't hold the stop.
+                    verdict = (
+                        "unsure",
+                        "the code of its block, as the debug information gives it, doesn't "
+                        "hold this stop",
+                    )
+                verdicts[each] = verdict
+            unsure = [(each, why[1]) for each, why in verdicts.items() if why[0] == "unsure"]
+            if unsure:
+                each, why = unsure[0]
+                found[name] = (
+                    None,
+                    f"at line {each[2]}, and Peeky can't tell whether the code here names it "
+                    f"({why}); print it from the program",
+                )
+                continue
+            named = sorted(
+                (each for each, verdict in verdicts.items() if verdict[0] in ("in", "hidden")),
+                key=lambda each: each[2],
+            )
+            if named and len(named) > 1 and named[-1][2] == named[-2][2]:
+                found[name] = (
+                    None,
+                    f"twice on line {named[-1][2]}, and Peeky can't tell which one the code "
+                    "here names; print it from the program",
+                )
+            elif named and verdicts[named[-1]][0] == "hidden":
+                found[name] = (
+                    None,
+                    f"at line {named[-1][2]}, but a block around this stop declares `{name}` "
+                    f"again, on line {verdicts[named[-1]][2]}, and the code here names that",
+                )
+            elif named:
+                found[name] = (named[-1], None)
+            elif on := [each for each, verdict in verdicts.items() if verdict[0] == "on"]:
+                found[name] = (
+                    None,
+                    f"on line {on[0][2]}, the stop's line, and Peeky reads it only below its "
+                    f"declaration; read it below line {on[0][2]}",
+                )
+            elif above := [each for each, verdict in verdicts.items() if verdict[0] == "above"]:
+                line = min(each[2] for each in above)
+                found[name] = (
+                    None,
+                    f"at line {line}, below this stop, so the code here doesn't name it yet; "
+                    f"read it below line {line}",
+                )
+            elif len(lines) == 1:
+                found[name] = (
+                    None,
+                    f"{at}, in a block this stop is outside of, so the code here doesn't name "
+                    f"it; read it in that block, below line {lines[0]}",
+                )
+            else:
+                found[name] = (
+                    None,
+                    f"{at}, and this stop is in none of their blocks, so the code here "
+                    "doesn't name one; read one in its block, below its declaration",
+                )
+        return found
+
+    def _static_scope(self, frame, function, declared, place):
+        """Where the stop at ``place`` (source, line) stands to the declaration
+        ``declared`` of a variable in static storage (#364), read from each translation
+        unit holding the source as the compiler preprocessed it: "in" (in its scope,
+        below it, and no later declaration in a block around the line hides it), "on"
+        (on its line), "above", "out" (past its block), ("hidden", what, its line) for
+        a declaration that hides it there (Statements.block_storage: an `extern`, an
+        enumerator...), or why Peeky can't tell."""
+        name, source, line = declared[0], declared[1], declared[2]
+        here, stop = place
+        if source != here:
+            return ("unsure", "this stop's line is in another file than its declaration")
+        verdicts, failure = set(), None
+        span = tuple((function or {}).get("span") or ())
+        own = bool(function is not None and function.get("source") == here)
+        # As _block_storage reads it: a frame wholly on the line (a lambda's body), or
+        # one whose function goes on past the line (a lambda's body on it is another's).
+        body = own and span == (stop, stop)
+        others = own and not body and len(span) == 2 and span[1] > stop
+        for unit in self._units(here):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                failure = read
+                break
+            preprocessed, statements = read
+            if here not in preprocessed.files:
+                continue
+            at, after = preprocessed.line(here, stop), preprocessed.line(here, line)
+            if not at or not after:
+                verdicts.add(None)
+                continue
+            if at <= after:
+                verdicts.add(("on",) if at == after else ("above",))
+                continue
+            scope = statements.scope_lines(after, name)
+            if scope is None or not scope[0] <= after <= scope[1]:
+                verdicts.add(None)
+                continue
+            if at > scope[1]:
+                verdicts.add(("out",))
+                continue
+            hidden = statements.block_storage(at, name, after, True, body, own=after, others=others)
+            origin = preprocessed.origins[hidden[1] - 1] if hidden else None
+            if hidden is None or (
+                hidden and (origin is None or hidden[1] == after or hidden[0] == "bodies")
+            ):
+                # Unread; on its own line, where Peeky can't tell which declaration is which
+                # (`static long n = 0, m = n;` names it twice); or in one of several lambdas'
+                # bodies on the line.
+                verdicts.add(None)
+            elif hidden:
+                verdicts.add(("hidden", hidden[0], origin[1]))
+            else:
+                verdicts.add(("in",))
+        if failure is not None:
+            return ("unsure", f"Peeky could not preprocess the source to read it: {failure}")
+        if len(verdicts) != 1 or None in verdicts:
+            return (
+                "unsure",
+                "Peeky can't read that from the source as the compiler preprocessed it",
+            )
+        return verdicts.pop()
+
+    def _static_entry(self, variables, chosen, frame=None):
+        """The debugger's one variable among ``variables`` that is the declaration
+        ``chosen``, or how many there may be (0, or several) where not exactly one: its
+        name, plain or `name @ file:line`; where it says where it is declared (lldb-dap's
+        `$__lldb_extensions`), that file's name and line; and where it gives its address
+        (lldb-dap 20's `memoryReference`, or `T @ 0x…`), that address. One its symbol
+        names (`Acc::run()::calls`, a C++ inline function's or template's) must say where
+        it is declared, and be ``frame``'s function's own: by its address, or by naming
+        that very function, as LLDB names the frame (`long tick<int>(int)::calls`, never
+        `tick<long>`'s, which shares its file and line; review of PR #370)."""
+        name, source, line, address = chosen[:4]
+        bias = getattr(self, "load_bias", None)
+        if type(bias) is not int:
+            return 0
+        file = Path(str(source)).name
+        function = str((frame or {}).get("name") or "").rpartition("`")[2]
+        # Apple's LLDB marks an optimized frame's name `… [opt]`.
+        function = function[: -len(" [opt]")] if function.endswith(" [opt]") else function
+        found = []
+        for variable in variables:
+            if not isinstance(variable, dict):
+                continue
+            shown = str(variable.get("name"))
+            located = split_located(shown)
+            if located is not None and located[1:] != (file, line):
+                continue
+            base = located[0] if located is not None else shown
+            extensions = variable.get("$__lldb_extensions")
+            declared = extensions.get("declaration") if isinstance(extensions, dict) else None
+            if isinstance(declared, dict) and (
+                Path(str(declared.get("path"))).name != file or declared.get("line") != line
+            ):
+                continue
+            placed = own_address(variable)
+            if placed is not None and placed != address + bias:
+                continue
+            if base != name:
+                # LLDB names one with a symbol of its own by it: `Acc::run()::calls`.
+                owner = base[: -len(name) - 2] if base.endswith(f"::{name}") else ""
+                if not owner or not isinstance(declared, dict):
+                    continue
+                if placed is None and owner != function:
+                    continue
+            found.append(variable)
+        return found[0] if len(found) == 1 else len(found)
+
+    def _static_guard(self, chosen, command):
+        """Why the C++ `static` local ``chosen`` has no value to show yet, or None: C++
+        runs its initializer the first time control passes its declaration, unless it
+        is a constant, and the guard variable the compiler gives it (`_ZGVZ4tickE1w` for
+        `_ZZ4tickE1w`) says whether that has run: its first byte is 0 until then, and
+        its lowest bit is set once it has (#364). None in C, for one with no guard, and
+        for a `const` aggregate GCC builds at compile time (`cs.0`: no symbol of a
+        `static`'s mangling)."""
+        if getattr(self.target, "language", None) != "cpp":
+            return None
+        line, address = chosen[2:4]
+        symbols = self.__dict__.get("data_symbols")
+        if symbols is None:
+            try:
+                symbols = object_symbols(self.binary)
+            except (OSError, ValueError, struct.error):
+                symbols = {}
+            self.__dict__["data_symbols"] = symbols
+        if (placed := self.__dict__.get("data_places")) is None:
+            # Each address's names, once a session.
+            placed = self.__dict__["data_places"] = {}
+            for symbol, places in symbols.items():
+                for place in places:
+                    placed.setdefault(place, []).append(symbol)
+        own = placed.get(address, [])
+        statics = [name for name in own if name.startswith("_ZZ")]
+
+        def unsure(why):
+            return Withholding(
+                f"{why}, so Peeky can't tell whether C++ has run its initializer, on line "
+                f"{line}; print it from the program",
+                "not shown",
+                None,
+            )
+
+        if not own:
+            return unsure("no symbol of the program names its address")
+        if len(statics) > 1:
+            return unsure("several symbols name its address")
+        if not statics:
+            return None
+        guard = symbols.get("_ZGV" + statics[0][2:])
+        if guard is None:
+            return None
+        bias = getattr(self, "load_bias", None)
+        found = None
+        if len(guard) == 1 and type(bias) is int and callable(command):
+            at = next(iter(guard)) + bias
+            try:
+                text = command(f"memory read --size 1 --count 1 --format x 0x{at:x}")
+            except (RuntimeError, OSError, TimeoutError):
+                text = None
+            read = re.search(rf"^0x0*{at:x}:\s+0x([0-9a-f]{{2}})\s*$", str(text or ""), re.M | re.I)
+            found = int(read[1], 16) if read else None
+        if found == 0:
+            return (
+                f"C++ runs its initializer the first time control passes its declaration, "
+                f"on line {line}, and its guard variable says that hasn't run yet; read it "
+                "after that"
+            )
+        if found is None or not found & 1:
+            return unsure("Peeky can't read its guard variable")
+        return None
 
     def __init__(
         self,
@@ -4699,8 +5353,16 @@ class NativeSession:
         prologues=None,
         code=None,
         statics=(),
+        optimized=None,
+        tail_calls=None,
     ):
         self.target, self.prepared = target, prepared
+        # Whether the debug information describes a tail call (has_tail_calls), from which
+        # LLDB rebuilds a caller's frame; None where unknown.
+        self.tail_calls = tail_calls
+        # Whether a unit may optimize a function beyond the build's level (an `optimize`
+        # attribute or pragma: c_source.optimizes); None where unknown.
+        self.optimized = optimized
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
@@ -5243,8 +5905,11 @@ class NativeSession:
         if function is None or function.get("types") is None:
             return None
         try:
-            shown = self._shown_where(steps[0], self._block_pc(frame))
-            offset, framed = self._declared_type(function["types"], steps[0], shown)
+            shown = self._static_where(frame, steps[0]) or self._shown_where(
+                steps[0], self._block_pc(frame)
+            )
+            declared = self._static_declared(frame, steps[0])
+            offset, framed = self._declared_type(function["types"], declared, shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
@@ -6002,7 +6667,12 @@ class NativeSession:
         element (#291) is withheld instead: until its declaration runs on this pass, that
         reference may point anywhere, and nothing is read through it. So is one at a stop
         on its declaration's lines in an optimized build, where whether that has run on
-        this pass cannot be told."""
+        this pass cannot be told.
+
+        A variable in static storage ``static_rows`` shows is judged there instead: its
+        storage holds its value the whole run, once C++ has run its initializer (#364)."""
+        if (static := self._static_row(variable, frame)) is not None:
+            return static[1]
         reason = self._not_yet_declared(variable, frame, innermost, stack, deeper, siblings, stop)
         if reason is not None and not isinstance(reason, ValueNote):
             return reason
@@ -6112,6 +6782,7 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
+                resume=self._resume(frame),
             )
         ):
             at, why, detail = unfinished
@@ -6907,6 +7578,10 @@ class NativeSession:
         which one the code names: then `t` is refused, and the rows' names select."""
         shown_name = str(variable.get("name"))
         shown = split_located(shown_name)
+        if (static := self._static_row(variable, frame)) is not None:
+            # A variable in static storage `static_rows` found the code names (#364), which
+            # LLDB may name `calls @ tick.c:9`, or `Acc::run()::calls` from its symbol.
+            return static[0][0] if shown_name != static[0][0] else None
         if shown is None or not self.declarations:
             return None
         base, names = shown[0], [str(sibling.get("name")) for sibling in siblings]
@@ -7091,7 +7766,8 @@ class NativeSession:
                         # one the frame reaches through a pointer or reference, or whose
                         # type is no writable integer (`const long`), never changes.
                         storages = self._declared_storages(entry.get("types") or {}, root, shown)
-                        if "through" in storages:
+                        if "through" in storages or storages == {"static"}:
+                            # Or in static storage, which is no frame's own (#364).
                             why = _not_framed(root, storages)
                         elif text or not (why := self._root_never_integer(entry, root, shown)):
                             break
@@ -7248,6 +7924,37 @@ class NativeSession:
             and identity not in getattr(self, "interrupted_ids", ())
         ):
             return address - 1
+        return address
+
+    def _resume(self, frame):
+        """Where a caller frame's call returns (unslid), where Peeky proves it a physical
+        call's in a function laid out in source order, else None. The build is -O0, and
+        no unit may optimize a function on its own (``optimized`` False: no `optimize`
+        attribute or pragma). The frame is above the innermost one, and no signal
+        interrupted it. And no inlined call's code holds its address or the one before
+        it: LLDB gives the caller of an inlined call the address where that call's code
+        starts, which is no return address, and a call from inlined code returns into
+        it. Nor is it a frame LLDB rebuilt for a tail call's caller, which has no frame
+        of its own left: the debug information describes no tail call (``tail_calls``
+        False), and the adapter marks it no artificial or hidden frame (lldb-dap 20's
+        `presentationHint` "subtle")."""
+        address = self._unslid(frame)
+        if (
+            address is None
+            or getattr(self.target, "optimization", "O0") != "O0"
+            or getattr(self, "optimized", None) is not False
+            or getattr(self, "tail_calls", None) is not False
+            or (frame or {}).get("presentationHint", "normal") != "normal"
+            or self._block_pc(frame) != address - 1
+        ):
+            return None
+        code = getattr(self, "code", None) or {}
+        if "dies" not in code:
+            return None
+        if "index" not in code:
+            code["index"] = CodeIndex(code["dies"])
+        if any(each.inline for at in (address - 1, address) for each in code["index"].holding(at)):
+            return None
         return address
 
     def _unslid(self, frame):
@@ -7909,7 +8616,7 @@ class NativeSession:
         """Where to change what the pointer local ``root`` of ``frame`` reaches, at a
         stop (validate_member): ``_caller_advice``, for the declaration the debugger
         shows there."""
-        where = self._shown_where(root, self._unslid(frame))
+        where = self._static_where(frame, root) or self._shown_where(root, self._unslid(frame))
         return self._caller_advice(self._function_at(frame), root, steps, where)
 
     def _pointer_kind(self, function, root, where):
@@ -8712,8 +9419,9 @@ class NativeSession:
                 "it when the session starts)"
             )
         name = root.get("name")
-        shown = self._shown_where(name, self._unslid(frame))
-        return (*self._declared_type(function["types"], name, shown), self.fields)
+        shown = self._static_where(frame, name) or self._shown_where(name, self._unslid(frame))
+        declared = self._static_declared(frame, name)
+        return (*self._declared_type(function["types"], declared, shown), self.fields)
 
     def _root_holds(self, frame, root, stack=None, deeper=None):
         """Raise fields.Unsettable unless the root local holds its value at the stop:
@@ -8749,8 +9457,8 @@ class NativeSession:
         if function is None or not function.get("types"):
             return set()
         name = root.get("name")
-        shown = self._shown_where(name, self._unslid(frame))
-        return self._declared_storages(function["types"], name, shown)
+        shown = self._static_where(frame, name) or self._shown_where(name, self._unslid(frame))
+        return self._declared_storages(function["types"], self._static_declared(frame, name), shown)
 
     @staticmethod
     def _declared_type(types, name, where=None):
@@ -8887,7 +9595,8 @@ class NativeSession:
     def _declaration_at(self, frame, root):
         """(source, line) of the declaration of the root local ``root`` the debugger shows
         at the stop ``frame``, or None (_shown_where)."""
-        where = self._shown_where(str(root.get("name")), self._unslid(frame))
+        name = str(root.get("name"))
+        where = self._static_where(frame, name) or self._shown_where(name, self._unslid(frame))
         return where[:2] if where else None
 
     def entry_lines(self, program, lines):
@@ -9236,6 +9945,9 @@ class NativeSession:
         to the stop (the debugger writes a register), as is an optimized build, where
         every change is refused."""
         target = getattr(self, "target", None)
+        if self._static_row(variable, frame) is not None:
+            # A variable in static storage `static_rows` shows, and all in it (#364).
+            return "static"
         if not member or self.fields is None or getattr(target, "optimization", "O0") != "O0":
             return None
         function = self._function_at(frame)
@@ -9267,7 +9979,8 @@ class NativeSession:
         """Whether a root local is a writable integer of a type Peeky can change: by the
         debugger's name for its type and, where Peeky reads it, the debug information's
         (``_declared_name``: LLDB 18 shows a `_BitInt(32)` as `int`)."""
-        if not _writable_integer(variable):
+        if not _writable_integer(variable) or self._static_row(variable, frame) is not None:
+            # A variable in static storage is no frame's own (#364).
             return False
         found = self._declared_name(variable, frame) if frame is not None else None
         return found is None or found[0] in INTEGER_RANGES

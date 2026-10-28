@@ -73,6 +73,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   On a line a loop returns to, such as a `do` body's first line, read it on the next line. Below a
   `setjmp` call, a local declared at or below the stop shows a `note`; read it below its
   declaration ([C and C++ 7.1](c-cpp-cookbook.md#why-a-local-shows-no-value-yet)).
+- **A `static` local** reads where the code at the stop names it: in its block, below its
+  declaration. In C++, it is `no value yet` until its initializer has run. It is never changed
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-a-static-local)).
 - **Same-named locals:** a plain name means the declaration the code names at the stop. To select
   another one, write `name @ file:line`
   ([C and C++ 7.1](c-cpp-cookbook.md#same-named-locals-which-one-a-name-means)).

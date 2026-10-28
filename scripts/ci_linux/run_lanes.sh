@@ -52,12 +52,12 @@ lane integration pytest -q -p no:cacheprovider tests/integration
 lane c "${native[@]}" PEEKY_NATIVE_CC=/usr/bin/clang-18 pytest -q -p no:cacheprovider tests/native
 lane cpp "${native[@]}" PEEKY_NATIVE_CXX=/usr/bin/clang++-18 pytest -q -p no:cacheprovider tests/cpp
 # C built by GCC with LLVM 20's lldb-dap: the files whose cases depend on how GCC lays out code
-# (prologues, loop headers, previews). The `c` lane runs their GCC cases with lldb-dap 18; the
+# (prologues, loop headers, previews, static storage). The `c` lane runs their GCC cases with lldb-dap 18; the
 # rest of tests/native expects clang's lines and text.
 lane c-gcc-llvm20 PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-20 PEEKY_NATIVE_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 \
   PEEKY_NATIVE_CC=/usr/bin/gcc pytest -q -p no:cacheprovider tests/native/test_native_entry_stops.py \
   tests/native/test_native_loop_headers.py tests/native/test_native_incbin.py \
-  tests/native/test_native_previews.py
+  tests/native/test_native_previews.py tests/native/test_native_statics.py
 lane cpp-llvm20 PEEKY_NATIVE_DAP=/usr/bin/lldb-dap-20 PEEKY_NATIVE_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 \
   PEEKY_NATIVE_CXX=/usr/bin/clang++-18 PEEKY_EXPECT_READ_MEMORY=1 pytest -q -p no:cacheprovider tests/cpp
 # C++ built by GCC (#167): every C++ case (`-m cpp`: tests/cpp and those of tests/native),
