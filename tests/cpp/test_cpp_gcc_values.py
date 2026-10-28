@@ -875,18 +875,6 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
     source = root / "reviewed.cpp"
     source.write_text(REVIEWED)
     reasons = {
-        "DESTROYED": (
-            "a,b",
-            "an element of `v`",
-            "and while it is in scope the code may change `v` or keep a pointer or reference "
-            "into it",
-        ),
-        "PROXY": (
-            "vx,vy",
-            "`view(&held)`",
-            "and Peeky can't prove the call returns a new standard pair, tuple or array of "
-            "numbers that the binding keeps alive",
-        ),
         # Review of #368, round 2: an overloaded operator that keeps the name's address;
         # an element whose own constructor keeps its address, or an allocator of the
         # program's, which sees where each element is; a pointer, which may point at
@@ -900,6 +888,18 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         "CONSTRUCTED": ("ex,ey", "an element of `es`", POLICY),
         "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
         "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
+        "DESTROYED": (
+            "a,b",
+            "an element of `v`",
+            "and while it is in scope the code may change `v` or keep a pointer or reference "
+            "into it",
+        ),
+        "PROXY": (
+            "vx,vy",
+            "`view(&held)`",
+            "and Peeky can't prove the call returns a new standard pair, tuple or array of "
+            "numbers that the binding keeps alive",
+        ),
     }
     for marker, (capture, what, why) in reasons.items():
         found = bound_rows_of(source, REVIEWED, marker, capture, capsys)
