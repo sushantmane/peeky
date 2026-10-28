@@ -1038,9 +1038,8 @@ def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
     assert isinstance(dangling, Withholding) and dangling.label == "not shown", dangling
     assert dangling == (
         "the binding refers to an object Peeky can't prove is still alive: `d` binds "
-        "`make(0)[0]` by reference, and only an object of this frame, or a member of one, is "
-        "proven. Read it where the code names that object, or bind by value (`auto [...]`, no "
-        "`&`)"
+        "`make(0)[0]` by reference, and Peeky proves only a local or its non-union member. Read "
+        "it where the code names that object, or bind by value (no `&`)"
     )
     assert len(dangling) <= 300
     # A local object in scope, or a member of one: read through.
@@ -1146,3 +1145,1095 @@ def test_a_member_chain_through_a_union_is_never_proven():
     assert _member_object(_member_object(holder, "u"), "p") is None
     assert _member_object(union, "p") is None and _member_object(library, "v") is None
     assert _member_object(holder, "missing") is None and _member_object(None, "p") is None
+
+
+# #297: bindings by reference into a local container, or of a call's result, which GCC
+# holds as references to `std::tuple_element<I, E>::type` (as BOUND's).
+HELD = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000024:     DW_TAG_structure_type
+                  DW_AT_name\t("tuple_element<0, std::pair<long int, long int> >")
+
+0x00000028:       DW_TAG_typedef
+                    DW_AT_name\t("type")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000030:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x00000034:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000038:       DW_TAG_member
+                    DW_AT_name\t("second")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x08)
+
+0x0000003a:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000003c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000040:     DW_TAG_class_type
+                  DW_AT_name\t("vector<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
+                  DW_AT_byte_size\t(0x18)
+
+0x00000044:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x00000048:       DW_TAG_member
+                    DW_AT_name\t("_M_impl")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x00)
+
+0x0000004a:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Alloc")
+                    DW_AT_type\t(0x00000084 "std::allocator<std::pair<long int, long int> >")
+
+0x00000050:     DW_TAG_class_type
+                  DW_AT_name\t("map<long int, long int, std::less<long int>, std::allocator<std::pair<long int const, long int> > >")
+                  DW_AT_byte_size\t(0x30)
+
+0x00000054:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Key")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000058:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000005a:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Compare")
+                    DW_AT_type\t(0x00000088 "std::less<long int>")
+
+0x0000005c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Alloc")
+                    DW_AT_type\t(0x0000008c "std::allocator<std::pair<long int const, long int> >")
+
+0x00000060:     DW_TAG_class_type
+                  DW_AT_name\t("deque<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
+                  DW_AT_byte_size\t(0x50)
+
+0x00000064:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x00000070:     DW_TAG_namespace
+                  DW_AT_name\t("__1")
+
+0x00000074:       DW_TAG_class_type
+                    DW_AT_name\t("vector<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
+                    DW_AT_byte_size\t(0x18)
+
+0x00000078:         DW_TAG_template_type_parameter
+                      DW_AT_name\t("_Tp")
+                      DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x0000007c:         DW_TAG_member
+                      DW_AT_name\t("__begin_")
+                      DW_AT_type\t(0x00000010 "long int")
+                      DW_AT_data_member_location\t(0x00)
+
+0x00000080:         DW_TAG_member
+                      DW_AT_name\t("__end_")
+                      DW_AT_type\t(0x00000010 "long int")
+                      DW_AT_data_member_location\t(0x08)
+
+0x00000082:         DW_TAG_template_type_parameter
+                      DW_AT_name\t("_Allocator")
+                      DW_AT_type\t(0x00000084 "std::allocator<std::pair<long int, long int> >")
+
+0x00000084:     DW_TAG_class_type
+                  DW_AT_name\t("allocator<std::pair<long int, long int> >")
+                  DW_AT_byte_size\t(0x01)
+
+0x00000088:     DW_TAG_structure_type
+                  DW_AT_name\t("less<long int>")
+                  DW_AT_byte_size\t(0x01)
+
+0x0000008c:     DW_TAG_class_type
+                  DW_AT_name\t("allocator<std::pair<long int const, long int> >")
+                  DW_AT_byte_size\t(0x01)
+
+0x00000090:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000094:   DW_TAG_rvalue_reference_type
+                DW_AT_type\t(0x00000028 "type")
+
+0x00000098:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x00000099:   DW_TAG_class_type
+                DW_AT_name\t("Spy<std::pair<long int, long int> >")
+                DW_AT_byte_size\t(0x01)
+
+0x0000009a:   DW_TAG_structure_type
+                DW_AT_name\t("E")
+                DW_AT_byte_size\t(0x10)
+
+0x0000009b:   DW_TAG_structure_type
+                DW_AT_name\t("ByValue")
+                DW_AT_byte_size\t(0x01)
+
+0x0000009d:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x000000a0:   DW_TAG_subprogram
+                DW_AT_name\t("one")
+                DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x000000a4:   DW_TAG_subprogram
+                DW_AT_name\t("pick")
+                DW_AT_type\t(0x00000098 "std::pair<long int, long int> &")
+
+0x000000b0:   DW_TAG_subprogram
+                DW_AT_name\t("main")
+
+0x000000b4:     DW_TAG_variable
+                  DW_AT_name\t("m")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(3)
+                  DW_AT_type\t(0x00000050 "std::map<long int, long int>")
+                  DW_AT_location\t(DW_OP_fbreg -48)
+
+0x000000b8:     DW_TAG_variable
+                  DW_AT_name\t("v")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(4)
+                  DW_AT_type\t(0x00000040 "std::vector<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -72)
+
+0x000000bc:     DW_TAG_variable
+                  DW_AT_name\t("k")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(5)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -80)
+
+0x000000c0:     DW_TAG_variable
+                  DW_AT_name\t("x")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(5)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -88)
+
+0x000000c4:     DW_TAG_variable
+                  DW_AT_name\t("r")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(8)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -96)
+
+0x000000c8:     DW_TAG_variable
+                  DW_AT_name\t("p")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -104)
+
+0x000000cc:     DW_TAG_variable
+                  DW_AT_name\t("a")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -112)
+
+0x000000d0:     DW_TAG_variable
+                  DW_AT_name\t("w")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(11)
+                  DW_AT_type\t(0x00000040 "std::vector<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -136)
+
+0x000000d4:     DW_TAG_variable
+                  DW_AT_name\t("c")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(12)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -144)
+
+0x000000d8:     DW_TAG_variable
+                  DW_AT_name\t("dq")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(14)
+                  DW_AT_type\t(0x00000060 "std::deque<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -224)
+
+0x000000dc:     DW_TAG_variable
+                  DW_AT_name\t("e")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(15)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -232)
+
+0x000000e0:     DW_TAG_variable
+                  DW_AT_name\t("lv")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(16)
+                  DW_AT_type\t(0x00000074 "std::__1::vector<std::pair<long int, long int> >")
+                  DW_AT_location\t(DW_OP_fbreg -256)
+
+0x000000e4:     DW_TAG_variable
+                  DW_AT_name\t("g")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(17)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -264)
+
+0x000000e8:     DW_TAG_variable
+                  DW_AT_name\t("s")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(8)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -272)
+
+0x000000ec:     DW_TAG_variable
+                  DW_AT_name\t("q")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(9)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -280)
+
+0x000000f0:     DW_TAG_variable
+                  DW_AT_name\t("b")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(10)
+                  DW_AT_type\t(0x00000094 "type &&")
+                  DW_AT_location\t(DW_OP_fbreg -288)
+
+0x000000f4:     DW_TAG_variable
+                  DW_AT_name\t("d")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(12)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -296)
+
+0x000000f8:     DW_TAG_variable
+                  DW_AT_name\t("h")
+                  DW_AT_decl_file\t("/w/t.cpp")
+                  DW_AT_decl_line\t(17)
+                  DW_AT_type\t(0x00000090 "type &")
+                  DW_AT_location\t(DW_OP_fbreg -304)
+"""
+HELD_SOURCE = """#include <map>
+int main(int argc, char **) {
+    std::map<long, long> m{{21, 22}, {23, 24}};
+    std::vector<P> v{{11, 12}, {13, 14}};
+    for (const auto &[k, x] : m) {
+        use(k + x); use((long)m.size());
+    }
+    auto &[r, s] = v[0];
+    auto &&[p, q] = one(argc);
+    auto &&[a, b] = pick(*held);
+    std::vector<P> w{{1, 2}};
+    auto &[c, d] = w[0];
+    w.push_back({3, 4});
+    std::deque<P> dq{{5, 6}};
+    for (auto &[e, f] : dq) use(e);
+    std::vector<P> lv{{7, 8}};
+    auto &[g, h] = lv[0];
+    return 0;
+}
+"""
+ENTRY = "std::pair<const long, long>"
+
+
+def held(optimization="O0", preprocessed=None, dwarf=HELD):
+    """A NativeSession over HELD's `main`, its source HELD_SOURCE; ``preprocessed``: the
+    Statements of its translation unit as the compiler preprocessed it (else the same)."""
+    from peeky.c_source import Statements
+    from peeky.fields import CPP_LIBRARIES, local_types, type_graph
+    from peeky.native import _parse_dies, call_arguments
+
+    dies = _parse_dies(dwarf)
+    types = local_types(dies, [0xB0], through=True)
+    kinds = {kind for declared in types.values() for kind, _, _ in declared}
+    function = {"types": types, "source": "src/t.cpp", "span": (2, 19)}
+    graph = type_graph(dies, kinds, CPP_LIBRARIES)
+    # As the build's: one level down through references too.
+    aimed = {node[2] for node in graph.values() if node[0] == "reference"}
+    for offset, node in type_graph(dies, aimed, CPP_LIBRARIES).items():
+        graph.setdefault(offset, node)
+    session = native(optimization=optimization, function=function, fields=graph)
+    statements = Statements(HELD_SOURCE, True)
+    session._statements = lambda path: statements if path == "src/t.cpp" else None
+    session._shown_where = lambda name, pc: None
+    session._unslid = lambda frame: 0x1000
+    session._units = lambda source: ["src/t.cpp"]
+    unit = SimpleNamespace(
+        files={"src/t.cpp"},
+        line=lambda source, number: number,
+        origins=[("src/t.cpp", number) for number in range(1, HELD_SOURCE.count("\n") + 2)],
+    )
+    session._preprocessed = lambda name: (unit, preprocessed or statements)
+    session.call_arguments = call_arguments(dies)
+    # It replaces no `operator new`, and its launch loads no library first.
+    session.allocation_replaced = False
+    session.prepared = SimpleNamespace(manifest=SimpleNamespace(effective_environment=()))
+    session.home = "home"
+    session.system_preload = False
+    return session
+
+
+def unproven(base, what, why):
+    return (
+        f"the binding refers to an object Peeky can't prove is still alive: `{base}` binds "
+        f"{what} by reference, {why}. Read it where the code names that object, or bind by "
+        "value (no `&`)"
+    )
+
+
+def test_a_binding_into_a_local_container_is_read_where_it_holds_that_element():
+    # #297: `for (const auto &[k, x] : m)` over a local map and `auto &[r, s] = v[0];` were
+    # `not shown`, though nothing changes either container while the binding refers to it.
+    session, frame = held(), {"id": 1}
+    entries = [
+        {"name": f"[{i}]", "type": ENTRY, "value": f"{ENTRY} @ {at:#x}", "variablesReference": 30}
+        for i, at in enumerate((0xAAAAAAAD32D0, 0xAAAAAAAD3310))
+    ]
+    asked = []
+
+    def fetch(reference, count, start=0):
+        asked.append((reference, count, start))
+        if reference == 9:
+            return entries[start : start + count]
+        return [{"name": "&k", "type": ELEMENT, "value": "21", "variablesReference": 0}]
+
+    m = {"name": "m", "type": "std::map<long, long>", "value": "size=2", "variablesReference": 9}
+    k = variable("k", f"{ELEMENT} &", "0x0000aaaaaaad32d0", 4)
+    x = variable("x", f"{ELEMENT} &", "0x0000aaaaaaad3318", 5)
+    # In one of the map's entries, as the debugger lists them: read through.
+    for row in (k, x):
+        assert session.bound_element(row, frame, fetch, siblings=[m])["variable"]["value"] == "21"
+    assert asked[:2] == [(9, 2, 0), (4, 2, 0)], asked
+    element = ("an element of `m`", "k")
+
+    def withheld(row, why, **kwargs):
+        found = session.bound_element(row, frame, fetch, **kwargs)
+        assert found == unproven(element[1], element[0], why) and found.label == "not shown"
+        assert len(found) <= 300, found
+
+    # In none of them (an entry erased, whose memory is reused): withheld.
+    gone = variable("k", f"{ELEMENT} &", "0x0000aaaaaaad3400", 4)
+    withheld(gone, "but it points into none of `m`'s entries now", siblings=[m])
+    # An entry's last byte is no room for the element's eight.
+    withheld(
+        variable("k", f"{ELEMENT} &", "0x0000aaaaaaad32dc", 4),
+        "but it points into none of `m`'s entries now",
+        siblings=[m],
+    )
+    unread = "and Peeky could not read `m`'s elements to check where it points"
+    # The entries not all listed, or listed with no place, or no one `m` among the locals.
+    withheld(gone, unread, siblings=[{**m, "value": "size=3"}])
+    entries[1]["value"] = "{first = 23, second = 24}"
+    withheld(gone, unread, siblings=[m])
+    withheld(gone, unread, siblings=[])
+    withheld(gone, unread, siblings=[m, {**m, "name": "m @ t.cpp:30"}])
+    withheld(gone, unread, siblings=[{**m, "value": "size=2 {...}"}])
+    many = "and `m` has more than 256 entries, more than Peeky checks"
+    withheld(gone, many, siblings=[{**m, "value": "size=257"}])
+    # Its pages, past the first 64 entries.
+    entries[:] = [
+        {"name": f"[{i}]", "type": ENTRY, "value": f"{ENTRY} @ {0x1000 + 32 * i:#x}"}
+        for i in range(100)
+    ]
+    del asked[:]
+    far = variable("k", f"{ELEMENT} &", f"{0x1000 + 32 * 99:#x}", 4)
+    assert session.bound_element(far, frame, fetch, siblings=[{**m, "value": "size=100"}])
+    assert asked == [(9, 64, 0), (9, 36, 64), (4, 2, 0)], asked
+
+    # A vector's element: between where its elements start and end, as its own members say.
+    def ends(start, finish, prefix="v._M_impl._M_"):
+        return Counts({f"{prefix}start": start, f"{prefix}finish": finish})
+
+    v = {"name": "v", "type": "std::vector<P>", "value": "size=2", "variablesReference": 8}
+    raw = ends("(pointer) _M_start = 0x0000aaaaaaad3740", "0x0000aaaaaaad3760")
+    r = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3758", 6)
+    assert session.bound_element(r, frame, fetch, siblings=[v], raw=raw)["variable"]
+    element = ("an element of `v`", "r")
+    past = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3760", 6)
+    withheld(past, "but it points outside `v`'s elements now", siblings=[v], raw=raw)
+    unread = "and Peeky could not read `v`'s elements to check where it points"
+    withheld(r, unread, siblings=[v], raw=ends("0x0000aaaaaaad3740", "<invalid>"))
+    withheld(r, unread, siblings=[v], raw=Counts({}))
+    withheld(r, unread, siblings=[v])
+    # libc++'s own members.
+    lv = {**v, "name": "lv"}
+    g = variable("g", f"{ELEMENT} &", "0x0000000100649350", 6)
+    raw = ends("0x0000000100649350", "0x0000000100649360", "lv.__")
+    raw.counts = {"lv.__begin_": raw.counts["lv.__start"], "lv.__end_": raw.counts["lv.__finish"]}
+    assert session.bound_element(g, frame, fetch, siblings=[lv], raw=raw)["variable"]
+    # The code may add or remove one while it is in scope: never read, whatever its place.
+    element = ("an element of `w`", "c")
+    w = {**v, "name": "w"}
+    c = variable("c", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
+    withheld(
+        c,
+        "and while it is in scope the code may change `w` or keep a pointer or reference into it",
+        siblings=[w],
+        raw=ends("0x0000aaaaaaad3740", "0x0000aaaaaaad3760", "w._M_impl._M_"),
+    )
+    # Neither a vector nor a map nor a set: a deque's element.
+    element = ("an element of `dq`", "e")
+    withheld(
+        variable("e", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6),
+        "and Peeky proves an element alive only in a local vector, or in a local map or set "
+        "a range `for` walks",
+    )
+    # Optimized: the debugger's view of either may be stale.
+    element = ("an element of `m`", "k")
+    found = held("O1").bound_element(k, frame, fetch, siblings=[m])
+    assert found == unproven(
+        "k", "an element of `m`", "and in an optimized build Peeky can't check it"
+    )
+
+
+def test_a_binding_of_a_calls_result_is_withheld():
+    # #297 read `auto &&[p, q] = one(argc);` in its frame's stack. Review of #368, round 3:
+    # with the named return value optimization the function called builds its result where
+    # the caller keeps it, and may keep a pointer into it (`saved = &r; return r;`).
+    from peeky.c_source import Statements
+
+    frame = {"id": 1}
+
+    def fetch(reference, count, start=0):
+        return [{"name": "&p", "type": ELEMENT, "value": "31", "variablesReference": 0}]
+
+    why = "a call's result, which the function called may keep a pointer into"
+    p = variable("p", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
+    a = variable("a", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
+    for row, what, session in (
+        (p, "`one(argc)`", held()),
+        (a, "`pick(*held)`", held()),
+        (p, "`one(argc)`", held("O2")),
+        (p, "`one(argc)`", held(preprocessed=Statements(HELD_SOURCE, True))),
+    ):
+        found = session.bound_element(row, frame, fetch)
+        assert found == unproven(row["name"], what, why) and found.label == "not shown"
+
+
+def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
+    # Review of #368: `P *p = v.data(); auto &[r, s] = v[0]; std::destroy_at(p);` and a
+    # stop before `new (p) P{13, 14}` read dead bytes; the container's own uses were
+    # checked, not the pointers and references they give, nor the binding's names.
+    from peeky.c_source import Statements
+
+    frame = {"id": 1}
+
+    def fetch(reference, count, start=0):
+        return [{"name": "&r", "type": ELEMENT, "value": "11", "variablesReference": 0}]
+
+    v = {"name": "v", "type": "std::vector<P>", "value": "size=2", "variablesReference": 8}
+    raw = Counts(
+        {"v._M_impl._M_start": "0x0000aaaaaaad3740", "v._M_impl._M_finish": "0x0000aaaaaaad3760"}
+    )
+    r = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
+    assert held().bound_element(r, frame, fetch, siblings=[v], raw=raw)["variable"]
+    changed = (
+        "and while it is in scope the code may change `v` or keep a pointer or reference into it"
+    )
+    for edit in (
+        # A pointer into it from before the binding, through which code may end the
+        # element's life; its name's address, a call that may take it by reference.
+        ("    }\n    auto &[r", "    } P *alias = v.data();\n    auto &[r"),
+        ("    return 0;", "    std::destroy_at(&r); return 0;"),
+        ("    return 0;", "    keep(s); return 0;"),
+    ):
+        expanded = Statements(HELD_SOURCE.replace(*edit), True)
+        found = held(preprocessed=expanded).bound_element(r, frame, fetch, siblings=[v], raw=raw)
+        assert found == unproven("r", "an element of `v`", changed), edit
+    # A name of a struct, whose uses Peeky can't follow: withheld, saying so.
+    session = held()
+    types = dict(session._function_at(frame)["types"])
+    types["s"] = frozenset({(0x98, "through", ("t.cpp", 8))})
+    session._function_at = lambda frame: {"types": types, "source": "src/t.cpp", "span": (2, 19)}
+    found = session.bound_element(r, frame, fetch, siblings=[v], raw=raw)
+    assert found == unproven(
+        "r",
+        "an element of `v`",
+        "and Peeky follows only names of numbers or characters through the code, never a pointer",
+    )
+
+
+def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_them():
+    # Review of #368, round 2: a constructor of the program's element type, or its own
+    # allocator or order, sees where each element is (`E() { saved = &x; }`), and may keep
+    # it to end that element's life where the binding's scope shows nothing.
+    frame = {"id": 1}
+
+    def fetch(reference, count, start=0):
+        if reference == 9:
+            return [{"name": "[0]", "type": ENTRY, "value": f"{ENTRY} @ 0xaaaaaaad32d0"}]
+        return [{"name": "&k", "type": ELEMENT, "value": "21", "variablesReference": 0}]
+
+    m = {"name": "m", "type": "std::map<long, long>", "value": "size=1", "variablesReference": 9}
+    k = variable("k", f"{ELEMENT} &", "0x0000aaaaaaad32d0", 4)
+    v = {"name": "v", "type": "std::vector<P>", "value": "size=2", "variablesReference": 8}
+    raw = Counts(
+        {"v._M_impl._M_start": "0x0000aaaaaaad3740", "v._M_impl._M_finish": "0x0000aaaaaaad3760"}
+    )
+    r = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
+    # The library's own: read.
+    assert held().bound_element(k, frame, fetch, siblings=[m])["variable"]
+    assert held().bound_element(r, frame, fetch, siblings=[v], raw=raw)["variable"]
+    policy = (
+        "and Peeky proves only standard vectors, maps and sets of numbers, with the default "
+        "allocator and order"
+    )
+    allocator = '(0x00000084 "std::allocator<std::pair<long int, long int> >")'
+    pair = '(0x00000030 "std::pair<long int, long int>")'
+    less = '(0x00000088 "std::less<long int>")'
+    mapped = 'DW_AT_name\t("_Tp")\n                    DW_AT_type\t(0x00000010 "long int")'
+    for edit, row, siblings in (
+        # A vector with an allocator of the program's, of elements of its own type.
+        ((allocator, '(0x00000099 "Spy<std::pair<long int, long int> >")'), r, [v]),
+        ((pair, '(0x0000009a "E")'), r, [v]),
+        # A map with an order of the program's, or a pointer for its value.
+        ((less, '(0x0000009b "ByValue")'), k, [m]),
+        ((mapped, mapped.replace('0x00000010 "long int"', '0x0000009d "long int *"')), k, [m]),
+    ):
+        found = held(dwarf=HELD.replace(*edit, 1)).bound_element(
+            row, frame, fetch, siblings=siblings, raw=raw
+        )
+        container = siblings[0]["name"]
+        assert found == unproven(row["name"], f"an element of `{container}`", policy), edit
+    # Review of #368, round 3: `std::allocator` calls `operator new`, which the program may
+    # replace, or a library the launch loads first; where Peeky can't tell, neither.
+    for replaced, environment, why in (
+        (
+            True,
+            (),
+            "and the program replaces `operator new` or `operator delete`, which may keep "
+            "where each element is",
+        ),
+        (None, (), "and Peeky can't tell whether the program replaces `operator new`"),
+        (
+            False,
+            (("LD_PRELOAD", "libspy.so"),),
+            "and the program runs with `LD_PRELOAD`, whose library may replace `operator new`",
+        ),
+        (
+            False,
+            (("DYLD_INSERT_LIBRARIES", "spy.dylib"),),
+            "and the program runs with `DYLD_INSERT_LIBRARIES`, whose library may replace "
+            "`operator new`",
+        ),
+    ):
+        session = held()
+        session.allocation_replaced = replaced
+        session.prepared.manifest.effective_environment = environment
+        found = session.bound_element(k, frame, fetch, siblings=[m])
+        assert found == unproven("k", "an element of `m`", why), why
+    session = held()
+    del session.prepared
+    found = session.bound_element(k, frame, fetch, siblings=[m])
+    assert found == unproven(
+        "k", "an element of `m`", "and Peeky can't tell whether the launch loads a library first"
+    )
+    # Round 4: the host's `/etc/ld.so.preload`, read at launch, naming a library; unread.
+    for preloaded, why in (
+        (
+            True,
+            "and the program runs with `/etc/ld.so.preload`, whose library may replace "
+            "`operator new`",
+        ),
+        (None, "and Peeky can't tell whether the launch loads a library first"),
+    ):
+        session = held()
+        session.system_preload = preloaded
+        found = session.bound_element(k, frame, fetch, siblings=[m])
+        assert found == unproven("k", "an element of `m`", why), why
+    session = held()
+    del session.system_preload
+    found = session.bound_element(k, frame, fetch, siblings=[m])
+    assert found == unproven(
+        "k", "an element of `m`", "and Peeky can't tell whether the launch loads a library first"
+    )
+
+
+def test_the_hosts_ld_so_preload_is_read_at_launch(tmp_path, monkeypatch):
+    """Review of #368, round 4: glibc's loader loads the libraries `/etc/ld.so.preload`
+    names into every program first, so one may replace `operator new`. Blank and comment
+    lines name none; a file that can't be read whole is unknown; none at all, nothing."""
+    import os
+    import sys
+
+    from peeky import native
+    from peeky.native import NativeSession, system_preload
+
+    preload = tmp_path / "ld.so.preload"
+    assert system_preload(preload) is False  # absent
+    for text, names in (
+        ("", False),
+        ("\n  \n\t\n", False),
+        ("# a comment\n   # another\n\n", False),
+        ("#/usr/lib/libspy.so\n", False),
+        ("/usr/lib/libspy.so\n", True),
+        ("# spies\n/usr/lib/libspy.so # kept\n", True),
+        ("libspy.so", True),
+        (": :\n", False),
+        ("a:b\n", True),
+    ):
+        preload.write_text(text)
+        assert system_preload(preload) is names, text
+    preload.write_bytes(b"#" * (native.MAX_LD_SO_PRELOAD + 1))
+    assert system_preload(preload) is None  # too long to read whole
+    preload.unlink()
+    preload.mkdir()
+    assert system_preload(preload) is None  # not a file
+    preload.rmdir()
+    if os.geteuid() != 0:
+        preload.write_text("# nothing\n")
+        preload.chmod(0)
+        try:
+            assert system_preload(preload) is None  # unreadable
+        finally:
+            preload.chmod(0o600)
+    os.mkfifo(tmp_path / "fifo")
+    assert system_preload(tmp_path / "fifo") is None  # never blocks on a pipe
+
+    session = NativeSession.__new__(NativeSession)
+    session.assert_current = lambda: None
+    session.source_path = lambda program: None
+    session.binary, session.target = "a.out", SimpleNamespace(arguments=())
+    session.prepared = SimpleNamespace(workspace="w")
+    monkeypatch.setattr(native, "LD_SO_PRELOAD", preload)
+    monkeypatch.setattr(sys, "platform", "linux")
+    preload.write_text("/usr/lib/libspy.so\n")
+    session.launch_args("p", "r")
+    assert session.system_preload is True
+    preload.write_text("# off\n")
+    session.launch_args("p", "r")
+    assert session.system_preload is False
+    # Only Linux's loader reads it.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    preload.write_text("/usr/lib/libspy.so\n")
+    session.launch_args("p", "r")
+    assert session.system_preload is False
+
+
+CALLS = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("long int")
+                DW_AT_encoding\t(DW_ATE_signed)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_structure_type
+                DW_AT_name\t("Pt")
+                DW_AT_byte_size\t(0x08)
+
+0x00000016:     DW_TAG_member
+                  DW_AT_name\t("n")
+                  DW_AT_type\t(0x00000010 "long int")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000018:   DW_TAG_base_type
+                DW_AT_name\t("char")
+                DW_AT_encoding\t(DW_ATE_signed_char)
+                DW_AT_byte_size\t(0x01)
+
+0x00000020:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x00000024:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x00000028:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000002c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000030:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000034:       DW_TAG_member
+                    DW_AT_name\t("second")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_data_member_location\t(0x08)
+
+0x00000038:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<Pt, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000003c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000014 "Pt")
+
+0x00000040:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000044:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000014 "Pt")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000048:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int const&, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000004c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000090 "const long int &")
+
+0x00000050:       DW_TAG_member
+                    DW_AT_name\t("first")
+                    DW_AT_type\t(0x00000090 "const long int &")
+                    DW_AT_data_member_location\t(0x00)
+
+0x00000054:     DW_TAG_class_type
+                  DW_AT_name\t("tuple<long int, char>")
+                  DW_AT_byte_size\t(0x10)
+
+0x00000058:       DW_TAG_GNU_template_parameter_pack
+                    DW_AT_name\t("_Elements")
+
+0x0000005c:         DW_TAG_template_type_parameter
+                      DW_AT_type\t(0x00000010 "long int")
+
+0x00000060:         DW_TAG_template_type_parameter
+                      DW_AT_type\t(0x00000018 "char")
+
+0x00000068:     DW_TAG_structure_type
+                  DW_AT_name\t("array<long int, 2>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000006c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000070:       DW_TAG_template_value_parameter
+                    DW_AT_name\t("_Nm")
+                    DW_AT_type\t(0x00000010 "long int")
+                    DW_AT_const_value\t(2)
+
+0x00000074:     DW_TAG_class_type
+                  DW_AT_name\t("vector<long int, std::allocator<long int> >")
+                  DW_AT_byte_size\t(0x18)
+
+0x00000078:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Tp")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000007a:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int *, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000007c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x000000ae "long int *")
+
+0x0000007e:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x00000080:   DW_TAG_structure_type
+                DW_AT_name\t("View")
+                DW_AT_byte_size\t(0x08)
+
+0x00000084:     DW_TAG_member
+                  DW_AT_name\t("p")
+                  DW_AT_type\t(0x00000088 "Pt *")
+                  DW_AT_data_member_location\t(0x00)
+
+0x00000088:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000014 "Pt")
+
+0x00000090:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000094 "const long int")
+
+0x00000094:   DW_TAG_const_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x00000098:   DW_TAG_typedef
+                DW_AT_name\t("P")
+                DW_AT_type\t(0x00000024 "std::pair<long int, long int>")
+
+0x0000009c:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000024 "std::pair<long int, long int>")
+
+0x000000a0:   DW_TAG_namespace
+                DW_AT_name\t("std")
+
+0x000000a4:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int, long int>")
+                  DW_AT_declaration\t(true)
+
+0x000000a8:   DW_TAG_reference_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x000000ac:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000018 "char")
+
+0x000000ae:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x000000be:   DW_TAG_subprogram
+                DW_AT_name\t("pointers")
+                DW_AT_type\t(0x0000007a "std::pair<long int *, long int>")
+
+0x000000c0:   DW_TAG_subprogram
+                DW_AT_name\t("one")
+                DW_AT_type\t(0x00000024 "t")
+
+0x000000c4:   DW_TAG_subprogram
+                DW_AT_name\t("alias")
+                DW_AT_type\t(0x00000098 "t")
+
+0x000000c8:   DW_TAG_subprogram
+                DW_AT_name\t("later")
+                DW_AT_type\t(0x000000a4 "t")
+
+0x000000cc:   DW_TAG_subprogram
+                DW_AT_name\t("make<long>")
+                DW_AT_type\t(0x00000024 "t")
+
+0x000000d0:   DW_TAG_subprogram
+                DW_AT_name\t("make<int>")
+                DW_AT_type\t(0x00000098 "t")
+
+0x000000d4:   DW_TAG_subprogram
+                DW_AT_name\t("tuple3")
+                DW_AT_type\t(0x00000054 "t")
+
+0x000000d8:   DW_TAG_subprogram
+                DW_AT_name\t("arr")
+                DW_AT_type\t(0x00000068 "t")
+
+0x000000dc:   DW_TAG_subprogram
+                DW_AT_name\t("pick")
+                DW_AT_type\t(0x0000009c "t")
+
+0x000000e0:   DW_TAG_subprogram
+                DW_AT_name\t("user")
+                DW_AT_type\t(0x00000038 "t")
+
+0x000000e4:   DW_TAG_subprogram
+                DW_AT_name\t("refs")
+                DW_AT_type\t(0x00000048 "t")
+
+0x000000e8:   DW_TAG_subprogram
+                DW_AT_name\t("view")
+                DW_AT_type\t(0x00000080 "t")
+
+0x000000ec:   DW_TAG_subprogram
+                DW_AT_name\t("vec")
+                DW_AT_type\t(0x00000074 "t")
+
+0x000000f0:   DW_TAG_subprogram
+                DW_AT_name\t("number")
+                DW_AT_type\t(0x00000010 "t")
+
+0x000000f4:   DW_TAG_subprogram
+                DW_AT_name\t("nothing")
+
+0x000000f8:   DW_TAG_subprogram
+                DW_AT_name\t("twice<long>")
+                DW_AT_type\t(0x00000024 "t")
+
+0x000000fc:   DW_TAG_subprogram
+                DW_AT_name\t("twice<int>")
+                DW_AT_type\t(0x0000009c "t")
+
+0x00000100:   DW_TAG_subprogram
+                DW_AT_name\t("fn")
+                DW_AT_type\t(0x00000024 "t")
+
+0x00000104:   DW_TAG_subprogram
+                DW_AT_name\t("operator()")
+                DW_AT_type\t(0x00000024 "t")
+
+0x00000108:   DW_TAG_variable
+                DW_AT_name\t("fn")
+                DW_AT_type\t(0x00000024 "P")
+
+0x0000010c:   DW_TAG_subprogram
+                DW_AT_name\t("use")
+
+0x00000110:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x00000114:   DW_TAG_subprogram
+                DW_AT_name\t("keep")
+
+0x00000118:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x000000a8 "long int &")
+
+0x0000011c:   DW_TAG_subprogram
+                DW_AT_name\t("printf")
+
+0x00000120:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x000000ac "const char *")
+
+0x00000124:     DW_TAG_unspecified_parameters
+
+0x00000128:   DW_TAG_subprogram
+                DW_AT_name\t("over")
+
+0x0000012c:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x00000130:   DW_TAG_subprogram
+                DW_AT_name\t("over")
+
+0x00000134:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x000000a8 "long int &")
+
+0x00000138:   DW_TAG_subprogram
+                DW_AT_name\t("member")
+
+0x0000013c:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000088 "Pt *")
+                  DW_AT_artificial\t(true)
+
+0x00000140:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x00000144:   DW_TAG_subprogram
+                DW_AT_name\t("number2")
+
+0x00000148:     DW_TAG_formal_parameter
+                  DW_AT_name\t("one")
+                  DW_AT_type\t(0x00000010 "long int")
+
+0x0000014c:     DW_TAG_variable
+                  DW_AT_name\t("alias")
+                  DW_AT_type\t(0x00000010 "long int")
+"""
+
+
+ALLOCATION = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("unsigned long")
+                DW_AT_encoding\t(DW_ATE_unsigned)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_pointer_type
+
+0x00000020:   DW_TAG_subprogram
+                DW_AT_name\t("operator new")
+                DW_AT_type\t(0x00000014 "void *")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000024:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+
+0x00000028:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000014 "void *")
+
+0x00000030:   DW_TAG_subprogram
+                DW_AT_name\t("operator delete")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000034:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000014 "void *")
+
+0x00000038:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000014 "void *")
+
+0x00000040:   DW_TAG_structure_type
+                DW_AT_name\t("Arena")
+                DW_AT_byte_size\t(0x01)
+
+0x00000044:     DW_TAG_subprogram
+                  DW_AT_name\t("operator new")
+                  DW_AT_type\t(0x00000014 "void *")
+                  DW_AT_declaration\t(true)
+
+0x00000048:       DW_TAG_formal_parameter
+                    DW_AT_type\t(0x00000010 "std::size_t")
+
+0x00000050:   DW_TAG_subprogram
+                DW_AT_specification\t(0x00000044 "operator new")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000054:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+
+0x00000060:   DW_TAG_subprogram
+                DW_AT_name\t("operator new")
+                DW_AT_type\t(0x00000014 "void *")
+                DW_AT_declaration\t(true)
+
+0x00000064:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+"""
+REPLACED = """
+0x00000070:   DW_TAG_subprogram
+                DW_AT_name\t("NAME")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000074:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+"""
+
+
+def test_a_replaced_operator_new_is_told_from_the_build():
+    # Review of #368, round 3: `std::allocator` calls the global `operator new`, which a
+    # program may replace (`void *operator new(std::size_t n) { captured = p; ... }`) to
+    # keep where each element of a container is.
+    from peeky.native import _parse_dies, allocation_replaced
+
+    # The placement forms the standard headers define, a class's own, a declaration.
+    assert allocation_replaced(_parse_dies(ALLOCATION)) is False
+    for name in ("operator new", "operator new []", "operator delete", "operator delete[]"):
+        extra = REPLACED.replace("NAME", name)
+        assert allocation_replaced(_parse_dies(ALLOCATION + extra)) is True, name
+
+
+def test_a_calls_arguments_are_read_from_the_build():
+    # Review of #368: a binding's name passed to a call is proven only where every function
+    # of the call's name takes that argument by value, as a number or a character.
+    from peeky.native import _parse_dies, call_arguments
+
+    dies = _parse_dies(CALLS)
+    arguments = call_arguments(dies)
+    assert arguments["use"] == [((True,), False)]
+    assert arguments["keep"] == [((False,), False)]
+    # A pointer is no number: only `printf`'s `...` takes a name by value.
+    assert arguments["printf"] == [((False,), True)]
+    assert arguments["over"] == [((True,), False), ((False,), False)]
+    assert arguments["member"] == [((True,), False)]
+    assert arguments["fn"] is None and arguments["first"] is None
+    assert arguments["one"] == [((), False)]
+
+
+def test_the_worker_lists_a_maps_later_pages(tmp_path):
+    # #297: a map's entries are listed in pages, for a binding's element to be found.
+    from peeky.worker import DebugWorker
+
+    worker = DebugWorker(tmp_path)
+    worker.stop_id = "stop1"
+    worker.dap = Listing({5: [{"name": "[64]", "value": "1"}]})
+    worker.reset_previews()
+    assert worker.preview_fetch(5, 1, start=64) == [{"name": "[64]", "value": "1"}]
+    assert worker.dap.requests[-1][1] == {"variablesReference": 5, "start": 64, "count": 1}
+    with pytest.raises(ValueError):
+        worker.preview_fetch(5, 1, start=-1)

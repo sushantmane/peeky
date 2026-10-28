@@ -3623,11 +3623,11 @@ class DebugWorker:
         self.preview_fetches = 0
         self.preview_deadline = time.monotonic() + PREVIEW_SECONDS
 
-    def preview_fetch(self, reference, count):
-        """The first ``count`` children of a raw debugger value, for a runtime's preview
-        (#136). Bounded per inspection or expansion (PREVIEW_FETCHES requests within
-        PREVIEW_SECONDS), apart from the value-view budget; exhaustion leaves the
-        remaining values as the debugger shows them."""
+    def preview_fetch(self, reference, count, start=0):
+        """The first ``count`` children of a raw debugger value (from ``start``), for a
+        runtime's preview (#136). Bounded per inspection or expansion (PREVIEW_FETCHES
+        requests within PREVIEW_SECONDS), apart from the value-view budget; exhaustion
+        leaves the remaining values as the debugger shows them."""
         remaining = self.preview_deadline - time.monotonic()
         if self.preview_fetches >= PREVIEW_FETCHES or remaining <= 0:
             raise ViewBudgetExhausted("Preview budget exhausted")
@@ -3636,10 +3636,12 @@ class DebugWorker:
             raise ValueError("Variable is not expandable")
         if type(count) is not int or not 0 < count <= 64:
             raise ValueError("Preview read exceeds limit")
+        if type(start) is not int or not 0 <= start <= 65536:
+            raise ValueError("Preview read exceeds limit")
         try:
             values = self.dap.request(
                 "variables",
-                {"variablesReference": reference, "start": 0, "count": count},
+                {"variablesReference": reference, "start": start, "count": count},
                 timeout=remaining,
             ).get("variables", [])
         except ResponseTimeout as exc:
@@ -3841,7 +3843,15 @@ class DebugWorker:
                 else None
             )
             element = (
-                bound(variable, frame, self.preview_fetch, note=note)
+                bound(
+                    variable,
+                    frame,
+                    self.preview_fetch,
+                    note=note,
+                    # Where what it binds is kept, to check it there (#297).
+                    siblings=variables,
+                    raw=lambda path: self.raw_value(frame, path),
+                )
                 if bound and not (self.placeholders() and is_unavailable(variable.get("value")))
                 else None
             )
