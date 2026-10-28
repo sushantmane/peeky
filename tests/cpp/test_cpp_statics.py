@@ -110,3 +110,44 @@ def test_a_static_local_is_never_changed_in_cpp(directory, cxx, capsys):
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #370: two instances of a template, each with its own `calls`, which share
+# their declaration's file and line; LLDB names g++'s by its symbol,
+# `long tick<int>(int)::calls`.
+TEMPLATES = """#include <cstdio>
+
+template <typename T>
+__attribute__((noinline)) long tick(T x) {
+    static long calls = 0;
+    calls += static_cast<long>(x);
+    std::printf("%ld\\n", calls);  // HERE
+    return calls;
+}
+
+int main() {
+    tick<int>(1);
+    tick<long>(10);
+    tick<int>(2);
+    tick<long>(20);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_each_template_instance_reads_its_own_static(directory, cxx, capsys):
+    path = directory / "templates.cpp"
+    path.write_text(TEMPLATES)
+    command = ["probe", str(path), "--at", str(line_of(TEMPLATES, "// HERE"))]
+    code = main([*command, "--capture", "calls,x", "--hits", "4", "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result
+    rows = {(row["hit"], row["selector"]): row for row in result["rows"]}
+    assert [rows[(hit, "x")]["value"] for hit in (1, 2, 3, 4)] == ["1", "10", "2", "20"], rows
+    assert [rows[(hit, "calls")].get("value") for hit in (1, 2, 3, 4)] == [
+        "1",
+        "10",
+        "3",
+        "30",
+    ], rows

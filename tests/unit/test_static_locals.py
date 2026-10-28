@@ -33,9 +33,9 @@ long f(long x) {
 }
 """
 FUNCTION = ((0x100, 0x200),)
-OUTER = ("calls", "a.c", 3, 0x4000, 0x10, FUNCTION)
-INNER = ("calls", "a.c", 6, 0x4008, 0x10, FUNCTION)
-COUNT = ("count", "a.c", 14, 0x4010, 0x10, FUNCTION)
+OUTER = ("calls", "a.c", 3, 0x4000, 0x10, FUNCTION, 0x30)
+INNER = ("calls", "a.c", 6, 0x4008, 0x10, FUNCTION, 0x60)
+COUNT = ("count", "a.c", 14, 0x4010, 0x10, FUNCTION, 0x140)
 
 
 def session(tmp_path, statics=(OUTER, INNER, COUNT), unit=UNIT, language="c"):
@@ -45,7 +45,7 @@ def session(tmp_path, statics=(OUTER, INNER, COUNT), unit=UNIT, language="c"):
     native = NativeSession.__new__(NativeSession)
     native.load_bias = 0x10000
     types = {}
-    for name, _, line, _, kind, _ in statics:
+    for name, _, line, _, kind, *_ in statics:
         types.setdefault(name, set()).add((kind, "static", ("a.c", line)))
     function = {"source": "a.c", "span": (1, 18), "statics": tuple(statics), "types": types}
     native._function_at = lambda frame: function
@@ -68,9 +68,10 @@ def session(tmp_path, statics=(OUTER, INNER, COUNT), unit=UNIT, language="c"):
     return native
 
 
-def frame(tmp_path, line, pc=0x150):
+def frame(tmp_path, line, pc=0x150, name="f"):
     return {
         "id": 1,
+        "name": name,
         "line": line,
         "source": {"path": str(tmp_path / "a.c")},
         "instructionPointerReference": hex(0x10000 + pc),
@@ -108,7 +109,7 @@ def test_the_code_names_the_innermost_static_whose_scope_holds_the_stop(tmp_path
 def test_a_static_is_named_only_where_its_block_holds_the_stop_too(tmp_path):
     # GCC gives the inner block's static that block's code: a stop the debug information
     # places outside it, though the source says the code names it, is not read.
-    inner = (*INNER[:5], ((0x140, 0x160),))
+    inner = (*INNER[:5], ((0x140, 0x160),), INNER[6])
     native = session(tmp_path, (OUTER, inner))
     assert native._static_named(frame(tmp_path, 7, pc=0x150))["calls"] == (inner, None)
     assert native._static_named(frame(tmp_path, 7, pc=0x170))["calls"] == (
@@ -119,6 +120,32 @@ def test_a_static_is_named_only_where_its_block_holds_the_stop_too(tmp_path):
     )
     # Outside it, the outer one, as the source says.
     assert native._static_named(frame(tmp_path, 17, pc=0x170))["calls"] == (OUTER, None)
+
+
+def test_a_static_is_named_in_whichever_copy_of_its_function_holds_the_stop(tmp_path):
+    # Review of PR #370: a function inlined twice, or copied, declares its block's
+    # `static` in each copy, each with its own code. Each copy whose code doesn't hold the
+    # stop made the name unsure, though another copy holds it: one declaration, held
+    # where any copy holds it.
+    first = (*INNER[:5], ((0x140, 0x160),), INNER[6])
+    second = (*INNER[:5], ((0x180, 0x1A0),), INNER[6])
+    native = session(tmp_path, (OUTER, first, second))
+    for pc in (0x150, 0x190):
+        chosen, why = native._static_named(frame(tmp_path, 7, pc=pc))["calls"]
+        assert why is None and chosen[:5] == INNER[:5], why
+        assert chosen[5] == ((0x140, 0x160), (0x180, 0x1A0))
+    # In no copy's code: Peeky can't tell.
+    assert (
+        "doesn't hold this stop" in native._static_named(frame(tmp_path, 7, pc=0x170))["calls"][1]
+    )
+    # Two declarations of it on its line are two, whatever their code: unsure.
+    other = (*first[:6], 0x99)
+    assert (
+        "twice on line 6"
+        in session(tmp_path, (OUTER, first, other))._static_named(frame(tmp_path, 7, pc=0x150))[
+            "calls"
+        ][1]
+    )
 
 
 def test_a_static_is_not_read_where_the_source_or_the_stop_cant_be_read(tmp_path):
@@ -143,7 +170,7 @@ def test_a_static_is_not_read_where_the_source_or_the_stop_cant_be_read(tmp_path
         named["calls"][0] is None and "Peeky can't read that from the source" in (named["calls"][1])
     )
     # Two of the name on one line: which one is named can't be told.
-    twin = (*INNER[:2], 3, *INNER[3:])
+    twin = (*INNER[:2], 3, *INNER[3:6], 0x61)
     assert (
         "twice on line 3"
         in session(tmp_path, (OUTER, twin))._static_named(frame(tmp_path, 4))["calls"][1]
@@ -183,21 +210,42 @@ def test_the_debuggers_row_of_a_static_is_its_declaration_and_address(tmp_path):
     # Where the debugger gives an address, it must be the declaration's.
     moved = [row("calls @ a.c:6", 6, address=0x14010)]
     assert native.static_rows(moved, frame(tmp_path, 7), []) == []
-    assert (
-        "the debugger lists no single value for it there"
-        in native.static_notes(frame(tmp_path, 7))["calls"]
+    assert native.static_notes(frame(tmp_path, 7))["calls"] == (
+        "at line 6, but the debugger doesn't list it for this frame, so Peeky can't read it "
+        "here; print it from the program"
     )
     placed = [row("calls @ a.c:6", 6, address=0x14008)]
     assert native.static_rows(placed, frame(tmp_path, 7), []) == placed
     # LLDB names one with a symbol of its own (a C++ inline function's) by it: read where
     # it says where it is declared, as `calls`, its type that declaration's.
     qualified = [row("f()::calls", 6, value="101")]
-    assert native.static_rows(qualified, frame(tmp_path, 7), []) == qualified
-    assert native.static_locals(frame(tmp_path, 7)) == ["count"]
-    assert native.selected_as(qualified[0], frame(tmp_path, 7), qualified) == "calls"
-    assert native._static_declared(frame(tmp_path, 7), "f()::calls") == "calls @ a.c:6"
+    assert native.static_rows(qualified, frame(tmp_path, 7, name="f()"), []) == qualified
+    assert native.static_locals(frame(tmp_path, 7, name="f()")) == ["count"]
+    assert native.selected_as(qualified[0], frame(tmp_path, 7, name="f()"), qualified) == "calls"
+    assert native._static_declared(frame(tmp_path, 7, name="f()"), "f()::calls") == "calls @ a.c:6"
     del qualified[0]["$__lldb_extensions"]
-    assert native.static_rows(qualified, frame(tmp_path, 7), []) == []
+    assert native.static_rows(qualified, frame(tmp_path, 7, name="f()"), []) == []
+
+    # A template's instances share its file and line: a row its symbol names must be
+    # this frame's function's own, by name or by address (review of PR #370).
+    def instance(owner, address=None, value="1"):
+        found = row(f"{owner}::calls", 6, address=address, value=value)
+        return found
+
+    instances = [instance("long f<int>(int)"), instance("long f<long>(long)", value="10")]
+    here = frame(tmp_path, 7, name="long f<int>(int)")
+    assert native.static_rows(instances, here, []) == instances[:1]
+    assert native.selected_as(instances[0], here, instances) == "calls"
+    there = frame(tmp_path, 7, name="long f<long>(long)")
+    assert native.static_rows(instances, there, []) == instances[1:]
+    # Named otherwise than the frame, it isn't proven its own, unless by its address.
+    elsewhere = frame(tmp_path, 7, name="f<int>(int)")
+    assert native.static_rows(instances, elsewhere, []) == []
+    placed = [instance("long f<int>(int)", 0x14008), instance("long f<long>(long)", 0x14018)]
+    assert native.static_rows(placed, elsewhere, []) == placed[:1]
+    # Two rows it may be: said so.
+    assert native.static_rows([*instances, instances[0]], here, []) == []
+    assert "lists several values it may be" in native.static_notes(here)["calls"]
     # A local of its name is listed: the existing rules judge which one the code names.
     assert native.static_rows(placed, frame(tmp_path, 7), ["calls @ a.c:2"]) == []
 
@@ -299,8 +347,8 @@ def test_a_functions_statics_are_its_variables_at_a_fixed_address():
     files = ({str(Path("/w/a.c").resolve()): "a.c"}, {})
     found = _static_locals(dies, (1,), files, Path("/w"))
     assert found == (
-        ("calls", "a.c", 3, 0x4000, 0x10, ((0x100, 0x200),)),
-        ("calls", "a.c", 6, 0x4008, 0x10, ((0x140, 0x160),)),
+        ("calls", "a.c", 3, 0x4000, 0x10, ((0x100, 0x200),), 2),
+        ("calls", "a.c", 6, 0x4008, 0x10, ((0x140, 0x160),), 6),
     )
 
 
@@ -381,3 +429,74 @@ def test_the_frames_static_storage_is_listed_where_its_function_declares_some():
     function["statics"], native.target.language = (OUTER,), "rust"
     listed = DebugWorker.frame_scopes(native, {"name": "f"}, scopes)
     assert [scope["name"] for scope in listed] == ["Locals"]
+
+
+def test_an_inlined_functions_static_is_held_by_each_copy_of_its_block():
+    # Review of PR #370: GCC declares an inlined (or copied) function's block `static` in
+    # its abstract instance, whose block has no code; each copy's block, which names it
+    # as its origin, has. A copy may declare the variable again, as clang's does.
+    def die(tag, parent, children=(), **attrs):
+        return {
+            "tag": tag,
+            "attrs": attrs,
+            "parent": parent,
+            "children": list(children),
+            "ranges": [],
+        }
+
+    hits = {
+        "DW_AT_name": '"hits"',
+        "DW_AT_decl_file": '"/w/a.c"',
+        "DW_AT_decl_line": "6",
+        "DW_AT_type": "0x00000010",
+        "DW_AT_location": "(DW_OP_addr 0x4008)",
+    }
+    dies = {
+        10: die("DW_TAG_subprogram", 0, (11,), DW_AT_name='"bump"'),
+        11: die("DW_TAG_lexical_block", 10, (12,)),
+        12: die("DW_TAG_variable", 11, **hits),
+        20: die(
+            "DW_TAG_inlined_subroutine",
+            0,
+            (21,),
+            DW_AT_abstract_origin="0x0000000a",
+            DW_AT_low_pc="0x0000000000000100",
+            DW_AT_high_pc="0x0000000000000180",
+        ),
+        21: die(
+            "DW_TAG_lexical_block",
+            20,
+            DW_AT_abstract_origin="0x0000000b",
+            DW_AT_low_pc="0x0000000000000140",
+            DW_AT_high_pc="0x0000000000000160",
+        ),
+        30: die(
+            "DW_TAG_inlined_subroutine",
+            0,
+            (31,),
+            DW_AT_abstract_origin="0x0000000a",
+            DW_AT_low_pc="0x0000000000000200",
+            DW_AT_high_pc="0x0000000000000280",
+        ),
+        31: die(
+            "DW_TAG_lexical_block",
+            30,
+            (32,),
+            DW_AT_abstract_origin="0x0000000b",
+            DW_AT_low_pc="0x0000000000000240",
+            DW_AT_high_pc="0x0000000000000260",
+        ),
+        32: die(
+            "DW_TAG_variable",
+            31,
+            DW_AT_abstract_origin="0x0000000c",
+            DW_AT_location="(DW_OP_addr 0x4008)",
+        ),
+    }
+    files = ({str(Path("/w/a.c").resolve()): "a.c"}, {})
+    found = _static_locals(dies, (20, 30, 10), files, Path("/w"))
+    copies = ((0x140, 0x160), (0x240, 0x260))
+    assert found == (
+        ("hits", "a.c", 6, 0x4008, 0x10, copies, 12),
+        ("hits", "a.c", 6, 0x4008, 0x10, ((0x240, 0x260),), 12),
+    )

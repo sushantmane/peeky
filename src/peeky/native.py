@@ -2110,13 +2110,16 @@ MAX_STATIC_LOCALS = 256
 
 
 def _static_locals(dies, bodies, files, workspace):
-    """((name, source, line, address, type offset, block), ...) for each variable of one
-    function's bodies (their nested blocks too, not calls inlined into them) that the
-    build places at one fixed address, `DW_OP_addr`: a `static` local, or a `const` one
-    GCC builds at compile time, in read-only data (#364). ``address``: before any slide;
-    ``block``: the code ranges of the block declaring it, the function's own where that
-    is its body (clang declares a block's `static` there too), or () where its block has
-    none (an abstract one's). Never a thread-local one, whose address is the thread's."""
+    """((name, source, line, address, type offset, block, origin), ...) for each variable
+    of one function's bodies (their nested blocks too, not calls inlined into them) that
+    the build places at one fixed address, `DW_OP_addr`: a `static` local, or a `const`
+    one GCC builds at compile time, in read-only data (#364). ``address``: before any
+    slide; ``block``: the code ranges of the block declaring it, the function's own where
+    that is its body (clang declares a block's `static` there too). An abstract block's
+    (GCC's, of a function inlined or copied, review of PR #370) are those of each
+    concrete copy of it, or () where there is none. ``origin``: the DIE the variable
+    completes (its abstract origin), or its own: one declaration, whatever copy of the
+    function declares it again. Never a thread-local one, whose address is the thread's."""
     from peeky.fields import _target
 
     inputs, cache = files
@@ -2127,6 +2130,23 @@ def _static_locals(dies, bodies, files, workspace):
     function = sorted(
         {span for body in bodies if body in dies for span in _code_ranges(dies[body])}
     )
+    # Each abstract block's concrete copies' code (`DW_AT_abstract_origin`).
+    copies, walk = (
+        {},
+        [
+            child
+            for body in dict.fromkeys(bodies)
+            if body in dies
+            for child in dies[body]["children"]
+        ],
+    )
+    while walk and len(copies) < 4096:
+        offset = walk.pop()
+        if offset not in dies or dies[offset]["tag"] != "DW_TAG_lexical_block":
+            continue
+        walk += dies[offset]["children"]
+        for abstract in _chain(dies, offset)[1:]:
+            copies.setdefault(abstract, set()).update(_code_ranges(dies[offset]))
     while pending and len(found) < MAX_STATIC_LOCALS:
         child, scope = pending.pop()
         if child in seen or child not in dies:
@@ -2147,10 +2167,13 @@ def _static_locals(dies, bodies, files, workspace):
         source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
         if not name or not line or not line.isdigit() or source is None:
             continue
-        block = tuple(function) if scope in bodies else tuple(_code_ranges(dies[scope]))
+        if scope in bodies:
+            block = tuple(function)
+        else:
+            block = tuple(sorted({*_code_ranges(dies[scope]), *copies.get(scope, ())}))
         kind = _target(_first(dies, chain, "DW_AT_type"))
-        found.append((name, source, int(line), int(placed[1], 16), kind, block))
-    return tuple(sorted(found, key=lambda each: (each[0], each[2], each[3])))
+        found.append((name, source, int(line), int(placed[1], 16), kind, block, chain[-1]))
+    return tuple(sorted(found, key=lambda each: (each[0], each[2], each[3], each[6])))
 
 
 def _gcc_captures(dies, entry):
@@ -2389,6 +2412,13 @@ def _short_frame(name):
         bare = folded
     bare = (bare.split("(", 1)[0].split() or [name])[-1].replace("\x00", "<…>")
     return bare if len(bare) <= 80 else bare[:79] + "…"
+
+
+# A `static` local's row in an optimized build (#364 review): read from its storage.
+_STATIC_OPTIMIZED = (
+    "the build is optimized ({level}), so the code may hold a newer value of this `static` "
+    "in a register, and store it later; this is what its storage holds"
+)
 
 
 def _line_list(lines):
@@ -4824,11 +4854,14 @@ class NativeSession:
         function = self._function_at(frame)
         types = (function or {}).get("types") or {}
         shown = {found[0][0] for found in self._static_seen(frame).get("rows", {}).values()}
-        return sorted(
+        names = {
             name
             for name, declared in types.items()
-            if any(storage == "static" for _, storage, _ in declared) and name not in shown
-        )[:50]
+            if any(storage == "static" for _, storage, _ in declared)
+        }
+        # And those an inlined function declares in its abstract instance (GCC's).
+        names |= {each[0] for each in (function or {}).get("statics") or ()}
+        return sorted(names - shown)[:50]
 
     def static_notes(self, frame):
         """{name: why} for each name ``static_locals`` gives that ``static_rows`` judged
@@ -4875,14 +4908,24 @@ class NativeSession:
             if chosen is None:
                 notes[name] = why
                 continue
-            entry = self._static_entry(variables, chosen)
-            if entry is None:
+            entry = self._static_entry(variables, chosen, frame)
+            if not isinstance(entry, dict):
                 notes[name] = (
-                    f"at line {chosen[2]}, but the debugger lists no single value for it there, "
-                    "so Peeky can't read it here; print it from the program"
+                    f"at line {chosen[2]}, but the debugger "
+                    + (
+                        "lists several values it may be, and Peeky can't tell which one is it"
+                        if entry
+                        else "doesn't list it for this frame"
+                    )
+                    + ", so Peeky can't read it here; print it from the program"
                 )
                 continue
-            shown[entry["name"]] = (chosen, self._static_guard(chosen, command))
+            reason = self._static_guard(chosen, command)
+            if reason is None and getattr(self.target, "optimization", "O0") != "O0":
+                # Its storage may lag what the code holds in a register (#364 review).
+                why = _STATIC_OPTIMIZED.format(level=self.target.optimization)
+                reason = ValueNote(why, why, True)
+            shown[entry["name"]] = (chosen, reason)
             rows.append(entry)
             if len(rows) >= 50:
                 break
@@ -4930,6 +4973,17 @@ class NativeSession:
         place, pc = self._place(frame), self._block_pc(frame)
         found = {}
         for name, declared in list(grouped.items())[:50]:
+            # One declaration each, whatever copies of the function declare it again (an
+            # inlined call's, review of PR #370): it holds the stop where any copy does.
+            merged = {}
+            for each in declared:
+                key = (each[6], *each[1:4])
+                if key in merged:
+                    other = merged[key][5]
+                    both = () if not other or not each[5] else tuple(sorted({*other, *each[5]}))
+                    each = (*merged[key][:5], both, *merged[key][6:])
+                merged[key] = each
+            declared = list(merged.values())
             lines = sorted({each[2] for each in declared})
             at = f"at line {lines[0]}" if len(lines) == 1 else f"at lines {_line_list(lines)}"
             if place is None or pc is None or type(getattr(self, "load_bias", None)) is not int:
@@ -5069,18 +5123,22 @@ class NativeSession:
             )
         return verdicts.pop()
 
-    def _static_entry(self, variables, chosen):
+    def _static_entry(self, variables, chosen, frame=None):
         """The debugger's one variable among ``variables`` that is the declaration
-        ``chosen``: its name, plain or `name @ file:line`, or as its symbol names it
-        (`Acc::run()::calls`) where the debugger says where it is declared; where it says
-        so (lldb-dap's `$__lldb_extensions`), that file's name and line; and where it
-        gives its address (lldb-dap 20's `memoryReference`, or `T @ 0x…`), that address.
-        None unless exactly one is."""
-        name, source, line, address, _, _ = chosen
+        ``chosen``, or how many there may be (0, or several) where not exactly one: its
+        name, plain or `name @ file:line`; where it says where it is declared (lldb-dap's
+        `$__lldb_extensions`), that file's name and line; and where it gives its address
+        (lldb-dap 20's `memoryReference`, or `T @ 0x…`), that address. One its symbol
+        names (`Acc::run()::calls`, a C++ inline function's or template's) must say where
+        it is declared, and be ``frame``'s function's own: by its address, or by naming
+        that very function, as LLDB names the frame (`long tick<int>(int)::calls`, never
+        `tick<long>`'s, which shares its file and line; review of PR #370)."""
+        name, source, line, address = chosen[:4]
         bias = getattr(self, "load_bias", None)
         if type(bias) is not int:
-            return None
+            return 0
         file = Path(str(source)).name
+        function = str((frame or {}).get("name") or "").rpartition("`")[2]
         found = []
         for variable in variables:
             if not isinstance(variable, dict):
@@ -5092,11 +5150,6 @@ class NativeSession:
             base = located[0] if located is not None else shown
             extensions = variable.get("$__lldb_extensions")
             declared = extensions.get("declaration") if isinstance(extensions, dict) else None
-            # LLDB names one with a symbol of its own (a C++ inline function's) by it:
-            # `Acc::run()::calls`.
-            qualified = base.endswith(f"::{name}") and len(base) > len(name) + 2
-            if base != name and not (qualified and isinstance(declared, dict)):
-                continue
             if isinstance(declared, dict) and (
                 Path(str(declared.get("path"))).name != file or declared.get("line") != line
             ):
@@ -5104,8 +5157,15 @@ class NativeSession:
             placed = own_address(variable)
             if placed is not None and placed != address + bias:
                 continue
+            if base != name:
+                # LLDB names one with a symbol of its own by it: `Acc::run()::calls`.
+                owner = base[: -len(name) - 2] if base.endswith(f"::{name}") else ""
+                if not owner or not isinstance(declared, dict):
+                    continue
+                if placed is None and owner != function:
+                    continue
             found.append(variable)
-        return found[0] if len(found) == 1 else None
+        return found[0] if len(found) == 1 else len(found)
 
     def _static_guard(self, chosen, command):
         """Why the C++ `static` local ``chosen`` has no value to show yet, or None: C++
@@ -5117,7 +5177,7 @@ class NativeSession:
         `static`'s mangling)."""
         if getattr(self.target, "language", None) != "cpp":
             return None
-        _, _, line, address, _, _ = chosen
+        line, address = chosen[2:4]
         symbols = self.__dict__.get("data_symbols")
         if symbols is None:
             try:

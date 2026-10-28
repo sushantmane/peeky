@@ -146,3 +146,73 @@ def test_a_static_local_is_never_changed(directory, capsys):
     finally:
         main(["session", "close"])
         capsys.readouterr()
+
+
+# Review of PR #370: a function inlined twice and called once out of line, optimized: each
+# copy has its own code for the block declaring `hits`.
+INLINED = """#include <stdio.h>
+
+__attribute__((noinline)) long use(long v) { return v + 1; }
+
+static inline long bump(long v) {
+    long r = v;
+    if (v > 0) {
+        static long hits = 0;
+        hits += v;
+        r += use(hits);  // HERE
+    }
+    return r;
+}
+
+long (*volatile keep)(long) = bump;
+
+int main(int argc, char **argv) {
+    long a = bump(argc);
+    long b = keep(argc + 1);
+    long c = bump(argc + 2);
+    printf("%ld %ld %ld\\n", a, b, c);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_a_static_of_an_inlined_function_is_never_refused_for_another_copy(
+    directory, capsys, optimization
+):
+    # In each copy's code the declaration the code names is `hits`, whichever copy's block
+    # the stop is in: read where the debugger lists it (clang's out-of-line copy), with
+    # the optimized build's note; else the note says the debugger doesn't list it there.
+    (directory / "inlined.c").write_text(INLINED)
+    config = directory / "inlined.json"
+    config.write_text(
+        json.dumps(
+            {
+                "language": "c",
+                "sources": ["inlined.c"],
+                "optimization": optimization,
+                "compiler": os.environ.get("PEEKY_NATIVE_CC", "clang"),
+                "adapter": os.environ["PEEKY_NATIVE_DAP"],
+                "dwarfdump": os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+                "dsymutil": os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+                "sysroot": os.environ.get("PEEKY_NATIVE_SYSROOT"),
+            }
+        )
+    )
+    at = f"inlined.c:{line_of(INLINED, '// HERE')}"
+    command = ["probe", str(directory), "--config", str(config), "--at", at]
+    code = main([*command, "--capture", "hits", "--hits", "all", "--json", "--quiet"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0 and result["rows"], result
+    declared = line_of(INLINED, "static long hits")
+    for row in result["rows"]:
+        if "value" in row:
+            assert row["value"] in ("0", "1", "3", "6"), row
+            assert row["note"].startswith(f"the build is optimized ({optimization})"), row
+        else:
+            assert row["error"].startswith(
+                f"not found: bump declares 'hits' in static storage (a `static` local, or a "
+                f"`const` one the compiler placed there), at line {declared}, but the "
+                "debugger doesn't list it for this frame"
+            ), row
