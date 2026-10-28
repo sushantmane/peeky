@@ -17,9 +17,12 @@ Anything else is refused before a byte is written: a pointer (`char *`, `&str`) 
 reference, whose memory Peeky cannot prove writable and large enough; a text longer
 than the storage; a layout that does not check out. A debugger that cannot write memory
 (lldb-dap before 21) changes an array's text one element at a time (printable ASCII
-only, as it shows each element exactly), and nothing on the heap. Every byte written is
-read back, and so is the size: what does not read back as asked was changed in a way
-nobody asked for, so the session is closed (RuntimeError) rather than reported.
+only, as it shows each element exactly), and nothing on the heap. A libstdc++ string's
+own buffer that the debugger misreads (GCC's, as `char[0]`: no element to set) is
+written with LLDB's own `memory write` command where the debugger reads memory but has
+no writeMemory request (lldb-dap 20). Every byte written is read back, and so is the
+size: what does not read back as asked was changed in a way nobody asked for, so the
+session is closed (RuntimeError) rather than reported.
 """
 
 import codecs
@@ -45,10 +48,13 @@ class Memory:
     lists a debugger variable's children (its first ``count``); ``set(reference, name,
     value)`` changes one through the debugger and returns the value it reports;
     ``read(address, count)`` and ``write(address, data)`` are None where the debugger
-    cannot read or write memory."""
+    cannot read or write memory. ``poke(address, data)`` writes memory with the
+    debugger's own command (LLDB's `memory write`) where it has no writeMemory request
+    (lldb-dap 20), else None: only a buffer the debugger lists no characters of uses it."""
 
-    def __init__(self, children, set, read=None, write=None):
+    def __init__(self, children, set, read=None, write=None, poke=None):
         self.children, self.set, self.read, self.write = children, set, read, write
+        self.poke = poke
 
 
 def parse_text(value):
@@ -127,16 +133,18 @@ def qualifier_reason(qualifier):
     )
 
 
-def held_in_place(variable, memory):
+def held_in_place(variable, memory, layout=None):
     """Whether a `std::string`'s text is in its own short buffer, as its members and
     memory tell (no write): a debugger without writeMemory (lldb-dap 20) changes it
-    there, element by element, so its row is marked `[settable]`. False where any read
-    fails or nothing checks out."""
+    there, element by element, or with ``memory.poke`` where it misreads the buffer
+    (``layout``, as for ``change``), so its row is marked `[settable]`. False where any
+    read fails or nothing checks out."""
     writer = _Writer(memory, f"`{variable.get('name')}`")
     try:
         members = _members(writer, variable)
         if "_M_dataplus" in members or "_M_string_length" in members:
-            return bool(_libstdcxx_shape(variable, writer)["local"])
+            shape = _libstdcxx_shape(variable, writer, layout)
+            return bool(shape["local"]) and (not shape["misread"] or writer.can_poke)
         return not _libcxx_shape(variable, writer)["long"]
     except ValueError:
         return False
@@ -167,6 +175,7 @@ class _Writer:
     def __init__(self, memory, name):
         self.memory, self.name, self.written = memory, name, False
         self.can_read, self.can_write = memory.read is not None, memory.write is not None
+        self.can_poke = getattr(memory, "poke", None) is not None
 
     def failed(self, reason):
         if self.written:
@@ -211,6 +220,24 @@ class _Writer:
             self.written = True
             self.failed("the debugger did not answer a write in time")
         except (OSError, ValueError, RuntimeError) as exc:
+            self.failed(f"the debugger refused to write its memory: {str(exc)[:120]}")
+        self.written = True
+
+    def poke(self, address, data):
+        """``data`` at ``address`` with the debugger's own command (``Memory.poke``). A
+        command that fails may have written part of it: it is refused as unchanged only
+        where its bytes read as they did before."""
+        before = self.read(address, len(data))
+        try:
+            self.memory.poke(address, data)
+        except TimeoutError:
+            self.written = True
+            self.failed("the debugger did not answer a write in time")
+        except (OSError, ValueError, RuntimeError) as exc:
+            try:
+                self.written = self.memory.read(address, len(data)) != before
+            except (OSError, ValueError, RuntimeError):
+                self.written = True
             self.failed(f"the debugger refused to write its memory: {str(exc)[:120]}")
         self.written = True
 
@@ -340,7 +367,7 @@ def _libstdcxx(variable, data, writer, relist, layout=None):
         )
     if not shape["local"] and not writer.can_write:
         writer.failed(f"its text is on the heap, and {_NO_WRITE}")
-    if shape["misread"] and not writer.can_write:
+    if shape["misread"] and not (writer.can_write or writer.can_poke):
         # Its characters cannot be listed, so none can be set one at a time.
         writer.failed(
             f"{_misread(shape)}, so it cannot set the text's characters one by one, and {_NO_WRITE}"
@@ -351,6 +378,10 @@ def _libstdcxx(variable, data, writer, relist, layout=None):
     writer.read(pointer, len(payload))
     if writer.can_write:
         writer.write(pointer, payload)
+    elif shape["misread"]:
+        # Its own buffer (checked above to be the one in use, and its size from the
+        # build's debug information), whose characters the debugger lists none of.
+        writer.poke(pointer, payload)
     else:
         # In its own buffer, through the debugger (checked above to be the one in use).
         writer.put(shape["buffer"], payload)

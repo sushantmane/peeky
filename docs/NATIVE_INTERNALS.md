@@ -386,8 +386,15 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     and the union the string, by their byte sizes. Any size that is missing or doesn't fit
     gives no length, so nothing is written there.
   - With `writeMemory` (lldb-dap 21), the text is written there and read back.
-  - Without it, Peeky would set the buffer's characters one by one, and LLDB lists none of them.
-    So the refusal says that the debugger misreads the build's string buffer.
+  - lldb-dap 20 reads memory but has no `writeMemory`. LLDB lists none of the buffer's
+    characters, so Peeky can't set them one by one. The worker's `memory_command` writes the
+    text and its NUL with LLDB's `memory write`, through lldb-dap's command escape.
+  - That write is made only where `_M_dataplus._M_p` is the buffer's address and the text fits.
+    Then `_M_string_length` is set, and the pointer, the length and the bytes are read back.
+  - LLDB prints nothing but the command when the write succeeds. Anything else is a refusal
+    where the bytes still read as before; otherwise the session is closed.
+  - lldb-dap 18 reads no memory, so it can't tell where the text is. The change is refused, as
+    in clang's build.
 - **LLDB's errors in the output.** LLDB 18 prints those errors on its own stderr, which lldb-dap
   sends as `stderr` output events. `DAP` keeps an event apart where it is `stderr` and every
   line matches `NativeSession.debugger_diagnostics`: `error: <module> 0x…: DW_TAG_…`. Rust's
