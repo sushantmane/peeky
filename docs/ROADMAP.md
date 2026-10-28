@@ -202,7 +202,6 @@ Reading it would take about 2 weeks:
 
 - read an unordered container's entries from its own nodes;
 - read a lambda's captures through `__closure`;
-- set a text in a string's own buffer, which LLDB reads as `char[0]`;
 - tell when a caller's aggregate is stored, from its elements' lines.
 
 GDB's DAP reads much of this right, but Peeky's native layer is built on lldb-dap. A GDB backend

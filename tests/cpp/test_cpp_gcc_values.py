@@ -10,7 +10,8 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   them: an allocator whose first template argument is another type, a 16-byte-aligned
   `long double`, or (LLDB 18) a map whose type's name holds `set` decode wrongly.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
-  length comes from the build's debug information, and a refusal says what LLDB misreads.
+  length comes from the build's debug information, and lldb-dap 20, which has no
+  writeMemory request, writes it with LLDB's `memory write` command.
 - LLDB 18's errors about that debug information come on its own stderr, apart from the
   program's output: they are a warning, not output.
 - A structured binding of a bitfield, which GCC gives no location: a true note.
@@ -295,34 +296,50 @@ DWARF = re.compile(
 )
 
 
-@pytest.mark.timeout(180)
-def test_a_string_set_is_made_or_refused_for_what_the_debugger_misreads(cpp, capsys):
+@pytest.mark.timeout(240)
+def test_a_string_set_is_made_in_the_buffer_the_debugger_misreads(cpp, capsys):
     # #167: with lldb-dap 20, GCC's string was refused as "its members are not laid out
-    # as libstdc++'s string's are"; LLDB reads its `_M_local_buf` as `char[0]`.
+    # as libstdc++'s string's are"; LLDB reads its `_M_local_buf` as `char[0]`. Then as
+    # one whose characters cannot be set one by one: lldb-dap 20 has no writeMemory
+    # request. Its text is now written with LLDB's `memory write`, and read back.
     compiler, root = cpp
     source = root / "text.cpp"
     source.write_text(TEXT)
     line = line_of(TEXT, "// OBSERVE")
     code, result = probe(source, line, "nm", capsys, "--set", 'nm="renamed"')
-    if code == 0:
-        assert "NM:[renamed]" in result["output"], result
+    if compiler == "gcc" and os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
+        assert code == 0, result.get("error")
+    if code != 0:
+        # lldb-dap 18 reads no memory, so it cannot tell where the text is.
+        error = result["error"]
+        assert error["code"] == "MUTATION_REJECTED", error
+        assert error["message"].startswith(
+            "`nm` cannot be changed: Peeky cannot tell whether its text is in the string "
+            "itself or on the heap: this debugger cannot read memory (lldb-dap 20 can)"
+        ), error
+        # Never marked as one a set changes.
+        assert result["rows"][0].get("settable") is not True, result["rows"]
         return
-    error = result["error"]
-    assert error["code"] == "MUTATION_REJECTED", error
-    assert "not laid out" not in error["message"], error
-    misread = (
-        "`nm` cannot be changed: the debugger misreads this build's string buffer as char[0] "
-        "(its debug information says char[16]), so it cannot set the text's characters one "
-        "by one, and this debugger cannot write memory (lldb-dap 21 can)"
-    )
-    unread = "this debugger cannot read memory (lldb-dap 20 can)"
-    assert error["message"].startswith(misread) or unread in error["message"], error
-    if compiler == "clang" or not os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
-        assert unread in error["message"], error
-    else:
-        assert error["message"].startswith(misread), error
-    # Never marked as one a set changes.
-    assert result["rows"][0].get("settable") is not True, result["rows"]
+    assert "NM:[renamed]" in result["output"], result
+    assert [(c["before"], c["after"]) for c in result["interventions"]] == [
+        ('"named"', '"renamed"')
+    ], result["interventions"]
+    after = [row for row in result["rows"] if row["phase"] == "after-set"]
+    assert after and after[0]["value"].endswith('"renamed"'), after
+    # Marked as one a set changes, before it was.
+    assert result["rows"][0].get("settable") is True, result["rows"]
+    if compiler != "gcc" or sys.platform == "darwin":
+        return
+    # Its whole room, 15 bytes and the NUL, with a byte LLDB shows escaped.
+    code, result = probe(source, line, "nm", capsys, "--set", 'nm="a\\tfull fifteen."')
+    assert code == 0, result.get("error")
+    assert "NM:[a\tfull fifteen.]" in result["output"], result["output"]
+    code, result = probe(source, line, "nm", capsys, "--set", 'nm="sixteen bytes!!!"')
+    assert code == 1 and result["error"]["message"].startswith(
+        "`nm` cannot be changed: the text does not fit: `nm` holds its text in its own "
+        "buffer, with room for 15 bytes, and the text is 16 bytes. Peeky never reallocates "
+        "a string; a longer text needs an edit to the source"
+    ), result.get("error")
 
 
 @pytest.mark.timeout(180)
