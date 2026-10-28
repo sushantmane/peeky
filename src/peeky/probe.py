@@ -652,14 +652,22 @@ def _visible(snapshot, module=True):
 def _static_hint(snapshot, name):
     """Why a name the stopped function keeps in static storage is not found (C, C++):
     lldb-dap lists none of them among a frame's locals. A `static` local, or a `const`
-    local GCC places in read-only data (#167)."""
+    local GCC places in read-only data (#167). Peeky reads one where the code at the
+    stop names it (#364); the worker's note says why not here (an earlier worker reads
+    none)."""
     if name not in (snapshot.get("statics") or ()):
         return ""
     function = display_function(snapshot.get("function")) or "this function"
+    note = (snapshot.get("static_notes") or {}).get(name)
     return (
         f": {function} declares {name!r} in static storage (a `static` local, or a `const` "
-        "one the compiler placed there), which the debugger does not list among a frame's "
-        "locals, so Peeky cannot read it here; print it from the program"
+        "one the compiler placed there), "
+        + (
+            note
+            if isinstance(note, str)
+            else "which the debugger does not list among a frame's locals, so Peeky cannot "
+            "read it here; print it from the program"
+        )
     )
 
 

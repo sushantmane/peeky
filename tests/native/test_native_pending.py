@@ -2,9 +2,10 @@
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
-from native_compilers import cxx_is_gcc
+from native_compilers import cxx_for, cxx_is_gcc, gcc, is_gcc
 
 from peeky.cli import main
 
@@ -265,7 +266,7 @@ int main(void) {
 
 
 @pytest.mark.timeout(180)
-def test_a_callers_aggregate_stored_element_by_element_is_withheld(bucket, capsys):
+def test_a_callers_aggregate_stored_element_by_element_is_withheld_until_stored(bucket, capsys):
     # Review of #104 (round 2): clang puts no code on the declaration line of an array of
     # structs, a 2-D array or a nested struct, so `--frame 1` showed `o.in.y = 20905`,
     # `ps[1].x = -1530060163171811189` and `grid[1][0] = 20908` while being stored.
@@ -283,9 +284,21 @@ def test_a_callers_aggregate_stored_element_by_element_is_withheld(bucket, capsy
             main(["session", "close"])
             capsys.readouterr()
         shown[hit] = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
+    # Each is read once all of its lines' code comes before the call: `o` from hit 5 on,
+    # `ps` from hit 9 and `grid` at hit 11 (withheld at every hit on main).
+    stored = {2: (), 5: ("o",), 9: ("o", "ps"), 11: ("o", "ps", "grid")}
+    values = {
+        "o": "{in = {x = 2, y = 4}}",
+        "ps": "[{x = 6, y = 8}, {x = 10, y = 12}]",
+        "grid": "[[14, 16], [18, 20]]",
+    }
     for hit in (2, 5, 9, 11):
         for name, line in (("o", 17), ("ps", 23), ("grid", 27)):
             variable = shown[hit][name]
+            if name in stored[hit]:
+                assert not variable.get("unavailable"), (hit, variable)
+                assert variable["value"] == values[name], (hit, variable)
+                continue
             assert variable["unavailable"] and variable.get("value") is None, (hit, variable)
             assert (
                 f"declared on line {line}, which has no code of its own" in (variable["reason"])
@@ -353,15 +366,19 @@ def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, cap
             capsys.readouterr()
     if suffix == "cpp" and cxx_is_gcc():
         # GCC gives an aggregate's declaration line no code of its own (#167): its stores
-        # carry its elements' lines, so Peeky cannot tell when it is done, and withholds.
-        for hit in (3, 4, 5):
-            for selector, line in (("t", 21), ("t.p", 21), ("t.p.y", 21), ("q.y", 17)):
+        # carry its elements' lines. Withheld while they run; read once all of their code
+        # comes before the call (`q` from line 21 on, `t` at line 25: on main, never).
+        for hit in (3, 4):
+            for selector in ("t", "t.p", "t.p.y"):
                 row = rows[hit][selector]
                 assert "value" not in row and (
-                    f"declared on line {line}, which has no code of its own (an aggregate is "
+                    "declared on line 21, which has no code of its own (an aggregate is "
                     "stored element by element)" in row["error"]
                 ), (hit, row)
+        for hit in (3, 4, 5):
+            assert rows[hit]["q.y"]["value"] == "4", rows[hit]["q.y"]
             assert rows[hit]["arr[1]"]["value"] == "18" and rows[hit]["ptrs"]["unavailable"]
+        assert rows[5]["t.p.y"]["value"] == "8" and rows[5]["t"].get("value"), rows[5]
         return
     for hit in (3, 4):
         for selector in ("t", "t.p", "t.p.y"):
@@ -373,6 +390,280 @@ def test_a_callers_declaration_still_running_on_its_line_is_withheld(bucket, cap
             ), (hit, row)
         assert rows[hit]["q.y"]["value"] == "4" and rows[hit]["arr[1]"]["value"] == "18"
     assert rows[5]["t.p.y"]["value"] == "8" and rows[5]["ptrs"]["unavailable"]
+
+
+LOOPED = """#include <stdio.h>
+
+struct pair { long x, y; };
+struct trio { long x; struct pair p; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    long total = 0;
+    for (long k = 0; k < 2; k++) {
+        total += twice(100 + k);
+        struct trio t = { seed,
+            { twice(k),
+              seed } };
+        struct pair ps[2] = {
+            { k, seed },
+            { seed, k } };
+        total += twice(t.p.x + ps[1].y);
+    }
+    return total;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+@pytest.fixture(
+    params=[("c", "clang"), ("c", "gcc"), ("cpp", "clang"), ("cpp", "gcc")],
+    ids=["c-clang", "c-gcc", "cpp-clang", "cpp-gcc"],
+)
+def looped(request, tmp_path, monkeypatch):
+    """LOOPED, built as C or C++ by clang or GCC (ids `c-gcc`, `cpp-clang`, …)."""
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    language, family = request.param
+    if language == "cpp":
+        compiler, why = cxx_for(family)
+        variable = "PEEKY_NATIVE_CXX"
+    else:
+        compiler, why = os.environ.get("PEEKY_NATIVE_CC", "clang"), None
+        if family == "gcc":
+            compiler, why = gcc(), "needs a gcc that is GCC"
+        elif is_gcc(compiler):
+            compiler, why = None, "this lane builds C with GCC; the clang lanes run the clang case"
+        variable = "PEEKY_NATIVE_CC"
+    if compiler is None:
+        pytest.skip(why)
+    monkeypatch.setenv(variable, compiler)
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+
+    def write(text, name="looped"):
+        path = tmp_path / f"{name}.{language}"
+        path.write_text(text.replace("<stdio.h>", "<cstdio>") if language == "cpp" else text)
+        return path
+
+    return SimpleNamespace(language=language, family=family, write=write)
+
+
+@pytest.mark.timeout(300)
+def test_a_callers_aggregate_is_read_once_its_lines_have_run_on_this_pass(looped, capsys):
+    # g++ gives `struct trio t = { seed,` no code of its own, and g++ and clang give
+    # `struct pair ps[2] = {` none: a caller frame withheld them even after their stores,
+    # at the call on line 26 (on main). Read once all of their lines' code comes before
+    # the call; withheld above them (on the next pass, line 19 sees the last pass's
+    # values) and while they run. GCC's C gives both lines code (unchanged).
+    selectors = ["t", "t.x", "t.p.x", "t.p.y", "ps", "ps[0].x", "ps[1].y"]
+    path = looped.write(LOOPED)
+    rows = {hit: _frame_one(capsys, path, 7, hit, *selectors) for hit in range(1, 7)}
+    for hit in (1, 2, 4, 5):
+        for selector in selectors:
+            row = rows[hit][selector]
+            line = 20 if selector.startswith("t") else 23
+            assert "value" not in row and f"line {line}" in row["error"], (hit, row)
+    for hit, k in ((3, 0), (6, 1)):
+        values = {selector: rows[hit][selector].get("value") for selector in selectors}
+        assert values["t"] is not None and values["ps"] is not None, (hit, rows[hit])
+        assert {s: values[s] for s in selectors if "." in s} == {
+            "t.x": "5",
+            "t.p.x": str(2 * k),
+            "t.p.y": "5",
+            "ps[0].x": str(k),
+            "ps[1].y": str(k),
+        }, (hit, rows[hit])
+
+
+# The same, where a unit may optimize a function beyond -O0 on its own (review of PR #366):
+# its code may leave source order, so the line table proves nothing.
+OPTIMIZING = {
+    "attribute": LOOPED.replace(
+        "__attribute__((noinline)) static long run(",
+        '__attribute__((noinline, optimize("reorder-blocks"))) static long run(',
+    ),
+    "pragma": LOOPED.replace(
+        "#include <stdio.h>\n\n", '#include <stdio.h>\n#pragma GCC optimize ("reorder-blocks")\n'
+    ),
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("kind", sorted(OPTIMIZING))
+def test_a_callers_aggregate_in_a_unit_that_may_optimize_a_function_is_withheld(
+    looped, capsys, kind
+):
+    # On the PR's first head, `ps` was read at line 26 with `optimize("reorder-blocks")` on
+    # `run`, or `#pragma GCC optimize` above it: the build's -O0 was taken as proof.
+    if looped.language == "c" and looped.family == "gcc":
+        pytest.skip("GCC's C gives these declarations' first lines code: the rule is not used")
+    path = looped.write(OPTIMIZING[kind])
+    withheld = ["ps", "ps[1].y"] + (["t", "t.p.x"] if looped.language == "cpp" else [])
+    if looped.family == "clang":
+        withheld = withheld[:2]
+    for hit in (3, 6):
+        rows = _frame_one(capsys, path, 7, hit, *withheld)
+        for selector in withheld:
+            row = rows[selector]
+            line = 20 if selector.startswith("t") else 23
+            assert "value" not in row and (
+                f"declared on line {line}, which has no code of its own" in row["error"]
+            ), (hit, row)
+
+
+INLINED = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+static inline __attribute__((always_inline)) long lifted(long v) {
+    long r = twice(v);
+    return r + 1;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    struct pair ps[2] = {
+        { seed, lifted(1) },
+        { seed, seed } };
+    long total = lifted(ps[0].y);
+    total += twice(ps[1].y);
+    return total;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+def _run_rows(capsys, path, line, hit, *selectors):
+    """`session get` of ``selectors`` in the caller frame that runs `run` (frame 1, or frame
+    2 above an inlined call's), at ``hit`` of ``line``: (frame, rows), or (frame, the
+    error) where Peeky refuses to read that frame."""
+    assert main(["session", "start", str(path), "--at", str(line), "--hit", str(hit)]) == 0
+    capsys.readouterr()
+    try:
+        for frame in (1, 2):
+            main(["session", "get", "--frame", str(frame), *selectors, "--json"])
+            found = json.loads(capsys.readouterr().out)
+            if isinstance(found, dict):
+                return frame, found["error"]
+            rows = {row["selector"]: row for row in found}
+            if all("run" in str(row.get("function")) for row in rows.values()):
+                return frame, rows
+        raise AssertionError(f"no frame runs `run` at hit {hit}: {rows}")
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_a_callers_aggregate_above_an_inlined_call_is_withheld(looped, capsys):
+    # Review of PR #366: LLDB gives the caller of an inlined call (`lifted`, always_inline)
+    # the address where that call's code starts, which is no return address. On the PR's
+    # first head, `ps` was read there at line 24 by taking it as one. Withheld inside and
+    # after its declaration above an inlined call; read in a physical call's caller.
+    if looped.language == "c" and looped.family == "gcc":
+        pytest.skip("GCC's C gives these declarations' first lines code: the rule is not used")
+    path = looped.write(INLINED, "inlined")
+    selectors = ("ps", "ps[0].y", "ps[1].y")
+    for hit in (1, 2):
+        frame, rows = _run_rows(capsys, path, 6, hit, *selectors)
+        assert frame == 2, (hit, rows)
+        if "code" in rows:
+            # LLDB shows the caller of an inlined call at the call's line; where g++ gives
+            # that line no code of its own, Peeky refuses the frame (as on main).
+            assert rows["code"] == "DEBUGGER_ERROR" and looped.family == "gcc", rows
+            assert "stopped line does not match prepared symbols" in rows["message"], rows
+            continue
+        for selector in selectors:
+            row = rows[selector]
+            assert "value" not in row and "declared on line 21" in row["error"], (hit, row)
+    frame, rows = _run_rows(capsys, path, 6, 3, *selectors)
+    assert frame == 1 and rows["ps"]["value"] == "[{x = 5, y = 3}, {x = 5, y = 5}]", rows
+    assert rows["ps[0].y"]["value"] == "3" and rows["ps[1].y"]["value"] == "5", rows
+
+
+TAIL = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static long leaf(long v) {
+    long r = twice(v);
+    return r + 1;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    struct pair ps[2] = {
+        { seed, seed + 1 },
+        { seed, seed + 2 } };
+    __attribute__((musttail)) return leaf(ps[1].y);
+}
+
+int main(void) {
+    printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_tail_calls_caller_is_never_read_as_a_physical_caller(looped, capsys):
+    # Review round 2 of PR #366: `run` tail-calls `leaf` (`musttail`, which works at -O0),
+    # so it has no frame of its own while `twice` runs. LLDB rebuilds one only from a
+    # call site the debug information marks a tail call, which clang gives none of at
+    # -O0: the stack is twice, leaf, main. A rebuilt `run` would not be read either
+    # (NativeSession._resume, unit-tested).
+    if looped.family == "gcc":
+        pytest.skip("GCC 13 has no `musttail`")
+    path = looped.write(TAIL, "tail")
+    assert main(["session", "start", str(path), "--at", "6", "--json"]) == 0
+    capsys.readouterr()
+    functions = []
+    try:
+        for frame in (1, 2, 3):
+            main(["session", "get", "--frame", str(frame), "ps", "ps[1].y", "--json"])
+            found = json.loads(capsys.readouterr().out)
+            if isinstance(found, dict):
+                break
+            rows = {row["selector"]: row for row in found}
+            functions.append(str(rows["ps"].get("function")))
+            if "run" in functions[-1]:
+                assert not any("value" in row for row in rows.values()), rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert "leaf" in functions[0] and "main" in functions[1], functions
 
 
 HELPERS = """#include <stdio.h>

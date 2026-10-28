@@ -134,7 +134,8 @@ int main() {
 @pytest.mark.timeout(120)
 def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys):
     # lldb-dap lists function-local statics outside the Locals scope: `calls` is not a
-    # visible local here, yet the code means the static, not this->calls.
+    # visible local here, yet the code means the static, not this->calls. #364: the static
+    # is read.
     (ring / "ring.cpp").write_text(STATIC)
     code = main(
         [
@@ -152,7 +153,7 @@ def test_a_static_that_shadows_a_member_is_never_read_as_the_member(ring, capsys
     result = json.loads(capsys.readouterr().out)
     assert code == 0, result.get("error")
     rows = {row["selector"]: row for row in result["rows"]}
-    assert "value" not in rows["calls"] and "if the code means the member" in rows["calls"]["error"]
+    assert rows["calls"]["value"] == "101", rows["calls"]
     assert rows["this.calls"]["value"] == "7"
     assert "static calls=101" in result["output"]
 
