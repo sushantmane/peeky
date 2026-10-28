@@ -118,7 +118,16 @@ def test_a_stop_the_debugger_does_not_describe_in_time_fails_and_is_never_shown_
         worker.dispatch("wait", {"session_id": "session", "timeout": 1})
     error = classify(caught.value)
     assert error["code"] == "TIMEOUT" and error["session_closed"] is True, error
-    assert error["message"].startswith("A stop is never shown without its line, function and")
+    assert error["message"] == (
+        (
+            "A stop is never shown without its line and function: the debugger did not give "
+            "this stop's line and function within 15 s"
+            if stalled == "frame"
+            else "A stop is never shown without the breakpoint it is at: the debugger did not "
+            "say within 15 s which breakpoint this stop is at"
+        )
+        + ", so the session was closed. Start again once the machine is less busy"
+    ), error
     assert error["hint"].startswith("The debugger stalled at a stop. Start again"), error
     assert worker.dap is None and dap.closed == {"terminate": True}
     (asked,) = [timeout for command, timeout, _ in dap.calls if command == "stackTrace"]

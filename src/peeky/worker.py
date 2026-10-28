@@ -844,6 +844,8 @@ class DebugWorker:
         limit = self.stop_read_limit()
         if limit <= 0:
             return None
+        # What was being read when the debugger stalled: its error says only that.
+        reading = "frame"
         try:
             levels = 20 if self.stop_reason in STEP_STOPS else 1
             stack = self.dap.request(
@@ -865,15 +867,21 @@ class DebugWorker:
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")
+            reading = "place"
             self.stop_place = self.place_of(frame)
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
         except TimeoutError as exc:
             if self.pause_spent():
                 return None
             raise TimeoutError(
-                "A stop is never shown without its line, function and place: the debugger "
-                f"did not give them within {STOP_READ_S} s, so the session was closed. Start "
-                "again once the machine is less busy"
+                (
+                    "A stop is never shown without its line and function: the debugger did not "
+                    f"give this stop's line and function within {STOP_READ_S} s"
+                    if reading == "frame"
+                    else "A stop is never shown without the breakpoint it is at: the debugger "
+                    f"did not say within {STOP_READ_S} s which breakpoint this stop is at"
+                )
+                + ", so the session was closed. Start again once the machine is less busy"
             ) from exc
         except Exception:
             return None
