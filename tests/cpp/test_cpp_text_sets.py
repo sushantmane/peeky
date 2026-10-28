@@ -3,8 +3,8 @@ and libstdc++ (Linux). The text, its NUL and the new size go in the string's own
 or its heap buffer, within its current capacity: never reallocating, never past it.
 
 Built by clang and by g++ (#167). LLDB 18 and 20 read GCC's string buffer (`char[16]`)
-as `char[0]`, so a text in it cannot be set character by character: refused, and said
-why, where the debugger cannot write memory."""
+as `char[0]`, so a text in it cannot be set character by character: lldb-dap 20, which
+reads memory but has no writeMemory request, writes it with LLDB's `memory write`."""
 
 import json
 import os
@@ -32,11 +32,6 @@ int main() {
 }
 """
 OBSERVE = next(i for i, text in enumerate(TEXTS.splitlines(), 1) if "// OBSERVE" in text)
-MISREAD = (
-    "the debugger misreads this build's string buffer as char[0] (its debug information says "
-    "char[16]), so it cannot set the text's characters one by one, and this debugger cannot "
-    "write memory (lldb-dap 21 can)"
-)
 LONG = "a heap string, changed in place"
 
 
@@ -87,11 +82,6 @@ def test_a_std_string_takes_a_text_within_its_capacity(texts, cxx, capsys):
         # lldb-dap 18 shows no address and reads no memory: where the text is held (in
         # the string or on the heap) cannot be told.
         refusal(code, result, "cannot read memory (lldb-dap 20 can)")
-        return
-    if cxx == "gcc" and not writes:
-        refusal(code, result, f"`shortv` cannot be changed: {MISREAD}")
-        code, result = probe(capsys, texts, "--set", f'longv="{LONG}"')
-        refusal(code, result, "its text is on the heap, and this debugger cannot write memory")
         return
     assert code == 0, result.get("error")
     # The reference sees the new size: the string itself changed, in place.
@@ -161,10 +151,10 @@ def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(tex
     assert main([*at, "--json", "--quiet"]) == 0
     result = json.loads(capsys.readouterr().out)
     reads = reads_memory(result["rows"])
-    # A string in its own buffer is changed element by element where the debugger reads
-    # but does not write memory (lldb-dap 20): `nm`; `s` is on the heap. Never GCC's,
-    # whose buffer LLDB misreads.
-    elementwise = reads and cxx == "clang"
+    # A string in its own buffer is changed where the debugger reads but does not write
+    # memory (lldb-dap 20): `nm`, element by element, or with LLDB's `memory write` where
+    # it misreads the buffer (GCC's); `s` is on the heap.
+    elementwise = reads
     marks = {row["selector"]: row.get("settable") for row in result["rows"]}
     assert marks == {
         "s": sys.platform == "darwin",
@@ -184,8 +174,7 @@ def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(tex
     code = main([*at, "--set", 'nm="renamed"', "--json", "--quiet"])
     result = json.loads(capsys.readouterr().out)
     if not elementwise:
-        expected = MISREAD if reads else "cannot read memory"
-        assert code == 1 and expected in result["error"]["message"], result
+        assert code == 1 and "cannot read memory" in result["error"]["message"], result
         return
     assert code == 0 and "NM:[renamed]" in result["output"], result
     if sys.platform != "darwin":

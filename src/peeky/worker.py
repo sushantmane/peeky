@@ -27,6 +27,7 @@ from peeky.names import display_function, short_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
 from peeky.text_sets import held_in_place, parse_text, text_kind
+from peeky.textlines import split_lines
 
 VIEW_SECONDS = 10
 # C and C++ previews (#136): their own budget per inspection or expansion, so that
@@ -5543,7 +5544,7 @@ class DebugWorker:
         if not getattr(self.runtime, "text_language", None):
             return False
         try:
-            kind = self.text_storage(self.runtime, variable, frame)[0]
+            kind, shape = self.text_storage(self.runtime, variable, frame)
         except ValueError:
             return False
         check = getattr(self.runtime, "text_settable", None)
@@ -5554,13 +5555,32 @@ class DebugWorker:
             return True
         if kind != "std" or not reads:
             return False
-        # lldb-dap 20 changes a string in its own short buffer, element by element.
+        # lldb-dap 20 changes a string in its own short buffer, element by element, or
+        # with LLDB's `memory write` where it misreads that buffer (GCC's).
         memory = TextMemory(
             lambda parent, count=None: self.view_fetch(parent),
             None,
             lambda address, count: self.view_read(f"0x{address:x}", count),
+            poke=self.memory_command,
         )
-        return held_in_place(variable, memory)
+        return held_in_place(variable, memory, shape)
+
+    def memory_command(self, address, data):
+        """Write ``data`` at ``address`` with LLDB's own `memory write` command, through
+        lldb-dap's command escape, for a debugger with readMemory but no writeMemory
+        (lldb-dap 20; text_sets.Memory.poke). LLDB echoes the command and prints nothing
+        else when it succeeds; anything else it prints is its failure (RuntimeError)."""
+        if not 0 < len(data) <= 64 or not 0 < address < 2**64:
+            raise ValueError("Memory write exceeds limit")
+        command = f"memory write -f x -s 1 0x{address:x} " + " ".join(f"0x{b:02x}" for b in data)
+        reply = self.dap.request("evaluate", {"expression": f"`{command}", "context": "repl"})
+        said = [
+            line
+            for line in split_lines(str(reply.get("result") or ""))
+            if line.strip() and line.strip() != f"(lldb) {command}"
+        ]
+        if said:
+            raise RuntimeError(" ".join(said)[:200])
 
     def view_settable(self, variable, frame, why=None):
         """The `[settable]` mark of a root string a runtime's view shows (a Rust String,
@@ -5635,11 +5655,15 @@ class DebugWorker:
                 raise RuntimeError(f"wrote {reply.get('bytesWritten')} of {len(data)} bytes")
 
         capabilities = self.capabilities
+        reads = capabilities.get("supports_read_memory")
+        writes = capabilities.get("supports_write_memory")
         memory = TextMemory(
             children,
             change,
-            read if capabilities.get("supports_read_memory") else None,
-            write if capabilities.get("supports_write_memory") else None,
+            read if reads else None,
+            write if writes else None,
+            # lldb-dap 20: LLDB's own command, for a buffer it lists no characters of.
+            self.memory_command if reads and not writes else None,
         )
         changed = change_text(variable, text, memory, relist, kind, shape)
         runtime.assert_current()

@@ -1106,9 +1106,6 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
   is placed in read-only data. lldb-dap lists no static storage among a frame's locals. So `cs` is
   `not found`, and the row says that `main` declares it in static storage. A `static` local gets
   the same note, in C too.
-- **A text change** to a `std::string` that holds its text in its own buffer is refused with
-  lldb-dap 20. LLDB reads that buffer as `char[0]`, so Peeky can't set its characters one by one.
-  The refusal says so ([details](#change-a-text)).
 - **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, is
   withheld in a caller frame. GCC gives its declaration's first line no code of its own, so Peeky
   can't tell when it is stored.
@@ -1618,6 +1615,11 @@ Which debugger can write what:
 
 A heap buffer needs lldb-dap 21. Rows say `[settable]` where a change can be made: with lldb-dap
 20, a string whose text is in its own buffer.
+
+In a GCC build, LLDB reads a string's own buffer as `char[0]` and lists none of its characters.
+So with lldb-dap 20, Peeky writes the text there with LLDB's `memory write` command. Any text
+that fits works, not only printable ASCII. Peeky then reads the bytes and the size back. With
+lldb-dap 18, which reads no memory, the change is still refused: use lldb-dap 20 or later.
 
 Peeky never writes a text:
 
