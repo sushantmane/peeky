@@ -41,7 +41,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
+from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -2569,21 +2569,22 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def _stored_before(function, source, at, end, line, address):
+def _stored_before(function, source, at, end, line, resume):
     """Whether all the code of a declaration on lines ``at``-``end`` of ``source`` has run
-    in a caller frame of ``function`` on ``line``, whose call returns to ``address``
-    (unslid), by the line table of a build that lays code out in source order (-O0).
+    in a caller frame of ``function`` on ``line``, whose call returns to ``resume``
+    (unslid: a physical call's, in a function laid out in source order; see
+    NativeSession._resume), by the line table.
 
     The frame's line is below the declaration's end, and each of the function's rows of
     those lines runs (to the function's next row, or the end of its code there) before
-    the call does, at ``address`` less one; at least one does. A loop around both runs
+    the call does, at ``resume`` less one; at least one does. A loop around both runs
     the declaration again before the call on each pass. Above the declaration (a loop's
     next pass), within it, with a row of its lines after the call (a loop's code placed
     there), or with anything unknown: False. A jump past the declaration is judged
     after (declared_skipped)."""
-    if address is None or end is None or line <= end:
+    if resume is None or end is None or line <= end:
         return False
-    call, ranges = address - 1, function.get("ranges", ())
+    call, ranges = resume - 1, function.get("ranges", ())
     # Every row the function runs, by address.
     order = function.get("order") or ()
     if not any(low <= call < high for low, high in ranges):
@@ -2605,7 +2606,7 @@ def _stored_before(function, source, at, end, line, address):
     return found
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, in_order=False):
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, resume=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2623,9 +2624,10 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
     designated initializer over several lines). Declared on a line with no code of its
     own: an array of structs, a nested struct or a 2-D array is stored element by
     element on its elements' lines (GCC's C++ does so for `struct trio t = { seed,`), so
-    only the code of the statement's lines (``ends``) places it: it counts unless the
-    build lays code out in source order (``in_order``: -O0) and that code has all run
-    before the call (_stored_before). With the address or its function unknown, every
+    only the code of the statement's lines (``ends``) places it: it counts unless that
+    code has all run before the call (_stored_before), which needs ``resume``: the
+    frame's return address where Peeky proves it a physical call's in a function laid
+    out in source order (NativeSession._resume), else None. With the address or its function unknown, every
     declaration at or above the line counts. And so does one whose statement, as the
     source writes it (``ends``), still runs on the frame's line: `struct trio t = {
     seed,` / `{ twice(3), ... } };` has code of its first line, all of it before the
@@ -2661,8 +2663,8 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
                 return at, "file", declared_in
             span = function["rows"].get((source, at))
             if span is None:
-                end = ends(at, base) if in_order and ends is not None else None
-                if _stored_before(function, source, at, end, line, address):
+                end = ends(at, base) if resume is not None and ends is not None else None
+                if _stored_before(function, source, at, end, line, resume):
                     continue
                 return at, "no code", None
             if at <= line and (at == line or address is None or span[1] >= address):
@@ -3785,6 +3787,9 @@ class NativeTarget:
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
 
+        # Whether each unit may optimize a function beyond the build's level (`optimizes`).
+        optimized = {}
+
         def before_command(workspace, results, command):
             if command == compiles[0]:
                 for source, unit in zip(self.sources, units):
@@ -3798,7 +3803,9 @@ class NativeTarget:
                         )
                         refused.before_launch = True
                         raise refused
-                    refused = c_refusal(path.read_bytes(), self.language == "cpp")
+                    output = path.read_bytes()
+                    refused = c_refusal(output, self.language == "cpp")
+                    optimized[source] = optimizes(output, self.language == "cpp")
                     path.unlink()
                     if refused is not None:
                         raise refused
@@ -3939,6 +3946,9 @@ class NativeTarget:
                 prologues=prologues,
                 code=code,
                 statics=statics,
+                optimized=(
+                    any(optimized.values()) if set(optimized) == set(self.sources) else None
+                ),
             )
             session.assert_current()
             return session
@@ -4731,8 +4741,12 @@ class NativeSession:
         prologues=None,
         code=None,
         statics=(),
+        optimized=None,
     ):
         self.target, self.prepared = target, prepared
+        # Whether a unit may optimize a function beyond the build's level (an `optimize`
+        # attribute or pragma: c_source.optimizes); None where unknown.
+        self.optimized = optimized
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
@@ -6140,7 +6154,7 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
-                in_order=getattr(self.target, "optimization", "O0") == "O0",
+                resume=self._resume(frame),
             )
         ):
             at, why, detail = unfinished
@@ -7277,6 +7291,32 @@ class NativeSession:
             and identity not in getattr(self, "interrupted_ids", ())
         ):
             return address - 1
+        return address
+
+    def _resume(self, frame):
+        """Where a caller frame's call returns (unslid), where Peeky proves it a physical
+        call's in a function laid out in source order, else None. The build is -O0, and
+        no unit may optimize a function on its own (``optimized`` False: no `optimize`
+        attribute or pragma). The frame is above the innermost one, and no signal
+        interrupted it. And no inlined call's code holds its address or the one before
+        it: LLDB gives the caller of an inlined call the address where that call's code
+        starts, which is no return address, and a call from inlined code returns into
+        it."""
+        address = self._unslid(frame)
+        if (
+            address is None
+            or getattr(self.target, "optimization", "O0") != "O0"
+            or getattr(self, "optimized", None) is not False
+            or self._block_pc(frame) != address - 1
+        ):
+            return None
+        code = getattr(self, "code", None) or {}
+        if "dies" not in code:
+            return None
+        if "index" not in code:
+            code["index"] = CodeIndex(code["dies"])
+        if any(each.inline for at in (address - 1, address) for each in code["index"].holding(at)):
+            return None
         return address
 
     def _unslid(self, frame):

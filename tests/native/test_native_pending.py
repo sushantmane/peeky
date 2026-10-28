@@ -2,6 +2,7 @@
 
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 from native_compilers import cxx_for, cxx_is_gcc, gcc, is_gcc
@@ -452,9 +453,13 @@ def looped(request, tmp_path, monkeypatch):
         pytest.skip(why)
     monkeypatch.setenv(variable, compiler)
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
-    path = tmp_path / f"looped.{language}"
-    path.write_text(LOOPED.replace("<stdio.h>", "<cstdio>") if language == "cpp" else LOOPED)
-    return path
+
+    def write(text, name="looped"):
+        path = tmp_path / f"{name}.{language}"
+        path.write_text(text.replace("<stdio.h>", "<cstdio>") if language == "cpp" else text)
+        return path
+
+    return SimpleNamespace(language=language, family=family, write=write)
 
 
 @pytest.mark.timeout(300)
@@ -465,7 +470,8 @@ def test_a_callers_aggregate_is_read_once_its_lines_have_run_on_this_pass(looped
     # the call; withheld above them (on the next pass, line 19 sees the last pass's
     # values) and while they run. GCC's C gives both lines code (unchanged).
     selectors = ["t", "t.x", "t.p.x", "t.p.y", "ps", "ps[0].x", "ps[1].y"]
-    rows = {hit: _frame_one(capsys, looped, 7, hit, *selectors) for hit in range(1, 7)}
+    path = looped.write(LOOPED)
+    rows = {hit: _frame_one(capsys, path, 7, hit, *selectors) for hit in range(1, 7)}
     for hit in (1, 2, 4, 5):
         for selector in selectors:
             row = rows[hit][selector]
@@ -481,6 +487,126 @@ def test_a_callers_aggregate_is_read_once_its_lines_have_run_on_this_pass(looped
             "ps[0].x": str(k),
             "ps[1].y": str(k),
         }, (hit, rows[hit])
+
+
+# The same, where a unit may optimize a function beyond -O0 on its own (review of PR #366):
+# its code may leave source order, so the line table proves nothing.
+OPTIMIZING = {
+    "attribute": LOOPED.replace(
+        "__attribute__((noinline)) static long run(",
+        '__attribute__((noinline, optimize("reorder-blocks"))) static long run(',
+    ),
+    "pragma": LOOPED.replace(
+        "#include <stdio.h>\n\n", '#include <stdio.h>\n#pragma GCC optimize ("reorder-blocks")\n'
+    ),
+}
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("kind", sorted(OPTIMIZING))
+def test_a_callers_aggregate_in_a_unit_that_may_optimize_a_function_is_withheld(
+    looped, capsys, kind
+):
+    # On the PR's first head, `ps` was read at line 26 with `optimize("reorder-blocks")` on
+    # `run`, or `#pragma GCC optimize` above it: the build's -O0 was taken as proof.
+    if looped.language == "c" and looped.family == "gcc":
+        pytest.skip("GCC's C gives these declarations' first lines code: the rule is not used")
+    path = looped.write(OPTIMIZING[kind])
+    withheld = ["ps", "ps[1].y"] + (["t", "t.p.x"] if looped.language == "cpp" else [])
+    if looped.family == "clang":
+        withheld = withheld[:2]
+    for hit in (3, 6):
+        rows = _frame_one(capsys, path, 7, hit, *withheld)
+        for selector in withheld:
+            row = rows[selector]
+            line = 20 if selector.startswith("t") else 23
+            assert "value" not in row and (
+                f"declared on line {line}, which has no code of its own" in row["error"]
+            ), (hit, row)
+
+
+INLINED = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static void scribble(void) {
+    volatile long junk[96];
+    for (int i = 0; i < 96; i++) junk[i] = 0x5150 + i;
+}
+
+static inline __attribute__((always_inline)) long lifted(long v) {
+    long r = twice(v);
+    return r + 1;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    struct pair ps[2] = {
+        { seed, lifted(1) },
+        { seed, seed } };
+    long total = lifted(ps[0].y);
+    total += twice(ps[1].y);
+    return total;
+}
+
+int main(void) {
+    scribble();
+    printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+def _run_rows(capsys, path, line, hit, *selectors):
+    """`session get` of ``selectors`` in the caller frame that runs `run` (frame 1, or frame
+    2 above an inlined call's), at ``hit`` of ``line``: (frame, rows), or (frame, the
+    error) where Peeky refuses to read that frame."""
+    assert main(["session", "start", str(path), "--at", str(line), "--hit", str(hit)]) == 0
+    capsys.readouterr()
+    try:
+        for frame in (1, 2):
+            main(["session", "get", "--frame", str(frame), *selectors, "--json"])
+            found = json.loads(capsys.readouterr().out)
+            if isinstance(found, dict):
+                return frame, found["error"]
+            rows = {row["selector"]: row for row in found}
+            if all("run" in str(row.get("function")) for row in rows.values()):
+                return frame, rows
+        raise AssertionError(f"no frame runs `run` at hit {hit}: {rows}")
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(300)
+def test_a_callers_aggregate_above_an_inlined_call_is_withheld(looped, capsys):
+    # Review of PR #366: LLDB gives the caller of an inlined call (`lifted`, always_inline)
+    # the address where that call's code starts, which is no return address. On the PR's
+    # first head, `ps` was read there at line 24 by taking it as one. Withheld inside and
+    # after its declaration above an inlined call; read in a physical call's caller.
+    if looped.language == "c" and looped.family == "gcc":
+        pytest.skip("GCC's C gives these declarations' first lines code: the rule is not used")
+    path = looped.write(INLINED, "inlined")
+    selectors = ("ps", "ps[0].y", "ps[1].y")
+    for hit in (1, 2):
+        frame, rows = _run_rows(capsys, path, 6, hit, *selectors)
+        assert frame == 2, (hit, rows)
+        if "code" in rows:
+            # LLDB shows the caller of an inlined call at the call's line; where g++ gives
+            # that line no code of its own, Peeky refuses the frame (as on main).
+            assert rows["code"] == "DEBUGGER_ERROR" and looped.family == "gcc", rows
+            assert "stopped line does not match prepared symbols" in rows["message"], rows
+            continue
+        for selector in selectors:
+            row = rows[selector]
+            assert "value" not in row and "declared on line 21" in row["error"], (hit, row)
+    frame, rows = _run_rows(capsys, path, 6, 3, *selectors)
+    assert frame == 1 and rows["ps"]["value"] == "[{x = 5, y = 3}, {x = 5, y = 5}]", rows
+    assert rows["ps[0].y"]["value"] == "3" and rows["ps[1].y"]["value"] == "5", rows
 
 
 HELPERS = """#include <stdio.h>

@@ -999,10 +999,9 @@ def test_a_callers_aggregate_with_no_code_on_its_line_reads_once_its_lines_have_
     run["rows"] = rows({20: (90, 90), 22: (104, 104), 23: (100, 112), 24: (130, 130)}, "a.c")
     run["locals"] = {"t": {("a.c", 21, True)}}
 
-    def judge(line, address, function=run, ends=statements.end, in_order=True):
-        return declared_unfinished(
-            [function], "t", "a.c", line, address, ends=ends, in_order=in_order
-        )
+    def judge(line, address, function=run, ends=statements.end, proven=True):
+        resume = address if proven else None
+        return declared_unfinished([function], "t", "a.c", line, address, ends=ends, resume=resume)
 
     # Past every address of lines 21-23 (line 23's last row runs to 130): read.
     assert judge(24, 140) is None
@@ -1013,12 +1012,13 @@ def test_a_callers_aggregate_with_no_code_on_its_line_reads_once_its_lines_have_
     # Within or above its lines, wherever the address is: withheld.
     assert judge(23, 140) == (21, "no code", None)
     assert judge(20, 140) == (21, "no code", None)
-    # Unknown: the statement's end, the return address, the function's rows, or code laid
-    # out out of source order (an optimized build).
+    # Unknown: the statement's end, the return address, the function's rows, or a return
+    # address not proven a physical call's in code laid out in source order
+    # (NativeSession._resume).
     assert judge(24, 140, ends=lambda at, name: None) == (21, "no code", None)
     assert judge(24, None) == (21, "no code", None)
     assert judge(24, 140, function={**run, "order": ()}) == (21, "no code", None)
-    assert judge(24, 140, in_order=False) == (21, "no code", None)
+    assert judge(24, 140, proven=False) == (21, "no code", None)
     # A row of the declaration's lines after the call (a loop's code there, which runs
     # again after it): withheld.
     looped = {**run, "order": (*order, (145, "a.c", 22))}
@@ -3404,6 +3404,45 @@ def code_die(offset, low, high, root, inline=False, depth=1, parent=None, call=N
     from peeky.native import CodeDie
 
     return CodeDie(offset, ((low, high),), inline, depth, root, parent, call, {low: first})
+
+
+def test_a_caller_frames_return_address_is_proven_only_where_its_call_is_physical():
+    from peeky.native import NativeSession
+
+    # Review of PR #366: LLDB gives the caller of an inlined call the address where that
+    # call's code starts (0x140), which is no return address, and a call from inlined code
+    # returns into it (0x150). `run` is 0x100-0x200; an inlined call of it is 0x140-0x160.
+    session = NativeSession.__new__(NativeSession)
+    session.load_bias, session.optimized = 0x1000, False
+    session.innermost_id, session.interrupted_ids = 0, set()
+    session.target = SimpleNamespace(optimization="O0")
+    session.code = {
+        "dies": (
+            code_die(1, 0x100, 0x200, 1),
+            code_die(2, 0x140, 0x160, 3, inline=True, depth=2, parent=1),
+        )
+    }
+
+    def resume(address, identity=1, **changes):
+        for key, value in changes.items():
+            setattr(session, key, value)
+        frame = {"id": identity, "instructionPointerReference": hex(0x1000 + address)}
+        return session._resume(frame)
+
+    assert resume(0x130) == 0x130 and resume(0x170) == 0x170
+    # Held by inlined code, or just after it (the address before is its last).
+    assert resume(0x140) is None and resume(0x150) is None and resume(0x160) is None
+    # The innermost frame, and one a signal interrupted, have no return address.
+    assert resume(0x130, identity=0) is None
+    assert resume(0x130, interrupted_ids={1}) is None
+    # An optimized build, a unit that may optimize a function on its own (an `optimize`
+    # attribute or pragma), or one Peeky could not read.
+    assert resume(0x130, interrupted_ids=set(), optimized=True) is None
+    assert resume(0x130, optimized=None) is None
+    session.optimized = False
+    assert resume(0x130, target=SimpleNamespace(optimization="O1")) is None
+    session.target = SimpleNamespace(optimization="O0")
+    assert resume(0x130, code=None) is None
 
 
 def unplaced_session(tmp_path, language="cpp"):

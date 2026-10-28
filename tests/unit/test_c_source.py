@@ -2193,3 +2193,29 @@ def test_identifiers_in_any_script_are_read_as_names():
         Statements("int f(void) {\n  int\u00a0q = 1;\n  return q;\n}\n").declared_through(2, "q")
         == 2
     )
+
+
+@pytest.mark.parametrize(
+    "unit, found",
+    [
+        ('__attribute__((optimize("O2"))) long run(long seed);\n', True),
+        ('__attribute__((__optimize__ ("reorder-blocks"))) long run(long);\n', True),
+        ('[[gnu::optimize("O2")]] long run(long);\n', True),
+        ('#pragma GCC optimize ("reorder-blocks")\n', True),
+        ('#pragma GCC optimize "O1"\n', True),
+        ("  #  pragma clang optimize off\n", True),
+        # As `-E` writes a `_Pragma`, a pragma line too.
+        ('# 4 "a.c"\n#pragma GCC optimize("O1")\n', True),
+        # A comment, a literal, a file's name, a name that is no call, other pragmas.
+        ('/* optimize(it) */ const char *s = "optimize(";\n# 1 "optimize.h"\n', False),
+        ("auto f = std::regex_constants::optimize;\n", False),
+        ('#pragma GCC push_options\n#pragma GCC target ("+crc")\n', False),
+        ("long optimized(long);\n", False),
+    ],
+)
+def test_a_unit_that_may_optimize_a_function_on_its_own_is_found(unit, found):
+    from peeky.c_source import optimizes
+
+    # Review of PR #366: `__attribute__((optimize(...)))` and `#pragma GCC optimize`
+    # optimize a function beyond the build's -O0, where its code may leave source order.
+    assert optimizes(unit.encode()) is found
