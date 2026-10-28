@@ -563,7 +563,9 @@ def test_the_worker_says_it_once_at_launch_and_drops_its_per_pass_warning(tmp_pa
         return 2, True
 
     runtime = SimpleNamespace(
-        breakpoint_locations=lambda dap, ids: breakpoint_locations(listing, set(ids)),
+        breakpoint_locations=lambda dap, ids, deadline=None: breakpoint_locations(
+            listing, set(ids)
+        ),
         loop_header_stops=stops,
         source_path=lambda program: program,
     )

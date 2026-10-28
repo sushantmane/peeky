@@ -12,9 +12,9 @@ status=0
 lane() {
   name=$1; shift; start=$SECONDS
   if env "$@" > "/tmp/$name.log" 2>&1; then
-    echo "PASS $name ($((SECONDS - start)) s): $(tail -1 "/tmp/$name.log")"
+    echo "PASS $name ($((SECONDS - start)) s): $(tail -1 "/tmp/$name.log" | cut -c1-300)"
   else
-    echo "FAIL $name ($((SECONDS - start)) s): $(tail -1 "/tmp/$name.log")"; failures "$name"
+    echo "FAIL $name ($((SECONDS - start)) s): $(tail -1 "/tmp/$name.log" | cut -c1-300)"; failures "$name"
     status=1
   fi
 }
@@ -27,11 +27,11 @@ rust=(PEEKY_RUST_LINKER=/usr/bin/clang-18 PEEKY_RUST_DAP=/usr/bin/lldb-dap-18
 # What a failed lane's log says, bounded, so that a failure seen once can be diagnosed:
 # pytest's summary lines, then each failing test's section (its header, its frames'
 # `file:line` lines, its `E` lines and the start of what it printed), at most 8 tests and
-# 300 lines; a lane that is not pytest (quality, wheel) shows its last 40 lines. With
-# PEEKY_LANE_LOGS set to a mounted directory, the whole log is kept there too.
+# 300 lines of 300 characters; a lane that is not pytest (quality, wheel) shows its last
+# 40 lines. With PEEKY_LANE_LOGS set to a mounted directory, the whole log is kept there too.
 failures() {
   log=/tmp/$1.log
-  grep -E '^(FAILED|ERROR) ' "$log" | head -20
+  grep -E '^(FAILED|ERROR) ' "$log" | head -20 | cut -c1-300
   awk '
     /^=+ (FAILURES|ERRORS) =+$/ { on = 1; next }
     /^=+ / { on = 0 }
@@ -43,7 +43,7 @@ failures() {
     /^E / { if (e++ < 25) print; next }
     /^[^ ].*:[0-9]+: / { if (at++ < 10) print }
   ' "$log" | head -300 > /tmp/failures.txt
-  if [ -s /tmp/failures.txt ]; then sed 's/^/  | /' /tmp/failures.txt; else tail -40 "$log" | sed 's/^/  | /'; fi
+  if [ -s /tmp/failures.txt ]; then sed 's/^/  | /' /tmp/failures.txt; else tail -40 "$log" | cut -c1-300 | sed 's/^/  | /'; fi
   if [ -n "${PEEKY_LANE_LOGS:-}" ]; then cp "$log" "$PEEKY_LANE_LOGS/"; fi
 }
 lane quality bash -c 'ruff check . && ruff format --check .'

@@ -67,7 +67,7 @@ def _worker(tmp_path, listings):
     """A worker whose runtime answers `breakpoint list` from ``listings`` in turn."""
     asked = []
 
-    def locations(dap, ids):
+    def locations(dap, ids, deadline=None):
         asked.append(sorted(ids))
         return breakpoint_locations(listings[min(len(asked), len(listings)) - 1], set(ids))
 

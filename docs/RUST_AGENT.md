@@ -83,7 +83,10 @@ Every message is read before deciding. These are fatal instead:
   headers. No step has a shorter wait of its own, save the launch write's 5 s. A program slow to
   start on a loaded machine has the whole deadline, and a slow answer never drops a note.
 - At a stop, its frame is read with the 15 s that `inspect` has. A stall shorter than that keeps
-  the stop's line, function and `stop` number.
+  the stop's line, function and `stop` number. Past it, the request fails with `TIMEOUT` and the
+  session closes: a stop is never shown without them.
+- With a pause budget (`--max-pause`), no read of a stop waits past it. A stop that outlives it
+  while it is read is resumed, as the pause guard does, never returned as a live stop.
 - A compile failure, and `close`, remove the workspace and its parent. A removal that fails is
   raised, or attached to the original error, never ignored.
 

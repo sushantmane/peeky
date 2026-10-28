@@ -129,15 +129,10 @@ def test_a_for_header_has_two_locations_both_before_the_loop(movavg, capsys):
     assert not any("stop" in row for row in result["rows"])
 
 
-@pytest.mark.timeout(600)
-@pytest.mark.parametrize("stall", ["launch", "stop"])
-def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
-    movavg, capsys, monkeypatch, stall
-):
-    # #356: a loaded machine can stall the debugger for seconds. Peeky gave it 5 s to say
-    # where the breakpoint's locations are at launch, and 2 s for the stop's frame, then
-    # left out the loop note, or each hit's stop, without a word. Here lldb-dap is frozen
-    # (SIGSTOP) past each of those waits: everything else still had time.
+def stall(monkeypatch, when, seconds):
+    """Freeze lldb-dap (SIGSTOP) for ``seconds``, once: as the launch asks `breakpoint list`
+    (``when`` "launch"), or at the first stop ("stop"), as a loaded machine may stall it.
+    Returns the timers that resume it, to join."""
     from peeky.dap import DAP
 
     timers = []
@@ -148,7 +143,7 @@ def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
         except ProcessLookupError:
             pass
 
-    def freeze(dap, seconds):
+    def freeze(dap):
         os.kill(dap.process.pid, signal.SIGSTOP)
         timers.append(threading.Timer(seconds, resume, (dap.process.pid,)))
         timers[-1].start()
@@ -156,19 +151,32 @@ def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
     accept, send = DAP._accept, DAP.send
 
     def accepted(self, body):
-        if stall == "stop" and not timers and isinstance(body, dict):
+        if when == "stop" and not timers and isinstance(body, dict):
             if body.get("type") == "event" and body.get("event") == "stopped":
-                freeze(self, 2.5)
+                freeze(self)
         return accept(self, body)
 
     def sent(self, command, arguments=None, *args, **kwargs):
         text = (arguments or {}).get("expression", "") if command == "evaluate" else ""
-        if stall == "launch" and not timers and text.startswith("`breakpoint list"):
-            freeze(self, 5.5)
+        if when == "launch" and not timers and text.startswith("`breakpoint list"):
+            freeze(self)
         return send(self, command, arguments, *args, **kwargs)
 
     monkeypatch.setattr(DAP, "_accept", accepted)
     monkeypatch.setattr(DAP, "send", sent)
+    return timers
+
+
+@pytest.mark.timeout(600)
+@pytest.mark.parametrize(("when", "seconds"), [("launch", 5.5), ("stop", 2.5)])
+def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
+    movavg, capsys, monkeypatch, when, seconds
+):
+    # #356: a loaded machine can stall the debugger for seconds. Peeky gave it 5 s to say
+    # where the breakpoint's locations are at launch, and 2 s for the stop's frame, then
+    # left out the loop note, or each hit's stop, without a word. Here lldb-dap is frozen
+    # past each of those waits: everything else still had time.
+    timers = stall(monkeypatch, when, seconds)
     try:
         result = probe(movavg, capsys, at("FOR"), "--hits", "all")
     finally:
@@ -178,6 +186,26 @@ def test_a_debugger_stalled_for_seconds_still_gives_the_loop_note_and_each_stop(
     assert result["hits"] == 2 and not per_pass(result)
     assert [w for w in result["warnings"] if "is a loop header: it stops twice" in w]
     assert [(row["stop"], row["stops"]) for row in result["rows"]] == [(1, 2), (2, 2)]
+
+
+@pytest.mark.timeout(600)
+def test_a_debugger_stalled_past_a_stops_read_fails_the_probe_with_no_stop_shown(
+    movavg, capsys, monkeypatch
+):
+    # Review of #356: frozen past the 15 s a stop's frame is read with, the stop was still
+    # served, its row with no `stop` (and no line or function): as if it were all there
+    # was. The probe now fails with TIMEOUT, and shows no row for it.
+    timers = stall(monkeypatch, "stop", 15.5)
+    command = ["probe", str(movavg), "--at", at("FOR"), "--capture", "mean", "--hits", "all"]
+    try:
+        code = main([*command, "--json", "--quiet", "--", "3", "3,6,9,12"])
+    finally:
+        for timer in timers:
+            timer.join()
+    result = json.loads(capsys.readouterr().out)
+    assert code != 0 and result["status"] == "failed", result
+    assert result["error"]["code"] == "TIMEOUT" and result["error"]["session_closed"] is True
+    assert result["rows"] == [] and len(timers) == 1
 
 
 SHAPES = """#[inline(never)]
