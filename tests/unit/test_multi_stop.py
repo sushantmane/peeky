@@ -67,7 +67,7 @@ def _worker(tmp_path, listings):
     """A worker whose runtime answers `breakpoint list` from ``listings`` in turn."""
     asked = []
 
-    def locations(dap, ids):
+    def locations(dap, ids, deadline=None):
         asked.append(sorted(ids))
         return breakpoint_locations(listings[min(len(asked), len(listings)) - 1], set(ids))
 
@@ -136,6 +136,38 @@ def test_locations_placed_before_the_program_loaded_are_asked_again_once(tmp_pat
     # A pc none of them names, even after asking again: no place, no more asks.
     assert worker.place_of({**frame, "instructionPointerReference": "0x200000000"}) is None
     assert len(asked) == 2
+
+
+def test_where_breakpoints_are_is_asked_as_long_as_setting_them_takes(monkeypatch):
+    # #356: `breakpoint list` had 5 s, though setting the breakpoints had 15 (and a
+    # launch's questions its whole deadline): a stall past 5 s on a loaded machine left out
+    # the line's per-pass warning, and each hit's stop, without a word.
+    import time
+
+    from peeky.dap import ResponseTimeout
+    from peeky.native import NativeSession
+
+    class Dap:
+        """lldb-dap stalled: it answers 6 s late."""
+
+        def __init__(self):
+            self.waits = []
+
+        def request(self, command, arguments, timeout=15):
+            self.waits.append(timeout)
+            if timeout < 6:
+                raise ResponseTimeout("Debugger response timed out; outcome may be uncertain")
+            return {"result": LISTING}
+
+    session = object.__new__(NativeSession)
+    dap = Dap()
+    assert len(session.breakpoint_locations(dap, [1]) or ()) == 3 and dap.waits == [15]
+    # At launch: until its deadline, and nothing is asked once it has passed.
+    found = session.breakpoint_locations(dap, [1], deadline=time.monotonic() + 30)
+    assert len(found or ()) == 3 and 25 < dap.waits[-1] <= 30
+    with pytest.raises(TimeoutError):
+        session.breakpoint_locations(dap, [1], deadline=time.monotonic() - 1)
+    assert len(dap.waits) == 2
 
 
 def test_the_table_has_a_stop_column_only_where_a_line_has_several(tmp_path):

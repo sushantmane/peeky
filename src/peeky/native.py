@@ -24,6 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISREG
 from typing import NamedTuple
 
 from peeky.adapters import PythonAdapter, locals_only
@@ -3765,6 +3766,147 @@ def static_variables(dies, limit=MAX_STATICS):
     return tuple(found)
 
 
+# Qualifiers a type is read under (#297).
+_QUALIFYING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type")
+
+
+def _named_calls(dies):
+    """(offset, name, chain) of each function of the build, and of each variable outside a
+    function (a global, a namespace's or a class's static) and data member, by its name
+    before any `<`: what a call by that name may mean. Operators are left out."""
+    from peeky.fields import _RECORDS as records
+
+    for offset, die in dies.items():
+        tag = die.get("tag")
+        if tag == "DW_TAG_variable":
+            if (dies.get(die.get("parent")) or {}).get("tag") not in (
+                "DW_TAG_compile_unit",
+                "DW_TAG_namespace",
+                *records,
+            ):
+                continue
+        elif tag not in ("DW_TAG_subprogram", "DW_TAG_member"):
+            continue
+        chain = _chain(dies, offset)
+        name = (_text(_first(dies, chain, "DW_AT_name")) or "").split("<", 1)[0].strip()
+        if name and not name.startswith("operator"):
+            yield offset, name, chain
+
+
+# A global allocation or deallocation function's name, as the debug information gives it.
+_ALLOCATING = re.compile(r"operator (?:new|delete) ?(?:\[\])?")
+
+
+def allocation_replaced(dies):
+    """Whether the build defines a global allocation or deallocation function of its own
+    (#297 review round 3): `operator new`, `new[]`, `delete` or `delete[]`, in any form
+    (aligned, nothrow, sized), which `std::allocator` calls and which may keep where each
+    element of a container is. Never a class's own, nor the non-allocating placement
+    forms (`operator new(std::size_t, void *)`, `operator delete(void *, void *)`), which a
+    program can't replace and the standard headers define inline."""
+    from peeky.fields import _RECORDS as records
+    from peeky.fields import _target
+
+    for offset, die in dies.items():
+        if die.get("tag") != "DW_TAG_subprogram" or not (
+            "DW_AT_low_pc" in die["attrs"] or "DW_AT_ranges" in die["attrs"]
+        ):
+            continue
+        chain = _chain(dies, offset)
+        if not _ALLOCATING.fullmatch((_text(_first(dies, chain, "DW_AT_name")) or "").strip()):
+            continue
+        if (dies.get(dies[chain[-1]]["parent"]) or {}).get("tag") in records:
+            continue  # a class's own
+        kinds = [
+            _first(dies, _chain(dies, child), "DW_AT_type")
+            for child in dies[offset]["children"]
+            if dies[child]["tag"] == "DW_TAG_formal_parameter"
+        ]
+        last = dies.get(_target(kinds[-1])) if len(kinds) == 2 else None
+        if (
+            last is not None
+            and last["tag"] == "DW_TAG_pointer_type"
+            and "DW_AT_type" not in last["attrs"]
+        ):
+            continue  # placement: `(std::size_t, void *)`, `(void *, void *)`
+        return True
+    return False
+
+
+# The file whose libraries glibc's loader loads into every program on the host, first.
+LD_SO_PRELOAD = Path("/etc/ld.so.preload")
+MAX_LD_SO_PRELOAD = 1 << 16
+
+
+def system_preload(path=None):
+    """Whether the host's `/etc/ld.so.preload` names a library (#297 review round 4),
+    which glibc's loader loads into the program first and which may replace `operator
+    new`: False where it doesn't exist or holds only blanks and comments (from `#` to the
+    end of its line); None where it can't be read whole."""
+    path = LD_SO_PRELOAD if path is None else path
+    try:
+        handle = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return None
+    try:
+        with os.fdopen(handle, "rb") as file:
+            if not S_ISREG(os.fstat(file.fileno()).st_mode):
+                return None
+            data = file.read(MAX_LD_SO_PRELOAD + 1)
+    except (OSError, ValueError):
+        return None
+    if data is None or len(data) > MAX_LD_SO_PRELOAD:
+        return None
+    # glibc reads names separated by white space or `:`.
+    return re.search(rb"[^\s:]", re.sub(rb"#[^\n]*", b"", data)) is not None
+
+
+def call_arguments(dies):
+    """{a function's name: [(for each argument it names, whether it takes it by value as
+    a number or a character; whether it takes more, `...`, which are by value) for each
+    function of that name the build describes]}, or None for a
+    name the build also gives a variable outside a function or a data member (#297
+    review): whether passing a structured binding's name to a call by that name copies
+    it, or may let the call keep a reference to it. A member function's `this` is left
+    out, as its object comes before the call's parentheses."""
+    from peeky.fields import _target
+
+    def by_value(value):
+        offset = _target(value)
+        for _ in range(64):
+            die = dies.get(offset)
+            if die is None or die["tag"] not in (
+                *_QUALIFYING,
+                "DW_TAG_restrict_type",
+                "DW_TAG_atomic_type",
+            ):
+                break
+            offset = _target(die["attrs"].get("DW_AT_type"))
+        die = dies.get(offset)
+        return die is not None and die["tag"] == "DW_TAG_base_type"
+
+    found = {}
+    for offset, name, _ in _named_calls(dies):
+        if dies[offset]["tag"] != "DW_TAG_subprogram":
+            found[name] = None
+            continue
+        if name in found and found[name] is None:
+            continue
+        kinds, variadic = [], False
+        for child in dies[offset]["children"]:
+            tag = dies[child]["tag"]
+            if tag == "DW_TAG_formal_parameter":
+                chain = _chain(dies, child)
+                if _first(dies, chain, "DW_AT_artificial") is None:
+                    kinds.append(by_value(_first(dies, chain, "DW_AT_type")))
+            elif tag == "DW_TAG_unspecified_parameters":
+                variadic = True
+        found.setdefault(name, []).append((tuple(kinds), variadic))
+    return found
+
+
 def string_sections(binary):
     """[(start, end, file offset)] of an executable's sections that hold only C strings,
     each ended by its NUL, before any slide (#339): a Mach-O's of `S_CSTRING_LITERALS`
@@ -4222,7 +4364,7 @@ class NativeTarget:
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
             tail_calls = None
-            code, statics = None, ()
+            code, statics, results = None, (), None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -4267,6 +4409,12 @@ class NativeTarget:
                         # The program's variables in static storage, which prove what a
                         # pointer at one points at live (#339).
                         statics = static_variables(_dies(info))
+                        # Which calls give a new object a binding keeps alive (#297).
+                        if self.language == "cpp":
+                            results = (
+                                call_arguments(_dies(info)),
+                                allocation_replaced(_dies(info)),
+                            )
                         # The types field and element changes walk (#105), and theirs.
                         fields = type_graph(
                             _dies(info),
@@ -4297,7 +4445,7 @@ class NativeTarget:
                 # note that its initialization is not judged (and no field or element
                 # can be changed).
                 declarations, fields, prologues, code = None, None, None, None
-                statics = ()
+                statics, results = (), None
                 unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
             session = NativeSession(
                 self,
@@ -4316,6 +4464,7 @@ class NativeTarget:
                 prologues=prologues,
                 code=code,
                 statics=statics,
+                results=results,
                 optimized=(
                     any(optimized.values()) if set(optimized) == set(self.sources) else None
                 ),
@@ -4562,6 +4711,16 @@ _LOOP_WORD = re.compile(r"(?i:for|each|while|loop|repeat|iter|\bdo\b)|\b[A-Z][A-
 MAX_LOOP_PLACES = 8
 
 
+def _until(deadline, default):
+    """A request's wait: until ``deadline`` (monotonic seconds) where one is given, else
+    ``default`` seconds. TimeoutError, before anything is asked, once it has passed."""
+    if deadline is None:
+        return default
+    if (remaining := deadline - time.monotonic()) <= 0:
+        raise TimeoutError("Launch exceeded its deadline")
+    return remaining
+
+
 def breakpoint_locations(text, ids):
     """Where LLDB placed the breakpoints ``ids`` (#157), from its `breakpoint list` text:
     [{"id", "line", "address", "function", "place", "resolved"}], each location with the
@@ -4622,6 +4781,9 @@ _PATH_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 _PATH_INDEX = re.compile(r"\[(?:0|[1-9][0-9]{0,9})\]")
 _FORMATTER_COUNT = re.compile(r"(?:0x[0-9a-fA-F]+\s+)?size=(0|[1-9][0-9]{0,18})")
 _RAW_COUNT = re.compile(r"(?:.*\s=\s)?(0|[1-9][0-9]{0,18})", re.S)
+# A pointer's value as LLDB's `evaluate` reply gives it for a variable path (lldb-dap 20's
+# `0x0000aaaaaaad3740`, 18's `(pointer) _M_start = 0x0000aaaaaaad3740`).
+_RAW_POINTER = re.compile(r"(?:.*\s=\s)?(0x[0-9a-fA-F]{1,16})", re.S)
 
 
 def local_buffer(graph, node):
@@ -4976,6 +5138,41 @@ class Everywhere(str):
     or step helps, so no advice to stop elsewhere goes with it."""
 
     everywhere = True
+
+
+# The standard containers whose elements a structured binding by reference may be proven
+# to refer to (#297): a vector's, which are in one array, and a map's, set's or
+# multiset's, each in a node of its own.
+_BOUND_CONTAINERS = re.compile(r"std::(?:__\w+::)*(vector|map|set|multiset)<")
+# What loads a library before the program's own, which may replace `operator new` (#297
+# review round 3).
+_PRELOADS = ("LD_PRELOAD", "LD_AUDIT", "DYLD_INSERT_LIBRARIES")
+# What such a container's elements, order and allocator must be (#297 review round 2).
+_PLAIN_ELEMENTS = re.compile(r"std::(?:__\w+::)*(?:pair|array)<")
+_LESS = re.compile(r"std::(?:__\w+::)*less<")
+_ALLOCATOR = re.compile(r"std::(?:__\w+::)*allocator<")
+# How many entries of a map or set Peeky checks a binding's element among (#297).
+BOUND_ENTRIES = 256
+
+
+def _unproven(base, what, why):
+    """The Withholding of a structured binding by reference whose element Peeky can't
+    prove alive (#296 review, #297): ``what`` it binds ((its text, whether an element of
+    it)), cut to keep the reason within 300 characters, and ``why`` that is not proven."""
+    text, element = what
+
+    def say(shown):
+        bound = f"an element of `{shown}`" if element else f"`{shown}`"
+        return (
+            f"the binding refers to an object Peeky can't prove is still alive: `{base}` "
+            f"binds {bound} by reference, {why}. Read it where the code names that object, "
+            "or bind by value (no `&`)"
+        )
+
+    message = say(text)
+    if len(message) > 300 and len(text) > 12:
+        message = say(text[: max(11, len(text) - (len(message) - 299))] + "…")
+    return Withholding(message, "not shown", None)
 
 
 def _member_object(typed, name):
@@ -5690,6 +5887,7 @@ class NativeSession:
         prologues=None,
         code=None,
         statics=(),
+        results=None,
         optimized=None,
         tail_calls=None,
     ):
@@ -5719,6 +5917,10 @@ class NativeSession:
         # static_variables of the build (#339): what a pointer into static storage may be
         # proven to point at.
         self.static_variables = tuple(statics or ())
+        # call_arguments of the build (#297 review): which calls take an argument by value;
+        # and allocation_replaced: whether it defines its own `operator new` (None: unknown).
+        self.call_arguments = dict((results or ({}, None))[0])
+        self.allocation_replaced = (results or ({}, None))[1]
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -5777,6 +5979,8 @@ class NativeSession:
     def launch_args(self, program, root, args=None):
         self.assert_current()
         self.source_path(program)
+        # Read on the host that runs the program, as it launches (#297 review round 4).
+        self.system_preload = system_preload() if sys.platform.startswith("linux") else False
         return {
             "initCommands": list(LLDB_INIT_COMMANDS),
             "program": str(self.binary),
@@ -5789,25 +5993,26 @@ class NativeSession:
             "enableAutoVariableSummaries": False,
         }
 
-    def breakpoint_locations(self, dap, ids):
+    def breakpoint_locations(self, dap, ids, deadline=None):
         """Where LLDB placed the breakpoints ``ids`` (see ``breakpoint_locations``): a
         line can have several locations in one function (a macro's or a block's own
         code, a loop header's), and it stops at each (#157). Asked with lldb-dap's
-        command escape, as a read-only `breakpoint list`; None where it cannot say."""
+        command escape, as a read-only `breakpoint list`; None where it cannot say. The
+        answer has until ``deadline`` (the launch's), else 15 s, as `setBreakpoints` has."""
         ids = sorted({number for number in ids if type(number) is int and number > 0})[:64]
         if not ids:
             return None
         reply = dap.request(
             "evaluate",
             {"expression": "`breakpoint list " + " ".join(map(str, ids)), "context": "repl"},
-            timeout=5,
+            timeout=_until(deadline, 15),
         )
         text = reply.get("result") if isinstance(reply, dict) else None
         if not isinstance(text, str) or len(text) > MAX_METADATA:
             return None
         return breakpoint_locations(text, set(ids))
 
-    def loop_header_stops(self, dap, source, line, groups, cache):
+    def loop_header_stops(self, dap, source, line, groups, cache, deadline=None):
         """(stops, exact): how many times ``line`` of ``source`` stops each time its loop
         starts, before its first pass (at most, unless ``exact``), where it is that
         loop's header alone in each function holding it (#161: `for (int i = 0; ...)`
@@ -5817,7 +6022,8 @@ class NativeSession:
         read-only and kept in ``cache`` for the launch; see ``loop_headers``. Only a line
         that may hold a loop is analysed (a loop keyword, a name with one in it such as
         `list_for_each`, or a macro's capitals: `REPEAT(3) {`), in at most
-        MAX_LOOP_PLACES functions or inlined copies."""
+        MAX_LOOP_PLACES functions or inlined copies. Each answer has until ``deadline``
+        (the launch's), else 15 s."""
         from peeky.loop_headers import disassembly, line_table, stops_before_loop
 
         path = str(source)
@@ -5838,7 +6044,9 @@ class NativeSession:
 
         def command(text):
             reply = dap.request(
-                "evaluate", {"expression": "`" + text, "context": "repl"}, timeout=5
+                "evaluate",
+                {"expression": "`" + text, "context": "repl"},
+                timeout=_until(deadline, 15),
             )
             result = reply.get("result") if isinstance(reply, dict) else None
             return result if isinstance(result, str) and len(result) <= MAX_METADATA else None
@@ -6828,9 +7036,12 @@ class NativeSession:
         by reference (`auto &`, `const auto &`, `auto &&`), an object of this frame or a
         member of one (`p`, `o.inner`: a local or by-value parameter in scope there,
         through no reference or pointer), or for a range-`for`, an element of such a C
-        array. Else a Withholding: `auto &[t, u] = make(0)[0];` refers into a temporary
-        the statement destroyed, which a later one may reuse; a call, a subscript, `*p`,
-        `p->x` or a global are not proven either."""
+        array. A check the stop must pass, where the source proves the rest (#297): an
+        element of a local standard container the code leaves in place
+        (``_held_element``). Else a Withholding: `auto &[t, u] = make(0)[0];` refers into
+        a temporary the statement destroyed, which a later one may reuse; a call's result
+        (``_kept_result``), a subscript of one, `*p`, `p->x` or a global are not proven
+        either."""
         if read is None:
             return Withholding(
                 "the binding refers to an object Peeky can't prove is still alive: it can't "
@@ -6847,15 +7058,382 @@ class NativeSession:
             typed = _member_object(typed, member)
         if typed is not None and (not read[2] or typed.kind() == "array"):
             return None
-        what = f"an element of `{read[1][:60]}`" if read[2] else f"`{read[1][:60]}`"
-        return Withholding(
-            f"the binding refers to an object Peeky can't prove is still alive: `{base}` "
-            f"binds {what} by reference, and only an object of this frame, or a member of "
-            "one, is proven. Read it where the code names that object, or bind by value "
-            "(`auto [...]`, no `&`)",
-            "not shown",
-            None,
+        for proven in (self._held_element, self._kept_result):
+            if (found := proven(frame, base, place, read)) is not None:
+                return found
+        if read[2] or re.fullmatch(r"[A-Za-z_]\w*\s*\[.*\]", read[1], re.S):
+            why = (
+                "and Peeky proves an element alive only in a local vector, or in a local map "
+                "or set a range `for` walks"
+            )
+        else:
+            why = "and Peeky proves only a local or its non-union member"
+        return _unproven(base, (read[1], read[2]), why)
+
+    def _held_element(self, frame, base, place, read):
+        """For a binding of an element of a local container (#297), by a range `for` over
+        it (`for (const auto &[k, v] : m)`) or one subscript (`auto &[r, s] = v[0];`):
+        where it is a `std::vector`, `std::map`, `std::set` or `std::multiset` this frame
+        holds (no reference, pointer or static; a map by a range `for` only), in an
+        unoptimized build, and the code leaves its elements in place while the binding is
+        in scope (``_leaves_elements``), the check the stop must pass: ("elements", what
+        it binds, its name, a vector's paths to where its elements start and end or
+        "nodes", a node's entry's size). A Withholding where the code may change it, or
+        Peeky cannot check it; None for any other binding."""
+        ranged = read[2]
+        found = re.fullmatch(r"([A-Za-z_]\w*)(\s*\[.*\])?", read[1], re.S)
+        if found is None or bool(found[2]) == ranged:
+            return None
+        container = found[1]
+        located = self._local_container(frame, container, place[1])
+        node = located[0].node() if located is not None else None
+        kind = (
+            _BOUND_CONTAINERS.match(node[11] or "")
+            if node is not None and node[0] == "record" and len(node) > 11
+            else None
         )
+        if kind is None or (kind[1] != "vector" and not ranged):
+            return None
+        what = (container, True)
+        if not self._plain_container(node, kind[1]):
+            return _unproven(
+                base,
+                what,
+                "and Peeky proves only standard vectors, maps and sets of numbers, with the "
+                "default allocator and order",
+            )
+        if (replaced := self._allocation_seen()) is not None:
+            return _unproven(base, what, replaced)
+        sort, size = "nodes", None
+        if kind[1] == "vector":
+            # Where its elements start and end: libc++'s own members, else libstdc++'s.
+            members = {member[0] for member in node[5]}
+            sort = (
+                ("__begin_", "__end_")
+                if {"__begin_", "__end_"} <= members
+                else ("_M_impl._M_start", "_M_impl._M_finish")
+            )
+        elif (size := self._entry_size(located[0])) is None:
+            return _unproven(
+                base, what, f"and Peeky can't tell the size of `{container}`'s entries to check it"
+            )
+        if getattr(self.target, "optimization", "O0") != "O0":
+            return _unproven(base, what, "and in an optimized build Peeky can't check it")
+        if (scalar := self._scalar_names(frame, base, place)) is not None:
+            return _unproven(base, what, scalar)
+        if not self._leaves_elements(frame, container, located, place, base):
+            return _unproven(
+                base,
+                what,
+                f"and while it is in scope the code may change `{container}` or keep a "
+                "pointer or reference into it",
+            )
+        return ("elements", what, container, sort, size)
+
+    def _scalar_names(self, frame, base, place):
+        """Why Peeky can't follow the names of the structured binding ``base`` declared on
+        ``place`` through the code (#297 review rounds 1, 2), or None: each must refer to a
+        number or a character (``_scalar_bound``), whose every use Peeky can read, never a
+        pointer, which may point at another element."""
+        function = self._function_at(frame) or {}
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+        names = statements.bound_names(place[1], base) if statements is not None else []
+        if names and all(self._scalar_bound(function, name, place) for name in names):
+            return None
+        return "and Peeky follows only names of numbers or characters through the code, never a pointer"
+
+    def _scalar_bound(self, function, name, origin=None):
+        """Whether each local ``name`` of ``function`` declared on ``origin`` (a file and
+        line; None: anywhere in it) is, or refers to, a number or a character: a base type,
+        whose operators are all built in (#297 review round 2), never an enumeration or a
+        pointer."""
+        from peeky.native_previews import Typed
+
+        if self.fields is None:
+            return False
+        place = (Path(str(origin[0])).name, origin[1]) if origin else None
+        declared = [
+            kind
+            for kind, _, where in (function.get("types") or {}).get(name) or ()
+            if place is None or where == place
+        ]
+        for kind in declared:
+            typed = Typed(self.fields, kind)
+            typed = typed.target() if typed.kind() == "reference" else typed
+            if typed is None or typed.scalar() is None:
+                return False
+        return bool(declared)
+
+    def _passes(self, function, callee, index):
+        """Whether every function ``callee`` may name takes its argument ``index`` by value
+        (call_arguments, #297 review), and no local of ``function`` has that name."""
+        if callee in (function.get("types") or {}):
+            return False
+        signatures = (getattr(self, "call_arguments", None) or {}).get(callee)
+        return bool(signatures) and all(
+            kinds[index] if index < len(kinds) else variadic for kinds, variadic in signatures
+        )
+
+    def _callbacks(self, function, preprocessed):
+        """Statements' ``scalar(name, line)`` and ``passes(function, index)`` for the
+        translation unit ``preprocessed`` (#297 review): its lines read back onto the
+        source's."""
+        origins = getattr(preprocessed, "origins", ())
+
+        def scalar(name, line=None):
+            if line is None:
+                return self._scalar_bound(function, name)
+            origin = origins[line - 1] if type(line) is int and 0 < line <= len(origins) else None
+            return origin is not None and self._scalar_bound(function, name, origin)
+
+        return scalar, lambda callee, index: self._passes(function, callee, index)
+
+    def _allocation_seen(self):
+        """Why `std::allocator`'s memory may be seen by code of the program's (#297 review
+        round 3), or None: it calls the global `operator new` and `operator delete`, which
+        the program may replace (allocation_replaced), or a library the launch loads
+        first (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, or the Linux host's
+        `/etc/ld.so.preload`, read at launch: system_preload), to keep where each element
+        is."""
+        replaced = getattr(self, "allocation_replaced", None)
+        if replaced is None:
+            return "and Peeky can't tell whether the program replaces `operator new`"
+        if replaced:
+            return (
+                "and the program replaces `operator new` or `operator delete`, which may keep "
+                "where each element is"
+            )
+        try:
+            environment = self.environment
+        except (AttributeError, OSError, TypeError, ValueError):
+            environment = None
+        if environment is None:
+            return "and Peeky can't tell whether the launch loads a library first"
+        loaded = [key for key in _PRELOADS if environment.get(key)]
+        preloaded = getattr(self, "system_preload", None)
+        if preloaded is None:
+            return "and Peeky can't tell whether the launch loads a library first"
+        if preloaded:
+            loaded.append(str(LD_SO_PRELOAD))
+        if loaded:
+            return (
+                f"and the program runs with `{loaded[0]}`, whose library may replace `operator new`"
+            )
+        return None
+
+    def _plain_container(self, node, sort):
+        """Whether the standard container ``node`` (a record of the type graph; ``sort``:
+        "vector", "map", "set" or "multiset") is one whose elements only the standard
+        library makes, orders and places (#297 review round 2): `std::allocator`, and
+        `std::less` for a map's or a set's order; its elements numbers or characters (a
+        map's key and value), or a set's or vector's a `std::pair` or `std::array` of them.
+        No constructor, allocator or comparison of the program's then sees where an
+        element is."""
+        from peeky.native_previews import Typed
+
+        graph = self.fields
+
+        def named(offset, pattern):
+            found = Typed(graph, offset).node() if offset in graph else None
+            return found is not None and found[0] == "record" and bool(pattern.match(found[11]))
+
+        def number(offset):
+            return offset in graph and Typed(graph, offset).scalar() is not None
+
+        def element(offset):
+            if not named(offset, _PLAIN_ELEMENTS):
+                return False
+            inner = [p[2] for p in Typed(graph, offset).node()[12] if p[0] == "type"]
+            return bool(inner) and all(number(each) for each in inner)
+
+        types = [p[2] for p in node[12] if p[0] == "type"]
+        if sort == "vector":
+            wanted = (element, _ALLOCATOR)
+        elif sort == "map":
+            wanted = (number, number, _LESS, _ALLOCATOR)
+        else:
+            wanted = (element, _LESS, _ALLOCATOR)
+        return len(types) == len(wanted) and all(
+            check(offset) if callable(check) else named(offset, check)
+            for check, offset in zip(wanted, types)
+        )
+
+    def _entry_size(self, typed):
+        """How many bytes an entry of a standard map, set or multiset ``typed`` takes: a
+        set's key's, or a map's `std::pair<const Key, T>`'s, laid out from the key's and
+        value's sizes and alignments in the build's debug information; None where they
+        are not known."""
+        from peeky.fields import _alignment
+
+        found = typed.container()
+        if found is None or found[0] not in ("map", "set"):
+            return None
+        if found[0] == "set":
+            return found[1].byte_size()
+        key, value = found[1], found[2]
+        sizes = key.byte_size(), value.byte_size()
+        aligned = _alignment(self.fields, key.offset), _alignment(self.fields, value.offset)
+        if None in sizes or not all(aligned):
+            return None
+        second = -(-sizes[0] // aligned[1]) * aligned[1]
+        return -(-(second + sizes[1]) // max(aligned)) * max(aligned)
+
+    def _local_container(self, frame, root, line):
+        """(Typed, storage, (file name, line) or None) of the one declaration of ``root``
+        in scope on ``line`` of the function ``frame`` runs, as ``_local_object`` finds it:
+        a local in the frame's memory ("automatic") or a by-value parameter, never a
+        static, nor one reached through a reference or a pointer; else None."""
+        from peeky.native_previews import Typed
+
+        function = self._function_at(frame) or {}
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+        if statements is None or self._local_object(frame, root, line) is None:
+            return None
+        found = []
+        for kind, storage, where in (function.get("types") or {}).get(root) or ():
+            if storage != "parameter":
+                if where is None or where[0] != Path(source).name or where[1] > line:
+                    continue
+                lines = statements.scope_lines(where[1], root)
+                if lines is None or not lines[0] <= line <= lines[1]:
+                    continue
+            found.append((kind, storage, where))
+        if len(found) != 1 or found[0][1] not in ("automatic", "parameter"):
+            return None
+        return Typed(self.fields, found[0][0]), found[0][1], found[0][2]
+
+    def _leaves_elements(self, frame, container, located, place, base):
+        """Whether the code leaves the elements of the local ``container`` (``located``:
+        ``_local_container``'s) in place while the binding ``base`` on ``place`` is in
+        scope (Statements.leaves_elements), in each translation unit holding the source as
+        the compiler preprocessed it, so a macro reads as its expansion; and the function
+        has no inline assembly or address builtin up to the container's scope's end,
+        which may reach it unseen (``_ADDRESSES``). False where Peeky cannot tell."""
+        function = self._function_at(frame) or {}
+        source, span = function.get("source"), function.get("span")
+        if not isinstance(source, str) or not span or Path(source).name != place[0]:
+            return False
+        _, storage, where = located
+        verdicts = set()
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                return False
+            preprocessed, statements = read
+            if source not in preprocessed.files:
+                continue
+            line = preprocessed.line(source, place[1])
+            region = statements.scope_lines(line, base) if line else None
+            begin = preprocessed.line(source, span[0])
+            if storage == "parameter":
+                end = preprocessed.line(source, span[1])
+                scope = (begin, end) if begin and end else None
+            else:
+                declared = preprocessed.line(source, where[1])
+                scope = statements.scope_lines(declared, container) if declared else None
+            if region is None or scope is None or not begin or begin > scope[0]:
+                return False
+            starts = statements.starts
+            text = statements.blanked[
+                starts[begin - 1] : starts[scope[1]] if scope[1] < len(starts) else None
+            ]
+            if _ASSEMBLY.search(text) or _ADDRESSES.search(text):
+                return False
+            scalar, passes = self._callbacks(function, preprocessed)
+            verdicts.add(
+                statements.leaves_elements(container, scope, region, line, base, scalar, passes)
+            )
+        return verdicts == {True}
+
+    def _kept_result(self, frame, base, place, read):
+        """For a binding by reference of a call's result (`auto &&[p, q] = one(i);`, `const
+        auto &[x, y] = ns::two();`, not a member or subscript of one): a Withholding, None
+        for any other binding. C++ keeps that result alive for the binding's scope, but the
+        function called may keep a pointer into it: with the named return value
+        optimization, `P r{1, 2}; saved = &r; return r;` builds `r` where the caller keeps
+        the result (#297 review round 3). So nothing proves the code leaves it alive."""
+        call = (
+            None if read[2] else re.match(r"(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(", read[1])
+        )
+        opened = read[1].find("(") if call is not None else -1
+        closed = _arguments(read[1], opened) if opened >= 0 else None
+        if call is None or closed is None or closed[1] != len(read[1]):
+            return None
+        return _unproven(
+            base,
+            (read[1], False),
+            "a call's result, which the function called may keep a pointer into",
+        )
+
+    def _bound_place(self, variable, base, check, target, fetch, siblings, raw):
+        """None where the address the binding by reference ``variable`` holds (its row's
+        value, `0x…`) is where ``check`` (``_bound_alive``'s, #297) says the program keeps
+        what it binds now; else a Withholding. A vector's element:
+        between where its elements start and end, as ``raw(path)`` reads its own members.
+        A map's or set's: in one of its entries, as the debugger lists them in
+        ``siblings`` (``fetch``; at most BOUND_ENTRIES), each where the debugger says it
+        is (``own_address``) and as large as ``check`` says. The whole element must fit
+        (``target``: its type, where known)."""
+        kind, what, container, sort, size = check
+        held = re.match(r"0x([0-9a-fA-F]{1,16})(?![0-9a-fA-F])", str(variable.get("value") or ""))
+        address = int(held[1], 16) if held else 0
+        width = (target.byte_size() if target is not None else None) or 1
+        if not address:
+            return _unproven(base, what, "and the debugger shows no address for it to check")
+        rows = [
+            row
+            for row in siblings
+            if isinstance(row, dict)
+            and (split_located(str(row.get("name"))) or (row.get("name"),))[0] == container
+        ]
+        unread = f"and Peeky could not read `{container}`'s elements to check where it points"
+        if len(rows) != 1:
+            return _unproven(base, what, unread)
+        if sort != "nodes":
+            ends = []
+            for path in sort:
+                try:
+                    text = raw(f"{container}.{path}") if raw is not None else None
+                except ValueError:
+                    text = None
+                found = _RAW_POINTER.fullmatch(str(text or "").strip())
+                ends.append(int(found[1], 16) if found else None)
+            if None in ends:
+                return _unproven(base, what, unread)
+            if ends[0] <= address and address + width <= ends[1]:
+                return None
+            return _unproven(base, what, f"but it points outside `{container}`'s elements now")
+        counted = re.fullmatch(r"size=(0|[1-9][0-9]{0,9})", str(rows[0].get("value") or ""))
+        reference = rows[0].get("variablesReference")
+        if counted is None or type(reference) is not int or reference <= 0:
+            return _unproven(base, what, unread)
+        count = int(counted[1])
+        if count > BOUND_ENTRIES:
+            return _unproven(
+                base,
+                what,
+                f"and `{container}` has more than {BOUND_ENTRIES} entries, more than Peeky checks",
+            )
+        entries = 0
+        for start in range(0, count, 64):
+            try:
+                listed = fetch(reference, min(64, count - start), start=start)
+            except (TypeError, ValueError):
+                return _unproven(base, what, unread)
+            for child in listed:
+                if not re.fullmatch(r"\[[0-9]+\]", str(child.get("name"))):
+                    continue
+                entries += 1
+                at = own_address(child)
+                if at is None:
+                    return _unproven(base, what, unread)
+                if at <= address and address + width <= at + size:
+                    return None
+        if entries != count:
+            return _unproven(base, what, unread)
+        return _unproven(base, what, f"but it points into none of `{container}`'s entries now")
 
     def _local_object(self, frame, root, line):
         """``native_previews.Typed`` of the object ``root`` names on ``line`` of the
@@ -6901,21 +7479,25 @@ class NativeSession:
             return None
         return bare[1]
 
-    def bound_element(self, variable, frame, fetch, note=None):
+    def bound_element(self, variable, frame, fetch, note=None, siblings=None, raw=None):
         """How the worker shows a root local the build holds as a reference to a
         structured binding's element (#291: GCC's `t` in `auto [t, u] = pair;`), which
         the debugger shows as the element's address. None for any other local. Else:
 
         - a Withholding, where the reference may not be set (``note``: why the row would
           be shown with a note), what it refers to may be gone (``_bound_alive``: a
-          reference-qualified binding of anything but this frame's own object), or the
-          element cannot be read;
+          reference-qualified binding of anything but this frame's own object, or an
+          element of a local container the code leaves in place), or the element cannot be
+          read;
         - {"variable": the debugger's child that is the element (a number, a character,
           a pointer), named as the row and listing nothing}, read as any value;
         - {"strip": True} for a struct, class, array or standard container, whose
           members the debugger lists as the reference's own: element_text shows it.
 
-        ``fetch(reference, count)``: the first children the debugger lists for a value.
+        ``fetch(reference, count, start=0)``: the children the debugger lists for a value,
+        from ``start``. For the checks ``_bound_alive`` asks for (#297, ``_bound_place``):
+        ``siblings``, the frame's other locals as the debugger lists them; ``raw(path)``,
+        the debugger's text for a variable path.
 
         A GCC lambda's capture by reference (#361) is shown so too, as what it refers to:
         the code names that object by the capture's name."""
@@ -6937,7 +7519,10 @@ class NativeSession:
         shown = split_located(name)
         base = shown[0] if shown else name
         if (dead := self._bound_alive(frame, base, found[2], found[3])) is not None:
-            return dead
+            if isinstance(dead, tuple):
+                dead = self._bound_place(variable, base, dead, found[1], fetch, siblings or (), raw)
+            if dead is not None:
+                return dead
         unread = (
             f"`{base}` is a structured binding the build holds as a reference to its "
             "element, which the debugger shows as an address, and the debugger listed no "

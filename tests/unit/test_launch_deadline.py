@@ -160,3 +160,47 @@ def test_real_dap_process_shares_absolute_deadline_and_disconnects_after_expiry(
     assert not dap.reader.is_alive()
     assert len(closed) == 1
     assert worker.session is None and worker.runtime is None and worker.dap is None
+
+
+def test_a_debuggee_slow_to_start_has_the_launchs_whole_deadline(tmp_path, monkeypatch):
+    # #356: each launch step was capped at 15 s inside the launch's 40 s deadline, so a
+    # debuggee that a loaded machine started in 20 s failed the launch with half of its
+    # time left: "did not start: the debugger never initialized it within the launch's
+    # 15 s" (reproduced with debugpy on one CPU shared with 32 busy loops).
+    script = tmp_path / "adapter.py"
+    script.write_text(FAKE_ADAPTER)
+    log, disconnected = tmp_path / "requests.log", tmp_path / "disconnected"
+
+    class Target(PythonAdapter):
+        @property
+        def command(self):
+            return (sys.executable, str(script), str(log), str(disconnected), "prompt")
+
+    waits = []
+
+    class SlowStart(DAP):
+        def wait_event(self, names, after=0, timeout=15, **kwargs):
+            if "initialized" in names:
+                waits.append(timeout)
+                # The debuggee initializes 20 s after the launch request: a shorter wait
+                # times out (the fake adapter sends the event at once).
+                if timeout < 20:
+                    raise TimeoutError("No matching debugger event before deadline")
+            return super().wait_event(names, after, timeout, **kwargs)
+
+    monkeypatch.setattr("peeky.worker.DAP", SlowStart)
+    (tmp_path / "target.py").write_text("pass\n")
+    worker = DebugWorker(tmp_path, adapter=Target())
+    assert worker.launch_deadline_s == 40
+    try:
+        launched = worker.dispatch("launch", {"program": "target.py"})
+        assert launched["state"] == "running"
+        assert len(waits) == 1 and 35 < waits[0] <= 40
+        assert log.read_text().split() == [
+            "initialize",
+            "launch",
+            "setBreakpoints",
+            "configurationDone",
+        ]
+    finally:
+        worker.close()

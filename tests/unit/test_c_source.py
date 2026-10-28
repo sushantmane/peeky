@@ -1431,6 +1431,219 @@ def test_a_binding_says_how_it_binds_and_what():
     assert statements.binding(9, "w") is None and statements.binding(2, "x") is None
 
 
+LOOP_OVER_M = """int main() {
+    std::map<long, long> m{{1, 2}};
+    BEFORE
+    for (const auto &[k, v] : m) {
+        BODY
+    }
+    AFTER
+}
+"""
+
+
+# The names of numbers and characters in these sources: what the build's types would say.
+NUMBERS = frozenset(("k", "v", "w", "total", "x", "a", "b", "c", "d", "i", "r", "s"))
+
+
+def scalar(name, line=None):
+    return name in NUMBERS
+
+
+def by_value(function, index):
+    """`use(long)` and `printf(const char *, ...)` take their arguments by value."""
+    return function in ("use", "printf")
+
+
+def kept(source, container, declared, line, bound):
+    statements = Statements(source, raw_strings=True)
+    scope, region = statements.scope_lines(declared, container), statements.scope_lines(line, bound)
+    return statements.leaves_elements(container, scope, region, line, bound, scalar, by_value)
+
+
+@pytest.mark.parametrize(
+    "before, body, after, expected",
+    [
+        ("", "", "", True),
+        # In the loop: a call of the container's that gives a value, and reads of the names
+        # in expressions of numbers alone, whose operators are all built in.
+        ("", "use(m.size());", "", True),
+        ("", 'use(k); std::printf("%ld", v);', "", True),
+        ("", "if (k > 1) total += v; long w = k; w += v; auto x = v; w = k * 2 + x;", "", True),
+        ("", "switch (k) { case 1: break; } use((long)k); use(k++); use(-k);", "", True),
+        ("", "use((k + 1) * v); k = 3; ++k; v--; k; return k;", "", True),
+        ("", "for (long i = 0; i < k; i++) use(i);", "", True),
+        # Before or after it: a call whose result the statement drops, an assignment, a copy.
+        ("m.insert({3, 4}); m[5] = 6;", "", "", True),
+        ("m = {};", "", "m.clear();", True),
+        ("for (auto e : m) use(e.first);", "", "", True),
+        ("for (auto &[a, b] : m) use(a + b);", "", "", True),
+        ("auto [a, b] = *m.begin(); keep(a);", "", "", False),
+        # In the loop: anything that may add or remove an element, or alias one.
+        ("", "m.erase(k);", "", False),
+        ("", "use(m[k]);", "", False),
+        ("", "use(m.find(k)->second);", "", False),
+        ("", "m.at(k) = 3;", "", False),
+        ("", "for (auto &[a, b] : m) use(a);", "", False),
+        # Review of #368, round 2: an operator Peeky can't prove built in, as any with an
+        # operand of another type may be an overload that takes the name by reference.
+        ("", "sink << v;", "", False),
+        ("", "std::cout << k;", "", False),
+        ("", "sink += k;", "", False),
+        ("", "k += sink;", "", False),
+        ("", "use(e + k);", "", False),
+        ("", "use(k * f(x));", "", False),
+        ("", "use(f(x) * k);", "", False),
+        ("", "use(sizeof(k) + k);", "", False),
+        ("", "Sink q = k;", "", False),
+        ("", "arr[k] = v;", "", False),
+        ("", "use(m.count(k));", "", False),
+        # A pointer or reference to a name: its address, a reference bound to it, an
+        # argument a call may take by reference, a branch of `?:`, a lambda's.
+        ("", "keep(k);", "", False),
+        ("", "auto &r = k;", "", False),
+        ("", "const long &r = v;", "", False),
+        ("", "decltype(auto) r = (k);", "", False),
+        ("", "auto *p = &k;", "", False),
+        ("", "std::destroy_at(&v);", "", False),
+        ("", "use(std::addressof(v));", "", False),
+        ("", "use(c ? k : v);", "", False),
+        ("", "use(static_cast<long>(k));", "", False),
+        ("", "use((long &)k);", "", False),
+        ("", "use(k = 3);", "", False),
+        ("", "use(++k);", "", False),
+        ("", "P pair{k, v};", "", False),
+        ("", "auto f = [&] { return k; };", "", False),
+        ("", "auto f = [&k] { return 1; };", "", False),
+        # Anywhere in its scope: an iterator, pointer or reference into it, or `m` passed on.
+        ("auto it = m.begin();", "", "", False),
+        ("long *p = &m[1];", "", "", False),
+        ("use(m[5]);", "", "", False),
+        ("for (auto &e : m) use(e.first);", "", "", False),
+        ("for (auto &[a, b] : m) keep(a);", "", "", False),
+        ("auto *pm = &m;", "", "", False),
+        ("auto &am = m;", "", "", False),
+        ("fill(m);", "", "", False),
+        ("auto &r = (m = {});", "", "", False),
+        ("m.operator=({});", "", "", False),
+        ("", "", "keep(&m);", False),
+        ("", "", "auto z = std::move(m);", False),
+        ("auto f = [&] { return m.size(); };", "", "", False),
+        ("struct L { void f() { m.clear(); } };", "", "", False),
+        ("#define X 1", "", "", False),
+    ],
+)
+def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(
+    before, body, after, expected
+):
+    # #297: a range `for` over a local container binds each element by reference; the code
+    # must leave that element alive while the binding is in scope. Review of #368: nor may
+    # it keep a pointer, iterator or reference to one, through the container or a name.
+    source = LOOP_OVER_M.replace("BEFORE", before).replace("BODY", body).replace("AFTER", after)
+    assert kept(source, "m", 2, 4, "k") is expected
+    # A name that may not be a number or a character is never followed.
+    statements = Statements(source, raw_strings=True)
+    scope, region = statements.scope_lines(2, "m"), statements.scope_lines(4, "k")
+    assert not statements.leaves_elements(
+        "m", scope, region, 4, "k", lambda name, line=None: name != "v", by_value
+    )
+    assert not statements.leaves_elements("m", scope, region, 4, "k")
+
+
+SUBSCRIPT = """int main() {
+    std::vector<P> v{{11, 12}};
+    BEFORE
+    auto &[a, b] = INITIAL;
+    use(a);
+    AFTER
+}
+"""
+
+
+@pytest.mark.parametrize(
+    "initial, before, after, expected",
+    [
+        ("v[0]", "", "", True),
+        ("v[v.size() - 1]", "", "", True),
+        ("v[0]", "v.push_back({1, 2});", "", True),
+        ("v[0]", "auto &[c, d] = v[1]; use(c);", "", True),
+        ("v[0]", "auto [c, d] = v[1]; keep(c);", "", True),
+        ("v[0]", "for (auto &[c, d] : v) d += 1;", "", True),
+        # One subscript of the local, nothing else.
+        ("v[0].x", "", "", False),
+        ("v[0][1]", "", "", False),
+        ("v", "", "", False),
+        ("w[0]", "", "", False),
+        ("v[g(v)]", "", "", False),
+        # Anything in the binding's scope that may add or remove one.
+        ("v[0]", "", "v.push_back({});", False),
+        ("v[0]", "", "v.reserve(9);", False),
+        # Review of #368: an alias made before the binding, through which code may end
+        # the element's life: `std::destroy_at(p)`, then `new (p) P{13, 14}`.
+        ("v[0]", "P *p = v.data();", "std::destroy_at(p);", False),
+        ("v[0]", "P *p = v.data();", "", False),
+        ("v[0]", "{ long *q = &v[0].first; }", "", False),
+        ("v[0]", "auto &[c, d] = v[1]; keep(c);", "", False),
+        ("v[0]", "for (auto &[c, d] : v) keep(d);", "", False),
+        ("v[0]", "", "std::destroy_at(&a);", False),
+    ],
+)
+def test_a_subscripts_binding_is_proven_only_where_the_code_leaves_it(
+    initial, before, after, expected
+):
+    source = SUBSCRIPT.replace("INITIAL", initial).replace("BEFORE", before)
+    assert kept(source.replace("AFTER", after), "v", 2, 4, "a") is expected
+    # A parameter's scope is its function's; one the code passes on is not proven.
+    declared = "void f(std::vector<P> v) {\n    auto &[r, s] = v[0];\n    use(r);\n}\n"
+    statements = Statements(declared, raw_strings=True)
+    assert statements.leaves_elements("v", (1, 4), (2, 4), 2, "r", scalar, by_value)
+    statements = Statements(declared.replace("use(r)", "use(v)"), raw_strings=True)
+    assert not statements.leaves_elements("v", (1, 4), (2, 4), 2, "r", scalar, by_value)
+    # Unknown lines: never proven.
+    assert not statements.leaves_elements("v", (None, 4), (2, 4), 2, "r", scalar, by_value)
+    assert not statements.leaves_elements("v", (1, 4), (2, 4), 3, "r", scalar, by_value)
+    # Initialized in parentheses or braces, as with `=`.
+    for initialized, proven in (("(v[0])", True), ("{v[1]}", True), ("(v)", False)):
+        source = f"int main() {{\n    std::vector<P> v;\n    auto &[r, s]{initialized};\n}}\n"
+        statements = Statements(source, raw_strings=True)
+        found = statements.leaves_elements("v", (2, 4), (3, 4), 3, "r", scalar, by_value)
+        assert found is proven, initialized
+
+
+def test_a_binding_lists_its_names_and_a_user_literal_is_no_number():
+    # Review of #368, round 3: `v + 1_sink` calls `operator""_sink`, whose class may bring
+    # an `operator+(long &, Sink)` that keeps `v`'s address; only the language's own
+    # literals and suffixes are numbers.
+    source = "int main() {\n    auto &&[c, d] = one(1);\n    use(c + d);\n}\n"
+    statements = Statements(source, raw_strings=True)
+    assert statements.bound_names(2, "d") == ["c", "d"] and statements.bound_names(3, "c") == []
+    for literal, number in (
+        ("1", True),
+        ("1'000ull", True),
+        ("0x1Fu", True),
+        ("0b101", True),
+        ("1.5e-3f", True),
+        ("0x1.8p-2L", True),
+        ("1_sink", False),
+        ("10s", False),
+        ("10ms", False),
+        ("2i", False),
+        ("1.0if", False),
+        ("1lL", False),
+    ):
+        body = f"use(v + {literal});"
+        assert (
+            kept(
+                LOOP_OVER_M.replace("BEFORE", "").replace("BODY", body).replace("AFTER", ""),
+                "m",
+                2,
+                4,
+                "k",
+            )
+            is number
+        ), literal
+
+
 RANGE_LAMBDA_SOURCE = """int f() {
     long t = 1;
     for (auto [t, u] : make([&] { long t = 40; return id(t); })) {
