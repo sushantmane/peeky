@@ -283,7 +283,9 @@ shows that reference's address as the variable's value.
   - `allocation_replaced` reads the build's debug information for a global `operator new` or
     `operator delete` of the program's own, in any form but the placement ones the headers
     define. One that is there, or a library the launch preloads (`_PRELOADS`), withholds
-    it (`_allocation_seen`).
+    it (`_allocation_seen`). So does a Linux host's `/etc/ld.so.preload` that names a library,
+    or that can't be read whole. `system_preload` reads it on the worker's host, in
+    `launch_args`, ignoring blanks and `#` comments.
   - A call's result is never proven (`_kept_result`). The function called may keep a pointer
     into it, as the named return value optimization builds it where the caller keeps it.
   - `Statements._names_kept` follows each of the binding's names, which must be of base types

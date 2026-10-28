@@ -24,6 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISREG
 from typing import NamedTuple
 
 from peeky.adapters import PythonAdapter, locals_only
@@ -3694,6 +3695,36 @@ def allocation_replaced(dies):
     return False
 
 
+# The file whose libraries glibc's loader loads into every program on the host, first.
+LD_SO_PRELOAD = Path("/etc/ld.so.preload")
+MAX_LD_SO_PRELOAD = 1 << 16
+
+
+def system_preload(path=None):
+    """Whether the host's `/etc/ld.so.preload` names a library (#297 review round 4),
+    which glibc's loader loads into the program first and which may replace `operator
+    new`: False where it doesn't exist or holds only blanks and comments (from `#` to the
+    end of its line); None where it can't be read whole."""
+    path = LD_SO_PRELOAD if path is None else path
+    try:
+        handle = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return None
+    try:
+        with os.fdopen(handle, "rb") as file:
+            if not S_ISREG(os.fstat(file.fileno()).st_mode):
+                return None
+            data = file.read(MAX_LD_SO_PRELOAD + 1)
+    except (OSError, ValueError):
+        return None
+    if data is None or len(data) > MAX_LD_SO_PRELOAD:
+        return None
+    # glibc reads names separated by white space or `:`.
+    return re.search(rb"[^\s:]", re.sub(rb"#[^\n]*", b"", data)) is not None
+
+
 def call_arguments(dies):
     """{a function's name: [(for each argument it names, whether it takes it by value as
     a number or a character; whether it takes more, `...`, which are by value) for each
@@ -5591,6 +5622,8 @@ class NativeSession:
     def launch_args(self, program, root, args=None):
         self.assert_current()
         self.source_path(program)
+        # Read on the host that runs the program, as it launches (#297 review round 4).
+        self.system_preload = system_preload() if sys.platform.startswith("linux") else False
         return {
             "initCommands": list(LLDB_INIT_COMMANDS),
             "program": str(self.binary),
@@ -6802,7 +6835,9 @@ class NativeSession:
         """Why `std::allocator`'s memory may be seen by code of the program's (#297 review
         round 3), or None: it calls the global `operator new` and `operator delete`, which
         the program may replace (allocation_replaced), or a library the launch loads
-        first (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`), to keep where each element is."""
+        first (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, or the Linux host's
+        `/etc/ld.so.preload`, read at launch: system_preload), to keep where each element
+        is."""
         replaced = getattr(self, "allocation_replaced", None)
         if replaced is None:
             return "and Peeky can't tell whether the program replaces `operator new`"
@@ -6818,6 +6853,11 @@ class NativeSession:
         if environment is None:
             return "and Peeky can't tell whether the launch loads a library first"
         loaded = [key for key in _PRELOADS if environment.get(key)]
+        preloaded = getattr(self, "system_preload", None)
+        if preloaded is None:
+            return "and Peeky can't tell whether the launch loads a library first"
+        if preloaded:
+            loaded.append(str(LD_SO_PRELOAD))
         if loaded:
             return (
                 f"and the program runs with `{loaded[0]}`, whose library may replace `operator new`"

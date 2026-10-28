@@ -1135,8 +1135,10 @@ Some things only look different:
       vector's elements, or into one of the map's entries as the debugger lists them (at most 256).
   - The program must not replace `operator new` or `operator delete`, which `std::allocator`
     calls, in any form. Peeky reads that from the build's debug information, and from
-    `LD_PRELOAD`, `LD_AUDIT` and `DYLD_INSERT_LIBRARIES` in the launch's environment. A system-wide
-    preload, such as `/etc/ld.so.preload`, isn't checked.
+    `LD_PRELOAD`, `LD_AUDIT` and `DYLD_INSERT_LIBRARIES` in the launch's environment. On Linux it
+    also reads `/etc/ld.so.preload` on the host that runs the program, at each launch. If that file
+    names a library (blank lines and `#` comments don't count), or exists but can't be read, the
+    binding is withheld.
   - A call's result is never read: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`.
     C++ keeps it alive until the binding's scope ends, but the function may keep a pointer into
     it. With the named return value optimization, `P r; saved = &r; return r;` builds `r` where

@@ -1488,6 +1488,7 @@ def held(optimization="O0", preprocessed=None, dwarf=HELD):
     session.allocation_replaced = False
     session.prepared = SimpleNamespace(manifest=SimpleNamespace(effective_environment=()))
     session.home = "home"
+    session.system_preload = False
     return session
 
 
@@ -1746,6 +1747,86 @@ def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_the
     assert found == unproven(
         "k", "an element of `m`", "and Peeky can't tell whether the launch loads a library first"
     )
+    # Round 4: the host's `/etc/ld.so.preload`, read at launch, naming a library; unread.
+    for preloaded, why in (
+        (
+            True,
+            "and the program runs with `/etc/ld.so.preload`, whose library may replace "
+            "`operator new`",
+        ),
+        (None, "and Peeky can't tell whether the launch loads a library first"),
+    ):
+        session = held()
+        session.system_preload = preloaded
+        found = session.bound_element(k, frame, fetch, siblings=[m])
+        assert found == unproven("k", "an element of `m`", why), why
+    session = held()
+    del session.system_preload
+    found = session.bound_element(k, frame, fetch, siblings=[m])
+    assert found == unproven(
+        "k", "an element of `m`", "and Peeky can't tell whether the launch loads a library first"
+    )
+
+
+def test_the_hosts_ld_so_preload_is_read_at_launch(tmp_path, monkeypatch):
+    """Review of #368, round 4: glibc's loader loads the libraries `/etc/ld.so.preload`
+    names into every program first, so one may replace `operator new`. Blank and comment
+    lines name none; a file that can't be read whole is unknown; none at all, nothing."""
+    import os
+    import sys
+
+    from peeky import native
+    from peeky.native import NativeSession, system_preload
+
+    preload = tmp_path / "ld.so.preload"
+    assert system_preload(preload) is False  # absent
+    for text, names in (
+        ("", False),
+        ("\n  \n\t\n", False),
+        ("# a comment\n   # another\n\n", False),
+        ("#/usr/lib/libspy.so\n", False),
+        ("/usr/lib/libspy.so\n", True),
+        ("# spies\n/usr/lib/libspy.so # kept\n", True),
+        ("libspy.so", True),
+        (": :\n", False),
+        ("a:b\n", True),
+    ):
+        preload.write_text(text)
+        assert system_preload(preload) is names, text
+    preload.write_bytes(b"#" * (native.MAX_LD_SO_PRELOAD + 1))
+    assert system_preload(preload) is None  # too long to read whole
+    preload.unlink()
+    preload.mkdir()
+    assert system_preload(preload) is None  # not a file
+    preload.rmdir()
+    if os.geteuid() != 0:
+        preload.write_text("# nothing\n")
+        preload.chmod(0)
+        try:
+            assert system_preload(preload) is None  # unreadable
+        finally:
+            preload.chmod(0o600)
+    os.mkfifo(tmp_path / "fifo")
+    assert system_preload(tmp_path / "fifo") is None  # never blocks on a pipe
+
+    session = NativeSession.__new__(NativeSession)
+    session.assert_current = lambda: None
+    session.source_path = lambda program: None
+    session.binary, session.target = "a.out", SimpleNamespace(arguments=())
+    session.prepared = SimpleNamespace(workspace="w")
+    monkeypatch.setattr(native, "LD_SO_PRELOAD", preload)
+    monkeypatch.setattr(sys, "platform", "linux")
+    preload.write_text("/usr/lib/libspy.so\n")
+    session.launch_args("p", "r")
+    assert session.system_preload is True
+    preload.write_text("# off\n")
+    session.launch_args("p", "r")
+    assert session.system_preload is False
+    # Only Linux's loader reads it.
+    monkeypatch.setattr(sys, "platform", "darwin")
+    preload.write_text("/usr/lib/libspy.so\n")
+    session.launch_args("p", "r")
+    assert session.system_preload is False
 
 
 CALLS = """0x0000000b: DW_TAG_compile_unit
