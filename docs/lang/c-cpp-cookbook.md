@@ -578,7 +578,14 @@ In C and C++, a caller's local is withheld while its declaration's code hasn't f
   the next.
 - **A declaration line with no code of its own:** the local is stored element by element, on its
   elements' lines. Examples are an array of structs, a nested struct, or a 2-D array initialized
-  over several lines.
+  over several lines. Peeky goes by the code of the declaration's lines instead. It shows the
+  local once the caller's line is below the declaration, and all of that code comes before the
+  call. A loop's next pass, above the declaration, still withholds it.
+  - So does an optimized build, or one with an `optimize` attribute or `#pragma GCC optimize`
+    in any of its files. Either may lay a function's code out of source order.
+  - So does the caller of an inlined call, such as an `always_inline` function's. Its address
+    is where that call's code starts, not where a call returns. A frame the debugger rebuilds
+    for a tail call's caller is withheld too.
 - **A declaration still running on the caller's line:** Peeky reads the declaration from the source
   up to its `;`. In `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's
   code runs before the calls, and `t.p` is stored after them.
@@ -1076,9 +1083,10 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).
-- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, is
-  withheld in a caller frame. GCC gives its declaration's first line no code of its own, so Peeky
-  can't tell when it is stored.
+- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
+  no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
+  once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
+  build, or above an inlined call, it stays withheld in a caller frame.
 - **GDB's DAP** isn't supported. Peeky debugs GCC's builds with lldb-dap.
 
 Some things only look different:

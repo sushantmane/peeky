@@ -41,7 +41,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
+from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -2337,6 +2337,17 @@ def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
     return False
 
 
+_TAIL_CALL = re.compile(r"\bDW_AT_(?:call_tail_call|GNU_tail_call)\b")
+
+
+def has_tail_calls(info):
+    """Whether the build's debug information (dwarfdump's `--debug-info` text) describes a
+    tail call (a call site's `DW_AT_call_tail_call`, or GCC's `DW_AT_GNU_tail_call`). LLDB
+    rebuilds a frame from one for a caller that has none of its own left (an artificial
+    frame), whose address is no physical call's return."""
+    return _TAIL_CALL.search(info) is not None
+
+
 def has_nonlocal_jumps(binary):
     """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
     (its imports), wherever the call is hidden (a TRY macro in a library header)."""
@@ -2699,7 +2710,44 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
+def _stored_before(function, source, at, end, line, resume):
+    """Whether all the code of a declaration on lines ``at``-``end`` of ``source`` has run
+    in a caller frame of ``function`` on ``line``, whose call returns to ``resume``
+    (unslid: a physical call's, in a function laid out in source order; see
+    NativeSession._resume), by the line table.
+
+    The frame's line is below the declaration's end, and each of the function's rows of
+    those lines runs (to the function's next row, or the end of its code there) before
+    the call does, at ``resume`` less one; at least one does. A loop around both runs
+    the declaration again before the call on each pass. Above the declaration (a loop's
+    next pass), within it, with a row of its lines after the call (a loop's code placed
+    there), or with anything unknown: False. A jump past the declaration is judged
+    after (declared_skipped)."""
+    if resume is None or end is None or line <= end:
+        return False
+    call, ranges = resume - 1, function.get("ranges", ())
+    # Every row the function runs, by address.
+    order = function.get("order") or ()
+    if not any(low <= call < high for low, high in ranges):
+        return False
+    found = False
+    for start, file, number in order:
+        if file != source or not at <= number <= end:
+            continue
+        holding = [high for low, high in ranges if low <= start < high]
+        if not holding:
+            return False
+        following = bisect.bisect_right(order, (start, "\U0010ffff", 1 << 62))
+        finish = holding[0]
+        if following < len(order):
+            finish = min(finish, order[following][0])
+        if finish > call:
+            return False
+        found = True
+    return found
+
+
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, resume=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2714,13 +2762,17 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
     Declared at or above the frame's line: the frame's own line always counts, and so
     does a line the function still has code of at or after ``address`` (`long r =` /
     `f(x);` stores `r` on the declaration's line after the call returns, and so does a
-    designated initializer over several lines). Declared anywhere on a line with no code
-    of its own: an array of structs, a nested struct or a 2-D array is stored element by
-    element on its elements' lines, so nothing places it. With the address or its
-    function unknown, every declaration at or above the line counts. And so does one whose
-    statement, as the source writes it (``ends``), still runs on the frame's line:
-    `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
-    it before the call.
+    designated initializer over several lines). Declared on a line with no code of its
+    own: an array of structs, a nested struct or a 2-D array is stored element by
+    element on its elements' lines (GCC's C++ does so for `struct trio t = { seed,`), so
+    only the code of the statement's lines (``ends``) places it: it counts unless that
+    code has all run before the call (_stored_before), which needs ``resume``: the
+    frame's return address where Peeky proves it a physical call's in a function laid
+    out in source order (NativeSession._resume), else None. With the address or its function unknown, every
+    declaration at or above the line counts. And so does one whose statement, as the
+    source writes it (``ends``), still runs on the frame's line: `struct trio t = {
+    seed,` / `{ twice(3), ... } };` has code of its first line, all of it before the
+    call.
 
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
@@ -2752,6 +2804,9 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
                 return at, "file", declared_in
             span = function["rows"].get((source, at))
             if span is None:
+                end = ends(at, base) if resume is not None and ends is not None else None
+                if _stored_before(function, source, at, end, line, resume):
+                    continue
                 return at, "no code", None
             if at <= line and (at == line or address is None or span[1] >= address):
                 return at, "unfinished", None
@@ -3962,6 +4017,9 @@ class NativeTarget:
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
 
+        # Whether each unit may optimize a function beyond the build's level (`optimizes`).
+        optimized = {}
+
         def before_command(workspace, results, command):
             if command == compiles[0]:
                 for source, unit in zip(self.sources, units):
@@ -3975,7 +4033,9 @@ class NativeTarget:
                         )
                         refused.before_launch = True
                         raise refused
-                    refused = c_refusal(path.read_bytes(), self.language == "cpp")
+                    output = path.read_bytes()
+                    refused = c_refusal(output, self.language == "cpp")
+                    optimized[source] = optimizes(output, self.language == "cpp")
                     path.unlink()
                     if refused is not None:
                         raise refused
@@ -4023,6 +4083,7 @@ class NativeTarget:
                 self.sources + self.headers,
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
+            tail_calls = None
             code, statics = None, ()
             try:
                 info = _metadata(
@@ -4033,6 +4094,7 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
+                tail_calls = has_tail_calls(info)
                 with _reusing_dies():
                     typedefs = typedef_kinds(info)
                     nonlocal_jumps = (
@@ -4116,6 +4178,10 @@ class NativeTarget:
                 prologues=prologues,
                 code=code,
                 statics=statics,
+                optimized=(
+                    any(optimized.values()) if set(optimized) == set(self.sources) else None
+                ),
+                tail_calls=tail_calls,
             )
             session.assert_current()
             return session
@@ -5277,8 +5343,16 @@ class NativeSession:
         prologues=None,
         code=None,
         statics=(),
+        optimized=None,
+        tail_calls=None,
     ):
         self.target, self.prepared = target, prepared
+        # Whether the debug information describes a tail call (has_tail_calls), from which
+        # LLDB rebuilds a caller's frame; None where unknown.
+        self.tail_calls = tail_calls
+        # Whether a unit may optimize a function beyond the build's level (an `optimize`
+        # attribute or pragma: c_source.optimizes); None where unknown.
+        self.optimized = optimized
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
@@ -6694,6 +6768,7 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
+                resume=self._resume(frame),
             )
         ):
             at, why, detail = unfinished
@@ -7835,6 +7910,37 @@ class NativeSession:
             and identity not in getattr(self, "interrupted_ids", ())
         ):
             return address - 1
+        return address
+
+    def _resume(self, frame):
+        """Where a caller frame's call returns (unslid), where Peeky proves it a physical
+        call's in a function laid out in source order, else None. The build is -O0, and
+        no unit may optimize a function on its own (``optimized`` False: no `optimize`
+        attribute or pragma). The frame is above the innermost one, and no signal
+        interrupted it. And no inlined call's code holds its address or the one before
+        it: LLDB gives the caller of an inlined call the address where that call's code
+        starts, which is no return address, and a call from inlined code returns into
+        it. Nor is it a frame LLDB rebuilt for a tail call's caller, which has no frame
+        of its own left: the debug information describes no tail call (``tail_calls``
+        False), and the adapter marks it no artificial or hidden frame (lldb-dap 20's
+        `presentationHint` "subtle")."""
+        address = self._unslid(frame)
+        if (
+            address is None
+            or getattr(self.target, "optimization", "O0") != "O0"
+            or getattr(self, "optimized", None) is not False
+            or getattr(self, "tail_calls", None) is not False
+            or (frame or {}).get("presentationHint", "normal") != "normal"
+            or self._block_pc(frame) != address - 1
+        ):
+            return None
+        code = getattr(self, "code", None) or {}
+        if "dies" not in code:
+            return None
+        if "index" not in code:
+            code["index"] = CodeIndex(code["dies"])
+        if any(each.inline for at in (address - 1, address) for each in code["index"].holding(at)):
+            return None
         return address
 
     def _unslid(self, frame):
