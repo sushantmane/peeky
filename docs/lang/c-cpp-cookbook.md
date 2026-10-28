@@ -1462,7 +1462,8 @@ In C++, `this` is withheld while its object is being built:
 - in any frame a constructor called. Peeky reads up to 64 frames to tell; past that, it
   withholds;
 - in a lambda defined inside a declaration or a constructor that may still be running. The note
-  names that declaration;
+  names that declaration. Peeky follows every function around a nested lambda, up to 256 of
+  them, and withholds `this` past that;
 - in a lambda that a class's default member initializer defines: `long b = [this] { ... }();`. A
   class with no constructor runs its initializers where the object is built.
 
@@ -1506,12 +1507,19 @@ member of `this`:
   marked: ``read through `held`: Peeky can't show that `held` refers to a live object …``.
 - A capture is withheld where clang's `this` would be, such as in a lambda that a running
   declaration defines ([`this` in C++](#this-in-c)).
+- In `[*this]`, `this` is the lambda's copy of the object: `this  Acc  {total = 5}`, and
+  `this.total` reads the copy's member. `[this]` shows the pointer, as before.
+- The lambda's own local of a capture's name hides the capture from its declaration to the end of
+  its block, as C++ reads it. Above it in the block, and after the block, the name reads the
+  capture. Where Peeky can't tell, as on the declaration's own line, the row says why.
 - No capture can be changed, by value or by reference. The lambda's object holds it, which the
   frame reaches through a pointer. A `--set` is refused before the program runs. Change the outer
   variable before the lambda is made, or edit the source.
 - Peeky reads no capture in an optimized build, where a `mutable` lambda may keep one in a
   register. Nor at a one-line lambda's first stop, before it stores `__closure`. There a capture
-  is `not found`, and the row says why.
+  is `not found`, and the row says why: ``not found: 'bonus' is a capture of this lambda, which
+  GCC passes through `__closure`, and Peeky can't read it here: the stop is at the lambda's start
+  …``.
 
 ### Read a C++ string that holds a NUL byte
 

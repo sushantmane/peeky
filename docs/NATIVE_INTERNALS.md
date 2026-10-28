@@ -401,8 +401,18 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     (`capture_referent`), and shown as that value, as a pair's binding is (`bound_element`). A
     pointer captured by reference shows its value; its text is judged as a pointer local's
     (`captured_pointer`).
-  - `capture_members` leaves out a capture whose name the lambda also declares with another
-    type: the rules that type a value by its root's name couldn't tell which one it is.
+  - `capture_plan` says how each capture reads at the stop. Where the lambda also declares
+    its name, `_capture_scope` reads the source as C++ does (`Statements.scope_lines`): a stop
+    above the declaration, or past its block outside the block's code, names the capture, and
+    one past its statement in its scope names the local. Anything else, such as the
+    declaration's own line, withholds the capture, saying so.
+  - A capture the worker reads replaces any row of its name lldb-dap lists: a local whose scope
+    hasn't begun, whose storage is no live object. `_typed` types a capture's root by the
+    capture's type there (`_capture_root`).
+  - `[*this]`: GCC gives `this` no location, and the copy is the member `__this`, of the class
+    `this` points at (`_copied_this`). The worker reads it as `this`, in place of lldb-dap's row
+    with no value. `[this]`'s `this` lldb-dap lists itself.
+  - A capture with no row says why in `closure_unread`, which `probe._capture_hint` gives.
   - `not_yet_declared` withholds a capture where `_under_construction` would withhold clang's
     `this`. No declaration rule applies to it: the object holds it from before the call.
   - A capture's local storage is `through` in `fields.local_types`, so a `--set` is refused
@@ -410,7 +420,8 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     (`capture_refusal`).
   - `captures_unread` reads none in an optimized build, where a `mutable` lambda may keep a
     capture in a register, nor in a prologue window, before the lambda stores `__closure`.
-    There `probe._capture_hint` says why a capture is `not found`.
+  - `_lambda_scope` follows every function around a lambda, up to `LAMBDA_NESTING` (256).
+    Past that, one may still be running, so it never counts as finished.
 
 ## Which tests check what
 
