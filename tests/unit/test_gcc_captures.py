@@ -2,8 +2,11 @@
 object holds each, how the worker lists them in a scope of their own, and that none is
 ever changed. Real builds: tests/cpp/test_cpp_gcc_captures.py."""
 
+import re
+
 import pytest
 
+from peeky.dap import RequestFailed, ResponseTimeout
 from peeky.native import NativeSession, _gcc_capture_members
 from peeky.probe import unproven_text
 from peeky.worker import _CLOSURE_HOVER, CAPTURES_SCOPE, DebugWorker
@@ -373,6 +376,9 @@ def test_which_x_a_stop_names_where_the_lambda_captures_and_declares_it(monkeypa
     assert scope(29, 0x150) == ("capture", None)
     assert scope(31, 0x160) == ("local", 30)
     assert scope(35, 0x250) == ("capture", None)
+    # Review round 2: where the stop's code isn't its block's, the capture, whatever the
+    # text reads (a macro's `if (int x = 9) …` ends where its line doesn't say).
+    assert scope(31, 0x250) == ("capture", None)
     # On the declaration's own line, or past its block where the stop's code is the
     # block's, Peeky can't tell.
     for line, pc in ((30, 0x158), (35, 0x180)):
@@ -381,11 +387,18 @@ def test_which_x_a_stop_names_where_the_lambda_captures_and_declares_it(monkeypa
             "this lambda also declares a local `x` on line 30, and Peeky can't tell whether "
             "the code at this stop names that local or the capture"
         )
-    # Where the source can't be read, only a stop above the declaration is told.
+    # Where the source can't be read, a stop above the declaration, or outside its block.
     monkeypatch.setattr(NativeSession, "_statements", lambda self, source: None)
     session.__dict__.pop("capture_scopes", None)
     assert scope(29, 0x150) == ("capture", None)
+    assert scope(36, 0x250) == ("capture", None)
     assert scope(31, 0x160)[0] == "unknown"
+    # Where the block's code isn't known, the text alone.
+    monkeypatch.setattr(NativeSession, "_statements", lambda self, source: statements)
+    entry["visible"] = {}
+    session.__dict__.pop("capture_scopes", None)
+    assert scope(31, 0x250) == ("local", 30)
+    assert scope(35, 0x250) == ("capture", None)
     # A capture the lambda doesn't declare again is the capture everywhere.
     assert session._capture_scope({"line": 31, "pc": 0x160}, "y") == ("capture", None)
 
@@ -420,3 +433,85 @@ def test_where_a_lambda_is_defined_is_found_however_deep_it_is_nested(monkeypatc
     session.declarations = chain(LAMBDA_NESTING + 5)
     found = session._lambda_scope(session.declarations[0], [], False)
     assert found == f"more than {LAMBDA_NESTING} functions deep"
+
+
+class _Failing(_Dap):
+    """lldb-dap answering the hover of `__closure`, then failing its listing a way."""
+
+    def __init__(self, listing):
+        super().__init__("0x0000fffff8f0")
+        self.listing = listing
+
+    def request(self, command, arguments=None, timeout=15, **_):
+        if command == "variables":
+            self.asked.append((command, arguments))
+            if isinstance(self.listing, Exception):
+                raise self.listing
+            return self.listing
+        return super().request(command, arguments, timeout)
+
+
+@pytest.mark.parametrize(
+    ("listing", "why"),
+    [
+        (
+            ResponseTimeout("variables"),
+            "the debugger didn't list what `__closure` points at in time",
+        ),
+        (
+            RequestFailed("no children"),
+            "the debugger couldn't list what `__closure` points at (no children)",
+        ),
+        (
+            {"variables": [{"name": f"__m{n}", "value": "1", "type": "int"} for n in range(513)]},
+            "what `__closure` points at has more than 512 members, past the bound Peeky lists",
+        ),
+        (
+            {"variables": "x"},
+            "the debugger's listing of what `__closure` points at is malformed",
+        ),
+        (
+            {"variables": [{"name": "__bonus"}, "x"]},
+            "the debugger's listing of what `__closure` points at is malformed",
+        ),
+    ],
+)
+def test_each_capture_not_read_says_which_read_failed(tmp_path, listing, why):
+    # Review round 2 of #361: a listing that timed out, failed, ran past 512 members or
+    # was malformed said the debugger gave no address for `__closure`.
+    frame = {"id": 3, "name": "operator()"}
+    worker = _worker(tmp_path, _Lambda())
+    worker.dap = _Failing(listing)
+    scope, unread = worker.read_captures(worker.runtime, frame, worker.runtime.capture_plan(frame))
+    assert scope is None
+    assert {name: unread[name] for name in ("grade", "bonus", "twice")} == {
+        "grade": why,
+        "bonus": why,
+        "twice": why,
+    }
+    assert unread["k"] == HIDDEN
+    assert worker.view_timed_out is isinstance(listing, ResponseTimeout)
+    # An expansion that reads it again says so too.
+    with pytest.raises(ValueError, match=f"^Peeky can't read `grade` again: {re.escape(why)}"):
+        worker.walk_capture(worker.runtime, frame, (("grade", "std::map<int, int> &"),))
+
+
+def test_a_hover_of_closure_that_fails_or_times_out_says_so(tmp_path):
+    frame = {"id": 3, "name": "operator()"}
+
+    class Hover(_Dap):
+        def __init__(self, failure):
+            super().__init__("")
+            self.failure = failure
+
+        def request(self, command, arguments=None, timeout=15, **_):
+            raise self.failure
+
+    for failure, why in (
+        (ResponseTimeout("evaluate"), "the debugger didn't answer a hover of `__closure` in time"),
+        (RequestFailed("no location"), "the debugger couldn't read `__closure` here (no location)"),
+    ):
+        worker = _worker(tmp_path, _Lambda())
+        worker.dap = Hover(failure)
+        _, unread = worker.read_captures(worker.runtime, frame, worker.runtime.capture_plan(frame))
+        assert unread["bonus"] == why

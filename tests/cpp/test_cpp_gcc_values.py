@@ -1106,3 +1106,52 @@ def test_this_of_a_lambda_that_copies_the_object_is_its_copy(cpp, capsys):
     for row in (by_copy["this"], by_copy["this.total"], named["self.total"]):
         assert row["not_settable"] == "capture" and "view" not in row, row
     assert by_copy["this.total"]["value"] == "5" and named["self.total"]["value"] == "5"
+
+
+SCOPED = """#include <cstdio>
+#define DECLARE(n) if (int n = 9) use(n)
+static void use(long v) { std::printf("USE:%ld\\n", v); }
+int main() {
+    int x = 7;
+    auto macro = [x]() {
+        DECLARE(x);
+        use(x); // MACRO_AFTER
+    };
+    auto line = [x]() {
+        use(x); { int x = 11; use(x); } // ONE_LINE_BLOCK
+        use(x); // LINE_AFTER
+    };
+    macro();
+    line();
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_local_hides_a_capture_only_where_its_block_runs(cpp, capsys):
+    # Review round 2 of #361: a macro's `if (int x = 9) use(x)` read, by its text, as in
+    # scope to the lambda's end, though its block had ended: the capture was said hidden.
+    # A line holding code before a block and the block itself stops in each.
+    compiler, root = cpp
+    source = root / "scoped.cpp"
+    source.write_text(SCOPED)
+    rows = {}
+    for marker in ("MACRO_AFTER", "ONE_LINE_BLOCK", "LINE_AFTER"):
+        code, result = probe(source, line_of(SCOPED, f"// {marker}"), "x", capsys, "--hits", "all")
+        assert result["status"] == "completed", result
+        rows[marker] = [row for row in result["rows"] if row["selector"] == "x"]
+    if compiler == "clang":
+        assert "__closure" not in json.dumps(rows), rows
+        return
+    for marker in ("MACRO_AFTER", "LINE_AFTER"):
+        [row] = rows[marker]
+        assert (row["value"], row["not_settable"]) == ("7", "capture"), (marker, row)
+    # The line's first stop runs `use(x)` before the block: the capture. Its second is in
+    # the block, on its declaration's line: Peeky can't tell.
+    before, inside = rows["ONE_LINE_BLOCK"]
+    assert (before["value"], before["not_settable"]) == ("7", "capture"), before
+    assert "value" not in inside and inside["error"].startswith(
+        "not shown: this lambda also declares a local `x` on line "
+        f"{line_of(SCOPED, '// ONE_LINE_BLOCK')}, and Peeky can't tell"
+    ), inside

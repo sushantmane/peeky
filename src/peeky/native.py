@@ -4874,11 +4874,12 @@ class NativeSession:
         captures ``name`` and may also declare it (#361): ("capture", None) where no
         declaration of the lambda's of that name is in scope there; ("local", its line)
         where one is; ("unknown", why) where Peeky can't tell. A declaration is in scope
-        from where it is declared to the end of its block, as C++ reads it
-        (Statements.scope_lines): a stop on a line above it, or past its block where the
-        stop's code is not that block's, names the capture; one on a line past its
-        statement, in that scope, names the local. Anything else, such as a stop on its
-        own lines, Peeky can't tell."""
+        from where it is declared to the end of its block, as C++ reads it. Where the
+        debug information places that block's code, a stop whose code is not the block's
+        names the capture (a macro's declaration ends where its text doesn't say). Else a
+        stop on a line above it, or past its scope (Statements.scope_lines), names the
+        capture; one on a line past its statement, in that scope, names the local.
+        Anything else, such as a stop in its block on its own lines, Peeky can't tell."""
         function = self._function_at(frame) or {}
         declared = [
             where
@@ -4895,6 +4896,14 @@ class NativeSession:
         visible, found = function.get("visible") or {}, ("capture", None)
         for where in sorted(declared, key=str):
             source, at, _ = where
+            ranges = visible.get((name, *where))
+            inside = (
+                None if not ranges or pc is None else any(low <= pc < high for low, high in ranges)
+            )
+            if inside is False:
+                # The stop's code is not its block's: it isn't in scope there, whatever the
+                # text reads (a macro's `if (int x = 9) …` ends where the line says not).
+                continue
             here = place is not None and place[0] == source and type(at) is int
             if here and place[1] < at:
                 # Above it: its scope hasn't begun.
@@ -4902,14 +4911,8 @@ class NativeSession:
             statements = self._statements(source) if here else None
             lines = statements.scope_lines(at, name) if statements is not None else None
             end = statements.declared_through(at, name) if statements is not None else None
-            ranges = visible.get((name, *where))
-            inside = (
-                None
-                if ranges is None or pc is None
-                else any(low <= pc < high for low, high in ranges)
-            )
-            if lines is not None and place[1] > lines[1] and inside is not True:
-                # Past the end of its scope, and not in its block's code.
+            if lines is not None and place[1] > lines[1] and inside is None:
+                # Past the end of its scope, where its block's code isn't known.
                 continue
             if lines is not None and end is not None and end < place[1] <= lines[1]:
                 found = ("local", at)

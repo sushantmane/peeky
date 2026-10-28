@@ -1511,7 +1511,8 @@ member of `this`:
   `this.total` reads the copy's member. `[this]` shows the pointer, as before.
 - The lambda's own local of a capture's name hides the capture from its declaration to the end of
   its block, as C++ reads it. Above it in the block, and after the block, the name reads the
-  capture. Where Peeky can't tell, as on the declaration's own line, the row says why.
+  capture. So does a stop whose code isn't the block's, as after a macro's `if (int x = 9) …`.
+  Where Peeky can't tell, as in the block on the declaration's own line, the row says why.
 - No capture can be changed, by value or by reference. The lambda's object holds it, which the
   frame reaches through a pointer. A `--set` is refused before the program runs. Change the outer
   variable before the lambda is made, or edit the source.

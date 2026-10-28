@@ -4695,9 +4695,9 @@ class DebugWorker:
         unread = {name: why for name, how, _, why in plan if how != "read"}
         wanted = [(name, member) for name, how, member, _ in plan if how == "read"]
         found = self.closure_members(runtime, frame) if wanted else None
-        if found is None:
+        if not isinstance(found, tuple):
             for name, _ in wanted:
-                unread[name] = "the debugger gave no address for `__closure` at this stop"
+                unread[name] = found
             return None, unread
         closure, children = found
         note = None
@@ -4737,39 +4737,53 @@ class DebugWorker:
     def closure_members(self, runtime, frame):
         """(`__closure` as a variable: {"name", "value": its address}, {member name: the
         debugger's variable}) for the GCC lambda ``frame`` runs (#361), read by a hover
-        of `__closure` and a listing of what it points at; None where the debugger gives
-        no address or no members, or doesn't answer in time. A member the debugger lists
-        twice is left out. The debugger's scope context may move (``frame_scans``)."""
+        of `__closure` and a listing of what it points at; else why not, as text for
+        ``closure_unread``: the hover or the listing failed or didn't answer in time, the
+        hover gave no address, or the listing is malformed or past 512 members. A member
+        the debugger lists twice is left out. The debugger's scope context may move
+        (``frame_scans``)."""
         self.frame_scans += 1
         arguments = {"expression": "__closure", "frameId": frame.get("id"), "context": "hover"}
         try:
             reply = self.dap.request("evaluate", arguments, timeout=5)
-            held = _CLOSURE_HOVER.fullmatch(str(reply.get("result") or "").strip())
-            reference = reply.get("variablesReference")
-            if held is None or type(reference) is not int or reference <= 0:
-                return None
-            listed = self.dap.request(
-                "variables", {"variablesReference": reference, "start": 0, "count": 513}, timeout=5
-            ).get("variables", [])
         except TimeoutError:
             # Its reply may still come: no change is made until the next inspection.
             self.view_timed_out = True
-            return None
-        except (RuntimeError, OSError, AttributeError):
-            return None
-        if not isinstance(listed, list) or len(listed) > 512:
-            return None
+            return "the debugger didn't answer a hover of `__closure` in time"
+        except (RuntimeError, OSError) as exc:
+            return f"the debugger couldn't read `__closure` here ({str(exc)[:120]})"
+        result = reply.get("result") if isinstance(reply, dict) else None
+        held = _CLOSURE_HOVER.fullmatch(result.strip()) if isinstance(result, str) else None
+        reference = reply.get("variablesReference") if isinstance(reply, dict) else None
+        if held is None or type(reference) is not int or reference <= 0:
+            return "the debugger gave no address for `__closure` at this stop"
+        try:
+            listing = self.dap.request(
+                "variables", {"variablesReference": reference, "start": 0, "count": 513}, timeout=5
+            )
+        except TimeoutError:
+            self.view_timed_out = True
+            return "the debugger didn't list what `__closure` points at in time"
+        except (RuntimeError, OSError) as exc:
+            return f"the debugger couldn't list what `__closure` points at ({str(exc)[:120]})"
+        listed = listing.get("variables") if isinstance(listing, dict) else None
+        malformed = "the debugger's listing of what `__closure` points at is malformed"
+        if not isinstance(listed, list) or not all(isinstance(each, dict) for each in listed):
+            return malformed
+        if len(listed) > 512:
+            return (
+                "what `__closure` points at has more than 512 members, past the bound Peeky lists"
+            )
         if validate_children := getattr(runtime, "validate_children", None):
-            validate_children(listed)
+            try:
+                validate_children(listed)
+            except (RuntimeError, ValueError):
+                return malformed
         counts = {}
         for child in listed:
-            if isinstance(child, dict) and isinstance(child.get("name"), str):
+            if isinstance(child.get("name"), str):
                 counts[child["name"]] = counts.get(child["name"], 0) + 1
-        children = {
-            child["name"]: child
-            for child in listed
-            if isinstance(child, dict) and counts.get(child.get("name")) == 1
-        }
+        children = {child["name"]: child for child in listed if counts.get(child.get("name")) == 1}
         return {"name": "__closure", "value": held[1]}, children
 
     def referent_note(self, frame, variable):
@@ -5935,6 +5949,8 @@ class DebugWorker:
         members = getattr(runtime, "capture_members", None)
         held = dict(members(frame)) if callable(members) else {}
         found = self.closure_members(runtime, frame) if ancestry[0][0] in held else None
+        if isinstance(found, str):
+            raise ValueError(f"Peeky can't read `{ancestry[0][0]}` again: {found}; inspect again")
         variable = found[1].get(held[ancestry[0][0]]) if found else None
         if variable is None or variable.get("type") != ancestry[0][1]:
             raise ValueError("Expansion ancestry changed or is ambiguous")

@@ -402,10 +402,14 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     pointer captured by reference shows its value; its text is judged as a pointer local's
     (`captured_pointer`).
   - `capture_plan` says how each capture reads at the stop. Where the lambda also declares
-    its name, `_capture_scope` reads the source as C++ does (`Statements.scope_lines`): a stop
-    above the declaration, or past its block outside the block's code, names the capture, and
-    one past its statement in its scope names the local. Anything else, such as the
-    declaration's own line, withholds the capture, saying so.
+    its name, `_capture_scope` decides by scope. A stop whose code is outside the declaration's
+    block (its DWARF ranges) names the capture, whatever the text says: a macro's declaration
+    ends where its line doesn't. Else it reads the source as C++ does
+    (`Statements.scope_lines`): a stop above the declaration, or past its scope, names the
+    capture, and one past its statement in its scope names the local. Anything else, such as
+    a stop in the block on the declaration's own line, withholds the capture, saying so.
+  - `closure_members` says which read failed: the hover of `__closure` or the listing of
+    what it points at (no answer in time, an error, malformed, past 512 members).
   - A capture the worker reads replaces any row of its name lldb-dap lists: a local whose scope
     hasn't begun, whose storage is no live object. `_typed` types a capture's root by the
     capture's type there (`_capture_root`).
