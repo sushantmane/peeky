@@ -798,7 +798,8 @@ def test_a_binding_into_a_local_container_reads_where_proven(cpp, capsys):
 # Review of #368: a pointer into the container made before the binding, through which the
 # element is destroyed before the stop and made again after it; a tuple-like type of the
 # program's whose `get<I>` returns what a pointer in it points at; and names passed by value.
-REVIEWED = """#include <cstddef>
+REVIEWED = """#include <array>
+#include <cstddef>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -843,9 +844,10 @@ template <class T, class U> bool operator==(const Spy<T> &, const Spy<U> &) { re
 template <class T, class U> bool operator!=(const Spy<T> &, const Spy<U> &) { return false; }
 __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
 __attribute__((noinline)) View view(Pair *p) { return View{p}; }
-P *saved = nullptr;
-__attribute__((noinline)) P make() {
-    P made{141, 142};
+using Four = std::array<long, 4>;
+Four *saved = nullptr;
+__attribute__((noinline)) Four make() {
+    Four made{141, 142, 143, 144};
     saved = &made;
     return made;
 }
@@ -888,11 +890,11 @@ int main(int argc, char **argv) {
     for (auto &[lk, lv] : lm) {
         use(lv + 1_sink); // LITERAL
     }
-    auto &&[na, nb] = make();
+    auto &&[na, nb, nc, nd] = make();
     std::destroy_at(saved);
     use(argc); // RETURNED
-    new (saved) P{143, 144};
-    use(na + nb);
+    new (saved) Four{145, 146, 147, 148};
+    use(na + nb + nc + nd);
     return 0;
 }
 """
@@ -928,8 +930,8 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
         "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
         # Review of #368, round 3: with the named return value optimization, `make()` builds
-        # `made` where the caller keeps its result, and keeps a pointer into it, through
-        # which the result is destroyed before the stop.
+        # `made` where the caller keeps its result (returned in memory: 32 bytes), and keeps
+        # a pointer into it, through which the result is destroyed before the stop.
         "RETURNED": ("na,nb", "`make()`", CALLED),
         # A user-defined literal, `1_sink`, of a class with `operator+(long &, Sink)`.
         "LITERAL": (
