@@ -1181,6 +1181,14 @@ HELD = """0x0000000b: DW_TAG_compile_unit
                     DW_AT_type\t(0x00000010 "long int")
                     DW_AT_data_member_location\t(0x08)
 
+0x0000003a:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x00000010 "long int")
+
+0x0000003c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
 0x00000040:     DW_TAG_class_type
                   DW_AT_name\t("vector<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
                   DW_AT_byte_size\t(0x18)
@@ -1194,6 +1202,10 @@ HELD = """0x0000000b: DW_TAG_compile_unit
                     DW_AT_type\t(0x00000010 "long int")
                     DW_AT_data_member_location\t(0x00)
 
+0x0000004a:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Alloc")
+                    DW_AT_type\t(0x00000084 "std::allocator<std::pair<long int, long int> >")
+
 0x00000050:     DW_TAG_class_type
                   DW_AT_name\t("map<long int, long int, std::less<long int>, std::allocator<std::pair<long int const, long int> > >")
                   DW_AT_byte_size\t(0x30)
@@ -1205,6 +1217,14 @@ HELD = """0x0000000b: DW_TAG_compile_unit
 0x00000058:       DW_TAG_template_type_parameter
                     DW_AT_name\t("_Tp")
                     DW_AT_type\t(0x00000010 "long int")
+
+0x0000005a:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Compare")
+                    DW_AT_type\t(0x00000088 "std::less<long int>")
+
+0x0000005c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_Alloc")
+                    DW_AT_type\t(0x0000008c "std::allocator<std::pair<long int const, long int> >")
 
 0x00000060:     DW_TAG_class_type
                   DW_AT_name\t("deque<std::pair<long int, long int>, std::allocator<std::pair<long int, long int> > >")
@@ -1235,6 +1255,22 @@ HELD = """0x0000000b: DW_TAG_compile_unit
                       DW_AT_type\t(0x00000010 "long int")
                       DW_AT_data_member_location\t(0x08)
 
+0x00000082:         DW_TAG_template_type_parameter
+                      DW_AT_name\t("_Allocator")
+                      DW_AT_type\t(0x00000084 "std::allocator<std::pair<long int, long int> >")
+
+0x00000084:     DW_TAG_class_type
+                  DW_AT_name\t("allocator<std::pair<long int, long int> >")
+                  DW_AT_byte_size\t(0x01)
+
+0x00000088:     DW_TAG_structure_type
+                  DW_AT_name\t("less<long int>")
+                  DW_AT_byte_size\t(0x01)
+
+0x0000008c:     DW_TAG_class_type
+                  DW_AT_name\t("allocator<std::pair<long int const, long int> >")
+                  DW_AT_byte_size\t(0x01)
+
 0x00000090:   DW_TAG_reference_type
                 DW_AT_type\t(0x00000028 "type")
 
@@ -1243,6 +1279,21 @@ HELD = """0x0000000b: DW_TAG_compile_unit
 
 0x00000098:   DW_TAG_reference_type
                 DW_AT_type\t(0x00000030 "std::pair<long int, long int>")
+
+0x00000099:   DW_TAG_class_type
+                DW_AT_name\t("Spy<std::pair<long int, long int> >")
+                DW_AT_byte_size\t(0x01)
+
+0x0000009a:   DW_TAG_structure_type
+                DW_AT_name\t("E")
+                DW_AT_byte_size\t(0x10)
+
+0x0000009b:   DW_TAG_structure_type
+                DW_AT_name\t("ByValue")
+                DW_AT_byte_size\t(0x01)
+
+0x0000009d:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000010 "long int")
 
 0x000000a0:   DW_TAG_subprogram
                 DW_AT_name\t("one")
@@ -1386,7 +1437,7 @@ int main(int argc, char **) {
     std::map<long, long> m{{21, 22}, {23, 24}};
     std::vector<P> v{{11, 12}, {13, 14}};
     for (const auto &[k, x] : m) {
-        use(k + x + (long)m.size());
+        use(k + x); use((long)m.size());
     }
     auto &[r, s] = v[0];
     auto &&[p, q] = one(argc);
@@ -1404,14 +1455,14 @@ int main(int argc, char **) {
 ENTRY = "std::pair<const long, long>"
 
 
-def held(optimization="O0", preprocessed=None):
+def held(optimization="O0", preprocessed=None, dwarf=HELD):
     """A NativeSession over HELD's `main`, its source HELD_SOURCE; ``preprocessed``: the
     Statements of its translation unit as the compiler preprocessed it (else the same)."""
     from peeky.c_source import Statements
     from peeky.fields import CPP_LIBRARIES, local_types, type_graph
     from peeky.native import _parse_dies, call_arguments, call_results
 
-    dies = _parse_dies(HELD)
+    dies = _parse_dies(dwarf)
     types = local_types(dies, [0xB0], through=True)
     kinds = {kind for declared in types.values() for kind, _, _ in declared}
     function = {"types": types, "source": "src/t.cpp", "span": (2, 19)}
@@ -1587,8 +1638,8 @@ def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
     # A call that returns a reference (`pick`), a local functor's, a macro that changes it.
     withheld(
         variable("a", f"{ELEMENT} &&", "0x0000fffffffffa58", 4),
-        "and Peeky can't prove the call returns a new standard pair, tuple or array that the "
-        "binding keeps alive",
+        "and Peeky can't prove the call returns a new standard pair, tuple or array of numbers "
+        "that the binding keeps alive",
         what="`pick(*held)`",
         extent=lambda: stack,
     )
@@ -1599,8 +1650,8 @@ def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
     shadowed._function_at = lambda frame: {"types": types, "source": "src/t.cpp", "span": (2, 19)}
     withheld(
         p,
-        "and Peeky can't prove the call returns a new standard pair, tuple or array that the "
-        "binding keeps alive",
+        "and Peeky can't prove the call returns a new standard pair, tuple or array of numbers "
+        "that the binding keeps alive",
         session=shadowed,
         extent=lambda: stack,
     )
@@ -1663,7 +1714,7 @@ def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
     assert found == unproven(
         "r",
         "an element of `v`",
-        "and Peeky follows only names of numbers, characters or pointers through the code",
+        "and Peeky follows only names of numbers or characters through the code, never a pointer",
     )
     # A call's result whose name the code passes on by reference.
     p = variable("p", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
@@ -1676,6 +1727,50 @@ def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
         "`one(argc)`",
         "and the code may keep a pointer or reference to what it names while it is in scope",
     )
+
+
+def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_them():
+    # Review of #368, round 2: a constructor of the program's element type, or its own
+    # allocator or order, sees where each element is (`E() { saved = &x; }`), and may keep
+    # it to end that element's life where the binding's scope shows nothing.
+    frame = {"id": 1}
+
+    def fetch(reference, count, start=0):
+        if reference == 9:
+            return [{"name": "[0]", "type": ENTRY, "value": f"{ENTRY} @ 0xaaaaaaad32d0"}]
+        return [{"name": "&k", "type": ELEMENT, "value": "21", "variablesReference": 0}]
+
+    m = {"name": "m", "type": "std::map<long, long>", "value": "size=1", "variablesReference": 9}
+    k = variable("k", f"{ELEMENT} &", "0x0000aaaaaaad32d0", 4)
+    v = {"name": "v", "type": "std::vector<P>", "value": "size=2", "variablesReference": 8}
+    raw = Counts(
+        {"v._M_impl._M_start": "0x0000aaaaaaad3740", "v._M_impl._M_finish": "0x0000aaaaaaad3760"}
+    )
+    r = variable("r", f"{ELEMENT} &", "0x0000aaaaaaad3740", 6)
+    # The library's own: read.
+    assert held().bound_element(k, frame, fetch, siblings=[m])["variable"]
+    assert held().bound_element(r, frame, fetch, siblings=[v], raw=raw)["variable"]
+    policy = (
+        "and Peeky proves only standard vectors, maps and sets of numbers, with the default "
+        "allocator and order"
+    )
+    allocator = '(0x00000084 "std::allocator<std::pair<long int, long int> >")'
+    pair = '(0x00000030 "std::pair<long int, long int>")'
+    less = '(0x00000088 "std::less<long int>")'
+    mapped = 'DW_AT_name\t("_Tp")\n                    DW_AT_type\t(0x00000010 "long int")'
+    for edit, row, siblings in (
+        # A vector with an allocator of the program's, of elements of its own type.
+        ((allocator, '(0x00000099 "Spy<std::pair<long int, long int> >")'), r, [v]),
+        ((pair, '(0x0000009a "E")'), r, [v]),
+        # A map with an order of the program's, or a pointer for its value.
+        ((less, '(0x0000009b "ByValue")'), k, [m]),
+        ((mapped, mapped.replace('0x00000010 "long int"', '0x0000009d "long int *"')), k, [m]),
+    ):
+        found = held(dwarf=HELD.replace(*edit, 1)).bound_element(
+            row, frame, fetch, siblings=siblings, raw=raw
+        )
+        container = siblings[0]["name"]
+        assert found == unproven(row["name"], f"an element of `{container}`", policy), edit
 
 
 CALLS = """0x0000000b: DW_TAG_compile_unit
@@ -1789,6 +1884,18 @@ CALLS = """0x0000000b: DW_TAG_compile_unit
                     DW_AT_name\t("_Tp")
                     DW_AT_type\t(0x00000010 "long int")
 
+0x0000007a:     DW_TAG_structure_type
+                  DW_AT_name\t("pair<long int *, long int>")
+                  DW_AT_byte_size\t(0x10)
+
+0x0000007c:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T1")
+                    DW_AT_type\t(0x000000ae "long int *")
+
+0x0000007e:       DW_TAG_template_type_parameter
+                    DW_AT_name\t("_T2")
+                    DW_AT_type\t(0x00000010 "long int")
+
 0x00000080:   DW_TAG_structure_type
                 DW_AT_name\t("View")
                 DW_AT_byte_size\t(0x08)
@@ -1826,6 +1933,13 @@ CALLS = """0x0000000b: DW_TAG_compile_unit
 
 0x000000ac:   DW_TAG_pointer_type
                 DW_AT_type\t(0x00000018 "char")
+
+0x000000ae:   DW_TAG_pointer_type
+                DW_AT_type\t(0x00000010 "long int")
+
+0x000000be:   DW_TAG_subprogram
+                DW_AT_name\t("pointers")
+                DW_AT_type\t(0x0000007a "std::pair<long int *, long int>")
 
 0x000000c0:   DW_TAG_subprogram
                 DW_AT_name\t("one")
@@ -1994,6 +2108,8 @@ def test_a_call_gives_a_new_object_only_where_every_function_of_its_name_returns
         "refs": False,
         "view": False,
         "vec": False,
+        # A pair holding a pointer, which may point at another object.
+        "pointers": False,
         "number": False,
         "nothing": False,
         # A variable's name: a call through it may give anything.
@@ -2002,7 +2118,8 @@ def test_a_call_gives_a_new_object_only_where_every_function_of_its_name_returns
     arguments = call_arguments(dies)
     assert arguments["use"] == [((True,), False)]
     assert arguments["keep"] == [((False,), False)]
-    assert arguments["printf"] == [((True,), True)]
+    # A pointer is no number: only `printf`'s `...` takes a name by value.
+    assert arguments["printf"] == [((False,), True)]
     assert arguments["over"] == [((True,), False), ((False,), False)]
     assert arguments["member"] == [((True,), False)]
     assert arguments["fn"] is None and arguments["first"] is None

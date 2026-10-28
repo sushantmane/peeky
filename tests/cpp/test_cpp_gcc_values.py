@@ -550,7 +550,7 @@ int main(int argc, char **argv) {
     std::tuple_element<0, std::pair<long, long>>::type &r = p.first; // EXPLICIT
     auto &[a, b] = p; // LOCAL
     auto &&[g, h] = one(argc); // EXTENDED
-    use(poison[0].first + r + a + g); // AFTER
+    use(poison[0].first + r + a); use(g + h); // AFTER
     return 0;
 }
 """
@@ -571,7 +571,7 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     code, result = probe(
         source, line_of(DANGLING, "// AFTER"), "t,u,c,d,e,f,r,a,b,g,h", capsys, "--hits", "1"
     )
-    assert "U=8041" in result["output"], result["output"]
+    assert "U=8010" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
     # A local of this frame: read through. So is `one(argc)`'s result, which `auto &&`
     # keeps alive for its scope (#297).
@@ -630,7 +630,7 @@ int main(int argc, char **argv) {
     for (auto &[key, value] : m) { // MAP_LOOP
         use(key * value); // MAP_READ
     }
-    use(u.q.first + c + e + g); // AFTER
+    use(u.q.first + c + e); use(g); // AFTER
     return 0;
 }
 """
@@ -645,7 +645,7 @@ def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(c
     source.write_text(BOUNDARIES)
     capture = "a,b,x,y,c,d,e,f,g,k"
     code, result = probe(source, line_of(BOUNDARIES, "// AFTER"), capture, capsys, "--hits", "1")
-    assert "U=90" in result["output"], result["output"]
+    assert "U=79" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
     # A struct's member, and a local reassigned after the binding: what it holds now. And
     # since #297, an element of a local vector nothing changes later: `v[0]`.
@@ -685,7 +685,7 @@ __attribute__((noinline)) void fill(std::map<long, long> &m) { m[99] = 100; }
 int main(int argc, char **argv) {
     std::map<long, long> m{{21, 22}, {23, 24}};
     for (const auto &[k, x] : m) {
-        use(k * x + (long)m.size()); // MAP_READ
+        use(k * x); use((long)m.size()); // MAP_READ
     }
     std::vector<P> v{{11, 12}, {13, 14}};
     for (auto &[a, b] : v) {
@@ -754,8 +754,8 @@ def test_a_binding_into_a_local_container_or_a_calls_result_reads_where_proven(c
         ),
         "e": (
             "`pick(w[1])`",
-            "and Peeky can't prove the call returns a new standard pair, tuple or array that "
-            "the binding keeps alive",
+            "and Peeky can't prove the call returns a new standard pair, tuple or array of "
+            "numbers that the binding keeps alive",
         ),
         "g": (
             "an element of `n`",
@@ -794,6 +794,29 @@ namespace std {
 template <> struct tuple_size<View> : std::integral_constant<std::size_t, 2> {};
 template <std::size_t I> struct tuple_element<I, View> { using type = long; };
 }
+struct Sink {};
+long *escaped = nullptr;
+Sink &operator<<(Sink &s, long &x) { escaped = &x; return s; }
+long *made = nullptr;
+struct E {
+    long x, y;
+    E(long a, long b) : x(a), y(b) { made = &x; }
+    template <std::size_t I> long &get() { return I == 0 ? x : y; }
+};
+namespace std {
+template <> struct tuple_size<E> : std::integral_constant<std::size_t, 2> {};
+template <std::size_t I> struct tuple_element<I, E> { using type = long; };
+}
+void *kept = nullptr;
+template <class T> struct Spy {
+    using value_type = T;
+    Spy() = default;
+    template <class U> Spy(const Spy<U> &) {}
+    T *allocate(std::size_t n) { T *p = std::allocator<T>{}.allocate(n); kept = p; return p; }
+    void deallocate(T *p, std::size_t n) { std::allocator<T>{}.deallocate(p, n); }
+};
+template <class T, class U> bool operator==(const Spy<T> &, const Spy<U> &) { return true; }
+template <class T, class U> bool operator!=(const Spy<T> &, const Spy<U> &) { return false; }
 __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
 __attribute__((noinline)) View view(Pair *p) { return View{p}; }
 int main(int argc, char **argv) {
@@ -812,9 +835,34 @@ int main(int argc, char **argv) {
         use(k);
         std::printf("%ld\\n", x); // PASSED
     }
+    Sink sink;
+    std::map<long, long> om{{101, 102}};
+    for (auto &[ok, ov] : om) {
+        sink << ov;
+        use(ok); // OPERATOR
+    }
+    std::vector<E> es;
+    es.emplace_back(111, 112);
+    for (auto &[ex, ey] : es) {
+        use(ex * ey); // CONSTRUCTED
+    }
+    std::vector<P, Spy<P>> sv{{121, 122}};
+    for (auto &[sa, sb] : sv) {
+        use(sa * sb); // ALLOCATED
+    }
+    std::map<long, long *> pointing{{131, &held.x}};
+    for (auto &[pk, pp] : pointing) {
+        use(pk); // POINTER
+    }
     return 0;
 }
 """
+
+
+POLICY = (
+    "and Peeky proves only standard vectors, maps and sets of numbers, with the default "
+    "allocator and order"
+)
 
 
 @pytest.mark.timeout(300)
@@ -836,13 +884,26 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         "PROXY": (
             "vx,vy",
             "`view(&held)`",
-            "and Peeky can't prove the call returns a new standard pair, tuple or array that "
-            "the binding keeps alive",
+            "and Peeky can't prove the call returns a new standard pair, tuple or array of "
+            "numbers that the binding keeps alive",
         ),
+        # Review of #368, round 2: an overloaded operator that keeps the name's address;
+        # an element whose own constructor keeps its address, or an allocator of the
+        # program's, which sees where each element is; a pointer, which may point at
+        # another element.
+        "OPERATOR": (
+            "ok,ov",
+            "an element of `om`",
+            "and while it is in scope the code may change `om` or keep a pointer or reference "
+            "into it",
+        ),
+        "CONSTRUCTED": ("ex,ey", "an element of `es`", POLICY),
+        "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
+        "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
     }
     for marker, (capture, what, why) in reasons.items():
         found = bound_rows_of(source, REVIEWED, marker, capture, capsys)
-        assert len(found) == 2, found
+        assert len(found) == 2, (marker, found)
         for row in found:
             assert row.get("value") is None, row
             assert hidden(compiler, row) or row["error"] == UNPROVEN.format(

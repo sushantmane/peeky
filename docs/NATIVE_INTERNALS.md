@@ -247,20 +247,27 @@ shows that reference's address as the variable's value.
   - An object of the frame, or a member of one (`_local_object`): a local or by-value parameter in
     scope there, reached through no reference, pointer or union (`_member_object`).
   - An element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`, by a range
-    `for` over it or one subscript of a vector (`_held_element`). `Statements.leaves_elements`
-    reads each translation unit as the compiler preprocessed it.
+    `for` over it or one subscript of a vector (`_held_element`). `_plain_container` reads its
+    template arguments: `std::allocator`, `std::less` for an order, and elements of base types
+    (a map's key and value, or a `std::pair` or `std::array` of them). `type_graph` walks every
+    template argument of such a container for this. `Statements.leaves_elements` reads each
+    translation unit as the compiler preprocessed it.
   - In the binding's scope, the container may only call a member that gives a value
     (`_VALUES`). In its own scope, nothing may keep a pointer, iterator or reference into it: a
     call's result is dropped (`m.insert(…);`), an element is only assigned (`v[1] = x;`), and
     another binding over it keeps its names. No lambda or local class may name it.
   - A call's own result (`_kept_result`). `call_results` proves the call's name from the debug
     information: every function of that name returns a `std::pair`, `std::tuple` or
-    `std::array` of standard types, so `std::get` names its own elements. No global, static or
-    data member has that name.
-  - For both, `Statements._names_kept` follows each of the binding's names, which must be numbers,
-    characters or pointers (`_scalar_bound`). A use may read or assign it, never take its address,
-    bind a reference to it, or pass it to a call. A call whose every function takes that argument
-    by value is fine (`call_arguments`).
+    `std::array` of base types, so `std::get` names its own elements. No global, static or data
+    member has that name.
+  - For both, `Statements._names_kept` follows each of the binding's names, which must be of base
+    types (`_scalar_bound`): never an enumeration or a pointer.
+  - `_operand` reads the expression around each use. Every token must be a name of a base type
+    (the binding's, or a local's), a number literal, a cast to a base type, a parenthesis, or a
+    built-in operator. With every operand of a base type, no overload can be called.
+  - `_only_read` then reads what takes that expression. A new value goes anywhere. The name alone
+    may be a statement, an assignment's target or source of a base type, a condition, returned,
+    or an argument every function of the call's name takes by value (`call_arguments`).
   - `bound_element` then checks the address the reference holds (`_bound_place`). It must be in
     the vector's elements (its own `_M_start` and `_M_finish`, or libc++'s `__begin_` and
     `__end_`). Or it must be in one of the map's entries as the debugger lists them. Or it must be

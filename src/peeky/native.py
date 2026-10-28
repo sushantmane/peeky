@@ -3476,13 +3476,14 @@ def call_results(dies):
     """{a function's name: whether a call by that name gives a new object whose
     structured binding names its own elements (#297)}: every function of the name the
     build describes (a template's instances by the name before their `<`) returns a
-    `std::pair`, `std::tuple` or `std::array` by value, of numbers, characters, pointers
-    to them or other such standard types, holding no reference. `auto &&[a, b] = f();`
-    binds such a call's result, a temporary the binding keeps alive for its scope, and
-    `std::get` gives each name its own element: no type of the program's is involved
-    that could give a `get` of its own (#297 review: a `View` whose `get<I>` returns what
-    a pointer in it points at). A name the build also gives a variable outside a function
-    or a data member is False: a call through one may give anything."""
+    `std::pair`, `std::tuple` or `std::array` by value, of numbers and characters alone.
+    `auto &&[a, b] = f();` binds such a call's result, a temporary the binding keeps
+    alive for its scope, and `std::get` gives each name its own element: no type of the
+    program's is involved that could give a `get`, a constructor or an operator of its
+    own (#297 review rounds 1, 2: a `View` whose `get<I>` returns what a pointer in it
+    points at), and no pointer that may point at another object. A name the build also
+    gives a variable outside a function or a data member is False: a call through one may
+    give anything."""
     from peeky.fields import _RECORDS as records
     from peeky.fields import _definitions, _target
 
@@ -3532,34 +3533,21 @@ def call_results(dies):
             )
         return kept[offset]
 
-    def standard_type(offset, depth=0):
-        # A number or a character, a pointer to one, or a standard library class of
-        # such arguments: no namespace of the program's, whose `get` a call may find.
-        offset = under(offset)
-        die = dies.get(offset)
-        if die is None or depth > 16:
-            return False
-        if die["tag"] == "DW_TAG_base_type":
-            return True
-        if die["tag"] == "DW_TAG_pointer_type":
-            pointee = _target(die["attrs"].get("DW_AT_type"))
-            return pointee is None or standard_type(pointee, depth + 1)
-        if die["tag"] not in records:
-            return False
+    def numbers(offset):
+        # Its template's type arguments, a pack's too, are each a number or a character.
         offset = complete(offset)
-        if offset is None or not (_qualified(dies, offset) or "").startswith("std::"):
+        if offset is None:
             return False
         if offset not in standard:
-            standard[offset] = False
             arguments, pending = [], list(dies[offset]["children"])
             while pending:
                 child = dies[pending.pop()]
                 if child["tag"] == "DW_TAG_GNU_template_parameter_pack":
                     pending.extend(child["children"])
                 elif child["tag"] == "DW_TAG_template_type_parameter":
-                    arguments.append(_target(child["attrs"].get("DW_AT_type")))
-            standard[offset] = all(
-                kind is not None and standard_type(kind, depth + 1) for kind in arguments
+                    arguments.append(under(_target(child["attrs"].get("DW_AT_type"))))
+            standard[offset] = bool(arguments) and all(
+                (dies.get(kind) or {}).get("tag") == "DW_TAG_base_type" for kind in arguments
             )
         return standard[offset]
 
@@ -3574,7 +3562,7 @@ def call_results(dies):
             record is not None
             and dies[record]["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type")
             and bool(_TUPLE_LIKE.match(_qualified(dies, record) or ""))
-            and standard_type(record)
+            and numbers(record)
             and holds_no_reference(record)
         )
         found[name] = found.get(name, True) and value
@@ -3583,8 +3571,8 @@ def call_results(dies):
 
 def call_arguments(dies):
     """{a function's name: [(for each argument it names, whether it takes it by value as
-    a number, a character, an enumerator or a pointer; whether it takes more, `...`, which
-    are by value) for each function of that name the build describes]}, or None for a
+    a number or a character; whether it takes more, `...`, which are by value) for each
+    function of that name the build describes]}, or None for a
     name the build also gives a variable outside a function or a data member (#297
     review): whether passing a structured binding's name to a call by that name copies
     it, or may let the call keep a reference to it. A member function's `this` is left
@@ -3603,11 +3591,7 @@ def call_arguments(dies):
                 break
             offset = _target(die["attrs"].get("DW_AT_type"))
         die = dies.get(offset)
-        return die is not None and die["tag"] in (
-            "DW_TAG_base_type",
-            "DW_TAG_enumeration_type",
-            "DW_TAG_pointer_type",
-        )
+        return die is not None and die["tag"] == "DW_TAG_base_type"
 
     found = {}
     for offset, name, _ in _named_calls(dies):
@@ -4726,6 +4710,10 @@ class Everywhere(str):
 # to refer to (#297): a vector's, which are in one array, and a map's, set's or
 # multiset's, each in a node of its own.
 _BOUND_CONTAINERS = re.compile(r"std::(?:__\w+::)*(vector|map|set|multiset)<")
+# What such a container's elements, order and allocator must be (#297 review round 2).
+_PLAIN_ELEMENTS = re.compile(r"std::(?:__\w+::)*(?:pair|array)<")
+_LESS = re.compile(r"std::(?:__\w+::)*less<")
+_ALLOCATOR = re.compile(r"std::(?:__\w+::)*allocator<")
 # How many entries of a map or set Peeky checks a binding's element among (#297).
 BOUND_ENTRIES = 256
 
@@ -6106,6 +6094,13 @@ class NativeSession:
         if kind is None or (kind[1] != "vector" and not ranged):
             return None
         what = (container, True)
+        if not self._plain_container(node, kind[1]):
+            return _unproven(
+                base,
+                what,
+                "and Peeky proves only standard vectors, maps and sets of numbers, with the "
+                "default allocator and order",
+            )
         sort, size = "nodes", None
         if kind[1] == "vector":
             # Where its elements start and end: libc++'s own members, else libstdc++'s.
@@ -6134,33 +6129,36 @@ class NativeSession:
 
     def _scalar_names(self, frame, base, place):
         """Why Peeky can't follow the names of the structured binding ``base`` declared on
-        ``place`` through the code (#297 review), or None: each must refer to a number, a
-        character or a pointer (``_scalar_bound``), whose every use Peeky can read."""
+        ``place`` through the code (#297 review rounds 1, 2), or None: each must refer to a
+        number or a character (``_scalar_bound``), whose every use Peeky can read, never a
+        pointer, which may point at another element."""
         function = self._function_at(frame) or {}
         source = function.get("source")
         statements = self._statements(source) if isinstance(source, str) else None
         names = statements.bound_names(place[1], base) if statements is not None else []
         if names and all(self._scalar_bound(function, name, place) for name in names):
             return None
-        return "and Peeky follows only names of numbers, characters or pointers through the code"
+        return "and Peeky follows only names of numbers or characters through the code, never a pointer"
 
-    def _scalar_bound(self, function, name, origin):
+    def _scalar_bound(self, function, name, origin=None):
         """Whether each local ``name`` of ``function`` declared on ``origin`` (a file and
-        line) is, or refers to, a number, a character or a pointer (#297 review)."""
+        line; None: anywhere in it) is, or refers to, a number or a character: a base type,
+        whose operators are all built in (#297 review round 2), never an enumeration or a
+        pointer."""
         from peeky.native_previews import Typed
 
-        if not origin or self.fields is None:
+        if self.fields is None:
             return False
-        place = (Path(str(origin[0])).name, origin[1])
+        place = (Path(str(origin[0])).name, origin[1]) if origin else None
         declared = [
             kind
             for kind, _, where in (function.get("types") or {}).get(name) or ()
-            if where == place
+            if place is None or where == place
         ]
         for kind in declared:
             typed = Typed(self.fields, kind)
             typed = typed.target() if typed.kind() == "reference" else typed
-            if typed is None or typed.kind() not in ("scalar", "pointer"):
+            if typed is None or typed.scalar() is None:
                 return False
         return bool(declared)
 
@@ -6180,11 +6178,50 @@ class NativeSession:
         source's."""
         origins = getattr(preprocessed, "origins", ())
 
-        def scalar(name, line):
+        def scalar(name, line=None):
+            if line is None:
+                return self._scalar_bound(function, name)
             origin = origins[line - 1] if type(line) is int and 0 < line <= len(origins) else None
-            return self._scalar_bound(function, name, origin)
+            return origin is not None and self._scalar_bound(function, name, origin)
 
         return scalar, lambda callee, index: self._passes(function, callee, index)
+
+    def _plain_container(self, node, sort):
+        """Whether the standard container ``node`` (a record of the type graph; ``sort``:
+        "vector", "map", "set" or "multiset") is one whose elements only the standard
+        library makes, orders and places (#297 review round 2): `std::allocator`, and
+        `std::less` for a map's or a set's order; its elements numbers or characters (a
+        map's key and value), or a set's or vector's a `std::pair` or `std::array` of them.
+        No constructor, allocator or comparison of the program's then sees where an
+        element is."""
+        from peeky.native_previews import Typed
+
+        graph = self.fields
+
+        def named(offset, pattern):
+            found = Typed(graph, offset).node() if offset in graph else None
+            return found is not None and found[0] == "record" and bool(pattern.match(found[11]))
+
+        def number(offset):
+            return offset in graph and Typed(graph, offset).scalar() is not None
+
+        def element(offset):
+            if not named(offset, _PLAIN_ELEMENTS):
+                return False
+            inner = [p[2] for p in Typed(graph, offset).node()[12] if p[0] == "type"]
+            return bool(inner) and all(number(each) for each in inner)
+
+        types = [p[2] for p in node[12] if p[0] == "type"]
+        if sort == "vector":
+            wanted = (element, _ALLOCATOR)
+        elif sort == "map":
+            wanted = (number, number, _LESS, _ALLOCATOR)
+        else:
+            wanted = (element, _LESS, _ALLOCATOR)
+        return len(types) == len(wanted) and all(
+            check(offset) if callable(check) else named(offset, check)
+            for check, offset in zip(wanted, types)
+        )
 
     def _entry_size(self, typed):
         """How many bytes an entry of a standard map, set or multiset ``typed`` takes: a
@@ -6300,8 +6337,8 @@ class NativeSession:
             return _unproven(
                 base,
                 what,
-                "and Peeky can't prove the call returns a new standard pair, tuple or array "
-                "that the binding keeps alive",
+                "and Peeky can't prove the call returns a new standard pair, tuple or array of "
+                "numbers that the binding keeps alive",
             )
         if getattr(self.target, "optimization", "O0") != "O0":
             return _unproven(base, what, "and in an optimized build Peeky can't check it")

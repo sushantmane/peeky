@@ -1442,8 +1442,12 @@ LOOP_OVER_M = """int main() {
 """
 
 
-def scalar(name, line):
-    return True
+# The names of numbers and characters in these sources: what the build's types would say.
+NUMBERS = frozenset(("k", "v", "w", "total", "x", "a", "b", "c", "d", "i", "r", "s"))
+
+
+def scalar(name, line=None):
+    return name in NUMBERS
 
 
 def by_value(function, index):
@@ -1461,11 +1465,14 @@ def kept(source, container, declared, line, bound):
     "before, body, after, expected",
     [
         ("", "", "", True),
-        # In the loop: a call of the container's that gives a value, and reads of the names.
-        ("", "use(m.size() + m.count(k));", "", True),
+        # In the loop: a call of the container's that gives a value, and reads of the names
+        # in expressions of numbers alone, whose operators are all built in.
+        ("", "use(m.size());", "", True),
         ("", 'use(k); std::printf("%ld", v);', "", True),
-        ("", "if (k > 1) total += v; long w = k; w += v; k = 3; arr[k] = v;", "", True),
-        ("", "switch (k) { case 1: break; } use((long)k); use(k++);", "", True),
+        ("", "if (k > 1) total += v; long w = k; w += v; auto x = v; w = k * 2 + x;", "", True),
+        ("", "switch (k) { case 1: break; } use((long)k); use(k++); use(-k);", "", True),
+        ("", "use((k + 1) * v); k = 3; ++k; v--; k; return k;", "", True),
+        ("", "for (long i = 0; i < k; i++) use(i);", "", True),
         # Before or after it: a call whose result the statement drops, an assignment, a copy.
         ("m.insert({3, 4}); m[5] = 6;", "", "", True),
         ("m = {};", "", "m.clear();", True),
@@ -1478,6 +1485,19 @@ def kept(source, container, declared, line, bound):
         ("", "use(m.find(k)->second);", "", False),
         ("", "m.at(k) = 3;", "", False),
         ("", "for (auto &[a, b] : m) use(a);", "", False),
+        # Review of #368, round 2: an operator Peeky can't prove built in, as any with an
+        # operand of another type may be an overload that takes the name by reference.
+        ("", "sink << v;", "", False),
+        ("", "std::cout << k;", "", False),
+        ("", "sink += k;", "", False),
+        ("", "k += sink;", "", False),
+        ("", "use(e + k);", "", False),
+        ("", "use(k * f(x));", "", False),
+        ("", "use(f(x) * k);", "", False),
+        ("", "use(sizeof(k) + k);", "", False),
+        ("", "Sink q = k;", "", False),
+        ("", "arr[k] = v;", "", False),
+        ("", "use(m.count(k));", "", False),
         # A pointer or reference to a name: its address, a reference bound to it, an
         # argument a call may take by reference, a branch of `?:`, a lambda's.
         ("", "keep(k);", "", False),
@@ -1521,11 +1541,11 @@ def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(
     # it keep a pointer, iterator or reference to one, through the container or a name.
     source = LOOP_OVER_M.replace("BEFORE", before).replace("BODY", body).replace("AFTER", after)
     assert kept(source, "m", 2, 4, "k") is expected
-    # A name that may not be a number, a character or a pointer is never followed.
+    # A name that may not be a number or a character is never followed.
     statements = Statements(source, raw_strings=True)
     scope, region = statements.scope_lines(2, "m"), statements.scope_lines(4, "k")
     assert not statements.leaves_elements(
-        "m", scope, region, 4, "k", lambda name, line: name != "v", by_value
+        "m", scope, region, 4, "k", lambda name, line=None: name != "v", by_value
     )
     assert not statements.leaves_elements("m", scope, region, 4, "k")
 
@@ -1594,17 +1614,22 @@ def test_a_calls_bindings_names_are_kept_only_where_nothing_aliases_them():
     # Review of #368: a binding of a call's result names that result's elements; only a
     # pointer or reference made through a name could end one's life while it is in scope.
     source = """int main() {
-    auto &&[p, q] = one(1);
-    use(p + q);
+    auto &&[c, d] = one(1);
+    use(c + d);
     LATER
 }
 """
-    for later, expected in (("", True), ("keep(q);", False), ("auto *r = &p;", False)):
+    for later, expected in (
+        ("", True),
+        ("keep(d);", False),
+        ("auto *r = &c;", False),
+        ("sink << c;", False),
+    ):
         statements = Statements(source.replace("LATER", later), raw_strings=True)
-        assert statements.kept_names(2, "p", scalar, by_value) is expected, later
-        assert statements.bound_names(2, "q") == ["p", "q"]
-    assert not statements.kept_names(2, "p") and not statements.kept_names(3, "p", scalar)
-    assert statements.bound_names(3, "p") == []
+        assert statements.kept_names(2, "c", scalar, by_value) is expected, later
+        assert statements.bound_names(2, "d") == ["c", "d"]
+    assert not statements.kept_names(2, "c") and not statements.kept_names(3, "c", scalar)
+    assert statements.bound_names(3, "c") == []
 
 
 RANGE_LAMBDA_SOURCE = """int f() {

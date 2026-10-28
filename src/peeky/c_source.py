@@ -41,10 +41,16 @@ _LEXEME = re.compile(
     r"\+\+|--|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|\.\*|<%|%>|\S"
 )
 _ASSIGNING = frozenset(("=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="))
-# Operators whose operands are values: a built-in one reads a number (#297).
-_OPERATING = frozenset(
+# Operators that are built in where every operand is a number or a character (#297 review
+# round 2): no type of the program's is there for an overload of its own to take one.
+_BUILT_IN = frozenset(
     ("+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "&", "|", "^")
-    + ("<<", ">>", "<=>", "!", "~")
+    + ("<<", ">>", "!", "~")
+)
+# The words of a number's or a character's type, as a local's declaration or a cast spells it.
+_NUMBER_TYPES = frozenset(
+    ("auto", "bool", "char", "char8_t", "char16_t", "char32_t", "const", "double", "float")
+    + ("int", "long", "short", "signed", "unsigned", "volatile", "wchar_t")
 )
 # Words before `(` that make it no call's.
 _NOT_CALLS = frozenset(
@@ -2871,7 +2877,7 @@ class Statements:
         ):
             return False
         bodies = self._running_bodies(*within, own)
-        if not self._names_kept(line, bound, binding, bodies, scalar, passes, name):
+        if not self._names_kept(line, bound, binding, bodies, scalar, passes):
             return False
         lexemes, places = self._lexemes()
         first = True
@@ -3012,9 +3018,7 @@ class Statements:
             return True  # by value: each name its own copy
         region = self.scope_lines(line, first[0])
         span = self._offsets(region) if region is not None else None
-        return span is not None and self._names_kept(
-            line, first[0], span, bodies, scalar, passes, name
-        )
+        return span is not None and self._names_kept(line, first[0], span, bodies, scalar, passes)
 
     def kept_names(self, line, bound, scalar=None, passes=None):
         """Whether the names of the structured binding ``bound`` declared on ``line`` are
@@ -3030,7 +3034,7 @@ class Statements:
             line, bound, span, self._running_bodies(*span, found[1]), scalar, passes
         )
 
-    def _names_kept(self, line, bound, span, bodies, scalar, passes, keeper=None):
+    def _names_kept(self, line, bound, span, bodies, scalar, passes):
         """Whether every name of the structured binding naming ``bound`` on ``line`` is a
         number, a character or a pointer (``scalar(name, line)``), and each of its uses in
         ``span`` (offsets) only reads it, or assigns it as a statement (`b += 1;`): never
@@ -3055,7 +3059,7 @@ class Statements:
                     continue  # a member's or another scope's name
                 if any(opened < word.start() < closed for opened, closed in bodies):
                     return False
-                if not self._only_read(index, passes, keeper):
+                if not self._only_read(index, lambda word: scalar(word, None), passes):
                     return False
         return True
 
@@ -3084,120 +3088,232 @@ class Statements:
         names = [part.strip() for part in text.split(",")]
         return names if all(_WORD.fullmatch(each) for each in names) else []
 
-    def _only_read(self, index, passes, keeper=None):
-        """Whether the use of a binding's name at token ``index`` of ``_lexemes`` (a
-        number, a character or a pointer) makes no pointer or reference to it
-        (``_names_kept``). ``keeper``: the container whose `count(…)` or `contains(…)` it
-        may be passed to."""
-        lexemes, places = self._lexemes()
-        code, pairs = self._code()
-        closes = self.closes
+    def _only_read(self, index, scalar, passes):
+        """Whether the use of a binding's name (a number or a character) at token ``index``
+        of ``_lexemes`` makes no pointer or reference to it, read from the expression
+        around it (``_operand``) and what takes that expression (#297 review rounds 1, 2).
+
+        The expression may hold only numbers and characters: the binding's names and
+        locals of such types (``scalar(name)``), number literals, casts to such types
+        (`(long)`), parentheses and the built-in operators, which any operator between
+        such operands is: no call, member, subscript, `&k`, `?:` or overloaded operator.
+        Such an expression, past the name alone, is a new value, which nothing can refer
+        to the name through. The name alone may be: a statement (`k;`, `++k;`), the
+        target of one that assigns such an expression (`b += 1;`), what initializes a
+        local of such a type (`long w = k;`, `auto w = k;`) or is assigned to one (`w +=
+        k;`), a condition (`if (k)`), returned, or an argument of a call whose every
+        function takes it by value (``passes(function, index)``)."""
+        lexemes, _ = self._lexemes()
 
         def text(at):
             return lexemes[at][1] if 0 <= at < len(lexemes) else None
 
-        def operand_end(at):
-            word = text(at)
-            return word in (")", "]") or (
-                word is not None
-                and bool(_WORD.fullmatch(word) or word[0].isdigit())
-                and word not in _NOT_CALLS
-                and word not in _NOT_TYPES
-            )
-
-        def call(opened):
-            """The name of the function the `(` at token ``opened`` calls; "" for a call of
-            another kind (`f<T>(x)`, `(*fp)(x)`), None for no call."""
-            word = text(opened - 1)
-            if word in (">", ")", "]"):
-                return ""
-            if word is None or not _WORD.fullmatch(word) or word in _NOT_CALLS:
-                return None
-            return "" if word in _NOT_TYPES else word
-
-        if text(index + 1) in ("[", "(", "->"):
-            return True  # what a pointer points at, or a call through it
-        if text(index + 1) in (".", ".*", "->*"):
+        found = self._operand(index, scalar)
+        if found is None:
             return False
-        first, last = index, index
-        # Parentheses around it that are no call's: `(b)`.
-        while (
-            text(first - 1) == "("
-            and text(last + 1) == ")"
-            and call(first - 1) is None
-            and closes.get(lexemes[last + 1][0]) == lexemes[first - 1][0]
-        ):
-            first, last = first - 1, last + 1
+        first, last, alone = found
         before, after = text(first - 1), text(last + 1)
-        if before == "&" and not operand_end(first - 2):
-            return False  # its address
-        if before in ("++", "--") and not operand_end(first - 2):
-            return self._starts_statement(first - 1)
+        statement = self._starts_statement(first)
+        if text(first) in ("++", "--"):
+            return statement and after == ";"  # `++k;`: `++k` is the name itself
+        if statement and after == ";":
+            return True  # its value dropped
         if after in _ASSIGNING:
-            return self._starts_statement(first)
-        if after in ("++", "--"):
-            return True
-        if before in ("?", ":") and after not in _OPERATING:
-            return False  # `c ? x : b` may be bound or passed as `b` itself
-        if before in ("(", ",", "{", "[", "<%", "<:") and after in (")", ",", "}", "]", "%>", ":>"):
-            # The whole of one of a bracket's parts.
-            opening = None
-            depth = 0
-            for back in range(first - 1, -1, -1):
-                word = text(back)
-                if word in (")", "]", "}", "%>", ":>"):
-                    depth += 1
-                elif word in ("(", "[", "{", "<%", "<:"):
-                    if depth == 0:
-                        opening = back
-                        break
-                    depth -= 1
-            if opening is None:
-                return False
-            if text(opening) in ("[", "<:"):
-                return True  # an index, or a lambda's copy of it
-            if text(opening) != "(":
-                return False
-            callee = call(opening)
-            if keeper is not None and callee in _VALUES and text(opening - 2) == ".":
-                # `m.count(k)`: the container's own lookup, which keeps nothing.
-                return text(opening - 3) == keeper and text(opening - 4) not in (".", "->", "::")
-            if not callee or passes is None:
-                return False
-            parts = lexemes[opening + 1 : first]
-            if any(word in ("<", "?") for _, word in parts):
-                return False
-            depth, position = 0, 0
-            for _, word in parts:
-                if word in ("(", "[", "{", "<%", "<:"):
-                    depth += 1
-                elif word in (")", "]", "}", "%>", ":>"):
-                    depth -= 1
-                elif word == "," and depth == 0:
-                    position += 1
-            return bool(passes(callee, position))
-        if before in _ASSIGNING and before != "=":
-            return True  # `w += b` reads it
-        if before == "=" and after in (";", ",", ")"):
-            # A copy, unless what it initializes is a reference (`auto &r = b;`).
+            # `b += 1;`: the target of a statement that assigns it a number.
+            ending = self._operand(last + 2, scalar, value=True)
+            return (
+                alone
+                and statement
+                and ending is not None
+                and ending[0] == last + 2
+                and text(ending[1] + 1) == ";"
+            )
+        if not alone:
+            # A new value: whatever takes it holds no pointer or reference to the name.
+            return before not in ("&", "*") and after not in _ASSIGNING
+        if before in _ASSIGNING and after in (";", ","):
             back = first - 2
             while back >= 0 and not self._starts_statement(back + 1):
-                if text(back) in ("&", "&&", "decltype"):
-                    return False
                 back -= 1
-            return True
-        if before in ("return", "if", "while", "switch", "sizeof", "alignof", "decltype"):
-            return True  # returned, a condition, or not run at all
-        if before == ")":
-            # A cast to a value type: `(long)b`.
-            opening = closes.get(lexemes[first - 1][0])
-            inside = code[opening + 1 : lexemes[first - 1][0]] if opening is not None else "&"
-            return (
-                "&" not in inside
-                and "*" not in inside
-                and call(bisect.bisect_left(places, opening)) is None
+            target = [text(at) for at in range(back + 1, first - 1)]
+            if before != "=":
+                return len(target) == 1 and bool(scalar(target[0]))
+            if len(target) == 1:
+                return bool(scalar(target[0]))
+            # `long w = k;`: a local of a number's type, no reference or pointer.
+            return all(word in _NUMBER_TYPES for word in target[:-1]) and bool(
+                _WORD.fullmatch(target[-1] or "")
             )
-        return before in _OPERATING or after in _OPERATING or after == "?"
+        if before == "return" and after == ";":
+            return True
+        if after == "?" and before in (";", "{", "}", "(", "=", "return", ","):
+            return True  # a condition
+        if before == "(" and after == ")":
+            opening = lexemes[first - 1][0]
+            if self._word_before(opening) in ("if", "while", "switch"):
+                return True  # a condition
+        if before in ("(", ",") and after in (")", ","):
+            return self._passed_by_value(first, passes)
+        return False
+
+    def _operand(self, index, scalar, value=False):
+        """(first, last, alone) tokens of the expression of numbers around token ``index``
+        (``_only_read``'s, ``value``: from there to its end), and whether it is a name
+        alone (in parentheses or not); None where a token in it is none such an expression
+        may hold, or it is not well formed."""
+        lexemes, _ = self._lexemes()
+        closes, pairs = self.closes, self._code()[1] or {}
+
+        def text(at):
+            return lexemes[at][1] if 0 <= at < len(lexemes) else None
+
+        def grouping(at):
+            # A `(` that groups: no call's, header's or operator's (`sizeof(`).
+            word = text(at - 1)
+            return not (
+                word in (")", "]", ">")
+                or (word is not None and _WORD.fullmatch(word) and word not in ("return",))
+            )
+
+        first, last, depth = index, index, 0
+        if not value:
+            # Out to where the expression starts: a token no operand or operator is, or
+            # a bracket around it that does not group.
+            while first > 0:
+                word = text(first - 1)
+                if word in (")", "]"):
+                    opened = closes.get(lexemes[first - 1][0])
+                    if (
+                        word == "]"
+                        or opened is None
+                        or self._word_before(opened)
+                        in (
+                            "if",
+                            "while",
+                            "for",
+                            "switch",
+                        )
+                    ):
+                        break
+                    first = bisect.bisect_left(self._lexemes()[1], opened)
+                    if not grouping(first) and text(first + 1) not in _NUMBER_TYPES:
+                        return None  # a call's: `f(x) * k`
+                    continue
+                if word == "(":
+                    if not grouping(first - 1):
+                        break
+                    depth += 1
+                    first -= 1
+                    continue
+                if word in _BUILT_IN or word in ("++", "--") or self._number(word, scalar):
+                    first -= 1
+                    continue
+                break
+        # Out to where it ends, past the parentheses it opened on the way.
+        while last + 1 < len(lexemes):
+            word = text(last + 1)
+            if word == "(":
+                shut = pairs.get(lexemes[last + 1][0])
+                if shut is None:
+                    return None
+                last = bisect.bisect_left(self._lexemes()[1], shut)
+                continue
+            if word == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+                last += 1
+                continue
+            if word in _BUILT_IN or word in ("++", "--") or self._number(word, scalar):
+                last += 1
+                continue
+            break
+        if depth:
+            return None
+        before = text(first - 1)
+        if text(first) in _BUILT_IN | {"++", "--"} and (
+            before in (")", "]", '"', "'")
+            or (before is not None and before[0].isdigit())
+            or (
+                before is not None
+                and _WORD.fullmatch(before)
+                and before not in _NOT_CALLS | _NOT_TYPES
+            )
+        ):
+            return None  # `e + k`: an operator between the name and an operand of another type
+        # Well formed, of numbers alone: operand, operator, operand…
+        operand, stack, names = True, 0, []
+        at = first
+        while at <= last:
+            word = text(at)
+            if operand:
+                if word == "(" and text(at + 1) in _NUMBER_TYPES:
+                    # A cast to a number's type: `(long)`, `(unsigned long)`.
+                    shut = bisect.bisect_left(self._lexemes()[1], pairs.get(lexemes[at][0], -1))
+                    if not all(text(inner) in _NUMBER_TYPES for inner in range(at + 1, shut)):
+                        return None
+                    at = shut + 1
+                    continue
+                if word == "(":
+                    stack += 1
+                elif word in ("-", "+", "!", "~"):
+                    pass
+                elif word in ("++", "--") and at == first and last == at + 1 and not value:
+                    pass  # `++k`, a statement's alone (``_only_read``)
+                elif self._number(word, scalar):
+                    names.append(word)
+                    operand = False
+                else:
+                    return None
+            elif word == ")" and stack:
+                stack -= 1
+            elif word in ("++", "--"):
+                pass
+            elif word in _BUILT_IN:
+                operand = True
+            else:
+                return None
+            at += 1
+        if operand or stack:
+            return None
+        alone = len(names) == 1 and all(
+            text(at) in ("(", ")") or at == index for at in range(first, last + 1)
+        )
+        return first, last, alone
+
+    def _number(self, word, scalar):
+        """Whether ``word`` is a number literal, or names a number or a character
+        (``scalar(word)``)."""
+        if word is None:
+            return False
+        if word[0].isdigit() or (word[0] == "." and word[1:2].isdigit()):
+            return True
+        return bool(_WORD.fullmatch(word)) and word not in _NUMBER_TYPES and bool(scalar(word))
+
+    def _passed_by_value(self, first, passes):
+        """Whether the name at token ``first``, a whole argument of a call, goes to a
+        parameter every function of the call's name takes by value (``passes``)."""
+        lexemes, _ = self._lexemes()
+        depth, position, at = 0, 0, first - 1
+        while at >= 0:
+            word = lexemes[at][1]
+            if word in (")", "]", "}"):
+                depth += 1
+            elif word in ("(", "[", "{"):
+                if depth == 0:
+                    break
+                depth -= 1
+            elif word == "," and depth == 0:
+                position += 1
+            elif word in ("<", "?") and depth == 0:
+                return False
+            at -= 1
+        if at < 1 or lexemes[at][1] != "(" or passes is None:
+            return False
+        callee = lexemes[at - 1][1]
+        if not _WORD.fullmatch(callee) or callee in _NOT_CALLS or callee in _NOT_TYPES:
+            return False
+        return bool(passes(callee, position))
 
     def old_style(self, line):
         """Whether ``line`` is in the body of a K&R-style definition (`long f(a) long a;

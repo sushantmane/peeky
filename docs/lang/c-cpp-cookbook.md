@@ -1117,21 +1117,30 @@ Some things only look different:
     - an object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A
       union's member doesn't count, since another member may become active.
     - an element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`: `for (const
-      auto &[k, v] : m)`, or `auto &[r, s] = v[0];` for a vector. While the binding is in scope,
-      the code may only call members that give a value, such as `m.size()`. Anywhere in the
-      container's scope, the code must keep no pointer, iterator or reference into it: no
-      `v.data()`, `m.begin()` or `&v[0]`, and it must not pass the container on or name it in a
-      lambda. At the stop, the binding must point into the vector's elements, or into one of the
-      map's entries as the debugger lists them (at most 256).
+      auto &[k, v] : m)`, or `auto &[r, s] = v[0];` for a vector. The container must use the
+      default allocator, and a map or set `std::less`. Its elements must be numbers or
+      characters: a map's key and value, or a `std::pair` or `std::array` of them. So no
+      constructor, allocator or order of the program's sees where an element is. While the
+      binding is in scope, the code may only call the container's members that give a value,
+      such as `m.size()`. Anywhere in the container's scope, the code must keep no
+      pointer, iterator or reference into it: no `v.data()`, `m.begin()` or `&v[0]`. It must not
+      pass the container on or name it in a lambda. At the stop, the binding must point into the
+      vector's elements, or into one of the map's entries as the debugger lists them (at most 256).
     - a call's own result: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`. Every
-      function of that name must return a `std::pair`, `std::tuple` or `std::array` by value, of
-      numbers, characters or other standard types, so each name is that result's own element. A
-      type of the program's with its own `get` doesn't count. C++ keeps that result alive until
-      the binding's scope ends. At the stop, the binding must point into the frame's stack.
-  - For both, each of the binding's names must refer to a number, a character or a pointer. The
-    code may read or assign it, but not take its address, bind a reference to it, or pass it to
-    a call that may take it by reference. A call whose every function takes that argument by
-    value, as `use(long)` or `printf`'s `...` do, is fine.
+      function of that name must return a `std::pair`, `std::tuple` or `std::array` of numbers or
+      characters by value, so each name is that result's own element. A type of the program's,
+      with its own `get`, doesn't count. C++ keeps that result alive until the binding's scope
+      ends. At the stop, the binding must point into the frame's stack.
+  - For both, each of the binding's names must be a number or a character. A binding with a
+    pointer in it stays `not shown`, since the pointer may point at another element.
+  - Each use of a name must be in an expression of numbers and characters alone: the binding's
+    names, locals of such types, number literals, casts such as `(long)`, and their built-in
+    operators. `use(k * v)`, `if (k > 1)`, `long w = k;`, `w += v;` and `b += 1;` are fine.
+  - An operand of another type may bring an overloaded operator that keeps the name's address,
+    so `std::cout << k`, `sink << v` and `use(m.count(k))` withhold the binding. So do `&k`,
+    `auto &r = k`, `arr[k]` and a branch of `?:`.
+  - The name alone may be an argument of a call whose every function takes it by value, as
+    `use(long)` or `printf`'s `...` do.
   - Peeky reads that code as the compiler preprocessed it, so a macro counts as what it expands
     to. In an optimized build, only an object of the frame is read.
   - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary
