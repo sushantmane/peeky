@@ -354,8 +354,25 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - libc++'s formatters are LLDB's own C++ ones, and its members differ. So a libc++ build, known
     by its `std::__1` namespace, is not checked.
 - **Reading the nodes.** Where LLDB's listing isn't proven, `NativeSession._node_listing` reads
-  the entries itself (`hashed_nodes`). The `Withholding` then carries them, and the worker shows
-  the row as a value view: `view: memory`, with worker-owned handles.
+  the entries itself (`hashed_nodes`). The worker then shows the row as a value view:
+  `view: memory`, with worker-owned handles.
+  - `unlisted_container` reads the count alone, and keeps its path and value on the
+    `Withholding` (`counted`). The worker asks `listed_container` for the nodes only once
+    nothing else withholds the row. So a row with a note (`no value yet`, leftovers, one
+    read through a value with a note) is never read from its nodes.
+  - Every C or C++ pointer on the row's way must be judged to point at a live object
+    (`DebugWorker.nodes_reachable`, #339's `pointee_unproven`). A pointer the rule doesn't
+    judge counts as unproven. A heap block may hold a container's bytes, and so may a
+    returned call's dead frame.
+  - lldb-dap 18 gives no address for a local the debugger shows with a summary, so Peeky
+    can't place a container local there. A pointer at one stays unproven, and nothing is
+    read through it. lldb-dap 20 gives each local's `memoryReference`.
+  - A preview reads nested containers' nodes under the same rule: none below a note, or
+    through such a pointer.
+  - Nothing is read in an optimized build, nor where a unit's preprocessed text asks GCC to
+    optimize a function (`asks_optimization`: an `optimize` attribute, also behind a macro,
+    or `#pragma GCC optimize`). Such a function may keep a value it stores in a register
+    while the count and the chain are unchanged. Any function on the stack may be one.
   - The nodes form one chain from `_M_h._M_before_begin._M_nxt`, in iteration order. Each node
     is a `std::__detail::_Hash_node<_Value, cache>`. The hashtable's `_Traits`
     (`_Hashtable_traits`) say whether it caches the hash code.
@@ -374,7 +391,10 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     8-byte words through hover paths.
   - The word 8 bytes into the first node is `us._M_h._M_before_begin._M_nxt[1]._M_nxt`. LLDB
     reads `[1]` past a pointer, and `_M_nxt` of what is there, as `frame variable` does.
-    Nothing is evaluated in the program, and nothing outside the nodes is read.
+    Nothing is evaluated in the program. `Words` reads nothing outside the nodes.
+  - `Memory` reads more: each request takes 4,096 bytes from a node's address, and a string's
+    text comes from where its data pointer points. Only bytes at the nodes' own addresses,
+    and at a string's text, are decoded.
   - The entries must hold integers, `bool`s and libstdc++ strings, in `std::pair`s and the
     program's structs. A struct has no base class, bitfield or anonymous member.
   - A string's text is read from its own buffer, or where its data pointer points. Its length
@@ -383,8 +403,7 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - The entries come back listed as the debugger lists a container it reads right: `[0]`, a
     pair's `first` and `second`, a struct's members, `T @ 0x…` for a struct. So
     `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.
-  - Nothing is read where a call may be changing the container (`containers_settled`). A row
-    shown with a note is withheld, as before: its count may be leftovers too.
+  - Nothing is read where a call may be changing the container (`containers_settled`).
   - The reads have their own budget: 4,096 requests and 4 MiB per inspection or expansion
     (`NODE_READS`), within the value view's 10 s. A hover's text is cached for the stop. With
     lldb-dap 18, 333 entries in three containers took about 1,000 hovers and 0.25 s.

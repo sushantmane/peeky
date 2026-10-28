@@ -2254,6 +2254,25 @@ def _class_role(dies, chain):
 _NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
 
 
+# GCC's ways to optimize one function in an unoptimized build (#360): its `optimize`
+# attribute, also inside a list of attributes (`__attribute__((noinline,
+# optimize("O2")))`, `[[gnu::optimize("O2")]]`), and its pragma, which `_Pragma` becomes
+# too in preprocessed text.
+_OPTIMIZE = re.compile(
+    r"\b__attribute(?:__)?\s*\(\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?"
+    r"\b(?:__)?optimize(?:__)?\s*\("
+    r"|\[\[(?:[^\[\]]|\[[^\[\]]*\])*?\b(?:__)?gnu(?:__)?\s*::\s*(?:__)?optimize(?:__)?\b"
+    r"|^[ \t]*#[ \t]*pragma[ \t]+GCC[ \t]+optimize\b",
+    re.M,
+)
+
+
+def asks_optimization(data):
+    """Whether a translation unit's preprocessed text (bytes) asks GCC to optimize a
+    function (``_OPTIMIZE``): any of its macros, and the headers it includes, expanded."""
+    return _OPTIMIZE.search(data.decode("utf-8", errors="replace")) is not None
+
+
 def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
     """Whether any of these source files names a non-local jump (each read once)."""
     for path in paths:
@@ -3743,7 +3762,11 @@ class NativeTarget:
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
 
+        # Whether a unit's source asks GCC to optimize a function (#360).
+        optimizing = False
+
         def before_command(workspace, results, command):
+            nonlocal optimizing
             if command == compiles[0]:
                 for source, unit in zip(self.sources, units):
                     path = workspace / unit
@@ -3756,7 +3779,9 @@ class NativeTarget:
                         )
                         refused.before_launch = True
                         raise refused
-                    refused = c_refusal(path.read_bytes(), self.language == "cpp")
+                    data = path.read_bytes()
+                    refused = c_refusal(data, self.language == "cpp")
+                    optimizing = optimizing or asks_optimization(data)
                     path.unlink()
                     if refused is not None:
                         raise refused
@@ -3910,6 +3935,7 @@ class NativeTarget:
                 prologues=prologues,
                 code=code,
                 statics=statics,
+                optimizing=optimizing,
             )
             session.assert_current()
             return session
@@ -4702,8 +4728,12 @@ class NativeSession:
         prologues=None,
         code=None,
         statics=(),
+        optimizing=None,
     ):
         self.target, self.prepared = target, prepared
+        # Whether the program's source asks GCC to optimize a function in an unoptimized
+        # build (``asks_optimization``); None where that was not read (#360).
+        self.optimizing = optimizing
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
@@ -5066,18 +5096,16 @@ class NativeSession:
             # as a member or an element.
             path = [*zip(steps, known_kinds), *((name, None) for name in at)]
             path[-1] = (path[-1][0], child.get("type"))
-            found = self.unlisted_container(
-                child,
-                frame,
-                path,
-                raw or _unread,
-                nodes=nodes,
-                stack=stack,
-                deeper=deeper,
-                threads=threads,
-            )
-            # Its entries as read from its nodes (#360), shown in its place.
-            return getattr(found, "listing", None) or found is not None
+            found = self.unlisted_container(child, frame, path, raw or _unread)
+            counted = getattr(found, "counted", None)
+            if counted is not None and nodes is not None:
+                # Its entries as read from its nodes (#360), shown in its place.
+                read = self._node_listing(
+                    child, frame, path, *counted, nodes, stack, deeper, threads
+                )
+                if read is not None:
+                    return read[1]
+            return found is not None
 
         return preview(variable, fetch, typed, text, containers=settled, unlisted=unlisted)
 
@@ -5674,9 +5702,7 @@ class NativeSession:
                 return "pointer" if pointer else "value"
         return None
 
-    def unlisted_container(
-        self, variable, frame, steps, evaluate, nodes=None, stack=None, deeper=None, threads=None
-    ):
+    def unlisted_container(self, variable, frame, steps, evaluate):
         """Why a C++ unordered container's row is withheld, as a ``Withholding``, or None
         (#167). LLDB's libstdc++ formatter for `std::unordered_map` and its kin takes the
         element type from the allocator's template argument, which GCC's debug
@@ -5688,14 +5714,8 @@ class NativeSession:
         ``variable``: the debugger's, a container or a pointer or reference to one;
         ``steps``: its way from its root local, [(name, type)], itself last.
 
-        Where LLDB's listing is not proven, Peeky reads the entries from the container's
-        own nodes where it can (#360, ``hashed_nodes``): the Withholding then carries
-        them, as ``view`` (the row: its value and its entries, as a value view's) and
-        ``listing`` (the debugger-shaped listing a preview shows), and the row is shown
-        from them. ``nodes``: (``evaluate`` on the node-read budget, ``read(reference,
-        count)`` or None where the debugger has no `readMemory`). ``stack``, ``deeper``
-        and ``threads`` are a preview's (``containers_settled``): nothing is read from a
-        container something may be changing."""
+        The Withholding keeps the count's path and the count (``counted``), with which
+        ``listed_container`` may read the entries from the container's own nodes (#360)."""
         shape = self._unordered(variable.get("type"))
         value = str(variable.get("value") or "")
         if shape is None or (value.startswith("<") and value.endswith(">")):
@@ -5735,26 +5755,45 @@ class NativeSession:
         else:
             reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
         withheld = Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
-        if raw is not None and nodes is not None:
-            read = self._node_listing(
-                variable, frame, steps, path, raw, nodes, stack, deeper, threads
-            )
-            if read is not None:
-                withheld.view, withheld.listing = read
+        withheld.counted = (path, raw) if path is not None and raw is not None else None
         return withheld
+
+    def listed_container(
+        self, withheld, variable, frame, steps, nodes, stack=None, deeper=None, threads=None
+    ):
+        """The value view of an unordered container ``unlisted_container`` withholds
+        (``withheld``), its entries read from its own nodes (#360): {"value", "rust_view":
+        "memory", "children"}, and "pointee" (what it points at, whole) for a pointer to
+        one. None where Peeky can't (``_node_listing``). The worker asks only once
+        nothing else withholds the row: no note, and no pointer on the way it can't show
+        points at a live object. ``nodes``: (``evaluate`` on the node-read budget,
+        ``read(reference, count)`` or None where the debugger has no `readMemory`)."""
+        counted = getattr(withheld, "counted", None)
+        if counted is None:
+            return None
+        read = self._node_listing(variable, frame, steps, *counted, nodes, stack, deeper, threads)
+        return read[0] if read is not None else None
 
     def _node_listing(self, variable, frame, steps, path, count, nodes, stack, deeper, threads):
         """(the row's value view, (the listing's root, fetch)) of an unordered container's
         entries read from its own nodes (#360), or None where Peeky cannot read them so:
-        the container may be part-way through a change (``containers_settled``), or
-        ``hashed_nodes.read_entries`` does not prove the read. ``path``: the variable
-        path of its own count; ``count``: that count."""
+        an optimized build, or one whose source asks GCC to optimize a function (a
+        value it stores may still be in a register, its nodes unchanged); a container
+        that may be part-way through a change (``containers_settled``); or a read that
+        ``hashed_nodes.read_entries`` does not prove. ``path``: the variable path of its
+        own count; ``count``: that count."""
         from peeky.hashed_nodes import Memory, Unread, Words, read_entries, view_children, word
         from peeky.native_previews import preview
 
         graph = getattr(self, "fields", None)
         suffix = "_M_h._M_element_count"
-        if graph is None or not path.endswith(suffix):
+        if graph is None or nodes is None or not path.endswith(suffix):
+            return None
+        if getattr(self.target, "optimization", "O0") != "O0":
+            return None
+        if getattr(self, "optimizing", None) is not False:
+            # A function the source asks GCC to optimize (its `optimize` attribute or
+            # pragma) may hold a value in a register, whichever function is stopped in.
             return None
         walked = self._typed(frame, [str(name) for name, _ in steps], walked=True)
         if walked is None:

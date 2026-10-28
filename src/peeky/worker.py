@@ -132,6 +132,8 @@ _UNAVAILABLE = re.compile(
 _POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
 # A C or C++ pointer's value that holds an address (`0x000000016f29b050`, `0x… "text"`).
 _NONZERO_ADDRESS = re.compile(r"0x0*[1-9a-fA-F][0-9a-fA-F]{0,15}(?![0-9a-zA-Z_])")
+# A C or C++ pointer type as the debugger names it (`T *`, `T *const`).
+_C_POINTER_TYPE = re.compile(r".+\*\s*(?:const\s*)?(?:volatile\s*)?")
 # The bytes of what a C or C++ character pointer LLDB shows as text points at, by the type
 # LLDB names (`const char *`).
 _CHARACTER_SIZES = {
@@ -3576,6 +3578,43 @@ class DebugWorker:
         self.node_bytes = getattr(self, "node_bytes", 0) + count
         return data
 
+    def nodes_reachable(self, frame, trail, names):
+        """Whether Peeky may read the nodes of an unordered container reached by ``names``
+        in ``frame`` (#360): ``trail`` holds the debugger's variable for each name, the
+        container (or a pointer to it) last. Every C or C++ pointer on the way must be
+        judged to point at a live object (#339), never left unjudged: a live heap block,
+        or the dead frame a dangling pointer holds, may hold bytes that read as entries."""
+        resolve = getattr(self.runtime, "typedef_kind", None)
+        for index, variable in enumerate(trail):
+            kind = variable.get("type")
+            resolved = resolve(kind) if resolve and isinstance(kind, str) else None
+            if not (
+                _C_POINTER_TYPE.fullmatch(str(kind or "").strip())
+                or (resolved is not None and resolved[0] == "pointer")
+            ):
+                continue
+            if not self.pointee_proven(variable, frame, names[: index + 1]):
+                return False
+        return True
+
+    def pointee_proven(self, variable, frame, steps):
+        """Whether the C or C++ pointer ``variable`` is judged to point at a live object
+        (``pointee_unproven``, #339): never where nothing is judged (a type the build
+        doesn't size, a runtime that judges none)."""
+        runtime = self.runtime
+        if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
+            return False
+        if not callable(getattr(runtime, "pointee_of", None)):
+            return False
+        value = variable.get("value")
+        if not isinstance(value, str) or _NONZERO_ADDRESS.match(value) is None:
+            return False
+        try:
+            judged = isinstance(runtime.pointee_of(frame, list(steps)), dict)
+        except (KeyError, TypeError, ValueError):
+            judged = False
+        return judged and self.pointee_unproven(variable, frame, steps) is None
+
     def node_reader(self, frame):
         """How a runtime reads an unordered container's nodes in ``frame`` (#360):
         (a variable path's text, a memory read or None without `readMemory`)."""
@@ -3648,23 +3687,21 @@ class DebugWorker:
             # read below, not even a container's own count.
             past = self.past_end_of(variable, frame, [step for step, _ in ancestry] + [name])
             # An unordered container the debugger counts otherwise than its own count says
-            # (GCC's, read as empty, #167): withheld, its entries never listed.
+            # (GCC's, read as empty, #167): withheld, its entries never listed, unless
+            # Peeky reads them from its own nodes, once nothing else withholds it (#360).
             unlisted = (
                 unlisted_container(
                     variable,
                     frame,
                     [*ancestry, (name, kind)],
                     lambda path: self.raw_value(frame, path),
-                    nodes=self.node_reader(frame),
-                    **self.preview_stack(),
                 )
                 if unlisted_container and past is None
                 else None
             )
-            # Or its entries as Peeky read them from its own nodes (#360): shown, as a
-            # value view.
-            listed = getattr(unlisted, "view", None)
-            changing = changing or (unlisted if listed is None else None)
+            withheld_only = unlisted is not None and not changing
+            changing = changing or unlisted
+            listed = None
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
                 if not ancestry:
                     raise RuntimeError("Debugger variable identity exceeds limit")
@@ -3733,6 +3770,23 @@ class DebugWorker:
                 carried = (f"read through `{name}`: {note}"[:500], refuses)
             elif noted:
                 note, carried = noted[0], noted
+            lister = getattr(self.runtime, "listed_container", None)
+            if lister and withheld_only and not reason and note is None and through is None:
+                # Its entries as Peeky reads them from its own nodes (#360): shown, as a
+                # value view. Never with a note (its count may be leftovers too), nor
+                # through a pointer not proven to point at a live object (#339).
+                way = [*trail[: len(ancestry)], variable]
+                if self.nodes_reachable(frame, way, [step for step, _ in ancestry] + [name]):
+                    listed = lister(
+                        unlisted,
+                        variable,
+                        frame,
+                        [*ancestry, (name, kind)],
+                        self.node_reader(frame),
+                        **self.preview_stack(),
+                    )
+                if listed is not None:
+                    changing = None
             if changing and not reason:
                 reason, note, carried = changing, None, None
             elif unlisted and note is not None:
@@ -4115,7 +4169,15 @@ class DebugWorker:
                         steps=steps,
                         kinds=[step for _, step in ancestry] + [kind],
                         raw=lambda path: self.raw_value(frame, path),
-                        nodes=self.node_reader(frame),
+                        nodes=(
+                            self.node_reader(frame)
+                            if note is None
+                            and through is None
+                            and self.nodes_reachable(
+                                frame, [*trail[: len(ancestry)], variable], steps
+                            )
+                            else None
+                        ),
                         **self.preview_stack(),
                     )
                 except ValueError:
@@ -4937,7 +4999,13 @@ class DebugWorker:
                 steps=steps,
                 kinds=[kind for _, kind in ancestry],
                 raw=lambda path: self.raw_value(frame, path),
-                nodes=self.node_reader(frame),
+                # Nodes are read only where nothing on the way is in doubt (#360).
+                nodes=(
+                    self.node_reader(frame)
+                    if not self.notes.get(args["handle"])
+                    and self.nodes_reachable(frame, trail, steps)
+                    else None
+                ),
                 **self.preview_stack(),
             )
         except ValueError:

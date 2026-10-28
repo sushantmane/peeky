@@ -333,32 +333,44 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
     from peeky.native import UNLISTED, Withholding
     from peeky.worker import DebugWorker
 
-    asked = []
+    counted, read = [], []
 
-    def unlisted_container(variable, frame, steps, evaluate, nodes=None, **stop):
-        asked.append((steps[-1][0], nodes is not None, sorted(stop)))
-        why = Withholding("it counts 0 entries", UNLISTED, "cannot be changed")
-        if variable["name"] in ("us", "p", "late"):
-            entries = [{"name": "[0]", "type": "int", "value": "4"}]
-            why.view = {"value": "size=1 {4}", "rust_view": "memory", "children": entries}
-            if variable["name"] == "p":
-                why.view.update(value="0x10 size=1", pointee="size=1 {4}")
-        return why
+    def unlisted_container(variable, frame, steps, evaluate):
+        # The count alone: no node is read here.
+        counted.append(steps[-1][0])
+        return Withholding("it counts 0 entries", UNLISTED, "cannot be changed")
+
+    def listed_container(withheld, variable, frame, steps, nodes, **stop):
+        read.append(steps[-1][0])
+        assert nodes is not None and sorted(stop) == ["deeper", "stack", "threads"]
+        entries = [{"name": "[0]", "type": "int", "value": "4"}]
+        view = {"value": "size=1 {4}", "rust_view": "memory", "children": entries}
+        if variable["name"] in ("p", "q"):
+            view.update(value="0x10 size=1", pointee="size=1 {4}")
+        return view
 
     runtime = SimpleNamespace(
         assert_current=lambda: None,
         reports_unavailable_as_text=True,
         unlisted_container=unlisted_container,
+        listed_container=listed_container,
         aliased_type=lambda kind: "std::unordered_set<int>" if kind == "Ids" else None,
         not_yet_declared=lambda variable, frame, **_: (
             type("Noted", (str,), {"note": "may hold leftovers"})("x")
             if variable["name"] == "late"
             else None
         ),
+        checks_past_ends=True,
+        pointee_of=lambda frame, steps: {"pointee": "set", "element_size": 56, "count": 1},
+        value_extent=lambda variable, frame, steps: None,
     )
     worker = DebugWorker(tmp_path)
     worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
     worker.listed_frames = [{"id": 1, "name": "main"}]
+    # `p` is proven to point at a live object; `q` (a heap block, a dead frame) is not.
+    worker.pointee_unproven = lambda variable, frame, steps: (
+        None if variable["name"] == "p" else {"kind": "heap"}
+    )
     worker.reset_views()
     rows = [
         {"name": "us", "type": "Ids", "value": "size=0", "variablesReference": 4},
@@ -369,9 +381,9 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
             "variablesReference": 5,
         },
         {
-            "name": "none",
-            "type": "std::unordered_set<int>",
-            "value": "size=0",
+            "name": "q",
+            "type": "std::unordered_set<int> *",
+            "value": "0x20 size=0",
             "variablesReference": 6,
         },
         {
@@ -381,8 +393,8 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
             "variablesReference": 7,
         },
     ]
-    us, p, none, late = worker.expose_variables(rows, {"id": 1}, ("Locals", None), ())
-    assert all(node and stop == ["deeper", "stack", "threads"] for _, node, stop in asked), asked
+    us, p, q, late = worker.expose_variables(rows, {"id": 1}, ("Locals", None), ())
+    assert counted == ["us", "p", "q", "late"] and read == ["us", "p"], (counted, read)
     # Its value and entries as read, said so, with what its type names.
     assert (us["value"], us["view"], us["aliased_type"]) == (
         "size=1 {4}",
@@ -398,10 +410,31 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
     shown = worker.preview({**stop, "handle": p["variablesReference"], "pointee": True}, runtime)
     assert shown == {"value": "size=1 {4}"}
     assert worker.preview({**stop, "handle": us["variablesReference"]}, runtime) == {}
-    # Withheld where it was not read; and where its value may be leftovers, its note
-    # makes no listing true.
-    assert none["withheld_as"] == UNLISTED and none["variablesReference"] == 0
+    # Never through a pointer not proven to point at a live object, nor where its value
+    # may be leftovers: its note makes no listing true. Neither is read at all.
+    assert q["withheld_as"] == UNLISTED and q["value"] is None and q["variablesReference"] == 0
     assert late["withheld_as"] == UNLISTED and late["value"] is None
+    # Nor through a pointer on the way that the expansion marks unproven, nor below a
+    # value shown with a note.
+    read.clear()
+    member = {
+        "name": "us",
+        "type": "std::unordered_set<int>",
+        "value": "size=0",
+        "variablesReference": 8,
+    }
+    owner = ("h", "Holder *")
+    holder = {"name": "h", "type": "Holder *", "value": "0x30"}
+    (through,) = worker.expose_variables(
+        [member], {"id": 1}, ("Locals", None), (owner,), trail=[holder], through="unproven"
+    )
+    (noted,) = worker.expose_variables(
+        [member], {"id": 1}, ("Locals", None), (("o", "Holder"),), noted=("leftovers", True)
+    )
+    (unjudged,) = worker.expose_variables(
+        [member], {"id": 1}, ("Locals", None), (owner,), trail=[holder]
+    )
+    assert read == [] and all(row["withheld_as"] == UNLISTED for row in (through, noted, unjudged))
     # A member whose type's name is too long to verify is shown without a view: withheld,
     # never the debugger's miscount.
     long = "std::unordered_set<" + "x" * 2100 + ">"
@@ -412,3 +445,58 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
         (("h", "Holder"),),
     )
     assert member["withheld_as"] == UNLISTED and member["value"] is None, member
+
+
+@pytest.mark.parametrize(
+    "text, asks",
+    [
+        ('__attribute__((optimize("O2"))) static int f(int x);', True),
+        ('static int f(int) __attribute__ ((noinline, __optimize__ ("-O3")));', True),
+        ('__attribute__((section("t"), optimize(2))) int g();', True),
+        ('[[gnu::optimize("O2")]] int f();', True),
+        ('[[nodiscard, gnu::optimize("O1")]] int f();', True),
+        ('#pragma GCC optimize ("O2")\nint f();', True),
+        ('  # pragma GCC optimize("unroll-loops")', True),
+        # Not asking: libstdc++'s regex constants, a function of the program's named so,
+        # GCC's other pragmas, and clang's `optnone`.
+        ("inline constexpr syntax_option_type optimize = _S_optimize;", False),
+        ("int optimize(int route); int r = optimize(3);", False),
+        ('#pragma GCC diagnostic ignored "-Wunused"\n#pragma GCC push_options', False),
+        ("__attribute__((optnone, noinline)) int f();", False),
+    ],
+)
+def test_a_source_that_asks_gcc_to_optimize_a_function_is_told(text, asks):
+    # #360 review: a function GCC optimizes may keep a stored value in a register while
+    # the nodes and count are unchanged, so no entry is read from the nodes then.
+    from peeky.native import asks_optimization
+
+    assert asks_optimization(text.encode()) is asks
+
+
+def test_no_node_is_read_in_a_build_that_may_be_optimized():
+    from types import SimpleNamespace
+
+    from peeky.native import NativeSession
+
+    session = NativeSession.__new__(NativeSession)
+    session.fields, walked = {}, []
+    # Past the gate, the container's type is looked up first.
+    session._typed = lambda frame, steps, walked_=None, **_: walked.append(steps)
+    cases = (("O1", False), ("O2", False), ("O0", True), ("O0", None), ("O0", False))
+    for optimization, optimizing in cases:
+        session.target = SimpleNamespace(language="cpp", optimization=optimization)
+        session.optimizing = optimizing
+        listing = session._node_listing(
+            {"type": "std::unordered_set<int>"},
+            {"id": 1},
+            [("us", "std::unordered_set<int>")],
+            "us._M_h._M_element_count",
+            1,
+            (lambda path: "0x10", None),
+            None,
+            None,
+            lambda: 1,
+        )
+        assert listing is None, (optimization, optimizing)
+    # Only the unoptimized build whose source asks for no optimization gets past it.
+    assert walked == [["us"]], walked

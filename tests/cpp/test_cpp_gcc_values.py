@@ -114,6 +114,13 @@ MISCOUNTED = (
 )
 
 
+def placed():
+    """Whether Peeky can show a pointer at a local container points at a live object
+    (#339): lldb-dap 20 gives each local's address. lldb-dap 18 gives none for one the
+    debugger shows with a summary, so no node is read through such a pointer there."""
+    return sys.platform != "linux" or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
+
+
 def withheld(row, count):
     """Whether a row is withheld as an unordered container LLDB miscounts: the container
     itself (`not listed: ...`), or a key, position or member read in it."""
@@ -142,20 +149,29 @@ def test_an_unordered_container_is_read_whole_or_not_listed(cpp, capsys):
     # An empty one's counts agree, whatever the compiler.
     assert rows["none"]["value"] == "size=0 {}", rows["none"]
     # Every one reads, by key, by position and inside another value: GCC's from their
-    # nodes (and clang's typedef'd one with LLDB 18, which counts it empty).
-    for selector, (value, _) in READS.items():
+    # nodes (and clang's typedef'd one with LLDB 18, which counts it empty). Through a
+    # pointer, only where Peeky can show it points at a live object (review of #360).
+    pointed = compiler == "gcc" and not placed()
+    for selector, (value, count) in READS.items():
+        if pointed and selector.startswith("p"):
+            assert withheld(rows[selector], count), (selector, rows[selector])
+            continue
         assert rows[selector].get("value") == value, (selector, rows[selector])
+        if compiler == "gcc":
+            # Read from memory, and said so.
+            assert rows[selector].get("view") == "memory", (selector, rows[selector])
     for selector, value in HOLDING.items():
         assert rows[selector].get("value") == value, (selector, rows[selector])
-    assert re.fullmatch(r"0x[0-9a-f]+ size=1", str(rows["p"].get("value"))), rows["p"]
-    if compiler == "gcc":
-        # Read from memory, and said so.
-        assert all(rows[selector].get("view") == "memory" for selector in READS), rows
+    pointer = rows["p"]
+    assert re.fullmatch(r"0x[0-9a-f]+ size=1", str(pointer.get("value"))) or (
+        pointed and withheld(pointer, 1) and pointer["error"].startswith("not listed: it points")
+    ), pointer
     # The evidence keeps what the rows showed.
-    assert main(["sql", "SELECT selector, value, view FROM last_run", "--json"]) == 0
+    assert main(["sql", "SELECT selector, value, error FROM last_run", "--json"]) == 0
     stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
-    for selector, (value, _) in READS.items():
-        assert stored[selector]["value"] == value, stored[selector]
+    for selector in READS:
+        assert stored[selector]["value"] == rows[selector].get("value"), stored[selector]
+        assert stored[selector]["error"] == rows[selector].get("error"), stored[selector]
 
 
 @pytest.mark.timeout(180)
@@ -178,10 +194,15 @@ def test_a_listing_and_a_callers_reference_follow_the_same_rule(cpp, capsys):
     assert re.fullmatch(r"0x[0-9a-f]+ size=1 \{1: 2\}", rows["ref"]["value"]), rows["ref"]
     listed = {c["selector"]: c["value"] for c in rows["ref"]["children"]}
     assert listed == {"ref[1]": "2"}, listed
-    assert re.fullmatch(r"0x[0-9a-f]+ size=1", rows["ptr"]["value"]), rows["ptr"]
-    assert rows["ptr[0]"]["value"] == "size=1 {4}", rows["ptr[0]"]
-    listed = {c["selector"]: c["value"] for c in rows["ptr[0]"]["children"]}
-    assert listed == {"ptr[0][#0]": "4"}, listed
+    if compiler == "gcc" and not placed():
+        # Peeky can't show `ptr` points at a live object here (#339): nothing read
+        # through it from the nodes.
+        assert withheld(rows["ptr"], 1) and withheld(rows["ptr[0]"], 1), rows
+    else:
+        assert re.fullmatch(r"0x[0-9a-f]+ size=1", rows["ptr"]["value"]), rows["ptr"]
+        assert rows["ptr[0]"]["value"] == "size=1 {4}", rows["ptr[0]"]
+        listed = {c["selector"]: c["value"] for c in rows["ptr[0]"]["children"]}
+        assert listed == {"ptr[0][#0]": "4"}, listed
     # A caller's `um` may be withheld for its own line (not finished); never miscounted.
     assert rows["um"].get("value") != "size=0 {}", rows["um"]
 
@@ -331,6 +352,150 @@ def test_no_entry_is_read_from_the_nodes_while_a_library_call_runs(cpp, capsys):
         # LLDB's summary alone, or `no value yet` for the line under way (clang's).
         assert rows["um"].get("value") in ("size=1", None), rows["um"]
     assert rows["um"].get("view") != "memory" and rows["um[1]"].get("value") is None, rows
+
+
+POINTERS = """#include <cstdio>
+#include <new>
+#include <unordered_set>
+static std::unordered_set<int> *gone;
+__attribute__((noinline)) static void keep() {
+    alignas(std::unordered_set<int>) unsigned char buf[sizeof(std::unordered_set<int>)];
+    // Never destroyed: once `keep` returns, its dead frame still reads as a set of {6}.
+    gone = new (buf) std::unordered_set<int>{6};
+}
+int main() {
+    std::unordered_set<int> local{3};
+    std::unordered_set<int> *mine = &local;
+    auto *heap = new std::unordered_set<int>{4};
+    keep();
+    std::unordered_set<int> *dangling = gone;
+    std::printf("P:%zu %zu %d\\n", mine->size(), heap->size(), dangling != nullptr); // HERE
+    delete heap;
+    return 0;
+}
+"""
+# The note on a pointer to an unordered container whose count LLDB gets wrong.
+POINTED = f"not listed: it points at an unordered container, and {MISCOUNTED.format(1)}"
+
+
+@pytest.mark.timeout(180)
+def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(cpp, capsys):
+    # Review of #360: a heap block's set, and a dead frame's (whose bytes still read as
+    # one), showed their entries from their nodes as `[memory]`, with no note: `heap`
+    # and `dangling` are pointers Peeky can't show point at a live object (#339).
+    compiler, root = cpp
+    source = root / "pointers.cpp"
+    source.write_text(POINTERS)
+    capture = "mine,mine[0],heap,heap[0],heap[0][#0],dangling,dangling[0]"
+    code, result = probe(source, line_of(POINTERS, "// HERE"), capture, capsys)
+    assert "P:1 1 1" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    for selector in ("heap", "heap[0]", "heap[0][#0]", "dangling", "dangling[0]"):
+        assert rows[selector].get("view") != "memory", (selector, rows[selector])
+    if compiler == "gcc":
+        assert rows["heap"]["error"] == POINTED and rows["dangling"]["error"] == POINTED, rows
+        for selector in ("heap[0]", "heap[0][#0]", "dangling[0]"):
+            assert rows[selector].get("value") is None, (selector, rows[selector])
+        if placed():
+            # A pointer at the frame's own local, which Peeky places, is read.
+            assert re.fullmatch(r"0x[0-9a-f]+ size=1", rows["mine"]["value"]), rows["mine"]
+            assert rows["mine[0]"]["value"] == "size=1 {3}", rows["mine[0]"]
+            assert rows["mine[0]"]["view"] == "memory", rows["mine[0]"]
+        else:
+            assert rows["mine"]["error"] == POINTED, rows["mine"]
+
+
+OPTIMIZED = """#include <cstdio>
+#include <unordered_map>
+__attribute__((noinline)) static void observe(int v) { std::printf("V:%d\\n", v); }
+int main(int argc, char **) {
+    std::unordered_map<int, int> um{{1, 2}};
+    int &slot = um[1];
+    for (int i = 0; i < 3; ++i) {
+        slot += argc;
+        observe(slot); // HERE
+    }
+    std::printf("UM:%zu %d\\n", um.size(), um[1]);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_no_node_is_read_in_an_optimized_build(cpp, optimization):
+    # Review of #360: optimized, `slot += argc` may keep `um[1]`'s new value in a
+    # register while its node and the count stay as they were, so the nodes would show
+    # a stale value as `[memory]`. No entry is read from them in such a build.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "optimized.cpp").write_text(OPTIMIZED)
+    adapter = NativeTarget(
+        sources=("optimized.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    line = line_of(OPTIMIZED, "// HERE")
+    probed = Probe("optimized.cpp", line, ("um", "um[1]", "um[#0]"), hits="all")
+    result = run_probe(root, probed, adapter=adapter)
+    assert result["status"] == "completed", result.get("error")
+    assert "UM:1 5" in result["output"], result["output"]
+    assert result["rows"], result
+    for row in result["rows"]:
+        assert row.get("view") != "memory", row
+        if compiler == "gcc":
+            # LLDB counts GCC's as empty: withheld, or no value at all here.
+            assert row.get("value") is None, row
+
+
+ASKED = """#include <cstdio>
+#include <unordered_map>
+{ask}
+static int bump(std::unordered_map<int, int> &m) {{ return ++m[1]; }}
+{after}
+int main() {{
+    std::unordered_map<int, int> um{{{{1, 2}}}};
+    int got = bump(um);
+    std::printf("UM:%zu %d\\n", um.size(), got); // HERE
+    return 0;
+}}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    "ask",
+    [
+        '__attribute__((noinline, optimize("O2")))',
+        '#define FAST __attribute__((optimize("O2")))\nFAST __attribute__((noinline))',
+        '#pragma GCC push_options\n#pragma GCC optimize ("O2")\n__attribute__((noinline))',
+    ],
+)
+def test_no_node_is_read_where_the_source_asks_gcc_to_optimize_a_function(cpp, capsys, ask):
+    # Review of #360: an unoptimized build whose source asks GCC to optimize `bump` (an
+    # attribute, behind a macro too, or a pragma) may hold a value it stores in a
+    # register, as an optimized build does: its nodes are not read.
+    compiler, root = cpp
+    after = "#pragma GCC pop_options" if "push_options" in ask else ""
+    program = ASKED.format(ask=ask, after=after)
+    source = root / "asked.cpp"
+    source.write_text(program)
+    code, result = probe(source, line_of(program, "// HERE"), "um,um[1]", capsys)
+    assert "UM:1 3" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert all(row.get("view") != "memory" for row in rows.values()), rows
+    if compiler == "gcc":
+        assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
+    else:
+        # Clang ignores GCC's attribute, and LLDB reads its build: as before.
+        assert rows["um[1]"]["value"] == "3", rows
 
 
 DECODED = """#include <cstddef>

@@ -924,6 +924,14 @@ That is the case for:
     `_M_element_count` of them;
   - nothing may be changing the container
     ([A container that something may be changing](#a-container-that-something-may-be-changing));
+  - the build is unoptimized, and its source asks GCC to optimize no function (no `optimize`
+    attribute or `#pragma GCC optimize`). An optimized function may keep a value it stores
+    in a register, with the nodes unchanged;
+  - the row has no note, such as `no value yet` or leftovers;
+  - every pointer on the way points at a live object, as Peeky can show it
+    ([When what a pointer points at is unproven](#when-what-a-pointer-points-at-is-unproven)).
+    A heap block or a returned call's frame doesn't count. With lldb-dap 18, which gives no
+    address for a container local, neither does a pointer at one;
   - with a debugger that can't read memory, such as lldb-dap 18, each string's text is in the
     node: 15 bytes or fewer. lldb-dap 20 reads longer ones.
 
