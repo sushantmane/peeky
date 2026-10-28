@@ -151,6 +151,30 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
 
+## A caller's local whose declaration line has no code
+
+- `declared_unfinished` withholds a caller frame's local whose declaration line has no row of
+  its own. GCC's C++ does this to `struct trio t = { seed,`, and clang to an array of structs.
+- `_stored_before` lifts that. The frame's line must be below the statement's end, from
+  `Statements.end`.
+- Each row of the statement's lines, from the function's `order`, must end before the call.
+  A row ends at the function's next row, or at the end of its code there. The call is the
+  return address less one.
+- `NativeSession._resume` gives that return address only where it is proven a physical call's,
+  in code laid out in source order. The build must be `-O0`. And no unit may optimize a function
+  on its own: `c_source.optimizes` finds an `optimize` attribute or pragma in a unit's `-E` text.
+- The frame must be above the innermost one, and no signal interrupted it. No inlined call's
+  code may hold its address or the one before. LLDB gives the caller of an inlined call the
+  address where that call's code starts.
+- Nor may it be a frame LLDB rebuilt for a tail call's caller, which has no frame of its own
+  left. LLDB rebuilds one only from a call site marked as a tail call. So the build's debug
+  information must mark none (`has_tail_calls`), and the frame's `presentationHint` must not
+  be lldb-dap 20's "subtle".
+- A row after the call, such as a loop's code placed there, keeps it withheld. So does anything
+  unknown.
+- A loop around both runs the declaration again before the call on each pass. A jump past the
+  declaration is judged after it, by `declared_skipped`.
+
 ## Preview bounds and types
 
 - `native_previews` sets the bounds: 8 members or elements per level, two levels, 40 characters
