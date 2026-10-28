@@ -132,8 +132,6 @@ _UNAVAILABLE = re.compile(
 _POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
 # A C or C++ pointer's value that holds an address (`0x000000016f29b050`, `0x… "text"`).
 _NONZERO_ADDRESS = re.compile(r"0x0*[1-9a-fA-F][0-9a-fA-F]{0,15}(?![0-9a-zA-Z_])")
-# A C or C++ pointer type as the debugger names it (`T *`, `T *const`).
-_C_POINTER_TYPE = re.compile(r".+\*\s*(?:const\s*)?(?:volatile\s*)?")
 # The bytes of what a C or C++ character pointer LLDB shows as text points at, by the type
 # LLDB names (`const char *`).
 _CHARACTER_SIZES = {
@@ -3581,21 +3579,50 @@ class DebugWorker:
     def nodes_reachable(self, frame, trail, names):
         """Whether Peeky may read the nodes of an unordered container reached by ``names``
         in ``frame`` (#360): ``trail`` holds the debugger's variable for each name, the
-        container (or a pointer to it) last. Every C or C++ pointer on the way must be
-        judged to point at a live object (#339), never left unjudged: a live heap block,
-        or the dead frame a dangling pointer holds, may hold bytes that read as entries."""
-        resolve = getattr(self.runtime, "typedef_kind", None)
-        for index, variable in enumerate(trail):
-            kind = variable.get("type")
-            resolved = resolve(kind) if resolve and isinstance(kind, str) else None
-            if not (
-                _C_POINTER_TYPE.fullmatch(str(kind or "").strip())
-                or (resolved is not None and resolved[0] == "pointer")
-            ):
-                continue
-            if not self.pointee_proven(variable, frame, names[: index + 1]):
+        container (or a pointer or reference to it) last. Every C or C++ pointer and C++
+        reference on the way (``indirections``) must be judged to refer to a live object
+        (#339's rule), never left unjudged: a live heap block, or the dead frame a
+        dangling one holds, may hold bytes that read as entries."""
+        found = getattr(self.runtime, "indirections", None)
+        steps = found(frame, list(names)) if found and len(trail) == len(names) else None
+        if steps is None:
+            return False
+        for index, kind in steps:
+            proven = self.pointee_proven if kind == "pointer" else self.referent_proven
+            if not proven(trail[index], frame, names[: index + 1]):
                 return False
         return True
+
+    def referent_proven(self, variable, frame, steps):
+        """Whether the C++ reference ``variable`` (whose value the debugger gives as the
+        address it refers to) is judged to refer to a live object, by the rule for what
+        a pointer points at (``judge_pointee``, #339): for reading an unordered
+        container's nodes through it (#360). Never where nothing is judged."""
+        runtime = self.runtime
+        if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
+            return False
+        if not callable(getattr(runtime, "referent_of", None)):
+            return False
+        value = variable.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if held is None:
+            return False
+        try:
+            referent = runtime.referent_of(frame, list(steps))
+        except (KeyError, TypeError, ValueError):
+            referent = None
+        if not isinstance(referent, dict):
+            return False
+        state = self.pointee_state()
+        key = ("referent", frame.get("id"), tuple(str(step) for step in steps), held[0])
+        if key not in state["judged"]:
+            self.pointee_partial = False
+            why = self.judge_pointee(int(held[0], 16), {**referent, "character": False}, frame)
+            if self.pointee_partial or self.past_incomplete:
+                # A read that didn't come may yet place it: judged again next time.
+                return why is None
+            state["judged"][key] = why
+        return state["judged"][key] is None
 
     def pointee_proven(self, variable, frame, steps):
         """Whether the C or C++ pointer ``variable`` is judged to point at a live object

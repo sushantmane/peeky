@@ -362,7 +362,18 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
         ),
         checks_past_ends=True,
         pointee_of=lambda frame, steps: {"pointee": "set", "element_size": 56, "count": 1},
+        referent_of=lambda frame, steps: {"pointee": "set", "element_size": 56, "count": 1},
         value_extent=lambda variable, frame, steps: None,
+        # Which steps are pointers or references; None where the build can't say.
+        indirections=lambda frame, steps: (
+            None
+            if steps[-1] == "lost"
+            else [
+                (i, "pointer" if step in ("p", "q", "h") else "reference")
+                for i, step in enumerate(steps)
+                if step in ("p", "q", "h", "r", "s", "seen")
+            ]
+        ),
     )
     worker = DebugWorker(tmp_path)
     worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
@@ -370,6 +381,11 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
     # `p` is proven to point at a live object; `q` (a heap block, a dead frame) is not.
     worker.pointee_unproven = lambda variable, frame, steps: (
         None if variable["name"] == "p" else {"kind": "heap"}
+    )
+    # A reference's referent: `r` and the member `seen` refer to 0x40, placed; `s` to a
+    # heap block.
+    worker.judge_pointee = lambda address, pointer, frame: (
+        None if address == 0x40 else {"kind": "heap"}
     )
     worker.reset_views()
     rows = [
@@ -435,6 +451,48 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
         [member], {"id": 1}, ("Locals", None), (owner,), trail=[holder]
     )
     assert read == [] and all(row["withheld_as"] == UNLISTED for row in (through, noted, unjudged))
+    # A reference is an indirection too (review 2 of #360): read only where its referent
+    # is judged live, never where nothing is judged (a value with no address, a step the
+    # build can't place).
+    rows = [
+        {"name": "r", "type": "Ref", "value": "0x40 size=0", "variablesReference": 9},
+        {
+            "name": "s",
+            "type": "std::unordered_set<int> &",
+            "value": "0x50 size=0",
+            "variablesReference": 10,
+        },
+        {
+            "name": "lost",
+            "type": "std::unordered_set<int>",
+            "value": "size=0",
+            "variablesReference": 11,
+        },
+    ]
+    r, s_, lost = worker.expose_variables(rows, {"id": 1}, ("Locals", None), ())
+    assert read == ["r"] and r["view"] == "memory", (read, r)
+    assert s_["withheld_as"] == UNLISTED and lost["withheld_as"] == UNLISTED
+    viewer = {"name": "view", "type": "Viewer", "value": "Viewer @ 0x60"}
+    seen = {
+        "name": "seen",
+        "type": "std::unordered_set<int> &",
+        "value": "0x40 size=0",
+        "variablesReference": 12,
+    }
+    far = {**seen, "value": "0x50 size=0"}
+    (shown,) = worker.expose_variables(
+        [seen], {"id": 1}, ("Locals", None), (("view", "Viewer"),), trail=[viewer]
+    )
+    (hidden,) = worker.expose_variables(
+        [far], {"id": 1}, ("Locals", None), (("view", "Viewer"),), trail=[viewer]
+    )
+    assert shown["view"] == "memory" and hidden["withheld_as"] == UNLISTED, (shown, hidden)
+    # Through a reference to a struct that holds one: the reference's referent decides.
+    boxed = {"name": "s", "type": "Holder &", "value": "0x50"}
+    (inner,) = worker.expose_variables(
+        [member], {"id": 1}, ("Locals", None), (("s", "Holder &"),), trail=[boxed]
+    )
+    assert inner["withheld_as"] == UNLISTED, inner
     # A member whose type's name is too long to verify is shown without a view: withheld,
     # never the debugger's miscount.
     long = "std::unordered_set<" + "x" * 2100 + ">"
@@ -455,22 +513,29 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
         ('__attribute__((section("t"), optimize(2))) int g();', True),
         ('[[gnu::optimize("O2")]] int f();', True),
         ('[[nodiscard, gnu::optimize("O1")]] int f();', True),
+        # Review 2 of #360: C++17's `using` prefix, which GCC 13 honours at -O0.
+        ('[[using gnu: optimize("O2")]] int f();', True),
+        ('[[using gnu: noinline, optimize("O2")]] int f();', True),
+        ('[[ using __gnu__ : cold , __optimize__ ( "O1" ) ]] int f();', True),
         ('#pragma GCC optimize ("O2")\nint f();', True),
         ('  # pragma GCC optimize("unroll-loops")', True),
-        # Not asking: libstdc++'s regex constants, a function of the program's named so,
-        # GCC's other pragmas, and clang's `optnone`.
+        # A function of that name, called, counts too: the detector is shared with the
+        # caller-aggregate rule, and never misses one.
+        ("int optimize(int route); int r = optimize(3);", True),
+        # Not: libstdc++'s regex constants, a comment or a literal, GCC's other pragmas,
+        # and clang's `optnone`.
         ("inline constexpr syntax_option_type optimize = _S_optimize;", False),
-        ("int optimize(int route); int r = optimize(3);", False),
+        ('/* optimize("O2") */ const char *s = "optimize(1)";', False),
         ('#pragma GCC diagnostic ignored "-Wunused"\n#pragma GCC push_options', False),
         ("__attribute__((optnone, noinline)) int f();", False),
     ],
 )
-def test_a_source_that_asks_gcc_to_optimize_a_function_is_told(text, asks):
+def test_a_source_that_may_optimize_a_function_is_told(text, asks):
     # #360 review: a function GCC optimizes may keep a stored value in a register while
     # the nodes and count are unchanged, so no entry is read from the nodes then.
-    from peeky.native import asks_optimization
+    from peeky.c_source import optimizes
 
-    assert asks_optimization(text.encode()) is asks
+    assert optimizes(text.encode()) is asks
 
 
 def test_no_node_is_read_in_a_build_that_may_be_optimized():

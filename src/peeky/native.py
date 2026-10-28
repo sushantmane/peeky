@@ -41,7 +41,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
+from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -2254,25 +2254,6 @@ def _class_role(dies, chain):
 _NONLOCAL_JUMPS = (b"setjmp", b"getcontext", b"swapcontext")
 
 
-# GCC's ways to optimize one function in an unoptimized build (#360): its `optimize`
-# attribute, also inside a list of attributes (`__attribute__((noinline,
-# optimize("O2")))`, `[[gnu::optimize("O2")]]`), and its pragma, which `_Pragma` becomes
-# too in preprocessed text.
-_OPTIMIZE = re.compile(
-    r"\b__attribute(?:__)?\s*\(\s*\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*?"
-    r"\b(?:__)?optimize(?:__)?\s*\("
-    r"|\[\[(?:[^\[\]]|\[[^\[\]]*\])*?\b(?:__)?gnu(?:__)?\s*::\s*(?:__)?optimize(?:__)?\b"
-    r"|^[ \t]*#[ \t]*pragma[ \t]+GCC[ \t]+optimize\b",
-    re.M,
-)
-
-
-def asks_optimization(data):
-    """Whether a translation unit's preprocessed text (bytes) asks GCC to optimize a
-    function (``_OPTIMIZE``): any of its macros, and the headers it includes, expanded."""
-    return _OPTIMIZE.search(data.decode("utf-8", errors="replace")) is not None
-
-
 def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
     """Whether any of these source files names a non-local jump (each read once)."""
     for path in paths:
@@ -3781,7 +3762,7 @@ class NativeTarget:
                         raise refused
                     data = path.read_bytes()
                     refused = c_refusal(data, self.language == "cpp")
-                    optimizing = optimizing or asks_optimization(data)
+                    optimizing = optimizing or optimizes(data, self.language == "cpp")
                     path.unlink()
                     if refused is not None:
                         raise refused
@@ -4731,8 +4712,8 @@ class NativeSession:
         optimizing=None,
     ):
         self.target, self.prepared = target, prepared
-        # Whether the program's source asks GCC to optimize a function in an unoptimized
-        # build (``asks_optimization``); None where that was not read (#360).
+        # Whether the program's source may optimize a function beyond the build's level
+        # (``c_source.optimizes``); None where that was not read (#360).
         self.optimizing = optimizing
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
@@ -5404,6 +5385,48 @@ class NativeSession:
         if identity is None or type(size) is not int or size < 1:
             return None
         return {"pointee": identity, "element_size": size, "count": count}
+
+    def referent_of(self, frame, steps):
+        """What the C++ reference ``steps`` names in ``frame`` refers to (`T &`, `T &&`, a
+        typedef of one, a member), as ``pointee_of`` says what a pointer points at: for
+        the rule on reading an unordered container's nodes through it (#360). None where
+        the build's debug information doesn't say."""
+        typed = self._typed(frame, list(steps))
+        if typed is None or typed.bits is not None or typed.entry:
+            return None
+        target = typed.target() if typed.kind() == "reference" else None
+        if target is None or target.kind() not in _ELEMENTS:
+            return None
+        identity, size = target.identity(), target.byte_size()
+        if identity is None or type(size) is not int or size < 1:
+            return None
+        return {"pointee": identity, "element_size": size, "count": 1}
+
+    def indirections(self, frame, steps):
+        """[(index, "pointer" or "reference")] of each of ``steps`` (a value's way from
+        its root local in ``frame``, the value itself last) that is a pointer or a
+        reference, by the build's debug information (#360). None where that can't be
+        told, or where the root local is one the frame reaches through a pointer (a
+        binding of a reference, `auto &[a, b] = *p`), which no variable stands for."""
+        function = self._function_at(frame)
+        referred = (function or {}).get("referred")
+        root = str(steps[0]) if steps else ""
+        plain = split_located(root)
+        if (
+            not steps
+            or referred is None
+            or (plain is None and looks_located(root))
+            or (plain[0] if plain else root) in referred
+        ):
+            return None
+        found = []
+        for index in range(len(steps)):
+            typed = self._typed(frame, [str(step) for step in steps[: index + 1]])
+            if typed is None:
+                return None
+            if typed.kind() in ("pointer", "reference"):
+                found.append((index, typed.kind()))
+        return found
 
     def static_ranges(self):
         """Where the program's own image is loaded (#339): [(start, end)] of each segment

@@ -360,19 +360,27 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     `Withholding` (`counted`). The worker asks `listed_container` for the nodes only once
     nothing else withholds the row. So a row with a note (`no value yet`, leftovers, one
     read through a value with a note) is never read from its nodes.
-  - Every C or C++ pointer on the row's way must be judged to point at a live object
-    (`DebugWorker.nodes_reachable`, #339's `pointee_unproven`). A pointer the rule doesn't
-    judge counts as unproven. A heap block may hold a container's bytes, and so may a
-    returned call's dead frame.
+  - Every C or C++ pointer, and every C++ reference, on the row's way must be judged to
+    refer to a live object (`DebugWorker.nodes_reachable`). `NativeSession.indirections`
+    names them by the debug information: `T &`, `T &&`, a typedef of one, a member.
+  - A pointer is judged by #339's `pointee_unproven`. A reference is judged the same way
+    (`referent_proven`): the address the debugger shows for it, and what `referent_of`
+    says it refers to.
+  - One the rule doesn't judge counts as unproven, as does a root local the frame reaches
+    through a pointer, which no variable stands for. A heap block may hold a container's
+    bytes, and so may a returned call's dead frame.
   - lldb-dap 18 gives no address for a local the debugger shows with a summary, so Peeky
-    can't place a container local there. A pointer at one stays unproven, and nothing is
-    read through it. lldb-dap 20 gives each local's `memoryReference`.
+    can't place a container local there. A pointer or reference to one stays unproven, and
+    nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
   - A preview reads nested containers' nodes under the same rule: none below a note, or
     through such a pointer.
-  - Nothing is read in an optimized build, nor where a unit's preprocessed text asks GCC to
-    optimize a function (`asks_optimization`: an `optimize` attribute, also behind a macro,
-    or `#pragma GCC optimize`). Such a function may keep a value it stores in a register
-    while the count and the chain are unchanged. Any function on the stack may be one.
+  - Nothing is read in an optimized build, nor where a unit's preprocessed text may optimize
+    a function (`c_source.optimizes`). That is any `optimize(` or `__optimize__(` outside
+    comments and literals, in any attribute form (`[[using gnu: optimize("O2")]]`), also
+    behind a macro, and any pragma that names `optimize`.
+  - Such a function may keep a value it stores in a register while the count and the chain
+    are unchanged. Any function on the stack may be one. A function named `optimize`,
+    called, counts too: the detector would rather withhold.
   - The nodes form one chain from `_M_h._M_before_begin._M_nxt`, in iteration order. Each node
     is a `std::__detail::_Hash_node<_Value, cache>`. The hashtable's `_Traits`
     (`_Hashtable_traits`) say whether it caches the hash code.

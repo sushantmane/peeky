@@ -191,14 +191,15 @@ def test_a_listing_and_a_callers_reference_follow_the_same_rule(cpp, capsys):
         capsys.readouterr()
     # A reference shows its address and the container; its entries are listed by key. A
     # pointer shows its address and count, and what it points at is the container.
-    assert re.fullmatch(r"0x[0-9a-f]+ size=1 \{1: 2\}", rows["ref"]["value"]), rows["ref"]
-    listed = {c["selector"]: c["value"] for c in rows["ref"]["children"]}
-    assert listed == {"ref[1]": "2"}, listed
     if compiler == "gcc" and not placed():
-        # Peeky can't show `ptr` points at a live object here (#339): nothing read
-        # through it from the nodes.
-        assert withheld(rows["ptr"], 1) and withheld(rows["ptr[0]"], 1), rows
+        # Peeky can't show that `ref` and `ptr` refer to a live object here (#339): no
+        # node is read through either (review of #360).
+        for selector in ("ref", "ptr", "ptr[0]"):
+            assert withheld(rows[selector], 1), (selector, rows[selector])
     else:
+        assert re.fullmatch(r"0x[0-9a-f]+ size=1 \{1: 2\}", rows["ref"]["value"]), rows
+        listed = {c["selector"]: c["value"] for c in rows["ref"]["children"]}
+        assert listed == {"ref[1]": "2"}, listed
         assert re.fullmatch(r"0x[0-9a-f]+ size=1", rows["ptr"]["value"]), rows["ptr"]
         assert rows["ptr[0]"]["value"] == "size=1 {4}", rows["ptr[0]"]
         listed = {c["selector"]: c["value"] for c in rows["ptr[0]"]["children"]}
@@ -405,6 +406,76 @@ def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(
             assert rows["mine"]["error"] == POINTED, rows["mine"]
 
 
+REFERENCES = """#include <cstdio>
+#include <new>
+#include <unordered_set>
+using Ref = std::unordered_set<int> &;
+struct Holder { std::unordered_set<int> us; int n; };
+struct Viewer { std::unordered_set<int> &seen; };
+static std::unordered_set<int> *gone;
+__attribute__((noinline)) static void keep() {
+    alignas(std::unordered_set<int>) unsigned char buf[sizeof(std::unordered_set<int>)];
+    // Never destroyed: once `keep` returns, its dead frame still reads as a set of {6}.
+    gone = new (buf) std::unordered_set<int>{6};
+}
+int main() {
+    std::unordered_set<int> local{3};
+    auto &mine = local;
+    Ref aliased = local;
+    Viewer view{local};
+    auto *heap = new std::unordered_set<int>{4};
+    auto &onheap = *heap;
+    Viewer far{*heap};
+    auto *box = new Holder{{5}, 1};
+    Holder &boxed = *box;
+    keep();
+    std::unordered_set<int> &dangling = *gone;
+    std::printf("R:%zu %zu %zu %zu %zu %d\\n", mine.size(), aliased.size(), view.seen.size(),
+                onheap.size() + far.seen.size(), boxed.us.size(), &dangling != nullptr); // HERE
+    delete box;
+    delete heap;
+    return 0;
+}
+"""
+# Each reference to an unordered container: (its entries, whether Peeky can show it
+# refers to a live object where the debugger gives each local's address).
+REFERS = {
+    "mine": ("{3}", True),
+    "aliased": ("{3}", True),
+    "view.seen": ("{3}", True),
+    "onheap": ("{4}", False),
+    "far.seen": ("{4}", False),
+    "boxed.us": ("{5}", False),
+    "dangling": ("{6}", False),
+}
+
+
+@pytest.mark.timeout(180)
+def test_no_node_is_read_through_a_reference_not_proven_to_refer_to_a_live_object(cpp, capsys):
+    # Review 2 of #360: a reference bypassed the rule on pointers, so `onheap` (`*heap`),
+    # `far.seen`, `boxed.us` (through `Holder &` to a heap block) and `dangling` (a dead
+    # frame's set) showed their entries from their nodes as `[memory]`, with no note.
+    compiler, root = cpp
+    source = root / "references.cpp"
+    source.write_text(REFERENCES)
+    capture = ",".join([*REFERS, *(f"{name}[#0]" for name in REFERS)])
+    code, result = probe(source, line_of(REFERENCES, "// HERE"), capture, capsys)
+    assert "R:1 1 1 2 1 1" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    for name, (entries, live) in REFERS.items():
+        row, entry = rows[name], rows[f"{name}[#0]"]
+        if not live:
+            assert row.get("view") != "memory" and entry.get("view") != "memory", (name, rows)
+        if compiler != "gcc":
+            continue
+        if live and placed():
+            # Its address, then the container, read from its nodes.
+            assert re.fullmatch(r"0x[0-9a-f]+ size=1 " + re.escape(entries), row["value"]), row
+            assert row["view"] == "memory" and entry["value"] == entries[1:-1], (row, entry)
+        else:
+            assert withheld(row, 1) and withheld(entry, 1), (name, row, entry)
+
+
 OPTIMIZED = """#include <cstdio>
 #include <unordered_map>
 __attribute__((noinline)) static void observe(int v) { std::printf("V:%d\\n", v); }
@@ -455,6 +526,52 @@ def test_no_node_is_read_in_an_optimized_build(cpp, optimization):
             assert row.get("value") is None, row
 
 
+STALE = """#include <cstdio>
+#include <unordered_map>
+__attribute__((noinline, const)) static int twice(int x) {
+    return x * 2; // IN_TWICE
+}
+[[using gnu: noinline, optimize("O2")]] static int bump(std::unordered_map<int, int> &m, int k) {
+    int &slot = m[1];
+    slot = k;
+    int t = twice(k);
+    slot = t;
+    return t;
+}
+int main(int argc, char **) {
+    std::unordered_map<int, int> um{{1, 2}};
+    int got = bump(um, argc + 40);
+    std::printf("UM:%zu %d %d\\n", um.size(), um[1], got);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_no_node_is_read_where_a_using_attribute_asks_gcc_to_optimize(cpp, capsys):
+    # Review 2 of #360: `[[using gnu: optimize("O2")]]` escaped the detector, and GCC 13
+    # optimizes `bump` under -O0. Stopped in `twice`, `bump` has stored 41 in `m[1]`, but
+    # GCC drops that store (`twice` is `const`): `main`'s `um` read `size=1 {1: 2}` from
+    # its node as `[memory]`.
+    compiler, root = cpp
+    source = root / "stale.cpp"
+    source.write_text(STALE)
+    assert main(["session", "start", str(source), "--at", str(line_of(STALE, "IN_TWICE"))]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        main(["session", "get", "um", "um[1]", "--frame", str(caller), "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert all(row.get("view") != "memory" for row in rows.values()), rows
+    if compiler == "gcc":
+        assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
+
+
 ASKED = """#include <cstdio>
 #include <unordered_map>
 {ask}
@@ -476,6 +593,7 @@ int main() {{
         '__attribute__((noinline, optimize("O2")))',
         '#define FAST __attribute__((optimize("O2")))\nFAST __attribute__((noinline))',
         '#pragma GCC push_options\n#pragma GCC optimize ("O2")\n__attribute__((noinline))',
+        '[[using gnu: noinline, optimize("O2")]]',
     ],
 )
 def test_no_node_is_read_where_the_source_asks_gcc_to_optimize_a_function(cpp, capsys, ask):
