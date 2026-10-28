@@ -573,8 +573,8 @@ int main(int argc, char **argv) {
 """
 DEAD = (
     "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
-    "`{}` by reference, and Peeky proves only a local or its non-union member, or a call's "
-    "result. Read it where the code names that object, or bind by value (no `&`)"
+    "`{}` by reference, and Peeky proves only a local or its non-union member. Read it where "
+    "the code names that object, or bind by value (no `&`)"
 )
 
 
@@ -590,10 +590,17 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     )
     assert "U=8010" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    # A local of this frame: read through. So is `one(argc)`'s result, which `auto &&`
-    # keeps alive for its scope (#297).
-    for selector, value in (("a", "5"), ("b", "6"), ("g", "31"), ("h", "41")):
+    # A local of this frame: read through.
+    for selector, value in (("a", "5"), ("b", "6")):
         assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
+    # `one(argc)`'s result, which `auto &&` keeps alive for its scope, but which the function
+    # called may keep a pointer into (#297, review of #368 round 3): withheld.
+    for selector in ("g", "h"):
+        row = rows[selector]
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+            selector, "`one(argc)`", CALLED
+        ), row
     # Never `poison`'s elements, nor any value, through a temporary the line destroyed.
     bound = {
         "t": "make(0)[0]",
@@ -686,9 +693,8 @@ def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(c
 
 
 # #297: bindings by reference of an element of a local container the code leaves in place
-# (a range `for` over a map, a vector or a set; `v[1]`), and of a call's own result, which
-# the binding keeps alive; and the same forms where the code may change the container, or
-# the call returns a reference.
+# (a range `for` over a map, a vector or a set; `v[1]`); and the same forms where the code
+# may change the container, and a call's result, which is never proven.
 HELD = """#include <cstdio>
 #include <map>
 #include <set>
@@ -735,22 +741,20 @@ HELD_ROWS = {
     "MAP_READ": ("k,x", {1: {"k": "21", "x": "22"}, 2: {"k": "23", "x": "24"}}),
     "VECTOR_READ": ("a,b", {1: {"a": "11", "b": "13"}, 2: {"a": "13", "b": "15"}}),
     "SET_READ": ("i,j", {1: {"i": "5", "j": "6"}, 2: {"i": "7", "j": "8"}}),
-    "READ": (
-        "r,s,p,q,y,z",
-        {1: {"r": "13", "s": "15", "p": "31", "q": "41", "y": "32", "z": "42"}},
-    ),
+    "READ": ("r,s", {1: {"r": "13", "s": "15"}}),
 }
 UNPROVEN = (
     "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
     "{} by reference, {}. Read it where the code names that object, or bind by value (no `&`)"
 )
+# Review of #368, round 3: the function called may keep a pointer into its result.
+CALLED = "a call's result, which the function called may keep a pointer into"
 
 
 @pytest.mark.timeout(300)
-def test_a_binding_into_a_local_container_or_a_calls_result_reads_where_proven(cpp, capsys):
+def test_a_binding_into_a_local_container_reads_where_proven(cpp, capsys):
     # #297: these were all `not shown` (only a local, or a member of one, was proven), under
-    # GCC and Apple clang alike: a range `for` over a local map, `v[1]` of a local vector,
-    # and `auto &&[p, q] = one(argc);`, whose result C++ keeps alive for the scope.
+    # GCC and Apple clang alike: a range `for` over a local map, `v[1]` of a local vector.
     compiler, root = cpp
     source = root / "held.cpp"
     source.write_text(HELD)
@@ -762,31 +766,32 @@ def test_a_binding_into_a_local_container_or_a_calls_result_reads_where_proven(c
                 continue
             assert row.get("value") == passes[row["hit"]][row["selector"]], row
             assert row.get("settable") is not True and "debugger_type" in row, row
-    # Where the code may change the container, or the call returns a reference: withheld.
+    # Where the code may change the container, and a call's result: withheld.
     changed = {
         "c": (
             "an element of `w`",
             "and while it is in scope the code may change `w` or keep a pointer or reference "
             "into it",
         ),
-        "e": (
-            "`pick(w[1])`",
-            "and Peeky can't prove the call returns a new standard pair, tuple or array of "
-            "numbers that the binding keeps alive",
-        ),
+        "e": ("`pick(w[1])`", CALLED),
         "g": (
             "an element of `n`",
             "and while it is in scope the code may change `n` or keep a pointer or reference "
             "into it",
         ),
+        "p": ("`one(argc)`", CALLED),
+        "y": ("`one(argc + 1)`", CALLED),
     }
-    code, result = probe(source, line_of(HELD, "// CHANGED"), "c,d,e,f,g,h", capsys, "--hits", "1")
+    code, result = probe(
+        source, line_of(HELD, "// CHANGED"), "c,d,e,f,g,h,p,q,y,z", capsys, "--hits", "1"
+    )
     assert "U=" in result["output"], result
     for row in result["rows"]:
         assert row.get("value") is None, row
         if hidden(compiler, row):
             continue
-        what, why = changed[{"d": "c", "f": "e", "h": "g"}.get(row["selector"], row["selector"])]
+        twin = {"d": "c", "f": "e", "h": "g", "q": "p", "z": "y"}
+        what, why = changed[twin.get(row["selector"], row["selector"])]
         assert row["error"] == UNPROVEN.format(row["selector"], what, why), row
 
 
@@ -814,6 +819,8 @@ template <std::size_t I> struct tuple_element<I, View> { using type = long; };
 struct Sink {};
 long *escaped = nullptr;
 Sink &operator<<(Sink &s, long &x) { escaped = &x; return s; }
+Sink operator""_sink(unsigned long long) { return Sink{}; }
+long operator+(long &x, Sink) { escaped = &x; return x; }
 long *made = nullptr;
 struct E {
     long x, y;
@@ -836,6 +843,12 @@ template <class T, class U> bool operator==(const Spy<T> &, const Spy<U> &) { re
 template <class T, class U> bool operator!=(const Spy<T> &, const Spy<U> &) { return false; }
 __attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
 __attribute__((noinline)) View view(Pair *p) { return View{p}; }
+P *saved = nullptr;
+__attribute__((noinline)) P make() {
+    P made{141, 142};
+    saved = &made;
+    return made;
+}
 int main(int argc, char **argv) {
     std::vector<P> v{{11, 12}};
     P *p = v.data();
@@ -871,6 +884,15 @@ int main(int argc, char **argv) {
     for (auto &[pk, pp] : pointing) {
         use(pk); // POINTER
     }
+    std::map<long, long> lm{{161, 162}};
+    for (auto &[lk, lv] : lm) {
+        use(lv + 1_sink); // LITERAL
+    }
+    auto &&[na, nb] = make();
+    std::destroy_at(saved);
+    use(argc); // RETURNED
+    new (saved) P{143, 144};
+    use(na + nb);
     return 0;
 }
 """
@@ -905,18 +927,24 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         "CONSTRUCTED": ("ex,ey", "an element of `es`", POLICY),
         "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
         "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
+        # Review of #368, round 3: with the named return value optimization, `make()` builds
+        # `made` where the caller keeps its result, and keeps a pointer into it, through
+        # which the result is destroyed before the stop.
+        "RETURNED": ("na,nb", "`make()`", CALLED),
+        # A user-defined literal, `1_sink`, of a class with `operator+(long &, Sink)`.
+        "LITERAL": (
+            "lk,lv",
+            "an element of `lm`",
+            "and while it is in scope the code may change `lm` or keep a pointer or reference "
+            "into it",
+        ),
         "DESTROYED": (
             "a,b",
             "an element of `v`",
             "and while it is in scope the code may change `v` or keep a pointer or reference "
             "into it",
         ),
-        "PROXY": (
-            "vx,vy",
-            "`view(&held)`",
-            "and Peeky can't prove the call returns a new standard pair, tuple or array of "
-            "numbers that the binding keeps alive",
-        ),
+        "PROXY": ("vx,vy", "`view(&held)`", CALLED),
     }
     for marker, (capture, what, why) in reasons.items():
         found = bound_rows_of(source, REVIEWED, marker, capture, capsys)
@@ -929,6 +957,52 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
     # Passed by value (`use(long)`, `printf`'s `...`): still read.
     for row in bound_rows_of(source, REVIEWED, "PASSED", "k,x", capsys):
         assert hidden(compiler, row) or row.get("value") == {"k": "71", "x": "72"}[row["selector"]]
+
+
+# Review of #368, round 3: `std::allocator` calls the global `operator new`, which this
+# program replaces to keep where each element is.
+REPLACED = """#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <new>
+void *captured = nullptr;
+void *operator new(std::size_t n) {
+    void *p = std::malloc(n ? n : 1);
+    if (p == nullptr) throw std::bad_alloc();
+    captured = p;
+    return p;
+}
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+int main() {
+    std::map<long, long> m{{151, 152}};
+    for (const auto &[k, x] : m) {
+        use(k * x); // CAPTURED
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_containers_element_is_withheld_where_the_program_replaces_operator_new(cpp, capsys):
+    # Review of #368, round 3: the map's loop read `k = 151, x = 152`, though the program's
+    # own `operator new` kept where the map's node is.
+    compiler, root = cpp
+    source = root / "replaced.cpp"
+    source.write_text(REPLACED)
+    found = bound_rows_of(source, REPLACED, "CAPTURED", "k,x", capsys)
+    assert len(found) == 2, found
+    why = (
+        "and the program replaces `operator new` or `operator delete`, which may keep where "
+        "each element is"
+    )
+    for row in found:
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+            row["selector"], "an element of `m`", why
+        ), row
 
 
 def bound_rows_of(source, text, marker, capture, capsys):

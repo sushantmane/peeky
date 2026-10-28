@@ -256,22 +256,24 @@ shows that reference's address as the variable's value.
     (`_VALUES`). In its own scope, nothing may keep a pointer, iterator or reference into it: a
     call's result is dropped (`m.insert(…);`), an element is only assigned (`v[1] = x;`), and
     another binding over it keeps its names. No lambda or local class may name it.
-  - A call's own result (`_kept_result`). `call_results` proves the call's name from the debug
-    information: every function of that name returns a `std::pair`, `std::tuple` or
-    `std::array` of base types, so `std::get` names its own elements. No global, static or data
-    member has that name.
-  - For both, `Statements._names_kept` follows each of the binding's names, which must be of base
-    types (`_scalar_bound`): never an enumeration or a pointer.
+  - `allocation_replaced` reads the build's debug information for a global `operator new` or
+    `operator delete` of the program's own, in any form but the placement ones the headers
+    define. One that is there, or a library the launch preloads (`_PRELOADS`), withholds
+    it (`_allocation_seen`).
+  - A call's result is never proven (`_kept_result`). The function called may keep a pointer
+    into it, as the named return value optimization builds it where the caller keeps it.
+  - `Statements._names_kept` follows each of the binding's names, which must be of base types
+    (`_scalar_bound`): never an enumeration or a pointer.
   - `_operand` reads the expression around each use. Every token must be a name of a base type
     (the binding's, or a local's), a number literal, a cast to a base type, a parenthesis, or a
-    built-in operator. With every operand of a base type, no overload can be called.
+    built-in operator. With every operand of a base type, no overload can be called. A literal
+    must match `_NUMBER_LITERAL`, with the language's own suffixes only.
   - `_only_read` then reads what takes that expression. A new value goes anywhere. The name alone
     may be a statement, an assignment's target or source of a base type, a condition, returned,
     or an argument every function of the call's name takes by value (`call_arguments`).
   - `bound_element` then checks the address the reference holds (`_bound_place`). It must be in
     the vector's elements (its own `_M_start` and `_M_finish`, or libc++'s `__begin_` and
-    `__end_`). Or it must be in one of the map's entries as the debugger lists them. Or it must be
-    in the frame's stack, from its stack pointer to its caller's (`frame_extent`).
+    `__end_`). Or it must be in one of the map's entries as the debugger lists them.
   - In an optimized build, only an object of the frame is read.
 - `NativeSession.bound_element` gives the worker the element in the variable's place. For a
   number, a character or a pointer, that is the debugger's one child under the reference, with

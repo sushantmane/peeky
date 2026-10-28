@@ -3442,9 +3442,6 @@ def static_variables(dies, limit=MAX_STATICS):
     return tuple(found)
 
 
-# A class template of the standard library whose structured binding names its own
-# subobjects (`std::get<I>`): a pair, a tuple, an array (#297 review).
-_TUPLE_LIKE = re.compile(r"std::(?:__\w+::)*(?:pair|tuple|array)<")
 # Qualifiers a type is read under (#297).
 _QUALIFYING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type")
 
@@ -3472,101 +3469,44 @@ def _named_calls(dies):
             yield offset, name, chain
 
 
-def call_results(dies):
-    """{a function's name: whether a call by that name gives a new object whose
-    structured binding names its own elements (#297)}: every function of the name the
-    build describes (a template's instances by the name before their `<`) returns a
-    `std::pair`, `std::tuple` or `std::array` by value, of numbers and characters alone.
-    `auto &&[a, b] = f();` binds such a call's result, a temporary the binding keeps
-    alive for its scope, and `std::get` gives each name its own element: no type of the
-    program's is involved that could give a `get`, a constructor or an operator of its
-    own (#297 review rounds 1, 2: a `View` whose `get<I>` returns what a pointer in it
-    points at), and no pointer that may point at another object. A name the build also
-    gives a variable outside a function or a data member is False: a call through one may
-    give anything."""
+# A global allocation or deallocation function's name, as the debug information gives it.
+_ALLOCATING = re.compile(r"operator (?:new|delete) ?(?:\[\])?")
+
+
+def allocation_replaced(dies):
+    """Whether the build defines a global allocation or deallocation function of its own
+    (#297 review round 3): `operator new`, `new[]`, `delete` or `delete[]`, in any form
+    (aligned, nothrow, sized), which `std::allocator` calls and which may keep where each
+    element of a container is. Never a class's own, nor the non-allocating placement
+    forms (`operator new(std::size_t, void *)`, `operator delete(void *, void *)`), which a
+    program can't replace and the standard headers define inline."""
     from peeky.fields import _RECORDS as records
-    from peeky.fields import _definitions, _target
+    from peeky.fields import _target
 
-    kept, standard, definitions = {}, {}, []
-
-    def under(offset):
-        for _ in range(64):
-            die = dies.get(offset)
-            if die is None or die["tag"] not in _QUALIFYING:
-                return offset
-            offset = _target(die["attrs"].get("DW_AT_type"))
-        return None
-
-    def complete(offset):
-        die = dies.get(offset)
-        if die is not None and "DW_AT_declaration" in die["attrs"]:
-            if not definitions:
-                definitions.append(_definitions(dies))
-            name = _qualified(dies, offset)
-            found = definitions[0].get((die["tag"], name), []) if name else []
-            return found[0] if len(found) == 1 else None
-        return offset
-
-    def holds_no_reference(offset, depth=0):
-        # Under typedefs and qualifiers: no reference, and none in a class or array.
-        offset = under(offset)
-        die = dies.get(offset)
-        if die is None or depth > 16:
-            return False
-        if die["tag"] in ("DW_TAG_base_type", "DW_TAG_enumeration_type", "DW_TAG_pointer_type"):
-            return True
-        if die["tag"] == "DW_TAG_array_type":
-            return holds_no_reference(_target(die["attrs"].get("DW_AT_type")), depth + 1)
-        if die["tag"] not in records:
-            return False
-        offset = complete(offset)
-        if offset is None:
-            return False
-        if offset not in kept:
-            kept[offset] = False
-            kept[offset] = all(
-                holds_no_reference(_target(dies[child]["attrs"].get("DW_AT_type")), depth + 1)
-                for child in dies[offset]["children"]
-                if dies[child]["tag"] in ("DW_TAG_member", "DW_TAG_inheritance")
-                and "DW_AT_declaration" not in dies[child]["attrs"]
-                and "DW_AT_external" not in dies[child]["attrs"]
-            )
-        return kept[offset]
-
-    def numbers(offset):
-        # Its template's type arguments, a pack's too, are each a number or a character.
-        offset = complete(offset)
-        if offset is None:
-            return False
-        if offset not in standard:
-            arguments, pending = [], list(dies[offset]["children"])
-            while pending:
-                child = dies[pending.pop()]
-                if child["tag"] == "DW_TAG_GNU_template_parameter_pack":
-                    pending.extend(child["children"])
-                elif child["tag"] == "DW_TAG_template_type_parameter":
-                    arguments.append(under(_target(child["attrs"].get("DW_AT_type"))))
-            standard[offset] = bool(arguments) and all(
-                (dies.get(kind) or {}).get("tag") == "DW_TAG_base_type" for kind in arguments
-            )
-        return standard[offset]
-
-    found = {}
-    for offset, name, chain in _named_calls(dies):
-        if dies[offset]["tag"] != "DW_TAG_subprogram":
-            found[name] = False
+    for offset, die in dies.items():
+        if die.get("tag") != "DW_TAG_subprogram" or not (
+            "DW_AT_low_pc" in die["attrs"] or "DW_AT_ranges" in die["attrs"]
+        ):
             continue
-        returned = _target(_first(dies, chain, "DW_AT_type"))
-        record = complete(under(returned)) if under(returned) in dies else None
-        value = (
-            record is not None
-            and dies[record]["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type")
-            and bool(_TUPLE_LIKE.match(_qualified(dies, record) or ""))
-            and numbers(record)
-            and holds_no_reference(record)
-        )
-        found[name] = found.get(name, True) and value
-    return found
+        chain = _chain(dies, offset)
+        if not _ALLOCATING.fullmatch((_text(_first(dies, chain, "DW_AT_name")) or "").strip()):
+            continue
+        if (dies.get(dies[chain[-1]]["parent"]) or {}).get("tag") in records:
+            continue  # a class's own
+        kinds = [
+            _first(dies, _chain(dies, child), "DW_AT_type")
+            for child in dies[offset]["children"]
+            if dies[child]["tag"] == "DW_TAG_formal_parameter"
+        ]
+        last = dies.get(_target(kinds[-1])) if len(kinds) == 2 else None
+        if (
+            last is not None
+            and last["tag"] == "DW_TAG_pointer_type"
+            and "DW_AT_type" not in last["attrs"]
+        ):
+            continue  # placement: `(std::size_t, void *)`, `(void *, void *)`
+        return True
+    return False
 
 
 def call_arguments(dies):
@@ -4021,7 +3961,10 @@ class NativeTarget:
                         statics = static_variables(_dies(info))
                         # Which calls give a new object a binding keeps alive (#297).
                         if self.language == "cpp":
-                            results = (call_results(_dies(info)), call_arguments(_dies(info)))
+                            results = (
+                                call_arguments(_dies(info)),
+                                allocation_replaced(_dies(info)),
+                            )
                         # The types field and element changes walk (#105), and theirs.
                         fields = type_graph(
                             _dies(info),
@@ -4710,6 +4653,9 @@ class Everywhere(str):
 # to refer to (#297): a vector's, which are in one array, and a map's, set's or
 # multiset's, each in a node of its own.
 _BOUND_CONTAINERS = re.compile(r"std::(?:__\w+::)*(vector|map|set|multiset)<")
+# What loads a library before the program's own, which may replace `operator new` (#297
+# review round 3).
+_PRELOADS = ("LD_PRELOAD", "LD_AUDIT", "DYLD_INSERT_LIBRARIES")
 # What such a container's elements, order and allocator must be (#297 review round 2).
 _PLAIN_ELEMENTS = re.compile(r"std::(?:__\w+::)*(?:pair|array)<")
 _LESS = re.compile(r"std::(?:__\w+::)*less<")
@@ -4921,11 +4867,10 @@ class NativeSession:
         # static_variables of the build (#339): what a pointer into static storage may be
         # proven to point at.
         self.static_variables = tuple(statics or ())
-        # call_results of the build (#297): {a function's name: whether its call gives a
-        # new object}; {} (unknown) proves none.
-        self.call_results = dict((results or ({}, {}))[0])
-        # call_arguments of the build (#297 review): which calls take an argument by value.
-        self.call_arguments = dict((results or ({}, {}))[1])
+        # call_arguments of the build (#297 review): which calls take an argument by value;
+        # and allocation_replaced: whether it defines its own `operator new` (None: unknown).
+        self.call_arguments = dict((results or ({}, None))[0])
+        self.allocation_replaced = (results or ({}, None))[1]
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -6037,10 +5982,10 @@ class NativeSession:
         through no reference or pointer), or for a range-`for`, an element of such a C
         array. A check the stop must pass, where the source proves the rest (#297): an
         element of a local standard container the code leaves in place
-        (``_held_element``), or a call's own result, which the binding keeps alive
-        (``_kept_result``). Else a Withholding: `auto &[t, u] = make(0)[0];` refers into
-        a temporary the statement destroyed, which a later one may reuse; a subscript of
-        a call, `*p`, `p->x` or a global are not proven either."""
+        (``_held_element``). Else a Withholding: `auto &[t, u] = make(0)[0];` refers into
+        a temporary the statement destroyed, which a later one may reuse; a call's result
+        (``_kept_result``), a subscript of one, `*p`, `p->x` or a global are not proven
+        either."""
         if read is None:
             return Withholding(
                 "the binding refers to an object Peeky can't prove is still alive: it can't "
@@ -6066,7 +6011,7 @@ class NativeSession:
                 "or set a range `for` walks"
             )
         else:
-            why = "and Peeky proves only a local or its non-union member, or a call's result"
+            why = "and Peeky proves only a local or its non-union member"
         return _unproven(base, (read[1], read[2]), why)
 
     def _held_element(self, frame, base, place, read):
@@ -6101,6 +6046,8 @@ class NativeSession:
                 "and Peeky proves only standard vectors, maps and sets of numbers, with the "
                 "default allocator and order",
             )
+        if (replaced := self._allocation_seen()) is not None:
+            return _unproven(base, what, replaced)
         sort, size = "nodes", None
         if kind[1] == "vector":
             # Where its elements start and end: libc++'s own members, else libstdc++'s.
@@ -6185,6 +6132,32 @@ class NativeSession:
             return origin is not None and self._scalar_bound(function, name, origin)
 
         return scalar, lambda callee, index: self._passes(function, callee, index)
+
+    def _allocation_seen(self):
+        """Why `std::allocator`'s memory may be seen by code of the program's (#297 review
+        round 3), or None: it calls the global `operator new` and `operator delete`, which
+        the program may replace (allocation_replaced), or a library the launch loads
+        first (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`), to keep where each element is."""
+        replaced = getattr(self, "allocation_replaced", None)
+        if replaced is None:
+            return "and Peeky can't tell whether the program replaces `operator new`"
+        if replaced:
+            return (
+                "and the program replaces `operator new` or `operator delete`, which may keep "
+                "where each element is"
+            )
+        try:
+            environment = self.environment
+        except (AttributeError, OSError, TypeError, ValueError):
+            environment = None
+        if environment is None:
+            return "and Peeky can't tell whether the launch loads a library first"
+        loaded = [key for key in _PRELOADS if environment.get(key)]
+        if loaded:
+            return (
+                f"and the program runs with `{loaded[0]}`, whose library may replace `operator new`"
+            )
+        return None
 
     def _plain_container(self, node, sort):
         """Whether the standard container ``node`` (a record of the type graph; ``sort``:
@@ -6312,16 +6285,12 @@ class NativeSession:
         return verdicts == {True}
 
     def _kept_result(self, frame, base, place, read):
-        """For a binding by reference of a call's result (#297: `auto &&[p, q] = one(i);`,
-        `const auto &[x, y] = ns::two();`, not a member or subscript of one): where every
-        function the call's name may be returns a standard pair, tuple or array by value,
-        whose `std::get` names its own elements (call_results), so the binding keeps that
-        new object alive for its scope; the name is no local's of the function; a macro
-        does not change the call (each translation unit as preprocessed reads the same);
-        each of the binding's names refers to a number, a character or a pointer, and the
-        code keeps no pointer or reference to one (Statements.kept_names); in an
-        unoptimized build: the check the stop must pass, ("result", what it binds, None,
-        None, None). A Withholding where any of that fails; None for any other binding."""
+        """For a binding by reference of a call's result (`auto &&[p, q] = one(i);`, `const
+        auto &[x, y] = ns::two();`, not a member or subscript of one): a Withholding, None
+        for any other binding. C++ keeps that result alive for the binding's scope, but the
+        function called may keep a pointer into it: with the named return value
+        optimization, `P r{1, 2}; saved = &r; return r;` builds `r` where the caller keeps
+        the result (#297 review round 3). So nothing proves the code leaves it alive."""
         call = (
             None if read[2] else re.match(r"(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(", read[1])
         )
@@ -6329,54 +6298,16 @@ class NativeSession:
         closed = _arguments(read[1], opened) if opened >= 0 else None
         if call is None or closed is None or closed[1] != len(read[1]):
             return None
-        name, what = call[1], (read[1], False)
-        function = self._function_at(frame) or {}
-        if name in (function.get("types") or {}) or not (
-            getattr(self, "call_results", None) or {}
-        ).get(name):
-            return _unproven(
-                base,
-                what,
-                "and Peeky can't prove the call returns a new standard pair, tuple or array of "
-                "numbers that the binding keeps alive",
-            )
-        if getattr(self.target, "optimization", "O0") != "O0":
-            return _unproven(base, what, "and in an optimized build Peeky can't check it")
-        if (scalar := self._scalar_names(frame, base, place)) is not None:
-            return _unproven(base, what, scalar)
-        source = function.get("source")
-        same, kept = set(), set()
-        for unit in self._units(source) if isinstance(source, str) else ():
-            found = self._preprocessed(unit)
-            if isinstance(found, str):
-                same.add(False)
-                break
-            preprocessed, statements = found
-            if source in preprocessed.files:
-                line = preprocessed.line(source, place[1])
-                same.add(bool(line) and statements.binding(line, base) == read)
-                scalar, passes = self._callbacks(function, preprocessed)
-                kept.add(bool(line) and statements.kept_names(line, base, scalar, passes))
-        if same != {True}:
-            return _unproven(
-                base,
-                what,
-                "and Peeky can't read that call as the compiler does (a macro may change it)",
-            )
-        if kept != {True}:
-            return _unproven(
-                base,
-                what,
-                "and the code may keep a pointer or reference to what it names while it is "
-                "in scope",
-            )
-        return ("result", what, None, None, None)
+        return _unproven(
+            base,
+            (read[1], False),
+            "a call's result, which the function called may keep a pointer into",
+        )
 
-    def _bound_place(self, variable, base, check, target, fetch, siblings, raw, extent):
+    def _bound_place(self, variable, base, check, target, fetch, siblings, raw):
         """None where the address the binding by reference ``variable`` holds (its row's
         value, `0x…`) is where ``check`` (``_bound_alive``'s, #297) says the program keeps
-        what it binds now; else a Withholding. A call's result: in the frame's stack
-        (``extent()``: from its stack pointer to its caller's). A vector's element:
+        what it binds now; else a Withholding. A vector's element:
         between where its elements start and end, as ``raw(path)`` reads its own members.
         A map's or set's: in one of its entries, as the debugger lists them in
         ``siblings`` (``fetch``; at most BOUND_ENTRIES), each where the debugger says it
@@ -6388,24 +6319,6 @@ class NativeSession:
         width = (target.byte_size() if target is not None else None) or 1
         if not address:
             return _unproven(base, what, "and the debugger shows no address for it to check")
-        if kind == "result":
-            try:
-                region = extent() if extent is not None else None
-            except (TimeoutError, RuntimeError, OSError, KeyError, TypeError, ValueError):
-                region = None
-            if region is None:
-                return _unproven(
-                    base,
-                    what,
-                    "and Peeky could not read this frame's stack bounds to check where it points",
-                )
-            if region[0] <= address and address + width <= region[1]:
-                return None
-            return _unproven(
-                base,
-                what,
-                "but it points outside this frame's stack, where that call's result would be",
-            )
         rows = [
             row
             for row in siblings
@@ -6500,18 +6413,16 @@ class NativeSession:
             return None
         return bare[1]
 
-    def bound_element(
-        self, variable, frame, fetch, note=None, siblings=None, raw=None, extent=None
-    ):
+    def bound_element(self, variable, frame, fetch, note=None, siblings=None, raw=None):
         """How the worker shows a root local the build holds as a reference to a
         structured binding's element (#291: GCC's `t` in `auto [t, u] = pair;`), which
         the debugger shows as the element's address. None for any other local. Else:
 
         - a Withholding, where the reference may not be set (``note``: why the row would
           be shown with a note), what it refers to may be gone (``_bound_alive``: a
-          reference-qualified binding of anything but this frame's own object, an element
-          of a local container the code leaves in place, or a call's own result), or the
-          element cannot be read;
+          reference-qualified binding of anything but this frame's own object, or an
+          element of a local container the code leaves in place), or the element cannot be
+          read;
         - {"variable": the debugger's child that is the element (a number, a character,
           a pointer), named as the row and listing nothing}, read as any value;
         - {"strip": True} for a struct, class, array or standard container, whose
@@ -6520,7 +6431,7 @@ class NativeSession:
         ``fetch(reference, count, start=0)``: the children the debugger lists for a value,
         from ``start``. For the checks ``_bound_alive`` asks for (#297, ``_bound_place``):
         ``siblings``, the frame's other locals as the debugger lists them; ``raw(path)``,
-        the debugger's text for a variable path; ``extent()``, the frame's stack, or None."""
+        the debugger's text for a variable path."""
         found = self._element_binding(variable, frame)
         if found is False:
             return None
@@ -6538,9 +6449,7 @@ class NativeSession:
         base = shown[0] if shown else name
         if (dead := self._bound_alive(frame, base, found[2], found[3])) is not None:
             if isinstance(dead, tuple):
-                dead = self._bound_place(
-                    variable, base, dead, found[1], fetch, siblings or (), raw, extent
-                )
+                dead = self._bound_place(variable, base, dead, found[1], fetch, siblings or (), raw)
             if dead is not None:
                 return dead
         target = found[1]

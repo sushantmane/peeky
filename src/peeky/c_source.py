@@ -47,6 +47,17 @@ _BUILT_IN = frozenset(
     ("+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "&&", "||", "&", "|", "^")
     + ("<<", ">>", "!", "~")
 )
+# A number literal as the language spells it, with only its own suffixes (#297 review round
+# 3): no user-defined literal (`1_sink`, `10s`, `2i`), which calls an operator of its own.
+_DIGITS = r"[0-9](?:'?[0-9])*"
+_HEX_DIGITS = r"[0-9a-fA-F](?:'?[0-9a-fA-F])*"
+_NUMBER_LITERAL = re.compile(
+    rf"(?:0[xX]{_HEX_DIGITS}|0[bB][01](?:'?[01])*|0(?:'?[0-7])*|[1-9](?:'?[0-9])*)"
+    r"(?:[uU](?:ll|LL|[lLzZ])?|(?:ll|LL|[lLzZ])[uU]?)?"
+    rf"|(?:(?:{_DIGITS})?\.{_DIGITS}(?:[eE][-+]?{_DIGITS})?|{_DIGITS}\.(?:[eE][-+]?{_DIGITS})?"
+    rf"|{_DIGITS}[eE][-+]?{_DIGITS}"
+    rf"|0[xX](?:{_HEX_DIGITS})?\.?(?:{_HEX_DIGITS})?[pP][-+]?{_DIGITS})[fFlL]?"
+)
 # The words of a number's or a character's type, as a local's declaration or a cast spells it.
 _NUMBER_TYPES = frozenset(
     ("auto", "bool", "char", "char8_t", "char16_t", "char32_t", "const", "double", "float")
@@ -3020,20 +3031,6 @@ class Statements:
         span = self._offsets(region) if region is not None else None
         return span is not None and self._names_kept(line, first[0], span, bodies, scalar, passes)
 
-    def kept_names(self, line, bound, scalar=None, passes=None):
-        """Whether the names of the structured binding ``bound`` declared on ``line`` are
-        kept while it is in scope (``_names_kept``, #297): no pointer or reference to what
-        they name is taken, so nothing can end its life through one. False where Peeky
-        cannot tell."""
-        region = self.scope_lines(line, bound) if type(line) is int else None
-        span = self._offsets(region) if region is not None else None
-        found = self._initializer(line, bound) if span is not None else None
-        if found is None or self.unreadable or self._code()[1] is None:
-            return False
-        return self._names_kept(
-            line, bound, span, self._running_bodies(*span, found[1]), scalar, passes
-        )
-
     def _names_kept(self, line, bound, span, bodies, scalar, passes):
         """Whether every name of the structured binding naming ``bound`` on ``line`` is a
         number, a character or a pointer (``scalar(name, line)``), and each of its uses in
@@ -3282,12 +3279,13 @@ class Statements:
         return first, last, alone
 
     def _number(self, word, scalar):
-        """Whether ``word`` is a number literal, or names a number or a character
-        (``scalar(word)``)."""
+        """Whether ``word`` is a number literal of the language's own syntax and suffixes
+        (``_NUMBER_LITERAL``), or names a number or a character (``scalar(word)``)."""
         if word is None:
             return False
         if word[0].isdigit() or (word[0] == "." and word[1:2].isdigit()):
-            return True
+            # A literal with a suffix of the program's (`1_sink`) is a call of its operator.
+            return bool(_NUMBER_LITERAL.fullmatch(word))
         return bool(_WORD.fullmatch(word)) and word not in _NUMBER_TYPES and bool(scalar(word))
 
     def _passed_by_value(self, first, passes):

@@ -1038,8 +1038,8 @@ def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
     assert isinstance(dangling, Withholding) and dangling.label == "not shown", dangling
     assert dangling == (
         "the binding refers to an object Peeky can't prove is still alive: `d` binds "
-        "`make(0)[0]` by reference, and Peeky proves only a local or its non-union member, or "
-        "a call's result. Read it where the code names that object, or bind by value (no `&`)"
+        "`make(0)[0]` by reference, and Peeky proves only a local or its non-union member. Read "
+        "it where the code names that object, or bind by value (no `&`)"
     )
     assert len(dangling) <= 300
     # A local object in scope, or a member of one: read through.
@@ -1460,7 +1460,7 @@ def held(optimization="O0", preprocessed=None, dwarf=HELD):
     Statements of its translation unit as the compiler preprocessed it (else the same)."""
     from peeky.c_source import Statements
     from peeky.fields import CPP_LIBRARIES, local_types, type_graph
-    from peeky.native import _parse_dies, call_arguments, call_results
+    from peeky.native import _parse_dies, call_arguments
 
     dies = _parse_dies(dwarf)
     types = local_types(dies, [0xB0], through=True)
@@ -1483,8 +1483,11 @@ def held(optimization="O0", preprocessed=None, dwarf=HELD):
         origins=[("src/t.cpp", number) for number in range(1, HELD_SOURCE.count("\n") + 2)],
     )
     session._preprocessed = lambda name: (unit, preprocessed or statements)
-    session.call_results = call_results(dies)
     session.call_arguments = call_arguments(dies)
+    # It replaces no `operator new`, and its launch loads no library first.
+    session.allocation_replaced = False
+    session.prepared = SimpleNamespace(manifest=SimpleNamespace(effective_environment=()))
+    session.home = "home"
     return session
 
 
@@ -1601,78 +1604,28 @@ def test_a_binding_into_a_local_container_is_read_where_it_holds_that_element():
     )
 
 
-def test_a_binding_of_a_calls_result_is_read_in_its_frames_stack():
-    # #297: `auto &&[p, q] = one(argc);` binds the call's result, a temporary C++ keeps
-    # alive for the binding's scope, in the frame's stack; it was `not shown`.
+def test_a_binding_of_a_calls_result_is_withheld():
+    # #297 read `auto &&[p, q] = one(argc);` in its frame's stack. Review of #368, round 3:
+    # with the named return value optimization the function called builds its result where
+    # the caller keeps it, and may keep a pointer into it (`saved = &r; return r;`).
     from peeky.c_source import Statements
 
-    session, frame = held(), {"id": 1}
+    frame = {"id": 1}
 
     def fetch(reference, count, start=0):
         return [{"name": "&p", "type": ELEMENT, "value": "31", "variablesReference": 0}]
 
+    why = "a call's result, which the function called may keep a pointer into"
     p = variable("p", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
-    stack = (0xFFFFFFFFFA00, 0xFFFFFFFFFB80)
-    assert session.bound_element(p, frame, fetch, extent=lambda: stack)["variable"]["value"]
-
-    def withheld(row, why, what="`one(argc)`", session=session, **kwargs):
-        found = session.bound_element(row, frame, fetch, **kwargs)
+    a = variable("a", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
+    for row, what, session in (
+        (p, "`one(argc)`", held()),
+        (a, "`pick(*held)`", held()),
+        (p, "`one(argc)`", held("O2")),
+        (p, "`one(argc)`", held(preprocessed=Statements(HELD_SOURCE, True))),
+    ):
+        found = session.bound_element(row, frame, fetch)
         assert found == unproven(row["name"], what, why) and found.label == "not shown"
-
-    outside = "but it points outside this frame's stack, where that call's result would be"
-    withheld(p, outside, extent=lambda: (0xFFFFFFFFFA60, 0xFFFFFFFFFB80))
-    withheld(p, outside, extent=lambda: (0xFFFFFFFFFA00, 0xFFFFFFFFFA5C))
-    unread = "and Peeky could not read this frame's stack bounds to check where it points"
-    withheld(p, unread, extent=lambda: None)
-    withheld(p, unread)
-
-    def timeout():
-        raise TimeoutError("no reply")
-
-    withheld(p, unread, extent=timeout)
-    withheld(
-        {**p, "value": "<invalid>"},
-        "and the debugger shows no address for it to check",
-        extent=lambda: stack,
-    )
-    # A call that returns a reference (`pick`), a local functor's, a macro that changes it.
-    withheld(
-        variable("a", f"{ELEMENT} &&", "0x0000fffffffffa58", 4),
-        "and Peeky can't prove the call returns a new standard pair, tuple or array of numbers "
-        "that the binding keeps alive",
-        what="`pick(*held)`",
-        extent=lambda: stack,
-    )
-    shadowed = held()
-    shadowed.call_results = {**shadowed.call_results, "one": True}
-    types = dict(shadowed._function_at(frame)["types"])
-    types["one"] = types["m"]
-    shadowed._function_at = lambda frame: {"types": types, "source": "src/t.cpp", "span": (2, 19)}
-    withheld(
-        p,
-        "and Peeky can't prove the call returns a new standard pair, tuple or array of numbers "
-        "that the binding keeps alive",
-        session=shadowed,
-        extent=lambda: stack,
-    )
-    expanded = Statements(
-        HELD_SOURCE.replace("one(argc);", "one(argc) ;").replace(
-            "auto &&[p, q] = one(argc) ;", "auto &&[p, q] = one(argc + 1);"
-        ),
-        True,
-    )
-    withheld(
-        p,
-        "and Peeky can't read that call as the compiler does (a macro may change it)",
-        session=held(preprocessed=expanded),
-        extent=lambda: stack,
-    )
-    withheld(
-        p,
-        "and in an optimized build Peeky can't check it",
-        session=held("O2"),
-        extent=lambda: stack,
-    )
 
 
 def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
@@ -1715,17 +1668,6 @@ def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
         "r",
         "an element of `v`",
         "and Peeky follows only names of numbers or characters through the code, never a pointer",
-    )
-    # A call's result whose name the code passes on by reference.
-    p = variable("p", f"{ELEMENT} &&", "0x0000fffffffffa58", 4)
-    expanded = Statements(HELD_SOURCE.replace("    return 0;", "    keep(q); return 0;"), True)
-    found = held(preprocessed=expanded).bound_element(
-        p, frame, fetch, extent=lambda: (0xFFFFFFFFFA00, 0xFFFFFFFFFB80)
-    )
-    assert found == unproven(
-        "p",
-        "`one(argc)`",
-        "and the code may keep a pointer or reference to what it names while it is in scope",
     )
 
 
@@ -1771,6 +1713,39 @@ def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_the
         )
         container = siblings[0]["name"]
         assert found == unproven(row["name"], f"an element of `{container}`", policy), edit
+    # Review of #368, round 3: `std::allocator` calls `operator new`, which the program may
+    # replace, or a library the launch loads first; where Peeky can't tell, neither.
+    for replaced, environment, why in (
+        (
+            True,
+            (),
+            "and the program replaces `operator new` or `operator delete`, which may keep "
+            "where each element is",
+        ),
+        (None, (), "and Peeky can't tell whether the program replaces `operator new`"),
+        (
+            False,
+            (("LD_PRELOAD", "libspy.so"),),
+            "and the program runs with `LD_PRELOAD`, whose library may replace `operator new`",
+        ),
+        (
+            False,
+            (("DYLD_INSERT_LIBRARIES", "spy.dylib"),),
+            "and the program runs with `DYLD_INSERT_LIBRARIES`, whose library may replace "
+            "`operator new`",
+        ),
+    ):
+        session = held()
+        session.allocation_replaced = replaced
+        session.prepared.manifest.effective_environment = environment
+        found = session.bound_element(k, frame, fetch, siblings=[m])
+        assert found == unproven("k", "an element of `m`", why), why
+    session = held()
+    del session.prepared
+    found = session.bound_element(k, frame, fetch, siblings=[m])
+    assert found == unproven(
+        "k", "an element of `m`", "and Peeky can't tell whether the launch loads a library first"
+    )
 
 
 CALLS = """0x0000000b: DW_TAG_compile_unit
@@ -2071,50 +2046,93 @@ CALLS = """0x0000000b: DW_TAG_compile_unit
 """
 
 
-def test_a_call_gives_a_new_object_only_where_every_function_of_its_name_returns_one():
-    # #297: `auto &&[p, q] = one(i);` keeps `one`'s result alive for its scope. Review of
-    # #368: only where `std::get` names that result's own elements: a standard pair, tuple
-    # or array of numbers, characters or other standard types, never a type of the
-    # program's (a `View` whose `get<I>` returns what a pointer in it points at).
-    from peeky.native import _parse_dies, call_arguments, call_results
+ALLOCATION = """0x0000000b: DW_TAG_compile_unit
+              DW_AT_name\t("t.cpp")
+
+0x00000010:   DW_TAG_base_type
+                DW_AT_name\t("unsigned long")
+                DW_AT_encoding\t(DW_ATE_unsigned)
+                DW_AT_byte_size\t(0x08)
+
+0x00000014:   DW_TAG_pointer_type
+
+0x00000020:   DW_TAG_subprogram
+                DW_AT_name\t("operator new")
+                DW_AT_type\t(0x00000014 "void *")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000024:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+
+0x00000028:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000014 "void *")
+
+0x00000030:   DW_TAG_subprogram
+                DW_AT_name\t("operator delete")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000034:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000014 "void *")
+
+0x00000038:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000014 "void *")
+
+0x00000040:   DW_TAG_structure_type
+                DW_AT_name\t("Arena")
+                DW_AT_byte_size\t(0x01)
+
+0x00000044:     DW_TAG_subprogram
+                  DW_AT_name\t("operator new")
+                  DW_AT_type\t(0x00000014 "void *")
+                  DW_AT_declaration\t(true)
+
+0x00000048:       DW_TAG_formal_parameter
+                    DW_AT_type\t(0x00000010 "std::size_t")
+
+0x00000050:   DW_TAG_subprogram
+                DW_AT_specification\t(0x00000044 "operator new")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000054:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+
+0x00000060:   DW_TAG_subprogram
+                DW_AT_name\t("operator new")
+                DW_AT_type\t(0x00000014 "void *")
+                DW_AT_declaration\t(true)
+
+0x00000064:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+"""
+REPLACED = """
+0x00000070:   DW_TAG_subprogram
+                DW_AT_name\t("NAME")
+                DW_AT_low_pc\t(0x0000000000001000)
+
+0x00000074:     DW_TAG_formal_parameter
+                  DW_AT_type\t(0x00000010 "std::size_t")
+"""
+
+
+def test_a_replaced_operator_new_is_told_from_the_build():
+    # Review of #368, round 3: `std::allocator` calls the global `operator new`, which a
+    # program may replace (`void *operator new(std::size_t n) { captured = p; ... }`) to
+    # keep where each element of a container is.
+    from peeky.native import _parse_dies, allocation_replaced
+
+    # The placement forms the standard headers define, a class's own, a declaration.
+    assert allocation_replaced(_parse_dies(ALLOCATION)) is False
+    for name in ("operator new", "operator new []", "operator delete", "operator delete[]"):
+        extra = REPLACED.replace("NAME", name)
+        assert allocation_replaced(_parse_dies(ALLOCATION + extra)) is True, name
+
+
+def test_a_calls_arguments_are_read_from_the_build():
+    # Review of #368: a binding's name passed to a call is proven only where every function
+    # of the call's name takes that argument by value, as a number or a character.
+    from peeky.native import _parse_dies, call_arguments
 
     dies = _parse_dies(CALLS)
-    found = call_results(dies)
-    # A member's name too; another function's parameter or local is no name a call here
-    # may mean (`one`, `alias`).
-    assert [found.pop(name) for name in ("first", "second", "n", "p")] == [False] * 4
-    assert {name: found[name] for name in ("use", "keep", "printf", "over", "member")} == {
-        name: False for name in ("use", "keep", "printf", "over", "member")
-    }
-    assert {
-        name: verdict
-        for name, verdict in found.items()
-        if name not in ("use", "keep", "printf", "over", "member", "number2")
-    } == {
-        "one": True,
-        # Through a typedef, or a declaration its definition completes.
-        "alias": True,
-        "later": True,
-        # Every instance of a template, by its name before `<`.
-        "make": True,
-        "twice": False,
-        # A tuple (its elements a template parameter pack) and an array.
-        "tuple3": True,
-        "arr": True,
-        # A reference; a pair of the program's type, or of a reference; the program's
-        # tuple-like `View`; a vector; no class; no type.
-        "pick": False,
-        "user": False,
-        "refs": False,
-        "view": False,
-        "vec": False,
-        # A pair holding a pointer, which may point at another object.
-        "pointers": False,
-        "number": False,
-        "nothing": False,
-        # A variable's name: a call through it may give anything.
-        "fn": False,
-    }
     arguments = call_arguments(dies)
     assert arguments["use"] == [((True,), False)]
     assert arguments["keep"] == [((False,), False)]
@@ -2126,31 +2144,12 @@ def test_a_call_gives_a_new_object_only_where_every_function_of_its_name_returns
     assert arguments["one"] == [((), False)]
 
 
-def test_the_worker_reads_a_frames_stack_and_a_listings_later_pages(tmp_path):
-    # #297: a binding of a call's result is checked against its frame's stack, from its
-    # stack pointer to its caller's; a map's entries are listed in pages.
+def test_the_worker_lists_a_maps_later_pages(tmp_path):
+    # #297: a map's entries are listed in pages, for a binding's element to be found.
     from peeky.worker import DebugWorker
 
     worker = DebugWorker(tmp_path)
     worker.stop_id = "stop1"
-    pointers = {1: 0x1000, 2: 0x1400, 3: 0x1800}
-    asked = []
-
-    def stack_pointer(dap, identity):
-        asked.append(identity)
-        return pointers.get(identity)
-
-    worker.runtime = SimpleNamespace(stack_pointer=stack_pointer)
-    worker.listed_frames = [{"id": 1}, {"id": 2}]
-    worker.deeper_stack = lambda levels=64: [{"id": 1}, {"id": 2}, {"id": 3}]
-    assert worker.frame_extent({"id": 1}) == (0x1000, 0x1400)
-    # Its caller is past the listed frames: read from more of the stack.
-    assert worker.frame_extent({"id": 2}) == (0x1400, 0x1800)
-    # Once a stop.
-    assert worker.frame_extent({"id": 1}) == (0x1000, 0x1400) and asked == [1, 2, 2, 3]
-    worker.stop_id, pointers[2] = "stop2", 0x0F00
-    assert worker.frame_extent({"id": 1}) is None
-    assert worker.frame_extent({"id": 3}) is None and worker.frame_extent({"id": 9}) is None
     worker.dap = Listing({5: [{"name": "[64]", "value": "1"}]})
     worker.reset_previews()
     assert worker.preview_fetch(5, 1, start=64) == [{"name": "[64]", "value": "1"}]

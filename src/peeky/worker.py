@@ -3684,7 +3684,6 @@ class DebugWorker:
                     # Where what it binds is kept, to check it there (#297).
                     siblings=variables,
                     raw=lambda path: self.raw_value(frame, path),
-                    extent=lambda: self.frame_extent(frame),
                 )
                 if bound and not (self.placeholders() and is_unavailable(variable.get("value")))
                 else None
@@ -4492,34 +4491,6 @@ class DebugWorker:
                     found.append(span)
         state["strings"] = (found, cut)
         return state["strings"]
-
-    def frame_extent(self, frame):
-        """(``frame``'s stack pointer, its caller's): the stack its locals and temporaries
-        are kept in (#297), as LLDB recovers both; None where either is not given, or a
-        caller is not listed. Asked once per frame and stop."""
-        cache = getattr(self, "stack_extents", None)
-        if cache is None or cache[0] != self.stop_id:
-            cache = self.stack_extents = (self.stop_id, {})
-        identity = frame.get("id")
-        if identity not in cache[1]:
-            listed = list(getattr(self, "listed_frames", None) or ())
-            index = next((i for i, each in enumerate(listed) if each.get("id") == identity), None)
-            if index is not None and index + 1 >= len(listed):
-                listed = list(self.deeper_stack())
-            caller = listed[index + 1] if index is not None and index + 1 < len(listed) else None
-            read = getattr(self.runtime, "stack_pointer", None)
-            found = None
-            if caller is not None and callable(read):
-                # As for a caller's locals: scopes are bound for changes only afresh after.
-                self.frame_scans += 1
-                try:
-                    low, high = read(self.dap, identity), read(self.dap, caller.get("id"))
-                except (TimeoutError, RuntimeError, OSError, KeyError, TypeError, ValueError):
-                    low = high = None
-                if type(low) is int and type(high) is int and 0 < low < high:
-                    found = (low, high)
-            cache[1][identity] = found
-        return cache[1][identity]
 
     def stop_stack_pointer(self):
         """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or

@@ -1610,26 +1610,38 @@ def test_a_subscripts_binding_is_proven_only_where_the_code_leaves_it(
         assert found is proven, initialized
 
 
-def test_a_calls_bindings_names_are_kept_only_where_nothing_aliases_them():
-    # Review of #368: a binding of a call's result names that result's elements; only a
-    # pointer or reference made through a name could end one's life while it is in scope.
-    source = """int main() {
-    auto &&[c, d] = one(1);
-    use(c + d);
-    LATER
-}
-"""
-    for later, expected in (
-        ("", True),
-        ("keep(d);", False),
-        ("auto *r = &c;", False),
-        ("sink << c;", False),
+def test_a_binding_lists_its_names_and_a_user_literal_is_no_number():
+    # Review of #368, round 3: `v + 1_sink` calls `operator""_sink`, whose class may bring
+    # an `operator+(long &, Sink)` that keeps `v`'s address; only the language's own
+    # literals and suffixes are numbers.
+    source = "int main() {\n    auto &&[c, d] = one(1);\n    use(c + d);\n}\n"
+    statements = Statements(source, raw_strings=True)
+    assert statements.bound_names(2, "d") == ["c", "d"] and statements.bound_names(3, "c") == []
+    for literal, number in (
+        ("1", True),
+        ("1'000ull", True),
+        ("0x1Fu", True),
+        ("0b101", True),
+        ("1.5e-3f", True),
+        ("0x1.8p-2L", True),
+        ("1_sink", False),
+        ("10s", False),
+        ("10ms", False),
+        ("2i", False),
+        ("1.0if", False),
+        ("1lL", False),
     ):
-        statements = Statements(source.replace("LATER", later), raw_strings=True)
-        assert statements.kept_names(2, "c", scalar, by_value) is expected, later
-        assert statements.bound_names(2, "d") == ["c", "d"]
-    assert not statements.kept_names(2, "c") and not statements.kept_names(3, "c", scalar)
-    assert statements.bound_names(3, "c") == []
+        body = f"use(v + {literal});"
+        assert (
+            kept(
+                LOOP_OVER_M.replace("BEFORE", "").replace("BODY", body).replace("AFTER", ""),
+                "m",
+                2,
+                4,
+                "k",
+            )
+            is number
+        ), literal
 
 
 RANGE_LAMBDA_SOURCE = """int f() {

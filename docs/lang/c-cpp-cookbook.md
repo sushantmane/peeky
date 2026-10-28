@@ -1123,16 +1123,22 @@ Some things only look different:
       pointer, iterator or reference into it: no `v.data()`, `m.begin()` or `&v[0]`. It must not
       pass the container on or name it in a lambda. At the stop, the binding must point into the
       vector's elements, or into one of the map's entries as the debugger lists them (at most 256).
-    - a call's own result: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`. Every
-      function of that name must return a `std::pair`, `std::tuple` or `std::array` of numbers or
-      characters by value, so each name is that result's own element. A type of the program's,
-      with its own `get`, doesn't count. C++ keeps that result alive until the binding's scope
-      ends. At the stop, the binding must point into the frame's stack.
-  - For both, each of the binding's names must be a number or a character. A binding with a
-    pointer in it stays `not shown`, since the pointer may point at another element.
+  - The program must not replace `operator new` or `operator delete`, which `std::allocator`
+    calls, in any form. Peeky reads that from the build's debug information, and from
+    `LD_PRELOAD`, `LD_AUDIT` and `DYLD_INSERT_LIBRARIES` in the launch's environment. A system-wide
+    preload, such as `/etc/ld.so.preload`, isn't checked.
+  - A call's result is never read: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`.
+    C++ keeps it alive until the binding's scope ends, but the function may keep a pointer into
+    it. With the named return value optimization, `P r; saved = &r; return r;` builds `r` where
+    the caller keeps the result. The row says `… a call's result, which the function called may
+    keep a pointer into`.
+  - Each of the binding's names must be a number or a character. A binding with a pointer in it
+    stays `not shown`, since the pointer may point at another element.
   - Each use of a name must be in an expression of numbers and characters alone: the binding's
     names, locals of such types, number literals, casts such as `(long)`, and their built-in
     operators. `use(k * v)`, `if (k > 1)`, `long w = k;`, `w += v;` and `b += 1;` are fine.
+  - A literal counts only with the language's own suffixes, such as `1u`, `2.5f` or `0x1Fll`. A
+    user-defined literal, such as `1_sink`, `10ms` or `2i`, calls an operator of its own.
   - An operand of another type may bring an overloaded operator that keeps the name's address,
     so `std::cout << k`, `sink << v` and `use(m.count(k))` withhold the binding. So do `&k`,
     `auto &r = k`, `arr[k]` and a branch of `?:`.
