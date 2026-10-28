@@ -198,14 +198,9 @@ def test_cpp_fields_change_only_in_objects_the_frame_holds(directory, cxx, capsy
         assert code == 0 and result["after"] == after, (assignment, result)
     refused(capsys, "h.ref.end=3", "`h.ref` is a reference")
     refused(capsys, "rs.end=3", "`rs` is a reference")
-    if cxx == "gcc":
-        # GCC places a `const` aggregate it can build at compile time in read-only data,
-        # which lldb-dap lists among no frame's locals (#167): not found, and said why.
-        code, result = change(capsys, "cs.end=3")
-        assert code == 2 and result["error"]["code"] == "NOT_FOUND", result
-        assert "main declares 'cs' in static storage" in result["error"]["message"], result
-    else:
-        refused(capsys, "cs.end=3", "`cs` is const")
+    # GCC places a `const` aggregate it can build at compile time in read-only data,
+    # which lldb-dap lists among no frame's locals (#167): read from there (#364).
+    refused(capsys, "cs.end=3", "`cs` is const")
     refused(capsys, "pr.first=3", "standard-library type")
     refused(capsys, "v[0]=3", "standard-library type")
     assert main(["session", "continue", "--to", str(line_of(CPP_SOURCE, "BUMP"))]) == 0
@@ -890,9 +885,9 @@ def test_cpp_fields_are_marked_only_in_objects_the_frame_holds(directory, cxx, c
     code = main(["probe", str(path), "--at", at, "--capture", ",".join(marked), "--json"])
     rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     if cxx == "gcc":
-        # GCC's `cs` is in read-only data, which lldb-dap does not list (#167).
-        assert "main declares 'cs' in static storage" in rows["cs.end"]["error"], rows
-        marked["cs.end"] = None
+        # GCC's `cs` is in read-only data, which lldb-dap does not list (#167): read from
+        # there, and never changed (#364).
+        assert rows["cs.end"]["not_settable"] == "static", rows
     assert code == 0 and {name: rows[name].get("settable") for name in marked} == marked, rows
 
 
