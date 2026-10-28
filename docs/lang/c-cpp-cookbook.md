@@ -583,7 +583,8 @@ In C and C++, a caller's local is withheld while its declaration's code hasn't f
   - So does an optimized build, or one with an `optimize` attribute or `#pragma GCC optimize`
     in any of its files. Either may lay a function's code out of source order.
   - So does the caller of an inlined call, such as an `always_inline` function's. Its address
-    is where that call's code starts, not where a call returns.
+    is where that call's code starts, not where a call returns. A frame the debugger rebuilds
+    for a tail call's caller is withheld too.
 - **A declaration still running on the caller's line:** Peeky reads the declaration from the source
   up to its `;`. In `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's
   code runs before the calls, and `t.p` is stored after them.

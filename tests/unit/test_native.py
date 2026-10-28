@@ -3413,7 +3413,7 @@ def test_a_caller_frames_return_address_is_proven_only_where_its_call_is_physica
     # call's code starts (0x140), which is no return address, and a call from inlined code
     # returns into it (0x150). `run` is 0x100-0x200; an inlined call of it is 0x140-0x160.
     session = NativeSession.__new__(NativeSession)
-    session.load_bias, session.optimized = 0x1000, False
+    session.load_bias, session.optimized, session.tail_calls = 0x1000, False, False
     session.innermost_id, session.interrupted_ids = 0, set()
     session.target = SimpleNamespace(optimization="O0")
     session.code = {
@@ -3423,10 +3423,12 @@ def test_a_caller_frames_return_address_is_proven_only_where_its_call_is_physica
         )
     }
 
-    def resume(address, identity=1, **changes):
+    def resume(address, identity=1, hint=None, **changes):
         for key, value in changes.items():
             setattr(session, key, value)
         frame = {"id": identity, "instructionPointerReference": hex(0x1000 + address)}
+        if hint is not None:
+            frame["presentationHint"] = hint
         return session._resume(frame)
 
     assert resume(0x130) == 0x130 and resume(0x170) == 0x170
@@ -3443,6 +3445,26 @@ def test_a_caller_frames_return_address_is_proven_only_where_its_call_is_physica
     assert resume(0x130, target=SimpleNamespace(optimization="O1")) is None
     session.target = SimpleNamespace(optimization="O0")
     assert resume(0x130, code=None) is None
+    # Review round 2 of PR #366: a frame LLDB rebuilt for a tail call's caller (a
+    # `musttail` call), which has no frame of its own left. lldb-dap 20 marks one
+    # "subtle"; lldb-dap 18 marks none, so a build whose debug information describes a
+    # tail call, or one Peeky could not read, proves nothing.
+    session.code = {"dies": (code_die(1, 0x100, 0x200, 1),)}
+    assert resume(0x130, hint="normal") == 0x130
+    assert resume(0x130, hint="subtle") is None
+    assert resume(0x130, tail_calls=True) is None
+    assert resume(0x130, tail_calls=None) is None
+
+
+def test_a_build_whose_debug_information_describes_a_tail_call_is_found():
+    from peeky.native import has_tail_calls
+
+    site = "0x00000060:     DW_TAG_call_site\n                  DW_AT_call_origin\t(0x0000004a)\n"
+    assert not has_tail_calls(
+        site + "                  DW_AT_call_return_pc\t(0x0000000000000a10)\n"
+    )
+    assert has_tail_calls(site + "                  DW_AT_call_tail_call\t(true)\n")
+    assert has_tail_calls("0x00000060:     DW_TAG_GNU_call_site\n    DW_AT_GNU_tail_call\t(true)\n")
 
 
 def unplaced_session(tmp_path, language="cpp"):

@@ -2263,6 +2263,17 @@ def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
     return False
 
 
+_TAIL_CALL = re.compile(r"\bDW_AT_(?:call_tail_call|GNU_tail_call)\b")
+
+
+def has_tail_calls(info):
+    """Whether the build's debug information (dwarfdump's `--debug-info` text) describes a
+    tail call (a call site's `DW_AT_call_tail_call`, or GCC's `DW_AT_GNU_tail_call`). LLDB
+    rebuilds a frame from one for a caller that has none of its own left (an artificial
+    frame), whose address is no physical call's return."""
+    return _TAIL_CALL.search(info) is not None
+
+
 def has_nonlocal_jumps(binary):
     """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
     (its imports), wherever the call is hidden (a TRY macro in a library header)."""
@@ -3853,6 +3864,7 @@ class NativeTarget:
                 self.sources + self.headers,
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
+            tail_calls = None
             code, statics = None, ()
             try:
                 info = _metadata(
@@ -3863,6 +3875,7 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
+                tail_calls = has_tail_calls(info)
                 with _reusing_dies():
                     typedefs = typedef_kinds(info)
                     nonlocal_jumps = (
@@ -3949,6 +3962,7 @@ class NativeTarget:
                 optimized=(
                     any(optimized.values()) if set(optimized) == set(self.sources) else None
                 ),
+                tail_calls=tail_calls,
             )
             session.assert_current()
             return session
@@ -4742,8 +4756,12 @@ class NativeSession:
         code=None,
         statics=(),
         optimized=None,
+        tail_calls=None,
     ):
         self.target, self.prepared = target, prepared
+        # Whether the debug information describes a tail call (has_tail_calls), from which
+        # LLDB rebuilds a caller's frame; None where unknown.
+        self.tail_calls = tail_calls
         # Whether a unit may optimize a function beyond the build's level (an `optimize`
         # attribute or pragma: c_source.optimizes); None where unknown.
         self.optimized = optimized
@@ -7301,12 +7319,17 @@ class NativeSession:
         interrupted it. And no inlined call's code holds its address or the one before
         it: LLDB gives the caller of an inlined call the address where that call's code
         starts, which is no return address, and a call from inlined code returns into
-        it."""
+        it. Nor is it a frame LLDB rebuilt for a tail call's caller, which has no frame
+        of its own left: the debug information describes no tail call (``tail_calls``
+        False), and the adapter marks it no artificial or hidden frame (lldb-dap 20's
+        `presentationHint` "subtle")."""
         address = self._unslid(frame)
         if (
             address is None
             or getattr(self.target, "optimization", "O0") != "O0"
             or getattr(self, "optimized", None) is not False
+            or getattr(self, "tail_calls", None) is not False
+            or (frame or {}).get("presentationHint", "normal") != "normal"
             or self._block_pc(frame) != address - 1
         ):
             return None

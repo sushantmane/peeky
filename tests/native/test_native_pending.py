@@ -609,6 +609,63 @@ def test_a_callers_aggregate_above_an_inlined_call_is_withheld(looped, capsys):
     assert rows["ps[0].y"]["value"] == "3" and rows["ps[1].y"]["value"] == "5", rows
 
 
+TAIL = """#include <stdio.h>
+
+struct pair { long x, y; };
+
+__attribute__((noinline)) static long twice(long v) {
+    long w = v * 2;
+    return w;
+}
+
+__attribute__((noinline)) static long leaf(long v) {
+    long r = twice(v);
+    return r + 1;
+}
+
+__attribute__((noinline)) static long run(long seed) {
+    struct pair ps[2] = {
+        { seed, seed + 1 },
+        { seed, seed + 2 } };
+    __attribute__((musttail)) return leaf(ps[1].y);
+}
+
+int main(void) {
+    printf("%ld\\n", run(5));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_tail_calls_caller_is_never_read_as_a_physical_caller(looped, capsys):
+    # Review round 2 of PR #366: `run` tail-calls `leaf` (`musttail`, which works at -O0),
+    # so it has no frame of its own while `twice` runs. LLDB rebuilds one only from a
+    # call site the debug information marks a tail call, which clang gives none of at
+    # -O0: the stack is twice, leaf, main. A rebuilt `run` would not be read either
+    # (NativeSession._resume, unit-tested).
+    if looped.family == "gcc":
+        pytest.skip("GCC 13 has no `musttail`")
+    path = looped.write(TAIL, "tail")
+    assert main(["session", "start", str(path), "--at", "6", "--json"]) == 0
+    capsys.readouterr()
+    functions = []
+    try:
+        for frame in (1, 2, 3):
+            main(["session", "get", "--frame", str(frame), "ps", "ps[1].y", "--json"])
+            found = json.loads(capsys.readouterr().out)
+            if isinstance(found, dict):
+                break
+            rows = {row["selector"]: row for row in found}
+            functions.append(str(rows["ps"].get("function")))
+            if "run" in functions[-1]:
+                assert not any("value" in row for row in rows.values()), rows
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert "leaf" in functions[0] and "main" in functions[1], functions
+
+
 HELPERS = """#include <stdio.h>
 
 struct pair { long x, y; };
