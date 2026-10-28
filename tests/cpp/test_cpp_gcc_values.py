@@ -849,9 +849,13 @@ def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, c
             "object, so this value may be left over: it points into the stack"
         ), row
     assert one[1, "bonus"]["value"] == "2" and one[1, "bonus"]["function"] == "main", one
-    assert one[2, "bonus"]["error"].startswith(
+    # Why, as the worker says it (review of #361: not that lldb-dap doesn't list it).
+    assert one[2, "bonus"]["error"] == (
         "not found: 'bonus' is a capture of this lambda, which GCC passes through "
-        "`__closure`, and lldb-dap doesn't list it"
+        "`__closure`, and Peeky can't read it here: the stop is at the lambda's start, "
+        "before the prologue stores `__closure`, so `__closure` holds leftovers (the build "
+        "marks no prologue end, as GCC's never do, so LLDB stops a one-line function here); "
+        "read it where the lambda is created, or print it from the program; visible: k"
     ), one
 
 
@@ -941,7 +945,164 @@ def test_an_optimized_lambdas_captures_are_not_read(cpp, optimization):
         root, Probe("opt.cpp", line, ("bonus", "count"), hits="all"), adapter=adapter
     )
     assert result["status"] == "completed", result.get("error")
+    said = 0
     for row in result["rows"]:
         assert row.get("not_settable") != "capture" and "__closure" not in row.get("note", ""), row
         if row.get("function", "").startswith("operator()"):
             assert row.get("value") is None, row
+        if "is a capture of this lambda" in row.get("error", ""):
+            # Why, as the worker says it (review of #361).
+            said += 1
+            assert (
+                "and Peeky can't read it here: Peeky reads no capture in an optimized build, "
+                "where a `mutable` lambda may keep one in a register while its object holds "
+                "an older value; read it where the lambda is created"
+            ) in row["error"], row
+    if compiler == "gcc" and optimization == "O1":
+        assert said, result["rows"]
+
+
+NESTED = """#include <cstdio>
+
+struct T { long a, b; };
+struct Acc {
+    long total = 5;
+    long add(long v) {
+        auto by_pointer = [this, v](long w) {
+            return total + v + w; // BY_POINTER
+        };
+        auto by_copy = [*this, v](long w) {
+            return total + v + w; // BY_COPY
+        };
+        auto named = [self = *this, v](long w) {
+            return self.total + v + w; // NAMED
+        };
+        return by_pointer(1) + by_copy(2) + named(3);
+    }
+};
+
+__attribute__((noinline)) static long id(long v) { return v; }
+static void use(long v) { std::printf("USE:%ld\\n", v); }
+
+int main() {
+    T t{1, [&] {
+        return [&] {
+            return [&] {
+                return [&] {
+                    return [&] {
+                        return id(t.b); // DEEPEST
+                    }();
+                }();
+            }();
+        }();
+    }()};
+    Acc acc;
+    long r = acc.add(3);
+    int x = 7;
+    auto other = [x]() {
+        use(x); // OTHER_OUTSIDE_BEFORE
+        {
+            use(x); // OTHER_INSIDE_BEFORE
+            long x = 9;
+            use(x); // OTHER_INSIDE_AFTER
+        }
+        use(x); // OTHER_OUTSIDE_AFTER
+    };
+    auto same = [x]() {
+        use(x); // SAME_OUTSIDE_BEFORE
+        {
+            use(x); // SAME_INSIDE_BEFORE
+            int x = 9;
+            use(x); // SAME_INSIDE_AFTER
+        }
+        use(x); // SAME_OUTSIDE_AFTER
+        { use(x); int x = 11; use(x); } // SAME_ONE_LINE
+    };
+    other();
+    same();
+    std::printf("NEST:%ld %ld %ld\\n", t.a, r, acc.total);
+    return 0;
+}
+"""
+
+
+def nested_rows(source, marker, names, capsys):
+    code, result = probe(source, line_of(NESTED, f"// {marker}"), names, capsys)
+    assert result["status"] == "completed" and "NEST:1 33 5" in result["output"], result
+    return {row["selector"]: row for row in result["rows"] if row["hit"] == 1}
+
+
+@pytest.mark.timeout(240)
+def test_a_lambda_nested_five_deep_in_a_running_initializer_is_withheld(cpp, capsys):
+    # Review of #361: only 4 functions around a lambda were read, then it counted as
+    # finished: the fifth `[&]` inside `T t{1, …}` read `t.b` before `t` was built (GCC's
+    # capture, and clang's `this` too).
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    rows = nested_rows(source, "DEEPEST", "t,t.b,this", capsys)
+    why = (
+        f"this lambda is defined in the declaration of `t` (line {line_of(NESTED, 'T t{')}), "
+        "which may still be running, so what it captures may be under construction"
+    )
+    for name in ("t", "t.b") if compiler == "gcc" else ("this",):
+        assert "value" not in rows[name] and why in rows[name]["error"], rows
+
+
+@pytest.mark.timeout(300)
+def test_a_capture_and_a_local_of_its_name_are_told_apart_by_scope(cpp, capsys):
+    # Review of #361: the capture was dropped wherever the lambda also declared its name
+    # with another type, and hidden wherever lldb-dap listed a local of its name, as in
+    # the local's block above its declaration, where the code names the capture.
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    shown = {}
+    for kind in ("OTHER", "SAME"):
+        for place in ("OUTSIDE_BEFORE", "INSIDE_BEFORE", "INSIDE_AFTER", "OUTSIDE_AFTER"):
+            shown[kind, place] = nested_rows(source, f"{kind}_{place}", "x", capsys)["x"]
+    one = nested_rows(source, "SAME_ONE_LINE", "x", capsys)["x"]
+    if compiler == "clang":
+        # Unchanged: the capture is `this.x`; the local reads where the debugger lists it.
+        assert all("__closure" not in json.dumps(row) for row in (*shown.values(), one))
+        assert shown["SAME", "INSIDE_AFTER"]["value"] == "9", shown
+        return
+    for kind, local in (("OTHER", "long"), ("SAME", "int")):
+        for place in ("OUTSIDE_BEFORE", "INSIDE_BEFORE", "OUTSIDE_AFTER"):
+            row = shown[kind, place]
+            assert (row["value"], row["type"], row["not_settable"]) == ("7", "int", "capture"), (
+                kind,
+                place,
+                row,
+            )
+        row = shown[kind, "INSIDE_AFTER"]
+        assert (row["value"], row["type"]) == ("9", local) and "not_settable" not in row, row
+    # A use of the capture and its declaration on one line: Peeky can't tell which.
+    assert "value" not in one and one["error"] == (
+        "not shown: this lambda also declares a local `x` on line "
+        f"{line_of(NESTED, '// SAME_ONE_LINE')}, and Peeky can't tell whether the code at this "
+        "stop names that local or the capture; print it from the program"
+    ), one
+
+
+@pytest.mark.timeout(240)
+def test_this_of_a_lambda_that_copies_the_object_is_its_copy(cpp, capsys):
+    # Review of #361: GCC gives `[*this]`'s `this` no location, so it had no value; the
+    # copy is the lambda's member `__this`. `[this]` and `[self = *this]` read as before.
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    by_pointer = nested_rows(source, "BY_POINTER", "this.total,v", capsys)
+    by_copy = nested_rows(source, "BY_COPY", "this,this.total,v", capsys)
+    named = nested_rows(source, "NAMED", "self.total,v", capsys)
+    if compiler == "clang":
+        # Unchanged: clang's `this` is the lambda's object, which holds the copy as `this`.
+        assert by_pointer["this.total"]["error"].startswith("'total' not found in 'this'")
+        assert by_copy["this.total"]["error"].startswith("'total' not found in 'this'")
+        assert "__closure" not in json.dumps([by_pointer, by_copy, named])
+        return
+    assert by_pointer["this.total"]["value"] == "5" and by_pointer["v"]["value"] == "3"
+    assert (by_copy["this"]["value"], by_copy["this"]["type"]) == ("{total = 5}", "Acc")
+    for row in (by_copy["this"], by_copy["this.total"], named["self.total"]):
+        assert row["not_settable"] == "capture" and "view" not in row, row
+    assert by_copy["this.total"]["value"] == "5" and named["self.total"]["value"] == "5"

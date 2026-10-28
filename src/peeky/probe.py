@@ -665,13 +665,19 @@ def _static_hint(snapshot, name):
 
 def _capture_hint(snapshot, name):
     """Why a GCC lambda's capture is not found (eleventh evaluation, prep 8): GCC passes
-    it through the lambda's `__closure`, which lldb-dap does not list."""
+    it through the lambda's `__closure`, which lldb-dap does not list, and the worker
+    reads it there except where ``closure_unread`` says why not (#361)."""
     if name not in (snapshot.get("closure_captures") or ()):
         return ""
+    why = (snapshot.get("closure_unread") or {}).get(name)
     return (
         f": {name!r} is a capture of this lambda, which GCC passes through `__closure`, and "
-        "lldb-dap doesn't list it, so Peeky cannot read it here; read it where the lambda "
-        "is created, or print it from the program"
+        + (
+            f"Peeky can't read it here: {why[:400]}"
+            if isinstance(why, str) and why
+            else "Peeky didn't read it here"
+        )
+        + "; read it where the lambda is created, or print it from the program"
     )
 
 

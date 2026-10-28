@@ -2108,8 +2108,10 @@ def _gcc_captures(dies, entry):
     """The names of the captures a GCC lambda's call operator (``entry``) reads through
     its object pointer, `__closure`: GCC declares each as an artificial variable of the
     body, which lldb-dap does not list (eleventh evaluation, prep 8), so a selector
-    rooted at one is not found. `this` is left out: lldb-dap lists GCC's. Empty for any
-    other function, and for clang's lambdas, which declare no such variables."""
+    rooted at one is not found. `this` of `[this]` is left out: lldb-dap lists GCC's. Of
+    `[*this]` it is kept: GCC gives it no location, and the copy is the object's (#361).
+    Empty for any other function, and for clang's lambdas, which declare no such
+    variables."""
     reference = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
     pointer = dies.get(int(reference[1], 16)) if reference else None
     if pointer is None or _text(pointer["attrs"].get("DW_AT_name")) != "__closure":
@@ -2123,7 +2125,7 @@ def _gcc_captures(dies, entry):
                 if dies[child]["tag"] == "DW_TAG_variable"
                 and "DW_AT_artificial" in dies[child]["attrs"]
                 and (name := _text(dies[child]["attrs"].get("DW_AT_name")))
-                and name != "this"
+                and (name != "this" or "DW_AT_location" not in dies[child]["attrs"])
             }
         )
     )
@@ -2169,7 +2171,8 @@ def _gcc_capture_members(dies, entry):
     `mutable`. A capture is given only where all of that holds, with exactly one member
     at its offset: the debugger lists the object's members by their own names (GCC 13's
     `__bonus`), and lists neither `__closure` nor the variables among the frame's locals.
-    The type is the variable's (`const int`, `long &`)."""
+    The type is the variable's (`const int`, `long &`), or for `this` of `[*this]`, its
+    copy's (_copied_this)."""
     at = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
     pointer = int(at[1], 16) if at else None
     if pointer not in dies or _text(dies[pointer]["attrs"].get("DW_AT_name")) != "__closure":
@@ -2178,13 +2181,15 @@ def _gcc_capture_members(dies, entry):
     record = _pointed_record(dies, _first(dies, _chain(dies, pointer), "DW_AT_type"))
     if record is None or not re.fullmatch(r"DW_OP_fbreg -?[0-9]+", location):
         return ()
-    members = {}
+    members, named = {}, {}
     for child in record["children"]:
         die = dies[child]
         offset = _offset_text(die["attrs"].get("DW_AT_data_member_location"))
         if die["tag"] == "DW_TAG_member" and offset is not None:
             name = _text(die["attrs"].get("DW_AT_name"))
-            members.setdefault(offset, []).append((name, _type_at(die["attrs"].get("DW_AT_type"))))
+            kind = _type_at(die["attrs"].get("DW_AT_type"))
+            members.setdefault(offset, []).append((name, kind))
+            named.setdefault(name, []).append((offset, kind))
     read = re.compile(
         re.escape(location) + r", DW_OP_deref(?:, DW_OP_plus_uconst (0x[0-9a-fA-F]+|[0-9]+))?"
     )
@@ -2197,14 +2202,21 @@ def _gcc_capture_members(dies, entry):
                 die["tag"] != "DW_TAG_variable"
                 or "DW_AT_artificial" not in die["attrs"]
                 or not name
-                or name == "this"
+                or (name == "this" and "DW_AT_location" in die["attrs"])
             ):
+                # `[this]`'s `this`, read through `__closure`, lldb-dap lists itself.
                 continue
             if name in seen:
                 # Declared twice: which one the code names is not told.
                 found.pop(name, None)
                 continue
             seen.add(name)
+            if name == "this":
+                # `[*this]` (C++17): GCC gives `this` no location. The lambda's copy is
+                # its member `__this`, of the class `this` points at.
+                if (copy := _copied_this(dies, die, named)) is not None:
+                    found[name] = copy
+                continue
             place = read.fullmatch((die["attrs"].get("DW_AT_location") or "").strip())
             offset = (_offset_text(place[1]) if place[1] else 0) if place else None
             held = members.get(offset) if offset is not None else None
@@ -2223,6 +2235,34 @@ def _gcc_capture_members(dies, entry):
         (name, member, kind)
         for name, (_, member, kind) in sorted(found.items(), key=lambda item: item[1][0])
     )
+
+
+def _bare_type(dies, offset):
+    """The DIE ``offset`` names past `const`, `volatile` and typedefs, or None."""
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] not in (
+            "DW_TAG_const_type",
+            "DW_TAG_volatile_type",
+            "DW_TAG_typedef",
+        ):
+            return die
+        offset = _type_at(die["attrs"].get("DW_AT_type"))
+    return None
+
+
+def _copied_this(dies, variable, named):
+    """(offset, `__this`, its type) for `this` of a GCC `[*this]` lambda (#361): the
+    artificial variable ``variable`` GCC gives no location, and the lambda's one member
+    named `__this` (``named``: {name: [(offset, type)]}), whose type is the class that
+    variable points at, not a pointer. None otherwise (`[this]` holds a pointer there)."""
+    target = _pointed_record(dies, variable["attrs"].get("DW_AT_type"))
+    held = named.get("__this") or []
+    if target is None or len(held) != 1 or held[0][1] is None:
+        return None
+    if _bare_type(dies, held[0][1]) is not target:
+        return None
+    return held[0][0], "__this", held[0][1]
 
 
 def _inlined_calls(dies, bodies, files, workspace):
@@ -4368,6 +4408,13 @@ def _pointer_type(kind):
 # What an element of an array, or what a pointer points at, can be for an offset into an
 # array to be proven (#302): never an incomplete type, a reference or a map entry.
 _ELEMENTS = frozenset({"record", "union", "scalar", "pointer", "library"})
+# How many functions around a lambda or a local class's method Peeky follows to find where
+# it is defined that may still be running (_lambda_scope); past them, one may be.
+LAMBDA_NESTING = 256
+
+
+class _TooDeep(str):
+    """_lambda_scope's text where a lambda is nested past LAMBDA_NESTING functions."""
 
 
 def _pointee(target):
@@ -4779,27 +4826,139 @@ class NativeSession:
     def capture_members(self, frame):
         """[(capture, member)] of the GCC lambda a frame runs (_gcc_capture_members): the
         worker reads each capture as that member of what `__closure` points at (#361).
-        Empty for any other frame, or where Peeky cannot place it. A capture whose name
-        the lambda also declares with another type is left out: the rules that read a
-        value's type by its name couldn't tell which one it is."""
+        Empty for any other frame, or where Peeky cannot place it."""
         function = self._function_at(frame) or {}
-        types = function.get("types") or {}
-        return [
-            (name, member)
-            for name, member, _ in function.get("capture_members") or ()
-            if len({kind for kind, _, _ in types.get(name) or ()}) == 1
-        ][:50]
+        return [(name, member) for name, member, _ in function.get("capture_members") or ()][:50]
+
+    def capture_plan(self, frame):
+        """How the worker reads each capture of the GCC lambda ``frame`` runs (#361), in
+        the lambda's object's order: [(capture, how, member, why)]. ``how`` is "read" (as
+        ``member`` of what `__closure` points at; not_yet_declared may withhold it, why
+        there), "hidden" (a local of the lambda's of its name is in scope here, which the
+        code names; ``why`` says which) or "unread" (``why`` it isn't read here). Empty
+        for any other frame, or where Peeky cannot place it."""
+        function = self._function_at(frame) or {}
+        names = list(function.get("captures") or ())[:50]
+        members = {name: member for name, member, _ in function.get("capture_members") or ()}
+        names.sort(key=lambda name: list(members).index(name) if name in members else 50)
+        unread = self.captures_unread(frame) if names else None
+        plan = []
+        for name in names:
+            if unread is not None:
+                plan.append((name, "unread", None, unread))
+            elif name not in members:
+                plan.append(
+                    (
+                        name,
+                        "unread",
+                        None,
+                        "the build's debug information doesn't say which member of the "
+                        "lambda's object holds it",
+                    )
+                )
+            elif (scope := self._capture_scope(frame, name))[0] == "local":
+                plan.append(
+                    (
+                        name,
+                        "hidden",
+                        None,
+                        f"the lambda's own `{name}`, declared on line {scope[1]}, hides it here",
+                    )
+                )
+            else:
+                plan.append((name, "read", members[name], None))
+        return plan
+
+    def _capture_scope(self, frame, name):
+        """Which ``name`` the code at ``frame``'s stop names, where the GCC lambda it runs
+        captures ``name`` and may also declare it (#361): ("capture", None) where no
+        declaration of the lambda's of that name is in scope there; ("local", its line)
+        where one is; ("unknown", why) where Peeky can't tell. A declaration is in scope
+        from where it is declared to the end of its block, as C++ reads it
+        (Statements.scope_lines): a stop on a line above it, or past its block where the
+        stop's code is not that block's, names the capture; one on a line past its
+        statement, in that scope, names the local. Anything else, such as a stop on its
+        own lines, Peeky can't tell."""
+        function = self._function_at(frame) or {}
+        declared = [
+            where
+            for where in (function.get("locals") or {}).get(name, ())
+            if where[:2] != (None, None)
+        ]
+        if not declared:
+            return ("capture", None)
+        pc, place = self._block_pc(frame), self._place(frame)
+        key = (function.get("root"), pc, place, name)
+        cache = self.__dict__.setdefault("capture_scopes", {})
+        if key in cache:
+            return cache[key]
+        visible, found = function.get("visible") or {}, ("capture", None)
+        for where in sorted(declared, key=str):
+            source, at, _ = where
+            here = place is not None and place[0] == source and type(at) is int
+            if here and place[1] < at:
+                # Above it: its scope hasn't begun.
+                continue
+            statements = self._statements(source) if here else None
+            lines = statements.scope_lines(at, name) if statements is not None else None
+            end = statements.declared_through(at, name) if statements is not None else None
+            ranges = visible.get((name, *where))
+            inside = (
+                None
+                if ranges is None or pc is None
+                else any(low <= pc < high for low, high in ranges)
+            )
+            if lines is not None and place[1] > lines[1] and inside is not True:
+                # Past the end of its scope, and not in its block's code.
+                continue
+            if lines is not None and end is not None and end < place[1] <= lines[1]:
+                found = ("local", at)
+                break
+            found = (
+                "unknown",
+                f"this lambda also declares a local `{name}` on line {at}, and Peeky can't "
+                "tell whether the code at this stop names that local or the capture; print "
+                "it from the program",
+            )
+        cache[key] = found
+        return found
+
+    def _capture_root(self, frame, name):
+        """The type offset of the GCC lambda capture ``name`` of ``frame`` (its artificial
+        variable's, or `[*this]`'s copy's), where the code at the stop names the capture
+        by that name (_capture_scope); else None."""
+        function = self._function_at(frame) or {}
+        kinds = {kind for each, _, kind in function.get("capture_members") or () if each == name}
+        if len(kinds) != 1 or self._capture_scope(frame, name)[0] != "capture":
+            return None
+        return kinds.pop()
 
     def captures_unread(self, frame):
         """Why the worker reads no capture of the GCC lambda ``frame`` runs, or None
         (#361): an optimized build, where a `mutable` lambda may keep a capture in a
         register while its object holds an older value; or a stop where `__closure` may
         hold leftovers, before the lambda's prologue stores it (a one-line lambda's first
-        instruction). There a capture stays `not found`, saying why it isn't listed."""
+        instruction). There a capture stays `not found`, saying why."""
         if getattr(getattr(self, "target", None), "optimization", "O0") != "O0":
-            return "the build is optimized"
+            return (
+                "Peeky reads no capture in an optimized build, where a `mutable` lambda may "
+                "keep one in a register while its object holds an older value"
+            )
+        if (window := self._prologue(frame)) is not None:
+            if "__closure" in window.kept:
+                return None
+            where, why, _, _ = _prologue_texts(window)
+            for old, new in (
+                ("its function's", "the lambda's"),
+                ("the parameters", "`__closure`"),
+            ):
+                where = where.replace(old, new)
+            return f"{where}, so `__closure` holds leftovers{why}"
         if self._prologue_unstored({"name": "__closure"}, frame) is not None:
-            return "the lambda has not stored `__closure` at this stop"
+            return (
+                "Peeky can't tell whether the stop is before the lambda's prologue stores "
+                "`__closure`"
+            )
         return None
 
     def _capture_type(self, frame, name):
@@ -5414,8 +5573,12 @@ class NativeSession:
         if function is None or function.get("types") is None:
             return None
         try:
-            shown = self._shown_where(steps[0], self._block_pc(frame))
-            offset, framed = self._declared_type(function["types"], steps[0], shown)
+            if (captured := self._capture_root(frame, str(steps[0]))) is not None:
+                # A GCC lambda's capture the code names here (#361): its object holds it.
+                offset, framed = captured, False
+            else:
+                shown = self._shown_where(steps[0], self._block_pc(frame))
+                offset, framed = self._declared_type(function["types"], steps[0], shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
@@ -6216,11 +6379,22 @@ class NativeSession:
 
         A GCC lambda's capture the worker reads through `__closure` (#361) has no
         declaration in the lambda: the lambda's object holds it from before the call. It
-        is withheld only where that object may be under construction, as clang's `this`
-        is there (_under_construction)."""
+        is withheld where that object may be under construction, as clang's `this` is
+        there (_under_construction), and where a local of the lambda's of its name may be
+        what the code names (_capture_scope)."""
         if variable.get("peekyCapture") is True:
             if (unread := self.captures_unread(frame)) is not None:
                 return f"Peeky reads no capture of this lambda here: {unread}"
+            name = str(variable.get("name") or "")
+            if (scope := self._capture_scope(frame, name))[0] != "capture":
+                # A local of the lambda's of its name may be what the code names here.
+                return Withholding(
+                    scope[1]
+                    if scope[0] == "unknown"
+                    else f"the lambda's own `{name}`, declared on line {scope[1]}, hides it here",
+                    "not shown",
+                    None,
+                )
             return self._under_construction(frame, stack, deeper, captured=True)
         reason = self._not_yet_declared(variable, frame, innermost, stack, deeper, siblings, stop)
         if reason is not None and not isinstance(reason, ValueNote):
@@ -6903,10 +7077,15 @@ class NativeSession:
             return None
         if (outer := self._lambda_scope(entry, callers, complete)) is not None:
             held = ("it", "it") if captured else ("its members", "them")
+            where = (
+                f"this lambda is nested {outer}, and Peeky doesn't follow them all, so one "
+                "around it may still be running"
+                if isinstance(outer, _TooDeep)
+                else f"this lambda is defined {outer}, which may still be running"
+            )
             return (
-                f"this lambda is defined {outer}, which may still be running, so what it "
-                f"captures may be under construction: {held[0]} may not be initialized "
-                f"yet and may hold leftovers; read {held[1]} once that has run"
+                f"{where}, so what it captures may be under construction: {held[0]} may not "
+                f"be initialized yet and may hold leftovers; read {held[1]} once that has run"
             )
         return None
 
@@ -6914,9 +7093,11 @@ class NativeSession:
         """Where a lambda (or a local class's method), as ``entry``, is defined that may
         still be running, as text, or None: in a constructor, or within a local's
         declaration statement in the function around it (and around that, for a lambda
-        in a lambda), unless the frames below show it has finished."""
+        in a lambda, out to the function holding them all), unless the frames below show
+        it has finished. Past LAMBDA_NESTING functions around it, it may be in any of
+        the rest: said so, never taken for finished (#361)."""
         by_root = {function.get("root"): function for function in self.declarations}
-        for _ in range(4):
+        for _ in range(LAMBDA_NESTING):
             outer, defined = by_root.get(entry.get("enclosing")), entry.get("defined")
             if outer is None or defined is None:
                 return "in a function Peeky cannot place"
@@ -6943,7 +7124,7 @@ class NativeSession:
             if outer.get("enclosing") is None:
                 return None
             entry = outer
-        return None
+        return _TooDeep(f"more than {LAMBDA_NESTING} functions deep")
 
     def _constructs(self, frame):
         """Whether a frame runs a C++ constructor: by its function's debug information,

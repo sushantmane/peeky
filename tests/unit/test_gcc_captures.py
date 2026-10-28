@@ -179,6 +179,9 @@ class _Dap:
         }
 
 
+HIDDEN = "the lambda's own `k`, declared on line 30, hides it here"
+
+
 class _Lambda:
     """A GCC lambda's runtime, with no rule but the captures' own."""
 
@@ -190,8 +193,16 @@ class _Lambda:
     def capture_members(self, frame):
         return [("grade", "__grade"), ("bonus", "__bonus"), ("twice", "__twice"), ("k", "__k")]
 
-    def captures_unread(self, frame):
-        return self.unread
+    def capture_plan(self, frame):
+        if self.unread:
+            return [(name, "unread", None, self.unread) for name, _ in self.capture_members(frame)]
+        return [
+            ("grade", "read", "__grade", None),
+            ("bonus", "read", "__bonus", None),
+            ("twice", "read", "__twice", None),
+            # A local of the lambda's of its name is in scope here: the code names it.
+            ("k", "hidden", None, HIDDEN),
+        ]
 
     def capture_referent(self, frame, name):
         return None
@@ -217,12 +228,15 @@ def _worker(tmp_path, runtime, hover="(const (unnamed struct) *const) __closure 
 def test_the_worker_lists_the_captures_it_reads_through_closure_and_changes_none(tmp_path):
     worker = _worker(tmp_path, _Lambda())
     frame = {"id": 3, "name": "operator()"}
-    # `k` is a local the frame lists (an inner block's): the code names that one here.
-    scope = worker.read_captures(worker.runtime, frame, ["a", "k @ lam.cpp:30"])
+    scope, unread = worker.read_captures(worker.runtime, frame, worker.runtime.capture_plan(frame))
     assert scope["name"] == "Captures" and scope["reference"] in worker.capture_handles
     rows = {row["name"]: row for row in scope["variables"]}
-    # A member the debugger lists twice is left out; so is the shadowed `k`.
+    # A member the debugger lists twice is left out, saying why; so is the hidden `k`.
     assert sorted(rows) == ["bonus", "grade"]
+    assert unread == {
+        "twice": "the debugger doesn't list the member of the lambda's object that holds it, once",
+        "k": HIDDEN,
+    }
     assert rows["bonus"]["value"] == "2" and rows["bonus"]["settable"] is False
     assert rows["bonus"]["not_settable"] == "capture"
     assert rows["grade"]["value"] == "0x0000fffffffffa88 size=2"
@@ -253,23 +267,156 @@ def test_the_worker_lists_the_captures_it_reads_through_closure_and_changes_none
 
 def test_no_capture_is_read_where_the_runtime_says_why_or_the_debugger_gives_no_address(tmp_path):
     frame = {"id": 3, "name": "operator()"}
-    # A stop before the lambda stores `__closure`, or an optimized build: not even asked.
-    worker = _worker(tmp_path, _Lambda(unread="the lambda has not stored `__closure` at this stop"))
-    assert worker.read_captures(worker.runtime, frame, []) is None
+    # A stop before the lambda stores `__closure`, or an optimized build: not even asked,
+    # and each says why.
+    why = "the stop is at the lambda's start, before its prologue stores `__closure`"
+    worker = _worker(tmp_path, _Lambda(unread=why))
+    plan = worker.runtime.capture_plan(frame)
+    assert worker.read_captures(worker.runtime, frame, plan) == (
+        None,
+        {"grade": why, "bonus": why, "twice": why, "k": why},
+    )
     assert worker.dap.asked == []
     worker = _worker(tmp_path, _Lambda(), hover="<error: invalid value object>")
-    assert worker.read_captures(worker.runtime, frame, []) is None
+    scope, unread = worker.read_captures(worker.runtime, frame, worker.runtime.capture_plan(frame))
+    assert scope is None
+    assert unread["bonus"] == "the debugger gave no address for `__closure` at this stop"
+    assert unread["k"] == HIDDEN
 
 
-def test_a_capture_the_lambda_also_declares_with_another_type_is_not_read(monkeypatch):
-    # The rules that type a value by its root's name (previews, a container a library
-    # call may be changing) couldn't tell which declaration `bonus` is.
-    entry = {
-        "capture_members": (("grade", "__grade", 0x40), ("bonus", "__bonus", 0x52)),
-        "types": {
-            "grade": frozenset({(0x40, "through", None)}),
-            "bonus": frozenset({(0x52, "through", None), (0x50, "automatic", ("l.cpp", 9))}),
-        },
+def test_a_not_found_capture_says_why_the_worker_did_not_read_it():
+    from peeky.probe import _root
+
+    snapshot = {
+        "scopes": [{"name": "Locals", "variables": [{"name": "k"}]}],
+        "closure_captures": ["bonus", "grade"],
+        "closure_unread": {"bonus": "Peeky reads no capture in an optimized build, …"},
     }
+    with pytest.raises(ValueError) as raised:
+        _root(None, {}, snapshot, "bonus")
+    assert str(raised.value) == (
+        "not found: 'bonus' is a capture of this lambda, which GCC passes through "
+        "`__closure`, and Peeky can't read it here: Peeky reads no capture in an optimized "
+        "build, …; read it where the lambda is created, or print it from the program; "
+        "visible: k"
+    )
+    with pytest.raises(ValueError) as raised:
+        _root(None, {}, snapshot, "grade")
+    assert "and Peeky didn't read it here; read it where" in str(raised.value)
+
+
+def test_this_of_a_by_copy_lambda_is_its_objects_copy():
+    # GCC 13 gives `[*this]`'s `this` no location; the copy is the member `__this`, of the
+    # class `this` points at. `[this]`'s `this` lldb-dap lists itself.
+    entry = {"chain": [0x16], "bodies": [0x16]}
+    dies = closure_dies()
+    dies[0x0A]["children"].append(0x23)
+    dies[0x16]["children"].append(0x24)
+    dies[0x23] = die(
+        "DW_TAG_member",
+        0x0A,
+        DW_AT_name='"__this"',
+        DW_AT_type='0x00000080 "Acc"',
+        DW_AT_data_member_location="0x28",
+    )
+    dies[0x24] = die(
+        "DW_TAG_variable",
+        0x16,
+        DW_AT_name='"this"',
+        DW_AT_type='0x00000090 "const Acc *const"',
+        DW_AT_artificial="true",
+    )
+    dies[0x80] = die("DW_TAG_structure_type", 0x01, DW_AT_name='"Acc"')
+    dies[0x90] = die("DW_TAG_const_type", 0x01, DW_AT_type='0x00000091 "const Acc *"')
+    dies[0x91] = die("DW_TAG_pointer_type", 0x01, DW_AT_type='0x00000092 "const Acc"')
+    dies[0x92] = die("DW_TAG_const_type", 0x01, DW_AT_type='0x00000080 "Acc"')
+    assert _gcc_capture_members(dies, entry)[-1] == ("this", "__this", 0x80)
+    # `[this]`: GCC reads it through `__closure`, and lldb-dap lists it.
+    dies[0x24]["attrs"]["DW_AT_location"] = "DW_OP_fbreg -24, DW_OP_deref, DW_OP_plus_uconst 0x28"
+    assert "this" not in [name for name, _, _ in _gcc_capture_members(dies, entry)]
+    # A `__this` of another class is no copy of what `this` points at.
+    del dies[0x24]["attrs"]["DW_AT_location"]
+    dies[0x23]["attrs"]["DW_AT_type"] = '0x00000060 "Pt"'
+    assert "this" not in [name for name, _, _ in _gcc_capture_members(dies, entry)]
+
+
+class _Statements:
+    """`long x = 9;` on line 30, in a block open from line 28 to its `}` on line 33."""
+
+    def scope_lines(self, line, name):
+        return (30, 33) if (line, name) == (30, "x") else None
+
+    def declared_through(self, line, name):
+        return 30 if (line, name) == (30, "x") else None
+
+
+def test_which_x_a_stop_names_where_the_lambda_captures_and_declares_it(monkeypatch):
+    # #361 review: `[x]{ use(x); { use(x); long x = 9; use(x); } use(x); }`, each on its
+    # own line: the capture above the block, in it above the declaration, and past it;
+    # the local past its declaration, in its block.
+    entry = {
+        "root": 0x16,
+        "locals": {"x": {("lam.cpp", 30, True), (None, None, True)}},
+        "visible": {("x", "lam.cpp", 30, True): ((0x100, 0x200),)},
+    }
+    session = NativeSession.__new__(NativeSession)
     monkeypatch.setattr(NativeSession, "_function_at", lambda self, frame: entry)
-    assert NativeSession.__new__(NativeSession).capture_members({}) == [("grade", "__grade")]
+    monkeypatch.setattr(NativeSession, "_block_pc", lambda self, frame: frame["pc"])
+    monkeypatch.setattr(NativeSession, "_place", lambda self, frame: ("lam.cpp", frame["line"]))
+    statements = _Statements()
+    monkeypatch.setattr(NativeSession, "_statements", lambda self, source: statements)
+
+    def scope(line, pc):
+        return session._capture_scope({"line": line, "pc": pc}, "x")
+
+    assert scope(26, 0x50) == ("capture", None)
+    assert scope(29, 0x150) == ("capture", None)
+    assert scope(31, 0x160) == ("local", 30)
+    assert scope(35, 0x250) == ("capture", None)
+    # On the declaration's own line, or past its block where the stop's code is the
+    # block's, Peeky can't tell.
+    for line, pc in ((30, 0x158), (35, 0x180)):
+        assert scope(line, pc)[0] == "unknown"
+        assert scope(line, pc)[1].startswith(
+            "this lambda also declares a local `x` on line 30, and Peeky can't tell whether "
+            "the code at this stop names that local or the capture"
+        )
+    # Where the source can't be read, only a stop above the declaration is told.
+    monkeypatch.setattr(NativeSession, "_statements", lambda self, source: None)
+    session.__dict__.pop("capture_scopes", None)
+    assert scope(29, 0x150) == ("capture", None)
+    assert scope(31, 0x160)[0] == "unknown"
+    # A capture the lambda doesn't declare again is the capture everywhere.
+    assert session._capture_scope({"line": 31, "pc": 0x160}, "y") == ("capture", None)
+
+
+def test_where_a_lambda_is_defined_is_found_however_deep_it_is_nested(monkeypatch):
+    # #361 review: only 4 functions around a lambda were read, and past them it counted
+    # as finished: a fifth lambda inside `T t{1, …}` read `t.b` uninitialized.
+    from peeky.native import LAMBDA_NESTING
+
+    def chain(depth):
+        entries = [
+            {"root": n, "enclosing": n + 1, "defined": 10, "locals": {}, "constructor": False}
+            for n in range(depth)
+        ]
+        entries.append(
+            {
+                "root": depth,
+                "enclosing": None,
+                "locals": {"t": {("f.cpp", 5, True)}},
+                "constructor": False,
+            }
+        )
+        return entries
+
+    session = NativeSession.__new__(NativeSession)
+    monkeypatch.setattr(NativeSession, "_through", lambda self, source, line, name: 20)
+    for depth in (1, 5, 40):
+        session.declarations = chain(depth)
+        found = session._lambda_scope(session.declarations[0], [], False)
+        assert found == "in the declaration of `t` (line 5)", depth
+    # Past the bound, never taken for finished.
+    session.declarations = chain(LAMBDA_NESTING + 5)
+    found = session._lambda_scope(session.declarations[0], [], False)
+    assert found == f"more than {LAMBDA_NESTING} functions deep"

@@ -2691,6 +2691,11 @@ class DebugWorker:
             pending, own, proof, given = [], [], None, None
             # Why a rule left roots unmarked (a stop part-way through a statement).
             self.unsettable_reasons, roots = [], []
+            # How each capture of a GCC lambda is read here (#361), and the names its
+            # captures list in place of what the debugger lists (`[*this]`'s `this`, which
+            # it gives no value; a local whose scope hasn't begun there).
+            plan = self.capture_plan(runtime, selected_frame)
+            replaced = {name for name, how, _, _ in plan if how == "read" or name == "this"}
             for scope in listed:
                 module = bool(is_global) and is_global(scope)
                 if module and not wanted:
@@ -2725,6 +2730,17 @@ class DebugWorker:
                         and isinstance(v.get("name"), str)
                         and v["name"] not in groups
                     ]
+                    # A local of a GCC lambda's whose scope hasn't begun, or has ended, where
+                    # the code names the capture of that name (#361): the capture is listed
+                    # instead, and that local's storage is no live object.
+                    variables = [
+                        v
+                        for v in variables
+                        if not (
+                            isinstance(v, dict)
+                            and str(v.get("name")).partition(" @ ")[0] in replaced
+                        )
+                    ]
                     self.frame_variables.setdefault(selected, []).extend(variables)
                 self.reference_counter += 1
                 handle = self.reference_counter
@@ -2746,7 +2762,7 @@ class DebugWorker:
             # A GCC lambda's captures, which lldb-dap doesn't list (#361): read through
             # `__closure`, in a scope of their own that no change is made through.
             self.capture_handles = set()
-            captured = self.read_captures(runtime, selected_frame, own)
+            captured, unread = self.read_captures(runtime, selected_frame, plan)
             if (
                 index == 0
                 and self.stop_reason == "step"
@@ -2827,13 +2843,15 @@ class DebugWorker:
                     else {}
                 ),
                 # The captures a GCC lambda reads through `__closure`, which lldb-dap
-                # does not list either.
+                # does not list either, and why each one not in its `Captures` scope isn't
+                # read here (#361).
                 **(
                     {"closure_captures": captures}
-                    if (captured := getattr(runtime, "closure_captures", None))
-                    and (captures := captured(selected_frame))
+                    if (listing := getattr(runtime, "closure_captures", None))
+                    and (captures := listing(selected_frame))
                     else {}
                 ),
+                **({"closure_unread": unread} if unread else {}),
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
                 # C++ string keys: whether LLDB's summary of a std::string is all of it.
@@ -4651,16 +4669,22 @@ class DebugWorker:
                 return unproven_text(_selector_path(names[: index + 1]), why)
         return None
 
-    def read_captures(self, runtime, frame, own):
-        """The scope of the captures of the GCC lambda ``frame`` runs (#361), as `inspect`
-        lists a scope, or None. lldb-dap lists neither `__closure` nor the variables GCC
-        declares for the captures, but a hover of `__closure` reads it (the debugger reads
-        the frame's variable, and runs nothing), and its members are the captures
-        (``capture_members``). A capture the frame lists a local of its name for is left
-        out: that local is the one the code names here. None where the runtime reads no
-        capture at this stop (``captures_unread``: an optimized build, a stop before the
-        lambda stores `__closure`), or the debugger gives none: a selector of one is then
-        `not found`, saying why (``closure_captures``).
+    @staticmethod
+    def capture_plan(runtime, frame):
+        """The runtime's ``capture_plan`` of the GCC lambda ``frame`` runs (#361):
+        [(capture, how, member, why)]; empty for any other frame or runtime."""
+        plan = getattr(runtime, "capture_plan", None)
+        found = plan(frame) if callable(plan) else ()
+        return [entry for entry in found or () if isinstance(entry, tuple) and len(entry) == 4]
+
+    def read_captures(self, runtime, frame, plan):
+        """(the scope of the captures of the GCC lambda ``frame`` runs, as `inspect` lists
+        a scope, or None; {capture: why it isn't read here}) (#361). lldb-dap lists neither
+        `__closure` nor the variables GCC declares for the captures, but a hover of
+        `__closure` reads it (the debugger reads the frame's variable, and runs nothing),
+        and its members are the captures (``plan``: the runtime's ``capture_plan``). A
+        selector of a capture with no row is `not found`, saying why
+        (``closure_unread``).
 
         What is read through `__closure` is judged as through any pointer (#339), and
         what a capture by reference refers to as through a pointer to it: shown, and
@@ -4668,16 +4692,13 @@ class DebugWorker:
         if self.closure_notes.get("stop") != self.stop_id:
             self.closure_notes = {"stop": self.stop_id}
         self.closure_notes.pop(frame.get("id"), None)
-        members = getattr(runtime, "capture_members", None)
-        pairs = members(frame) if callable(members) else ()
-        unread = getattr(runtime, "captures_unread", None)
-        if not pairs or (callable(unread) and unread(frame) is not None):
-            return None
-        listed = {str(name).partition(" @ ")[0] for name in own}
-        pairs = [(name, member) for name, member in pairs if name not in listed]
-        found = self.closure_members(runtime, frame) if pairs else None
+        unread = {name: why for name, how, _, why in plan if how != "read"}
+        wanted = [(name, member) for name, how, member, _ in plan if how == "read"]
+        found = self.closure_members(runtime, frame) if wanted else None
         if found is None:
-            return None
+            for name, _ in wanted:
+                unread[name] = "the debugger gave no address for `__closure` at this stop"
+            return None, unread
         closure, children = found
         note = None
         if (why := self.pointee_unproven(closure, frame, ["__closure"])) is not None:
@@ -4686,8 +4707,12 @@ class DebugWorker:
             note = unproven_text("__closure", why)
         self.closure_notes[frame.get("id")] = note
         variables = []
-        for name, member in pairs[:50]:
+        for name, member in wanted:
             if member not in children:
+                unread[name] = (
+                    "the debugger doesn't list the member of the lambda's object that holds "
+                    "it, once"
+                )
                 continue
             variable = {**children[member], "name": name, "peekyCapture": True}
             through = note or self.referent_note(frame, variable)
@@ -4700,14 +4725,14 @@ class DebugWorker:
                         row.update(view="unproven", unproven_read=True, note=marked[:1000])
             variables += rows
         if not variables:
-            return None
+            return None, unread
         self.reference_counter += 1
         self.capture_handles.add(self.reference_counter)
         return {
             "name": CAPTURES_SCOPE[0],
             "reference": self.reference_counter,
             "variables": variables,
-        }
+        }, unread
 
     def closure_members(self, runtime, frame):
         """(`__closure` as a variable: {"name", "value": its address}, {member name: the
