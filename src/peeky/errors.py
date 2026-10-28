@@ -28,6 +28,14 @@ PROTOCOL_VERSION = 7
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
     (
+        # A stop's read that timed out (#356): before the rule that takes any "breakpoint".
+        r"^A stop is never shown without (its line and function|the breakpoint it is at):",
+        "TIMEOUT",
+        "The debugger stalled at a stop. Start again once the machine is less busy; nothing "
+        "of that stop was shown.",
+        False,
+    ),
+    (
         r"^Evidence query failed: --schema has no ",
         "INVALID_QUERY",
         "Name a table, view or part the message lists, or --schema all for everything; "

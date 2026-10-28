@@ -70,6 +70,9 @@ OPERATIONS = frozenset(
 # Stops the pause budget (--max-pause) may auto-resume: Peeky's own breakpoints and the
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
 RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
+# How long a read of a stop (its frame, its place) waits for the debugger, as `inspect`
+# does; never past the stop's pause budget (#356).
+STOP_READ_S = 15
 # Stops where a user's step left the thread, maybe outside the program's sources: its
 # end, or (LLDB) the point another thread's stop at the same time caught it (#162).
 STEP_STOPS = frozenset({"step", "interrupted"})
@@ -377,6 +380,8 @@ class DebugWorker:
         self.max_pause = None
         self.stopped_at = None
         self.auto_resumed = []
+        # While auto_resume takes the stops queued behind one it resumes.
+        self.resuming = False
         self.cursor = 0
         self.resumed_at = 0.0
         self.liveness_checked = 0.0
@@ -840,15 +845,25 @@ class DebugWorker:
         return {"trace": False} if getattr(self.dap, "annotate", None) else {}
 
     def read_location(self):
-        """Best-effort top-frame location for display; never evidence, never fatal.
+        """Top-frame location for display: the stop's line, function and place; never
+        evidence.
 
         Crash or signal stops may fail runtime validation; that belongs to `inspect`,
-        so a failed read here only omits the location.
+        so a debugger's refusal here only omits the location. A debugger that does not
+        answer within STOP_READ_S fails the request (TimeoutError, #356): a stop is never
+        shown as if all of it were read. Under a pause budget (--max-pause), the read
+        waits no longer than the budget; a stop that outlives it here is resumed unread
+        (``resume_spent``).
         """
+        limit = self.stop_read_limit()
+        if limit <= 0:
+            return None
+        # What was being read when the debugger stalled: its error says only that.
+        reading = "frame"
         try:
             levels = 20 if self.stop_reason in STEP_STOPS else 1
             stack = self.dap.request(
-                "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=2
+                "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=limit
             )
             frames = stack.get("stackFrames") or [{}]
             frame = frames[0]
@@ -866,10 +881,93 @@ class DebugWorker:
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")
+            reading = "place"
             self.stop_place = self.place_of(frame)
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
+        except TimeoutError as exc:
+            if self.pause_spent():
+                return None
+            raise TimeoutError(
+                (
+                    "A stop is never shown without its line and function: the debugger did not "
+                    f"give this stop's line and function within {STOP_READ_S} s"
+                    if reading == "frame"
+                    else "A stop is never shown without the breakpoint it is at: the debugger "
+                    f"did not say within {STOP_READ_S} s which breakpoint this stop is at"
+                )
+                + ", so the session was closed. Start again once the machine is less busy"
+            ) from exc
         except Exception:
             return None
+
+    def pause_left(self):
+        """Seconds left of the current stop's pause budget (--max-pause); None where none
+        applies: no budget, or a stop the guard never resumes (a crash, an exception)."""
+        if (
+            not self.max_pause
+            or self.state != "stopped"
+            or self.stopped_at is None
+            or self.stop_reason not in RESUMABLE_STOPS
+        ):
+            return None
+        return self.max_pause - (time.monotonic() - self.stopped_at)
+
+    def pause_spent(self):
+        left = self.pause_left()
+        return left is not None and left <= 0
+
+    def stop_read_limit(self, limit=STOP_READ_S):
+        """How long a read of the current stop may wait for the debugger: ``limit``, and
+        never past the stop's pause budget (#356). The pause guard cannot resume the stop
+        while a request holds the lock."""
+        left = self.pause_left()
+        return limit if left is None else min(limit, left)
+
+    def resume_spent(self):
+        """Resume a stop that outlived its pause budget while it was read, or while the
+        guard waited for the lock (#356), as the guard would have; True if the program
+        runs again. Not while ``auto_resume`` takes the stops queued behind one."""
+        if self.resuming or not self.pause_spent():
+            return False
+        return self.auto_resume()
+
+    def auto_resume(self):
+        """Resume the current stop past its pause budget, and keep the record of it; True
+        if the program runs again. Where another thread's stop from the same all-threads
+        stop is queued, `continue` serves it next and resumes nothing (review of #367):
+        that stop, made at the same time, is past the budget too, so it is taken (none of
+        it is read) and resumed in turn, until a `continue` resumes the program. Only then
+        is each recorded as auto-resumed; else none is, and the guard tries again."""
+        entries, self.resuming = [], True
+        try:
+            while self.state == "stopped" and self.pause_spent() and len(entries) < 64:
+                entries.append(
+                    {
+                        "stop_id": self.stop_id,
+                        "reason": self.stop_reason,
+                        "location": self.stop_location,
+                        "paused_s": round(time.monotonic() - self.stopped_at, 2),
+                    }
+                )
+                if self._dispatch("continue", {"stop_id": self.stop_id}).get("resumed") is True:
+                    break
+                self._dispatch("wait", {"timeout": 0.1})
+            else:
+                return False
+        finally:
+            self.resuming = False
+        for entry in entries:
+            self.auto_resumed.append(entry)
+            self.record(
+                {
+                    "time": time.time(),
+                    "operation": "auto_resume",
+                    "arguments": {"stop_id": entry["stop_id"]},
+                    "result": {**entry, "max_pause": self.max_pause},
+                }
+            )
+        self.auto_resumed = self.auto_resumed[-100:]
+        return True
 
     def read_crash(self, runtime, body):
         """What an `exception` or `signal` stop tells (#342), for display; nothing of any
@@ -1205,11 +1303,14 @@ class DebugWorker:
         where it is deeper than CALL_FRAMES, or the debugger does not say the reply is all
         of it (`totalFrames`), or does not answer within 2 s. Bounded, so a deep recursion's
         stack never makes a reply too large to read (best effort: then no note is given)."""
+        limit = self.stop_read_limit(2)
+        if limit <= 0:
+            return None
         try:
             reply = self.dap.request(
                 "stackTrace",
                 {"threadId": self.thread_id, "startFrame": 0, "levels": CALL_FRAMES},
-                timeout=2,
+                timeout=limit,
             )
         except Exception:
             return None
@@ -1406,26 +1507,9 @@ class DebugWorker:
                     return
                 if self.stop_reason not in RESUMABLE_STOPS:
                     return
-                paused = time.monotonic() - self.stopped_at
-                if paused < self.max_pause:
+                if time.monotonic() - self.stopped_at < self.max_pause:
                     return
-                entry = {
-                    "stop_id": self.stop_id,
-                    "reason": self.stop_reason,
-                    "location": self.stop_location,
-                    "paused_s": round(paused, 2),
-                }
-                self._dispatch("continue", {"stop_id": self.stop_id})
-                self.auto_resumed.append(entry)
-                self.auto_resumed = self.auto_resumed[-100:]
-                self.record(
-                    {
-                        "time": time.time(),
-                        "operation": "auto_resume",
-                        "arguments": {"stop_id": entry["stop_id"]},
-                        "result": {**entry, "max_pause": self.max_pause},
-                    }
-                )
+                self.auto_resume()
             except Exception as exc:
                 import sys
 
@@ -1580,13 +1664,15 @@ class DebugWorker:
         # #160): the first stop asks again.
         self.places_unresolved = False
 
-    def note_places(self, runtime, requested, placed):
+    def note_places(self, runtime, requested, placed, deadline=None):
         """Ask the runtime where the debugger placed the session program's breakpoints
         (#157): a line can have several locations in one function (a macro's or a
-        block's own code, a loop header's), and it stops at each. Best effort: none
-        known means no warning and no `place`, never a failure."""
-        self.forget_places()
-        self.places_asked = (runtime, list(requested), placed)
+        block's own code, a loop header's), and it stops at each. Where the debugger
+        cannot say, none known means no warning and no `place`. ``deadline`` (monotonic
+        seconds): when its answer is due (the launch's, a stop's read limit); else the
+        runtime's own wait. A debugger that does not answer by then fails the request
+        (TimeoutError, #356), and what was known before is kept."""
+        asked = (runtime, list(requested), placed)
         hook = getattr(runtime, "breakpoint_locations", None)
         replies = (placed.get("breakpoints") or []) if isinstance(placed, dict) else []
         ids = [
@@ -1597,10 +1683,18 @@ class DebugWorker:
             and type(reply.get("id")) is int
         ]
         if hook is None or not ids or self.dap is None:
+            self.forget_places()
+            self.places_asked = asked
             return
         try:
-            found = hook(self.dap, ids)
+            found = hook(self.dap, ids, **({} if deadline is None else {"deadline": deadline}))
+        except TimeoutError:
+            raise
         except Exception:
+            found = None
+        self.forget_places()
+        self.places_asked = asked
+        if not found:
             return
         groups = {}
         self.places_unresolved = any(location.get("resolved") is False for location in found or ())
@@ -1612,13 +1706,14 @@ class DebugWorker:
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
 
-    def loop_headers(self, runtime):
+    def loop_headers(self, runtime, deadline=None):
         """{line: stops} of the session's breakpoint lines that are loop headers whose
         every location runs once each time the loop starts, before it (#161): a C, C++
         `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
         runtime once, at launch, before the program runs (the debugger's disassembly and
-        line table, kept for the launch); never again when breakpoints are set again or
-        their places asked again (review of #166). Best effort."""
+        line table, kept for the launch), within the launch's ``deadline``; never again
+        when breakpoints are set again or their places asked again (review of #166). Best
+        effort."""
         hook = getattr(runtime, "loop_header_stops", None)
         if hook is None or self.dap is None or not self.places:
             return {}
@@ -1627,10 +1722,14 @@ class DebugWorker:
         except Exception:
             return {}
         found, cache = {}, {}
+        within = {} if deadline is None else {"deadline": deadline}
         for line in sorted(self.places)[:8]:
             groups = [addresses for _, addresses in self.places[line]]
             try:
-                count = hook(self.dap, source, line, groups, cache)
+                count = hook(self.dap, source, line, groups, cache, **within)
+            except TimeoutError:
+                # Past the launch's deadline (#356): the launch fails, never its note alone.
+                raise
             except Exception:
                 count = None
             if count:
@@ -1673,8 +1772,12 @@ class DebugWorker:
             if self.places_renewed or self.places_asked is None:
                 return None
             # Placed before the program loaded, at addresses it may no longer have (listed
-            # as unresolved, or none matches): asked once more, now that it runs.
-            self.note_places(*self.places_asked)
+            # as unresolved, or none matches): asked once more, now that it runs, within
+            # the stop's own read limit (#356).
+            limit = self.stop_read_limit()
+            if limit <= 0:
+                return None
+            self.note_places(*self.places_asked, deadline=time.monotonic() + limit)
             self.places_renewed = True
         return None
 
@@ -2245,11 +2348,14 @@ class DebugWorker:
             self.auto_resumed = []
             deadline = time.monotonic() + self.launch_deadline_s
 
-            def left(limit=15):
+            def left(limit=None):
+                # Every launch step gets what remains of the one deadline (#356): a step
+                # capped below it (15 s) failed a debuggee slow to start on a loaded
+                # machine while most of the launch's time was left.
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Launch exceeded its deadline; session discarded")
-                return min(limit, remaining)
+                return remaining if limit is None else min(limit, remaining)
 
             try:
                 staging = {"edit": edit} if edit else {}
@@ -2355,9 +2461,11 @@ class DebugWorker:
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
-                self.note_places(runtime, args.get("breakpoints", []), points)
+                # Within the launch's deadline, as its other steps (#356): a stall past a
+                # shorter wait of their own left out their notes without a word.
+                self.note_places(runtime, args.get("breakpoints", []), points, deadline=deadline)
                 # Once, before the program runs (#161): breakpoints set again later keep it.
-                self.loop_lines = self.loop_headers(runtime)
+                self.loop_lines = self.loop_headers(runtime, deadline=deadline)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -2428,6 +2536,10 @@ class DebugWorker:
                 raise
         if operation == "wait":
             timeout = max(0.1, min(float(args.get("timeout", 2)), 2))
+            if self.state == "stopped":
+                # Past its pause budget while a request held the lock (#356): never
+                # returned as a live stop.
+                self.resume_spent()
             updates = {}
             if self.breakpoint_events:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
@@ -2557,10 +2669,21 @@ class DebugWorker:
                 # The one-shot `continue --to` line served its purpose (or another stop
                 # came first): only the session's own breakpoints remain.
                 self.set_points(runtime, self.points)
+            served = self.stop_id
+            if self.stop_id and self.resume_spent():
+                # The stop outlived its pause budget while it was read (#356): resumed, as
+                # the pause guard would have, and never returned as a live stop.
+                return {
+                    "state": self.state,
+                    **updates,
+                    "auto_resumed": len(self.auto_resumed),
+                    "last_auto_resumed": self.auto_resumed[-1],
+                }
             return {
                 "state": self.state,
                 "stop_id": self.stop_id,
-                "event": event,
+                # Not where a stop queued behind this one became current, unresumed.
+                **({"event": event} if self.stop_id == served else {}),
                 **({"exit_inferred": True} if self.exit_inferred else {}),
                 **({"unreported_stop": self.unreported} if self.unreported else {}),
                 **self.location(),
@@ -3511,11 +3634,11 @@ class DebugWorker:
         self.preview_fetches = 0
         self.preview_deadline = time.monotonic() + PREVIEW_SECONDS
 
-    def preview_fetch(self, reference, count):
-        """The first ``count`` children of a raw debugger value, for a runtime's preview
-        (#136). Bounded per inspection or expansion (PREVIEW_FETCHES requests within
-        PREVIEW_SECONDS), apart from the value-view budget; exhaustion leaves the
-        remaining values as the debugger shows them."""
+    def preview_fetch(self, reference, count, start=0):
+        """The first ``count`` children of a raw debugger value (from ``start``), for a
+        runtime's preview (#136). Bounded per inspection or expansion (PREVIEW_FETCHES
+        requests within PREVIEW_SECONDS), apart from the value-view budget; exhaustion
+        leaves the remaining values as the debugger shows them."""
         remaining = self.preview_deadline - time.monotonic()
         if self.preview_fetches >= PREVIEW_FETCHES or remaining <= 0:
             raise ViewBudgetExhausted("Preview budget exhausted")
@@ -3524,10 +3647,12 @@ class DebugWorker:
             raise ValueError("Variable is not expandable")
         if type(count) is not int or not 0 < count <= 64:
             raise ValueError("Preview read exceeds limit")
+        if type(start) is not int or not 0 <= start <= 65536:
+            raise ValueError("Preview read exceeds limit")
         try:
             values = self.dap.request(
                 "variables",
-                {"variablesReference": reference, "start": 0, "count": count},
+                {"variablesReference": reference, "start": start, "count": count},
                 timeout=remaining,
             ).get("variables", [])
         except ResponseTimeout as exc:
@@ -3873,7 +3998,15 @@ class DebugWorker:
                 else None
             )
             element = (
-                bound(variable, frame, self.preview_fetch, note=note)
+                bound(
+                    variable,
+                    frame,
+                    self.preview_fetch,
+                    note=note,
+                    # Where what it binds is kept, to check it there (#297).
+                    siblings=variables,
+                    raw=lambda path: self.raw_value(frame, path),
+                )
                 if bound and not (self.placeholders() and is_unavailable(variable.get("value")))
                 else None
             )

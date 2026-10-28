@@ -62,7 +62,10 @@ that hosted CI doesn't have:
   `native-cpp-gcc` job) runs them with lldb-dap 18;
 - `gdb-dap`: GDB's DAP, which the CUDA qualification drives (`scripts/cuda/qualify.py`).
 
-It prints one PASS or FAIL line per lane, and exits non-zero on a failure.
+It prints one PASS or FAIL line per lane, and exits non-zero on a failure. Under a FAIL line, it
+prints what each failing test said, bounded: its header, its frames' `file:line`, its `E` lines and
+the start of its output. A lane that isn't pytest shows its last 40 lines. To keep each failed
+lane's whole log, mount a directory and set `PEEKY_LANE_LOGS` to it.
 
 C++ cases whose lines, frame names or notes depend on the compiler take the `cxx` fixture
 (`tests/conftest.py`). Each runs once per compiler, with each compiler's expectations, as C's

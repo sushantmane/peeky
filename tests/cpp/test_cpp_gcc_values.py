@@ -19,7 +19,8 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
 - A structured binding of a bitfield, which GCC gives no location: a true note.
 - A structured binding of a pair or tuple, which GCC (and Apple clang 21) hold as a
   reference to the element: the element, never its address (#291). By reference, only
-  where it names an object the frame keeps alive; optimized, never on its own line.
+  where it names an object the frame keeps alive, an element of a local container the
+  code leaves in place, or a call's own result (#297); optimized, never on its own line.
 
 The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
 C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
@@ -990,14 +991,14 @@ int main(int argc, char **argv) {
     std::tuple_element<0, std::pair<long, long>>::type &r = p.first; // EXPLICIT
     auto &[a, b] = p; // LOCAL
     auto &&[g, h] = one(argc); // EXTENDED
-    use(poison[0].first + r + a + g); // AFTER
+    use(poison[0].first + r + a); use(g + h); // AFTER
     return 0;
 }
 """
 DEAD = (
     "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
-    "`{}` by reference, and only an object of this frame, or a member of one, is proven. Read "
-    "it where the code names that object, or bind by value (`auto [...]`, no `&`)"
+    "`{}` by reference, and Peeky proves only a local or its non-union member. Read it where "
+    "the code names that object, or bind by value (no `&`)"
 )
 
 
@@ -1011,11 +1012,20 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     code, result = probe(
         source, line_of(DANGLING, "// AFTER"), "t,u,c,d,e,f,r,a,b,g,h", capsys, "--hits", "1"
     )
-    assert "U=8041" in result["output"], result["output"]
+    assert "U=8010" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    # Never `poison`'s elements, nor any value, through a temporary the line destroyed;
-    # nor through `one(argc)`'s, which `auto &&` keeps alive, but only by a rule Peeky
-    # does not prove (a call).
+    # A local of this frame: read through.
+    for selector, value in (("a", "5"), ("b", "6")):
+        assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
+    # `one(argc)`'s result, which `auto &&` keeps alive for its scope, but which the function
+    # called may keep a pointer into (#297, review of #368 round 3): withheld.
+    for selector in ("g", "h"):
+        row = rows[selector]
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+            selector, "`one(argc)`", CALLED
+        ), row
+    # Never `poison`'s elements, nor any value, through a temporary the line destroyed.
     bound = {
         "t": "make(0)[0]",
         "u": "make(0)[0]",
@@ -1023,17 +1033,12 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
         "d": "make(0)[1]",
         "e": "make(0)[0]",
         "f": "make(0)[0]",
-        "g": "one(argc)",
-        "h": "one(argc)",
     }
     for selector, initializer in bound.items():
         row = rows[selector]
         assert row.get("value") is None, row
         if not hidden(compiler, row):
             assert row["error"] == DEAD.format(selector, initializer), row
-    # A local of this frame: read through.
-    for selector, value in (("a", "5"), ("b", "6")):
-        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
     # The code's own reference, though GCC types it as a binding's: a reference's row.
     assert rows["r"]["type"].endswith("&") and "debugger_type" not in rows["r"], rows["r"]
     assert re.fullmatch(r"0x[0-9a-f]+", rows["r"]["value"]), rows["r"]
@@ -1041,7 +1046,7 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
 
 # Round 2 of the #296 review: a union's member, whose life ends when another becomes
 # active, and the boundaries checked by hand: a local reassigned, a vector's element, and a
-# map's entries in a range `for`.
+# map's entries in a range `for` (read since #297: the code leaves both in place).
 BOUNDARIES = """#include <cstdio>
 #include <map>
 #include <new>
@@ -1073,14 +1078,14 @@ int main(int argc, char **argv) {
     for (auto &[key, value] : m) { // MAP_LOOP
         use(key * value); // MAP_READ
     }
-    use(u.q.first + c + e + g); // AFTER
+    use(u.q.first + c + e); use(g); // AFTER
     return 0;
 }
 """
 
 
 @pytest.mark.timeout(180)
-def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys):
+def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(cpp, capsys):
     # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then a placement new made `u.q`
     # the union's active member: `a = 7, b = 8`, with no note.
     compiler, root = cpp
@@ -1088,27 +1093,349 @@ def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys)
     source.write_text(BOUNDARIES)
     capture = "a,b,x,y,c,d,e,f,g,k"
     code, result = probe(source, line_of(BOUNDARIES, "// AFTER"), capture, capsys, "--hits", "1")
-    assert "U=90" in result["output"], result["output"]
+    assert "U=79" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p", "g": "v[0]", "k": "v[0]"}
+    # A struct's member, and a local reassigned after the binding: what it holds now. And
+    # since #297, an element of a local vector nothing changes later: `v[0]`.
+    shown = {"c": "31", "d": "32", "e": "41", "f": "51", "g": "11", "k": "12"}
+    for selector, value in shown.items():
+        assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
+    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p"}
     for selector, initializer in withheld.items():
         row = rows[selector]
         assert row.get("value") is None, row
         assert hidden(compiler, row) or row["error"] == DEAD.format(selector, initializer), row
-    # A struct's member, and a local reassigned after the binding: what it holds now.
-    shown = {"c": "31", "d": "32", "e": "41", "f": "51"}
-    for selector, value in shown.items():
-        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
-    # A map's entry in a range `for`: an element of `m`, which the body may erase.
+    # A map's entry in a range `for` whose body leaves the map alone (#297): each pass's.
     code, result = probe(
         source, line_of(BOUNDARIES, "// MAP_READ"), "key,value", capsys, "--hits", "all"
     )
     assert len(result["rows"]) == 4, result["rows"]
+    entries = {(1, "key"): "21", (1, "value"): "22", (2, "key"): "23", (2, "value"): "24"}
+    for row in result["rows"]:
+        expected = entries[(row["hit"], row["selector"])]
+        assert hidden(compiler, row) or row.get("value") == expected, row
+
+
+# #297: bindings by reference of an element of a local container the code leaves in place
+# (a range `for` over a map, a vector or a set; `v[1]`); and the same forms where the code
+# may change the container, and a call's result, which is never proven.
+HELD = """#include <cstdio>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
+using P = std::pair<long, long>;
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) P one(long v) { return {v + 30, v + 40}; }
+__attribute__((noinline)) const P &pick(const P &p) { return p; }
+__attribute__((noinline)) void fill(std::map<long, long> &m) { m[99] = 100; }
+int main(int argc, char **argv) {
+    std::map<long, long> m{{21, 22}, {23, 24}};
+    for (const auto &[k, x] : m) {
+        use(k * x); use((long)m.size()); // MAP_READ
+    }
+    std::vector<P> v{{11, 12}, {13, 14}};
+    for (auto &[a, b] : v) {
+        b += 1;
+        use(a * b); // VECTOR_READ
+    }
+    std::set<P> ps{{5, 6}, {7, 8}};
+    for (const auto &[i, j] : ps) {
+        use(i * j); // SET_READ
+    }
+    auto &[r, s] = v[1];
+    auto &&[p, q] = one(argc);
+    const auto &[y, z] = one(argc + 1);
+    use(r + s + p + q + y + z); // READ
+    std::vector<P> w{{51, 52}};
+    auto &[c, d] = w[0];
+    long first = c;
+    w.push_back({53, 54});
+    w.push_back({55, 56});
+    auto &&[e, f] = pick(w[1]);
+    std::map<long, long> n{{61, 62}};
+    fill(n);
+    for (auto &[g, h] : n) {
+        use(g + h + first + e); // CHANGED
+    }
+    return 0;
+}
+"""
+HELD_ROWS = {
+    "MAP_READ": ("k,x", {1: {"k": "21", "x": "22"}, 2: {"k": "23", "x": "24"}}),
+    "VECTOR_READ": ("a,b", {1: {"a": "11", "b": "13"}, 2: {"a": "13", "b": "15"}}),
+    "SET_READ": ("i,j", {1: {"i": "5", "j": "6"}, 2: {"i": "7", "j": "8"}}),
+    "READ": ("r,s", {1: {"r": "13", "s": "15"}}),
+}
+UNPROVEN = (
+    "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
+    "{} by reference, {}. Read it where the code names that object, or bind by value (no `&`)"
+)
+# Review of #368, round 3: the function called may keep a pointer into its result.
+CALLED = "a call's result, which the function called may keep a pointer into"
+
+
+@pytest.mark.timeout(300)
+def test_a_binding_into_a_local_container_reads_where_proven(cpp, capsys):
+    # #297: these were all `not shown` (only a local, or a member of one, was proven), under
+    # GCC and Apple clang alike: a range `for` over a local map, `v[1]` of a local vector.
+    compiler, root = cpp
+    source = root / "held.cpp"
+    source.write_text(HELD)
+    for marker, (capture, passes) in HELD_ROWS.items():
+        found = bound_rows_of(source, HELD, marker, capture, capsys)
+        assert len(found) == sum(len(each) for each in passes.values()), found
+        for row in found:
+            if hidden(compiler, row):
+                continue
+            assert row.get("value") == passes[row["hit"]][row["selector"]], row
+            assert row.get("settable") is not True and "debugger_type" in row, row
+    # Where the code may change the container, and a call's result: withheld.
+    changed = {
+        "c": (
+            "an element of `w`",
+            "and while it is in scope the code may change `w` or keep a pointer or reference "
+            "into it",
+        ),
+        "e": ("`pick(w[1])`", CALLED),
+        "g": (
+            "an element of `n`",
+            "and while it is in scope the code may change `n` or keep a pointer or reference "
+            "into it",
+        ),
+        "p": ("`one(argc)`", CALLED),
+        "y": ("`one(argc + 1)`", CALLED),
+    }
+    code, result = probe(
+        source, line_of(HELD, "// CHANGED"), "c,d,e,f,g,h,p,q,y,z", capsys, "--hits", "1"
+    )
+    assert "U=" in result["output"], result
     for row in result["rows"]:
         assert row.get("value") is None, row
-        assert hidden(compiler, row) or row["error"] == DEAD.format(row["selector"], "m").replace(
-            "binds `m`", "binds an element of `m`"
+        if hidden(compiler, row):
+            continue
+        twin = {"d": "c", "f": "e", "h": "g", "q": "p", "z": "y"}
+        what, why = changed[twin.get(row["selector"], row["selector"])]
+        assert row["error"] == UNPROVEN.format(row["selector"], what, why), row
+
+
+# Review of #368: a pointer into the container made before the binding, through which the
+# element is destroyed before the stop and made again after it; a tuple-like type of the
+# program's whose `get<I>` returns what a pointer in it points at; and names passed by value.
+REVIEWED = """#include <array>
+#include <cstddef>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <new>
+#include <tuple>
+#include <utility>
+#include <vector>
+using P = std::pair<long, long>;
+struct Pair { long x, y; };
+struct View {
+    Pair *p;
+    template <std::size_t I> long &get() const { return I == 0 ? p->x : p->y; }
+};
+namespace std {
+template <> struct tuple_size<View> : std::integral_constant<std::size_t, 2> {};
+template <std::size_t I> struct tuple_element<I, View> { using type = long; };
+}
+struct Sink {};
+long *escaped = nullptr;
+Sink &operator<<(Sink &s, long &x) { escaped = &x; return s; }
+Sink operator""_sink(unsigned long long) { return Sink{}; }
+long operator+(long &x, Sink) { escaped = &x; return x; }
+long *made = nullptr;
+struct E {
+    long x, y;
+    E(long a, long b) : x(a), y(b) { made = &x; }
+    template <std::size_t I> long &get() { return I == 0 ? x : y; }
+};
+namespace std {
+template <> struct tuple_size<E> : std::integral_constant<std::size_t, 2> {};
+template <std::size_t I> struct tuple_element<I, E> { using type = long; };
+}
+void *kept = nullptr;
+template <class T> struct Spy {
+    using value_type = T;
+    Spy() = default;
+    template <class U> Spy(const Spy<U> &) {}
+    T *allocate(std::size_t n) { T *p = std::allocator<T>{}.allocate(n); kept = p; return p; }
+    void deallocate(T *p, std::size_t n) { std::allocator<T>{}.deallocate(p, n); }
+};
+template <class T, class U> bool operator==(const Spy<T> &, const Spy<U> &) { return true; }
+template <class T, class U> bool operator!=(const Spy<T> &, const Spy<U> &) { return false; }
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) View view(Pair *p) { return View{p}; }
+using Four = std::array<long, 4>;
+Four *saved = nullptr;
+__attribute__((noinline)) Four make() {
+    Four made{141, 142, 143, 144};
+    saved = &made;
+    return made;
+}
+int main(int argc, char **argv) {
+    std::vector<P> v{{11, 12}};
+    P *p = v.data();
+    auto &[a, b] = v[0];
+    std::destroy_at(p);
+    use(argc); // DESTROYED
+    new (p) P{13, 14};
+    use(a + b);
+    Pair held{41, 42};
+    auto &&[vx, vy] = view(&held);
+    use(vx + vy); // PROXY
+    std::map<long, long> m{{71, 72}};
+    for (const auto &[k, x] : m) {
+        use(k);
+        std::printf("%ld\\n", x); // PASSED
+    }
+    Sink sink;
+    std::map<long, long> om{{101, 102}};
+    for (auto &[ok, ov] : om) {
+        sink << ov;
+        use(ok); // OPERATOR
+    }
+    std::vector<E> es;
+    es.emplace_back(111, 112);
+    for (auto &[ex, ey] : es) {
+        use(ex * ey); // CONSTRUCTED
+    }
+    std::vector<P, Spy<P>> sv{{121, 122}};
+    for (auto &[sa, sb] : sv) {
+        use(sa * sb); // ALLOCATED
+    }
+    std::map<long, long *> pointing{{131, &held.x}};
+    for (auto &[pk, pp] : pointing) {
+        use(pk); // POINTER
+    }
+    std::map<long, long> lm{{161, 162}};
+    for (auto &[lk, lv] : lm) {
+        use(lv + 1_sink); // LITERAL
+    }
+    auto &&[na, nb, nc, nd] = make();
+    std::destroy_at(saved);
+    use(argc); // RETURNED
+    new (saved) Four{145, 146, 147, 148};
+    use(na + nb + nc + nd);
+    return 0;
+}
+"""
+
+
+POLICY = (
+    "and Peeky proves only standard vectors, maps and sets of numbers, with the default "
+    "allocator and order"
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(cpp, capsys):
+    # Review of #368: `P *p = v.data(); auto &[a, b] = v[0]; std::destroy_at(p);` showed
+    # `a = 11, b = 12` at a stop before `new (p) P{13, 14}`: the element was dead. And
+    # `auto &&[vx, vy] = view(&held);` showed `held`'s members: `View`'s own `get<I>` names
+    # what a pointer in the call's result points at, not that result's elements.
+    compiler, root = cpp
+    source = root / "reviewed.cpp"
+    source.write_text(REVIEWED)
+    reasons = {
+        # Review of #368, round 2: an overloaded operator that keeps the name's address;
+        # an element whose own constructor keeps its address, or an allocator of the
+        # program's, which sees where each element is; a pointer, which may point at
+        # another element.
+        "OPERATOR": (
+            "ok,ov",
+            "an element of `om`",
+            "and while it is in scope the code may change `om` or keep a pointer or reference "
+            "into it",
+        ),
+        "CONSTRUCTED": ("ex,ey", "an element of `es`", POLICY),
+        "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
+        "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
+        # Review of #368, round 3: with the named return value optimization, `make()` builds
+        # `made` where the caller keeps its result (returned in memory: 32 bytes), and keeps
+        # a pointer into it, through which the result is destroyed before the stop.
+        "RETURNED": ("na,nb", "`make()`", CALLED),
+        # A user-defined literal, `1_sink`, of a class with `operator+(long &, Sink)`.
+        "LITERAL": (
+            "lk,lv",
+            "an element of `lm`",
+            "and while it is in scope the code may change `lm` or keep a pointer or reference "
+            "into it",
+        ),
+        "DESTROYED": (
+            "a,b",
+            "an element of `v`",
+            "and while it is in scope the code may change `v` or keep a pointer or reference "
+            "into it",
+        ),
+        "PROXY": ("vx,vy", "`view(&held)`", CALLED),
+    }
+    for marker, (capture, what, why) in reasons.items():
+        found = bound_rows_of(source, REVIEWED, marker, capture, capsys)
+        assert len(found) == 2, (marker, found)
+        for row in found:
+            assert row.get("value") is None, row
+            assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+                row["selector"], what, why
+            ), row
+    # Passed by value (`use(long)`, `printf`'s `...`): still read.
+    for row in bound_rows_of(source, REVIEWED, "PASSED", "k,x", capsys):
+        assert hidden(compiler, row) or row.get("value") == {"k": "71", "x": "72"}[row["selector"]]
+
+
+# Review of #368, round 3: `std::allocator` calls the global `operator new`, which this
+# program replaces to keep where each element is.
+REPLACED = """#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <new>
+void *captured = nullptr;
+void *operator new(std::size_t n) {
+    void *p = std::malloc(n ? n : 1);
+    if (p == nullptr) throw std::bad_alloc();
+    captured = p;
+    return p;
+}
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+int main() {
+    std::map<long, long> m{{151, 152}};
+    for (const auto &[k, x] : m) {
+        use(k * x); // CAPTURED
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_containers_element_is_withheld_where_the_program_replaces_operator_new(cpp, capsys):
+    # Review of #368, round 3: the map's loop read `k = 151, x = 152`, though the program's
+    # own `operator new` kept where the map's node is.
+    compiler, root = cpp
+    source = root / "replaced.cpp"
+    source.write_text(REPLACED)
+    found = bound_rows_of(source, REPLACED, "CAPTURED", "k,x", capsys)
+    assert len(found) == 2, found
+    why = (
+        "and the program replaces `operator new` or `operator delete`, which may keep where "
+        "each element is"
+    )
+    for row in found:
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+            row["selector"], "an element of `m`", why
         ), row
+
+
+def bound_rows_of(source, text, marker, capture, capsys):
+    """The rows of ``capture`` at every stop of ``marker``'s line of ``text``."""
+    code, result = probe(source, line_of(text, f"// {marker}"), capture, capsys, "--hits", "all")
+    assert result["status"] == "completed", result
+    return result["rows"]
 
 
 @pytest.mark.timeout(300)

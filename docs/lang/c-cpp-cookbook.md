@@ -1148,13 +1148,49 @@ Some things only look different:
   - An element that is a pointer shows its value, but Peeky doesn't follow it: `p[0]` can't be
     read. Read what it points at where the pair is made.
   - It can't be changed, nor can its fields: a change would write through the reference.
-  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where it names an
-    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A union's
-    member doesn't count, since another member may become active. Anything else may be gone by
-    the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
-    line destroys. So a binding of a call, a subscript, a range `for`'s element, `*p` or a global
-    shows `not shown: the binding refers to an object Peeky can't prove is still alive`. Read it
-    where the code names that object, or bind by value.
+  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where Peeky proves
+    that what it refers to is still alive. That is one of these:
+    - an object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A
+      union's member doesn't count, since another member may become active.
+    - an element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`: `for (const
+      auto &[k, v] : m)`, or `auto &[r, s] = v[0];` for a vector. The container must use the
+      default allocator, and a map or set `std::less`. Its elements must be numbers or
+      characters: a map's key and value, or a `std::pair` or `std::array` of them. So no
+      constructor, allocator or order of the program's sees where an element is. While the
+      binding is in scope, the code may only call the container's members that give a value,
+      such as `m.size()`. Anywhere in the container's scope, the code must keep no
+      pointer, iterator or reference into it: no `v.data()`, `m.begin()` or `&v[0]`. It must not
+      pass the container on or name it in a lambda. At the stop, the binding must point into the
+      vector's elements, or into one of the map's entries as the debugger lists them (at most 256).
+  - The program must not replace `operator new` or `operator delete`, which `std::allocator`
+    calls, in any form. Peeky reads that from the build's debug information, and from
+    `LD_PRELOAD`, `LD_AUDIT` and `DYLD_INSERT_LIBRARIES` in the launch's environment. On Linux it
+    also reads `/etc/ld.so.preload` on the host that runs the program, at each launch. If that file
+    names a library (blank lines and `#` comments don't count), or exists but can't be read, the
+    binding is withheld.
+  - A call's result is never read: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`.
+    C++ keeps it alive until the binding's scope ends, but the function may keep a pointer into
+    it. With the named return value optimization, `P r; saved = &r; return r;` builds `r` where
+    the caller keeps the result. The row says `… a call's result, which the function called may
+    keep a pointer into`.
+  - Each of the binding's names must be a number or a character. A binding with a pointer in it
+    stays `not shown`, since the pointer may point at another element.
+  - Each use of a name must be in an expression of numbers and characters alone: the binding's
+    names, locals of such types, number literals, casts such as `(long)`, and their built-in
+    operators. `use(k * v)`, `if (k > 1)`, `long w = k;`, `w += v;` and `b += 1;` are fine.
+  - A literal counts only with the language's own suffixes, such as `1u`, `2.5f` or `0x1Fll`. A
+    user-defined literal, such as `1_sink`, `10ms` or `2i`, calls an operator of its own.
+  - An operand of another type may bring an overloaded operator that keeps the name's address,
+    so `std::cout << k`, `sink << v` and `use(m.count(k))` withhold the binding. So do `&k`,
+    `auto &r = k`, `arr[k]` and a branch of `?:`.
+  - The name alone may be an argument of a call whose every function takes it by value, as
+    `use(long)` or `printf`'s `...` do.
+  - Peeky reads that code as the compiler preprocessed it, so a macro counts as what it expands
+    to. In an optimized build, only an object of the frame is read.
+  - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary
+    that its line destroys. Such a row shows `not shown: the binding refers to an object Peeky
+    can't prove is still alive`, and why. Read it where the code names that object, or bind by
+    value.
   - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
     tell whether that pass has set its reference yet.
   - Peeky reads the binding's line to tell it from a reference the code declares with the
