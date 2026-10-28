@@ -2414,11 +2414,42 @@ def _short_frame(name):
     return bare if len(bare) <= 80 else bare[:79] + "…"
 
 
-# A `static` local's row in an optimized build (#364 review): read from its storage.
+# A row read from a fixed address in an optimized build (#364 review).
 _STATIC_OPTIMIZED = (
-    "the build is optimized ({level}), so the code may hold a newer value of this `static` "
-    "in a register, and store it later; this is what its storage holds"
+    "the build is optimized ({level}): it may reorder stores and keep values in registers, "
+    "so the value its code is using may differ from what its fixed address holds; this is "
+    "what the declared address holds"
 )
+
+
+def _static_placed(declared, pc):
+    """[(declaration, held)] for the variables in static storage ``declared`` (one name's
+    ``_static_locals``) at the stop ``pc``, one per declaration, whatever copies of the
+    function declare it again (an inlined call's, a clone's; review of PR #370): those of
+    one origin, file, line and type. Each copy is placed by its address and its block's
+    code; the declaration is the copy whose block holds the stop, held True. Copies at
+    several addresses that hold it: held None. None holds it: held False, unless a copy's
+    block is unknown (an abstract one with no concrete copy), which may: True, where they
+    are at one address."""
+    groups = {}
+    for each in declared:
+        groups.setdefault((each[6], each[1], each[2], each[4]), []).append(each)
+    found = []
+    for copies in groups.values():
+        holding = [each for each in copies if any(low <= pc < high for low, high in each[5])]
+        unknown = [each for each in copies if not each[5]]
+        chosen = holding or unknown
+        addresses = {each[3] for each in chosen}
+        if not chosen:
+            found.append((copies[0], False))
+        elif len(addresses) > 1:
+            found.append((chosen[0], None))
+        else:
+            block = (
+                () if not holding else tuple(sorted({span for each in holding for span in each[5]}))
+            )
+            found.append(((*chosen[0][:5], block, *chosen[0][6:]), True))
+    return found
 
 
 def _line_list(lines):
@@ -4922,7 +4953,7 @@ class NativeSession:
                 continue
             reason = self._static_guard(chosen, command)
             if reason is None and getattr(self.target, "optimization", "O0") != "O0":
-                # Its storage may lag what the code holds in a register (#364 review).
+                # What its fixed address holds may differ from what the code uses.
                 why = _STATIC_OPTIMIZED.format(level=self.target.optimization)
                 reason = ValueNote(why, why, True)
             shown[entry["name"]] = (chosen, reason)
@@ -4973,17 +5004,6 @@ class NativeSession:
         place, pc = self._place(frame), self._block_pc(frame)
         found = {}
         for name, declared in list(grouped.items())[:50]:
-            # One declaration each, whatever copies of the function declare it again (an
-            # inlined call's, review of PR #370): it holds the stop where any copy does.
-            merged = {}
-            for each in declared:
-                key = (each[6], *each[1:4])
-                if key in merged:
-                    other = merged[key][5]
-                    both = () if not other or not each[5] else tuple(sorted({*other, *each[5]}))
-                    each = (*merged[key][:5], both, *merged[key][6:])
-                merged[key] = each
-            declared = list(merged.values())
             lines = sorted({each[2] for each in declared})
             at = f"at line {lines[0]}" if len(lines) == 1 else f"at lines {_line_list(lines)}"
             if place is None or pc is None or type(getattr(self, "load_bias", None)) is not int:
@@ -4994,9 +5014,15 @@ class NativeSession:
                 )
                 continue
             verdicts = {}
-            for each in declared:
+            for each, placed in _static_placed(declared, pc):
                 verdict = self._static_scope(frame, function, each, place)
-                held = not each[5] or any(low <= pc < high for low, high in each[5])
+                if placed is None and verdict[0] in ("in", "hidden"):
+                    verdict = (
+                        "unsure",
+                        "copies of it at several addresses hold this stop, as the debug "
+                        "information gives their blocks' code",
+                    )
+                held = bool(placed)
                 if not held and verdict[0] in ("in", "hidden"):
                     # The source says the code names it, but the debug information's
                     # block for it doesn't hold the stop.

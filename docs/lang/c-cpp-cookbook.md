@@ -1502,7 +1502,8 @@ hit  phase     line  function  selector  type        value
   instance's, as `long tick<int>(int)::calls` names it, or as its address proves it.
 - An inlined or copied function's `static` is one declaration in every copy. lldb-dap lists none
   for an inlined call's frame, so there the note says the debugger doesn't list it.
-- In an optimized build, the row carries a note: the code may hold a newer value in a register.
+- In an optimized build, the row carries a note. Optimized code may reorder stores and keep
+  values in registers, so the value it uses may differ from what the declared address holds.
 - C++ runs a `static` local's initializer the first time control passes its declaration, unless
   it is a constant. Until then the row is `no value yet`. Peeky reads the guard variable the
   compiler gives it (`_ZGVZ4tickE1w`), and shows the value only once that says it has run.

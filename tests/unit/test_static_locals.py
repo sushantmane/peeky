@@ -130,10 +130,27 @@ def test_a_static_is_named_in_whichever_copy_of_its_function_holds_the_stop(tmp_
     first = (*INNER[:5], ((0x140, 0x160),), INNER[6])
     second = (*INNER[:5], ((0x180, 0x1A0),), INNER[6])
     native = session(tmp_path, (OUTER, first, second))
-    for pc in (0x150, 0x190):
+    for pc, block in ((0x150, first[5]), (0x190, second[5])):
         chosen, why = native._static_named(frame(tmp_path, 7, pc=pc))["calls"]
-        assert why is None and chosen[:5] == INNER[:5], why
-        assert chosen[5] == ((0x140, 0x160), (0x180, 0x1A0))
+        # The copy whose block holds the stop.
+        assert why is None and chosen[:5] == INNER[:5] and chosen[5] == block, why
+    # Copies may be placed apart too (a `const` aggregate a clone or an inlined call keeps
+    # in read-only data of its own; review of PR #370, round 2): the copy whose block holds
+    # the stop is read, at its own address.
+    moved = (*INNER[:3], 0x4018, INNER[4], ((0x180, 0x1A0),), INNER[6])
+    native = session(tmp_path, (OUTER, first, moved))
+    for pc, address in ((0x150, 0x4008), (0x190, 0x4018)):
+        chosen, why = native._static_named(frame(tmp_path, 7, pc=pc))["calls"]
+        assert why is None and chosen[3] == address, why
+    # Copies at two addresses that both hold it: which one is read can't be told.
+    overlapping = (*moved[:5], ((0x150, 0x158),), moved[6])
+    assert (
+        "copies of it at several addresses hold this stop"
+        in session(tmp_path, (OUTER, first, overlapping))._static_named(
+            frame(tmp_path, 7, pc=0x154)
+        )["calls"][1]
+    )
+    native = session(tmp_path, (OUTER, first, second))
     # In no copy's code: Peeky can't tell.
     assert (
         "doesn't hold this stop" in native._static_named(frame(tmp_path, 7, pc=0x170))["calls"][1]
