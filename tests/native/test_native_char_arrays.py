@@ -94,3 +94,55 @@ def test_a_char_array_shows_its_text_up_to_its_first_nul(arrays, capsys):
         "raw": None,
         "tiny": "hi",
     }, texts
+
+
+EDGE = """#define _DEFAULT_SOURCE
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+struct rec { char label[16]; };
+
+int main(void) {
+    long page = sysconf(_SC_PAGESIZE);
+    char *base = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (base == MAP_FAILED)
+        return 1;
+    char *edge = base + page - 6;
+    memcpy(edge, "abcdef", 6);
+    if (mprotect(base + page, page, PROT_NONE) != 0)
+        return 1;
+    struct rec *r = (struct rec *)edge;
+    char local[16] = "hi";
+    printf("%.6s %s\\n", r->label, local); /* EDGE */
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_bytes_past_an_unreadable_page_are_never_called_nuls(arrays, capsys):
+    # Review of #390: LLDB's summary formats what part of its read succeeded, so
+    # `r.label`, whose last 10 bytes are on a page the program made unreadable, read
+    # `"abcdef"` as if NULs followed: `"abcdef" (then 10 NUL bytes)`. Peeky reads those
+    # bytes again, from memory or as the debugger lists the elements, and claims none.
+    path = arrays.with_name("edge.c")
+    path.write_text(EDGE)
+    arrays.unlink()
+    line = next(i for i, text in enumerate(EDGE.splitlines(), 1) if "/* EDGE */" in text)
+    at = ["probe", str(path.parent), "--at", f"edge.c:{line}", "--capture", "r.label,local"]
+    code = main([*at, "--json"])
+    result = json.loads(capsys.readouterr().out)
+    assert code == 0, result.get("error")
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert rows["r.label"]["value"] == '"abcdef" (then 10 bytes not read)', rows["r.label"]
+    assert rows["r.label"]["buffer"] == '"abcdef"...', rows["r.label"]
+    # A local's NULs are read, and said.
+    assert rows["local"]["value"] == '"hi" (then 14 NUL bytes)', rows["local"]
+    assert rows["local"]["buffer"] == '"hi' + "\\0" * 14 + '"', rows["local"]
+    assert "abcdef hi" in result["output"], result["output"]
+    query = "SELECT selector, text(value, language, type) AS t FROM evidence ORDER BY selector"
+    assert main(["sql", query, "--json"]) == 0
+    texts = {row["selector"]: row["t"] for row in json.loads(capsys.readouterr().out)["rows"]}
+    assert texts == {"local": "hi", "r.label": None}, texts

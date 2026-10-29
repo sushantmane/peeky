@@ -43,7 +43,7 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
-from peeky.char_arrays import array_size
+from peeky.char_arrays import array_size, proven_rest
 from peeky.char_arrays import shown as char_array
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
@@ -6156,8 +6156,9 @@ class NativeSession:
         text (or as why it has none) is marked "text": the worker lists none of its
         members, which are the library's (the sixth evaluation). A narrow character array
         (`char[N]` by LLDB's name for its type) shows its text up to its first NUL, with
-        a note of what follows, and its every byte as "buffer" (``char_arrays``). None
-        leaves the value."""
+        a note of what follows, and its every proven byte as "buffer" (``char_arrays``):
+        the bytes after its summary are read from memory, or as ``fetch(reference,
+        start)`` lists its elements. None leaves the value."""
         shown = None
         language = getattr(getattr(self, "target", None), "language", None)
         if language == "cpp":
@@ -6177,10 +6178,18 @@ class NativeSession:
             language in ("c", "cpp")
             and isinstance(text, str)
             and (size := array_size(variable.get("type"))) is not None
-            and (array := char_array(text, size)) is not None
+            and (
+                array := char_array(
+                    text,
+                    size,
+                    lambda known, window: proven_rest(variable, known, window, fetch, read),
+                )
+            )
+            is not None
         ):
             # A narrow character array: its text up to its first NUL, and what follows
-            # the text as a note, never as text (thirteenth evaluation).
+            # the text as a note, never as text (thirteenth evaluation). What follows the
+            # bytes LLDB's summary shows is read again: they may be unreadable, not NULs.
             return {**(shown or {}), **array}
         ended = False
         if (
@@ -6285,7 +6294,9 @@ class NativeSession:
                 # An entry Peeky read from an unordered container's nodes (#360): shown
                 # as read.
                 return child.get("value")
-            shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
+            shown = self.string_value(
+                child, lambda reference, start=0: fetch(reference, 64, start), read
+            )
             if shown and shown.get("unavailable"):
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")

@@ -379,8 +379,11 @@ def _array_text(reader, size):
     """A narrow C or C++ character array's text (a `char[N]` of ``size`` bytes): its bytes
     up to its first NUL, or all of them where it holds none, read as UTF-8. Its value is
     Peeky's (`"Adeyemi" (then a NUL and 24 bytes not shown)`), whose note must agree with
-    the size; or, as runs before that stored it, LLDB's literal of every byte it read up
-    to the last that is no NUL (`"Adeyemi\\0\\x80"`). None for a cut or other value."""
+    the size; or, as runs before that stored it, LLDB's literal of the bytes it read up to
+    the last that is no NUL (`"Adeyemi\\0\\x80"`). That one proves a NUL only where it
+    shows one, and no NUL only where it shows every byte: LLDB formats what part of its
+    read succeeded, so fewer bytes may end at an unreadable page, not a NUL. None for a
+    cut or other value."""
     value = reader.text
     if not value.startswith('"'):
         return None
@@ -400,7 +403,7 @@ def _array_text(reader, size):
             or (whole is not None and not len(data) == whole == size)
         ):
             return None
-    elif len(data) > size:
+    elif len(data) > size or (nul < 0 and len(data) != size):
         return None
     try:
         return (data[:nul] if nul >= 0 else data).decode("utf-8")

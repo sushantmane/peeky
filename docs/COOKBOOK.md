@@ -2840,8 +2840,11 @@ hit  value
 - A C or C++ `char[N]` gives its text up to its first NUL:
   `"Adeyemi" (then a NUL and 24 bytes not shown)` gives `Adeyemi`. An array with no NUL gives all
   its bytes.
-- The note's count must add up to the N in the row's type, or `text` is NULL. A run saved before
-  Peeky wrote the note holds LLDB's text of every byte: `"Adeyemi\0\x80…"` gives `Adeyemi` too.
+- The note's count must add up to the N in the row's type, or `text` is NULL. So is a row whose
+  bytes after the text weren't read: `"abcdef" (then 10 bytes not read)`.
+- A run saved before Peeky wrote the note holds LLDB's text: `"Adeyemi\0\x80…"` gives `Adeyemi`
+  too. Such a text needs a `\0` in it, or all N bytes. LLDB's `"Zürich"` in a `char[16]` is NULL:
+  the bytes it didn't show may be unreadable, not NULs.
 - It is NULL for any other value. It is NULL too where the text may be cut, as in C's `"abc"...`
   or Rust's `"abc" (first 3 of 9 bytes)`, or where its bytes are no text, as in C's `"\xff"`.
 - Both functions are NULL for every Python value. debugpy names a value's type by its `__class__`,

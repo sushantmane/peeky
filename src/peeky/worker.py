@@ -3646,8 +3646,10 @@ class DebugWorker:
         cache[1][key] = result[:2000]
         return cache[1][key]
 
-    def view_fetch(self, reference):
-        """Bounded raw reads used only by a runtime's trusted value-view hook.
+    def view_fetch(self, reference, start=None):
+        """Bounded raw reads used only by a runtime's trusted value-view hook: a value's
+        children, at most 64 (a value with more is refused), or, from ``start``, the next
+        64 of them (an array's elements).
 
         Count, time, item and byte budgets are shared by one inspection or expansion;
         exhaustion makes remaining views opaque instead of extending the request.
@@ -3658,9 +3660,12 @@ class DebugWorker:
         self.view_fetches += 1
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
+        if start is not None and (type(start) is not int or not 0 <= start <= 65536):
+            raise ValueError("Value view read exceeds limit")
+        window = {"start": 0, "count": 65} if start is None else {"start": start, "count": 64}
         try:
             values = self.view_request(
-                "variables", {"variablesReference": reference, "start": 0, "count": 65}, remaining
+                "variables", {"variablesReference": reference, **window}, remaining
             ).get("variables", [])
         except ResponseTimeout as exc:
             # The read was written completely; only its reply missed the view budget.

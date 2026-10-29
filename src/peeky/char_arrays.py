@@ -8,25 +8,32 @@ control character as `\\U000000NN`. So a `char name[32]` holding "Adeyemi", a NU
 leftovers showed `"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`: the leftovers read as part
 of the text, and a byte had two spellings.
 
-Peeky reads the bytes back from that literal (``summary_bytes``: every escape LLDB
-writes stands for one byte or one UTF-8 character, and Peeky's lldb-dap sources no
-init file, so its escaping and its limit are LLDB's defaults). It shows the text before
-the first NUL, then a note of what follows it, never as text:
+LLDB's summary also formats whatever part of its read succeeded, and the DAP value
+says nothing of how much that was: an array that runs into an unreadable page shows the
+bytes before it, as if NULs followed. So Peeky takes the bytes the literal shows
+(``summary_bytes``: every escape LLDB writes stands for one byte or one UTF-8 character,
+and Peeky's lldb-dap sources no init file, so its escaping and its limit are LLDB's
+defaults), and proves the bytes after them itself (``proven_rest``): read from memory,
+every byte, or as the debugger lists the array's elements. It shows the text before the
+first NUL, then a note of what follows it, never as text:
 
-- `"Adeyemi" (then a NUL and 24 bytes not shown)`: some byte after the NUL is not one, or
-  LLDB did not read them all;
-- `"hello" (then 59 NUL bytes)`: every byte after the text is a NUL;
-- `"abcdefgh" (no NUL in its 8 bytes)`.
+- `"Adeyemi" (then a NUL and 24 bytes not shown)`: a proven NUL, then bytes Peeky doesn't
+  show (not all NULs, or not all read);
+- `"hello" (then 59 NUL bytes)`: every byte after the text is a NUL, each one read;
+- `"abcdefgh" (no NUL in its 8 bytes)`: every byte read, none a NUL;
+- `"abcdef" (then 10 bytes not read)`: no NUL among the bytes read, and the rest unread.
 
 A printable UTF-8 character shows as itself; any other byte as `\\xNN` (or the escape C
-gives it: `\\n`, `\\t`), spelled as C reads it back (``cxx_strings._spell``). Every byte
-read, NULs included, is kept as ``buffer``. Where LLDB read only the first 1024 bytes and
-shows no NUL among them, the text ends `...`, as LLDB's did, and has no note.
+gives it: `\\n`, `\\t`), spelled as C reads it back (``cxx_strings._spell``). Every
+proven byte, NULs included, is kept as ``buffer``, which ends `...` where the array holds
+more. Where LLDB read only the first 1024 bytes and shows no NUL among them, the text
+ends `...`, as LLDB's did, and has no note.
 """
 
 import re
 
 from peeky.cxx_strings import _ESCAPES, SUMMARY_UNITS, _lex, _literal, _printable
+from peeky.text_sets import parse_char
 
 # A one-dimensional narrow character array, as LLDB names its type.
 NARROW_ARRAY = re.compile(
@@ -40,6 +47,10 @@ NOTE = re.compile(
 )
 # The characters a value's literal keeps, with room for its note within the worker's 2000.
 _SHOWN = 1700
+# The elements, at most, that prove an array's bytes after its summary where the debugger
+# reads no memory: one request.
+ELEMENTS = 64
+_REFERENCE = re.compile(r"0x[0-9a-fA-F]{1,16}")
 
 
 def array_size(kind):
@@ -118,10 +129,46 @@ def _count(number, unit):
     return f"{number} {unit}" + ("" if number == 1 else "s")
 
 
-def shown(text, size):
-    """{"value": the text before the first NUL and a note, "buffer": every byte LLDB
-    read, as a literal} for LLDB's summary ``text`` of a narrow character array of
-    ``size`` bytes; None where it is not such a summary, or does not fit the size."""
+def proven_rest(variable, known, window, fetch, read):
+    """The bytes of a narrow character array (the DAP ``variable``) after ``known``, the
+    bytes its summary shows, up to ``window``, as far as Peeky proves them: from memory,
+    where ``read(reference, count)`` is given and returns every byte, which must agree
+    with ``known``; else from the elements the debugger lists (``fetch(reference,
+    start)``: up to 64 from ``start``), each a char literal, up to ELEMENTS of them. What
+    a read can't give proves nothing: an unreadable element ends them."""
+    start = len(known)
+    reference = variable.get("memoryReference")
+    if read is not None and isinstance(reference, str) and _REFERENCE.fullmatch(reference):
+        try:
+            data = read(reference, window)
+        except ValueError:
+            # A partial read, a refusal or the spent budget.
+            data = None
+        if isinstance(data, bytes) and len(data) == window:
+            return data[start:] if data[:start] == known else b""
+    raw = variable.get("variablesReference")
+    if fetch is None or type(raw) is not int or raw <= 0:
+        return b""
+    try:
+        listed = fetch(raw, start)
+    except ValueError:
+        return b""
+    found = bytearray()
+    for index, child in enumerate(listed[: min(ELEMENTS, window - start)], start):
+        named = isinstance(child, dict) and child.get("name") == f"[{index}]"
+        byte = parse_char(child.get("value")) if named else None
+        if byte is None:
+            break
+        found.append(byte)
+    return bytes(found)
+
+
+def shown(text, size, rest=None):
+    """{"value": the text before the first NUL and a note, "buffer": every byte proven,
+    as a literal} for LLDB's summary ``text`` of a narrow character array of ``size``
+    bytes; None where it is not such a summary, or does not fit the size. ``rest(known,
+    window)``: the bytes after ``known`` up to ``window`` that Peeky proves
+    (``proven_rest``), else none are."""
     if size < 1:
         return None
     read = summary_bytes(text)
@@ -129,7 +176,7 @@ def shown(text, size):
         return None
     data, capped = read
     if capped:
-        # LLDB read its first SUMMARY_UNITS bytes, and only those.
+        # LLDB read its first SUMMARY_UNITS bytes at most.
         if size <= SUMMARY_UNITS or len(data) > SUMMARY_UNITS:
             return None
         window = SUMMARY_UNITS
@@ -137,20 +184,23 @@ def shown(text, size):
         if size > SUMMARY_UNITS or len(data) > size:
             return None
         window = size
-    # At most 4 characters a byte, so never cut: at most SUMMARY_UNITS bytes were read.
-    buffer = literal(data + bytes(window - len(data)), capped, 4 * window + 8)
-    nul = data.find(b"\0")
-    if nul < 0 and len(data) == window:
-        if capped:
-            # No NUL in the first 1024 bytes: the rest was not read.
-            return {"value": literal(data, True), "buffer": buffer}
+    known = data
+    if len(data) < window and rest is not None:
+        # The summary ends where LLDB's read did, or where NULs began: not told apart.
+        known += rest(data, window)[: window - len(data)]
+    nul = known.find(b"\0")
+    whole = len(known) == size
+    # At most 4 characters a byte, so never cut.
+    buffer = literal(known, not whole, 4 * len(known) + 8)
+    if nul < 0 and len(known) < window:
+        note = f"then {_count(size - len(known), 'byte')} not read"
+    elif nul < 0 and capped:
+        # No NUL in the first 1024 bytes: the rest was not read.
+        return {"value": literal(known, True), "buffer": buffer}
+    elif nul < 0:
         note = f"no NUL in its {_count(size, 'byte')}"
-    elif nul < 0 and not capped:
-        # LLDB dropped only NULs after the text.
-        note = f"then {_count(size - len(data), 'NUL byte')}"
+    elif whole and not any(known[nul:]):
+        note = f"then {_count(size - nul, 'NUL byte')}"
     else:
-        # A byte after the NUL is not one (else LLDB would have dropped it), or was not
-        # read.
-        nul = len(data) if nul < 0 else nul
         note = f"then a NUL and {_count(size - nul - 1, 'byte')} not shown"
-    return {"value": f"{literal(data if nul < 0 else data[:nul])} ({note})", "buffer": buffer}
+    return {"value": f"{literal(known if nul < 0 else known[:nul])} ({note})", "buffer": buffer}

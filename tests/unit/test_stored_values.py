@@ -179,6 +179,7 @@ def test_elements_reads_each_languages_list_exactly(store, value, language, list
         # A char array's row cut to keep its note, or with a NUL in its text before a note.
         ('["abcdefghijklmnop"... (then 1 NUL byte)]', "c"),
         ('["a\\0b" (then 1 NUL byte)]', "c"),
+        ('["ab" (then 6 bytes not read)]', "c"),
         # Not a list, or not this language's notation.
         ("{7}", "cpp"),
         ("490", "java"),
@@ -210,7 +211,7 @@ def test_elements_is_null_unless_every_element_is_read_exactly(store, value, lan
         ("é", "java-attach", "char", "é"),
         ('"', "java", "char", '"'),
         # C and C++: a literal, a wide one, octal NULs, a pointer's or reference's text.
-        ('"Zürich"', "c", "char[16]", "Zürich"),
+        ('"Zürich"', "c", "const char *", "Zürich"),
         ('L"Žilina"', "cpp", "const wchar_t *", "Žilina"),
         ('u"Ålesund"', "cpp", "std::u16string", "Ålesund"),
         ('"a\\tb\\000c\\"d"', "cpp", "std::string", 'a\tb\0c"d'),
@@ -305,11 +306,11 @@ def test_text_is_null_unless_decoded_exactly(store, value, language):
         ('"ok" (then 2 NUL bytes)', "const unsigned char[4]", "ok"),
         ('"a\\001b" (then 1 NUL byte)', "char[4]", "a\x01b"),
         ('"caf\\303\\251" (then 2 NUL bytes)', "char8_t[7]", "café"),
-        # As runs before this stored it: LLDB's literal of every byte up to the last that
-        # is no NUL.
+        # As runs before this stored it: LLDB's literal of the bytes it read up to the last
+        # that is no NUL. It proves a NUL where it shows one, and no NUL where it shows
+        # every byte.
         ('"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001\\0\\0\\0\\U00000001"', "char[32]", "Adeyemi"),
         ('"apple\\0:4"', "char[16]", "apple"),
-        ('"Zürich"', "char[16]", "Zürich"),
         ('"abcd"', "char[4]", "abcd"),
     ],
 )
@@ -334,6 +335,12 @@ def test_text_of_a_char_array_ends_at_its_first_nul(store, value, kind, shown):
         ('"abcde"', "char[4]"),
         ('"ok\\x80\\x01" (then a NUL and 1 byte not shown)', "unsigned char[6]"),
         ('"\\xc2\\205a\\xe2\\x82" (no NUL in its 5 bytes)', "char[5]"),
+        # Review of #390: LLDB's literal with fewer bytes than the array, and no NUL shown.
+        # LLDB formats what part of its read succeeded, so the next byte may be unreadable.
+        ('"Zürich"', "char[16]"),
+        ('""', "char[4]"),
+        # Peeky's note that the bytes after the text weren't read.
+        ('"abcdef" (then 10 bytes not read)', "char[16]"),
         # Another note, a wide array's elements, a 2-D array's preview.
         ('"a" (shown up to a NUL at byte 1 of 3)', "char[4]"),
         ("[L'a', L'\\0']", "wchar_t[2]"),

@@ -247,14 +247,27 @@ frame's entry: the narrowest function whose code holds the frame's address.
   character as `\U000000NN`. Each escape stands for one byte, or one character's UTF-8.
 - Peeky's lldb-dap sources no init file (`sourceInitFile: false`), so these settings and
   `escape-non-printables` keep LLDB's defaults.
-- `peeky.char_arrays` reads the bytes back from that summary, with no request. A character LLDB
-  would have escaped, shown as itself, means the text isn't its summary: the value stays LLDB's.
-- A NUL among the bytes is the first one. Without one, fewer bytes than LLDB read mean that it
-  dropped NULs: the first is at the end of the bytes.
-- After an explicit NUL, some later byte isn't a NUL, or LLDB would have dropped it. So
-  `then N NUL bytes` is said only where LLDB read the whole array and showed no NUL.
-- `NativeSession.string_value` matches the array by LLDB's type name. `buffer` spells every byte
-  read, the dropped NULs too. `stored_values.text` checks the note's count against the row's type.
+- LLDB's summary formats whatever part of its read succeeded: `GetPointeeData` keeps a partial
+  read, and the DAP value doesn't say how much was read. So an array that runs into an
+  unreadable page shows the bytes before it, as if NULs followed.
+- `peeky.char_arrays` reads the bytes back from that summary. A character LLDB would have
+  escaped, shown as itself, means the text isn't its summary: the value stays LLDB's.
+- Those bytes are proven: LLDB read them. A NUL among them is the first one.
+- `proven_rest` reads the bytes after them up to the window, `min(N, 1024)`. With `readMemory`,
+  that is one read of the whole window from the variable's `memoryReference`. Every byte must
+  come back, and its start must match the summary's bytes.
+- Otherwise it reads one page of elements, at most 64, from where the summary's bytes end. Each
+  must be named `[i]` in order and read as a char literal. An unreadable one ends them: lldb-dap
+  shows `error: read memory from … failed`.
+- These reads share the inspection's value-view budget, or a preview's. A spent budget leaves
+  the bytes `not read`.
+- `then N NUL bytes` needs every byte of the array read, all NULs after the text. A NUL with
+  bytes after it not all read, or not all NULs, is `then a NUL and N bytes not shown`. No NUL
+  among the bytes read is `then N bytes not read`.
+- `NativeSession.string_value` matches the array by LLDB's type name. `buffer` spells every
+  byte read, and ends `...` where the array holds more.
+- `stored_values.text` checks the note's count against the row's type. A run saved before the
+  note proves a NUL only where LLDB's literal shows one, and no NUL only where it shows N bytes.
 
 ## Locals reached through a pointer
 

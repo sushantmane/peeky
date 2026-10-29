@@ -1054,18 +1054,26 @@ it says what follows the text. Those bytes are never shown as part of the text:
 | The text, then only NULs | `"hello" (then 59 NUL bytes)` |
 | A NUL first | `"" (then a NUL and 31 bytes not shown)` |
 | No NUL | `"abcdefgh" (no NUL in its 8 bytes)` |
+| No NUL in the bytes Peeky could read | `"abcdef" (then 10 bytes not read)` |
 
+- LLDB's text shows the bytes up to the last one it read that isn't a NUL. It shows the same
+  for an array that runs into memory it can't read. So Peeky reads the bytes after that text
+  again, and calls them NULs only where it read them.
+- It reads them from memory where the debugger can. Otherwise it reads them as the debugger
+  lists the array's elements, at most 64 of them: lldb-dap 18 reads no memory.
+- So a NUL past those 64 elements is not shown, and the note says the bytes were not read.
+  `text()` is NULL for such a row.
 - This holds for an array of `char`, `signed char`, `unsigned char` or a `char8_t` typedef, by
   LLDB's name for its type. An array under a typedef's own name, such as `Tag` for `char[8]`,
   keeps LLDB's text.
 - A printable UTF-8 character shows as itself: `"Malmö"`. Every other byte is `\xNN`, or C's own
   escape, such as `\n`. So byte 0x01 is `\x01`, never LLDB's `\U00000001`.
 - A byte before a hex digit is written in octal, `"\001a"`, so that C reads it back the same.
-- `--json` rows and `session inspect --json` keep every byte the debugger read, NULs included, as
-  `buffer`: `"Adeyemi\0\x80\xf8\xe6\xef\x01…"`. The store keeps only the value.
+- `--json` rows and `session inspect --json` keep every byte read, NULs included, as `buffer`:
+  `"Adeyemi\0\x80\xf8\xe6\xef\x01…"`. It ends `...` where the array holds bytes that weren't
+  read. The store keeps only the value.
 - LLDB reads at most an array's first 1024 bytes. In a longer array, the bytes after the NUL are
-  counted as not shown. With no NUL in those 1024 bytes, the text ends `...`, with no note, and
-  so does `buffer`.
+  counted as not shown. With no NUL in those 1024 bytes, the text ends `...`, with no note.
 - In a preview, the note is kept whole, and a long text before it is cut with `...`:
   `{label = "desk" (then a NUL and 7 bytes not shown), id = 7}`.
 - In SQL, `text(value, language, type)` gives the text up to the NUL
