@@ -15,8 +15,15 @@ Peeky is not:
 **Worker token**
 
 - It authorizes all operations on one worker.
-- Remove it from the environments of debugger and verification children.
+- The worker reads it from `DEBUG_TOKEN`, and a client from `PEEKY_WORKER_TOKEN`.
+- Both names are removed from the environments of debuggers, debuggees, build commands, checkers,
+  candidates, probe processes and the model's process.
+- A session's own local worker gets only its own token, as `DEBUG_TOKEN`.
 - Never print it in evidence.
+- The worker waits at most 10 s for each read of a request, before and after the token. A
+  connection that sends nothing doesn't hold a worker thread for longer.
+- A client sends the token to whatever process holds the local port. Start SSH tunnels with
+  `-o ExitOnForwardFailure=yes`, so that ssh exits when another process holds that port.
 
 **Target memory and source**
 
@@ -32,6 +39,11 @@ Peeky is not:
 
 - It receives task data, and emits proposed structured decisions.
 - The controller's validation governs what runs.
+- `peeky-agent` applies the model's `finish` edit to a copy, and runs it with the checker. There is
+  no sandbox: the model's code runs with your permissions.
+- The source, the bug report, and the program's output and values reach the model. Treat them as
+  untrusted. Text in them can steer the model (prompt injection) into writing code that then runs.
+- Run `peeky-agent` only on code and inputs you trust, or inside a container or VM.
 
 **Verifier**
 

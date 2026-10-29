@@ -19,6 +19,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_DOWNLOAD = 25 * 1024 * 1024
+# peeky.processes.CREDENTIAL_ENV: this script runs without Peeky installed.
+CREDENTIAL_ENV = frozenset({"DEBUG_TOKEN", "PEEKY_WORKER_TOKEN"})
 
 # Source patches to the pinned java-debug, applied before compiling and recorded in
 # adapter.json (`patches`); peeky.java refuses a bundle without them.
@@ -88,7 +90,7 @@ def run(command: list[str]) -> str:
             command,
             stdout=output,
             stderr=subprocess.STDOUT,
-            env={k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"},
+            env={k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV},
             start_new_session=True,
         )
         deadline = time.monotonic() + 90

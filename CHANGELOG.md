@@ -26,6 +26,11 @@
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369).
+- **Security:** `PEEKY_WORKER_TOKEN`, a client's name for the worker's token, is now removed from
+  the environments of debuggers, debuggees, builds, checkers, candidates and the model, as
+  `DEBUG_TOKEN` was. The worker bounds each read of a request at 10 s, before the token check too.
+  The tunnel command adds `-o ExitOnForwardFailure=yes`. [SECURITY.md](SECURITY.md) says how to
+  report a vulnerability (#378).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.
