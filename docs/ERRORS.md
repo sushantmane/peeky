@@ -487,7 +487,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 10`.
+HTTP response carries `X-Peeky-Protocol: 10`, and so does every request a client sends.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
@@ -518,11 +518,15 @@ HTTP response carries `X-Peeky-Protocol: 10`.
   too. The worker's `expand` takes `key`, and its answer names the key. A protocol 9 worker
   ignores it and gives the first entries
   ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
-- Every client asks a worker's `version` before its first other request. It sends nothing else
-  to a worker of another protocol: not a session's, a remote probe's, or the `Client` SDK's
-  (`python -m peeky.client`).
+- Each request names its client's protocol in `X-Peeky-Protocol`. From protocol 10, a worker
+  refuses any request but `version` that names another protocol, or none, before it runs it.
+- A client asks a worker's `version` before its first other request, and again after any lost
+  connection. It sends nothing else to a worker of another protocol: a session's, a remote
+  probe's, or the `Client` SDK's (`python -m peeky.client`).
 - A local session keeps the protocol its worker's `version` said at `session start`, so later
   commands don't ask again. A record that names another protocol, or none, is asked again.
-- A client also reads no answer whose `X-Peeky-Protocol` names another protocol. Only
-  `version`'s answer is read, since its caller compares the protocol it states.
-- A client and a worker of different protocols refuse each other before anything runs.
+- A client reads no answer whose `X-Peeky-Protocol` names another protocol. Only `version`'s
+  answer is read, since its caller compares the protocol it states.
+- A worker before protocol 10 doesn't check the request's header. One swapped in at the same
+  address between two requests runs the next one. Only its answer's header shows that, after it
+  ran.

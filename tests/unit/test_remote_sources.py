@@ -839,3 +839,164 @@ def test_a_worker_that_reads_through_c_pointers_unmarked_is_refused(
         assert f"Worker speaks protocol {protocol}, this client 10" in result["error"]["message"]
     assert outputs[0][1]["refused_before_launch"] is True
     assert asked == ["/version", "/version"]  # nothing was launched
+
+
+def fake_worker(protocol, delay=0.0, lost=()):
+    """A worker that states ``protocol`` in its `version` (after ``delay`` s) and answers
+    every other request; it drops the connection, answering nothing, for ``lost``. Its
+    `asked` lists the paths it was sent."""
+    import time
+
+    asked = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            asked.append(self.path)
+            if self.path == "/version":
+                time.sleep(delay)
+            if self.path.removeprefix("/") in lost:
+                self.close_connection = True
+                self.connection.shutdown(2)
+                return
+            answer = json.dumps({"protocol": protocol, "state": "stopped"}).encode()
+            self.send_response(200)
+            self.send_header("X-Peeky-Protocol", str(protocol))
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    class Server(ThreadingHTTPServer):
+        # Room for every concurrent connection a test opens (the default backlog is 5).
+        request_queue_size = 64
+
+    server = Server(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    server.asked = asked
+    return server
+
+
+def test_concurrent_requests_ask_the_version_once_and_each_decides_on_it():
+    # #374 review 4: the first ask and the protocol it caches are under the client's lock:
+    # eight threads asked the worker's `version` eight times, each deciding on its own.
+    server = fake_worker(PROTOCOL_VERSION, delay=0.2)
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", TOKEN)
+        answers, errors = [], []
+
+        def inspect():
+            try:
+                answers.append(client.call("inspect"))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=inspect) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        assert errors == [] and len(answers) == 8, errors
+        assert sorted(server.asked) == ["/inspect"] * 8 + ["/version"], server.asked
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_lost_connection_forgets_the_workers_protocol():
+    # #374 review 4: after a lost connection, another worker may answer at that address:
+    # the next request asks its `version` again, and a worker of another protocol is sent
+    # nothing else.
+    from peeky.client import TransportLost, WorkerUnreachable
+
+    first = fake_worker(PROTOCOL_VERSION, lost=("step",))
+    client = Client(f"http://127.0.0.1:{first.server_port}", TOKEN)
+    try:
+        assert client.call("inspect")["state"] == "stopped" and client.protocol == PROTOCOL_VERSION
+        with pytest.raises(TransportLost):
+            client.call("step")
+        assert client.protocol is None
+        assert client.call("inspect")["state"] == "stopped"
+        assert first.asked == ["/version", "/inspect", "/step", "/version", "/inspect"]
+    finally:
+        first.shutdown()
+        first.server_close()
+    with pytest.raises(WorkerUnreachable):
+        client.call("continue")
+    assert client.protocol is None
+    # A protocol 9 worker now answers there.
+    second = fake_worker(9)
+    try:
+        client.url = f"http://127.0.0.1:{second.server_port}"
+        with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 10"):
+            client.call("continue")
+        assert second.asked == ["/version"]
+    finally:
+        second.shutdown()
+        second.server_close()
+
+
+@pytest.mark.parametrize("header", [None, "9", "eleven"])
+def test_this_worker_refuses_a_request_of_another_protocol_before_it_runs_it(app, header):
+    # #374 review 4: each request names its client's protocol (`X-Peeky-Protocol`). From
+    # protocol 10, a worker refuses one that names another, or none, before dispatch: a
+    # client of another protocol never runs anything, whatever it cached.
+    import http.client
+
+    server = make_server(app, TOKEN, 0)
+    ran = []
+    server.worker.dispatch = lambda operation, args: ran.append(operation) or {}
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def post(operation, header):
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=10)
+        headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+        if header is not None:
+            headers["X-Peeky-Protocol"] = header
+        connection.request("POST", f"/{operation}", body=b"{}", headers=headers)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+
+    try:
+        for operation in ("continue", "step", "set_variable", "close", "probe"):
+            status, body = post(operation, header)
+            assert status == 400 and body["error"]["code"] == "INVALID_REQUEST", body
+            assert body["error"]["message"].startswith(
+                f"Client speaks protocol {header or 'none'} (its X-Peeky-Protocol header), "
+                "this worker 10: install the same Peeky version on both hosts"
+            ), body
+        # `version` is answered whatever the client speaks; this client's requests run.
+        assert post("version", header)[1]["protocol"] == PROTOCOL_VERSION
+        assert ran == []
+        assert post("inspect", str(PROTOCOL_VERSION))[0] == 200 and ran == ["inspect"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_every_client_request_names_its_protocol(app):
+    # The SDK's, a session's and a remote probe's requests all go through Client._request.
+    server = fake_worker(PROTOCOL_VERSION)
+    seen = []
+    handler = server.RequestHandlerClass
+    original = handler.do_POST
+
+    def do_post(self):
+        seen.append((self.path, self.headers.get("X-Peeky-Protocol")))
+        original(self)
+
+    handler.do_POST = do_post
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", TOKEN)
+        client.call("inspect")
+        client.probe("main.py:2", capture=["x"])
+        assert seen == [
+            ("/version", str(PROTOCOL_VERSION)),
+            ("/inspect", str(PROTOCOL_VERSION)),
+            ("/probe", str(PROTOCOL_VERSION)),
+        ], seen
+    finally:
+        server.shutdown()
+        server.server_close()

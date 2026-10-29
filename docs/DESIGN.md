@@ -119,7 +119,9 @@ transitions. A future event stream may replace polling, without changing what th
 
 ## HTTP contract
 
-Requests are JSON objects with `Authorization: Bearer <token>`.
+Requests are JSON objects with `Authorization: Bearer <token>`. Each also names its client's
+protocol in `X-Peeky-Protocol: 10`. The worker refuses any request but `version` that names
+another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protocol-version)).
 
 - The worker binds only to `127.0.0.1`.
 - The token authorizes control of that worker. It is not a per-target policy.

@@ -7215,6 +7215,15 @@ def make_server(root, token, port=8765, *, adapter=None):
                 if not isinstance(args, dict):
                     raise ValueError("Expected a JSON object")
                 operation = self.path.removeprefix("/")
+                spoken = self.headers.get("X-Peeky-Protocol")
+                if operation != "version" and (spoken or "").strip() != str(PROTOCOL_VERSION):
+                    # A client of another protocol, or one that doesn't say: refused before
+                    # it runs anything, as it would read the answer otherwise (#374 review).
+                    raise ValueError(
+                        f"Client speaks protocol {str(spoken).strip()[:20] if spoken else 'none'}"
+                        f" (its X-Peeky-Protocol header), this worker {PROTOCOL_VERSION}: install "
+                        "the same Peeky version on both hosts"
+                    )
                 if (
                     operation in ("launch", "probe")
                     and args.get("expect_sha256") is not None

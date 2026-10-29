@@ -1934,11 +1934,11 @@ class _LocalClient(Client):
         if verified:
             self.protocol = PROTOCOL_VERSION
 
-    def _refusal(self, operation):
+    def _refusal(self, operation, spoken):
         if self.name is None:
-            return super()._refusal(operation)
+            return super()._refusal(operation, spoken)
         return (
-            f"Worker speaks protocol {self.protocol}, this session {PROTOCOL_VERSION}: another "
+            f"Worker speaks protocol {spoken}, this session {PROTOCOL_VERSION}: another "
             f"Peeky version started session {self.name!r}, so nothing is sent to its worker. "
             f"Drop the record with `peeky session close --forget --name {self.name}` (its "
             "worker ends after its idle timeout), then start the session again"

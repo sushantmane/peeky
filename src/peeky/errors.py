@@ -30,7 +30,9 @@ from peeky.textlines import split_lines
 # `stop_line`; a protocol 8 worker refuses `1:i` as no selector.
 # 10 (#374): `expand` takes `key`, the entry of that key among those Peeky read from an
 # unordered container's nodes, past 256 entries too; a protocol 9 worker ignores `key`
-# and gives the first entries, which a client would take for the key's.
+# and gives the first entries, which a client would take for the key's. Each request
+# names its client's protocol (`X-Peeky-Protocol`), which the worker checks before it
+# runs anything but `version`.
 PROTOCOL_VERSION = 10
 
 # (pattern on the message, code, hint, retryable). First match wins.
