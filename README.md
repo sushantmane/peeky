@@ -173,6 +173,8 @@ decisions, through Codex CLI. It is not the main interface.
 - [Performance](docs/PERFORMANCE.md): a repeatable HTTP and debugger benchmark.
 - [Decision records](docs/adr/) and [reviews](docs/reviews/), with each finding's disposition.
 - [History](docs/HISTORY.md): milestones, evaluation reports and reviews.
+- [Presentation](docs/presentation/Peeky.pdf): why Peeky exists, what it is and how it works, for
+  executives and engineers. The [PowerPoint](docs/presentation/Peeky.pptx) opens in Keynote too.
 
 ## Contributing
 
