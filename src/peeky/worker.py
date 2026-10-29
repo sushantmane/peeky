@@ -22,17 +22,29 @@ from peeky import add_version
 from peeky.adapters import PythonAdapter, ViewBudgetExhausted
 from peeky.dap import DAP, RequestFailed, ResponseTimeout
 from peeky.errors import _RULES, PROTOCOL_VERSION, UnplacedStop, classify
-from peeky.identifiers import changeable, is_located, is_name, member_name, reachable
+from peeky.identifiers import (
+    changeable,
+    is_located,
+    is_name,
+    member_name,
+    reachable,
+    split_located,
+)
 from peeky.names import display_function, short_function
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
 from peeky.text_sets import held_in_place, parse_text, text_kind
+from peeky.textlines import split_lines
 
 VIEW_SECONDS = 10
 # C and C++ previews (#136): their own budget per inspection or expansion, so that
 # they never take the one value views and string checks use (#128).
 PREVIEW_FETCHES = 256
 PREVIEW_SECONDS = 3
+# Reads of an unordered container's nodes (#360): their own budget per inspection or
+# expansion, within the value view's time. Without `readMemory` (lldb-dap 18), each node
+# costs a read per 8 bytes, each well under a millisecond.
+NODE_READS = 4096
 MAX_HISTORY_BYTES = 4_000_000
 MAX_HISTORY_ENTRY_BYTES = 256_000
 
@@ -58,6 +70,9 @@ OPERATIONS = frozenset(
 # Stops the pause budget (--max-pause) may auto-resume: Peeky's own breakpoints and the
 # user's own steps. Crashes, exceptions and signals stay stopped for inspection.
 RESUMABLE_STOPS = frozenset({"breakpoint", "step", "interrupted"})
+# How long a read of a stop (its frame, its place) waits for the debugger, as `inspect`
+# does; never past the stop's pause budget (#356).
+STOP_READ_S = 15
 # Stops where a user's step left the thread, maybe outside the program's sources: its
 # end, or (LLDB) the point another thread's stop at the same time caught it (#162).
 STEP_STOPS = frozenset({"step", "interrupted"})
@@ -128,6 +143,12 @@ _UNAVAILABLE = re.compile(
 _POINTER_OR_ARRAY = re.compile(r"(?:\*|\])(?:\s*\b(?:const|volatile|restrict)\b)*\s*$")
 # A C or C++ pointer's value that holds an address (`0x000000016f29b050`, `0x… "text"`).
 _NONZERO_ADDRESS = re.compile(r"0x0*[1-9a-fA-F][0-9a-fA-F]{0,15}(?![0-9a-zA-Z_])")
+# The scope a GCC lambda's captures are listed in (#361): no debugger's, so its values
+# are found again through `__closure` (DebugWorker.closure_members), never by a scope.
+CAPTURES_SCOPE = ("Captures", "peekyCaptures")
+# A hover of `__closure`: lldb-dap 18 writes `(const (unnamed struct) *const) __closure =
+# 0x…`, later ones the address alone.
+_CLOSURE_HOVER = re.compile(r"(?:\(.*\) __closure = )?(0x[0-9a-fA-F]{1,16})")
 # The bytes of what a C or C++ character pointer LLDB shows as text points at, by the type
 # LLDB names (`const char *`).
 _CHARACTER_SIZES = {
@@ -298,6 +319,14 @@ class DebugWorker:
         self.references = set()
         # Scope handles of module globals: listed for reading, never changed.
         self.global_handles = set()
+        # Scope handles of a GCC lambda's captures (#361): read through `__closure`,
+        # never changed; and the note on what is read through each listed frame's
+        # `__closure`, by frame id, for the stop of ``pointee_stop``.
+        self.capture_handles = set()
+        self.closure_notes = {}
+        # Scope handles of a frame's variables in static storage (C, C++, #364), with the
+        # frame: read, never changed.
+        self.static_handles = {}
         self.launched_at = None
         # Whether the current launch has asked the debugger to start (or attach to) the
         # program: an error before that is one before launch (#190).
@@ -362,6 +391,8 @@ class DebugWorker:
         self.max_pause = None
         self.stopped_at = None
         self.auto_resumed = []
+        # While auto_resume takes the stops queued behind one it resumes.
+        self.resuming = False
         self.cursor = 0
         self.resumed_at = 0.0
         self.liveness_checked = 0.0
@@ -825,15 +856,25 @@ class DebugWorker:
         return {"trace": False} if getattr(self.dap, "annotate", None) else {}
 
     def read_location(self):
-        """Best-effort top-frame location for display; never evidence, never fatal.
+        """Top-frame location for display: the stop's line, function and place; never
+        evidence.
 
         Crash or signal stops may fail runtime validation; that belongs to `inspect`,
-        so a failed read here only omits the location.
+        so a debugger's refusal here only omits the location. A debugger that does not
+        answer within STOP_READ_S fails the request (TimeoutError, #356): a stop is never
+        shown as if all of it were read. Under a pause budget (--max-pause), the read
+        waits no longer than the budget; a stop that outlives it here is resumed unread
+        (``resume_spent``).
         """
+        limit = self.stop_read_limit()
+        if limit <= 0:
+            return None
+        # What was being read when the debugger stalled: its error says only that.
+        reading = "frame"
         try:
             levels = 20 if self.stop_reason in STEP_STOPS else 1
             stack = self.dap.request(
-                "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=2
+                "stackTrace", {"threadId": self.thread_id, "levels": levels}, timeout=limit
             )
             frames = stack.get("stackFrames") or [{}]
             frame = frames[0]
@@ -851,10 +892,93 @@ class DebugWorker:
             path = frame.get("source", {}).get("path")
             self.stop_function = str(frame.get("name") or "")[:300] or None
             self.stop_line = frame.get("line")
+            reading = "place"
             self.stop_place = self.place_of(frame)
             return f"{_display_path(self.runtime, path)}:{frame.get('line')}" if path else None
+        except TimeoutError as exc:
+            if self.pause_spent():
+                return None
+            raise TimeoutError(
+                (
+                    "A stop is never shown without its line and function: the debugger did not "
+                    f"give this stop's line and function within {STOP_READ_S} s"
+                    if reading == "frame"
+                    else "A stop is never shown without the breakpoint it is at: the debugger "
+                    f"did not say within {STOP_READ_S} s which breakpoint this stop is at"
+                )
+                + ", so the session was closed. Start again once the machine is less busy"
+            ) from exc
         except Exception:
             return None
+
+    def pause_left(self):
+        """Seconds left of the current stop's pause budget (--max-pause); None where none
+        applies: no budget, or a stop the guard never resumes (a crash, an exception)."""
+        if (
+            not self.max_pause
+            or self.state != "stopped"
+            or self.stopped_at is None
+            or self.stop_reason not in RESUMABLE_STOPS
+        ):
+            return None
+        return self.max_pause - (time.monotonic() - self.stopped_at)
+
+    def pause_spent(self):
+        left = self.pause_left()
+        return left is not None and left <= 0
+
+    def stop_read_limit(self, limit=STOP_READ_S):
+        """How long a read of the current stop may wait for the debugger: ``limit``, and
+        never past the stop's pause budget (#356). The pause guard cannot resume the stop
+        while a request holds the lock."""
+        left = self.pause_left()
+        return limit if left is None else min(limit, left)
+
+    def resume_spent(self):
+        """Resume a stop that outlived its pause budget while it was read, or while the
+        guard waited for the lock (#356), as the guard would have; True if the program
+        runs again. Not while ``auto_resume`` takes the stops queued behind one."""
+        if self.resuming or not self.pause_spent():
+            return False
+        return self.auto_resume()
+
+    def auto_resume(self):
+        """Resume the current stop past its pause budget, and keep the record of it; True
+        if the program runs again. Where another thread's stop from the same all-threads
+        stop is queued, `continue` serves it next and resumes nothing (review of #367):
+        that stop, made at the same time, is past the budget too, so it is taken (none of
+        it is read) and resumed in turn, until a `continue` resumes the program. Only then
+        is each recorded as auto-resumed; else none is, and the guard tries again."""
+        entries, self.resuming = [], True
+        try:
+            while self.state == "stopped" and self.pause_spent() and len(entries) < 64:
+                entries.append(
+                    {
+                        "stop_id": self.stop_id,
+                        "reason": self.stop_reason,
+                        "location": self.stop_location,
+                        "paused_s": round(time.monotonic() - self.stopped_at, 2),
+                    }
+                )
+                if self._dispatch("continue", {"stop_id": self.stop_id}).get("resumed") is True:
+                    break
+                self._dispatch("wait", {"timeout": 0.1})
+            else:
+                return False
+        finally:
+            self.resuming = False
+        for entry in entries:
+            self.auto_resumed.append(entry)
+            self.record(
+                {
+                    "time": time.time(),
+                    "operation": "auto_resume",
+                    "arguments": {"stop_id": entry["stop_id"]},
+                    "result": {**entry, "max_pause": self.max_pause},
+                }
+            )
+        self.auto_resumed = self.auto_resumed[-100:]
+        return True
 
     def read_crash(self, runtime, body):
         """What an `exception` or `signal` stop tells (#342), for display; nothing of any
@@ -1190,11 +1314,14 @@ class DebugWorker:
         where it is deeper than CALL_FRAMES, or the debugger does not say the reply is all
         of it (`totalFrames`), or does not answer within 2 s. Bounded, so a deep recursion's
         stack never makes a reply too large to read (best effort: then no note is given)."""
+        limit = self.stop_read_limit(2)
+        if limit <= 0:
+            return None
         try:
             reply = self.dap.request(
                 "stackTrace",
                 {"threadId": self.thread_id, "startFrame": 0, "levels": CALL_FRAMES},
-                timeout=2,
+                timeout=limit,
             )
         except Exception:
             return None
@@ -1391,26 +1518,9 @@ class DebugWorker:
                     return
                 if self.stop_reason not in RESUMABLE_STOPS:
                     return
-                paused = time.monotonic() - self.stopped_at
-                if paused < self.max_pause:
+                if time.monotonic() - self.stopped_at < self.max_pause:
                     return
-                entry = {
-                    "stop_id": self.stop_id,
-                    "reason": self.stop_reason,
-                    "location": self.stop_location,
-                    "paused_s": round(paused, 2),
-                }
-                self._dispatch("continue", {"stop_id": self.stop_id})
-                self.auto_resumed.append(entry)
-                self.auto_resumed = self.auto_resumed[-100:]
-                self.record(
-                    {
-                        "time": time.time(),
-                        "operation": "auto_resume",
-                        "arguments": {"stop_id": entry["stop_id"]},
-                        "result": {**entry, "max_pause": self.max_pause},
-                    }
-                )
+                self.auto_resume()
             except Exception as exc:
                 import sys
 
@@ -1565,13 +1675,15 @@ class DebugWorker:
         # #160): the first stop asks again.
         self.places_unresolved = False
 
-    def note_places(self, runtime, requested, placed):
+    def note_places(self, runtime, requested, placed, deadline=None):
         """Ask the runtime where the debugger placed the session program's breakpoints
         (#157): a line can have several locations in one function (a macro's or a
-        block's own code, a loop header's), and it stops at each. Best effort: none
-        known means no warning and no `place`, never a failure."""
-        self.forget_places()
-        self.places_asked = (runtime, list(requested), placed)
+        block's own code, a loop header's), and it stops at each. Where the debugger
+        cannot say, none known means no warning and no `place`. ``deadline`` (monotonic
+        seconds): when its answer is due (the launch's, a stop's read limit); else the
+        runtime's own wait. A debugger that does not answer by then fails the request
+        (TimeoutError, #356), and what was known before is kept."""
+        asked = (runtime, list(requested), placed)
         hook = getattr(runtime, "breakpoint_locations", None)
         replies = (placed.get("breakpoints") or []) if isinstance(placed, dict) else []
         ids = [
@@ -1582,10 +1694,18 @@ class DebugWorker:
             and type(reply.get("id")) is int
         ]
         if hook is None or not ids or self.dap is None:
+            self.forget_places()
+            self.places_asked = asked
             return
         try:
-            found = hook(self.dap, ids)
+            found = hook(self.dap, ids, **({} if deadline is None else {"deadline": deadline}))
+        except TimeoutError:
+            raise
         except Exception:
+            found = None
+        self.forget_places()
+        self.places_asked = asked
+        if not found:
             return
         groups = {}
         self.places_unresolved = any(location.get("resolved") is False for location in found or ())
@@ -1597,13 +1717,14 @@ class DebugWorker:
         for (line, _), (function, addresses) in groups.items():
             self.places.setdefault(line, []).append((function, tuple(sorted(addresses))))
 
-    def loop_headers(self, runtime):
+    def loop_headers(self, runtime, deadline=None):
         """{line: stops} of the session's breakpoint lines that are loop headers whose
         every location runs once each time the loop starts, before it (#161): a C, C++
         `for`/`while` header binds its first code, Rust's `for` its two. Asked of the
         runtime once, at launch, before the program runs (the debugger's disassembly and
-        line table, kept for the launch); never again when breakpoints are set again or
-        their places asked again (review of #166). Best effort."""
+        line table, kept for the launch), within the launch's ``deadline``; never again
+        when breakpoints are set again or their places asked again (review of #166). Best
+        effort."""
         hook = getattr(runtime, "loop_header_stops", None)
         if hook is None or self.dap is None or not self.places:
             return {}
@@ -1612,10 +1733,14 @@ class DebugWorker:
         except Exception:
             return {}
         found, cache = {}, {}
+        within = {} if deadline is None else {"deadline": deadline}
         for line in sorted(self.places)[:8]:
             groups = [addresses for _, addresses in self.places[line]]
             try:
-                count = hook(self.dap, source, line, groups, cache)
+                count = hook(self.dap, source, line, groups, cache, **within)
+            except TimeoutError:
+                # Past the launch's deadline (#356): the launch fails, never its note alone.
+                raise
             except Exception:
                 count = None
             if count:
@@ -1658,8 +1783,12 @@ class DebugWorker:
             if self.places_renewed or self.places_asked is None:
                 return None
             # Placed before the program loaded, at addresses it may no longer have (listed
-            # as unresolved, or none matches): asked once more, now that it runs.
-            self.note_places(*self.places_asked)
+            # as unresolved, or none matches): asked once more, now that it runs, within
+            # the stop's own read limit (#356).
+            limit = self.stop_read_limit()
+            if limit <= 0:
+                return None
+            self.note_places(*self.places_asked, deadline=time.monotonic() + limit)
             self.places_renewed = True
         return None
 
@@ -2230,11 +2359,14 @@ class DebugWorker:
             self.auto_resumed = []
             deadline = time.monotonic() + self.launch_deadline_s
 
-            def left(limit=15):
+            def left(limit=None):
+                # Every launch step gets what remains of the one deadline (#356): a step
+                # capped below it (15 s) failed a debuggee slow to start on a loaded
+                # machine while most of the launch's time was left.
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Launch exceeded its deadline; session discarded")
-                return min(limit, remaining)
+                return remaining if limit is None else min(limit, remaining)
 
             try:
                 staging = {"edit": edit} if edit else {}
@@ -2340,9 +2472,11 @@ class DebugWorker:
                 )
                 self.record_own_points(args.get("breakpoints", []), points)
                 self.note_placed(runtime.source_path(program), args.get("breakpoints", []), points)
-                self.note_places(runtime, args.get("breakpoints", []), points)
+                # Within the launch's deadline, as its other steps (#356): a stall past a
+                # shorter wait of their own left out their notes without a word.
+                self.note_places(runtime, args.get("breakpoints", []), points, deadline=deadline)
                 # Once, before the program runs (#161): breakpoints set again later keep it.
-                self.loop_lines = self.loop_headers(runtime)
+                self.loop_lines = self.loop_headers(runtime, deadline=deadline)
                 self.dap.request("configurationDone", timeout=left())
                 self.dap.response(launch, timeout=left())
                 runtime.assert_current()
@@ -2413,6 +2547,10 @@ class DebugWorker:
                 raise
         if operation == "wait":
             timeout = max(0.1, min(float(args.get("timeout", 2)), 2))
+            if self.state == "stopped":
+                # Past its pause budget while a request held the lock (#356): never
+                # returned as a live stop.
+                self.resume_spent()
             updates = {}
             if self.breakpoint_events:
                 updates["breakpoint_events"] = list(self.breakpoint_events)
@@ -2542,10 +2680,21 @@ class DebugWorker:
                 # The one-shot `continue --to` line served its purpose (or another stop
                 # came first): only the session's own breakpoints remain.
                 self.set_points(runtime, self.points)
+            served = self.stop_id
+            if self.stop_id and self.resume_spent():
+                # The stop outlived its pause budget while it was read (#356): resumed, as
+                # the pause guard would have, and never returned as a live stop.
+                return {
+                    "state": self.state,
+                    **updates,
+                    "auto_resumed": len(self.auto_resumed),
+                    "last_auto_resumed": self.auto_resumed[-1],
+                }
             return {
                 "state": self.state,
                 "stop_id": self.stop_id,
-                "event": event,
+                # Not where a stop queued behind this one became current, unresumed.
+                **({"event": event} if self.stop_id == served else {}),
                 **({"exit_inferred": True} if self.exit_inferred else {}),
                 **({"unreported_stop": self.unreported} if self.unreported else {}),
                 **self.location(),
@@ -2680,8 +2829,17 @@ class DebugWorker:
             pending, own, proof, given = [], [], None, None
             # Why a rule left roots unmarked (a stop part-way through a statement).
             self.unsettable_reasons, roots = [], []
+            # How each capture of a GCC lambda is read here (#361), and the names its
+            # captures list in place of what the debugger lists (`[*this]`'s `this`, which
+            # it gives no value; a local whose scope hasn't begun there).
+            plan = self.capture_plan(runtime, selected_frame)
+            replaced = {name for name, how, _, _ in plan if how == "read" or name == "this"}
+            in_statics = getattr(runtime, "static_scope", None)
             for scope in listed:
                 module = bool(is_global) and is_global(scope)
+                # The frame's variables in static storage, which lldb-dap lists apart from
+                # its locals, among its unit's globals (C, C++, #364).
+                static = callable(in_statics) and in_statics(scope, selected_frame)
                 if module and not wanted:
                     continue
                 if module and isinstance(wanted, list):
@@ -2693,7 +2851,16 @@ class DebugWorker:
                 ).get("variables", [])
                 if validate_children:
                     validate_children(variables)
-                if (taken := self.take_returned(runtime, variables)) is not None:
+                if static:
+                    # Only those the code at the stop names, with no local of their name,
+                    # nor a capture's the frame reads in its place (#361).
+                    variables = runtime.static_rows(
+                        variables,
+                        selected_frame,
+                        [*own, *sorted(replaced)],
+                        command=self.debugger_command,
+                    )
+                elif (taken := self.take_returned(runtime, variables)) is not None:
                     # Shown apart, as `returned`, and only if it is the function's (#155).
                     variables, found = taken
                     if index == 0 and given is None:
@@ -2714,7 +2881,19 @@ class DebugWorker:
                         and isinstance(v.get("name"), str)
                         and v["name"] not in groups
                     ]
-                    self.frame_variables.setdefault(selected, []).extend(variables)
+                    # A local of a GCC lambda's whose scope hasn't begun, or has ended, where
+                    # the code names the capture of that name (#361): the capture is listed
+                    # instead, and that local's storage is no live object.
+                    variables = [
+                        v
+                        for v in variables
+                        if not (
+                            isinstance(v, dict)
+                            and str(v.get("name")).partition(" @ ")[0] in replaced
+                        )
+                    ]
+                    if not static:
+                        self.frame_variables.setdefault(selected, []).extend(variables)
                 self.reference_counter += 1
                 handle = self.reference_counter
                 shown = variables[: min(50, 512 - self.inspection_nodes)]
@@ -2732,6 +2911,10 @@ class DebugWorker:
                 if not module:
                     roots += shown
                 pending.append((handle, scope, exposed, len(variables)))
+            # A GCC lambda's captures, which lldb-dap doesn't list (#361): read through
+            # `__closure`, in a scope of their own that no change is made through.
+            self.capture_handles = set()
+            captured, unread = self.read_captures(runtime, selected_frame, plan)
             if (
                 index == 0
                 and self.stop_reason == "step"
@@ -2750,13 +2933,18 @@ class DebugWorker:
                 # Bind mutation authority only to freshly re-acquired, identical scopes.
                 references = self.reacquire_scopes(runtime, selected_frame, pending)
             result = []
-            self.global_handles = set()
+            self.global_handles, self.static_handles = set(), {}
             for (handle, scope, exposed, total), reference in zip(pending, references):
                 entry = {"name": scope["name"], "reference": handle, "variables": exposed}
                 if is_global and is_global(scope):
                     # The module's globals are read, never changed.
                     entry["globals"] = True
                     self.global_handles.add(handle)
+                elif callable(in_statics) and in_statics(scope, selected_frame):
+                    # The frame's variables in static storage, read and never changed
+                    # (#364): named apart from the globals lldb-dap lists with them.
+                    entry.update(name="Statics", static_storage=True)
+                    self.static_handles[handle] = selected_frame
                 elif writable:
                     self.references.add(handle)
                     self.reference_frames[handle] = selected_frame
@@ -2765,6 +2953,8 @@ class DebugWorker:
                     # Cut at the bound (50 per scope, 512 per inspection): never silently.
                     entry.update(truncated=True, total=total)
                 result.append(entry)
+            if captured is not None:
+                result.append(captured)
             source = (selected_frame.get("source") or {}).get("path")
             snapshot = {
                 "stop_id": self.stop_id,
@@ -2802,21 +2992,29 @@ class DebugWorker:
                     else {}
                 ),
                 # What the function keeps in static storage, which lldb-dap does not list
-                # among a frame's locals (C, C++).
+                # among a frame's locals (C, C++), and is not read here; and why (#364).
                 **(
                     {"statics": statics}
                     if (lister := getattr(runtime, "static_locals", None))
                     and (statics := lister(selected_frame))
                     else {}
                 ),
-                # The captures a GCC lambda reads through `__closure`, which lldb-dap
-                # does not list either.
                 **(
-                    {"closure_captures": captures}
-                    if (captured := getattr(runtime, "closure_captures", None))
-                    and (captures := captured(selected_frame))
+                    {"static_notes": notes}
+                    if (noter := getattr(runtime, "static_notes", None))
+                    and (notes := noter(selected_frame))
                     else {}
                 ),
+                # The captures a GCC lambda reads through `__closure`, which lldb-dap
+                # does not list either, and why each one not in its `Captures` scope isn't
+                # read here (#361).
+                **(
+                    {"closure_captures": captures}
+                    if (listing := getattr(runtime, "closure_captures", None))
+                    and (captures := listing(selected_frame))
+                    else {}
+                ),
+                **({"closure_unread": unread} if unread else {}),
                 **self.pause_status(),
                 **({"optimized": level} if (level := self.optimized()) else {}),
                 # C++ string keys: whether LLDB's summary of a std::string is all of it.
@@ -2921,6 +3119,20 @@ class DebugWorker:
             if ref in self.global_handles:
                 raise ValueError(
                     "Module globals cannot be changed: only the stopped function's own locals can"
+                )
+            if ref in self.capture_handles and (
+                refusal := getattr(runtime, "capture_refusal", None)
+            ):
+                # A GCC lambda's capture (#361): its object holds it, read through a pointer.
+                raise ValueError(f"{args['name']!r} cannot be changed: {refusal(args['name'])}")
+            if ref in self.static_handles:
+                # A C or C++ variable in static storage (#364).
+                raise ValueError(
+                    _STATIC_SET.format(
+                        name=repr((split_located(str(args["name"])) or (args["name"],))[0]),
+                        function=display_function(self.static_handles[ref].get("name"))
+                        or "this function",
+                    )
                 )
             if ref not in self.references:
                 raise ValueError("Inspect the scope before changing variables")
@@ -3251,12 +3463,16 @@ class DebugWorker:
 
     @staticmethod
     def frame_scopes(runtime, frame, scopes):
-        """The scopes an inspection of ``frame`` lists, at most 16."""
+        """The scopes an inspection of ``frame`` lists, at most 16: and, in C and C++,
+        lldb-dap's list of static storage where the frame's function declares a variable
+        there (#364)."""
         listed = runtime.local_scopes(scopes)
         is_global = getattr(runtime, "global_scope", None)
         if is_global and frame.get("name") == "<module>":
             # Module code runs with its globals as its locals: they are listed once.
             listed = [scope for scope in listed if not is_global(scope)]
+        if callable(statics := getattr(runtime, "static_scope", None)):
+            listed += [scope for scope in scopes if scope not in listed and statics(scope, frame)]
         return listed[:16]
 
     def preview_stack(self):
@@ -3370,6 +3586,7 @@ class DebugWorker:
     def reset_views(self):
         """A fresh value-view budget, for one inspection or expansion."""
         self.view_fetches = self.view_items = self.view_bytes = 0
+        self.node_reads = self.node_bytes = 0
         self.view_waited = 0.0
         self.view_deadline = time.monotonic() + VIEW_SECONDS
 
@@ -3393,12 +3610,13 @@ class DebugWorker:
         finally:
             self.view_waited += time.monotonic() - started
 
-    def raw_value(self, frame, path):
+    def raw_value(self, frame, path, nodes=False):
         """The debugger's text for the variable path ``path`` in ``frame`` (#167: an
         unordered container's own count, `us._M_h._M_element_count`), asked as a hover:
         lldb-dap then reads the path's variables and members as they are, past any
         formatter, and never evaluates it as an expression, so nothing runs in the
-        program. Cached for the stop; counted against the value-view budget."""
+        program. Cached for the stop; counted against the value-view budget, or with
+        ``nodes`` against the node-read budget (#360: a word of a container's node)."""
         cache = getattr(self, "raw_values", None)
         if cache is None or cache[0] != self.stop_id:
             cache = self.raw_values = (self.stop_id, {})
@@ -3406,9 +3624,14 @@ class DebugWorker:
         if key in cache[1]:
             return cache[1][key]
         remaining = self.view_deadline - time.monotonic()
-        if self.view_fetches >= 128 or remaining <= 0:
+        if nodes:
+            if getattr(self, "node_reads", 0) >= NODE_READS or remaining <= 0:
+                raise ViewBudgetExhausted(f"Node read budget exhausted ({NODE_READS} reads)")
+            self.node_reads = getattr(self, "node_reads", 0) + 1
+        elif self.view_fetches >= 128 or remaining <= 0:
             raise self.view_exhausted()
-        self.view_fetches += 1
+        else:
+            self.view_fetches += 1
         arguments = {"expression": path, "frameId": frame.get("id"), "context": "hover"}
         try:
             reply = self.view_request("evaluate", arguments, remaining)
@@ -3455,11 +3678,11 @@ class DebugWorker:
         self.preview_fetches = 0
         self.preview_deadline = time.monotonic() + PREVIEW_SECONDS
 
-    def preview_fetch(self, reference, count):
-        """The first ``count`` children of a raw debugger value, for a runtime's preview
-        (#136). Bounded per inspection or expansion (PREVIEW_FETCHES requests within
-        PREVIEW_SECONDS), apart from the value-view budget; exhaustion leaves the
-        remaining values as the debugger shows them."""
+    def preview_fetch(self, reference, count, start=0):
+        """The first ``count`` children of a raw debugger value (from ``start``), for a
+        runtime's preview (#136). Bounded per inspection or expansion (PREVIEW_FETCHES
+        requests within PREVIEW_SECONDS), apart from the value-view budget; exhaustion
+        leaves the remaining values as the debugger shows them."""
         remaining = self.preview_deadline - time.monotonic()
         if self.preview_fetches >= PREVIEW_FETCHES or remaining <= 0:
             raise ViewBudgetExhausted("Preview budget exhausted")
@@ -3468,10 +3691,12 @@ class DebugWorker:
             raise ValueError("Variable is not expandable")
         if type(count) is not int or not 0 < count <= 64:
             raise ValueError("Preview read exceeds limit")
+        if type(start) is not int or not 0 <= start <= 65536:
+            raise ValueError("Preview read exceeds limit")
         try:
             values = self.dap.request(
                 "variables",
-                {"variablesReference": reference, "start": 0, "count": count},
+                {"variablesReference": reference, "start": start, "count": count},
                 timeout=remaining,
             ).get("variables", [])
         except ResponseTimeout as exc:
@@ -3514,6 +3739,128 @@ class DebugWorker:
             raise ValueError("Partial memory read")
         self.view_bytes += count
         return data
+
+    def type_keys(self, kind):
+        """What a C or C++ row's type names, where a typedef hides it: "typedef_kind" (a
+        pointer indexes as C does, a reference as its referent, #102), "pointee_type",
+        "aliased_type" (the class behind it: a C++ map by another name, #119) and
+        "pointee_aliased_type" (behind what a pointer points at: `IntSet *`)."""
+        keys = {}
+        resolve = getattr(self.runtime, "typedef_kind", None)
+        if resolve and (resolved := resolve(kind)) is not None:
+            keys["typedef_kind"], pointee = resolved
+            if resolved[0] == "pointer":
+                keys["pointee_type"] = pointee
+        alias = getattr(self.runtime, "aliased_type", None)
+        if alias and (aliased := alias(kind)) is not None:
+            keys["aliased_type"] = aliased[:2000]
+        pointed = getattr(self.runtime, "pointee_aliased_type", None)
+        if pointed and (aliased := pointed(kind, keys.get("pointee_type"))) is not None:
+            keys["pointee_aliased_type"] = aliased[:2000]
+        return keys
+
+    def node_memory(self, reference, count):
+        """A memory read of an unordered container's nodes (#360), on the node-read
+        budget (NODE_READS requests and 4 MiB per inspection or expansion)."""
+        remaining = self.view_deadline - time.monotonic()
+        if getattr(self, "node_reads", 0) >= NODE_READS or remaining <= 0:
+            raise ViewBudgetExhausted(f"Node read budget exhausted ({NODE_READS} reads)")
+        self.node_reads = getattr(self, "node_reads", 0) + 1
+        if not isinstance(reference, str) or not re.fullmatch(r"0x[0-9A-Fa-f]{1,16}", reference):
+            raise ValueError("Invalid memory reference")
+        if type(count) is not int or not 0 < count <= 4096:
+            raise ValueError("Memory read exceeds limit")
+        if getattr(self, "node_bytes", 0) + count > 4 * 1024 * 1024:
+            raise ViewBudgetExhausted("Node read budget exhausted (4 MiB)")
+        try:
+            reply = self.view_request(
+                "readMemory", {"memoryReference": reference, "count": count}, remaining
+            )
+        except ResponseTimeout as exc:
+            self.view_timed_out = True
+            raise self.view_exhausted("the debugger did not answer in the time left") from exc
+        except RequestFailed as exc:
+            raise ValueError(f"The debugger refused the memory read: {exc}") from None
+        try:
+            data = base64.b64decode(reply.get("data") or "", validate=True)
+        except ValueError:
+            raise ValueError("Malformed memory read reply") from None
+        if len(data) != count or reply.get("unreadableBytes"):
+            raise ValueError("Partial memory read")
+        self.node_bytes = getattr(self, "node_bytes", 0) + count
+        return data
+
+    def nodes_reachable(self, frame, trail, names):
+        """Whether Peeky may read the nodes of an unordered container reached by ``names``
+        in ``frame`` (#360): ``trail`` holds the debugger's variable for each name, the
+        container (or a pointer or reference to it) last. Every C or C++ pointer and C++
+        reference on the way (``indirections``) must be judged to refer to a live object
+        (#339's rule), never left unjudged: a live heap block, or the dead frame a
+        dangling one holds, may hold bytes that read as entries."""
+        found = getattr(self.runtime, "indirections", None)
+        steps = found(frame, list(names)) if found and len(trail) == len(names) else None
+        if steps is None:
+            return False
+        for index, kind in steps:
+            proven = self.pointee_proven if kind == "pointer" else self.referent_proven
+            if not proven(trail[index], frame, names[: index + 1]):
+                return False
+        return True
+
+    def referent_proven(self, variable, frame, steps):
+        """Whether the C++ reference ``variable`` (whose value the debugger gives as the
+        address it refers to) is judged to refer to a live object, by the rule for what
+        a pointer points at (``judge_pointee``, #339): for reading an unordered
+        container's nodes through it (#360). Never where nothing is judged."""
+        runtime = self.runtime
+        if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
+            return False
+        if not callable(getattr(runtime, "referent_of", None)):
+            return False
+        value = variable.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        if held is None:
+            return False
+        try:
+            referent = runtime.referent_of(frame, list(steps))
+        except (KeyError, TypeError, ValueError):
+            referent = None
+        if not isinstance(referent, dict):
+            return False
+        state = self.pointee_state()
+        key = ("referent", frame.get("id"), tuple(str(step) for step in steps), held[0])
+        if key not in state["judged"]:
+            self.pointee_partial = False
+            why = self.judge_pointee(int(held[0], 16), {**referent, "character": False}, frame)
+            if self.pointee_partial or self.past_incomplete:
+                # A read that didn't come may yet place it: judged again next time.
+                return why is None
+            state["judged"][key] = why
+        return state["judged"][key] is None
+
+    def pointee_proven(self, variable, frame, steps):
+        """Whether the C or C++ pointer ``variable`` is judged to point at a live object
+        (``pointee_unproven``, #339): never where nothing is judged (a type the build
+        doesn't size, a runtime that judges none)."""
+        runtime = self.runtime
+        if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
+            return False
+        if not callable(getattr(runtime, "pointee_of", None)):
+            return False
+        value = variable.get("value")
+        if not isinstance(value, str) or _NONZERO_ADDRESS.match(value) is None:
+            return False
+        try:
+            judged = isinstance(runtime.pointee_of(frame, list(steps)), dict)
+        except (KeyError, TypeError, ValueError):
+            judged = False
+        return judged and self.pointee_unproven(variable, frame, steps) is None
+
+    def node_reader(self, frame):
+        """How a runtime reads an unordered container's nodes in ``frame`` (#360):
+        (a variable path's text, a memory read or None without `readMemory`)."""
+        reads = self.node_memory if self.capabilities.get("supports_read_memory") else None
+        return (lambda path: self.raw_value(frame, path, nodes=True)), reads
 
     def expose_variables(
         self,
@@ -3567,6 +3914,11 @@ class DebugWorker:
             name, kind = variable.get("name"), variable.get("type")
             if not isinstance(name, str) or (kind is not None and not isinstance(kind, str)):
                 raise RuntimeError("Malformed debugger variable identity")
+            # A GCC lambda's capture, read through `__closure` (#361, read_captures). The
+            # mark is the worker's own: a debugger's variable never carries it.
+            captured = not ancestry and scope == CAPTURES_SCOPE
+            if "peekyCapture" in variable and not captured:
+                variable = {k: v for k, v in variable.items() if k != "peekyCapture"}
             # Read through a standard container something may be part-way through
             # changing (an element `clear()` has destroyed, another thread's `push_back`,
             # #187): withheld, and so is everything below it, whatever its identity.
@@ -3581,7 +3933,8 @@ class DebugWorker:
             # read below, not even a container's own count.
             past = self.past_end_of(variable, frame, [step for step, _ in ancestry] + [name])
             # An unordered container the debugger counts otherwise than its own count says
-            # (GCC's, read as empty, #167): withheld, its entries never listed.
+            # (GCC's, read as empty, #167): withheld, its entries never listed, unless
+            # Peeky reads them from its own nodes, once nothing else withholds it (#360).
             unlisted = (
                 unlisted_container(
                     variable,
@@ -3592,7 +3945,9 @@ class DebugWorker:
                 if unlisted_container and past is None
                 else None
             )
+            withheld_only = unlisted is not None and not changing
             changing = changing or unlisted
+            listed = None
             if len(name) > 2000 or (kind is not None and len(kind) > 2000):
                 if not ancestry:
                     raise RuntimeError("Debugger variable identity exceeds limit")
@@ -3606,10 +3961,12 @@ class DebugWorker:
                     **({"type": kind if len(kind) <= 2000 else kind[:200] + "…"} if kind else {}),
                     "identity_truncated": True,
                 }
-                if changing:
-                    shown.update(value=None, unavailable=True, reason=changing[:300])
+                # Shown without a view: never the debugger's miscount of an unordered
+                # container, even one Peeky read from its nodes (#360).
+                if held := changing or unlisted:
+                    shown.update(value=None, unavailable=True, reason=held[:300])
                     shown.update(withheld=True, settable=False)
-                    if isinstance(label := getattr(changing, "label", None), str):
+                    if isinstance(label := getattr(held, "label", None), str):
                         shown["withheld_as"] = label[:100]
                 elif view_variable:
                     # Values that need a qualified view (Rust enums) are never shown raw.
@@ -3659,6 +4016,23 @@ class DebugWorker:
                 carried = (f"read through `{name}`: {note}"[:500], refuses)
             elif noted:
                 note, carried = noted[0], noted
+            lister = getattr(self.runtime, "listed_container", None)
+            if lister and withheld_only and not reason and note is None and through is None:
+                # Its entries as Peeky reads them from its own nodes (#360): shown, as a
+                # value view. Never with a note (its count may be leftovers too), nor
+                # through a pointer not proven to point at a live object (#339).
+                way = [*trail[: len(ancestry)], variable]
+                if self.nodes_reachable(frame, way, [step for step, _ in ancestry] + [name]):
+                    listed = lister(
+                        unlisted,
+                        variable,
+                        frame,
+                        [*ancestry, (name, kind)],
+                        self.node_reader(frame),
+                        **self.preview_stack(),
+                    )
+                if listed is not None:
+                    changing = None
             if changing and not reason:
                 reason, note, carried = changing, None, None
             elif unlisted and note is not None:
@@ -3673,7 +4047,15 @@ class DebugWorker:
                 else None
             )
             element = (
-                bound(variable, frame, self.preview_fetch, note=note)
+                bound(
+                    variable,
+                    frame,
+                    self.preview_fetch,
+                    note=note,
+                    # Where what it binds is kept, to check it there (#297).
+                    siblings=variables,
+                    raw=lambda path: self.raw_value(frame, path),
+                )
                 if bound and not (self.placeholders() and is_unavailable(variable.get("value")))
                 else None
             )
@@ -3715,7 +4097,7 @@ class DebugWorker:
                 result.append(output)
                 self.inspection_nodes += 1
                 continue
-            view = (
+            view = listed or (
                 view_variable(
                     variable,
                     self.view_fetch,
@@ -3763,6 +4145,10 @@ class DebugWorker:
                         else None
                     )
                     self.children[handle] = ("view", list(view["children"][:512]), source)
+                    if isinstance(view.get("pointee"), str):
+                        # What a pointer points at, shown whole where a selector reads it
+                        # (`p[0]`, #360).
+                        self.children[handle] += (None, view["pointee"][:2000])
                     if carried:
                         self.notes[handle] = carried
                 output = {
@@ -3788,6 +4174,10 @@ class DebugWorker:
                     output["stale"] = True
                 if kind is not None:
                     output["type"] = kind
+                if listed is not None:
+                    # An unordered container read from its nodes (#360): what its type
+                    # names, as for a row the debugger lists (a map by another name).
+                    output.update(self.type_keys(kind))
                 shown = getattr(self.runtime, "display_type", None)
                 if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                     # A reference parameter's Rust type (`&mut Window`), as for plain rows.
@@ -3831,7 +4221,11 @@ class DebugWorker:
             unread = False
             # Only the stopped frame's values change: a caller's are read-only.
             innermost = frame.get("id") == self.innermost_frame
-            if not ancestry and (check := getattr(self.runtime, "settable", None)):
+            if not ancestry and captured:
+                # A GCC lambda's capture (#361), which its object holds: never changed,
+                # and the row says so (never_settable_row).
+                settable = False
+            elif not ancestry and (check := getattr(self.runtime, "settable", None)):
                 # Root locals `set` can change, so agents need not try and be refused;
                 # optimized builds refuse every change.
                 mid = getattr(self.runtime, "mid_statement", None)
@@ -4033,6 +4427,15 @@ class DebugWorker:
                         steps=steps,
                         kinds=[step for _, step in ancestry] + [kind],
                         raw=lambda path: self.raw_value(frame, path),
+                        nodes=(
+                            self.node_reader(frame)
+                            if note is None
+                            and through is None
+                            and self.nodes_reachable(
+                                frame, [*trail[: len(ancestry)], variable], steps
+                            )
+                            else None
+                        ),
                         **self.preview_stack(),
                     )
                 except ValueError:
@@ -4072,21 +4475,7 @@ class DebugWorker:
                 output["note"] = marked[:1000]
             if kind is not None:
                 output["type"] = kind
-            resolve = getattr(self.runtime, "typedef_kind", None)
-            if resolve and (resolved := resolve(kind)) is not None:
-                # A C/C++ type named by a typedef: a pointer indexes as C does, a reference
-                # as its referent (#102).
-                output["typedef_kind"], pointee = resolved
-                if resolved[0] == "pointer":
-                    output["pointee_type"] = pointee
-            alias = getattr(self.runtime, "aliased_type", None)
-            if alias and (aliased := alias(kind)) is not None:
-                # The class behind a typedef'd type: a C++ map by another name (#119).
-                output["aliased_type"] = aliased[:2000]
-            pointed = getattr(self.runtime, "pointee_aliased_type", None)
-            if pointed and (aliased := pointed(kind, output.get("pointee_type"))) is not None:
-                # Or behind what a pointer points at (`IntSet *`).
-                output["pointee_aliased_type"] = aliased[:2000]
+            output.update(self.type_keys(kind))
             shown = getattr(self.runtime, "display_type", None)
             if shown and (rust := shown(variable, frame, **self.typed_at(ancestry, name))):
                 # The language's own name; the debugger's stays alongside.
@@ -4345,29 +4734,36 @@ class DebugWorker:
             self.pointee_stop = {"stop": self.stop_id, "judged": {}, "placed": {}, "hovers": 0}
         return self.pointee_stop
 
-    def pointee_unproven(self, variable, frame, steps):
+    def pointee_unproven(self, variable, frame, steps, pointer=None):
         """Why what the C or C++ pointer ``variable`` (the debugger's, by the names
         ``steps`` in ``frame``) points at isn't proven to be a live object (#339):
         ``probe.pointee_past``'s, or {"kind": ``probe.pointee_place``'s, "statics"}. None
         where it is proven, and where nothing is judged: not C or C++, a NULL pointer, or
         what the build's debug information doesn't size (`void *`, a function). Judged
-        once per stop."""
+        once per stop. ``pointer``: what it points at, where the runtime's ``pointee_of``
+        doesn't say (a GCC lambda's capture by reference, #361)."""
         runtime = self.runtime
         if getattr(runtime, "checks_past_ends", False) is not True or frame is None:
             return None
-        if not callable(getattr(runtime, "pointee_of", None)):
+        if pointer is None and not callable(getattr(runtime, "pointee_of", None)):
             return None
         value = variable.get("value")
         held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
         if held is None:
             return None
         state = self.pointee_state()
-        key = (frame.get("id"), tuple(str(step) for step in steps), held[0])
+        key = (
+            frame.get("id"),
+            tuple(str(step) for step in steps),
+            held[0],
+            pointer is not None,
+        )
         if key not in state["judged"]:
-            try:
-                pointer = runtime.pointee_of(frame, list(steps))
-            except (KeyError, TypeError, ValueError):
-                pointer = None
+            if pointer is None:
+                try:
+                    pointer = runtime.pointee_of(frame, list(steps))
+                except (KeyError, TypeError, ValueError):
+                    pointer = None
             why, self.pointee_partial = None, False
             if isinstance(pointer, dict):
                 character = pointer["element_size"] == 1 and _character(pointer["pointee"])
@@ -4481,6 +4877,22 @@ class DebugWorker:
         state["strings"] = (found, cut)
         return state["strings"]
 
+    def debugger_command(self, text):
+        """The text of a read-only LLDB command, run through lldb-dap's command escape
+        (#364: `memory read` of a C++ `static` local's guard variable); counted as one
+        of the frame's scans, so scopes are bound for changes only afresh after."""
+        self.frame_scans += 1
+        try:
+            reply = self.dap.request(
+                "evaluate", {"expression": f"`{text}", "context": "repl"}, timeout=2
+            )
+        except TimeoutError:
+            # Its reply may still come: no change is made until the next inspection.
+            self.view_timed_out = True
+            raise
+        result = reply.get("result") if isinstance(reply, dict) else None
+        return result if isinstance(result, str) else None
+
     def stop_stack_pointer(self):
         """The innermost frame's stack pointer at this stop (#339), as LLDB reads it, or
         None where the debugger doesn't give it; asked once per stop."""
@@ -4591,18 +5003,180 @@ class DebugWorker:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def unproven_through(self, frame, trail, ancestry):
+    def unproven_through(self, frame, trail, ancestry, scope=None):
         """The note on every value read through the debugger's variables ``trail`` (each
         step ``ancestry`` names from a root local of ``frame``) (#339): of the first C or
         C++ pointer on the way that Peeky can't show points at a live object. None where
-        each does, or none is judged."""
+        each does, or none is judged. A GCC lambda's capture (``scope`` the captures',
+        #361) is read through `__closure` first, and one by reference through what it
+        refers to."""
         names = [name for name, _ in ancestry]
+        if scope == CAPTURES_SCOPE and trail:
+            if self.closure_notes.get("stop") != self.stop_id:
+                raise ValueError("Unknown or stale expansion handle; inspect again")
+            if (note := self.closure_notes.get(frame.get("id"))) is not None:
+                return note
+            if (note := self.referent_note(frame, trail[0])) is not None:
+                return note
         for index, variable in enumerate(trail[: len(names)]):
             if (why := self.pointee_unproven(variable, frame, names[: index + 1])) is not None:
                 from peeky.probe import unproven_text
 
                 return unproven_text(_selector_path(names[: index + 1]), why)
         return None
+
+    @staticmethod
+    def capture_plan(runtime, frame):
+        """The runtime's ``capture_plan`` of the GCC lambda ``frame`` runs (#361):
+        [(capture, how, member, why)]; empty for any other frame or runtime."""
+        plan = getattr(runtime, "capture_plan", None)
+        found = plan(frame) if callable(plan) else ()
+        return [entry for entry in found or () if isinstance(entry, tuple) and len(entry) == 4]
+
+    def read_captures(self, runtime, frame, plan):
+        """(the scope of the captures of the GCC lambda ``frame`` runs, as `inspect` lists
+        a scope, or None; {capture: why it isn't read here}) (#361). lldb-dap lists neither
+        `__closure` nor the variables GCC declares for the captures, but a hover of
+        `__closure` reads it (the debugger reads the frame's variable, and runs nothing),
+        and its members are the captures (``plan``: the runtime's ``capture_plan``). A
+        selector of a capture with no row is `not found`, saying why
+        (``closure_unread``).
+
+        What is read through `__closure` is judged as through any pointer (#339), and
+        what a capture by reference refers to as through a pointer to it: shown, and
+        marked where Peeky can't show it is a live object. No capture is ever changed."""
+        if self.closure_notes.get("stop") != self.stop_id:
+            self.closure_notes = {"stop": self.stop_id}
+        self.closure_notes.pop(frame.get("id"), None)
+        unread = {name: why for name, how, _, why in plan if how != "read"}
+        wanted = [(name, member) for name, how, member, _ in plan if how == "read"]
+        found = self.closure_members(runtime, frame) if wanted else None
+        if not isinstance(found, tuple):
+            for name, _ in wanted:
+                unread[name] = found
+            return None, unread
+        closure, children = found
+        note = None
+        if (why := self.pointee_unproven(closure, frame, ["__closure"])) is not None:
+            from peeky.probe import unproven_text
+
+            note = unproven_text("__closure", why)
+        self.closure_notes[frame.get("id")] = note
+        variables = []
+        for name, member in wanted:
+            if member not in children:
+                unread[name] = (
+                    "the debugger doesn't list the member of the lambda's object that holds "
+                    "it, once"
+                )
+                continue
+            variable = {**children[member], "name": name, "peekyCapture": True}
+            through = note or self.referent_note(frame, variable)
+            rows = self.expose_variables([variable], frame, CAPTURES_SCOPE, (), through=through)
+            for row in rows if not through else ():
+                # A pointer captured by reference, shown as its value: a `char *`'s text
+                # is read through it, as through a pointer local's (#339).
+                if not row.get("unavailable") and "note" not in row:
+                    if (marked := self.captured_text_note(frame, name, row)) is not None:
+                        row.update(view="unproven", unproven_read=True, note=marked[:1000])
+            variables += rows
+        if not variables:
+            return None, unread
+        self.reference_counter += 1
+        self.capture_handles.add(self.reference_counter)
+        return {
+            "name": CAPTURES_SCOPE[0],
+            "reference": self.reference_counter,
+            "variables": variables,
+        }, unread
+
+    def closure_members(self, runtime, frame):
+        """(`__closure` as a variable: {"name", "value": its address}, {member name: the
+        debugger's variable}) for the GCC lambda ``frame`` runs (#361), read by a hover
+        of `__closure` and a listing of what it points at; else why not, as text for
+        ``closure_unread``: the hover or the listing failed or didn't answer in time, the
+        hover gave no address, or the listing is malformed or past 512 members. A member
+        the debugger lists twice is left out. The debugger's scope context may move
+        (``frame_scans``)."""
+        self.frame_scans += 1
+        arguments = {"expression": "__closure", "frameId": frame.get("id"), "context": "hover"}
+        try:
+            reply = self.dap.request("evaluate", arguments, timeout=5)
+        except TimeoutError:
+            # Its reply may still come: no change is made until the next inspection.
+            self.view_timed_out = True
+            return "the debugger didn't answer a hover of `__closure` in time"
+        except (RuntimeError, OSError) as exc:
+            return f"the debugger couldn't read `__closure` here ({str(exc)[:120]})"
+        result = reply.get("result") if isinstance(reply, dict) else None
+        held = _CLOSURE_HOVER.fullmatch(result.strip()) if isinstance(result, str) else None
+        reference = reply.get("variablesReference") if isinstance(reply, dict) else None
+        if held is None or type(reference) is not int or reference <= 0:
+            return "the debugger gave no address for `__closure` at this stop"
+        try:
+            listing = self.dap.request(
+                "variables", {"variablesReference": reference, "start": 0, "count": 513}, timeout=5
+            )
+        except TimeoutError:
+            self.view_timed_out = True
+            return "the debugger didn't list what `__closure` points at in time"
+        except (RuntimeError, OSError) as exc:
+            return f"the debugger couldn't list what `__closure` points at ({str(exc)[:120]})"
+        listed = listing.get("variables") if isinstance(listing, dict) else None
+        malformed = "the debugger's listing of what `__closure` points at is malformed"
+        if not isinstance(listed, list) or not all(isinstance(each, dict) for each in listed):
+            return malformed
+        if len(listed) > 512:
+            return (
+                "what `__closure` points at has more than 512 members, past the bound Peeky lists"
+            )
+        if validate_children := getattr(runtime, "validate_children", None):
+            try:
+                validate_children(listed)
+            except (RuntimeError, ValueError):
+                return malformed
+        counts = {}
+        for child in listed:
+            if isinstance(child.get("name"), str):
+                counts[child["name"]] = counts.get(child["name"], 0) + 1
+        children = {child["name"]: child for child in listed if counts.get(child.get("name")) == 1}
+        return {"name": "__closure", "value": held[1]}, children
+
+    def referent_note(self, frame, variable):
+        """The note on what is read through the GCC lambda capture ``variable`` (the
+        debugger's, named as the capture), where the lambda captures it by reference and
+        Peeky can't show it refers to a live object (#361), as through a pointer (#339).
+        None otherwise."""
+        referent = getattr(self.runtime, "capture_referent", None)
+        name = variable.get("name")
+        pointer = referent(frame, name) if callable(referent) and isinstance(name, str) else None
+        if pointer is None:
+            return None
+        if (why := self.pointee_unproven(variable, frame, [name], pointer=pointer)) is None:
+            return None
+        from peeky.probe import unproven_text
+
+        return unproven_text(name, why, reference=True)
+
+    def captured_text_note(self, frame, name, row):
+        """The note on the row of a GCC lambda capture ``name`` that is a pointer captured
+        by reference (#361), where its value holds text LLDB read through that pointer
+        (`0x… "abc"`) and Peeky can't show it points at a live object, as
+        ``unproven_text_of`` says it of a pointer local. None otherwise."""
+        pointed = getattr(self.runtime, "captured_pointer", None)
+        value = row.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        shown = value[held.end() :].strip() if held is not None else ""
+        if not callable(pointed) or not shown or shown.startswith("<"):
+            return None
+        if (pointer := pointed(frame, name)) is None:
+            return None
+        why = self.pointee_unproven({"value": value}, frame, [name, "*"], pointer=pointer)
+        if why is None:
+            return None
+        from peeky.probe import unproven_text
+
+        return unproven_text(name, why, text=True)
 
     def unproven_text_of(self, variable, frame, ancestry, output):
         """The note on a C or C++ pointer's own row whose value holds text LLDB read
@@ -4690,7 +5264,12 @@ class DebugWorker:
             variables = self.bounded_variables(reference, indexed)
         if validate_children:
             validate_children(variables)
-        return [v for v in variables if v.get("name") == name]
+        # The worker's own mark of a GCC lambda's capture (#361) is never a debugger's.
+        return [
+            {key: value for key, value in v.items() if key != "peekyCapture"}
+            for v in variables
+            if v.get("name") == name
+        ]
 
     def bounded_variables(self, reference, indexed=None):
         if type(reference) is not int or reference <= 0:
@@ -4802,7 +5381,7 @@ class DebugWorker:
         # points at a live object (#339); not below a value with a note (#148), whose
         # pointers may be leftovers themselves, as that note says.
         noted = self.notes.get(args["handle"])
-        through = None if noted else self.unproven_through(frame, trail, ancestry)
+        through = None if noted else self.unproven_through(frame, trail, ancestry, scope_identity)
         result = self.expose_variables(
             variables[start : start + count],
             frame,
@@ -4838,7 +5417,11 @@ class DebugWorker:
         if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
         hook = getattr(runtime, "preview_value", None)
-        if hook is None or record[0] == "view":
+        if record[0] == "view":
+            # What a pointer whose entries Peeky read from memory points at (#360).
+            held = record[4] if len(record) > 4 else None
+            return {"value": held} if args.get("pointee") is True and held else {}
+        if hook is None:
             return {}
         trail = []
         frame, _, ancestry, _, _ = self.walk(record, runtime, trail)
@@ -4864,6 +5447,13 @@ class DebugWorker:
                 steps=steps,
                 kinds=[kind for _, kind in ancestry],
                 raw=lambda path: self.raw_value(frame, path),
+                # Nodes are read only where nothing on the way is in doubt (#360).
+                nodes=(
+                    self.node_reader(frame)
+                    if not self.notes.get(args["handle"])
+                    and self.nodes_reachable(frame, trail, steps)
+                    else None
+                ),
                 **self.preview_stack(),
             )
         except ValueError:
@@ -5165,6 +5755,14 @@ class DebugWorker:
             record = record[2]
         if record is None:
             raise ValueError("Unknown or stale expansion handle; inspect again")
+        if (
+            record[1] == CAPTURES_SCOPE
+            and record[2]
+            and (refusal := getattr(runtime, "capture_refusal", None))
+        ):
+            # Inside a GCC lambda's capture (#361), which the lambda's object holds.
+            selector = member_selector(record[2], args["name"])
+            raise ValueError(f"`{selector}` cannot be changed: {refusal(record[2][0][0])}")
         if record[0].get("id") != self.innermost_frame:
             raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
         if level := self.optimized():
@@ -5374,7 +5972,7 @@ class DebugWorker:
         if not getattr(self.runtime, "text_language", None):
             return False
         try:
-            kind = self.text_storage(self.runtime, variable, frame)[0]
+            kind, shape = self.text_storage(self.runtime, variable, frame)
         except ValueError:
             return False
         check = getattr(self.runtime, "text_settable", None)
@@ -5385,13 +5983,32 @@ class DebugWorker:
             return True
         if kind != "std" or not reads:
             return False
-        # lldb-dap 20 changes a string in its own short buffer, element by element.
+        # lldb-dap 20 changes a string in its own short buffer, element by element, or
+        # with LLDB's `memory write` where it misreads that buffer (GCC's).
         memory = TextMemory(
             lambda parent, count=None: self.view_fetch(parent),
             None,
             lambda address, count: self.view_read(f"0x{address:x}", count),
+            poke=self.memory_command,
         )
-        return held_in_place(variable, memory)
+        return held_in_place(variable, memory, shape)
+
+    def memory_command(self, address, data):
+        """Write ``data`` at ``address`` with LLDB's own `memory write` command, through
+        lldb-dap's command escape, for a debugger with readMemory but no writeMemory
+        (lldb-dap 20; text_sets.Memory.poke). LLDB echoes the command and prints nothing
+        else when it succeeds; anything else it prints is its failure (RuntimeError)."""
+        if not 0 < len(data) <= 64 or not 0 < address < 2**64:
+            raise ValueError("Memory write exceeds limit")
+        command = f"memory write -f x -s 1 0x{address:x} " + " ".join(f"0x{b:02x}" for b in data)
+        reply = self.dap.request("evaluate", {"expression": f"`{command}", "context": "repl"})
+        said = [
+            line
+            for line in split_lines(str(reply.get("result") or ""))
+            if line.strip() and line.strip() != f"(lldb) {command}"
+        ]
+        if said:
+            raise RuntimeError(" ".join(said)[:200])
 
     def view_settable(self, variable, frame, why=None):
         """The `[settable]` mark of a root string a runtime's view shows (a Rust String,
@@ -5466,11 +6083,15 @@ class DebugWorker:
                 raise RuntimeError(f"wrote {reply.get('bytesWritten')} of {len(data)} bytes")
 
         capabilities = self.capabilities
+        reads = capabilities.get("supports_read_memory")
+        writes = capabilities.get("supports_write_memory")
         memory = TextMemory(
             children,
             change,
-            read if capabilities.get("supports_read_memory") else None,
-            write if capabilities.get("supports_write_memory") else None,
+            read if reads else None,
+            write if writes else None,
+            # lldb-dap 20: LLDB's own command, for a buffer it lists no characters of.
+            self.memory_command if reads and not writes else None,
         )
         changed = change_text(variable, text, memory, relist, kind, shape)
         runtime.assert_current()
@@ -5690,6 +6311,10 @@ class DebugWorker:
         scopes = self.frame_scopes(
             runtime, frame, self.dap.request("scopes", {"frameId": frame["id"]}).get("scopes", [])
         )
+        if scope_identity == CAPTURES_SCOPE:
+            # A GCC lambda's capture (#361): found again through `__closure`, as the
+            # member of what it points at that holds it.
+            return self.walk_capture(runtime, frame, ancestry, trail)
         matches = [scope for scope in scopes if self.scope_identity(scope) == scope_identity]
         if len(matches) != 1:
             raise ValueError("Expansion scope is missing or ambiguous")
@@ -5704,6 +6329,35 @@ class DebugWorker:
             if trail is not None:
                 trail.append(matches[0])
         return frame, scope_identity, ancestry, reference, indexed
+
+    def walk_capture(self, runtime, frame, ancestry, trail=None):
+        """``walk`` from the GCC lambda capture ``ancestry`` starts at (#361): its member
+        of what `__closure` points at, by ``capture_members``, of the type it had, then
+        each further step by its name and type."""
+        if not ancestry:
+            raise ValueError("Expansion ancestry changed or is ambiguous")
+        members = getattr(runtime, "capture_members", None)
+        held = dict(members(frame)) if callable(members) else {}
+        found = self.closure_members(runtime, frame) if ancestry[0][0] in held else None
+        if isinstance(found, str):
+            raise ValueError(f"Peeky can't read `{ancestry[0][0]}` again: {found}; inspect again")
+        variable = found[1].get(held[ancestry[0][0]]) if found else None
+        if variable is None or variable.get("type") != ancestry[0][1]:
+            raise ValueError("Expansion ancestry changed or is ambiguous")
+        variable = {**variable, "name": ancestry[0][0], "peekyCapture": True}
+        if trail is not None:
+            trail.append(variable)
+        reference = variable.get("variablesReference")
+        indexed = variable.get("indexedVariables")
+        for name, kind in ancestry[1:]:
+            matches = self.named_children(reference, indexed, name, runtime)
+            if len(matches) != 1 or matches[0].get("type") != kind:
+                raise ValueError("Expansion ancestry changed or is ambiguous")
+            reference = matches[0].get("variablesReference")
+            indexed = matches[0].get("indexedVariables")
+            if trail is not None:
+                trail.append(matches[0])
+        return frame, CAPTURES_SCOPE, ancestry, reference, indexed
 
     def close(self):
         """End the session; returns what became of the processes it started, if any."""
@@ -5730,6 +6384,7 @@ class DebugWorker:
         self.held_extras, self.pointee_stop, self.past_incomplete = {}, None, False
         self.references.clear()
         self.global_handles.clear()
+        self.static_handles.clear()
         self.reference_frames.clear()
         self.reference_adapter.clear()
         self.children.clear()
@@ -5895,6 +6550,12 @@ def member_selector(ancestry, name):
     return text
 
 
+# A C or C++ variable in static storage (#364).
+_STATIC_SET = (
+    "{name} cannot be changed: {function} keeps it in the program's static storage, not in "
+    "its frame's own memory, and Peeky changes only values a frame holds itself; edit the "
+    "source and run verify instead"
+)
 _CALLER_SET = (
     "{name} is in a caller's frame, whose values cannot be changed: only the stopped "
     "(innermost) frame's can, which `session set` and probes change"

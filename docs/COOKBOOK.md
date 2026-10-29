@@ -3327,7 +3327,9 @@ peeky: [STALE_STOP] Stale stop_id: the program was auto-resumed after its 3.0 s 
   hint: Call wait until state is stopped, then inspect the latest stop.
 ```
 
-Crash and exception stops are never auto-resumed.
+Crash and exception stops are never auto-resumed. The budget holds while Peeky reads a stop too.
+If the debugger hasn't said where the stop is when the budget runs out, the stop is resumed. The
+note then says the latest stop was at a place not read in time.
 
 ### 5.5 Cleaning Up
 

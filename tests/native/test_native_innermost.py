@@ -210,19 +210,25 @@ def test_this_is_withheld_while_its_object_is_being_built(directory, cxx, capsys
     # The constructor as a caller frame (while `twice` runs for `a`).
     rows = shown_at(capsys, path, line_of(BUILDING, "return w;"), "this", hit=3, frame=1)
     assert rows["this"]["frame"] == 1 and withheld(rows["this"], "is building")
-    rows = shown_at(capsys, path, line_of(BUILDING, "// lambda in t's"), "this", "this.t")
+    rows = shown_at(capsys, path, line_of(BUILDING, "// lambda in t's"), "this", "this.t", "t")
     if cxx == "gcc":
-        # GCC passes a lambda its captures through `__closure`, which lldb-dap does not
-        # list (#167): nothing to read, so nothing shown.
-        assert all(row["error"].startswith("not found; visible: ") for row in rows.values())
+        # GCC passes a lambda its captures through `__closure` (#361): no `this`, and the
+        # capture `t` is withheld as clang's `this` is.
+        assert rows["this"]["error"] == "not found; visible: got, t", rows
+        assert withheld(rows["t"], "this lambda is defined in the declaration of `t`")
+        assert withheld(rows["t"], "what it captures may be under construction: it may not")
     else:
         assert withheld(rows["this"], "this lambda is defined in the declaration of `t`")
     # Built: a member function called later, and a lambda called after its declaration.
     rows = shown_at(capsys, path, line_of(BUILDING, "// called once built"), "this.a", "this.b")
     assert [rows["this.a"]["value"], rows["this.b"]["value"]] == ["6", "13"]
-    rows = shown_at(capsys, path, line_of(BUILDING, "// lambda called later"), "this.t.p.y")
+    rows = shown_at(
+        capsys, path, line_of(BUILDING, "// lambda called later"), "this.t.p.y", "t.p.y"
+    )
     if cxx == "gcc":
-        assert rows["this.t.p.y"]["error"] == "not found; visible: (none)", rows
+        # Before #361: `not found; visible: (none)`.
+        assert rows["this.t.p.y"]["error"] == "not found; visible: t, w", rows
+        assert rows["t.p.y"]["value"] == "8", rows
     else:
         assert rows["this.t.p.y"]["value"] == "8"
 
@@ -589,10 +595,14 @@ def test_a_lambda_called_below_the_listed_frames_is_judged_from_more_of_them(
     path.write_text(DEEP)
     line = line_of(DEEP, "// in the lambda")
     if cxx == "gcc":
-        # GCC passes the lambda its captures through `__closure`, which lldb-dap does not
-        # list (#167): no `this` to judge, and none shown.
-        rows = shown_at(capsys, path, line, "this", hit=3)
-        assert rows["this"]["error"] == "not found; visible: doubled, v", rows
+        # GCC passes the lambda its captures through `__closure` (#361): its capture
+        # `total` is judged as clang's `this` is.
+        for hit in (1, 2):
+            rows = shown_at(capsys, path, line, "total", hit=hit)
+            assert "value" in rows["total"], rows
+        rows = shown_at(capsys, path, line, "this", "total", hit=3)
+        assert rows["this"]["error"] == "not found; visible: doubled, total, v", rows
+        assert withheld(rows["total"], "Peeky cannot list every frame below this one")
         return
     for hit in (1, 2):
         rows = shown_at(capsys, path, line, "this", hit=hit)
@@ -1742,16 +1752,15 @@ int main(void) {
 
 
 @pytest.mark.timeout(300)
-def test_a_static_local_says_why_the_debugger_does_not_list_it(directory, capsys):
+def test_a_static_local_is_read_though_the_debugger_does_not_list_it(directory, capsys):
     # #167 (B4): lldb-dap lists no frame's static storage, so a function's `static` read
-    # "not found; visible: a", as if main had no `q`.
+    # "not found; visible: a", as if main had no `q`. #364: it is read where the code
+    # names it, and never changed.
     path = directory / "statics.c"
     path.write_text(STATICS)
     rows = shown_at(capsys, path, line_of(STATICS, "// HERE"), "q", "a")
     assert rows["a"]["value"] == "1", rows
-    error = rows["q"]["error"]
-    assert error.startswith("not found: main declares 'q' in static storage"), error
-    assert error.endswith("Peeky cannot read it here; print it from the program; visible: a")
+    assert rows["q"]["value"] == "5" and rows["q"]["not_settable"] == "static", rows
 
 
 @pytest.mark.cpp

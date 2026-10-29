@@ -2033,9 +2033,11 @@ def _state_text(state, name="default", base=None):
         text += f"\nwarning: {warning}"
     if state.get("auto_resumed"):
         last = state.get("last_auto_resumed") or {}
+        # A stop resumed before the debugger said where it was has no location (#356).
+        where = f"at {last['location']}" if last.get("location") else "at a place not read in time"
         text += (
             f"\nnote: {state['auto_resumed']} breakpoint stop(s) were auto-resumed after the "
-            f"pause budget (latest at {last.get('location')} after {last.get('paused_s')} s)"
+            f"pause budget (latest {where}, after {last.get('paused_s')} s)"
         )
     return _named(text, name)
 

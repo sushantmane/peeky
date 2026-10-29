@@ -1,4 +1,4 @@
-# Error codes (protocol 7)
+# Error codes (protocol 8)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -111,6 +111,13 @@ The last column is the `retryable` field.
   launch.
 - Then check that the program can read its own path and every directory above it. A hung file
   system, or a pending macOS privacy prompt, blocks it. Then retry.
+- `A stop is never shown without its line and function` means that the debugger stopped, but
+  didn't give the stop's line and function within 15 s. `A stop is never shown without the
+  breakpoint it is at` means that it gave them, but didn't say within 15 s which breakpoint the
+  stop is at. A very busy machine can stall it. Either way, the session was closed, and nothing of
+  that stop was shown. Start again once the load has passed.
+- A debugger that refuses that read, as it may at a crash, doesn't end the session. The stop then
+  has no location.
 
 ### DEBUGGER_ERROR
 
@@ -145,8 +152,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 6, this client 7`,
-  or, from the worker, `Client speaks protocol 6, this worker 7`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 7, this client 8`,
+  or, from the worker, `Client speaks protocol 7, this worker 8`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -245,7 +252,7 @@ a Java String. These are refused, and nothing is written:
 | A `const` or `volatile` string | `a const object` |
 | A Java variable not declared String | |
 | A text that this debugger can't write | `cannot write memory` (lldb-dap 21 can write it); `cannot read memory` for a libstdc++ string with lldb-dap 18 |
-| A GCC build's `std::string`, whose own buffer LLDB reads as `char[0]`, with a debugger that can't write memory | `the debugger misreads this build's string buffer as char[0]` |
+| A GCC build's `std::string`, whose own buffer LLDB reads as `char[0]`, where the build's debug information doesn't give that buffer's size | `the debugger misreads this build's string buffer as char[0]` |
 
 A Java adapter bundle built before String changes were supported says to rebuild it:
 `predates String changes`.
@@ -499,4 +506,7 @@ HTTP response carries `X-Peeky-Protocol: 5`.
 - **Protocol 7** says which C or C++ pointers point at a pointer. A value read through
   `pp[0]` of an `Item **pp` is then never said to be at `pp`'s address. A protocol 6 worker
   doesn't say it ([C and C++ 2.1](lang/c-cpp-cookbook.md#a-value-read-at-another-pointers-address)).
+- **Protocol 8** reads a GCC lambda's captures in a `Captures` scope. A stop says why each one
+  it doesn't read isn't read (`closure_unread`). A protocol 7 worker reads none
+  ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-lambdas-captures)).
 - A client and a worker of different protocols refuse each other before anything runs.

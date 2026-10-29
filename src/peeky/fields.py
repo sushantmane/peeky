@@ -415,7 +415,8 @@ def type_graph(dies, offsets, libraries, limit=MAX_TYPES, pointees=False):
             if graph[offset][9] and CXX_CONTAINER.match(graph[offset][11]):
                 # A standard container's elements (and a map's keys and values), which
                 # its members reach only through pointers: their previews' types (#181).
-                pending.extend(p[2] for p in parameters[:2] if p[0] == "type" and p[2])
+                # And its order and allocator, which may see where each element is (#297).
+                pending.extend(p[2] for p in parameters if p[0] == "type" and p[2])
             if graph[offset][9] and HASHED.match(graph[offset][11]):
                 pending.extend(p[2] for p in parameters if p[0] == "type" and p[2])
         else:

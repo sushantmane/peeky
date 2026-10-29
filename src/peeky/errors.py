@@ -23,10 +23,21 @@ from peeky.textlines import split_lines
 # 7 (#344): a C or C++ pointer's value extent says `indirect` where it points at a
 # pointer; a protocol 6 worker leaves it out, so `pp[0].uses` of an `Item **pp` would be
 # said to be read at the address `pp`'s alias holds.
-PROTOCOL_VERSION = 7
+# 8 (#361): a GCC lambda's captures come in a `Captures` scope, and a stop says why each
+# one it doesn't list isn't read (`closure_unread`); a protocol 7 worker reads none, and
+# a protocol 7 client would say lldb-dap doesn't list one where Peeky read none.
+PROTOCOL_VERSION = 8
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
+    (
+        # A stop's read that timed out (#356): before the rule that takes any "breakpoint".
+        r"^A stop is never shown without (its line and function|the breakpoint it is at):",
+        "TIMEOUT",
+        "The debugger stalled at a stop. Start again once the machine is less busy; nothing "
+        "of that stop was shown.",
+        False,
+    ),
     (
         r"^Evidence query failed: --schema has no ",
         "INVALID_QUERY",

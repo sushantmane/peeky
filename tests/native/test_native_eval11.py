@@ -1,5 +1,5 @@
-"""The eleventh agent evaluation's C++ Lows on real builds: a GCC lambda's capture is not
-found, and its row now says why (prep 8)."""
+"""The eleventh agent evaluation's C++ Lows on real builds: a GCC lambda's capture said why
+it was not found (prep 8); it is read through `__closure` now (#361)."""
 
 import json
 import os
@@ -37,7 +37,7 @@ def directory(tmp_path, monkeypatch):
 
 
 @pytest.mark.timeout(300)
-def test_cpp_a_lambdas_capture_says_why_it_is_not_found(directory, cxx, capsys):
+def test_cpp_a_lambdas_capture_is_read(directory, cxx, capsys):
     path = directory / "lambda.cpp"
     path.write_text(LAMBDA)
     line = next(n for n, text in enumerate(LAMBDA.splitlines(), 1) if "IN_LAMBDA" in text)
@@ -50,13 +50,16 @@ def test_cpp_a_lambdas_capture_says_why_it_is_not_found(directory, cxx, capsys):
     # The lambda's parameter is listed.
     assert not str(rows["a"].get("error", "")).startswith("not found"), rows
     if cxx == "gcc":
-        # Before: `not found; visible: a, b, ga`, with no reason.
+        # Before prep 8: `not found; visible: a, b, ga`, with no reason; before #361, `not
+        # found: 'grade' is a capture of this lambda, which GCC passes through `__closure`,
+        # and lldb-dap doesn't list it ...`. Read through `__closure` now: `std::sort` calls
+        # a copy of the lambda's object, which no listed frame holds, so both are marked.
+        assert rows["bonus"]["value"] == "2", rows
+        assert rows["grade"]["type"].startswith("std::map<"), rows
+        assert rows["grade"]["debugger_type"].endswith("&"), rows
         for name in ("grade", "bonus"):
-            assert rows[name]["error"].startswith(
-                f"not found: '{name}' is a capture of this lambda, which GCC passes through "
-                "`__closure`, and lldb-dap doesn't list it"
-            ), rows
-            assert rows[name]["error"].endswith("; visible: a, b, ga"), rows
+            assert rows[name]["view"] == "unproven", rows
+            assert rows[name]["note"].startswith("read through `__closure`: "), rows
     else:
         # Clang lists a capture as a member of the lambda's `this`: no GCC note.
         assert all("__closure" not in json.dumps(rows[n]) for n in ("grade", "bonus")), rows

@@ -40,7 +40,9 @@ Start with [7.1](#71-c-and-c): what Peeky reads and changes in C and C++.
   - [Name the tools in a config](#name-the-tools-in-a-config)
   - [What Peeky checks about a build](#what-peeky-checks-about-a-build)
   - [Why a local shows `no value yet`](#why-a-local-shows-no-value-yet)
+  - [Read a `static` local](#read-a-static-local)
   - [Read C++ members](#read-c-members)
+  - [Read a lambda's captures](#read-a-lambdas-captures)
   - [Read a C++ string that holds a NUL byte](#read-a-c-string-that-holds-a-nul-byte)
   - [Change a text](#change-a-text)
   - [Read a C++ map or set by key](#read-a-c-map-or-set-by-key)
@@ -227,7 +229,8 @@ Peeky checks addresses, not where a pointer came from:
 - In a method of a C++ object made with `new`, what `this` points at is marked: it is a heap
   block.
 - A pointer into a library's own memory, such as `stdout`, is marked.
-- A C++ reference, and a smart pointer's object, aren't checked.
+- A C++ reference, and a smart pointer's object, aren't checked. A GCC lambda's capture by
+  reference is ([details](#read-a-lambdas-captures)).
 - A pointer with a `note` already, such as a local on a `do` body's first line, keeps that note
   on what is read through it. It may hold leftovers itself
   ([7.1](#values-peeky-withholds-or-cant-vouch-for)).
@@ -577,7 +580,14 @@ In C and C++, a caller's local is withheld while its declaration's code hasn't f
   the next.
 - **A declaration line with no code of its own:** the local is stored element by element, on its
   elements' lines. Examples are an array of structs, a nested struct, or a 2-D array initialized
-  over several lines.
+  over several lines. Peeky goes by the code of the declaration's lines instead. It shows the
+  local once the caller's line is below the declaration, and all of that code comes before the
+  call. A loop's next pass, above the declaration, still withholds it.
+  - So does an optimized build, or one with an `optimize` attribute or `#pragma GCC optimize`
+    in any of its files. Either may lay a function's code out of source order.
+  - So does the caller of an inlined call, such as an `always_inline` function's. Its address
+    is where that call's code starts, not where a call returns. A frame the debugger rebuilds
+    for a tail call's caller is withheld too.
 - **A declaration still running on the caller's line:** Peeky reads the declaration from the source
   up to its `;`. In `struct trio t = { seed,` / `{ twice(3),` / `twice(4) } };`, the first line's
   code runs before the calls, and `t.p` is stored after them.
@@ -688,6 +698,8 @@ parts after it give the details.
   `this`: `this.head_`.
 - A `std::string` reads whole. A `std::vector` reads by index, and a `std::map` by key: `m[1]`,
   `ages["al"]`.
+- A `static` local reads where the code at the stop names it, and is never changed
+  ([details](#read-a-static-local)).
 - Structs, arrays and most standard containers show their members, in probes, `inspect` and
   `session get`. `bins` reads `[{lo = 0, hi = 2, count = 0}, …]`, `bins[3]` reads
   `{lo = 6, hi = 7, count = 0}`, and a `std::vector<std::string>` reads
@@ -904,16 +916,43 @@ That is the case for:
 - A set (`std::set`, `std::multiset`, `std::unordered_set`, `std::unordered_multiset`) shows its
   elements: `size=2 {1, 3}`.
 - A `std::multimap` keeps its summary, `size=2`: its keys repeat.
-- An unordered container (`std::unordered_map`, `std::unordered_set` and their multi forms) shows
-  its entries only where LLDB's count of them equals the container's own `_M_element_count`.
-  LLDB's libstdc++ formatter counts one as empty when the debug information doesn't name its
-  element type. That happens in a GCC build, and with LLDB 18 for one named by a typedef
-  (`using Ids = std::unordered_set<long>`). Such a row has no value, and no key, position or
-  listing is read in it:
+- An unordered container (`std::unordered_map`, `std::unordered_set` and their multi forms) can
+  be misread by LLDB's libstdc++ formatter. It counts one as empty when the debug information
+  doesn't name its element type. That happens in a GCC build, and with LLDB 18 for one named by
+  a typedef (`using Ids = std::unordered_set<long>`). It can also decode the entries as another
+  type, or from the wrong place (see below).
+
+  So Peeky checks LLDB's count against the container's own `_M_element_count`, and the type and
+  place LLDB decodes. Where either is wrong, Peeky reads the entries from the container's own
+  nodes instead. The row shows them as any container's, with `view: memory`:
+  `ids  Ids  size=1 {9}`. Keys, positions, previews and listings read them too.
+
+  Peeky reads the nodes only where all of these hold:
+
+  - the debug information gives the nodes' type, and where each node holds its entry;
+  - the entries hold integers, `bool`s and `std::string`s, in pairs and structs. A struct with a
+    base class or a bitfield doesn't count;
+  - the container holds at most 256 entries, and its chain of nodes ends after exactly
+    `_M_element_count` of them;
+  - nothing may be changing the container
+    ([A container that something may be changing](#a-container-that-something-may-be-changing));
+  - the build is unoptimized, and its source asks to optimize no function: no `optimize`
+    attribute (`[[using gnu: optimize("O2")]]` too) or pragma. An optimized function may
+    keep a value it stores in a register, with the nodes unchanged;
+  - the row has no note, such as `no value yet` or leftovers;
+  - every pointer and reference on the way refers to a live object, as Peeky can show it
+    ([When what a pointer points at is unproven](#when-what-a-pointer-points-at-is-unproven)).
+    A heap block or a returned call's frame doesn't count. With lldb-dap 18, which gives no
+    address for a container local, neither does a pointer or reference to one;
+  - with a debugger that can't read memory, such as lldb-dap 18, each string's text is in the
+    node: 15 bytes or fewer. lldb-dap 20 reads longer ones.
+
+  Otherwise the row has no value, and no key, position or listing is read in it. For example, in
+  a GCC build:
 
   ```
-  ids  Ids  <not listed: the debugger cannot list this build's unordered containers: it counts 0 entries, but the container's own count (`_M_element_count`) is 1; print its entries from the program>
-  ids[#0]   <[#0] not read: ids is not listed: the debugger cannot list this build's unordered containers: …>
+  ratios  std::unordered_map<int, double>  <not listed: the debugger cannot list this build's unordered containers: it counts 0 entries, but the container's own count (`_M_element_count`) is 1; print its entries from the program>
+  ratios[1]   <[1] not read: ratios is not listed: the debugger cannot list this build's unordered containers: …>
   ```
 
   Inside a preview it shows `<not listed>`: `{us = <not listed>, n = 2}`. A pointer to one is
@@ -921,8 +960,9 @@ That is the case for:
   too, and says so. That happens for one reached through a base class or an anonymous member.
 
   A right count isn't enough. LLDB decodes each entry as the allocator's first template
-  argument, at a fixed place in each node. So a non-empty one is listed only where the debug
-  information proves that type and place right. These are withheld, each with why:
+  argument, at a fixed place in each node. So Peeky uses LLDB's listing only where the debug
+  information proves that type and place right. These are read from the nodes instead, or
+  withheld, each with why:
 
   - an allocator whose first template argument is another type, such as
     `WeirdAlloc<double, int>` for `int` entries;
@@ -1061,32 +1101,29 @@ To fix it, set `PEEKY_NATIVE_CXX` to a clang++ or a g++.
 GCC's debug information differs from clang's, and LLDB misreads some of it. Where Peeky can't
 prove a value, it withholds it, and the row says why. These are the known gaps:
 
-- **Unordered containers** show no entries. LLDB finds no element type in GCC's `std::allocator`,
-  so it counts each one as empty. Peeky withholds the container's entries, keys and positions,
-  unless LLDB's count is the container's own ([details](#standard-containers)).
-- **A lambda's captures** can't be read. GCC passes them through `__closure`, which lldb-dap
-  doesn't list. So a captured name is `not found` in the lambda, and the row says so:
-  ``not found: 'grade' is a capture of this lambda, which GCC passes through `__closure` …``. To
-  see a by-value capture, stop in the declaring function on the line that creates the lambda, or
-  print it inside the lambda. Later, the outer variable may no longer match the copy the lambda
-  holds.
+- **Unordered containers** are read from their own nodes. LLDB finds no element type in GCC's
+  `std::allocator`, so it counts each one as empty. Peeky reads the entries itself where it can
+  prove how. Entries that hold floating-point numbers, characters, enums, pointers or other
+  containers stay withheld, as does a container of more than 256 entries
+  ([details](#standard-containers)).
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).
-- **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
-  is placed in read-only data. lldb-dap lists no static storage among a frame's locals. So `cs` is
-  `not found`, and the row says that `main` declares it in static storage. A `static` local gets
-  the same note, in C too.
-- **A text change** to a `std::string` that holds its text in its own buffer is refused with
-  lldb-dap 20. LLDB reads that buffer as `char[0]`, so Peeky can't set its characters one by one.
-  The refusal says so ([details](#change-a-text)).
-- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, is
-  withheld in a caller frame. GCC gives its declaration's first line no code of its own, so Peeky
-  can't tell when it is stored.
 - **GDB's DAP** isn't supported. Peeky debugs GCC's builds with lldb-dap.
 
 Some things only look different:
 
+- **A lambda's captures** are read through `__closure`, which lldb-dap doesn't list
+  ([details](#read-a-lambdas-captures)). In an optimized build, and at a one-line lambda's first
+  stop, a captured name is `not found`, and the row says why. To see a by-value capture there,
+  stop on the line that creates the lambda, or print it inside the lambda.
+- **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
+  no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
+  once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
+  build, or above an inlined call, it stays withheld in a caller frame.
+- **A `const` local aggregate** that GCC builds at compile time, such as `const Span cs{8, 9};`,
+  is in read-only data, not in the frame. It reads as a `static` local does, and is never changed
+  ([details](#read-a-static-local)).
 - **Function names:** LLDB names a `static` function from its declaration, from the global scope:
   `::trim_left(const std::string &)`, where clang's build gives `trim_left(std::string const&)`.
   Tables and messages drop that leading `::`, so the column reads `trim_left` in both. The store
@@ -1112,13 +1149,49 @@ Some things only look different:
   - An element that is a pointer shows its value, but Peeky doesn't follow it: `p[0]` can't be
     read. Read what it points at where the pair is made.
   - It can't be changed, nor can its fields: a change would write through the reference.
-  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where it names an
-    object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A union's
-    member doesn't count, since another member may become active. Anything else may be gone by
-    the stop. `auto &[t, u] = make(0)[0];` refers into a temporary that its
-    line destroys. So a binding of a call, a subscript, a range `for`'s element, `*p` or a global
-    shows `not shown: the binding refers to an object Peeky can't prove is still alive`. Read it
-    where the code names that object, or bind by value.
+  - A binding by reference (`auto &`, `const auto &`, `auto &&`) is read only where Peeky proves
+    that what it refers to is still alive. That is one of these:
+    - an object of the stopped frame, or a member of one: `auto &[a, b] = p;`, `= o.inner`. A
+      union's member doesn't count, since another member may become active.
+    - an element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`: `for (const
+      auto &[k, v] : m)`, or `auto &[r, s] = v[0];` for a vector. The container must use the
+      default allocator, and a map or set `std::less`. Its elements must be numbers or
+      characters: a map's key and value, or a `std::pair` or `std::array` of them. So no
+      constructor, allocator or order of the program's sees where an element is. While the
+      binding is in scope, the code may only call the container's members that give a value,
+      such as `m.size()`. Anywhere in the container's scope, the code must keep no
+      pointer, iterator or reference into it: no `v.data()`, `m.begin()` or `&v[0]`. It must not
+      pass the container on or name it in a lambda. At the stop, the binding must point into the
+      vector's elements, or into one of the map's entries as the debugger lists them (at most 256).
+  - The program must not replace `operator new` or `operator delete`, which `std::allocator`
+    calls, in any form. Peeky reads that from the build's debug information, and from
+    `LD_PRELOAD`, `LD_AUDIT` and `DYLD_INSERT_LIBRARIES` in the launch's environment. On Linux it
+    also reads `/etc/ld.so.preload` on the host that runs the program, at each launch. If that file
+    names a library (blank lines and `#` comments don't count), or exists but can't be read, the
+    binding is withheld.
+  - A call's result is never read: `auto &&[p, q] = one(i);` or `const auto &[x, y] = one(i);`.
+    C++ keeps it alive until the binding's scope ends, but the function may keep a pointer into
+    it. With the named return value optimization, `P r; saved = &r; return r;` builds `r` where
+    the caller keeps the result. The row says `… a call's result, which the function called may
+    keep a pointer into`.
+  - Each of the binding's names must be a number or a character. A binding with a pointer in it
+    stays `not shown`, since the pointer may point at another element.
+  - Each use of a name must be in an expression of numbers and characters alone: the binding's
+    names, locals of such types, number literals, casts such as `(long)`, and their built-in
+    operators. `use(k * v)`, `if (k > 1)`, `long w = k;`, `w += v;` and `b += 1;` are fine.
+  - A literal counts only with the language's own suffixes, such as `1u`, `2.5f` or `0x1Fll`. A
+    user-defined literal, such as `1_sink`, `10ms` or `2i`, calls an operator of its own.
+  - An operand of another type may bring an overloaded operator that keeps the name's address,
+    so `std::cout << k`, `sink << v` and `use(m.count(k))` withhold the binding. So do `&k`,
+    `auto &r = k`, `arr[k]` and a branch of `?:`.
+  - The name alone may be an argument of a call whose every function takes it by value, as
+    `use(long)` or `printf`'s `...` do.
+  - Peeky reads that code as the compiler preprocessed it, so a macro counts as what it expands
+    to. In an optimized build, only an object of the frame is read.
+  - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary
+    that its line destroys. Such a row shows `not shown: the binding refers to an object Peeky
+    can't prove is still alive`, and why. Read it where the code names that object, or bind by
+    value.
   - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
     tell whether that pass has set its reference yet.
   - Peeky reads the binding's line to tell it from a reference the code declares with the
@@ -1460,11 +1533,57 @@ In C++, `this` is withheld while its object is being built:
 - in any frame a constructor called. Peeky reads up to 64 frames to tell; past that, it
   withholds;
 - in a lambda defined inside a declaration or a constructor that may still be running. The note
-  names that declaration;
+  names that declaration. Peeky follows every function around a nested lambda, up to 256 of
+  them, and withholds `this` past that;
 - in a lambda that a class's default member initializer defines: `long b = [this] { ... }();`. A
   class with no constructor runs its initializers where the object is built.
 
-An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too.
+An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too. In a GCC build, a
+lambda's captures are withheld in the same places ([captures](#read-a-lambdas-captures)).
+
+### Read a `static` local
+
+lldb-dap lists a function's static storage apart from its locals. That holds a `static` local,
+and a `const` aggregate GCC builds at compile time. Peeky reads the one the code at the stop
+names. `inspect` lists it under `[Statics]`. Here `tick` declares `static long calls` at line 7,
+and again in a block, at line 13:
+
+```sh
+peeky probe tick.c --at 15 --capture calls,cs --hits 2
+```
+
+```
+hit  phase     line  function  selector  type        value
+1    observed  15    tick      calls     long        101  [not settable: static]
+1    observed  15    tick      cs        const span  {start = 8, end = 9}  [not settable: static]
+2    observed  15    tick      calls     long        102  [not settable: static]
+2    observed  15    tick      cs        const span  {start = 8, end = 9}  [not settable: static]
+```
+
+- The code names a `static` local from below its declaration to the end of its block. An inner
+  block's declaration hides an outer one. Peeky reads that from the source, as the compiler
+  preprocesses it, and from the debug information.
+- Above its declaration, on its line, or past its block, the selector is `not found`, and says
+  why: ``tick declares 'count' in static storage (…), at line 18, in a block this stop is outside
+  of, so the code here doesn't name it; read it in that block, below line 18``.
+- Where Peeky can't tell which declaration the code names, the note says why, and it isn't read.
+- Where the frame has a local of that name, the name selects the local, as before
+  ([A name a block declares again](#a-name-a-block-declares-again)).
+- Where lldb-dap lists several of one name, the row is `calls @ tick.c:13`. One a C++ symbol
+  names may read `Acc::run()::calls`. Select either as `calls`.
+- A template's instances share the declaration's file and line. Peeky reads only the stopped
+  instance's, as `long tick<int>(int)::calls` names it, or as its address proves it.
+- An inlined or copied function's `static` is one declaration in every copy. lldb-dap lists none
+  for an inlined call's frame, so there the note says the debugger doesn't list it.
+- In an optimized build, the row carries a note. Optimized code may reorder stores and keep
+  values in registers, so the value it uses may differ from what the declared address holds.
+- C++ runs a `static` local's initializer the first time control passes its declaration, unless
+  it is a constant. Until then the row is `no value yet`. Peeky reads the guard variable the
+  compiler gives it (`_ZGVZ4tickE1w`), and shows the value only once that says it has run.
+- A `static` local is never changed: Peeky changes only values a frame holds itself. Its rows say
+  `[not settable: static]`. `--set calls=5` is refused before the program runs. A `const` one's
+  fields are refused as const.
+- A lambda is a function of its own: a `static` of the function around it isn't read there.
 
 ### Read C++ members
 
@@ -1474,6 +1593,49 @@ An unnamed struct's constructor (`$_0::$_0()`) counts as a constructor too.
 - Peeky never reads a member in place of a local. The debugger's list of locals can be
   incomplete, for example for statics or classes built without local-variable tables. So a missing
   local doesn't mean that the code uses the member.
+
+### Read a lambda's captures
+
+Inside a lambda, select a capture by its name in a GCC build. In a clang build, select it as a
+member of `this`:
+
+| Build | Selector | Row |
+| --- | --- | --- |
+| GCC | `count` | `count  long  25  [not settable: capture]` |
+| clang | `this.count` | `this.count  long &  0x…` |
+
+- clang lists the lambda's object as `this`. A bare `count` there says to select `this.count`.
+- GCC passes the lambda's object as `__closure`, which lldb-dap doesn't list. Peeky reads it as a
+  hover, which runs nothing. `session inspect` lists the captures under `[Captures]`.
+- A capture by value shows the lambda's copy. The program may have changed the outer variable
+  since the lambda was made.
+- A capture by reference shows what it refers to: `count  long  25`. The `type` is that value's,
+  and `debugger_type` keeps LLDB's `long &`. A struct, a string or a container shows its text
+  with no address, and its members stay listed.
+- A pointer captured by reference shows its value, and its text is checked as a pointer local's
+  is. Peeky doesn't follow it: `word[0]` can't be read there.
+- Peeky checks the lambda's object as it checks what a pointer points at
+  ([unproven](#when-what-a-pointer-points-at-is-unproven)). `std::sort` calls a copy of the lambda
+  that no listed frame holds. So its captures are marked `[unproven]`, with a note that names
+  `__closure`.
+- It checks what a capture by reference refers to the same way. A capture of a heap value is
+  marked: ``read through `held`: Peeky can't show that `held` refers to a live object …``.
+- A capture is withheld where clang's `this` would be, such as in a lambda that a running
+  declaration defines ([`this` in C++](#this-in-c)).
+- In `[*this]`, `this` is the lambda's copy of the object: `this  Acc  {total = 5}`, and
+  `this.total` reads the copy's member. `[this]` shows the pointer, as before.
+- The lambda's own local of a capture's name hides the capture from its declaration to the end of
+  its block, as C++ reads it. Above it in the block, and after the block, the name reads the
+  capture. So does a stop whose code isn't the block's, as after a macro's `if (int x = 9) …`.
+  Where Peeky can't tell, as in the block on the declaration's own line, the row says why.
+- No capture can be changed, by value or by reference. The lambda's object holds it, which the
+  frame reaches through a pointer. A `--set` is refused before the program runs. Change the outer
+  variable before the lambda is made, or edit the source.
+- Peeky reads no capture in an optimized build, where a `mutable` lambda may keep one in a
+  register. Nor at a one-line lambda's first stop, before it stores `__closure`. There a capture
+  is `not found`, and the row says why: ``not found: 'bonus' is a capture of this lambda, which
+  GCC passes through `__closure`, and Peeky can't read it here: the stop is at the lambda's start
+  …``.
 
 ### Read a C++ string that holds a NUL byte
 
@@ -1589,6 +1751,11 @@ Which debugger can write what:
 
 A heap buffer needs lldb-dap 21. Rows say `[settable]` where a change can be made: with lldb-dap
 20, a string whose text is in its own buffer.
+
+In a GCC build, LLDB reads a string's own buffer as `char[0]` and lists none of its characters.
+So with lldb-dap 20, Peeky writes the text there with LLDB's `memory write` command. Any text
+that fits works, not only printable ASCII. Peeky then reads the bytes and the size back. With
+lldb-dap 18, which reads no memory, the change is still refused: use lldb-dap 20 or later.
 
 Peeky never writes a text:
 

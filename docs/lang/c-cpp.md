@@ -12,10 +12,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 **GCC's C++ builds have known gaps.** Peeky withholds what LLDB misreads, and the row says why
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
-- unordered containers show no entries, unless LLDB's count is the container's own;
-- a lambda's captures can't be read: they are `not found` in the lambda;
+- unordered containers are read from their own nodes, except entries that hold floating-point
+  numbers, characters, enums, pointers or other containers;
 - a one-line function's parameters can show `no value yet` at a stop on its line;
-- a `const` local aggregate GCC builds at compile time is in read-only data, and `not found`;
 - GDB's DAP isn't supported.
 
 ## Choose the target
@@ -48,6 +47,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - Read C++ members through `this`: `this.head_`. Read a map's value by its key, `m[1]`, and its
   first entry as `m[#0]` ([C and C++ 2.1](c-cpp-cookbook.md#21-fields-and-indexes),
   [C and C++ 7.1](c-cpp-cookbook.md#71-c-and-c)).
+- Read a lambda's capture by its name in a GCC build, and as `this.count` in a clang build. None
+  can be changed ([C and C++ 7.1](c-cpp-cookbook.md#read-a-lambdas-captures)).
 - Write a name as Clang keeps it, non-ASCII too: `größe.zähler`, `--set ñ=3`. `größe` in NFC and
   in NFD are two different locals, each selected by its own spelling. When two names are equal
   under NFKC, `inspect` marks each row with how it is written
@@ -73,6 +74,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   On a line a loop returns to, such as a `do` body's first line, read it on the next line. Below a
   `setjmp` call, a local declared at or below the stop shows a `note`; read it below its
   declaration ([C and C++ 7.1](c-cpp-cookbook.md#why-a-local-shows-no-value-yet)).
+- **A `static` local** reads where the code at the stop names it: in its block, below its
+  declaration. In C++, it is `no value yet` until its initializer has run. It is never changed
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-a-static-local)).
 - **Same-named locals:** a plain name means the declaration the code names at the stop. To select
   another one, write `name @ file:line`
   ([C and C++ 7.1](c-cpp-cookbook.md#same-named-locals-which-one-a-name-means)).
@@ -94,8 +98,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   `auto [t, u] = p;`. GCC and newer clang hold each name as a reference. The row's `type` is the
   binding's, and `debugger_type` is LLDB's reference
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
-- A binding by reference, such as `auto &[t, u]`, is read only where it names a local of the frame,
-  or a member of one. Otherwise its row is `not shown`, because what it refers to may be gone
+- A binding by reference, such as `auto &[t, u]`, is read only where Peeky proves that what it
+  refers to is alive. That is a local of the frame or a member of one, or an element of a local
+  vector, map or set of numbers the code leaves in place. A call's result is never read.
+  Otherwise its row is `not shown`, because what it refers to may be gone
   ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 - A pointer captured with an array at the same stop says which element's address it holds, where
   Peeky proves it: `[at level[6]'s address]`, or `[at the address one past level's end]`. The

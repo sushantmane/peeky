@@ -151,6 +151,30 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
 
+## A caller's local whose declaration line has no code
+
+- `declared_unfinished` withholds a caller frame's local whose declaration line has no row of
+  its own. GCC's C++ does this to `struct trio t = { seed,`, and clang to an array of structs.
+- `_stored_before` lifts that. The frame's line must be below the statement's end, from
+  `Statements.end`.
+- Each row of the statement's lines, from the function's `order`, must end before the call.
+  A row ends at the function's next row, or at the end of its code there. The call is the
+  return address less one.
+- `NativeSession._resume` gives that return address only where it is proven a physical call's,
+  in code laid out in source order. The build must be `-O0`. And no unit may optimize a function
+  on its own: `c_source.optimizes` finds an `optimize` attribute or pragma in a unit's `-E` text.
+- The frame must be above the innermost one, and no signal interrupted it. No inlined call's
+  code may hold its address or the one before. LLDB gives the caller of an inlined call the
+  address where that call's code starts.
+- Nor may it be a frame LLDB rebuilt for a tail call's caller, which has no frame of its own
+  left. LLDB rebuilds one only from a call site marked as a tail call. So the build's debug
+  information must mark none (`has_tail_calls`), and the frame's `presentationHint` must not
+  be lldb-dap 20's "subtle".
+- A row after the call, such as a loop's code placed there, keeps it withheld. So does anything
+  unknown.
+- A loop around both runs the declaration again before the call on each pass. A jump past the
+  declaration is judged after it, by `declared_skipped`.
+
 ## Preview bounds and types
 
 - `native_previews` sets the bounds: 8 members or elements per level, two levels, 40 characters
@@ -242,10 +266,41 @@ shows that reference's address as the variable's value.
   (`std::tuple_element<0, P>::type &r`) fails that check, so it stays a reference. A GCC
   candidate whose line Peeky can't read is withheld.
 - `Statements.binding` says whether the binding is by reference, and what it binds.
-  `NativeSession._bound_alive` follows one by reference only where that is an object of the
-  frame, or a member of one (`_local_object`): a local or by-value parameter in scope there,
-  reached through no reference, pointer or union (`_member_object`). Anything else is `not
-  shown`, since it may be gone.
+  `NativeSession._bound_alive` follows one by reference only where it proves what that refers to
+  is still alive. Anything else is `not shown`, with why, since it may be gone.
+  - An object of the frame, or a member of one (`_local_object`): a local or by-value parameter in
+    scope there, reached through no reference, pointer or union (`_member_object`).
+  - An element of a local `std::vector`, `std::map`, `std::set` or `std::multiset`, by a range
+    `for` over it or one subscript of a vector (`_held_element`). `_plain_container` reads its
+    template arguments: `std::allocator`, `std::less` for an order, and elements of base types
+    (a map's key and value, or a `std::pair` or `std::array` of them). `type_graph` walks every
+    template argument of such a container for this. `Statements.leaves_elements` reads each
+    translation unit as the compiler preprocessed it.
+  - In the binding's scope, the container may only call a member that gives a value
+    (`_VALUES`). In its own scope, nothing may keep a pointer, iterator or reference into it: a
+    call's result is dropped (`m.insert(…);`), an element is only assigned (`v[1] = x;`), and
+    another binding over it keeps its names. No lambda or local class may name it.
+  - `allocation_replaced` reads the build's debug information for a global `operator new` or
+    `operator delete` of the program's own, in any form but the placement ones the headers
+    define. One that is there, or a library the launch preloads (`_PRELOADS`), withholds
+    it (`_allocation_seen`). So does a Linux host's `/etc/ld.so.preload` that names a library,
+    or that can't be read whole. `system_preload` reads it on the worker's host, in
+    `launch_args`, ignoring blanks and `#` comments.
+  - A call's result is never proven (`_kept_result`). The function called may keep a pointer
+    into it, as the named return value optimization builds it where the caller keeps it.
+  - `Statements._names_kept` follows each of the binding's names, which must be of base types
+    (`_scalar_bound`): never an enumeration or a pointer.
+  - `_operand` reads the expression around each use. Every token must be a name of a base type
+    (the binding's, or a local's), a number literal, a cast to a base type, a parenthesis, or a
+    built-in operator. With every operand of a base type, no overload can be called. A literal
+    must match `_NUMBER_LITERAL`, with the language's own suffixes only.
+  - `_only_read` then reads what takes that expression. A new value goes anywhere. The name alone
+    may be a statement, an assignment's target or source of a base type, a condition, returned,
+    or an argument every function of the call's name takes by value (`call_arguments`).
+  - `bound_element` then checks the address the reference holds (`_bound_place`). It must be in
+    the vector's elements (its own `_M_start` and `_M_finish`, or libc++'s `__begin_` and
+    `__end_`). Or it must be in one of the map's entries as the debugger lists them.
+  - In an optimized build, only an object of the frame is read.
 - `NativeSession.bound_element` gives the worker the element in the variable's place. For a
   number, a character or a pointer, that is the debugger's one child under the reference, with
   nothing listed under it. For a struct, a string or a container, `element_text` keeps the text
@@ -331,8 +386,8 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - In an optimized build, a function that declares the root's name twice leaves it unread too.
     An inner block's local of that name may be in scope there, but not listed.
   - Where the counts differ, or the count is unread, the row is withheld as `not listed`, with no
-    handle. A preview shows `<not listed>` in its place. The probe refuses its keys and
-    positions: `um[1] not read: um is not listed: …`.
+    handle, unless Peeky reads its nodes (below). A preview shows `<not listed>` in its place.
+    The probe refuses its keys and positions: `um[1] not read: um is not listed: …`.
   - A right count doesn't prove the entries right. The provider decodes each node's entry as
     its allocator's first template argument, `skip_size` bytes into the node: the size of
     `_M_nxt`.
@@ -353,6 +408,72 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     compare.
   - libc++'s formatters are LLDB's own C++ ones, and its members differ. So a libc++ build, known
     by its `std::__1` namespace, is not checked.
+- **Reading the nodes.** Where LLDB's listing isn't proven, `NativeSession._node_listing` reads
+  the entries itself (`hashed_nodes`). The worker then shows the row as a value view:
+  `view: memory`, with worker-owned handles.
+  - `unlisted_container` reads the count alone, and keeps its path and value on the
+    `Withholding` (`counted`). The worker asks `listed_container` for the nodes only once
+    nothing else withholds the row. So a row with a note (`no value yet`, leftovers, one
+    read through a value with a note) is never read from its nodes.
+  - Every C or C++ pointer, and every C++ reference, on the row's way must be judged to
+    refer to a live object (`DebugWorker.nodes_reachable`). `NativeSession.indirections`
+    names them by the debug information: `T &`, `T &&`, a typedef of one, a member.
+  - A pointer is judged by #339's `pointee_unproven`. A reference is judged the same way
+    (`referent_proven`): the address the debugger shows for it, and what `referent_of`
+    says it refers to.
+  - One the rule doesn't judge counts as unproven, as does a root local the frame reaches
+    through a pointer, which no variable stands for. A heap block may hold a container's
+    bytes, and so may a returned call's dead frame.
+  - lldb-dap 18 gives no address for a local the debugger shows with a summary, so Peeky
+    can't place a container local there. A pointer or reference to one stays unproven, and
+    nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
+  - A preview reads nested containers' nodes under the same rule: none below a note, or
+    through such a pointer.
+  - A GCC lambda's capture is read through `__closure`. Where `__closure`, or what a capture
+    by reference refers to, isn't proven live, its note withholds the nodes too. Its count
+    is the capture's own, not that of a global it shadows.
+  - Nothing is read in an optimized build, nor where a unit's preprocessed text may optimize
+    a function (`c_source.optimizes`). That is any `optimize(` or `__optimize__(` outside
+    comments and literals, in any attribute form (`[[using gnu: optimize("O2")]]`), also
+    behind a macro, and any pragma that names `optimize`.
+  - Such a function may keep a value it stores in a register while the count and the chain
+    are unchanged. Any function on the stack may be one. A function named `optimize`,
+    called, counts too: the detector would rather withhold.
+  - The nodes form one chain from `_M_h._M_before_begin._M_nxt`, in iteration order. Each node
+    is a `std::__detail::_Hash_node<_Value, cache>`. The hashtable's `_Traits`
+    (`_Hashtable_traits`) say whether it caches the hash code.
+  - No local's type reaches the node type but through a pointer. So the session adds every
+    `_Hash_node` the debug information defines to `fields.type_graph` (`hashed_nodes.node_types`).
+  - `hashed_nodes.layout` proves where a node holds its entry. The node types of that `_Value`
+    and cache, one per unit, must all place it alike. Each holds one `_Hash_node_base` at
+    offset 0, an 8-byte pointer `_M_nxt`.
+  - It also holds one `_Hash_node_value_base` of `_Value`, whose `_M_storage` is an
+    `__aligned_buffer` of `_Value`, at least its size. The entry sits there: past the link,
+    aligned for `_Value`, inside the node.
+  - The chain must end in a null `_M_nxt` after exactly `_M_element_count` nodes, at most 256.
+    Every node must be aligned.
+  - With `readMemory` (lldb-dap 20), `hashed_nodes.Memory` reads each node, 4,096 bytes a
+    request, so nodes close together cost one request. Without it (lldb-dap 18), `Words` reads
+    8-byte words through hover paths.
+  - The word 8 bytes into the first node is `us._M_h._M_before_begin._M_nxt[1]._M_nxt`. LLDB
+    reads `[1]` past a pointer, and `_M_nxt` of what is there, as `frame variable` does.
+    Nothing is evaluated in the program. `Words` reads nothing outside the nodes.
+  - `Memory` reads more: each request takes 4,096 bytes from a node's address, and a string's
+    text comes from where its data pointer points. Only bytes at the nodes' own addresses,
+    and at a string's text, are decoded.
+  - The entries must hold integers, `bool`s and libstdc++ strings, in `std::pair`s and the
+    program's structs. A struct has no base class, bitfield or anonymous member.
+  - A string's text is read from its own buffer, or where its data pointer points. Its length
+    must fit that buffer, as `local_buffer` proves it. Up to 1,024 bytes are read, as for any
+    string read from memory.
+  - The entries come back listed as the debugger lists a container it reads right: `[0]`, a
+    pair's `first` and `second`, a struct's members, `T @ 0x…` for a struct. So
+    `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.
+  - Nothing is read where a call may be changing the container (`containers_settled`).
+  - The reads have their own budget: 4,096 requests and 4 MiB per inspection or expansion
+    (`NODE_READS`), within the value view's 10 s. A hover's text is cached for the stop. With
+    lldb-dap 18, 333 entries in three containers took about 1,000 hovers and 0.25 s.
+  - Otherwise the row stays `not listed`, with the note it had.
 - **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
   `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the
   bounds of …`, though GCC's DWARF is valid.
@@ -362,8 +483,15 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     and the union the string, by their byte sizes. Any size that is missing or doesn't fit
     gives no length, so nothing is written there.
   - With `writeMemory` (lldb-dap 21), the text is written there and read back.
-  - Without it, Peeky would set the buffer's characters one by one, and LLDB lists none of them.
-    So the refusal says that the debugger misreads the build's string buffer.
+  - lldb-dap 20 reads memory but has no `writeMemory`. LLDB lists none of the buffer's
+    characters, so Peeky can't set them one by one. The worker's `memory_command` writes the
+    text and its NUL with LLDB's `memory write`, through lldb-dap's command escape.
+  - That write is made only where `_M_dataplus._M_p` is the buffer's address and the text fits.
+    Then `_M_string_length` is set, and the pointer, the length and the bytes are read back.
+  - LLDB prints nothing but the command when the write succeeds. Anything else is a refusal
+    where the bytes still read as before; otherwise the session is closed.
+  - lldb-dap 18 reads no memory, so it can't tell where the text is. The change is refused, as
+    in clang's build.
 - **LLDB's errors in the output.** LLDB 18 prints those errors on its own stderr, which lldb-dap
   sends as `stderr` output events. `DAP` keeps an event apart where it is `stderr` and every
   line matches `NativeSession.debugger_diagnostics`: `error: <module> 0x…: DW_TAG_…`. Rust's
@@ -379,15 +507,92 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   no stop can follow.
 - **Static storage.** GCC places a `const` local aggregate it can build at compile time in
   read-only data (`DW_OP_addr`). lldb-dap lists no static storage among a frame's locals, a
-  `static` local's neither. `NativeSession.static_locals` names the function's locals with a fixed
-  address (`fields.local_types`' storage `static`), and the worker's `inspect` passes them as
-  `statics`. A selector rooted at one says so (`probe._static_hint`).
+  `static` local's neither. Peeky reads them as [Static locals](#static-locals) says.
 - **A const pointer.** GCC types `this` as `Widget *const`. `fields.settable_member` refuses a
   change through a pointer under a `const` as a pointer's, not as a const object's
   (`_pointer_under`).
 - **A lambda's captures.** GCC passes them through `__closure`, and describes each one as an
-  artificial variable read through it. lldb-dap lists neither, so a capture is `not found` in the
-  lambda. Peeky doesn't read them yet.
+  artificial variable read through it. lldb-dap lists neither, so the worker reads them itself
+  (`DebugWorker.read_captures`).
+  - `_gcc_capture_members` matches each variable to the member of the lambda's object at its
+    offset: `DW_OP_fbreg -24, DW_OP_deref, DW_OP_plus_uconst 0x8` is the member at 8. The
+    member's type must be the variable's, or the variable's without its `const`.
+  - lldb-dap lists the members by GCC's names (`__bonus`). The offset, not the name, tells which
+    member holds a capture.
+  - The worker asks for `__closure` as a hover, which reads the frame's variable and runs
+    nothing. It lists what it points at, and shows each capture by its own name in a `Captures`
+    scope. An expansion finds the member again the same way (`walk_capture`).
+  - What is read through `__closure` is judged as through any pointer (#339): its type is the
+    lambda's object. A capture by reference is judged as a pointer to what it refers to
+    (`capture_referent`), and shown as that value, as a pair's binding is (`bound_element`). A
+    pointer captured by reference shows its value; its text is judged as a pointer local's
+    (`captured_pointer`).
+  - `capture_plan` says how each capture reads at the stop. Where the lambda also declares
+    its name, `_capture_scope` decides by scope. A stop whose code is outside the declaration's
+    block (its DWARF ranges) names the capture, whatever the text says: a macro's declaration
+    ends where its line doesn't. Else it reads the source as C++ does
+    (`Statements.scope_lines`): a stop above the declaration, or past its scope, names the
+    capture, and one past its statement in its scope names the local. Anything else, such as
+    a stop in the block on the declaration's own line, withholds the capture, saying so.
+  - `closure_members` says which read failed: the hover of `__closure` or the listing of
+    what it points at (no answer in time, an error, malformed, past 512 members).
+  - A capture the worker reads replaces any row of its name lldb-dap lists: a local whose scope
+    hasn't begun, whose storage is no live object. `_typed` types a capture's root by the
+    capture's type there (`_capture_root`).
+  - `[*this]`: GCC gives `this` no location, and the copy is the member `__this`, of the class
+    `this` points at (`_copied_this`). The worker reads it as `this`, in place of lldb-dap's row
+    with no value. `[this]`'s `this` lldb-dap lists itself.
+  - A capture with no row says why in `closure_unread`, which `probe._capture_hint` gives.
+  - A `static` of a capture's name gets no `Statics` row where the worker reads the capture in
+    its place: the worker passes the capture's name to `static_rows` with the frame's locals.
+  - `not_yet_declared` withholds a capture where `_under_construction` would withhold clang's
+    `this`. No declaration rule applies to it: the object holds it from before the call.
+  - A capture's local storage is `through` in `fields.local_types`, so a `--set` is refused
+    before the run. At a stop, the scope's handle and its children's refuse it too
+    (`capture_refusal`).
+  - `captures_unread` reads none in an optimized build, where a `mutable` lambda may keep a
+    capture in a register, nor in a prologue window, before the lambda stores `__closure`.
+  - `_lambda_scope` follows every function around a lambda, up to `LAMBDA_NESTING` (256).
+    Past that, one may still be running, so it never counts as finished.
+
+## Static locals
+
+lldb-dap lists a frame's `static` locals in its "Globals" scope, with its unit's globals, never
+among its locals. Each has `$__lldb_extensions.declaration`: its file and line.
+
+- `_static_locals` gives each function entry its `statics`: the variables of its bodies at one
+  `DW_OP_addr`, with their file, line, address, type and block's code. Clang declares a block's
+  `static` in the function's scope, so its block is the function's.
+- `NativeSession.static_scope` lists "Globals" for a C or C++ frame whose function has one. The
+  worker reads it as the `Statics` scope (`static_storage`).
+- `_static_named` picks the declaration the code at the stop names. `_static_scope` reads where
+  the stop stands to each, from the source as the compiler preprocesses it.
+- It reads `Statements.scope_lines`, and `block_storage` for a later declaration that hides it.
+  The stop must be below the declaration, in its scope, and in its block's code where the debug
+  information gives one. Of several, the innermost counts.
+- Copies of one function (inlined, or cloned) may each declare it again, even at another
+  address. GCC declares it in an abstract block, whose code is each copy's block's.
+- `_static_placed` takes one declaration per origin, file, line and type. Its placement is the
+  copy whose block holds the stop. Copies at several addresses that hold it are unsure.
+- `_static_entry` matches it to lldb-dap's row by name, file and line. The name may be plain,
+  `calls @ f.c:9`, or a symbol's `Acc::run()::calls`. An address lldb-dap gives must be the
+  declaration's, slid.
+- A symbol's name must be the frame's function, as LLDB names it: `long tick<int>(int)::calls`,
+  never another instance's, at the same file and line. Else its address must prove it.
+- In an optimized build, a row carries a note. Stores and register updates may be reordered,
+  so the code may use a value other than what the declared address holds.
+- A row keeps lldb-dap's name; `selected_as` gives the plain one. `_static_declared` gives the
+  row's `name @ file:line` to `fields.local_types` lookups, for its type.
+- In C++, `_static_guard` finds the `_ZZ…` symbol at its address (`object_symbols`). Its guard
+  `_ZGV…`'s first byte is read with LLDB's `memory read`. Zero means its initializer hasn't run:
+  `no value yet`.
+- No guard, or a symbol of another mangling (GCC's `cs.0`), needs no wait. A guard Peeky can't
+  read, or no symbol, is `not shown`.
+- Rows are never settable: `settable` says no, and `never_settable_row` says `static`. The
+  worker refuses `set_variable` on the scope's reference. A member is refused by
+  `validate_member` (`_not_framed`), or as const. A probe's `--set` of one is refused before
+  launch.
+- Why one isn't read is in `static_notes`, which `probe._static_hint` shows.
 
 ## Which tests check what
 
@@ -415,7 +620,9 @@ required test calls a model.
 | `tests/cpp/test_cpp_eval6.py` | A `stock.cpp`; strings by value, reference, pointer and typedef, in a struct, a vector and a map; overloads on one line | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
-| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, and a pair's or tuple's bindings, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
+| `tests/native/test_native_statics.py`, `tests/cpp/test_cpp_statics.py` | `static` locals, and GCC's `const` aggregate in read-only data: read where the code names them, a C++ one once its guard says it is initialized, and never changed | macOS (Apple clang); Linux (clang 18, gcc and g++, lldb-dap 18 and 20) |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, also read from their nodes (types, strings, a call under way), a string's text, LLDB's errors in the output, a bitfield's binding, a pair's or tuple's bindings (by reference too: into a local container, or of a call's result), and a lambda's captures, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
+| `tests/unit/test_hashed_nodes.py` | Reading an unordered container's nodes: the layout proof, the chain's length, the types read, words through variable paths, and the worker's value view | Unit |
 | `tests/cpp/test_cpp_landing_pads.py` | A local declared on the stop line, after clang's landing pad, is withheld; built by clang and by g++ | macOS (Apple clang); Linux (clang 18 and g++, lldb-dap 18 and 20) |
 | The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |

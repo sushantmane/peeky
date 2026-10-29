@@ -4,19 +4,23 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
 
 - Unordered containers: LLDB's libstdc++ formatter finds no element type in GCC's
   `std::allocator` (nor behind a typedef's name), so it counts each as empty. Peeky
-  checks its count against the container's own `_M_element_count`: where they differ,
-  no preview, key or position read, or listing. Where they agree, the entries are listed
-  only where the formatter decodes them as the type the container holds, where it holds
-  them: an allocator whose first template argument is another type, a 16-byte-aligned
-  `long double`, or (LLDB 18) a map whose type's name holds `set` decode wrongly.
+  checks its count against the container's own `_M_element_count`. Where they agree, the
+  entries are listed only where the formatter decodes them as the type the container
+  holds, where it holds them: an allocator whose first template argument is another
+  type, a 16-byte-aligned `long double`, or (LLDB 18) a map whose type's name holds `set`
+  decode wrongly. Otherwise Peeky reads the entries from the container's own nodes
+  (#360), where the debug information proves how and they are integers, bools and
+  strings, in pairs and structs; else no preview, key or position read, or listing.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
-  length comes from the build's debug information, and a refusal says what LLDB misreads.
+  length comes from the build's debug information, and lldb-dap 20, which has no
+  writeMemory request, writes it with LLDB's `memory write` command.
 - LLDB 18's errors about that debug information come on its own stderr, apart from the
   program's output: they are a warning, not output.
 - A structured binding of a bitfield, which GCC gives no location: a true note.
 - A structured binding of a pair or tuple, which GCC (and Apple clang 21) hold as a
   reference to the element: the element, never its address (#291). By reference, only
-  where it names an object the frame keeps alive; optimized, never on its own line.
+  where it names an object the frame keeps alive, an element of a local container the
+  code leaves in place, or a call's own result (#297); optimized, never on its own line.
 
 The g++ cases skip where no g++ is GCC (macOS), and the clang cases where the lane builds
 C++ with g++. lldb-dap 18 or 20, as the lane sets it."""
@@ -112,6 +116,13 @@ MISCOUNTED = (
 )
 
 
+def placed():
+    """Whether Peeky can show a pointer at a local container points at a live object
+    (#339): lldb-dap 20 gives each local's address. lldb-dap 18 gives none for one the
+    debugger shows with a summary, so no node is read through such a pointer there."""
+    return sys.platform != "linux" or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
+
+
 def withheld(row, count):
     """Whether a row is withheld as an unordered container LLDB miscounts: the container
     itself (`not listed: ...`), or a key, position or member read in it."""
@@ -128,7 +139,8 @@ def withheld(row, count):
 @pytest.mark.timeout(180)
 def test_an_unordered_container_is_read_whole_or_not_listed(cpp, capsys):
     # #167: with GCC, `us{4}` read `size=0 {}`, `um[1]` "um is empty; in C++, um[1] would
-    # insert the key", and `us[#0]` "us has 0 entries", with no note.
+    # insert the key", and `us[#0]` "us has 0 entries", with no note. Then each was
+    # withheld as `not listed`; #360: each is read from its own nodes.
     compiler, root = cpp
     source = root / "unordered.cpp"
     source.write_text(UNORDERED)
@@ -138,35 +150,30 @@ def test_an_unordered_container_is_read_whole_or_not_listed(cpp, capsys):
     rows = {row["selector"]: row for row in result["rows"]}
     # An empty one's counts agree, whatever the compiler.
     assert rows["none"]["value"] == "size=0 {}", rows["none"]
-    shown = {}
+    # Every one reads, by key, by position and inside another value: GCC's from their
+    # nodes (and clang's typedef'd one with LLDB 18, which counts it empty). Through a
+    # pointer, only where Peeky can show it points at a live object (review of #360).
+    pointed = compiler == "gcc" and not placed()
     for selector, (value, count) in READS.items():
-        row = rows[selector]
-        shown[selector] = row.get("value") == value
-        assert shown[selector] or withheld(row, count), (selector, row)
+        if pointed and selector.startswith("p"):
+            assert withheld(rows[selector], count), (selector, rows[selector])
+            continue
+        assert rows[selector].get("value") == value, (selector, rows[selector])
+        if compiler == "gcc":
+            # Read from memory, and said so.
+            assert rows[selector].get("view") == "memory", (selector, rows[selector])
     for selector, value in HOLDING.items():
-        row = rows[selector]
-        hidden = re.sub(r"size=1 \{\d\}", "<not listed>", value)
-        assert row.get("value") in (value, hidden), (selector, row)
+        assert rows[selector].get("value") == value, (selector, rows[selector])
     pointer = rows["p"]
     assert re.fullmatch(r"0x[0-9a-f]+ size=1", str(pointer.get("value"))) or (
-        withheld(pointer, 1) and pointer["error"].startswith("not listed: it points at an")
+        pointed and withheld(pointer, 1) and pointer["error"].startswith("not listed: it points")
     ), pointer
-    if compiler == "gcc":
-        # LLDB counts every one as empty: none reads, and none says it is empty.
-        assert not any(shown.values()), shown
-        assert rows["h"]["value"] == "{us = <not listed>, n = 2}", rows["h"]
-    else:
-        # Clang's debug information names the element types: all read, save a typedef's,
-        # which LLDB 18's formatter does not look through (LLDB 20's does).
-        assert all(read for selector, read in shown.items() if "ids" not in selector), shown
-        assert rows["h"]["value"] == HOLDING["h"] and rows["vs"]["value"] == HOLDING["vs"]
-    # The evidence keeps what the rows showed: no value, the same note.
+    # The evidence keeps what the rows showed.
     assert main(["sql", "SELECT selector, value, error FROM last_run", "--json"]) == 0
     stored = {row["selector"]: row for row in json.loads(capsys.readouterr().out)["rows"]}
     for selector in READS:
-        if not shown[selector]:
-            assert stored[selector]["value"] is None, stored[selector]
-            assert stored[selector]["error"] == rows[selector]["error"]
+        assert stored[selector]["value"] == rows[selector].get("value"), stored[selector]
+        assert stored[selector]["error"] == rows[selector].get("error"), stored[selector]
 
 
 @pytest.mark.timeout(180)
@@ -177,22 +184,438 @@ def test_a_listing_and_a_callers_reference_follow_the_same_rule(cpp, capsys):
     assert main(["session", "start", str(source), "--at", str(line_of(UNORDERED, "IN_LOOK"))]) == 0
     capsys.readouterr()
     try:
-        main(["session", "get", "ref", "ptr", "--json"])
+        main(["session", "get", "ref", "ptr", "ptr[0]", "--json"])
         rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
         main(["session", "get", "um", "--frame", "1", "--json"])
         rows.update({row["selector"]: row for row in json.loads(capsys.readouterr().out)})
     finally:
         main(["session", "close"])
         capsys.readouterr()
-    if compiler == "gcc":
-        for selector in ("ref", "ptr"):
-            assert withheld(rows[selector], 1) and "children" not in rows[selector], rows
+    # A reference shows its address and the container; its entries are listed by key. A
+    # pointer shows its address and count, and what it points at is the container.
+    if compiler == "gcc" and not placed():
+        # Peeky can't show that `ref` and `ptr` refer to a live object here (#339): no
+        # node is read through either (review of #360).
+        for selector in ("ref", "ptr", "ptr[0]"):
+            assert withheld(rows[selector], 1), (selector, rows[selector])
     else:
-        assert re.fullmatch(r"0x[0-9a-f]+ size=1 \{1: 2\}", rows["ref"]["value"]), rows["ref"]
+        assert re.fullmatch(r"0x[0-9a-f]+ size=1 \{1: 2\}", rows["ref"]["value"]), rows
         listed = {c["selector"]: c["value"] for c in rows["ref"]["children"]}
         assert listed == {"ref[1]": "2"}, listed
+        assert re.fullmatch(r"0x[0-9a-f]+ size=1", rows["ptr"]["value"]), rows["ptr"]
+        assert rows["ptr[0]"]["value"] == "size=1 {4}", rows["ptr[0]"]
+        listed = {c["selector"]: c["value"] for c in rows["ptr[0]"]["children"]}
+        assert listed == {"ptr[0][#0]": "4"}, listed
     # A caller's `um` may be withheld for its own line (not finished); never miscounted.
     assert rows["um"].get("value") != "size=0 {}", rows["um"]
+
+
+KINDS = """#include <cstdio>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+struct Pt { int x; long y; };
+struct Tagged { int id; std::string name; };
+int main() {
+    std::unordered_map<std::string, int> words{{"al", 1}};
+    std::unordered_map<int, std::string> longs{{7, std::string(40, 'x')}};
+    std::unordered_map<int, Pt> points{{1, {5, -6}}};
+    std::unordered_set<bool> flags{true};
+    std::unordered_map<int, Tagged> tagged{{3, {9, "nine"}}};
+    std::unordered_map<int, double> ratios{{1, 0.5}};
+    std::unordered_set<unsigned long> big;
+    for (unsigned long i = 0; i < 300; ++i)
+        big.insert(i);
+    std::printf("KINDS:%zu %zu %zu %zu %zu %zu %zu\\n", words.size(), longs.size(), points.size(),
+                flags.size(), tagged.size(), ratios.size(), big.size()); // HERE
+    return 0;
+}
+"""
+# Each selector's value, whatever the compiler and debugger.
+KIND_READS = {
+    "words": 'size=1 {"al": 1}',
+    'words["al"]': "1",
+    "words[#0].first": '"al"',
+    "points": "size=1 {1: {x = 5, y = -6}}",
+    "points[1]": "{x = 5, y = -6}",
+    "points[1].y": "-6",
+    "flags": "size=1 {true}",
+    "flags[#0]": "true",
+}
+# A string in a struct, which clang's build leaves to LLDB's summary: with LLDB 18 that
+# fails there (`<no value>`).
+TAGGED = {"tagged": 'size=1 {3: {id = 9, name = "nine"}}', "tagged[3].name": '"nine"'}
+LONG = '"' + "x" * 40 + '"'
+
+
+@pytest.mark.timeout(180)
+def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, capsys):
+    # #360: with GCC, each of these was `not listed` (LLDB counts them empty). Peeky now
+    # reads integers, bools and strings, in pairs and structs, from the nodes. A string's
+    # text outside its node needs `readMemory` (lldb-dap 20); a `double`, or more than
+    # 256 entries, stays withheld with the note it had.
+    compiler, root = cpp
+    source = root / "kinds.cpp"
+    source.write_text(KINDS)
+    capture = ",".join([*KIND_READS, *TAGGED, "longs", "longs[7]", "ratios", "big"])
+    code, result = probe(source, line_of(KINDS, "// HERE"), capture, capsys)
+    assert "KINDS:1 1 1 1 1 1 300" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    for selector, value in {**KIND_READS, **TAGGED}.items():
+        if sys.platform != "linux" and "{" in value:
+            # Apple's LLDB shows a struct in libc++'s map as `Pt`, or `{…}` in a preview.
+            continue
+        if selector in TAGGED and compiler == "clang" and rows[selector].get("value") != value:
+            shown = rows[selector].get("value")
+            assert shown is None or shown == value.replace('"nine"', "<no value>"), shown
+        else:
+            assert rows[selector].get("value") == value, (selector, rows[selector])
+    reads = compiler == "clang" or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
+    if reads or sys.platform != "linux":
+        assert rows["longs[7]"].get("value") == LONG, rows["longs[7]"]
+        assert rows["longs"].get("value") == 'size=1 {7: "' + "x" * 35 + '"...}', rows["longs"]
+    else:
+        assert withheld(rows["longs"], 1) and withheld(rows["longs[7]"], 1), rows
+    if compiler == "gcc":
+        assert withheld(rows["ratios"], 1) and withheld(rows["big"], 300), rows
+    else:
+        assert rows["ratios"].get("value") == "size=1 {1: 0.5}", rows["ratios"]
+        # LLDB 18 counts clang's `big` as empty too: too many entries to read from nodes.
+        big = rows["big"]
+        assert str(big.get("value")).startswith("size=300 {") or withheld(big, 300), big
+    # A listing names each entry by its key, as for any map.
+    assert main(["session", "start", str(source), "--at", str(line_of(KINDS, "// HERE"))]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "words", "tagged", "--json"])
+        listed = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    children = {c["selector"]: c["value"] for c in listed["words"]["children"]}
+    assert children == {'words["al"]': "1"}, listed["words"]
+    children = {c["selector"]: c["value"] for c in listed["tagged"]["children"]}
+    if compiler == "gcc":
+        assert children == {"tagged[3]": '{id = 9, name = "nine"}'}, listed["tagged"]
+
+
+CHANGING = """#include <cstddef>
+#include <cstdio>
+#include <unordered_map>
+static bool armed = false;
+static int marks = 0;
+static void mark() {
+    ++marks; // IN_MARK
+}
+struct Loud {
+    std::size_t operator()(int k) const {
+        if (armed)
+            mark();
+        return static_cast<std::size_t>(k);
+    }
+};
+int main() {
+    std::unordered_map<int, int, Loud> um{{1, 2}};
+    armed = true;
+    bool found = um.find(1) != um.end();
+    armed = false;
+    std::printf("FOUND:%d %zu\\n", found ? 1 : 0, um.size()); // AFTER
+    return marks - 1;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_no_entry_is_read_from_the_nodes_while_a_library_call_runs(cpp, capsys):
+    # #360: stopped in a hash function `um.find(1)` calls, `main`'s `um` may be part-way
+    # through a change (#181), so its nodes are not read: GCC's stays withheld as LLDB
+    # miscounts it, and clang's keeps LLDB's summary.
+    compiler, root = cpp
+    source = root / "changing.cpp"
+    source.write_text(CHANGING)
+    # Once `find` has returned, it reads.
+    code, result = probe(source, line_of(CHANGING, "// AFTER"), "um,um[1]", capsys)
+    assert "FOUND:1 1" in result["output"], result
+    after = {row["selector"]: row.get("value") for row in result["rows"]}
+    assert after == {"um": "size=1 {1: 2}", "um[1]": "2"}, result["rows"]
+    assert main(["session", "start", str(source), "--at", str(line_of(CHANGING, "IN_MARK"))]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        main(["session", "get", "um", "um[1]", "--frame", str(caller), "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    if compiler == "gcc":
+        assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
+    else:
+        # LLDB's summary alone, or `no value yet` for the line under way (clang's).
+        assert rows["um"].get("value") in ("size=1", None), rows["um"]
+    assert rows["um"].get("view") != "memory" and rows["um[1]"].get("value") is None, rows
+
+
+POINTERS = """#include <cstdio>
+#include <new>
+#include <unordered_set>
+static std::unordered_set<int> *gone;
+__attribute__((noinline)) static void keep() {
+    alignas(std::unordered_set<int>) unsigned char buf[sizeof(std::unordered_set<int>)];
+    // Never destroyed: once `keep` returns, its dead frame still reads as a set of {6}.
+    gone = new (buf) std::unordered_set<int>{6};
+}
+int main() {
+    std::unordered_set<int> local{3};
+    std::unordered_set<int> *mine = &local;
+    auto *heap = new std::unordered_set<int>{4};
+    keep();
+    std::unordered_set<int> *dangling = gone;
+    std::printf("P:%zu %zu %d\\n", mine->size(), heap->size(), dangling != nullptr); // HERE
+    delete heap;
+    return 0;
+}
+"""
+# The note on a pointer to an unordered container whose count LLDB gets wrong.
+POINTED = f"not listed: it points at an unordered container, and {MISCOUNTED.format(1)}"
+
+
+@pytest.mark.timeout(180)
+def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(cpp, capsys):
+    # Review of #360: a heap block's set, and a dead frame's (whose bytes still read as
+    # one), showed their entries from their nodes as `[memory]`, with no note: `heap`
+    # and `dangling` are pointers Peeky can't show point at a live object (#339).
+    compiler, root = cpp
+    source = root / "pointers.cpp"
+    source.write_text(POINTERS)
+    capture = "mine,mine[0],heap,heap[0],heap[0][#0],dangling,dangling[0]"
+    code, result = probe(source, line_of(POINTERS, "// HERE"), capture, capsys)
+    assert "P:1 1 1" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    for selector in ("heap", "heap[0]", "heap[0][#0]", "dangling", "dangling[0]"):
+        assert rows[selector].get("view") != "memory", (selector, rows[selector])
+    if compiler == "gcc":
+        assert rows["heap"]["error"] == POINTED and rows["dangling"]["error"] == POINTED, rows
+        for selector in ("heap[0]", "heap[0][#0]", "dangling[0]"):
+            assert rows[selector].get("value") is None, (selector, rows[selector])
+        if placed():
+            # A pointer at the frame's own local, which Peeky places, is read.
+            assert re.fullmatch(r"0x[0-9a-f]+ size=1", rows["mine"]["value"]), rows["mine"]
+            assert rows["mine[0]"]["value"] == "size=1 {3}", rows["mine[0]"]
+            assert rows["mine[0]"]["view"] == "memory", rows["mine[0]"]
+        else:
+            assert rows["mine"]["error"] == POINTED, rows["mine"]
+
+
+REFERENCES = """#include <cstdio>
+#include <new>
+#include <unordered_set>
+using Ref = std::unordered_set<int> &;
+struct Holder { std::unordered_set<int> us; int n; };
+struct Viewer { std::unordered_set<int> &seen; };
+static std::unordered_set<int> *gone;
+__attribute__((noinline)) static void keep() {
+    alignas(std::unordered_set<int>) unsigned char buf[sizeof(std::unordered_set<int>)];
+    // Never destroyed: once `keep` returns, its dead frame still reads as a set of {6}.
+    gone = new (buf) std::unordered_set<int>{6};
+}
+int main() {
+    std::unordered_set<int> local{3};
+    auto &mine = local;
+    Ref aliased = local;
+    Viewer view{local};
+    auto *heap = new std::unordered_set<int>{4};
+    auto &onheap = *heap;
+    Viewer far{*heap};
+    auto *box = new Holder{{5}, 1};
+    Holder &boxed = *box;
+    keep();
+    std::unordered_set<int> &dangling = *gone;
+    std::printf("R:%zu %zu %zu %zu %zu %d\\n", mine.size(), aliased.size(), view.seen.size(),
+                onheap.size() + far.seen.size(), boxed.us.size(), &dangling != nullptr); // HERE
+    delete box;
+    delete heap;
+    return 0;
+}
+"""
+# Each reference to an unordered container: (its entries, whether Peeky can show it
+# refers to a live object where the debugger gives each local's address).
+REFERS = {
+    "mine": ("{3}", True),
+    "aliased": ("{3}", True),
+    "view.seen": ("{3}", True),
+    "onheap": ("{4}", False),
+    "far.seen": ("{4}", False),
+    "boxed.us": ("{5}", False),
+    "dangling": ("{6}", False),
+}
+
+
+@pytest.mark.timeout(180)
+def test_no_node_is_read_through_a_reference_not_proven_to_refer_to_a_live_object(cpp, capsys):
+    # Review 2 of #360: a reference bypassed the rule on pointers, so `onheap` (`*heap`),
+    # `far.seen`, `boxed.us` (through `Holder &` to a heap block) and `dangling` (a dead
+    # frame's set) showed their entries from their nodes as `[memory]`, with no note.
+    compiler, root = cpp
+    source = root / "references.cpp"
+    source.write_text(REFERENCES)
+    capture = ",".join([*REFERS, *(f"{name}[#0]" for name in REFERS)])
+    code, result = probe(source, line_of(REFERENCES, "// HERE"), capture, capsys)
+    assert "R:1 1 1 2 1 1" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    for name, (entries, live) in REFERS.items():
+        row, entry = rows[name], rows[f"{name}[#0]"]
+        if not live:
+            assert row.get("view") != "memory" and entry.get("view") != "memory", (name, rows)
+        if compiler != "gcc":
+            continue
+        if live and placed():
+            # Its address, then the container, read from its nodes.
+            assert re.fullmatch(r"0x[0-9a-f]+ size=1 " + re.escape(entries), row["value"]), row
+            assert row["view"] == "memory" and entry["value"] == entries[1:-1], (row, entry)
+        else:
+            assert withheld(row, 1) and withheld(entry, 1), (name, row, entry)
+
+
+OPTIMIZED = """#include <cstdio>
+#include <unordered_map>
+__attribute__((noinline)) static void observe(int v) { std::printf("V:%d\\n", v); }
+int main(int argc, char **) {
+    std::unordered_map<int, int> um{{1, 2}};
+    int &slot = um[1];
+    for (int i = 0; i < 3; ++i) {
+        slot += argc;
+        observe(slot); // HERE
+    }
+    std::printf("UM:%zu %d\\n", um.size(), um[1]);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_no_node_is_read_in_an_optimized_build(cpp, optimization):
+    # Review of #360: optimized, `slot += argc` may keep `um[1]`'s new value in a
+    # register while its node and the count stay as they were, so the nodes would show
+    # a stale value as `[memory]`. No entry is read from them in such a build.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "optimized.cpp").write_text(OPTIMIZED)
+    adapter = NativeTarget(
+        sources=("optimized.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    line = line_of(OPTIMIZED, "// HERE")
+    probed = Probe("optimized.cpp", line, ("um", "um[1]", "um[#0]"), hits="all")
+    result = run_probe(root, probed, adapter=adapter)
+    assert result["status"] == "completed", result.get("error")
+    assert "UM:1 5" in result["output"], result["output"]
+    assert result["rows"], result
+    for row in result["rows"]:
+        assert row.get("view") != "memory", row
+        if compiler == "gcc":
+            # LLDB counts GCC's as empty: withheld, or no value at all here.
+            assert row.get("value") is None, row
+
+
+STALE = """#include <cstdio>
+#include <unordered_map>
+__attribute__((noinline, const)) static int twice(int x) {
+    return x * 2; // IN_TWICE
+}
+[[using gnu: noinline, optimize("O2")]] static int bump(std::unordered_map<int, int> &m, int k) {
+    int &slot = m[1];
+    slot = k;
+    int t = twice(k);
+    slot = t;
+    return t;
+}
+int main(int argc, char **) {
+    std::unordered_map<int, int> um{{1, 2}};
+    int got = bump(um, argc + 40);
+    std::printf("UM:%zu %d %d\\n", um.size(), um[1], got);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_no_node_is_read_where_a_using_attribute_asks_gcc_to_optimize(cpp, capsys):
+    # Review 2 of #360: `[[using gnu: optimize("O2")]]` escaped the detector, and GCC 13
+    # optimizes `bump` under -O0. Stopped in `twice`, `bump` has stored 41 in `m[1]`, but
+    # GCC drops that store (`twice` is `const`): `main`'s `um` read `size=1 {1: 2}` from
+    # its node as `[memory]`.
+    compiler, root = cpp
+    source = root / "stale.cpp"
+    source.write_text(STALE)
+    assert main(["session", "start", str(source), "--at", str(line_of(STALE, "IN_TWICE"))]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        main(["session", "get", "um", "um[1]", "--frame", str(caller), "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert all(row.get("view") != "memory" for row in rows.values()), rows
+    if compiler == "gcc":
+        assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
+
+
+ASKED = """#include <cstdio>
+#include <unordered_map>
+{ask}
+static int bump(std::unordered_map<int, int> &m) {{ return ++m[1]; }}
+{after}
+int main() {{
+    std::unordered_map<int, int> um{{{{1, 2}}}};
+    int got = bump(um);
+    std::printf("UM:%zu %d\\n", um.size(), got); // HERE
+    return 0;
+}}
+"""
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    "ask",
+    [
+        '__attribute__((noinline, optimize("O2")))',
+        '#define FAST __attribute__((optimize("O2")))\nFAST __attribute__((noinline))',
+        '#pragma GCC push_options\n#pragma GCC optimize ("O2")\n__attribute__((noinline))',
+        '[[using gnu: noinline, optimize("O2")]]',
+    ],
+)
+def test_no_node_is_read_where_the_source_asks_gcc_to_optimize_a_function(cpp, capsys, ask):
+    # Review of #360: an unoptimized build whose source asks GCC to optimize `bump` (an
+    # attribute, behind a macro too, or a pragma) may hold a value it stores in a
+    # register, as an optimized build does: its nodes are not read.
+    compiler, root = cpp
+    after = "#pragma GCC pop_options" if "push_options" in ask else ""
+    program = ASKED.format(ask=ask, after=after)
+    source = root / "asked.cpp"
+    source.write_text(program)
+    code, result = probe(source, line_of(program, "// HERE"), "um,um[1]", capsys)
+    assert "UM:1 3" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    assert all(row.get("view") != "memory" for row in rows.values()), rows
+    if compiler == "gcc":
+        assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
+    else:
+        # Clang ignores GCC's attribute, and LLDB reads its build: as before.
+        assert rows["um[1]"]["value"] == "3", rows
 
 
 DECODED = """#include <cstddef>
@@ -234,7 +657,8 @@ WRONG_PLACE = (
 @pytest.mark.timeout(180)
 def test_entries_lldb_would_decode_as_another_type_or_place_are_not_listed(cpp, capsys):
     # Review of #281: `WeirdAlloc<double, int>` compiles, LLDB counts `size=1` as the
-    # container does, and shows `ws[#0]` as the double 3.4584595208887258E-323.
+    # container does, and shows `ws[#0]` as the double 3.4584595208887258E-323. Since
+    # #360, Peeky reads the `int` from the node itself.
     compiler, root = cpp
     source = root / "decoded.cpp"
     source.write_text(DECODED)
@@ -274,8 +698,10 @@ def test_entries_lldb_would_decode_as_another_type_or_place_are_not_listed(cpp, 
         reason = error.removeprefix("not listed: ")
         assert rows["assets[1].v"]["error"] == f"[1] not read: assets is not listed: {reason}"
     if sys.platform == "linux":
-        # libstdc++ here: LLDB's provider decodes `ws` and `ld` wrongly, so neither reads.
-        assert rows["ws"].get("value") is None and rows["ld"].get("value") is None, rows
+        # libstdc++ here: LLDB's provider decodes `ws` and `ld` wrongly. Peeky reads `ws`'s
+        # `int`s from its nodes (#360), and no `long double`.
+        assert rows["ws"].get("view") == "memory" and rows["ws[#0]"]["value"] == "7", rows
+        assert rows["ld"].get("value") is None and rows["ld[#0]"].get("value") is None, rows
 
 
 TEXT = """#include <cstdio>
@@ -294,34 +720,50 @@ DWARF = re.compile(
 )
 
 
-@pytest.mark.timeout(180)
-def test_a_string_set_is_made_or_refused_for_what_the_debugger_misreads(cpp, capsys):
+@pytest.mark.timeout(240)
+def test_a_string_set_is_made_in_the_buffer_the_debugger_misreads(cpp, capsys):
     # #167: with lldb-dap 20, GCC's string was refused as "its members are not laid out
-    # as libstdc++'s string's are"; LLDB reads its `_M_local_buf` as `char[0]`.
+    # as libstdc++'s string's are"; LLDB reads its `_M_local_buf` as `char[0]`. Then as
+    # one whose characters cannot be set one by one: lldb-dap 20 has no writeMemory
+    # request. Its text is now written with LLDB's `memory write`, and read back.
     compiler, root = cpp
     source = root / "text.cpp"
     source.write_text(TEXT)
     line = line_of(TEXT, "// OBSERVE")
     code, result = probe(source, line, "nm", capsys, "--set", 'nm="renamed"')
-    if code == 0:
-        assert "NM:[renamed]" in result["output"], result
+    if compiler == "gcc" and os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
+        assert code == 0, result.get("error")
+    if code != 0:
+        # lldb-dap 18 reads no memory, so it cannot tell where the text is.
+        error = result["error"]
+        assert error["code"] == "MUTATION_REJECTED", error
+        assert error["message"].startswith(
+            "`nm` cannot be changed: Peeky cannot tell whether its text is in the string "
+            "itself or on the heap: this debugger cannot read memory (lldb-dap 20 can)"
+        ), error
+        # Never marked as one a set changes.
+        assert result["rows"][0].get("settable") is not True, result["rows"]
         return
-    error = result["error"]
-    assert error["code"] == "MUTATION_REJECTED", error
-    assert "not laid out" not in error["message"], error
-    misread = (
-        "`nm` cannot be changed: the debugger misreads this build's string buffer as char[0] "
-        "(its debug information says char[16]), so it cannot set the text's characters one "
-        "by one, and this debugger cannot write memory (lldb-dap 21 can)"
-    )
-    unread = "this debugger cannot read memory (lldb-dap 20 can)"
-    assert error["message"].startswith(misread) or unread in error["message"], error
-    if compiler == "clang" or not os.environ.get("PEEKY_EXPECT_READ_MEMORY"):
-        assert unread in error["message"], error
-    else:
-        assert error["message"].startswith(misread), error
-    # Never marked as one a set changes.
-    assert result["rows"][0].get("settable") is not True, result["rows"]
+    assert "NM:[renamed]" in result["output"], result
+    assert [(c["before"], c["after"]) for c in result["interventions"]] == [
+        ('"named"', '"renamed"')
+    ], result["interventions"]
+    after = [row for row in result["rows"] if row["phase"] == "after-set"]
+    assert after and after[0]["value"].endswith('"renamed"'), after
+    # Marked as one a set changes, before it was.
+    assert result["rows"][0].get("settable") is True, result["rows"]
+    if compiler != "gcc" or sys.platform == "darwin":
+        return
+    # Its whole room, 15 bytes and the NUL, with a byte LLDB shows escaped.
+    code, result = probe(source, line, "nm", capsys, "--set", 'nm="a\\tfull fifteen."')
+    assert code == 0, result.get("error")
+    assert "NM:[a\tfull fifteen.]" in result["output"], result["output"]
+    code, result = probe(source, line, "nm", capsys, "--set", 'nm="sixteen bytes!!!"')
+    assert code == 1 and result["error"]["message"].startswith(
+        "`nm` cannot be changed: the text does not fit: `nm` holds its text in its own "
+        "buffer, with room for 15 bytes, and the text is 16 bytes. Peeky never reallocates "
+        "a string; a longer text needs an edit to the source"
+    ), result.get("error")
 
 
 @pytest.mark.timeout(180)
@@ -549,14 +991,14 @@ int main(int argc, char **argv) {
     std::tuple_element<0, std::pair<long, long>>::type &r = p.first; // EXPLICIT
     auto &[a, b] = p; // LOCAL
     auto &&[g, h] = one(argc); // EXTENDED
-    use(poison[0].first + r + a + g); // AFTER
+    use(poison[0].first + r + a); use(g + h); // AFTER
     return 0;
 }
 """
 DEAD = (
     "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
-    "`{}` by reference, and only an object of this frame, or a member of one, is proven. Read "
-    "it where the code names that object, or bind by value (`auto [...]`, no `&`)"
+    "`{}` by reference, and Peeky proves only a local or its non-union member. Read it where "
+    "the code names that object, or bind by value (no `&`)"
 )
 
 
@@ -570,11 +1012,20 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     code, result = probe(
         source, line_of(DANGLING, "// AFTER"), "t,u,c,d,e,f,r,a,b,g,h", capsys, "--hits", "1"
     )
-    assert "U=8041" in result["output"], result["output"]
+    assert "U=8010" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    # Never `poison`'s elements, nor any value, through a temporary the line destroyed;
-    # nor through `one(argc)`'s, which `auto &&` keeps alive, but only by a rule Peeky
-    # does not prove (a call).
+    # A local of this frame: read through.
+    for selector, value in (("a", "5"), ("b", "6")):
+        assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
+    # `one(argc)`'s result, which `auto &&` keeps alive for its scope, but which the function
+    # called may keep a pointer into (#297, review of #368 round 3): withheld.
+    for selector in ("g", "h"):
+        row = rows[selector]
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+            selector, "`one(argc)`", CALLED
+        ), row
+    # Never `poison`'s elements, nor any value, through a temporary the line destroyed.
     bound = {
         "t": "make(0)[0]",
         "u": "make(0)[0]",
@@ -582,17 +1033,12 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
         "d": "make(0)[1]",
         "e": "make(0)[0]",
         "f": "make(0)[0]",
-        "g": "one(argc)",
-        "h": "one(argc)",
     }
     for selector, initializer in bound.items():
         row = rows[selector]
         assert row.get("value") is None, row
         if not hidden(compiler, row):
             assert row["error"] == DEAD.format(selector, initializer), row
-    # A local of this frame: read through.
-    for selector, value in (("a", "5"), ("b", "6")):
-        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
     # The code's own reference, though GCC types it as a binding's: a reference's row.
     assert rows["r"]["type"].endswith("&") and "debugger_type" not in rows["r"], rows["r"]
     assert re.fullmatch(r"0x[0-9a-f]+", rows["r"]["value"]), rows["r"]
@@ -600,7 +1046,7 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
 
 # Round 2 of the #296 review: a union's member, whose life ends when another becomes
 # active, and the boundaries checked by hand: a local reassigned, a vector's element, and a
-# map's entries in a range `for`.
+# map's entries in a range `for` (read since #297: the code leaves both in place).
 BOUNDARIES = """#include <cstdio>
 #include <map>
 #include <new>
@@ -632,14 +1078,14 @@ int main(int argc, char **argv) {
     for (auto &[key, value] : m) { // MAP_LOOP
         use(key * value); // MAP_READ
     }
-    use(u.q.first + c + e + g); // AFTER
+    use(u.q.first + c + e); use(g); // AFTER
     return 0;
 }
 """
 
 
 @pytest.mark.timeout(180)
-def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys):
+def test_a_binding_through_a_union_is_withheld_a_local_containers_element_read(cpp, capsys):
     # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then a placement new made `u.q`
     # the union's active member: `a = 7, b = 8`, with no note.
     compiler, root = cpp
@@ -647,27 +1093,349 @@ def test_a_binding_through_a_union_a_subscript_or_a_map_is_withheld(cpp, capsys)
     source.write_text(BOUNDARIES)
     capture = "a,b,x,y,c,d,e,f,g,k"
     code, result = probe(source, line_of(BOUNDARIES, "// AFTER"), capture, capsys, "--hits", "1")
-    assert "U=90" in result["output"], result["output"]
+    assert "U=79" in result["output"], result["output"]
     rows = {row["selector"]: row for row in result["rows"]}
-    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p", "g": "v[0]", "k": "v[0]"}
+    # A struct's member, and a local reassigned after the binding: what it holds now. And
+    # since #297, an element of a local vector nothing changes later: `v[0]`.
+    shown = {"c": "31", "d": "32", "e": "41", "f": "51", "g": "11", "k": "12"}
+    for selector, value in shown.items():
+        assert hidden(compiler, rows[selector]) or rows[selector].get("value") == value, rows
+    withheld = {"a": "u.p", "b": "u.p", "x": "h.u.p", "y": "h.u.p"}
     for selector, initializer in withheld.items():
         row = rows[selector]
         assert row.get("value") is None, row
         assert hidden(compiler, row) or row["error"] == DEAD.format(selector, initializer), row
-    # A struct's member, and a local reassigned after the binding: what it holds now.
-    shown = {"c": "31", "d": "32", "e": "41", "f": "51"}
-    for selector, value in shown.items():
-        assert hidden(compiler, rows[selector]) or rows[selector]["value"] == value, rows
-    # A map's entry in a range `for`: an element of `m`, which the body may erase.
+    # A map's entry in a range `for` whose body leaves the map alone (#297): each pass's.
     code, result = probe(
         source, line_of(BOUNDARIES, "// MAP_READ"), "key,value", capsys, "--hits", "all"
     )
     assert len(result["rows"]) == 4, result["rows"]
+    entries = {(1, "key"): "21", (1, "value"): "22", (2, "key"): "23", (2, "value"): "24"}
+    for row in result["rows"]:
+        expected = entries[(row["hit"], row["selector"])]
+        assert hidden(compiler, row) or row.get("value") == expected, row
+
+
+# #297: bindings by reference of an element of a local container the code leaves in place
+# (a range `for` over a map, a vector or a set; `v[1]`); and the same forms where the code
+# may change the container, and a call's result, which is never proven.
+HELD = """#include <cstdio>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
+using P = std::pair<long, long>;
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) P one(long v) { return {v + 30, v + 40}; }
+__attribute__((noinline)) const P &pick(const P &p) { return p; }
+__attribute__((noinline)) void fill(std::map<long, long> &m) { m[99] = 100; }
+int main(int argc, char **argv) {
+    std::map<long, long> m{{21, 22}, {23, 24}};
+    for (const auto &[k, x] : m) {
+        use(k * x); use((long)m.size()); // MAP_READ
+    }
+    std::vector<P> v{{11, 12}, {13, 14}};
+    for (auto &[a, b] : v) {
+        b += 1;
+        use(a * b); // VECTOR_READ
+    }
+    std::set<P> ps{{5, 6}, {7, 8}};
+    for (const auto &[i, j] : ps) {
+        use(i * j); // SET_READ
+    }
+    auto &[r, s] = v[1];
+    auto &&[p, q] = one(argc);
+    const auto &[y, z] = one(argc + 1);
+    use(r + s + p + q + y + z); // READ
+    std::vector<P> w{{51, 52}};
+    auto &[c, d] = w[0];
+    long first = c;
+    w.push_back({53, 54});
+    w.push_back({55, 56});
+    auto &&[e, f] = pick(w[1]);
+    std::map<long, long> n{{61, 62}};
+    fill(n);
+    for (auto &[g, h] : n) {
+        use(g + h + first + e); // CHANGED
+    }
+    return 0;
+}
+"""
+HELD_ROWS = {
+    "MAP_READ": ("k,x", {1: {"k": "21", "x": "22"}, 2: {"k": "23", "x": "24"}}),
+    "VECTOR_READ": ("a,b", {1: {"a": "11", "b": "13"}, 2: {"a": "13", "b": "15"}}),
+    "SET_READ": ("i,j", {1: {"i": "5", "j": "6"}, 2: {"i": "7", "j": "8"}}),
+    "READ": ("r,s", {1: {"r": "13", "s": "15"}}),
+}
+UNPROVEN = (
+    "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
+    "{} by reference, {}. Read it where the code names that object, or bind by value (no `&`)"
+)
+# Review of #368, round 3: the function called may keep a pointer into its result.
+CALLED = "a call's result, which the function called may keep a pointer into"
+
+
+@pytest.mark.timeout(300)
+def test_a_binding_into_a_local_container_reads_where_proven(cpp, capsys):
+    # #297: these were all `not shown` (only a local, or a member of one, was proven), under
+    # GCC and Apple clang alike: a range `for` over a local map, `v[1]` of a local vector.
+    compiler, root = cpp
+    source = root / "held.cpp"
+    source.write_text(HELD)
+    for marker, (capture, passes) in HELD_ROWS.items():
+        found = bound_rows_of(source, HELD, marker, capture, capsys)
+        assert len(found) == sum(len(each) for each in passes.values()), found
+        for row in found:
+            if hidden(compiler, row):
+                continue
+            assert row.get("value") == passes[row["hit"]][row["selector"]], row
+            assert row.get("settable") is not True and "debugger_type" in row, row
+    # Where the code may change the container, and a call's result: withheld.
+    changed = {
+        "c": (
+            "an element of `w`",
+            "and while it is in scope the code may change `w` or keep a pointer or reference "
+            "into it",
+        ),
+        "e": ("`pick(w[1])`", CALLED),
+        "g": (
+            "an element of `n`",
+            "and while it is in scope the code may change `n` or keep a pointer or reference "
+            "into it",
+        ),
+        "p": ("`one(argc)`", CALLED),
+        "y": ("`one(argc + 1)`", CALLED),
+    }
+    code, result = probe(
+        source, line_of(HELD, "// CHANGED"), "c,d,e,f,g,h,p,q,y,z", capsys, "--hits", "1"
+    )
+    assert "U=" in result["output"], result
     for row in result["rows"]:
         assert row.get("value") is None, row
-        assert hidden(compiler, row) or row["error"] == DEAD.format(row["selector"], "m").replace(
-            "binds `m`", "binds an element of `m`"
+        if hidden(compiler, row):
+            continue
+        twin = {"d": "c", "f": "e", "h": "g", "q": "p", "z": "y"}
+        what, why = changed[twin.get(row["selector"], row["selector"])]
+        assert row["error"] == UNPROVEN.format(row["selector"], what, why), row
+
+
+# Review of #368: a pointer into the container made before the binding, through which the
+# element is destroyed before the stop and made again after it; a tuple-like type of the
+# program's whose `get<I>` returns what a pointer in it points at; and names passed by value.
+REVIEWED = """#include <array>
+#include <cstddef>
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <new>
+#include <tuple>
+#include <utility>
+#include <vector>
+using P = std::pair<long, long>;
+struct Pair { long x, y; };
+struct View {
+    Pair *p;
+    template <std::size_t I> long &get() const { return I == 0 ? p->x : p->y; }
+};
+namespace std {
+template <> struct tuple_size<View> : std::integral_constant<std::size_t, 2> {};
+template <std::size_t I> struct tuple_element<I, View> { using type = long; };
+}
+struct Sink {};
+long *escaped = nullptr;
+Sink &operator<<(Sink &s, long &x) { escaped = &x; return s; }
+Sink operator""_sink(unsigned long long) { return Sink{}; }
+long operator+(long &x, Sink) { escaped = &x; return x; }
+long *made = nullptr;
+struct E {
+    long x, y;
+    E(long a, long b) : x(a), y(b) { made = &x; }
+    template <std::size_t I> long &get() { return I == 0 ? x : y; }
+};
+namespace std {
+template <> struct tuple_size<E> : std::integral_constant<std::size_t, 2> {};
+template <std::size_t I> struct tuple_element<I, E> { using type = long; };
+}
+void *kept = nullptr;
+template <class T> struct Spy {
+    using value_type = T;
+    Spy() = default;
+    template <class U> Spy(const Spy<U> &) {}
+    T *allocate(std::size_t n) { T *p = std::allocator<T>{}.allocate(n); kept = p; return p; }
+    void deallocate(T *p, std::size_t n) { std::allocator<T>{}.deallocate(p, n); }
+};
+template <class T, class U> bool operator==(const Spy<T> &, const Spy<U> &) { return true; }
+template <class T, class U> bool operator!=(const Spy<T> &, const Spy<U> &) { return false; }
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+__attribute__((noinline)) View view(Pair *p) { return View{p}; }
+using Four = std::array<long, 4>;
+Four *saved = nullptr;
+__attribute__((noinline)) Four make() {
+    Four made{141, 142, 143, 144};
+    saved = &made;
+    return made;
+}
+int main(int argc, char **argv) {
+    std::vector<P> v{{11, 12}};
+    P *p = v.data();
+    auto &[a, b] = v[0];
+    std::destroy_at(p);
+    use(argc); // DESTROYED
+    new (p) P{13, 14};
+    use(a + b);
+    Pair held{41, 42};
+    auto &&[vx, vy] = view(&held);
+    use(vx + vy); // PROXY
+    std::map<long, long> m{{71, 72}};
+    for (const auto &[k, x] : m) {
+        use(k);
+        std::printf("%ld\\n", x); // PASSED
+    }
+    Sink sink;
+    std::map<long, long> om{{101, 102}};
+    for (auto &[ok, ov] : om) {
+        sink << ov;
+        use(ok); // OPERATOR
+    }
+    std::vector<E> es;
+    es.emplace_back(111, 112);
+    for (auto &[ex, ey] : es) {
+        use(ex * ey); // CONSTRUCTED
+    }
+    std::vector<P, Spy<P>> sv{{121, 122}};
+    for (auto &[sa, sb] : sv) {
+        use(sa * sb); // ALLOCATED
+    }
+    std::map<long, long *> pointing{{131, &held.x}};
+    for (auto &[pk, pp] : pointing) {
+        use(pk); // POINTER
+    }
+    std::map<long, long> lm{{161, 162}};
+    for (auto &[lk, lv] : lm) {
+        use(lv + 1_sink); // LITERAL
+    }
+    auto &&[na, nb, nc, nd] = make();
+    std::destroy_at(saved);
+    use(argc); // RETURNED
+    new (saved) Four{145, 146, 147, 148};
+    use(na + nb + nc + nd);
+    return 0;
+}
+"""
+
+
+POLICY = (
+    "and Peeky proves only standard vectors, maps and sets of numbers, with the default "
+    "allocator and order"
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(cpp, capsys):
+    # Review of #368: `P *p = v.data(); auto &[a, b] = v[0]; std::destroy_at(p);` showed
+    # `a = 11, b = 12` at a stop before `new (p) P{13, 14}`: the element was dead. And
+    # `auto &&[vx, vy] = view(&held);` showed `held`'s members: `View`'s own `get<I>` names
+    # what a pointer in the call's result points at, not that result's elements.
+    compiler, root = cpp
+    source = root / "reviewed.cpp"
+    source.write_text(REVIEWED)
+    reasons = {
+        # Review of #368, round 2: an overloaded operator that keeps the name's address;
+        # an element whose own constructor keeps its address, or an allocator of the
+        # program's, which sees where each element is; a pointer, which may point at
+        # another element.
+        "OPERATOR": (
+            "ok,ov",
+            "an element of `om`",
+            "and while it is in scope the code may change `om` or keep a pointer or reference "
+            "into it",
+        ),
+        "CONSTRUCTED": ("ex,ey", "an element of `es`", POLICY),
+        "ALLOCATED": ("sa,sb", "an element of `sv`", POLICY),
+        "POINTER": ("pk,pp", "an element of `pointing`", POLICY),
+        # Review of #368, round 3: with the named return value optimization, `make()` builds
+        # `made` where the caller keeps its result (returned in memory: 32 bytes), and keeps
+        # a pointer into it, through which the result is destroyed before the stop.
+        "RETURNED": ("na,nb", "`make()`", CALLED),
+        # A user-defined literal, `1_sink`, of a class with `operator+(long &, Sink)`.
+        "LITERAL": (
+            "lk,lv",
+            "an element of `lm`",
+            "and while it is in scope the code may change `lm` or keep a pointer or reference "
+            "into it",
+        ),
+        "DESTROYED": (
+            "a,b",
+            "an element of `v`",
+            "and while it is in scope the code may change `v` or keep a pointer or reference "
+            "into it",
+        ),
+        "PROXY": ("vx,vy", "`view(&held)`", CALLED),
+    }
+    for marker, (capture, what, why) in reasons.items():
+        found = bound_rows_of(source, REVIEWED, marker, capture, capsys)
+        assert len(found) == 2, (marker, found)
+        for row in found:
+            assert row.get("value") is None, row
+            assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+                row["selector"], what, why
+            ), row
+    # Passed by value (`use(long)`, `printf`'s `...`): still read.
+    for row in bound_rows_of(source, REVIEWED, "PASSED", "k,x", capsys):
+        assert hidden(compiler, row) or row.get("value") == {"k": "71", "x": "72"}[row["selector"]]
+
+
+# Review of #368, round 3: `std::allocator` calls the global `operator new`, which this
+# program replaces to keep where each element is.
+REPLACED = """#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <new>
+void *captured = nullptr;
+void *operator new(std::size_t n) {
+    void *p = std::malloc(n ? n : 1);
+    if (p == nullptr) throw std::bad_alloc();
+    captured = p;
+    return p;
+}
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+__attribute__((noinline)) long use(long v) { std::printf("U=%ld\\n", v); return v; }
+int main() {
+    std::map<long, long> m{{151, 152}};
+    for (const auto &[k, x] : m) {
+        use(k * x); // CAPTURED
+    }
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_containers_element_is_withheld_where_the_program_replaces_operator_new(cpp, capsys):
+    # Review of #368, round 3: the map's loop read `k = 151, x = 152`, though the program's
+    # own `operator new` kept where the map's node is.
+    compiler, root = cpp
+    source = root / "replaced.cpp"
+    source.write_text(REPLACED)
+    found = bound_rows_of(source, REPLACED, "CAPTURED", "k,x", capsys)
+    assert len(found) == 2, found
+    why = (
+        "and the program replaces `operator new` or `operator delete`, which may keep where "
+        "each element is"
+    )
+    for row in found:
+        assert row.get("value") is None, row
+        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+            row["selector"], "an element of `m`", why
         ), row
+
+
+def bound_rows_of(source, text, marker, capture, capsys):
+    """The rows of ``capture`` at every stop of ``marker``'s line of ``text``."""
+    code, result = probe(source, line_of(text, f"// {marker}"), capture, capsys, "--hits", "all")
+    assert result["status"] == "completed", result
+    return result["rows"]
 
 
 @pytest.mark.timeout(300)
@@ -737,3 +1505,471 @@ def test_an_optimized_pair_binding_never_shows_its_elements_address(cpp, optimiz
         if row.get("value") is not None:
             # The element, or nothing: never its address.
             assert row["value"] == {"r": str(1001 + row["hit"] - 1), "s": "2"}[row["selector"]]
+
+
+CAPTURES = """#include <algorithm>
+#include <cstdio>
+#include <vector>
+
+struct Pt { long x, y; };
+
+int main() {
+    std::vector<long> sizes{3, 1, 2};
+    int bonus = 2;
+    long count = 7;
+    Pt pt{3, 4};
+    long *heap = new long(40);
+    long &held = *heap;
+    char *word = new char[5]{'h', 'e', 'a', 'p', 0};
+    auto m = [bonus, &count, pt, n = count + 1]() mutable {
+        bonus += 1; // IN_MUTABLE
+        count += n + pt.x;
+        return bonus;
+    };
+    m();
+    auto refs = [&](int k) {
+        count += k + bonus + held + word[4]; // IN_REFS
+        return count;
+    };
+    refs(2);
+    std::sort(sizes.begin(), sizes.end(), [&sizes, bonus](long a, long b) {
+        return a + bonus > b + (long)sizes.size(); // IN_SORT
+    });
+    auto one = [bonus](int k) { return k + bonus; }; // ONE_LINE
+    long total = one(4);
+    std::printf("CAPS:%d %ld %ld %ld\\n", bonus, count, total, sizes[0]);
+    delete heap;
+    delete[] word;
+    return 0;
+}
+"""
+
+
+def capture_rows(source, marker, names, capsys, hits="1"):
+    code, result = probe(source, line_of(CAPTURES, f"// {marker}"), names, capsys, "--hits", hits)
+    assert code == 0 and "CAPS:2 62 6 3" in result["output"], result
+    return {(row["hit"], row["selector"]): row for row in result["rows"]}
+
+
+@pytest.mark.timeout(300)
+def test_a_lambdas_captures_are_read_through_its_object_and_never_changed(cpp, capsys):
+    # #361: GCC passes a lambda's captures through `__closure`, which lldb-dap doesn't
+    # list, so each was `not found` in the lambda. clang lists them as members of `this`.
+    compiler, root = cpp
+    source = root / "caps.cpp"
+    source.write_text(CAPTURES)
+    mutable = capture_rows(source, "IN_MUTABLE", "bonus,count,pt,pt.x,n", capsys)
+    refs = capture_rows(source, "IN_REFS", "bonus,count,held,word,k", capsys)
+    sort = capture_rows(source, "IN_SORT", "bonus,sizes", capsys)
+    # A one-line lambda's first stop is in `main`; its second, before the lambda stores
+    # `__closure`, where no capture is read.
+    one = capture_rows(source, "ONE_LINE", "bonus", capsys, "all")
+    if compiler == "clang":
+        # Unchanged: a capture is a member of the lambda's `this`, which a selector names.
+        for rows in (mutable, sort):
+            assert all(
+                row["error"].startswith("not found")
+                and f"this has a member '{name}'" in row["error"]
+                for (_, name), row in rows.items()
+                if "." not in name
+            ), rows
+        assert "__closure" not in json.dumps([list(r.values()) for r in (mutable, refs, sort, one)])
+        return
+    # By value: the lambda's copy; by reference: what it refers to, the reference's type
+    # kept as the debugger's. Never settable: the lambda's object holds them.
+    assert {name: row["value"] for (_, name), row in mutable.items()} == {
+        "bonus": "2",
+        "count": "7",
+        "pt": "{x = 3, y = 4}",
+        "pt.x": "3",
+        "n": "8",
+    }, mutable
+    assert (mutable[1, "count"]["type"], mutable[1, "count"]["debugger_type"]) == (
+        "long",
+        "long &",
+    )
+    for row in mutable.values():
+        assert row["settable"] is False and row["not_settable"] == "capture", row
+        assert "view" not in row and "note" not in row, row
+    # The lambda's object is `refs` in `main`, and what `count` and `bonus` refer to are
+    # `main`'s locals: proven. `held` refers to a heap block, which Peeky can't prove.
+    assert [refs[1, name]["value"] for name in ("bonus", "count", "held")] == ["2", "18", "40"]
+    assert "view" not in refs[1, "count"] and "view" not in refs[1, "bonus"], refs
+    assert refs[1, "held"]["view"] == "unproven", refs
+    assert refs[1, "held"]["note"].startswith(
+        "read through `held`: Peeky can't show that `held` refers to a live object, so this "
+        "value may be left over: its address is in no local, member or element"
+    ), refs
+    # A pointer captured by reference shows its value: its text is read through it.
+    assert refs[1, "word"]["type"] == "char *" and refs[1, "word"]["view"] == "unproven", refs
+    assert refs[1, "word"]["value"].endswith('"heap"'), refs
+    assert refs[1, "word"]["note"].startswith(
+        "Peeky can't show that `word` points at a live object, so its text may be left over"
+    ), refs
+    assert refs[1, "k"]["value"] == "2" and refs[1, "k"]["settable"] is True, refs
+    # `std::sort` calls a copy of the lambda's object, which no frame Peeky lists holds.
+    assert sort[1, "bonus"]["value"] == "2", sort
+    assert sort[1, "sizes"]["type"] == "std::vector<long>", sort
+    for row in sort.values():
+        assert row["view"] == "unproven", row
+        assert row["note"].startswith(
+            "read through `__closure`: Peeky can't show that `__closure` points at a live "
+            "object, so this value may be left over: it points into the stack"
+        ), row
+    assert one[1, "bonus"]["value"] == "2" and one[1, "bonus"]["function"] == "main", one
+    # Why, as the worker says it (review of #361: not that lldb-dap doesn't list it).
+    assert one[2, "bonus"]["error"] == (
+        "not found: 'bonus' is a capture of this lambda, which GCC passes through "
+        "`__closure`, and Peeky can't read it here: the stop is at the lambda's start, "
+        "before the prologue stores `__closure`, so `__closure` holds leftovers (the build "
+        "marks no prologue end, as GCC's never do, so LLDB stops a one-line function here); "
+        "read it where the lambda is created, or print it from the program; visible: k"
+    ), one
+
+
+@pytest.mark.timeout(240)
+def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
+    # #361: a capture, or a member of one, is reached through `__closure`: refused before
+    # the program runs, and at a stop, saying so.
+    compiler, root = cpp
+    source = root / "caps.cpp"
+    source.write_text(CAPTURES)
+    line = line_of(CAPTURES, "// IN_MUTABLE")
+    code, result = probe(source, line, "bonus", capsys, "--set", "bonus=5")
+    assert code != 0 and result["status"] == "failed", result
+    if compiler == "gcc":
+        assert result["error"]["code"] == "MUTATION_REJECTED", result
+        assert (
+            "is reached through a pointer or reference (a C++ structured binding of a "
+            "reference, or of a pair or tuple, a GCC lambda's capture" in result["error"]["message"]
+        )
+    assert main(["session", "start", str(source), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        refused = []
+        for change in ("n=9", "pt.x=9"):
+            assert main(["session", "set", change]) != 0
+            refused.append(capsys.readouterr().err)
+        main(["session", "get", "n", "pt.x", "--json"])
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    if compiler == "clang":
+        assert all("not" in text for text in refused), refused
+        return
+    assert (
+        "MUTATION_REJECTED" in refused[0]
+        and (
+            "'n' cannot be changed: `n` is a capture of this lambda, so it is reached through a "
+            "pointer or reference: GCC keeps it in the lambda's object"
+        )
+        in refused[0]
+    ), refused
+    assert "`pt.x` cannot be changed: `pt` is a capture of this lambda" in refused[1], refused
+    # Nothing changed.
+    assert [rows["n"]["value"], rows["pt.x"]["value"]] == ["8", "3"], rows
+
+
+CAPTURED_CONTAINERS = """#include <cstdio>
+#include <unordered_map>
+std::unordered_map<int, int> um;
+static void touch() { um[7] = 8; um[9] = 10; um[11] = 12; }
+int main() {
+    touch();
+    std::unordered_map<int, int> local{{1, 2}};
+    std::unordered_map<int, int> copy{{3, 4}, {5, 6}};
+    // `um` is a global of three entries too: a capture's name may shadow one.
+    auto f = [&um = local, copy]() {
+        return (int)um.size() + (int)copy.size(); // IN_LAMBDA
+    };
+    std::printf("F:%d %zu\\n", f(), um.size());
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_a_lambdas_capture_of_an_unordered_container_reads_or_withholds_truthfully(cpp, capsys):
+    # #360 with #361: a GCC lambda's capture of an unordered container, by reference and
+    # by value, is its own container: read whole, or withheld with its own count (never
+    # the shadowed global's 3), and never from nodes Peeky can't show are live.
+    compiler, root = cpp
+    source = root / "captured.cpp"
+    source.write_text(CAPTURED_CONTAINERS)
+    line = line_of(CAPTURED_CONTAINERS, "// IN_LAMBDA")
+    # Clang's lambda reads its captures as members of its object, `this.um`.
+    at = "this." if compiler == "clang" else ""
+    names = ["um", "um[1]", "copy", "copy[3]"]
+    code, result = probe(source, line, ",".join(at + name for name in names), capsys)
+    assert "F:3 3" in result["output"], result
+    rows = {row["selector"].removeprefix(at): row for row in result["rows"]}
+    expected = {"um": ("size=1 {1: 2}", 1), "um[1]": ("2", 1), "copy[3]": ("4", 2)}
+    for selector, (value, count) in expected.items():
+        row = rows[selector]
+        shown = row.get("value")
+        assert shown is None or shown == value or shown.endswith(" " + value), (selector, row)
+        if shown is None:
+            assert withheld(row, count), (selector, row)
+    copy = rows["copy"]
+    if copy.get("value") is None:
+        assert withheld(copy, 2), copy
+    else:
+        assert re.search(r"size=2 \{(3: 4, 5: 6|5: 6, 3: 4)\}$", copy["value"]), copy
+    if compiler == "gcc":
+        # LLDB counts GCC's as empty: whatever shows is Peeky's own read, never `size=0`.
+        assert all("size=0" not in str(row.get("value")) for row in rows.values()), rows
+
+
+OPTIMIZED_CAPTURES = """#include <cstdio>
+int main(int argc, char **) {
+    int bonus = argc + 1;
+    long count = argc * 7;
+    auto f = [bonus, &count](int k) __attribute__((noinline)) {
+        count += k + bonus; // IN_OPT
+        std::printf("OPT:%ld\\n", count);
+        return count;
+    };
+    long a = f(1);
+    long b = f(2);
+    std::printf("%ld %ld\\n", a, b);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+@pytest.mark.parametrize("optimization", ["O1", "O2"])
+def test_an_optimized_lambdas_captures_are_not_read(cpp, optimization):
+    # #361: optimized, a `mutable` lambda may keep a capture in a register while its
+    # object holds an older value: no capture is read through `__closure` there.
+    from peeky.native import NativeTarget
+    from peeky.probe import Probe, run_probe
+
+    compiler, root = cpp
+    (root / "opt.cpp").write_text(OPTIMIZED_CAPTURES)
+    adapter = NativeTarget(
+        sources=("opt.cpp",),
+        language="cpp",
+        compiler=os.environ["PEEKY_NATIVE_CXX"],
+        adapter=os.environ["PEEKY_NATIVE_DAP"],
+        dwarfdump=os.environ.get("PEEKY_NATIVE_DWARFDUMP", "llvm-dwarfdump"),
+        dsymutil=os.environ.get("PEEKY_NATIVE_DSYMUTIL"),
+        sysroot=os.environ.get("PEEKY_NATIVE_SYSROOT"),
+        optimization=optimization,
+    )
+    line = line_of(OPTIMIZED_CAPTURES, "// IN_OPT")
+    result = run_probe(
+        root, Probe("opt.cpp", line, ("bonus", "count"), hits="all"), adapter=adapter
+    )
+    assert result["status"] == "completed", result.get("error")
+    said = 0
+    for row in result["rows"]:
+        assert row.get("not_settable") != "capture" and "__closure" not in row.get("note", ""), row
+        if row.get("function", "").startswith("operator()"):
+            assert row.get("value") is None, row
+        if "is a capture of this lambda" in row.get("error", ""):
+            # Why, as the worker says it (review of #361).
+            said += 1
+            assert (
+                "and Peeky can't read it here: Peeky reads no capture in an optimized build, "
+                "where a `mutable` lambda may keep one in a register while its object holds "
+                "an older value; read it where the lambda is created"
+            ) in row["error"], row
+    if compiler == "gcc" and optimization == "O1":
+        assert said, result["rows"]
+
+
+NESTED = """#include <cstdio>
+
+struct T { long a, b; };
+struct Acc {
+    long total = 5;
+    long add(long v) {
+        auto by_pointer = [this, v](long w) {
+            return total + v + w; // BY_POINTER
+        };
+        auto by_copy = [*this, v](long w) {
+            return total + v + w; // BY_COPY
+        };
+        auto named = [self = *this, v](long w) {
+            return self.total + v + w; // NAMED
+        };
+        return by_pointer(1) + by_copy(2) + named(3);
+    }
+};
+
+__attribute__((noinline)) static long id(long v) { return v; }
+static void use(long v) { std::printf("USE:%ld\\n", v); }
+
+int main() {
+    T t{1, [&] {
+        return [&] {
+            return [&] {
+                return [&] {
+                    return [&] {
+                        return id(t.b); // DEEPEST
+                    }();
+                }();
+            }();
+        }();
+    }()};
+    Acc acc;
+    long r = acc.add(3);
+    int x = 7;
+    auto other = [x]() {
+        use(x); // OTHER_OUTSIDE_BEFORE
+        {
+            use(x); // OTHER_INSIDE_BEFORE
+            long x = 9;
+            use(x); // OTHER_INSIDE_AFTER
+        }
+        use(x); // OTHER_OUTSIDE_AFTER
+    };
+    auto same = [x]() {
+        use(x); // SAME_OUTSIDE_BEFORE
+        {
+            use(x); // SAME_INSIDE_BEFORE
+            int x = 9;
+            use(x); // SAME_INSIDE_AFTER
+        }
+        use(x); // SAME_OUTSIDE_AFTER
+        { use(x); int x = 11; use(x); } // SAME_ONE_LINE
+    };
+    other();
+    same();
+    std::printf("NEST:%ld %ld %ld\\n", t.a, r, acc.total);
+    return 0;
+}
+"""
+
+
+def nested_rows(source, marker, names, capsys):
+    code, result = probe(source, line_of(NESTED, f"// {marker}"), names, capsys)
+    assert result["status"] == "completed" and "NEST:1 30 5" in result["output"], result
+    return {row["selector"]: row for row in result["rows"] if row["hit"] == 1}
+
+
+@pytest.mark.timeout(240)
+def test_a_lambda_nested_five_deep_in_a_running_initializer_is_withheld(cpp, capsys):
+    # Review of #361: only 4 functions around a lambda were read, then it counted as
+    # finished: the fifth `[&]` inside `T t{1, …}` read `t.b` before `t` was built (GCC's
+    # capture, and clang's `this` too).
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    rows = nested_rows(source, "DEEPEST", "t,t.b,this", capsys)
+    why = (
+        f"this lambda is defined in the declaration of `t` (line {line_of(NESTED, 'T t{')}), "
+        "which may still be running, so what it captures may be under construction"
+    )
+    for name in ("t", "t.b") if compiler == "gcc" else ("this",):
+        assert "value" not in rows[name] and why in rows[name]["error"], rows
+
+
+@pytest.mark.timeout(300)
+def test_a_capture_and_a_local_of_its_name_are_told_apart_by_scope(cpp, capsys):
+    # Review of #361: the capture was dropped wherever the lambda also declared its name
+    # with another type, and hidden wherever lldb-dap listed a local of its name, as in
+    # the local's block above its declaration, where the code names the capture.
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    shown = {}
+    for kind in ("OTHER", "SAME"):
+        for place in ("OUTSIDE_BEFORE", "INSIDE_BEFORE", "INSIDE_AFTER", "OUTSIDE_AFTER"):
+            shown[kind, place] = nested_rows(source, f"{kind}_{place}", "x", capsys)["x"]
+    one = nested_rows(source, "SAME_ONE_LINE", "x", capsys)["x"]
+    if compiler == "clang":
+        # Unchanged: the capture is `this.x`; the local reads where the debugger lists it.
+        assert all("__closure" not in json.dumps(row) for row in (*shown.values(), one))
+        assert shown["SAME", "INSIDE_AFTER"]["value"] == "9", shown
+        return
+    for kind, local in (("OTHER", "long"), ("SAME", "int")):
+        for place in ("OUTSIDE_BEFORE", "INSIDE_BEFORE", "OUTSIDE_AFTER"):
+            row = shown[kind, place]
+            assert (row["value"], row["type"], row["not_settable"]) == ("7", "int", "capture"), (
+                kind,
+                place,
+                row,
+            )
+        row = shown[kind, "INSIDE_AFTER"]
+        assert (row["value"], row["type"]) == ("9", local) and "not_settable" not in row, row
+    # A use of the capture and its declaration on one line: Peeky can't tell which.
+    assert "value" not in one and one["error"] == (
+        "not shown: this lambda also declares a local `x` on line "
+        f"{line_of(NESTED, '// SAME_ONE_LINE')}, and Peeky can't tell whether the code at this "
+        "stop names that local or the capture; print it from the program"
+    ), one
+
+
+@pytest.mark.timeout(240)
+def test_this_of_a_lambda_that_copies_the_object_is_its_copy(cpp, capsys):
+    # Review of #361: GCC gives `[*this]`'s `this` no location, so it had no value; the
+    # copy is the lambda's member `__this`. `[this]` and `[self = *this]` read as before.
+    compiler, root = cpp
+    source = root / "nest.cpp"
+    source.write_text(NESTED)
+    by_pointer = nested_rows(source, "BY_POINTER", "this.total,v", capsys)
+    by_copy = nested_rows(source, "BY_COPY", "this,this.total,v", capsys)
+    named = nested_rows(source, "NAMED", "self.total,v", capsys)
+    if compiler == "clang":
+        # Unchanged: clang's `this` is the lambda's object, which holds the copy as `this`.
+        assert by_pointer["this.total"]["error"].startswith("'total' not found in 'this'")
+        assert by_copy["this.total"]["error"].startswith("'total' not found in 'this'")
+        assert "__closure" not in json.dumps([by_pointer, by_copy, named])
+        return
+    assert by_pointer["this.total"]["value"] == "5" and by_pointer["v"]["value"] == "3"
+    assert (by_copy["this"]["value"], by_copy["this"]["type"]) == ("{total = 5}", "Acc")
+    for row in (by_copy["this"], by_copy["this.total"], named["self.total"]):
+        assert row["not_settable"] == "capture" and "view" not in row, row
+    assert by_copy["this.total"]["value"] == "5" and named["self.total"]["value"] == "5"
+
+
+SCOPED = """#include <cstdio>
+#define DECLARE(n) if (int n = 9) use(n)
+static void use(long v) { std::printf("USE:%ld\\n", v); }
+int main() {
+    int x = 7;
+    auto macro = [x]() {
+        DECLARE(x);
+        use(x); // MACRO_AFTER
+    };
+    auto line = [x]() {
+        use(x); { int x = 11; use(x); } // ONE_LINE_BLOCK
+        use(x); // LINE_AFTER
+    };
+    macro();
+    line();
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_local_hides_a_capture_only_where_its_block_runs(cpp, capsys):
+    # Review round 2 of #361: a macro's `if (int x = 9) use(x)` read, by its text, as in
+    # scope to the lambda's end, though its block had ended: the capture was said hidden.
+    # A line holding code before a block and the block itself stops in each.
+    compiler, root = cpp
+    source = root / "scoped.cpp"
+    source.write_text(SCOPED)
+    rows = {}
+    for marker in ("MACRO_AFTER", "ONE_LINE_BLOCK", "LINE_AFTER"):
+        code, result = probe(source, line_of(SCOPED, f"// {marker}"), "x", capsys, "--hits", "all")
+        assert result["status"] == "completed", result
+        rows[marker] = [row for row in result["rows"] if row["selector"] == "x"]
+    if compiler == "clang":
+        assert "__closure" not in json.dumps(rows), rows
+        return
+    for marker in ("MACRO_AFTER", "LINE_AFTER"):
+        [row] = rows[marker]
+        assert (row["value"], row["not_settable"]) == ("7", "capture"), (marker, row)
+    # The line's first stop runs `use(x)` before the block: the capture. Its second is in
+    # the block, on its declaration's line: Peeky can't tell.
+    before, inside = rows["ONE_LINE_BLOCK"]
+    assert (before["value"], before["not_settable"]) == ("7", "capture"), before
+    assert "value" not in inside and inside["error"].startswith(
+        "not shown: this lambda also declares a local `x` on line "
+        f"{line_of(SCOPED, '// ONE_LINE_BLOCK')}, and Peeky can't tell"
+    ), inside

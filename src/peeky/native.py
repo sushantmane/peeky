@@ -24,6 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISREG
 from typing import NamedTuple
 
 from peeky.adapters import PythonAdapter, locals_only
@@ -41,7 +42,7 @@ from peeky.build import (
     prepare,
     real_tool,
 )
-from peeky.c_source import Preprocessed, Statements, macro_hazards, returning_twice
+from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -2097,17 +2098,95 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 ),
                 # The names a GCC lambda reads through `__closure` (_gcc_captures).
                 "captures": _gcc_captures(dies, entry),
+                # Which member of the lambda's object holds each (_gcc_capture_members).
+                "capture_members": _gcc_capture_members(dies, entry),
+                # Its variables in static storage, which lldb-dap lists among no frame's
+                # locals (_static_locals, #364).
+                "statics": _static_locals(dies, (*entry["bodies"], root), files, workspace),
             }
         )
     return table
+
+
+# The most variables in static storage one function's entry keeps (#364).
+MAX_STATIC_LOCALS = 256
+
+
+def _static_locals(dies, bodies, files, workspace):
+    """((name, source, line, address, type offset, block, origin), ...) for each variable
+    of one function's bodies (their nested blocks too, not calls inlined into them) that
+    the build places at one fixed address, `DW_OP_addr`: a `static` local, or a `const`
+    one GCC builds at compile time, in read-only data (#364). ``address``: before any
+    slide; ``block``: the code ranges of the block declaring it, the function's own where
+    that is its body (clang declares a block's `static` there too). An abstract block's
+    (GCC's, of a function inlined or copied, review of PR #370) are those of each
+    concrete copy of it, or () where there is none. ``origin``: the DIE the variable
+    completes (its abstract origin), or its own: one declaration, whatever copy of the
+    function declares it again. Never a thread-local one, whose address is the thread's."""
+    from peeky.fields import _target
+
+    inputs, cache = files
+    found, seen, pending = [], set(), []
+    for body in dict.fromkeys(bodies):
+        if body in dies:
+            pending += [(child, body) for child in dies[body]["children"]]
+    function = sorted(
+        {span for body in bodies if body in dies for span in _code_ranges(dies[body])}
+    )
+    # Each abstract block's concrete copies' code (`DW_AT_abstract_origin`).
+    copies, walk = (
+        {},
+        [
+            child
+            for body in dict.fromkeys(bodies)
+            if body in dies
+            for child in dies[body]["children"]
+        ],
+    )
+    while walk and len(copies) < 4096:
+        offset = walk.pop()
+        if offset not in dies or dies[offset]["tag"] != "DW_TAG_lexical_block":
+            continue
+        walk += dies[offset]["children"]
+        for abstract in _chain(dies, offset)[1:]:
+            copies.setdefault(abstract, set()).update(_code_ranges(dies[offset]))
+    while pending and len(found) < MAX_STATIC_LOCALS:
+        child, scope = pending.pop()
+        if child in seen or child not in dies:
+            continue
+        seen.add(child)
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending += [(inner, child) for inner in die["children"]]
+            continue
+        if die["tag"] != "DW_TAG_variable":
+            continue
+        placed = _FIXED_ADDRESS.fullmatch(die["attrs"].get("DW_AT_location") or "")
+        if placed is None or int(placed[1], 16) == 0:
+            continue
+        chain = _chain(dies, child)
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        line = _first(dies, chain, "DW_AT_decl_line")
+        source = _source_of(_first(dies, chain, "DW_AT_decl_file"), inputs, workspace, cache)
+        if not name or not line or not line.isdigit() or source is None:
+            continue
+        if scope in bodies:
+            block = tuple(function)
+        else:
+            block = tuple(sorted({*_code_ranges(dies[scope]), *copies.get(scope, ())}))
+        kind = _target(_first(dies, chain, "DW_AT_type"))
+        found.append((name, source, int(line), int(placed[1], 16), kind, block, chain[-1]))
+    return tuple(sorted(found, key=lambda each: (each[0], each[2], each[3], each[6])))
 
 
 def _gcc_captures(dies, entry):
     """The names of the captures a GCC lambda's call operator (``entry``) reads through
     its object pointer, `__closure`: GCC declares each as an artificial variable of the
     body, which lldb-dap does not list (eleventh evaluation, prep 8), so a selector
-    rooted at one is not found. `this` is left out: lldb-dap lists GCC's. Empty for any
-    other function, and for clang's lambdas, which declare no such variables."""
+    rooted at one is not found. `this` of `[this]` is left out: lldb-dap lists GCC's. Of
+    `[*this]` it is kept: GCC gives it no location, and the copy is the object's (#361).
+    Empty for any other function, and for clang's lambdas, which declare no such
+    variables."""
     reference = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
     pointer = dies.get(int(reference[1], 16)) if reference else None
     if pointer is None or _text(pointer["attrs"].get("DW_AT_name")) != "__closure":
@@ -2121,10 +2200,144 @@ def _gcc_captures(dies, entry):
                 if dies[child]["tag"] == "DW_TAG_variable"
                 and "DW_AT_artificial" in dies[child]["attrs"]
                 and (name := _text(dies[child]["attrs"].get("DW_AT_name")))
-                and name != "this"
+                and (name != "this" or "DW_AT_location" not in dies[child]["attrs"])
             }
         )
     )
+
+
+def _type_at(value):
+    """The DIE offset a DW_AT_type (`0x0000b343 "long &"`) names, or None."""
+    found = _REFERENCE.fullmatch(value or "")
+    return int(found[1], 16) if found else None
+
+
+def _offset_text(text):
+    """A number dwarfdump writes as hex (`0x08`) or decimal (`8`), or None."""
+    text = (text or "").strip()
+    if re.fullmatch(r"0x[0-9a-fA-F]+", text):
+        return int(text, 16)
+    return int(text) if re.fullmatch(r"[0-9]+", text) else None
+
+
+def _pointed_record(dies, value):
+    """The class or struct DIE a pointer type (``value``, a DW_AT_type) points at, past
+    qualifiers and typedefs on either side of the pointer; None for any other type."""
+    found, pointer = dies.get(_type_at(value)), False
+    for _ in range(16):
+        if found is None:
+            return None
+        if found["tag"] == "DW_TAG_pointer_type" and not pointer:
+            pointer = True
+        elif found["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type"):
+            return found if pointer else None
+        elif found["tag"] not in ("DW_TAG_const_type", "DW_TAG_volatile_type", "DW_TAG_typedef"):
+            return None
+        found = dies.get(_type_at(found["attrs"].get("DW_AT_type")))
+    return None
+
+
+def _gcc_capture_members(dies, entry):
+    """((capture, member, type offset), ...) of a GCC lambda's call operator (``entry``):
+    for each capture _gcc_captures names, the member of the lambda's object that holds
+    it, in the object's order (#361). GCC places each capture's artificial variable at a
+    member's offset in what `__closure` points at (`DW_OP_fbreg -24, DW_OP_deref,
+    DW_OP_plus_uconst 0x8`), of that member's type, made `const` where the lambda is not
+    `mutable`. A capture is given only where all of that holds, with exactly one member
+    at its offset: the debugger lists the object's members by their own names (GCC 13's
+    `__bonus`), and lists neither `__closure` nor the variables among the frame's locals.
+    The type is the variable's (`const int`, `long &`), or for `this` of `[*this]`, its
+    copy's (_copied_this)."""
+    at = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
+    pointer = int(at[1], 16) if at else None
+    if pointer not in dies or _text(dies[pointer]["attrs"].get("DW_AT_name")) != "__closure":
+        return ()
+    location = (dies[pointer]["attrs"].get("DW_AT_location") or "").strip()
+    record = _pointed_record(dies, _first(dies, _chain(dies, pointer), "DW_AT_type"))
+    if record is None or not re.fullmatch(r"DW_OP_fbreg -?[0-9]+", location):
+        return ()
+    members, named = {}, {}
+    for child in record["children"]:
+        die = dies[child]
+        offset = _offset_text(die["attrs"].get("DW_AT_data_member_location"))
+        if die["tag"] == "DW_TAG_member" and offset is not None:
+            name = _text(die["attrs"].get("DW_AT_name"))
+            kind = _type_at(die["attrs"].get("DW_AT_type"))
+            members.setdefault(offset, []).append((name, kind))
+            named.setdefault(name, []).append((offset, kind))
+    read = re.compile(
+        re.escape(location) + r", DW_OP_deref(?:, DW_OP_plus_uconst (0x[0-9a-fA-F]+|[0-9]+))?"
+    )
+    found, seen = {}, set()
+    for body in entry["bodies"]:
+        for child in dies[body]["children"]:
+            die = dies[child]
+            name = _text(die["attrs"].get("DW_AT_name"))
+            if (
+                die["tag"] != "DW_TAG_variable"
+                or "DW_AT_artificial" not in die["attrs"]
+                or not name
+                or (name == "this" and "DW_AT_location" in die["attrs"])
+            ):
+                # `[this]`'s `this`, read through `__closure`, lldb-dap lists itself.
+                continue
+            if name in seen:
+                # Declared twice: which one the code names is not told.
+                found.pop(name, None)
+                continue
+            seen.add(name)
+            if name == "this":
+                # `[*this]` (C++17): GCC gives `this` no location. The lambda's copy is
+                # its member `__this`, of the class `this` points at.
+                if (copy := _copied_this(dies, die, named)) is not None:
+                    found[name] = copy
+                continue
+            place = read.fullmatch((die["attrs"].get("DW_AT_location") or "").strip())
+            offset = (_offset_text(place[1]) if place[1] else 0) if place else None
+            held = members.get(offset) if offset is not None else None
+            if not held or len(held) != 1 or not held[0][0] or held[0][1] is None:
+                continue
+            kind = _type_at(die["attrs"].get("DW_AT_type"))
+            qualified = dies.get(kind)
+            if kind != held[0][1] and not (
+                qualified is not None
+                and qualified["tag"] == "DW_TAG_const_type"
+                and _type_at(qualified["attrs"].get("DW_AT_type")) == held[0][1]
+            ):
+                continue
+            found[name] = (offset, held[0][0], kind)
+    return tuple(
+        (name, member, kind)
+        for name, (_, member, kind) in sorted(found.items(), key=lambda item: item[1][0])
+    )
+
+
+def _bare_type(dies, offset):
+    """The DIE ``offset`` names past `const`, `volatile` and typedefs, or None."""
+    for _ in range(16):
+        die = dies.get(offset)
+        if die is None or die["tag"] not in (
+            "DW_TAG_const_type",
+            "DW_TAG_volatile_type",
+            "DW_TAG_typedef",
+        ):
+            return die
+        offset = _type_at(die["attrs"].get("DW_AT_type"))
+    return None
+
+
+def _copied_this(dies, variable, named):
+    """(offset, `__this`, its type) for `this` of a GCC `[*this]` lambda (#361): the
+    artificial variable ``variable`` GCC gives no location, and the lambda's one member
+    named `__this` (``named``: {name: [(offset, type)]}), whose type is the class that
+    variable points at, not a pointer. None otherwise (`[this]` holds a pointer there)."""
+    target = _pointed_record(dies, variable["attrs"].get("DW_AT_type"))
+    held = named.get("__this") or []
+    if target is None or len(held) != 1 or held[0][1] is None:
+        return None
+    if _bare_type(dies, held[0][1]) is not target:
+        return None
+    return held[0][0], "__this", held[0][1]
 
 
 def _inlined_calls(dies, bodies, files, workspace):
@@ -2263,6 +2476,17 @@ def mentions_nonlocal_jumps(paths, names=_NONLOCAL_JUMPS):
     return False
 
 
+_TAIL_CALL = re.compile(r"\bDW_AT_(?:call_tail_call|GNU_tail_call)\b")
+
+
+def has_tail_calls(info):
+    """Whether the build's debug information (dwarfdump's `--debug-info` text) describes a
+    tail call (a call site's `DW_AT_call_tail_call`, or GCC's `DW_AT_GNU_tail_call`). LLDB
+    rebuilds a frame from one for a caller that has none of its own left (an artificial
+    frame), whose address is no physical call's return."""
+    return _TAIL_CALL.search(info) is not None
+
+
 def has_nonlocal_jumps(binary):
     """Whether the executable names setjmp/sigsetjmp or a ucontext switch anywhere
     (its imports), wherever the call is hidden (a TRY macro in a library header)."""
@@ -2340,6 +2564,57 @@ def _short_frame(name):
     return bare if len(bare) <= 80 else bare[:79] + "…"
 
 
+# A row read from a fixed address in an optimized build (#364 review).
+_STATIC_OPTIMIZED = (
+    "the build is optimized ({level}): it may reorder stores and keep values in registers, "
+    "so the value its code is using may differ from what its fixed address holds; this is "
+    "what the declared address holds"
+)
+
+
+def _static_placed(declared, pc):
+    """[(declaration, held)] for the variables in static storage ``declared`` (one name's
+    ``_static_locals``) at the stop ``pc``, one per declaration, whatever copies of the
+    function declare it again (an inlined call's, a clone's; review of PR #370): those of
+    one origin, file, line and type. Each copy is placed by its address and its block's
+    code; the declaration is the copy whose block holds the stop, held True. Copies at
+    several addresses that hold it: held None. None holds it: held False, unless a copy's
+    block is unknown (an abstract one with no concrete copy), which may: True, where they
+    are at one address."""
+    groups = {}
+    for each in declared:
+        groups.setdefault((each[6], each[1], each[2], each[4]), []).append(each)
+    found = []
+    for copies in groups.values():
+        holding = [each for each in copies if any(low <= pc < high for low, high in each[5])]
+        unknown = [each for each in copies if not each[5]]
+        chosen = holding or unknown
+        addresses = {each[3] for each in chosen}
+        if not chosen:
+            found.append((copies[0], False))
+        elif len(addresses) > 1:
+            found.append((chosen[0], None))
+        else:
+            block = (
+                () if not holding else tuple(sorted({span for each in holding for span in each[5]}))
+            )
+            found.append(((*chosen[0][:5], block, *chosen[0][6:]), True))
+    return found
+
+
+def _line_list(lines):
+    """`7 and 12`, `3, 7 and 12`: lines for a message."""
+    shown = [str(line) for line in lines]
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " and " + shown[-1]
+
+
+def _frame_key(frame):
+    """What tells one listed frame at a stop from another: its id and address."""
+    if not isinstance(frame, dict):
+        return None
+    return frame.get("id"), frame.get("instructionPointerReference")
+
+
 def _not_framed(name, storages):
     """Why a local outside the frame's own memory is not changed: one the frame reaches
     through a pointer or reference ("through", fields.local_types), or a static or a
@@ -2347,9 +2622,14 @@ def _not_framed(name, storages):
     if "through" in storages:
         return (
             f"`{name}` is reached through a pointer or reference (a C++ structured binding "
-            "of a reference, or of a pair or tuple, a named return value or a C `__block` "
-            "variable). Change the value where it is owned: Peeky changes only values the "
-            "frame holds itself"
+            "of a reference, or of a pair or tuple, a GCC lambda's capture, a named return "
+            "value or a C `__block` variable). Change the value where it is owned: Peeky "
+            "changes only values the frame holds itself"
+        )
+    if storages == {"static"}:
+        return (
+            f"`{name}` is a `static` local, kept in the program's static storage, not in this "
+            "frame's own memory: Peeky changes only values a frame holds itself"
         )
     return (
         f"`{name}` is not kept in this frame's own memory (a static, or a value the debug "
@@ -2569,7 +2849,44 @@ def declared_below(table, name, source, line, through=None, address=None, pc=Non
     return at, why
 
 
-def declared_unfinished(table, name, source, line, address, ends=None, chosen=None):
+def _stored_before(function, source, at, end, line, resume):
+    """Whether all the code of a declaration on lines ``at``-``end`` of ``source`` has run
+    in a caller frame of ``function`` on ``line``, whose call returns to ``resume``
+    (unslid: a physical call's, in a function laid out in source order; see
+    NativeSession._resume), by the line table.
+
+    The frame's line is below the declaration's end, and each of the function's rows of
+    those lines runs (to the function's next row, or the end of its code there) before
+    the call does, at ``resume`` less one; at least one does. A loop around both runs
+    the declaration again before the call on each pass. Above the declaration (a loop's
+    next pass), within it, with a row of its lines after the call (a loop's code placed
+    there), or with anything unknown: False. A jump past the declaration is judged
+    after (declared_skipped)."""
+    if resume is None or end is None or line <= end:
+        return False
+    call, ranges = resume - 1, function.get("ranges", ())
+    # Every row the function runs, by address.
+    order = function.get("order") or ()
+    if not any(low <= call < high for low, high in ranges):
+        return False
+    found = False
+    for start, file, number in order:
+        if file != source or not at <= number <= end:
+            continue
+        holding = [high for low, high in ranges if low <= start < high]
+        if not holding:
+            return False
+        following = bisect.bisect_right(order, (start, "\U0010ffff", 1 << 62))
+        finish = holding[0]
+        if following < len(order):
+            finish = min(finish, order[following][0])
+        if finish > call:
+            return False
+        found = True
+    return found
+
+
+def declared_unfinished(table, name, source, line, address, ends=None, chosen=None, resume=None):
     """For a caller frame at ``source:line``, inside a call that returns to ``address``
     (unslid; None if unknown): ``(line, why, detail)`` for a C/C++ local of that name
     whose declaration may not have run yet, else None. ``why`` is `file` (``detail``: the
@@ -2584,13 +2901,17 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
     Declared at or above the frame's line: the frame's own line always counts, and so
     does a line the function still has code of at or after ``address`` (`long r =` /
     `f(x);` stores `r` on the declaration's line after the call returns, and so does a
-    designated initializer over several lines). Declared anywhere on a line with no code
-    of its own: an array of structs, a nested struct or a 2-D array is stored element by
-    element on its elements' lines, so nothing places it. With the address or its
-    function unknown, every declaration at or above the line counts. And so does one whose
-    statement, as the source writes it (``ends``), still runs on the frame's line:
-    `struct trio t = { seed,` / `{ twice(3), ... } };` has code of its first line, all of
-    it before the call.
+    designated initializer over several lines). Declared on a line with no code of its
+    own: an array of structs, a nested struct or a 2-D array is stored element by
+    element on its elements' lines (GCC's C++ does so for `struct trio t = { seed,`), so
+    only the code of the statement's lines (``ends``) places it: it counts unless that
+    code has all run before the call (_stored_before), which needs ``resume``: the
+    frame's return address where Peeky proves it a physical call's in a function laid
+    out in source order (NativeSession._resume), else None. With the address or its function unknown, every
+    declaration at or above the line counts. And so does one whose statement, as the
+    source writes it (``ends``), still runs on the frame's line: `struct trio t = {
+    seed,` / `{ twice(3), ... } };` has code of its first line, all of it before the
+    call.
 
     ``chosen``: (source, line) of the declaration the name means there, where Peeky
     can tell (#158: `_named_where`); only it is judged then, not every one of the name
@@ -2622,6 +2943,9 @@ def declared_unfinished(table, name, source, line, address, ends=None, chosen=No
                 return at, "file", declared_in
             span = function["rows"].get((source, at))
             if span is None:
+                end = ends(at, base) if resume is not None and ends is not None else None
+                if _stored_before(function, source, at, end, line, resume):
+                    continue
                 return at, "no code", None
             if at <= line and (at == line or address is None or span[1] >= address):
                 return at, "unfinished", None
@@ -3442,6 +3766,147 @@ def static_variables(dies, limit=MAX_STATICS):
     return tuple(found)
 
 
+# Qualifiers a type is read under (#297).
+_QUALIFYING = ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type")
+
+
+def _named_calls(dies):
+    """(offset, name, chain) of each function of the build, and of each variable outside a
+    function (a global, a namespace's or a class's static) and data member, by its name
+    before any `<`: what a call by that name may mean. Operators are left out."""
+    from peeky.fields import _RECORDS as records
+
+    for offset, die in dies.items():
+        tag = die.get("tag")
+        if tag == "DW_TAG_variable":
+            if (dies.get(die.get("parent")) or {}).get("tag") not in (
+                "DW_TAG_compile_unit",
+                "DW_TAG_namespace",
+                *records,
+            ):
+                continue
+        elif tag not in ("DW_TAG_subprogram", "DW_TAG_member"):
+            continue
+        chain = _chain(dies, offset)
+        name = (_text(_first(dies, chain, "DW_AT_name")) or "").split("<", 1)[0].strip()
+        if name and not name.startswith("operator"):
+            yield offset, name, chain
+
+
+# A global allocation or deallocation function's name, as the debug information gives it.
+_ALLOCATING = re.compile(r"operator (?:new|delete) ?(?:\[\])?")
+
+
+def allocation_replaced(dies):
+    """Whether the build defines a global allocation or deallocation function of its own
+    (#297 review round 3): `operator new`, `new[]`, `delete` or `delete[]`, in any form
+    (aligned, nothrow, sized), which `std::allocator` calls and which may keep where each
+    element of a container is. Never a class's own, nor the non-allocating placement
+    forms (`operator new(std::size_t, void *)`, `operator delete(void *, void *)`), which a
+    program can't replace and the standard headers define inline."""
+    from peeky.fields import _RECORDS as records
+    from peeky.fields import _target
+
+    for offset, die in dies.items():
+        if die.get("tag") != "DW_TAG_subprogram" or not (
+            "DW_AT_low_pc" in die["attrs"] or "DW_AT_ranges" in die["attrs"]
+        ):
+            continue
+        chain = _chain(dies, offset)
+        if not _ALLOCATING.fullmatch((_text(_first(dies, chain, "DW_AT_name")) or "").strip()):
+            continue
+        if (dies.get(dies[chain[-1]]["parent"]) or {}).get("tag") in records:
+            continue  # a class's own
+        kinds = [
+            _first(dies, _chain(dies, child), "DW_AT_type")
+            for child in dies[offset]["children"]
+            if dies[child]["tag"] == "DW_TAG_formal_parameter"
+        ]
+        last = dies.get(_target(kinds[-1])) if len(kinds) == 2 else None
+        if (
+            last is not None
+            and last["tag"] == "DW_TAG_pointer_type"
+            and "DW_AT_type" not in last["attrs"]
+        ):
+            continue  # placement: `(std::size_t, void *)`, `(void *, void *)`
+        return True
+    return False
+
+
+# The file whose libraries glibc's loader loads into every program on the host, first.
+LD_SO_PRELOAD = Path("/etc/ld.so.preload")
+MAX_LD_SO_PRELOAD = 1 << 16
+
+
+def system_preload(path=None):
+    """Whether the host's `/etc/ld.so.preload` names a library (#297 review round 4),
+    which glibc's loader loads into the program first and which may replace `operator
+    new`: False where it doesn't exist or holds only blanks and comments (from `#` to the
+    end of its line); None where it can't be read whole."""
+    path = LD_SO_PRELOAD if path is None else path
+    try:
+        handle = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return None
+    try:
+        with os.fdopen(handle, "rb") as file:
+            if not S_ISREG(os.fstat(file.fileno()).st_mode):
+                return None
+            data = file.read(MAX_LD_SO_PRELOAD + 1)
+    except (OSError, ValueError):
+        return None
+    if data is None or len(data) > MAX_LD_SO_PRELOAD:
+        return None
+    # glibc reads names separated by white space or `:`.
+    return re.search(rb"[^\s:]", re.sub(rb"#[^\n]*", b"", data)) is not None
+
+
+def call_arguments(dies):
+    """{a function's name: [(for each argument it names, whether it takes it by value as
+    a number or a character; whether it takes more, `...`, which are by value) for each
+    function of that name the build describes]}, or None for a
+    name the build also gives a variable outside a function or a data member (#297
+    review): whether passing a structured binding's name to a call by that name copies
+    it, or may let the call keep a reference to it. A member function's `this` is left
+    out, as its object comes before the call's parentheses."""
+    from peeky.fields import _target
+
+    def by_value(value):
+        offset = _target(value)
+        for _ in range(64):
+            die = dies.get(offset)
+            if die is None or die["tag"] not in (
+                *_QUALIFYING,
+                "DW_TAG_restrict_type",
+                "DW_TAG_atomic_type",
+            ):
+                break
+            offset = _target(die["attrs"].get("DW_AT_type"))
+        die = dies.get(offset)
+        return die is not None and die["tag"] == "DW_TAG_base_type"
+
+    found = {}
+    for offset, name, _ in _named_calls(dies):
+        if dies[offset]["tag"] != "DW_TAG_subprogram":
+            found[name] = None
+            continue
+        if name in found and found[name] is None:
+            continue
+        kinds, variadic = [], False
+        for child in dies[offset]["children"]:
+            tag = dies[child]["tag"]
+            if tag == "DW_TAG_formal_parameter":
+                chain = _chain(dies, child)
+                if _first(dies, chain, "DW_AT_artificial") is None:
+                    kinds.append(by_value(_first(dies, chain, "DW_AT_type")))
+            elif tag == "DW_TAG_unspecified_parameters":
+                variadic = True
+        found.setdefault(name, []).append((tuple(kinds), variadic))
+    return found
+
+
 def string_sections(binary):
     """[(start, end, file offset)] of an executable's sections that hold only C strings,
     each ended by its NUL, before any slide (#339): a Mach-O's of `S_CSTRING_LITERALS`
@@ -3494,6 +3959,95 @@ def string_sections(binary):
             if kind == 1 and strings_only and address and size:
                 found.append((address, address + size, offset))
         return tuple(found)
+
+
+# How many symbols, and bytes of symbol and string tables, `object_symbols` reads.
+MAX_SYMBOLS = 1 << 20
+MAX_SYMBOL_BYTES = 64 << 20
+
+
+def object_symbols(binary):
+    """{name: {address, ...}} of a 64-bit executable's symbols for data, before any
+    slide (#364): an ELF's `STT_OBJECT` symbols from `.symtab`, or a Mach-O's symbols
+    defined in a section (`N_SECT`, no debugging entry), less the leading `_` Mach-O adds.
+    A C++ `static` local's own (`_ZZ4tickE1w`) and its guard's (`_ZGVZ4tickE1w`) are
+    among them. Raises ValueError where the tables can't be read."""
+    found = {}
+
+    def add(name, address):
+        if name and address and len(found) < MAX_SYMBOLS:
+            found.setdefault(name, set()).add(address)
+
+    with Path(binary).open("rb") as stream:
+        header = stream.read(64)
+        if len(header) >= 32 and struct.unpack_from("<I", header)[0] == 0xFEEDFACF:
+            count, size = struct.unpack_from("<II", header, 16)
+            if not 0 < count <= 4096 or not 0 < size <= 1 << 20:
+                raise ValueError("Invalid Mach-O load commands")
+            stream.seek(32)
+            commands = stream.read(size)
+            cursor = 0
+            for _ in range(count):
+                if cursor + 8 > len(commands):
+                    raise ValueError("Truncated Mach-O load command")
+                kind, length = struct.unpack_from("<II", commands, cursor)
+                if length < 8 or cursor + length > len(commands):
+                    raise ValueError("Invalid Mach-O load command size")
+                if kind == 0x2 and length >= 24:  # LC_SYMTAB
+                    offset, entries, strings, extent = struct.unpack_from(
+                        "<IIII", commands, cursor + 8
+                    )
+                    if entries > MAX_SYMBOLS or max(entries * 16, extent) > MAX_SYMBOL_BYTES:
+                        raise ValueError("Mach-O symbol table too large")
+                    stream.seek(offset)
+                    table = stream.read(entries * 16)
+                    stream.seek(strings)
+                    names = stream.read(extent)
+                    if len(table) != entries * 16 or len(names) != extent:
+                        raise ValueError("Truncated Mach-O symbol table")
+                    for index in range(entries):
+                        start, kind, _, _, value = struct.unpack_from("<IBBHQ", table, index * 16)
+                        # N_SECT, and no N_STAB debugging entry.
+                        end = names.find(b"\0", start) if start < extent else -1
+                        if kind & 0xE0 or kind & 0x0E != 0x0E or end < 0:
+                            continue
+                        name = names[start:end].decode("latin-1")
+                        add(name[1:] if name.startswith("_") else name, value)
+                cursor += length
+            return found
+        if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01":
+            raise ValueError("Expected a 64-bit little-endian executable")
+        table = struct.unpack_from("<Q", header, 40)[0]
+        entry, count = struct.unpack_from("<HH", header, 58)
+        if entry != 64 or not 0 < count <= 4096:
+            raise ValueError("Invalid ELF section header table")
+        stream.seek(table)
+        raw = stream.read(entry * count)
+        if len(raw) != entry * count:
+            raise ValueError("Truncated ELF section header table")
+        headers = [struct.unpack_from("<IIQQQQIIQQ", raw, i * entry) for i in range(count)]
+        for _, kind, _, _, offset, size, link, _, _, entry_size in headers:
+            if kind != 2 or entry_size != 24 or link >= count:  # SHT_SYMTAB
+                continue
+            strings, extent = headers[link][4], headers[link][5]
+            if size > MAX_SYMBOL_BYTES or extent > MAX_SYMBOL_BYTES:
+                raise ValueError("ELF symbol table too large")
+            stream.seek(offset)
+            symbols = stream.read(size)
+            stream.seek(strings)
+            names = stream.read(extent)
+            if len(symbols) != size or len(names) != extent:
+                raise ValueError("Truncated ELF symbol table")
+            for index in range(size // 24):
+                start, info, _, section, value, _ = struct.unpack_from(
+                    "<IBBHQQ", symbols, index * 24
+                )
+                # STT_OBJECT, defined in a section.
+                end = names.find(b"\0", start) if start < extent else -1
+                if info & 0xF != 1 or section == 0 or end < 0:
+                    continue
+                add(names[start:end].decode("latin-1"), value)
+        return found
 
 
 def image_ranges(binary):
@@ -3743,6 +4297,9 @@ class NativeTarget:
         elif sys.platform != "linux":
             raise ValueError("Native target supports Linux and macOS hosts only")
 
+        # Whether each unit may optimize a function beyond the build's level (`optimizes`).
+        optimized = {}
+
         def before_command(workspace, results, command):
             if command == compiles[0]:
                 for source, unit in zip(self.sources, units):
@@ -3756,7 +4313,9 @@ class NativeTarget:
                         )
                         refused.before_launch = True
                         raise refused
-                    refused = c_refusal(path.read_bytes(), self.language == "cpp")
+                    output = path.read_bytes()
+                    refused = c_refusal(output, self.language == "cpp")
+                    optimized[source] = optimizes(output, self.language == "cpp")
                     path.unlink()
                     if refused is not None:
                         raise refused
@@ -3804,7 +4363,8 @@ class NativeTarget:
                 self.sources + self.headers,
             )
             typedefs, fields, unjudged, returns_twice, prologues = {}, None, None, None, None
-            code, statics = None, ()
+            tail_calls = None
+            code, statics, results = None, (), None
             try:
                 info = _metadata(
                     dwarfdump,
@@ -3814,6 +4374,7 @@ class NativeTarget:
                     max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
+                tail_calls = has_tail_calls(info)
                 with _reusing_dies():
                     typedefs = typedef_kinds(info)
                     nonlocal_jumps = (
@@ -3843,11 +4404,18 @@ class NativeTarget:
                             for path in external
                         )
                     if declarations is not None:
-                        from peeky.fields import CPP_LIBRARIES, type_graph
+                        from peeky.fields import CPP_LIBRARIES, HASHED, type_graph
+                        from peeky.hashed_nodes import node_types
 
                         # The program's variables in static storage, which prove what a
                         # pointer at one points at live (#339).
                         statics = static_variables(_dies(info))
+                        # Which calls give a new object a binding keeps alive (#297).
+                        if self.language == "cpp":
+                            results = (
+                                call_arguments(_dies(info)),
+                                allocation_replaced(_dies(info)),
+                            )
                         # The types field and element changes walk (#105), and theirs.
                         fields = type_graph(
                             _dies(info),
@@ -3873,12 +4441,24 @@ class NativeTarget:
                                 _dies(info), aimed, CPP_LIBRARIES
                             ).items():
                                 fields.setdefault(offset, node)
+                        if any(
+                            node[0] == "record" and HASHED.match(node[11] or "")
+                            for node in fields.values()
+                            if len(node) > 11
+                        ):
+                            # The node types of the unordered containers, which no
+                            # local reaches but through a pointer: their entries are
+                            # read from the nodes (#360).
+                            for offset, node in type_graph(
+                                _dies(info), node_types(_dies(info)), CPP_LIBRARIES
+                            ).items():
+                                fields.setdefault(offset, node)
             except (RuntimeError, ValueError, OSError) as exc:
                 # Without it, values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
                 # can be changed).
                 declarations, fields, prologues, code = None, None, None, None
-                statics = ()
+                statics, results = (), None
                 unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
             session = NativeSession(
                 self,
@@ -3897,6 +4477,11 @@ class NativeTarget:
                 prologues=prologues,
                 code=code,
                 statics=statics,
+                results=results,
+                optimized=(
+                    any(optimized.values()) if set(optimized) == set(self.sources) else None
+                ),
+                tail_calls=tail_calls,
             )
             session.assert_current()
             return session
@@ -4139,6 +4724,16 @@ _LOOP_WORD = re.compile(r"(?i:for|each|while|loop|repeat|iter|\bdo\b)|\b[A-Z][A-
 MAX_LOOP_PLACES = 8
 
 
+def _until(deadline, default):
+    """A request's wait: until ``deadline`` (monotonic seconds) where one is given, else
+    ``default`` seconds. TimeoutError, before anything is asked, once it has passed."""
+    if deadline is None:
+        return default
+    if (remaining := deadline - time.monotonic()) <= 0:
+        raise TimeoutError("Launch exceeded its deadline")
+    return remaining
+
+
 def breakpoint_locations(text, ids):
     """Where LLDB placed the breakpoints ``ids`` (#157), from its `breakpoint list` text:
     [{"id", "line", "address", "function", "place", "resolved"}], each location with the
@@ -4199,6 +4794,9 @@ _PATH_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 _PATH_INDEX = re.compile(r"\[(?:0|[1-9][0-9]{0,9})\]")
 _FORMATTER_COUNT = re.compile(r"(?:0x[0-9a-fA-F]+\s+)?size=(0|[1-9][0-9]{0,18})")
 _RAW_COUNT = re.compile(r"(?:.*\s=\s)?(0|[1-9][0-9]{0,18})", re.S)
+# A pointer's value as LLDB's `evaluate` reply gives it for a variable path (lldb-dap 20's
+# `0x0000aaaaaaad3740`, 18's `(pointer) _M_start = 0x0000aaaaaaad3740`).
+_RAW_POINTER = re.compile(r"(?:.*\s=\s)?(0x[0-9a-fA-F]{1,16})", re.S)
 
 
 def local_buffer(graph, node):
@@ -4270,6 +4868,33 @@ def _pointer_type(kind):
 # What an element of an array, or what a pointer points at, can be for an offset into an
 # array to be proven (#302): never an incomplete type, a reference or a map entry.
 _ELEMENTS = frozenset({"record", "union", "scalar", "pointer", "library"})
+# How many functions around a lambda or a local class's method Peeky follows to find where
+# it is defined that may still be running (_lambda_scope); past them, one may be.
+LAMBDA_NESTING = 256
+
+
+class _TooDeep(str):
+    """_lambda_scope's text where a lambda is nested past LAMBDA_NESTING functions."""
+
+
+def _pointee(target):
+    """What a pointer or reference to ``target`` (a ``native_previews.Typed``) reads, for
+    the rule on reading through it (#339): {"pointee": its type's ``Typed.identity``,
+    "element_size", "count": how many, more than one for an array}. None where the
+    build's debug information doesn't say: a `void`, a function, an incomplete type."""
+    count = 1
+    if target is not None and target.kind() == "array":
+        count, target = target.count(), target.element()
+        if type(count) is not int or count < 1 or target.dims:
+            return None
+    if target is None or target.kind() not in _ELEMENTS:
+        return None
+    identity, size = target.identity(), target.byte_size()
+    if identity is None or type(size) is not int or size < 1:
+        return None
+    return {"pointee": identity, "element_size": size, "count": count}
+
+
 # How many arrays and objects one local holds that ``held_extents`` lists (#336).
 HELD_EXTENTS = 64
 # lldb-dap's text for a value with neither a value nor a summary: its type and address.
@@ -4528,6 +5153,41 @@ class Everywhere(str):
     everywhere = True
 
 
+# The standard containers whose elements a structured binding by reference may be proven
+# to refer to (#297): a vector's, which are in one array, and a map's, set's or
+# multiset's, each in a node of its own.
+_BOUND_CONTAINERS = re.compile(r"std::(?:__\w+::)*(vector|map|set|multiset)<")
+# What loads a library before the program's own, which may replace `operator new` (#297
+# review round 3).
+_PRELOADS = ("LD_PRELOAD", "LD_AUDIT", "DYLD_INSERT_LIBRARIES")
+# What such a container's elements, order and allocator must be (#297 review round 2).
+_PLAIN_ELEMENTS = re.compile(r"std::(?:__\w+::)*(?:pair|array)<")
+_LESS = re.compile(r"std::(?:__\w+::)*less<")
+_ALLOCATOR = re.compile(r"std::(?:__\w+::)*allocator<")
+# How many entries of a map or set Peeky checks a binding's element among (#297).
+BOUND_ENTRIES = 256
+
+
+def _unproven(base, what, why):
+    """The Withholding of a structured binding by reference whose element Peeky can't
+    prove alive (#296 review, #297): ``what`` it binds ((its text, whether an element of
+    it)), cut to keep the reason within 300 characters, and ``why`` that is not proven."""
+    text, element = what
+
+    def say(shown):
+        bound = f"an element of `{shown}`" if element else f"`{shown}`"
+        return (
+            f"the binding refers to an object Peeky can't prove is still alive: `{base}` "
+            f"binds {bound} by reference, {why}. Read it where the code names that object, "
+            "or bind by value (no `&`)"
+        )
+
+    message = say(text)
+    if len(message) > 300 and len(text) > 12:
+        message = say(text[: max(11, len(text) - (len(message) - 299))] + "…")
+    return Withholding(message, "not shown", None)
+
+
 def _member_object(typed, name):
     """The Typed of the member ``name`` of the struct or class ``typed`` (one member of
     that name, no reference or pointer), or None. Never a union's (a standard library's
@@ -4658,18 +5318,569 @@ class NativeSession:
         function = self._function_at(frame)
         return list((function or {}).get("captures") or ())[:50]
 
+    def capture_members(self, frame):
+        """[(capture, member)] of the GCC lambda a frame runs (_gcc_capture_members): the
+        worker reads each capture as that member of what `__closure` points at (#361).
+        Empty for any other frame, or where Peeky cannot place it."""
+        function = self._function_at(frame) or {}
+        return [(name, member) for name, member, _ in function.get("capture_members") or ()][:50]
+
+    def capture_plan(self, frame):
+        """How the worker reads each capture of the GCC lambda ``frame`` runs (#361), in
+        the lambda's object's order: [(capture, how, member, why)]. ``how`` is "read" (as
+        ``member`` of what `__closure` points at; not_yet_declared may withhold it, why
+        there), "hidden" (a local of the lambda's of its name is in scope here, which the
+        code names; ``why`` says which) or "unread" (``why`` it isn't read here). Empty
+        for any other frame, or where Peeky cannot place it."""
+        function = self._function_at(frame) or {}
+        names = list(function.get("captures") or ())[:50]
+        members = {name: member for name, member, _ in function.get("capture_members") or ()}
+        names.sort(key=lambda name: list(members).index(name) if name in members else 50)
+        unread = self.captures_unread(frame) if names else None
+        plan = []
+        for name in names:
+            if unread is not None:
+                plan.append((name, "unread", None, unread))
+            elif name not in members:
+                plan.append(
+                    (
+                        name,
+                        "unread",
+                        None,
+                        "the build's debug information doesn't say which member of the "
+                        "lambda's object holds it",
+                    )
+                )
+            elif (scope := self._capture_scope(frame, name))[0] == "local":
+                plan.append(
+                    (
+                        name,
+                        "hidden",
+                        None,
+                        f"the lambda's own `{name}`, declared on line {scope[1]}, hides it here",
+                    )
+                )
+            else:
+                plan.append((name, "read", members[name], None))
+        return plan
+
+    def _capture_scope(self, frame, name):
+        """Which ``name`` the code at ``frame``'s stop names, where the GCC lambda it runs
+        captures ``name`` and may also declare it (#361): ("capture", None) where no
+        declaration of the lambda's of that name is in scope there; ("local", its line)
+        where one is; ("unknown", why) where Peeky can't tell. A declaration is in scope
+        from where it is declared to the end of its block, as C++ reads it. Where the
+        debug information places that block's code, a stop whose code is not the block's
+        names the capture (a macro's declaration ends where its text doesn't say). Else a
+        stop on a line above it, or past its scope (Statements.scope_lines), names the
+        capture; one on a line past its statement, in that scope, names the local.
+        Anything else, such as a stop in its block on its own lines, Peeky can't tell."""
+        function = self._function_at(frame) or {}
+        declared = [
+            where
+            for where in (function.get("locals") or {}).get(name, ())
+            if where[:2] != (None, None)
+        ]
+        if not declared:
+            return ("capture", None)
+        pc, place = self._block_pc(frame), self._place(frame)
+        key = (function.get("root"), pc, place, name)
+        cache = self.__dict__.setdefault("capture_scopes", {})
+        if key in cache:
+            return cache[key]
+        visible, found = function.get("visible") or {}, ("capture", None)
+        for where in sorted(declared, key=str):
+            source, at, _ = where
+            ranges = visible.get((name, *where))
+            inside = (
+                None if not ranges or pc is None else any(low <= pc < high for low, high in ranges)
+            )
+            if inside is False:
+                # The stop's code is not its block's: it isn't in scope there, whatever the
+                # text reads (a macro's `if (int x = 9) …` ends where the line says not).
+                continue
+            here = place is not None and place[0] == source and type(at) is int
+            if here and place[1] < at:
+                # Above it: its scope hasn't begun.
+                continue
+            statements = self._statements(source) if here else None
+            lines = statements.scope_lines(at, name) if statements is not None else None
+            end = statements.declared_through(at, name) if statements is not None else None
+            if lines is not None and place[1] > lines[1] and inside is None:
+                # Past the end of its scope, where its block's code isn't known.
+                continue
+            if lines is not None and end is not None and end < place[1] <= lines[1]:
+                found = ("local", at)
+                break
+            found = (
+                "unknown",
+                f"this lambda also declares a local `{name}` on line {at}, and Peeky can't "
+                "tell whether the code at this stop names that local or the capture; print "
+                "it from the program",
+            )
+        cache[key] = found
+        return found
+
+    def _capture_root(self, frame, name):
+        """The type offset of the GCC lambda capture ``name`` of ``frame`` (its artificial
+        variable's, or `[*this]`'s copy's), where the code at the stop names the capture
+        by that name (_capture_scope); else None."""
+        function = self._function_at(frame) or {}
+        kinds = {kind for each, _, kind in function.get("capture_members") or () if each == name}
+        if len(kinds) != 1 or self._capture_scope(frame, name)[0] != "capture":
+            return None
+        return kinds.pop()
+
+    def captures_unread(self, frame):
+        """Why the worker reads no capture of the GCC lambda ``frame`` runs, or None
+        (#361): an optimized build, where a `mutable` lambda may keep a capture in a
+        register while its object holds an older value; or a stop where `__closure` may
+        hold leftovers, before the lambda's prologue stores it (a one-line lambda's first
+        instruction). There a capture stays `not found`, saying why."""
+        if getattr(getattr(self, "target", None), "optimization", "O0") != "O0":
+            return (
+                "Peeky reads no capture in an optimized build, where a `mutable` lambda may "
+                "keep one in a register while its object holds an older value"
+            )
+        if (window := self._prologue(frame)) is not None:
+            if "__closure" in window.kept:
+                return None
+            where, why, _, _ = _prologue_texts(window)
+            for old, new in (
+                ("its function's", "the lambda's"),
+                ("the parameters", "`__closure`"),
+            ):
+                where = where.replace(old, new)
+            return f"{where}, so `__closure` holds leftovers{why}"
+        if self._prologue_unstored({"name": "__closure"}, frame) is not None:
+            return (
+                "Peeky can't tell whether the stop is before the lambda's prologue stores "
+                "`__closure`"
+            )
+        return None
+
+    def _capture_type(self, frame, name):
+        """``native_previews.Typed`` of the GCC lambda capture ``name`` of ``frame``: its
+        artificial variable's type (`const int`, `long &`), or None."""
+        from peeky.native_previews import Typed
+
+        if getattr(self, "fields", None) is None:
+            return None
+        function = self._function_at(frame) or {}
+        kinds = {kind for each, _, kind in function.get("capture_members") or () if each == name}
+        return Typed(self.fields, kinds.pop()) if len(kinds) == 1 else None
+
+    def capture_referent(self, frame, name):
+        """What the GCC lambda capture ``name`` of ``frame`` refers to, where the lambda
+        captures it by reference, as pointee_of gives a pointer's (#361): the rule on
+        reading through a pointer (#339) judges it. None for a capture by value, or what
+        the build's debug information doesn't size."""
+        typed = self._capture_type(frame, name)
+        if typed is None or typed.kind() != "reference":
+            return None
+        return _pointee(typed.target())
+
+    def captured_pointer(self, frame, name):
+        """What the pointer a GCC lambda capture ``name`` of ``frame`` refers to points at,
+        where the lambda captures a pointer by reference (#361), as pointee_of gives a
+        pointer's: a `char *`'s text is read through it. None otherwise."""
+        typed = self._capture_type(frame, name)
+        target = typed.target() if typed is not None and typed.kind() == "reference" else None
+        if target is None or target.kind() != "pointer":
+            return None
+        return _pointee(target.target())
+
+    def capture_refusal(self, name):
+        """Why a change to the GCC lambda capture ``name`` (or what it holds) is refused
+        (#361), as _not_framed says it of a structured binding of a reference."""
+        return (
+            f"`{name}` is a capture of this lambda, so it is reached through a pointer or "
+            "reference: GCC keeps it in the lambda's object, which this frame reads through "
+            "`__closure`. Change the value where it is owned: Peeky changes only values the "
+            "frame holds itself"
+        )
+
     def static_locals(self, frame):
         """The names the function a frame runs declares in static storage (a fixed
         address): a `static` local, or a `const` local GCC places in read-only data
-        (#167). lldb-dap lists none of them among a frame's locals. Empty where Peeky
-        cannot place the function."""
+        (#167), less those ``static_rows`` shows as rows at this stop (#364). Empty where
+        Peeky cannot place the function."""
         function = self._function_at(frame)
         types = (function or {}).get("types") or {}
-        return sorted(
+        shown = {found[0][0] for found in self._static_seen(frame).get("rows", {}).values()}
+        names = {
             name
             for name, declared in types.items()
             if any(storage == "static" for _, storage, _ in declared)
-        )[:50]
+        }
+        # And those an inlined function declares in its abstract instance (GCC's).
+        names |= {each[0] for each in (function or {}).get("statics") or ()}
+        return sorted(names - shown)[:50]
+
+    def static_notes(self, frame):
+        """{name: why} for each name ``static_locals`` gives that ``static_rows`` judged
+        at this stop (#364): why Peeky doesn't read it here, said after "declares it in
+        static storage"."""
+        return dict(list(self._static_seen(frame).get("notes", {}).items())[:50])
+
+    def static_scope(self, scope, frame):
+        """Whether ``scope`` is lldb-dap's "Globals" and the function ``frame`` runs
+        declares a variable in static storage (#364): lldb-dap lists that function's
+        statics there, among its unit's globals, and Peeky reads the ones the code at
+        the stop names (``static_rows``)."""
+        if (
+            getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp")
+            or not isinstance(scope, dict)
+            or scope.get("name") != "Globals"
+            or scope.get("presentationHint") not in (None, "globals")
+            or scope.get("expensive")
+        ):
+            return False
+        return bool((self._function_at(frame) or {}).get("statics"))
+
+    def _static_seen(self, frame):
+        seen = self.__dict__.get("static_seen") or {}
+        return seen.get(_frame_key(frame), {})
+
+    def static_rows(self, variables, frame, listed, command=None):
+        """The rows of the variables in static storage that the code at ``frame``'s stop
+        names (#364), taken from lldb-dap's "Globals" ``variables``, as it names them:
+        `calls`, or `calls @ tick.c:9` where it lists several of the name (a selector
+        reads that one as `calls`: ``selected_as``).
+        ``listed``: the names the frame's own locals take, which a static never does
+        here (the existing rules judge which one the code names). A row is the
+        declaration ``_static_named`` finds, matched to the debugger's variable by its
+        name, where it is declared, and its address where the debugger gives one. A C++
+        `static` initialized at run time shows only once its guard variable says that
+        has run (``_static_guard``; ``command`` runs a read-only LLDB command). Why any
+        other is not read is kept for ``static_notes``."""
+        rows, notes, shown = [], {}, {}
+        listed = {(split_located(str(name)) or (name,))[0] for name in listed}
+        for name, (chosen, why) in self._static_named(frame).items():
+            if name in listed:
+                continue
+            if chosen is None:
+                notes[name] = why
+                continue
+            entry = self._static_entry(variables, chosen, frame)
+            if not isinstance(entry, dict):
+                notes[name] = (
+                    f"at line {chosen[2]}, but the debugger "
+                    + (
+                        "lists several values it may be, and Peeky can't tell which one is it"
+                        if entry
+                        else "doesn't list it for this frame"
+                    )
+                    + ", so Peeky can't read it here; print it from the program"
+                )
+                continue
+            reason = self._static_guard(chosen, command)
+            if reason is None and getattr(self.target, "optimization", "O0") != "O0":
+                # What its fixed address holds may differ from what the code uses.
+                why = _STATIC_OPTIMIZED.format(level=self.target.optimization)
+                reason = ValueNote(why, why, True)
+            shown[entry["name"]] = (chosen, reason)
+            rows.append(entry)
+            if len(rows) >= 50:
+                break
+        seen = self.__dict__.setdefault("static_seen", {})
+        if len(seen) >= 64:
+            # Only the frames of this inspection's stop are asked about.
+            seen.clear()
+        seen[_frame_key(frame)] = {"rows": shown, "notes": notes}
+        return rows
+
+    def _static_row(self, variable, frame):
+        """(declaration, reason) of a row ``static_rows`` made for ``frame``, or None."""
+        name = variable.get("name") if isinstance(variable, dict) else None
+        return self._static_seen(frame).get("rows", {}).get(name)
+
+    def _static_where(self, frame, name):
+        """(source, line, False) of the declaration a row ``static_rows`` made for
+        ``frame``, listed as ``name``, is, or None: what ``_shown_where`` gives for a
+        local."""
+        found = self._static_row({"name": name}, frame)
+        return (found[0][1], found[0][2], False) if found else None
+
+    def _static_declared(self, frame, name):
+        """The name ``fields.local_types`` gives the declaration a row ``static_rows``
+        made for ``frame``, listed as ``name``, is: `calls @ tick.c:9`, where the debugger
+        may name it `calls` or, from its symbol, `Acc::run()::calls`. Else ``name``."""
+        found = self._static_row({"name": name}, frame)
+        if found is None:
+            return name
+        return f"{found[0][0]} @ {Path(str(found[0][1])).name}:{found[0][2]}"
+
+    def _static_named(self, frame):
+        """{name: (declaration, None) or (None, why)} for each name of the variables in
+        static storage the function ``frame`` runs declares (``_static_locals``, #364):
+        the declaration the code at the stop names, or why Peeky reads none there, said
+        after "declares it in static storage". The C rule: a declaration names it from
+        there to the end of its block, and an inner block's hides an outer one. So of the
+        declarations whose scope (``_static_scope``) holds the stop's line, below their
+        own, the innermost (the one declared last); none where the debug information's
+        block for it doesn't hold the stop either (GCC's), or where Peeky can't tell."""
+        function = self._function_at(frame)
+        grouped = {}
+        for each in (function or {}).get("statics") or ():
+            grouped.setdefault(each[0], []).append(each)
+        place, pc = self._place(frame), self._block_pc(frame)
+        found = {}
+        for name, declared in list(grouped.items())[:50]:
+            lines = sorted({each[2] for each in declared})
+            at = f"at line {lines[0]}" if len(lines) == 1 else f"at lines {_line_list(lines)}"
+            if place is None or pc is None or type(getattr(self, "load_bias", None)) is not int:
+                found[name] = (
+                    None,
+                    f"{at}, and Peeky can't place this stop in its function's code, so it "
+                    "can't tell whether the code here names it; print it from the program",
+                )
+                continue
+            verdicts = {}
+            for each, placed in _static_placed(declared, pc):
+                verdict = self._static_scope(frame, function, each, place)
+                if placed is None and verdict[0] in ("in", "hidden"):
+                    verdict = (
+                        "unsure",
+                        "copies of it at several addresses hold this stop, as the debug "
+                        "information gives their blocks' code",
+                    )
+                held = bool(placed)
+                if not held and verdict[0] in ("in", "hidden"):
+                    # The source says the code names it, but the debug information's
+                    # block for it doesn't hold the stop.
+                    verdict = (
+                        "unsure",
+                        "the code of its block, as the debug information gives it, doesn't "
+                        "hold this stop",
+                    )
+                verdicts[each] = verdict
+            unsure = [(each, why[1]) for each, why in verdicts.items() if why[0] == "unsure"]
+            if unsure:
+                each, why = unsure[0]
+                found[name] = (
+                    None,
+                    f"at line {each[2]}, and Peeky can't tell whether the code here names it "
+                    f"({why}); print it from the program",
+                )
+                continue
+            named = sorted(
+                (each for each, verdict in verdicts.items() if verdict[0] in ("in", "hidden")),
+                key=lambda each: each[2],
+            )
+            if named and len(named) > 1 and named[-1][2] == named[-2][2]:
+                found[name] = (
+                    None,
+                    f"twice on line {named[-1][2]}, and Peeky can't tell which one the code "
+                    "here names; print it from the program",
+                )
+            elif named and verdicts[named[-1]][0] == "hidden":
+                found[name] = (
+                    None,
+                    f"at line {named[-1][2]}, but a block around this stop declares `{name}` "
+                    f"again, on line {verdicts[named[-1]][2]}, and the code here names that",
+                )
+            elif named:
+                found[name] = (named[-1], None)
+            elif on := [each for each, verdict in verdicts.items() if verdict[0] == "on"]:
+                found[name] = (
+                    None,
+                    f"on line {on[0][2]}, the stop's line, and Peeky reads it only below its "
+                    f"declaration; read it below line {on[0][2]}",
+                )
+            elif above := [each for each, verdict in verdicts.items() if verdict[0] == "above"]:
+                line = min(each[2] for each in above)
+                found[name] = (
+                    None,
+                    f"at line {line}, below this stop, so the code here doesn't name it yet; "
+                    f"read it below line {line}",
+                )
+            elif len(lines) == 1:
+                found[name] = (
+                    None,
+                    f"{at}, in a block this stop is outside of, so the code here doesn't name "
+                    f"it; read it in that block, below line {lines[0]}",
+                )
+            else:
+                found[name] = (
+                    None,
+                    f"{at}, and this stop is in none of their blocks, so the code here "
+                    "doesn't name one; read one in its block, below its declaration",
+                )
+        return found
+
+    def _static_scope(self, frame, function, declared, place):
+        """Where the stop at ``place`` (source, line) stands to the declaration
+        ``declared`` of a variable in static storage (#364), read from each translation
+        unit holding the source as the compiler preprocessed it: "in" (in its scope,
+        below it, and no later declaration in a block around the line hides it), "on"
+        (on its line), "above", "out" (past its block), ("hidden", what, its line) for
+        a declaration that hides it there (Statements.block_storage: an `extern`, an
+        enumerator...), or why Peeky can't tell."""
+        name, source, line = declared[0], declared[1], declared[2]
+        here, stop = place
+        if source != here:
+            return ("unsure", "this stop's line is in another file than its declaration")
+        verdicts, failure = set(), None
+        span = tuple((function or {}).get("span") or ())
+        own = bool(function is not None and function.get("source") == here)
+        # As _block_storage reads it: a frame wholly on the line (a lambda's body), or
+        # one whose function goes on past the line (a lambda's body on it is another's).
+        body = own and span == (stop, stop)
+        others = own and not body and len(span) == 2 and span[1] > stop
+        for unit in self._units(here):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                failure = read
+                break
+            preprocessed, statements = read
+            if here not in preprocessed.files:
+                continue
+            at, after = preprocessed.line(here, stop), preprocessed.line(here, line)
+            if not at or not after:
+                verdicts.add(None)
+                continue
+            if at <= after:
+                verdicts.add(("on",) if at == after else ("above",))
+                continue
+            scope = statements.scope_lines(after, name)
+            if scope is None or not scope[0] <= after <= scope[1]:
+                verdicts.add(None)
+                continue
+            if at > scope[1]:
+                verdicts.add(("out",))
+                continue
+            hidden = statements.block_storage(at, name, after, True, body, own=after, others=others)
+            origin = preprocessed.origins[hidden[1] - 1] if hidden else None
+            if hidden is None or (
+                hidden and (origin is None or hidden[1] == after or hidden[0] == "bodies")
+            ):
+                # Unread; on its own line, where Peeky can't tell which declaration is which
+                # (`static long n = 0, m = n;` names it twice); or in one of several lambdas'
+                # bodies on the line.
+                verdicts.add(None)
+            elif hidden:
+                verdicts.add(("hidden", hidden[0], origin[1]))
+            else:
+                verdicts.add(("in",))
+        if failure is not None:
+            return ("unsure", f"Peeky could not preprocess the source to read it: {failure}")
+        if len(verdicts) != 1 or None in verdicts:
+            return (
+                "unsure",
+                "Peeky can't read that from the source as the compiler preprocessed it",
+            )
+        return verdicts.pop()
+
+    def _static_entry(self, variables, chosen, frame=None):
+        """The debugger's one variable among ``variables`` that is the declaration
+        ``chosen``, or how many there may be (0, or several) where not exactly one: its
+        name, plain or `name @ file:line`; where it says where it is declared (lldb-dap's
+        `$__lldb_extensions`), that file's name and line; and where it gives its address
+        (lldb-dap 20's `memoryReference`, or `T @ 0x…`), that address. One its symbol
+        names (`Acc::run()::calls`, a C++ inline function's or template's) must say where
+        it is declared, and be ``frame``'s function's own: by its address, or by naming
+        that very function, as LLDB names the frame (`long tick<int>(int)::calls`, never
+        `tick<long>`'s, which shares its file and line; review of PR #370)."""
+        name, source, line, address = chosen[:4]
+        bias = getattr(self, "load_bias", None)
+        if type(bias) is not int:
+            return 0
+        file = Path(str(source)).name
+        function = str((frame or {}).get("name") or "").rpartition("`")[2]
+        # Apple's LLDB marks an optimized frame's name `… [opt]`.
+        function = function[: -len(" [opt]")] if function.endswith(" [opt]") else function
+        found = []
+        for variable in variables:
+            if not isinstance(variable, dict):
+                continue
+            shown = str(variable.get("name"))
+            located = split_located(shown)
+            if located is not None and located[1:] != (file, line):
+                continue
+            base = located[0] if located is not None else shown
+            extensions = variable.get("$__lldb_extensions")
+            declared = extensions.get("declaration") if isinstance(extensions, dict) else None
+            if isinstance(declared, dict) and (
+                Path(str(declared.get("path"))).name != file or declared.get("line") != line
+            ):
+                continue
+            placed = own_address(variable)
+            if placed is not None and placed != address + bias:
+                continue
+            if base != name:
+                # LLDB names one with a symbol of its own by it: `Acc::run()::calls`.
+                owner = base[: -len(name) - 2] if base.endswith(f"::{name}") else ""
+                if not owner or not isinstance(declared, dict):
+                    continue
+                if placed is None and owner != function:
+                    continue
+            found.append(variable)
+        return found[0] if len(found) == 1 else len(found)
+
+    def _static_guard(self, chosen, command):
+        """Why the C++ `static` local ``chosen`` has no value to show yet, or None: C++
+        runs its initializer the first time control passes its declaration, unless it
+        is a constant, and the guard variable the compiler gives it (`_ZGVZ4tickE1w` for
+        `_ZZ4tickE1w`) says whether that has run: its first byte is 0 until then, and
+        its lowest bit is set once it has (#364). None in C, for one with no guard, and
+        for a `const` aggregate GCC builds at compile time (`cs.0`: no symbol of a
+        `static`'s mangling)."""
+        if getattr(self.target, "language", None) != "cpp":
+            return None
+        line, address = chosen[2:4]
+        symbols = self.__dict__.get("data_symbols")
+        if symbols is None:
+            try:
+                symbols = object_symbols(self.binary)
+            except (OSError, ValueError, struct.error):
+                symbols = {}
+            self.__dict__["data_symbols"] = symbols
+        if (placed := self.__dict__.get("data_places")) is None:
+            # Each address's names, once a session.
+            placed = self.__dict__["data_places"] = {}
+            for symbol, places in symbols.items():
+                for place in places:
+                    placed.setdefault(place, []).append(symbol)
+        own = placed.get(address, [])
+        statics = [name for name in own if name.startswith("_ZZ")]
+
+        def unsure(why):
+            return Withholding(
+                f"{why}, so Peeky can't tell whether C++ has run its initializer, on line "
+                f"{line}; print it from the program",
+                "not shown",
+                None,
+            )
+
+        if not own:
+            return unsure("no symbol of the program names its address")
+        if len(statics) > 1:
+            return unsure("several symbols name its address")
+        if not statics:
+            return None
+        guard = symbols.get("_ZGV" + statics[0][2:])
+        if guard is None:
+            return None
+        bias = getattr(self, "load_bias", None)
+        found = None
+        if len(guard) == 1 and type(bias) is int and callable(command):
+            at = next(iter(guard)) + bias
+            try:
+                text = command(f"memory read --size 1 --count 1 --format x 0x{at:x}")
+            except (RuntimeError, OSError, TimeoutError):
+                text = None
+            read = re.search(rf"^0x0*{at:x}:\s+0x([0-9a-f]{{2}})\s*$", str(text or ""), re.M | re.I)
+            found = int(read[1], 16) if read else None
+        if found == 0:
+            return (
+                f"C++ runs its initializer the first time control passes its declaration, "
+                f"on line {line}, and its guard variable says that hasn't run yet; read it "
+                "after that"
+            )
+        if found is None or not found & 1:
+            return unsure("Peeky can't read its guard variable")
+        return None
 
     def __init__(
         self,
@@ -4689,8 +5900,18 @@ class NativeSession:
         prologues=None,
         code=None,
         statics=(),
+        results=None,
+        optimized=None,
+        tail_calls=None,
     ):
         self.target, self.prepared = target, prepared
+        # Whether the debug information describes a tail call (has_tail_calls), from which
+        # LLDB rebuilds a caller's frame; None where unknown.
+        self.tail_calls = tail_calls
+        # Whether a unit may optimize a function beyond the build's level (an `optimize`
+        # attribute or pragma: c_source.optimizes); None where unknown. An unordered
+        # container's nodes are read only where it is False (#360).
+        self.optimized = optimized
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
         # local_declarations if read, to tell which rows are automatic locals).
@@ -4710,6 +5931,10 @@ class NativeSession:
         # static_variables of the build (#339): what a pointer into static storage may be
         # proven to point at.
         self.static_variables = tuple(statics or ())
+        # call_arguments of the build (#297 review): which calls take an argument by value;
+        # and allocation_replaced: whether it defines its own `operator new` (None: unknown).
+        self.call_arguments = dict((results or ({}, None))[0])
+        self.allocation_replaced = (results or ({}, None))[1]
         # typedef_kinds of the build: {} (unknown) resolves no typedef.
         self.typedefs = dict(typedefs or {})
         self.external_inputs = dict(external or {})
@@ -4768,6 +5993,8 @@ class NativeSession:
     def launch_args(self, program, root, args=None):
         self.assert_current()
         self.source_path(program)
+        # Read on the host that runs the program, as it launches (#297 review round 4).
+        self.system_preload = system_preload() if sys.platform.startswith("linux") else False
         return {
             "initCommands": list(LLDB_INIT_COMMANDS),
             "program": str(self.binary),
@@ -4780,25 +6007,26 @@ class NativeSession:
             "enableAutoVariableSummaries": False,
         }
 
-    def breakpoint_locations(self, dap, ids):
+    def breakpoint_locations(self, dap, ids, deadline=None):
         """Where LLDB placed the breakpoints ``ids`` (see ``breakpoint_locations``): a
         line can have several locations in one function (a macro's or a block's own
         code, a loop header's), and it stops at each (#157). Asked with lldb-dap's
-        command escape, as a read-only `breakpoint list`; None where it cannot say."""
+        command escape, as a read-only `breakpoint list`; None where it cannot say. The
+        answer has until ``deadline`` (the launch's), else 15 s, as `setBreakpoints` has."""
         ids = sorted({number for number in ids if type(number) is int and number > 0})[:64]
         if not ids:
             return None
         reply = dap.request(
             "evaluate",
             {"expression": "`breakpoint list " + " ".join(map(str, ids)), "context": "repl"},
-            timeout=5,
+            timeout=_until(deadline, 15),
         )
         text = reply.get("result") if isinstance(reply, dict) else None
         if not isinstance(text, str) or len(text) > MAX_METADATA:
             return None
         return breakpoint_locations(text, set(ids))
 
-    def loop_header_stops(self, dap, source, line, groups, cache):
+    def loop_header_stops(self, dap, source, line, groups, cache, deadline=None):
         """(stops, exact): how many times ``line`` of ``source`` stops each time its loop
         starts, before its first pass (at most, unless ``exact``), where it is that
         loop's header alone in each function holding it (#161: `for (int i = 0; ...)`
@@ -4808,7 +6036,8 @@ class NativeSession:
         read-only and kept in ``cache`` for the launch; see ``loop_headers``. Only a line
         that may hold a loop is analysed (a loop keyword, a name with one in it such as
         `list_for_each`, or a macro's capitals: `REPEAT(3) {`), in at most
-        MAX_LOOP_PLACES functions or inlined copies."""
+        MAX_LOOP_PLACES functions or inlined copies. Each answer has until ``deadline``
+        (the launch's), else 15 s."""
         from peeky.loop_headers import disassembly, line_table, stops_before_loop
 
         path = str(source)
@@ -4829,7 +6058,9 @@ class NativeSession:
 
         def command(text):
             reply = dap.request(
-                "evaluate", {"expression": "`" + text, "context": "repl"}, timeout=5
+                "evaluate",
+                {"expression": "`" + text, "context": "repl"},
+                timeout=_until(deadline, 15),
             )
             result = reply.get("result") if isinstance(reply, dict) else None
             return result if isinstance(result, str) and len(result) <= MAX_METADATA else None
@@ -4968,6 +6199,7 @@ class NativeSession:
         threads=None,
         kinds=None,
         raw=None,
+        nodes=None,
     ):
         """A C or C++ struct's, class's, fixed-size array's or standard container's
         preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
@@ -4985,7 +6217,8 @@ class NativeSession:
         (``containers_settled``). ``kinds``: the debugger's type of each of ``steps``;
         ``raw(path)`` reads a variable path as the debugger does (``unlisted_container``):
         an unordered container inside shows `<not listed>` where its count is not
-        proven (#167)."""
+        proven (#167), or its entries as read from its nodes (#360; ``nodes``, as for
+        ``unlisted_container``)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
@@ -5034,6 +6267,10 @@ class NativeSession:
                 variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
 
         def text(child):
+            if child.get("view") == "memory":
+                # An entry Peeky read from an unordered container's nodes (#360): shown
+                # as read.
+                return child.get("value")
             shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
             if shown and shown.get("unavailable"):
                 return None
@@ -5047,7 +6284,16 @@ class NativeSession:
             # as a member or an element.
             path = [*zip(steps, known_kinds), *((name, None) for name in at)]
             path[-1] = (path[-1][0], child.get("type"))
-            return self.unlisted_container(child, frame, path, raw or _unread) is not None
+            found = self.unlisted_container(child, frame, path, raw or _unread)
+            counted = getattr(found, "counted", None)
+            if counted is not None and nodes is not None:
+                # Its entries as read from its nodes (#360), shown in its place.
+                read = self._node_listing(
+                    child, frame, path, *counted, nodes, stack, deeper, threads
+                )
+                if read is not None:
+                    return read[1]
+            return found is not None
 
         return preview(variable, fetch, typed, text, containers=settled, unlisted=unlisted)
 
@@ -5229,8 +6475,18 @@ class NativeSession:
         if function is None or function.get("types") is None:
             return None
         try:
-            shown = self._shown_where(steps[0], self._block_pc(frame))
-            offset, framed = self._declared_type(function["types"], steps[0], shown)
+            if (
+                self._static_row({"name": steps[0]}, frame) is None
+                and (captured := self._capture_root(frame, str(steps[0]))) is not None
+            ):
+                # A GCC lambda's capture the code names here (#361): its object holds it.
+                offset, framed = captured, False
+            else:
+                shown = self._static_where(frame, steps[0]) or self._shown_where(
+                    steps[0], self._block_pc(frame)
+                )
+                declared = self._static_declared(frame, steps[0])
+                offset, framed = self._declared_type(function["types"], declared, shown)
         except Unsettable:
             return None
         typed = Typed(self.fields, offset)
@@ -5335,17 +6591,49 @@ class NativeSession:
         typed = self._typed(frame, list(steps))
         if typed is None or typed.bits is not None or typed.entry or typed.kind() != "pointer":
             return None
-        target, count = typed.target(), 1
-        if target is not None and target.kind() == "array":
-            count, target = target.count(), target.element()
-            if type(count) is not int or count < 1 or target.dims:
-                return None
+        return _pointee(typed.target())
+
+    def referent_of(self, frame, steps):
+        """What the C++ reference ``steps`` names in ``frame`` refers to (`T &`, `T &&`, a
+        typedef of one, a member), as ``pointee_of`` says what a pointer points at: for
+        the rule on reading an unordered container's nodes through it (#360). None where
+        the build's debug information doesn't say."""
+        typed = self._typed(frame, list(steps))
+        if typed is None or typed.bits is not None or typed.entry:
+            return None
+        target = typed.target() if typed.kind() == "reference" else None
         if target is None or target.kind() not in _ELEMENTS:
             return None
         identity, size = target.identity(), target.byte_size()
         if identity is None or type(size) is not int or size < 1:
             return None
-        return {"pointee": identity, "element_size": size, "count": count}
+        return {"pointee": identity, "element_size": size, "count": 1}
+
+    def indirections(self, frame, steps):
+        """[(index, "pointer" or "reference")] of each of ``steps`` (a value's way from
+        its root local in ``frame``, the value itself last) that is a pointer or a
+        reference, by the build's debug information (#360). None where that can't be
+        told, or where the root local is one the frame reaches through a pointer (a
+        binding of a reference, `auto &[a, b] = *p`), which no variable stands for."""
+        function = self._function_at(frame)
+        referred = (function or {}).get("referred")
+        root = str(steps[0]) if steps else ""
+        plain = split_located(root)
+        if (
+            not steps
+            or referred is None
+            or (plain is None and looks_located(root))
+            or (plain[0] if plain else root) in referred
+        ):
+            return None
+        found = []
+        for index in range(len(steps)):
+            typed = self._typed(frame, [str(step) for step in steps[: index + 1]])
+            if typed is None:
+                return None
+            if typed.kind() in ("pointer", "reference"):
+                found.append((index, typed.kind()))
+        return found
 
     def static_ranges(self):
         """Where the program's own image is loaded (#339): [(start, end)] of each segment
@@ -5654,7 +6942,10 @@ class NativeSession:
         `_M_h._M_element_count`, read raw by ``evaluate(path)`` (lldb-dap's `hover`: a
         variable path, never code run in the program), or nothing of it is shown.
         ``variable``: the debugger's, a container or a pointer or reference to one;
-        ``steps``: its way from its root local, [(name, type)], itself last."""
+        ``steps``: its way from its root local, [(name, type)], itself last.
+
+        The Withholding keeps the count's path and the count (``counted``), with which
+        ``listed_container`` may read the entries from the container's own nodes (#360)."""
         shape = self._unordered(variable.get("type"))
         value = str(variable.get("value") or "")
         if shape is None or (value.startswith("<") and value.endswith(">")):
@@ -5693,7 +6984,88 @@ class NativeSession:
             reason = undecoded_reason(why, pointer=shape == "pointer")
         else:
             reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
-        return Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
+        withheld = Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
+        withheld.counted = (path, raw) if path is not None and raw is not None else None
+        return withheld
+
+    def listed_container(
+        self, withheld, variable, frame, steps, nodes, stack=None, deeper=None, threads=None
+    ):
+        """The value view of an unordered container ``unlisted_container`` withholds
+        (``withheld``), its entries read from its own nodes (#360): {"value", "rust_view":
+        "memory", "children"}, and "pointee" (what it points at, whole) for a pointer to
+        one. None where Peeky can't (``_node_listing``). The worker asks only once
+        nothing else withholds the row: no note, and no pointer on the way it can't show
+        points at a live object. ``nodes``: (``evaluate`` on the node-read budget,
+        ``read(reference, count)`` or None where the debugger has no `readMemory`)."""
+        counted = getattr(withheld, "counted", None)
+        if counted is None:
+            return None
+        read = self._node_listing(variable, frame, steps, *counted, nodes, stack, deeper, threads)
+        return read[0] if read is not None else None
+
+    def _node_listing(self, variable, frame, steps, path, count, nodes, stack, deeper, threads):
+        """(the row's value view, (the listing's root, fetch)) of an unordered container's
+        entries read from its own nodes (#360), or None where Peeky cannot read them so:
+        an optimized build, or one whose source asks GCC to optimize a function (a
+        value it stores may still be in a register, its nodes unchanged); a container
+        that may be part-way through a change (``containers_settled``); or a read that
+        ``hashed_nodes.read_entries`` does not prove. ``path``: the variable path of its
+        own count; ``count``: that count."""
+        from peeky.hashed_nodes import Memory, Unread, Words, read_entries, view_children, word
+        from peeky.native_previews import preview
+
+        graph = getattr(self, "fields", None)
+        suffix = "_M_h._M_element_count"
+        if graph is None or nodes is None or not path.endswith(suffix):
+            return None
+        if getattr(self.target, "optimization", "O0") != "O0":
+            return None
+        if getattr(self, "optimized", None) is not False:
+            # A function the source asks GCC to optimize (its `optimize` attribute or
+            # pragma) may hold a value in a register, whichever function is stopped in.
+            return None
+        walked = self._typed(frame, [str(name) for name, _ in steps], walked=True)
+        if walked is None:
+            return None
+        typed, indirect, _, _ = walked
+        container = typed.target() if typed.kind() in ("pointer", "reference") else typed
+        node = container.node() if container is not None else None
+        if node is None or node[0] != "record" or not container.unordered():
+            return None
+        if threads is None or not self.containers_settled(frame, indirect, stack, deeper, threads):
+            # A call may be part-way through changing it (#181): its nodes too.
+            return None
+        evaluate, read = nodes
+        base = path[: -len(suffix)] + "_M_h._M_before_begin._M_nxt"
+        try:
+            if read is not None:
+                memory = Memory(word(evaluate(base)), read)
+            else:
+                memory = Words(base, evaluate)
+            root, fetch = read_entries(graph, node, count, memory)
+        except (Unread, ValueError, RuntimeError, OSError, TimeoutError, struct.error):
+            return None
+
+        def text(child):
+            return child.get("value")
+
+        whole = preview(root, fetch, container, text) or root["value"]
+        children = view_children(graph, root, fetch)
+        value = str(variable.get("value") or "")
+        address = re.match(r"0x[0-9a-fA-F]+(?=\s|$)", value)
+        view = {"value": whole, "rust_view": "memory", "children": children}
+        if self._unordered(variable.get("type")) == "pointer":
+            # As for a pointer the debugger lists: its address and the count; what it
+            # points at, `p[0]`, is the container, shown whole.
+            if address is None:
+                return None
+            view.update(value=f"{address[0]} {root['value']}", pointee=whole)
+        elif typed.kind() == "reference":
+            if address is None:
+                return None
+            view["value"] = f"{address[0]} {whole}"
+        return view, (root, fetch)
 
     def _unproven_entries(self, variable, frame, steps):
         """Why LLDB's listing of a non-empty unordered container is not proven to decode
@@ -5819,9 +7191,12 @@ class NativeSession:
         by reference (`auto &`, `const auto &`, `auto &&`), an object of this frame or a
         member of one (`p`, `o.inner`: a local or by-value parameter in scope there,
         through no reference or pointer), or for a range-`for`, an element of such a C
-        array. Else a Withholding: `auto &[t, u] = make(0)[0];` refers into a temporary
-        the statement destroyed, which a later one may reuse; a call, a subscript, `*p`,
-        `p->x` or a global are not proven either."""
+        array. A check the stop must pass, where the source proves the rest (#297): an
+        element of a local standard container the code leaves in place
+        (``_held_element``). Else a Withholding: `auto &[t, u] = make(0)[0];` refers into
+        a temporary the statement destroyed, which a later one may reuse; a call's result
+        (``_kept_result``), a subscript of one, `*p`, `p->x` or a global are not proven
+        either."""
         if read is None:
             return Withholding(
                 "the binding refers to an object Peeky can't prove is still alive: it can't "
@@ -5838,15 +7213,382 @@ class NativeSession:
             typed = _member_object(typed, member)
         if typed is not None and (not read[2] or typed.kind() == "array"):
             return None
-        what = f"an element of `{read[1][:60]}`" if read[2] else f"`{read[1][:60]}`"
-        return Withholding(
-            f"the binding refers to an object Peeky can't prove is still alive: `{base}` "
-            f"binds {what} by reference, and only an object of this frame, or a member of "
-            "one, is proven. Read it where the code names that object, or bind by value "
-            "(`auto [...]`, no `&`)",
-            "not shown",
-            None,
+        for proven in (self._held_element, self._kept_result):
+            if (found := proven(frame, base, place, read)) is not None:
+                return found
+        if read[2] or re.fullmatch(r"[A-Za-z_]\w*\s*\[.*\]", read[1], re.S):
+            why = (
+                "and Peeky proves an element alive only in a local vector, or in a local map "
+                "or set a range `for` walks"
+            )
+        else:
+            why = "and Peeky proves only a local or its non-union member"
+        return _unproven(base, (read[1], read[2]), why)
+
+    def _held_element(self, frame, base, place, read):
+        """For a binding of an element of a local container (#297), by a range `for` over
+        it (`for (const auto &[k, v] : m)`) or one subscript (`auto &[r, s] = v[0];`):
+        where it is a `std::vector`, `std::map`, `std::set` or `std::multiset` this frame
+        holds (no reference, pointer or static; a map by a range `for` only), in an
+        unoptimized build, and the code leaves its elements in place while the binding is
+        in scope (``_leaves_elements``), the check the stop must pass: ("elements", what
+        it binds, its name, a vector's paths to where its elements start and end or
+        "nodes", a node's entry's size). A Withholding where the code may change it, or
+        Peeky cannot check it; None for any other binding."""
+        ranged = read[2]
+        found = re.fullmatch(r"([A-Za-z_]\w*)(\s*\[.*\])?", read[1], re.S)
+        if found is None or bool(found[2]) == ranged:
+            return None
+        container = found[1]
+        located = self._local_container(frame, container, place[1])
+        node = located[0].node() if located is not None else None
+        kind = (
+            _BOUND_CONTAINERS.match(node[11] or "")
+            if node is not None and node[0] == "record" and len(node) > 11
+            else None
         )
+        if kind is None or (kind[1] != "vector" and not ranged):
+            return None
+        what = (container, True)
+        if not self._plain_container(node, kind[1]):
+            return _unproven(
+                base,
+                what,
+                "and Peeky proves only standard vectors, maps and sets of numbers, with the "
+                "default allocator and order",
+            )
+        if (replaced := self._allocation_seen()) is not None:
+            return _unproven(base, what, replaced)
+        sort, size = "nodes", None
+        if kind[1] == "vector":
+            # Where its elements start and end: libc++'s own members, else libstdc++'s.
+            members = {member[0] for member in node[5]}
+            sort = (
+                ("__begin_", "__end_")
+                if {"__begin_", "__end_"} <= members
+                else ("_M_impl._M_start", "_M_impl._M_finish")
+            )
+        elif (size := self._entry_size(located[0])) is None:
+            return _unproven(
+                base, what, f"and Peeky can't tell the size of `{container}`'s entries to check it"
+            )
+        if getattr(self.target, "optimization", "O0") != "O0":
+            return _unproven(base, what, "and in an optimized build Peeky can't check it")
+        if (scalar := self._scalar_names(frame, base, place)) is not None:
+            return _unproven(base, what, scalar)
+        if not self._leaves_elements(frame, container, located, place, base):
+            return _unproven(
+                base,
+                what,
+                f"and while it is in scope the code may change `{container}` or keep a "
+                "pointer or reference into it",
+            )
+        return ("elements", what, container, sort, size)
+
+    def _scalar_names(self, frame, base, place):
+        """Why Peeky can't follow the names of the structured binding ``base`` declared on
+        ``place`` through the code (#297 review rounds 1, 2), or None: each must refer to a
+        number or a character (``_scalar_bound``), whose every use Peeky can read, never a
+        pointer, which may point at another element."""
+        function = self._function_at(frame) or {}
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+        names = statements.bound_names(place[1], base) if statements is not None else []
+        if names and all(self._scalar_bound(function, name, place) for name in names):
+            return None
+        return "and Peeky follows only names of numbers or characters through the code, never a pointer"
+
+    def _scalar_bound(self, function, name, origin=None):
+        """Whether each local ``name`` of ``function`` declared on ``origin`` (a file and
+        line; None: anywhere in it) is, or refers to, a number or a character: a base type,
+        whose operators are all built in (#297 review round 2), never an enumeration or a
+        pointer."""
+        from peeky.native_previews import Typed
+
+        if self.fields is None:
+            return False
+        place = (Path(str(origin[0])).name, origin[1]) if origin else None
+        declared = [
+            kind
+            for kind, _, where in (function.get("types") or {}).get(name) or ()
+            if place is None or where == place
+        ]
+        for kind in declared:
+            typed = Typed(self.fields, kind)
+            typed = typed.target() if typed.kind() == "reference" else typed
+            if typed is None or typed.scalar() is None:
+                return False
+        return bool(declared)
+
+    def _passes(self, function, callee, index):
+        """Whether every function ``callee`` may name takes its argument ``index`` by value
+        (call_arguments, #297 review), and no local of ``function`` has that name."""
+        if callee in (function.get("types") or {}):
+            return False
+        signatures = (getattr(self, "call_arguments", None) or {}).get(callee)
+        return bool(signatures) and all(
+            kinds[index] if index < len(kinds) else variadic for kinds, variadic in signatures
+        )
+
+    def _callbacks(self, function, preprocessed):
+        """Statements' ``scalar(name, line)`` and ``passes(function, index)`` for the
+        translation unit ``preprocessed`` (#297 review): its lines read back onto the
+        source's."""
+        origins = getattr(preprocessed, "origins", ())
+
+        def scalar(name, line=None):
+            if line is None:
+                return self._scalar_bound(function, name)
+            origin = origins[line - 1] if type(line) is int and 0 < line <= len(origins) else None
+            return origin is not None and self._scalar_bound(function, name, origin)
+
+        return scalar, lambda callee, index: self._passes(function, callee, index)
+
+    def _allocation_seen(self):
+        """Why `std::allocator`'s memory may be seen by code of the program's (#297 review
+        round 3), or None: it calls the global `operator new` and `operator delete`, which
+        the program may replace (allocation_replaced), or a library the launch loads
+        first (`LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, or the Linux host's
+        `/etc/ld.so.preload`, read at launch: system_preload), to keep where each element
+        is."""
+        replaced = getattr(self, "allocation_replaced", None)
+        if replaced is None:
+            return "and Peeky can't tell whether the program replaces `operator new`"
+        if replaced:
+            return (
+                "and the program replaces `operator new` or `operator delete`, which may keep "
+                "where each element is"
+            )
+        try:
+            environment = self.environment
+        except (AttributeError, OSError, TypeError, ValueError):
+            environment = None
+        if environment is None:
+            return "and Peeky can't tell whether the launch loads a library first"
+        loaded = [key for key in _PRELOADS if environment.get(key)]
+        preloaded = getattr(self, "system_preload", None)
+        if preloaded is None:
+            return "and Peeky can't tell whether the launch loads a library first"
+        if preloaded:
+            loaded.append(str(LD_SO_PRELOAD))
+        if loaded:
+            return (
+                f"and the program runs with `{loaded[0]}`, whose library may replace `operator new`"
+            )
+        return None
+
+    def _plain_container(self, node, sort):
+        """Whether the standard container ``node`` (a record of the type graph; ``sort``:
+        "vector", "map", "set" or "multiset") is one whose elements only the standard
+        library makes, orders and places (#297 review round 2): `std::allocator`, and
+        `std::less` for a map's or a set's order; its elements numbers or characters (a
+        map's key and value), or a set's or vector's a `std::pair` or `std::array` of them.
+        No constructor, allocator or comparison of the program's then sees where an
+        element is."""
+        from peeky.native_previews import Typed
+
+        graph = self.fields
+
+        def named(offset, pattern):
+            found = Typed(graph, offset).node() if offset in graph else None
+            return found is not None and found[0] == "record" and bool(pattern.match(found[11]))
+
+        def number(offset):
+            return offset in graph and Typed(graph, offset).scalar() is not None
+
+        def element(offset):
+            if not named(offset, _PLAIN_ELEMENTS):
+                return False
+            inner = [p[2] for p in Typed(graph, offset).node()[12] if p[0] == "type"]
+            return bool(inner) and all(number(each) for each in inner)
+
+        types = [p[2] for p in node[12] if p[0] == "type"]
+        if sort == "vector":
+            wanted = (element, _ALLOCATOR)
+        elif sort == "map":
+            wanted = (number, number, _LESS, _ALLOCATOR)
+        else:
+            wanted = (element, _LESS, _ALLOCATOR)
+        return len(types) == len(wanted) and all(
+            check(offset) if callable(check) else named(offset, check)
+            for check, offset in zip(wanted, types)
+        )
+
+    def _entry_size(self, typed):
+        """How many bytes an entry of a standard map, set or multiset ``typed`` takes: a
+        set's key's, or a map's `std::pair<const Key, T>`'s, laid out from the key's and
+        value's sizes and alignments in the build's debug information; None where they
+        are not known."""
+        from peeky.fields import _alignment
+
+        found = typed.container()
+        if found is None or found[0] not in ("map", "set"):
+            return None
+        if found[0] == "set":
+            return found[1].byte_size()
+        key, value = found[1], found[2]
+        sizes = key.byte_size(), value.byte_size()
+        aligned = _alignment(self.fields, key.offset), _alignment(self.fields, value.offset)
+        if None in sizes or not all(aligned):
+            return None
+        second = -(-sizes[0] // aligned[1]) * aligned[1]
+        return -(-(second + sizes[1]) // max(aligned)) * max(aligned)
+
+    def _local_container(self, frame, root, line):
+        """(Typed, storage, (file name, line) or None) of the one declaration of ``root``
+        in scope on ``line`` of the function ``frame`` runs, as ``_local_object`` finds it:
+        a local in the frame's memory ("automatic") or a by-value parameter, never a
+        static, nor one reached through a reference or a pointer; else None."""
+        from peeky.native_previews import Typed
+
+        function = self._function_at(frame) or {}
+        source = function.get("source")
+        statements = self._statements(source) if isinstance(source, str) else None
+        if statements is None or self._local_object(frame, root, line) is None:
+            return None
+        found = []
+        for kind, storage, where in (function.get("types") or {}).get(root) or ():
+            if storage != "parameter":
+                if where is None or where[0] != Path(source).name or where[1] > line:
+                    continue
+                lines = statements.scope_lines(where[1], root)
+                if lines is None or not lines[0] <= line <= lines[1]:
+                    continue
+            found.append((kind, storage, where))
+        if len(found) != 1 or found[0][1] not in ("automatic", "parameter"):
+            return None
+        return Typed(self.fields, found[0][0]), found[0][1], found[0][2]
+
+    def _leaves_elements(self, frame, container, located, place, base):
+        """Whether the code leaves the elements of the local ``container`` (``located``:
+        ``_local_container``'s) in place while the binding ``base`` on ``place`` is in
+        scope (Statements.leaves_elements), in each translation unit holding the source as
+        the compiler preprocessed it, so a macro reads as its expansion; and the function
+        has no inline assembly or address builtin up to the container's scope's end,
+        which may reach it unseen (``_ADDRESSES``). False where Peeky cannot tell."""
+        function = self._function_at(frame) or {}
+        source, span = function.get("source"), function.get("span")
+        if not isinstance(source, str) or not span or Path(source).name != place[0]:
+            return False
+        _, storage, where = located
+        verdicts = set()
+        for unit in self._units(source):
+            read = self._preprocessed(unit)
+            if isinstance(read, str):
+                return False
+            preprocessed, statements = read
+            if source not in preprocessed.files:
+                continue
+            line = preprocessed.line(source, place[1])
+            region = statements.scope_lines(line, base) if line else None
+            begin = preprocessed.line(source, span[0])
+            if storage == "parameter":
+                end = preprocessed.line(source, span[1])
+                scope = (begin, end) if begin and end else None
+            else:
+                declared = preprocessed.line(source, where[1])
+                scope = statements.scope_lines(declared, container) if declared else None
+            if region is None or scope is None or not begin or begin > scope[0]:
+                return False
+            starts = statements.starts
+            text = statements.blanked[
+                starts[begin - 1] : starts[scope[1]] if scope[1] < len(starts) else None
+            ]
+            if _ASSEMBLY.search(text) or _ADDRESSES.search(text):
+                return False
+            scalar, passes = self._callbacks(function, preprocessed)
+            verdicts.add(
+                statements.leaves_elements(container, scope, region, line, base, scalar, passes)
+            )
+        return verdicts == {True}
+
+    def _kept_result(self, frame, base, place, read):
+        """For a binding by reference of a call's result (`auto &&[p, q] = one(i);`, `const
+        auto &[x, y] = ns::two();`, not a member or subscript of one): a Withholding, None
+        for any other binding. C++ keeps that result alive for the binding's scope, but the
+        function called may keep a pointer into it: with the named return value
+        optimization, `P r{1, 2}; saved = &r; return r;` builds `r` where the caller keeps
+        the result (#297 review round 3). So nothing proves the code leaves it alive."""
+        call = (
+            None if read[2] else re.match(r"(?:[A-Za-z_]\w*\s*::\s*)*([A-Za-z_]\w*)\s*\(", read[1])
+        )
+        opened = read[1].find("(") if call is not None else -1
+        closed = _arguments(read[1], opened) if opened >= 0 else None
+        if call is None or closed is None or closed[1] != len(read[1]):
+            return None
+        return _unproven(
+            base,
+            (read[1], False),
+            "a call's result, which the function called may keep a pointer into",
+        )
+
+    def _bound_place(self, variable, base, check, target, fetch, siblings, raw):
+        """None where the address the binding by reference ``variable`` holds (its row's
+        value, `0x…`) is where ``check`` (``_bound_alive``'s, #297) says the program keeps
+        what it binds now; else a Withholding. A vector's element:
+        between where its elements start and end, as ``raw(path)`` reads its own members.
+        A map's or set's: in one of its entries, as the debugger lists them in
+        ``siblings`` (``fetch``; at most BOUND_ENTRIES), each where the debugger says it
+        is (``own_address``) and as large as ``check`` says. The whole element must fit
+        (``target``: its type, where known)."""
+        kind, what, container, sort, size = check
+        held = re.match(r"0x([0-9a-fA-F]{1,16})(?![0-9a-fA-F])", str(variable.get("value") or ""))
+        address = int(held[1], 16) if held else 0
+        width = (target.byte_size() if target is not None else None) or 1
+        if not address:
+            return _unproven(base, what, "and the debugger shows no address for it to check")
+        rows = [
+            row
+            for row in siblings
+            if isinstance(row, dict)
+            and (split_located(str(row.get("name"))) or (row.get("name"),))[0] == container
+        ]
+        unread = f"and Peeky could not read `{container}`'s elements to check where it points"
+        if len(rows) != 1:
+            return _unproven(base, what, unread)
+        if sort != "nodes":
+            ends = []
+            for path in sort:
+                try:
+                    text = raw(f"{container}.{path}") if raw is not None else None
+                except ValueError:
+                    text = None
+                found = _RAW_POINTER.fullmatch(str(text or "").strip())
+                ends.append(int(found[1], 16) if found else None)
+            if None in ends:
+                return _unproven(base, what, unread)
+            if ends[0] <= address and address + width <= ends[1]:
+                return None
+            return _unproven(base, what, f"but it points outside `{container}`'s elements now")
+        counted = re.fullmatch(r"size=(0|[1-9][0-9]{0,9})", str(rows[0].get("value") or ""))
+        reference = rows[0].get("variablesReference")
+        if counted is None or type(reference) is not int or reference <= 0:
+            return _unproven(base, what, unread)
+        count = int(counted[1])
+        if count > BOUND_ENTRIES:
+            return _unproven(
+                base,
+                what,
+                f"and `{container}` has more than {BOUND_ENTRIES} entries, more than Peeky checks",
+            )
+        entries = 0
+        for start in range(0, count, 64):
+            try:
+                listed = fetch(reference, min(64, count - start), start=start)
+            except (TypeError, ValueError):
+                return _unproven(base, what, unread)
+            for child in listed:
+                if not re.fullmatch(r"\[[0-9]+\]", str(child.get("name"))):
+                    continue
+                entries += 1
+                at = own_address(child)
+                if at is None:
+                    return _unproven(base, what, unread)
+                if at <= address and address + width <= at + size:
+                    return None
+        if entries != count:
+            return _unproven(base, what, unread)
+        return _unproven(base, what, f"but it points into none of `{container}`'s entries now")
 
     def _local_object(self, frame, root, line):
         """``native_previews.Typed`` of the object ``root`` names on ``line`` of the
@@ -5885,25 +7627,37 @@ class NativeSession:
         long> >::type`, as the binding is declared, where LLDB names the reference (`…
         &&`). None for any other value, whose type stays LLDB's."""
         bare = re.fullmatch(r"(.*?\S)\s*&{1,2}\s*", str(variable.get("type") or ""))
+        if top and bare is not None and variable.get("peekyCapture") is True:
+            # A GCC lambda's capture by reference, shown as what it refers to (#361).
+            return bare[1]
         if not top or bare is None or not isinstance(self._element_binding(variable, frame), tuple):
             return None
         return bare[1]
 
-    def bound_element(self, variable, frame, fetch, note=None):
+    def bound_element(self, variable, frame, fetch, note=None, siblings=None, raw=None):
         """How the worker shows a root local the build holds as a reference to a
         structured binding's element (#291: GCC's `t` in `auto [t, u] = pair;`), which
         the debugger shows as the element's address. None for any other local. Else:
 
         - a Withholding, where the reference may not be set (``note``: why the row would
           be shown with a note), what it refers to may be gone (``_bound_alive``: a
-          reference-qualified binding of anything but this frame's own object), or the
-          element cannot be read;
+          reference-qualified binding of anything but this frame's own object, or an
+          element of a local container the code leaves in place), or the element cannot be
+          read;
         - {"variable": the debugger's child that is the element (a number, a character,
           a pointer), named as the row and listing nothing}, read as any value;
         - {"strip": True} for a struct, class, array or standard container, whose
           members the debugger lists as the reference's own: element_text shows it.
 
-        ``fetch(reference, count)``: the first children the debugger lists for a value."""
+        ``fetch(reference, count, start=0)``: the children the debugger lists for a value,
+        from ``start``. For the checks ``_bound_alive`` asks for (#297, ``_bound_place``):
+        ``siblings``, the frame's other locals as the debugger lists them; ``raw(path)``,
+        the debugger's text for a variable path.
+
+        A GCC lambda's capture by reference (#361) is shown so too, as what it refers to:
+        the code names that object by the capture's name."""
+        if variable.get("peekyCapture") is True:
+            return self._captured_element(variable, frame, fetch)
         found = self._element_binding(variable, frame)
         if found is False:
             return None
@@ -5920,8 +7674,52 @@ class NativeSession:
         shown = split_located(name)
         base = shown[0] if shown else name
         if (dead := self._bound_alive(frame, base, found[2], found[3])) is not None:
-            return dead
-        target = found[1]
+            if isinstance(dead, tuple):
+                dead = self._bound_place(variable, base, dead, found[1], fetch, siblings or (), raw)
+            if dead is not None:
+                return dead
+        unread = (
+            f"`{base}` is a structured binding the build holds as a reference to its "
+            "element, which the debugger shows as an address, and the debugger listed no "
+            "element through it{}; print it from the program"
+        )
+        return self._referred(variable, found[1], fetch, unread)
+
+    def _captured_element(self, variable, frame, fetch):
+        """bound_element of a GCC lambda's capture (#361): None for one by value, which
+        shows as the debugger lists it; one by reference as what it refers to
+        (_referred); withheld where the build's debug information doesn't type it."""
+        name = str(variable.get("name") or "")
+        if not str(variable.get("type") or "").rstrip().endswith("&"):
+            return None
+        typed = self._capture_type(frame, name)
+        if typed is None or typed.kind() != "reference":
+            return Withholding(
+                f"`{name}` is a capture of this lambda by reference, and Peeky can't read its "
+                "type in the build's debug information to show what it refers to; print it "
+                "from the program",
+                "not shown",
+                None,
+            )
+        unread = (
+            f"`{name}` is a capture of this lambda by reference, which the debugger shows as "
+            "an address, and the debugger listed nothing through it{}; print it from the "
+            "program"
+        )
+        found = self._referred(variable, typed.target(), fetch, unread)
+        if isinstance(found, dict) and isinstance(found.get("variable"), dict):
+            found["variable"]["peekyCapture"] = True
+        return found
+
+    @staticmethod
+    def _referred(variable, target, fetch, unread):
+        """What a reference ``variable`` refers to, as bound_element shows it: {"strip":
+        True} for a struct, class, array or standard container (``target``, the
+        ``Typed`` it refers to), whose members the debugger lists as the reference's own;
+        else {"variable": the debugger's one child under it, named as the row and listing
+        nothing}; or a Withholding (``unread``, with a `{}` for why) where the debugger
+        lists no such child."""
+        name = str(variable.get("name") or "")
         if target is not None and target.kind() in (
             "record",
             "union",
@@ -5930,11 +7728,6 @@ class NativeSession:
             "incomplete",
         ):
             return {"strip": True}
-        unread = (
-            f"`{base}` is a structured binding the build holds as a reference to its "
-            "element, which the debugger shows as an address, and the debugger listed no "
-            "element through it{}; print it from the program"
-        )
         reference = variable.get("variablesReference")
         try:
             children = fetch(reference, 2) if type(reference) is int and reference > 0 else []
@@ -5962,10 +7755,15 @@ class NativeSession:
         located = re.fullmatch(r"(0x[0-9a-fA-F]{1,16})(?: (.+))?", str(value or ""), re.S)
         if located is None:
             name = split_located(str(variable.get("name") or ""))
+            what = (
+                "a capture of this lambda by reference"
+                if variable.get("peekyCapture") is True
+                else "a structured binding the build holds as a reference to its element"
+            )
             return Withholding(
-                f"`{name[0] if name else variable.get('name')}` is a structured binding the "
-                "build holds as a reference to its element, and the debugger shows it as "
-                f"{str(value)[:60]!r}, not that element's address; print it from the program",
+                f"`{name[0] if name else variable.get('name')}` is {what}, and the debugger "
+                f"shows it as {str(value)[:60]!r}, not the address of what it refers to; "
+                "print it from the program",
                 "not shown",
                 None,
             )
@@ -5988,7 +7786,32 @@ class NativeSession:
         element (#291) is withheld instead: until its declaration runs on this pass, that
         reference may point anywhere, and nothing is read through it. So is one at a stop
         on its declaration's lines in an optimized build, where whether that has run on
-        this pass cannot be told."""
+        this pass cannot be told.
+
+        A GCC lambda's capture the worker reads through `__closure` (#361) has no
+        declaration in the lambda: the lambda's object holds it from before the call. It
+        is withheld where that object may be under construction, as clang's `this` is
+        there (_under_construction), and where a local of the lambda's of its name may be
+        what the code names (_capture_scope).
+
+        A variable in static storage ``static_rows`` shows is judged there instead: its
+        storage holds its value the whole run, once C++ has run its initializer (#364)."""
+        if variable.get("peekyCapture") is True:
+            if (unread := self.captures_unread(frame)) is not None:
+                return f"Peeky reads no capture of this lambda here: {unread}"
+            name = str(variable.get("name") or "")
+            if (scope := self._capture_scope(frame, name))[0] != "capture":
+                # A local of the lambda's of its name may be what the code names here.
+                return Withholding(
+                    scope[1]
+                    if scope[0] == "unknown"
+                    else f"the lambda's own `{name}`, declared on line {scope[1]}, hides it here",
+                    "not shown",
+                    None,
+                )
+            return self._under_construction(frame, stack, deeper, captured=True)
+        if (static := self._static_row(variable, frame)) is not None:
+            return static[1]
         reason = self._not_yet_declared(variable, frame, innermost, stack, deeper, siblings, stop)
         if reason is not None and not isinstance(reason, ValueNote):
             return reason
@@ -6098,6 +7921,7 @@ class NativeSession:
                 self._unslid(frame),
                 ends=lambda at, local: self._statement_end(here, at, local),
                 chosen=self._chosen(name, frame),
+                resume=self._resume(frame),
             )
         ):
             at, why, detail = unfinished
@@ -6610,12 +8434,14 @@ class NativeSession:
             return None
         return self._statements(found) if found != str(source) else None
 
-    def _under_construction(self, frame, stack, deeper=None):
+    def _under_construction(self, frame, stack, deeper=None, captured=False):
         """Why `this` in ``frame`` (C++) may point to an object still being built, or
         None: the frame runs its constructor, a constructor runs below the frame
         (``stack``, innermost first; ``deeper()`` lists up to 64 frames when the ten
         listed do not reach the bottom, and beyond that it is unknown), or the frame runs
-        a lambda defined where what it captures may be under construction."""
+        a lambda defined where what it captures may be under construction. With
+        ``captured``, the same of a GCC lambda's capture (#361), read through its object
+        as clang's are through `this`."""
         if getattr(self.target, "language", None) != "cpp" or not isinstance(frame, dict):
             return None
         frames = [listed for listed in stack or () if isinstance(listed, dict)]
@@ -6627,6 +8453,10 @@ class NativeSession:
             "its members may not be initialized yet and may hold leftovers; read them once "
             "it returns"
         )
+        pointing = "`this` may point to the object it is building"
+        if captured:
+            unread = "it may not be initialized yet and may hold leftovers; read it once it returns"
+            pointing = "what this lambda captures may be part of the object it is building"
         if self._constructs(frame):
             return f"the object this constructor ({frame.get('name')}) is building: {unread}"
         if (self._function_at(frame) or {}).get("initializer"):
@@ -6643,7 +8473,7 @@ class NativeSession:
                 if self._constructs(caller):
                     return (
                         f"a constructor ({caller.get('name')}) called this frame, directly "
-                        f"or not, so `this` may point to the object it is building: {unread}"
+                        f"or not, so {pointing}: {unread}"
                     )
             if complete or attempt or deeper is None:
                 break
@@ -6657,16 +8487,22 @@ class NativeSession:
         if not complete:
             return (
                 "Peeky cannot list every frame below this one, so a constructor may be "
-                f"running there and `this` may point to the object it is building: {unread}"
+                f"running there and {pointing}: {unread}"
             )
         entry = self._function_at(frame)
         if entry is None or entry.get("enclosing") is None:
             return None
         if (outer := self._lambda_scope(entry, callers, complete)) is not None:
+            held = ("it", "it") if captured else ("its members", "them")
+            where = (
+                f"this lambda is nested {outer}, and Peeky doesn't follow them all, so one "
+                "around it may still be running"
+                if isinstance(outer, _TooDeep)
+                else f"this lambda is defined {outer}, which may still be running"
+            )
             return (
-                f"this lambda is defined {outer}, which may still be running, so what it "
-                "captures may be under construction: its members may not be initialized "
-                "yet and may hold leftovers; read them once that has run"
+                f"{where}, so what it captures may be under construction: {held[0]} may not "
+                f"be initialized yet and may hold leftovers; read {held[1]} once that has run"
             )
         return None
 
@@ -6674,9 +8510,11 @@ class NativeSession:
         """Where a lambda (or a local class's method), as ``entry``, is defined that may
         still be running, as text, or None: in a constructor, or within a local's
         declaration statement in the function around it (and around that, for a lambda
-        in a lambda), unless the frames below show it has finished."""
+        in a lambda, out to the function holding them all), unless the frames below show
+        it has finished. Past LAMBDA_NESTING functions around it, it may be in any of
+        the rest: said so, never taken for finished (#361)."""
         by_root = {function.get("root"): function for function in self.declarations}
-        for _ in range(4):
+        for _ in range(LAMBDA_NESTING):
             outer, defined = by_root.get(entry.get("enclosing")), entry.get("defined")
             if outer is None or defined is None:
                 return "in a function Peeky cannot place"
@@ -6703,7 +8541,7 @@ class NativeSession:
             if outer.get("enclosing") is None:
                 return None
             entry = outer
-        return None
+        return _TooDeep(f"more than {LAMBDA_NESTING} functions deep")
 
     def _constructs(self, frame):
         """Whether a frame runs a C++ constructor: by its function's debug information,
@@ -6893,6 +8731,10 @@ class NativeSession:
         which one the code names: then `t` is refused, and the rows' names select."""
         shown_name = str(variable.get("name"))
         shown = split_located(shown_name)
+        if (static := self._static_row(variable, frame)) is not None:
+            # A variable in static storage `static_rows` found the code names (#364), which
+            # LLDB may name `calls @ tick.c:9`, or `Acc::run()::calls` from its symbol.
+            return static[0][0] if shown_name != static[0][0] else None
         if shown is None or not self.declarations:
             return None
         base, names = shown[0], [str(sibling.get("name")) for sibling in siblings]
@@ -7077,7 +8919,8 @@ class NativeSession:
                         # one the frame reaches through a pointer or reference, or whose
                         # type is no writable integer (`const long`), never changes.
                         storages = self._declared_storages(entry.get("types") or {}, root, shown)
-                        if "through" in storages:
+                        if "through" in storages or storages == {"static"}:
+                            # Or in static storage, which is no frame's own (#364).
                             why = _not_framed(root, storages)
                         elif text or not (why := self._root_never_integer(entry, root, shown)):
                             break
@@ -7234,6 +9077,37 @@ class NativeSession:
             and identity not in getattr(self, "interrupted_ids", ())
         ):
             return address - 1
+        return address
+
+    def _resume(self, frame):
+        """Where a caller frame's call returns (unslid), where Peeky proves it a physical
+        call's in a function laid out in source order, else None. The build is -O0, and
+        no unit may optimize a function on its own (``optimized`` False: no `optimize`
+        attribute or pragma). The frame is above the innermost one, and no signal
+        interrupted it. And no inlined call's code holds its address or the one before
+        it: LLDB gives the caller of an inlined call the address where that call's code
+        starts, which is no return address, and a call from inlined code returns into
+        it. Nor is it a frame LLDB rebuilt for a tail call's caller, which has no frame
+        of its own left: the debug information describes no tail call (``tail_calls``
+        False), and the adapter marks it no artificial or hidden frame (lldb-dap 20's
+        `presentationHint` "subtle")."""
+        address = self._unslid(frame)
+        if (
+            address is None
+            or getattr(self.target, "optimization", "O0") != "O0"
+            or getattr(self, "optimized", None) is not False
+            or getattr(self, "tail_calls", None) is not False
+            or (frame or {}).get("presentationHint", "normal") != "normal"
+            or self._block_pc(frame) != address - 1
+        ):
+            return None
+        code = getattr(self, "code", None) or {}
+        if "dies" not in code:
+            return None
+        if "index" not in code:
+            code["index"] = CodeIndex(code["dies"])
+        if any(each.inline for at in (address - 1, address) for each in code["index"].holding(at)):
+            return None
         return address
 
     def _unslid(self, frame):
@@ -7895,7 +9769,7 @@ class NativeSession:
         """Where to change what the pointer local ``root`` of ``frame`` reaches, at a
         stop (validate_member): ``_caller_advice``, for the declaration the debugger
         shows there."""
-        where = self._shown_where(root, self._unslid(frame))
+        where = self._static_where(frame, root) or self._shown_where(root, self._unslid(frame))
         return self._caller_advice(self._function_at(frame), root, steps, where)
 
     def _pointer_kind(self, function, root, where):
@@ -8698,8 +10572,9 @@ class NativeSession:
                 "it when the session starts)"
             )
         name = root.get("name")
-        shown = self._shown_where(name, self._unslid(frame))
-        return (*self._declared_type(function["types"], name, shown), self.fields)
+        shown = self._static_where(frame, name) or self._shown_where(name, self._unslid(frame))
+        declared = self._static_declared(frame, name)
+        return (*self._declared_type(function["types"], declared, shown), self.fields)
 
     def _root_holds(self, frame, root, stack=None, deeper=None):
         """Raise fields.Unsettable unless the root local holds its value at the stop:
@@ -8735,8 +10610,8 @@ class NativeSession:
         if function is None or not function.get("types"):
             return set()
         name = root.get("name")
-        shown = self._shown_where(name, self._unslid(frame))
-        return self._declared_storages(function["types"], name, shown)
+        shown = self._static_where(frame, name) or self._shown_where(name, self._unslid(frame))
+        return self._declared_storages(function["types"], self._static_declared(frame, name), shown)
 
     @staticmethod
     def _declared_type(types, name, where=None):
@@ -8873,7 +10748,8 @@ class NativeSession:
     def _declaration_at(self, frame, root):
         """(source, line) of the declaration of the root local ``root`` the debugger shows
         at the stop ``frame``, or None (_shown_where)."""
-        where = self._shown_where(str(root.get("name")), self._unslid(frame))
+        name = str(root.get("name"))
+        where = self._static_where(frame, name) or self._shown_where(name, self._unslid(frame))
         return where[:2] if where else None
 
     def entry_lines(self, program, lines):
@@ -9222,6 +11098,12 @@ class NativeSession:
         to the stop (the debugger writes a register), as is an optimized build, where
         every change is refused."""
         target = getattr(self, "target", None)
+        if variable.get("peekyCapture") is True:
+            # A GCC lambda's capture (#361), which its object holds: never changed.
+            return "capture"
+        if self._static_row(variable, frame) is not None:
+            # A variable in static storage `static_rows` shows, and all in it (#364).
+            return "static"
         if not member or self.fields is None or getattr(target, "optimization", "O0") != "O0":
             return None
         function = self._function_at(frame)
@@ -9253,7 +11135,8 @@ class NativeSession:
         """Whether a root local is a writable integer of a type Peeky can change: by the
         debugger's name for its type and, where Peeky reads it, the debug information's
         (``_declared_name``: LLDB 18 shows a `_BitInt(32)` as `int`)."""
-        if not _writable_integer(variable):
+        if not _writable_integer(variable) or self._static_row(variable, frame) is not None:
+            # A variable in static storage is no frame's own (#364).
             return False
         found = self._declared_name(variable, frame) if frame is not None else None
         return found is None or found[0] in INTEGER_RANGES
