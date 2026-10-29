@@ -442,12 +442,13 @@ class _Cancelled(Exception):
 
 
 def _run_group(group, workspace, env, deadline, workers, store=None):
-    """Runs ``group``'s commands at the same time, ``workers`` at once, started in their
-    order: [(tool, result)] in that order. When commands fail, the earliest one's error
-    is raised: the first a build in order reaches, as the commands are independent.
-    Once one fails, the commands after it are stopped, and none after it starts: a
-    process is started only under the lock that records a failure, after checking that
-    none before it failed."""
+    """Runs ``group``'s commands at the same time, ``workers`` at once: [(tool, result)]
+    in the group's order. Workers take commands in that order, but their processes may
+    start in any order. When commands fail, the earliest one's error is raised: the
+    first a build in order reaches, as the commands are independent. Once one fails,
+    the commands after it are stopped, and none after it starts: a process is started
+    only under the lock that records a failure, after checking that none before it
+    failed."""
     outcomes = [None] * len(group)
     stops = [threading.Event() for _ in group]
     lock = threading.Lock()
@@ -566,11 +567,12 @@ def prepare(
     there is fatal, never compiler feedback.
 
     ``parallel``: groups of consecutive build commands that are independent of each
-    other: each reads the inputs and writes only its own outputs. A group's commands
-    start in their order and run at the same time (``jobs()`` at once), after the checks
-    before each of them; the checks before the next command cover what any of them did.
-    When several fail, the earliest one's error is raised (``_run_group``). What a
-    command writes may still depend on when it runs (`__TIME__`), as in any two builds.
+    other: each reads the inputs and writes only its own outputs. A group's commands run
+    at the same time (``jobs()`` at once), in no set order, after the checks before each
+    of them; the checks before the next command cover what any of them did. When several
+    fail, the earliest one's error is raised, and none starts after a failure is recorded
+    (``_run_group``). What a command writes may still depend on when it runs
+    (`__TIME__`), as in any two builds. PEEKY_BUILD_JOBS=1 runs them one after another.
     ``keep_tool_digests``: the digest of each executable a probe or command runs is
     kept in Peeky's state directory, so that a new process reuses it under
     digest.sha256_file's rules. Toolchain probes always run.

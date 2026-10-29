@@ -172,8 +172,8 @@ costs there were Peeky's own, and each build paid them, `verify` too:
   on macOS. Peeky now keeps their digests in its state directory, by the same rules as within one
   process.
 - **One unit at a time:** an 8-file program ran 8 `-E` commands, then 8 `-c` commands, in turn.
-  Each group now runs at the same time, up to 8 at once (`PEEKY_BUILD_JOBS`). The commands start
-  in order, and when sources fail, the first one's error is reported.
+  Each group now runs at the same time, up to 8 at once (`PEEKY_BUILD_JOBS`). When sources fail,
+  the first one's error is reported.
 - **The checks of preprocessed text:** the inline-assembly scan took 1.16 s for the 8 units on
   macOS, and the check of the headers they read 0.41 s. They now take 0.25 s and 0.04 s. Both
   check the same things: tests compare the scan with the earlier one on random text.

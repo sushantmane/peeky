@@ -4571,9 +4571,9 @@ class NativeTarget:
                 edit=edit,
                 deadline=deadline,
                 before_command=before_command,
-                # They start in order; where several fail, the first one's error is
-                # raised, as in a build one unit at a time. What a unit's compile writes
-                # may still depend on when it runs (`__TIME__`), as in any two builds.
+                # In no set order; where several fail, the first one's error is raised,
+                # as in a build one unit at a time. What a unit's compile writes may
+                # still depend on when it runs (`__TIME__`), as in any two builds.
                 parallel=(tuple(preprocesses), tuple(compiles)),
                 keep_tool_digests=True,
             )

@@ -1367,8 +1367,8 @@ went into the build, and checks it again before it trusts the program.
 - Peeky builds no `.s` or `.S` file, and passes no `-Wa,` option.
 - Peeky preprocesses the sources at the same time, then compiles them at the same time: up to 8
   at once, or `PEEKY_BUILD_JOBS`. Each source's commands write only that source's files, and they
-  start in the sources' order. When several sources fail, Peeky reports the first one's error, as
-  a build of one source at a time would.
+  may start in any order. When several sources fail, Peeky reports the first one's error, as a
+  build of one source at a time would.
 - What a compile writes can still depend on when it runs, as between any two builds. `__TIME__`
   and `__DATE__` do, and so may a compiler wrapper that shares a cache between compiles. Set
   `PEEKY_BUILD_JOBS=1` to compile one source at a time.

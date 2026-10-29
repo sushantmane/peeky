@@ -1,7 +1,7 @@
 """Build speed without new trust (#398): toolchain probes run on every build, and only
 their tools' digests are kept across processes; a parallel group of independent build
-commands starts them in order, and raises the earliest failure, as running them in order
-does."""
+commands raises the earliest failure, as running them in order does, and starts nothing
+after a recorded failure."""
 
 import os
 import shutil

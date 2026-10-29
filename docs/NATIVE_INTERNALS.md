@@ -16,14 +16,16 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - The tools' escapes, dwarfdump's and clang's octal, are read back. Their output's lines end at
   `\n` alone, so a source's name may hold any character.
 - `NativeTarget.prepare` gives `build.prepare` two parallel groups: each unit's `-E`, then each
-  `-c`. `build._run_group` starts a group's commands in order, `build.jobs()` at once. Once one
-  fails, it stops those after it, and raises the earliest failure, as a build in order would.
+  `-c`. `build._run_group` runs a group's commands `build.jobs()` at once, in no set order. Once
+  one fails, it stops those after it, and raises the earliest failure, as a build in order would.
 - A worker starts a process only while holding the group's lock, after checking that no earlier
   command failed. So no command after a recorded failure starts.
 - The checks before each command of a group run before the group starts. The checks before the
   link cover what the group did.
-- Parallel builds promise the order commands start in, their output files, and which error is
-  reported. They don't promise byte-identical outputs: `__TIME__` differs between any two builds.
+- Parallel builds promise each command's own output files, which error is reported, and that
+  nothing starts after a recorded failure. They don't promise the order commands start in, nor
+  byte-identical outputs: `__TIME__` differs between any two builds. `PEEKY_BUILD_JOBS=1` builds
+  one unit at a time.
 - `keep_tool_digests` keeps the toolchain executables' digests under `cache/digests` in the state
   directory. The toolchain probes run on every build: a tool's output may depend on files its
   hash doesn't cover, such as a configuration file, a library or a program a wrapper runs.
