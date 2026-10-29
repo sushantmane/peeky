@@ -2818,7 +2818,7 @@ class DebugWorker:
                 # a request the stop cannot serve, not a debugger failure.
                 raise ValueError(
                     f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
-                    "program's sources; inspect one of your program's frames"
+                    "program's sources: read one of your program's frames"
                 ) from exc
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 validate_debugger(self.dap, selected_frame)

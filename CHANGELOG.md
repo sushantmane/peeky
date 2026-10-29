@@ -31,6 +31,12 @@
   `DEBUG_TOKEN` was. The worker bounds each read of a request at 10 s, before the token check too.
   The tunnel command adds `-o ExitOnForwardFailure=yes`. [SECURITY.md](SECURITY.md) says how to
   report a vulnerability (#378).
+- **Probes read a caller's frame:** `--capture 'reading,1:i'` reads `i` in frame 1, the caller,
+  beside the stopped frame's values, by the rules `session get --frame 1` applies. Rows say
+  `frame`; the store keeps `captures.frame` (schema 21) (#382).
+- **Under load:** every launch step has what remains of the launch's one deadline. A stop the
+  debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
+- **Remote protocol 8** (#369), and **9** (#382).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

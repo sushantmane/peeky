@@ -73,6 +73,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # pro
    - [2.7 JSON for Scripts](#27-json-for-scripts): `--json` and `jq`
    - [2.8 Change a Value, Then Restore It](#28-change-a-value-then-restore-it): `--set-at LINE@HIT`: change at one line, restore at another; `LINE@all`: at every stop; `name=@before`: restore the value from before the change
    - [2.9 What a Function Returned](#29-what-a-function-returned): `--capture return`: what a call returned, in C, C++, Rust and Java
+   - [2.10 Values in a Caller's Frame](#210-values-in-a-callers-frame): `1:i`: a value in the caller's frame, beside the stopped frame's
 3. [Comparing Runs](#3-comparing-runs): what differs between saved runs
    - [3.1 Two Inputs Side by Side](#31-two-inputs-side-by-side): `queries diff`: what else differed, then the first divergence
    - [3.2 Inputs, Outcomes and Outputs of the Last Two Runs](#32-inputs-outcomes-and-outputs-of-the-last-two-runs): `queries outputs`: arguments, changes, status and output per run
@@ -393,7 +394,8 @@ hit  phase     line  function  selector   type  value
 #### Write a selector
 
 A selector is a dotted path, an index or a string key: `request.page`, `args[0]`, `items[-1]`,
-`order['id']`. It is never an expression: Peeky never evaluates code in your program.
+`order['id']`. It is never an expression: Peeky never evaluates code in your program. In a probe,
+`1:` before it reads it in the caller's frame ([2.10](#210-values-in-a-callers-frame)).
 
 A selector that is not there lists what is:
 
@@ -1712,6 +1714,84 @@ globals (`__pydevd_ret_val_dict`), which the program could see. So Peeky refuses
 **Per language:** [Java 2.9](lang/java-cookbook.md#29-what-a-function-returned)
 (a method that threw).
 
+### 2.10 Values in a Caller's Frame
+
+**What it answers:** Which pass of the caller's loop is each hit in?
+
+A probe reads where the program stopped. Write `1:` before a selector to read it in frame 1, the
+caller, instead: `1:i`. `2:i` reads frame 2, the caller's caller. Each reads as
+`session get --frame N` does ([5.1](#read-a-callers-frame)), in the same run. So one probe gives
+the callee's values and the caller's pass.
+
+```python
+def add_reading(totals, reading):
+    totals.append(reading)
+
+
+def ward(readings):
+    totals = []
+    for i, reading in enumerate(readings):
+        add_reading(totals, reading * 2)
+        last = reading
+    return totals, last
+
+
+print(ward([3, 5, 7]))
+```
+
+```sh
+peeky probe ward.py --at 2 --capture 'reading,1:i,1:last' --hits all
+```
+
+```
+hit  phase     line  function     selector  type  value
+1    observed  2     add_reading  reading   int   6
+1    observed  8     ward         1:i       int   0
+1    observed  8     ward         1:last          <not found: 'last' is a local of ward with no value at this line (not yet assigned, or deleted): reading it here raises UnboundLocalError. A module global of that name is not what ward reads here, so it is not read; visible: i, reading, readings, totals>
+2    observed  2     add_reading  reading   int   10
+2    observed  8     ward         1:i       int   1
+2    observed  8     ward         1:last    int   3  [note]
+3    observed  2     add_reading  reading   int   14
+3    observed  8     ward         1:i       int   2
+3    observed  8     ward         1:last    int   5  [note]
+status: completed  hits: 3 (all)  seconds: 1.06  max pause: 11.9 ms
+warning: 1:last: This pass's code has not assigned it before this line, and every path through the rest of the pass assigns it (line 9) before reading it: the value is likely from an earlier pass (or from before the loop at line 7).
+output:
+  ([6, 10, 14], 7)
+...
+```
+
+#### What a caller's row says
+
+- Its `line` and `function` are that frame's: `ward` at line 8, where its call is.
+- `--json` adds `frame` (1), its `location`, and `stop_line`: the line the program stopped at.
+- A hit's own line is still the stop's: `by_hit`, and `queries wide`, show line 2.
+- A frame past the stack, or outside your sources, is that row's error. The probe goes on.
+
+#### Which values a caller shows
+
+Every rule of a caller's frame applies, as in a session:
+
+- Python: `1:last` has no value at the first pass. Later, its note says the value is likely the
+  last pass's ([Python 5.1](lang/python-cookbook.md#51-stop-look-change-finish)).
+- C and C++: a caller's local is withheld while its declaration's call runs, as in
+  `long result = twice(n);`. So is a `for` loop's own variable while its body calls
+  ([C and C++ 5.1](lang/c-cpp-cookbook.md#read-a-callers-local)).
+- Rust: a caller's `Vec` shows LLDB's summary, `[stale]`, with a note: the call may be changing
+  it.
+- A caller's value is never settable. `--set 1:i=0` is refused: a change is made only where the
+  program stopped.
+
+#### How to write it
+
+- The frame is 1 to 63, as `session inspect --json` lists `frames`.
+- No name starts with a digit, so `1:` begins no selector. `@` already means where a local is
+  declared (`s @ main.rs:81`) and at which hit (`--set-at 9@2`). So `i@1` is refused, and the
+  message spells `1:i`.
+- `return` is what the stopped function returns, read in its caller already: `1:return` is
+  refused.
+- Saved runs keep each row's frame, `captures.frame` ([4.1](#41-what-is-in-the-store)).
+
 ---
 
 ## 3. Comparing Runs
@@ -2998,6 +3078,8 @@ peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 
 - A frame past the stack is refused with `INVALID_REQUEST`, which says how many frames there are.
 - In C, C++, Rust and Java, a frame outside your sources, such as libc's or `start` below `main`,
   is refused with `INVALID_REQUEST`, which names it. After a step, it is refused in any language.
+- A probe reads a caller's values in the same run, by the same rules: `--capture 1:x`
+  ([2.10](#210-values-in-a-callers-frame)).
 - A caller's values can't be changed. `session set` takes no `--frame`, and a change to a caller's
   value is refused with `MUTATION_REJECTED`. So caller listings never say `[settable]`.
 - Rust's proofs for owned locals and `Box`es hold only in the innermost frame. So a caller's `Vec`
@@ -4086,7 +4168,7 @@ set `PEEKY_NO_DIGEST_CACHE=1`: Peeky then rehashes every file on every check.
 | `condition 1 x > 5` | `--hits N`, then `peeky sql "... WHERE num > 5"` | Conditions would run code in the program |
 | `info locals`, `print *obj` | `peeky session inspect`, `peeky session get obj` | `get` lists one level of children, with their selectors |
 | `bt` | `peeky session inspect --json \| jq '.frames'` | The stack at the stop. Values come from the top frame |
-| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x` | Reads a caller's locals. Frame N is as `frames` lists them |
+| `frame 1`, `up` | `peeky session inspect --frame 1`, `peeky session get --frame 1 x`; in a probe, `--capture 1:x` | Reads a caller's locals. Frame N is as `frames` lists them |
 | `next`, `step`, `finish` | `peeky session step`, `step --into`, `step --out` | Java's `--into` and `--out` skip JDK code. After `step --out` in C, C++, Rust and Java, `session inspect` shows what the function returned, under `[Returned]`. It does so also when the step stopped in a library. `session get return` reads it. The value is withheld unless it is exact ([2.9](#29-what-a-function-returned)). Python: not available |
 | `finish` at every call (`Run till exit ... Value returned is`) | `peeky probe target --at <function's first line> --capture return --hits all` | One `(return)` row per call, recursion and library callers included ([2.9](#29-what-a-function-returned)). Python refuses it ([Python](lang/python.md#see-what-a-function-returned)) |
 | `until 42`, `advance 42` | `peeky session continue --to 42` | One-shot. The session's own breakpoint stays. If the program stops there first, Peeky says so, with exit status 3 |

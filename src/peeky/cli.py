@@ -3965,8 +3965,9 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument(
         "--capture",
         default="",
-        help="Comma-separated selectors, e.g. a,b.c,d[0]; `return`: what the function holding "
-        "the line returns, each call (C, C++, Rust, Java)",
+        help="Comma-separated selectors, e.g. a,b.c,d[0]; 1:i reads i in frame 1, the caller "
+        "(2:i its caller), as `session get --frame 1 i` does; `return`: what the function "
+        "holding the line returns, each call (C, C++, Rust, Java)",
     )
     sub.add_argument(
         "--set",

@@ -84,6 +84,43 @@ def returns(selector):
     return RETURN if selector.strip() in ("return", RETURN) else selector
 
 
+# A probe's selector of a caller frame's value (#382): `1:i` reads `i` in frame 1, the
+# caller, as `session get --frame 1 i` does. No name starts with a digit, so the prefix
+# begins no selector; `@` already says where a local is declared (`s @ main.rs:81`) and
+# at which hit a change is made (`--set-at 9@2`).
+_FRAME_PREFIX = re.compile(r"([0-9]{1,6}):")
+
+
+def frame_selector(selector):
+    """`1:i` -> (1, 'i'): the frame a probe's selector reads, and its path there; a
+    selector with no prefix reads frame 0, where the program stopped. Frames 1 to
+    MAX_FRAMES - 1, as `session get --frame N` reads them."""
+    found = _FRAME_PREFIX.match(selector)
+    if not found:
+        parse_selector(selector)
+        return 0, selector
+    frame, path = int(found[1]), selector[found.end() :]
+    if not path:
+        raise ValueError(f"Invalid selector: {selector}. Name what to read after it: 1:i")
+    if frame == 0:
+        raise ValueError(
+            f"Invalid selector: {selector}. Frame 0 is where the program stopped: capture "
+            f"{path} without the 0: prefix"
+        )
+    if found[1] != str(frame) or frame >= MAX_FRAMES:
+        raise ValueError(
+            f"Invalid selector: {selector}. A frame prefix is 1 to {MAX_FRAMES - 1}, with no "
+            f"leading zero: 1:i reads i in frame 1, the caller"
+        )
+    if returns(path) == RETURN:
+        raise ValueError(
+            f"Invalid selector: {selector}. `return` takes no frame prefix: it is what the "
+            "function holding the line returns, read in its caller"
+        )
+    parse_selector(path)
+    return frame, path
+
+
 def parse_selector(text):
     """`request.page` -> ['request', 'page']; `args[0]` -> ['args', '[0]'];
     `order['id']` -> ['order', "['id']"]; `m[#0]` -> ['m', '[#0]']; `s @ main.rs:81.a`
@@ -98,6 +135,13 @@ def parse_selector(text):
     """
     if not isinstance(text, str) or not text or len(text) > 512:
         raise ValueError("Selectors must be nonempty dotted paths")
+    if framed := _FRAME_PREFIX.match(text):
+        # A caller frame's selector (#382), which only a probe's --capture takes.
+        raise ValueError(
+            f"Invalid selector: {text}. Only a probe's --capture reads a caller's frame "
+            f"({text}): a change is made only where the program stopped. A session reads "
+            f"it with `session get --frame {int(framed[1])} {text[framed.end() :]}`"
+        )
     if not (position := name_end(text)):
         raise ValueError(f"Invalid selector: {text}{_SELECTOR_HELP}{_invisible_hint(text)}")
     root = text[:position]
@@ -131,6 +175,12 @@ def parse_selector(text):
                     "or an expression: capture "
                     + (f"`{named[1]}`" if is_name(named[1]) else "what it is computed from")
                     + f" first, then use its value, as {text[:position]}[2]"
+                )
+            if at := re.fullmatch(r"@([1-9][0-9]{0,5})", text[position:]):
+                # `name@1` (thirteenth evaluation's guess) for a caller frame's value (#382).
+                arrow += (
+                    f"; a probe reads {text[:position]} in caller frame {at[1]} as "
+                    f"{at[1]}:{text[:position]}"
                 )
             raise ValueError(
                 f"Invalid selector: {text}{_SELECTOR_HELP}{arrow}{_invisible_hint(text)}"
@@ -461,7 +511,8 @@ class Probe:
         object.__setattr__(self, "capture", tuple(returns(s) for s in self.capture))
         for selector in self.capture:
             if selector != RETURN:
-                parse_selector(selector)
+                # `1:i` (#382): a caller frame's value.
+                frame_selector(selector)
         if len(set(self.capture)) != len(self.capture):
             # A repeated selector adds no evidence and would multiply rows in comparisons.
             object.__setattr__(self, "capture", tuple(dict.fromkeys(self.capture)))
@@ -1758,6 +1809,27 @@ def _previewed(worker, stop, variable):
     return {**variable, "value": shown["value"]} if shown.get("value") else variable
 
 
+def _named(selectors):
+    """What an inspection for ``selectors`` asks: their roots read by name, even past the
+    listing bound, previewed (#136), and with what their addresses can tell (#302)."""
+    roots = _roots(selectors)
+    return {**({"names": roots} if roots else {}), "previews": roots, "extents": roots}
+
+
+def _inspection(worker, stop, named, frame=0):
+    """An inspection of stack frame ``frame`` (0, the innermost, by default)."""
+    if not frame:
+        return worker.dispatch("inspect", {**stop, **named})
+    shown = worker.dispatch("inspect", {**stop, "frame": frame, **named})
+    if shown.get("frame") != frame:
+        # A worker that predates `frame` ignores it and reads the innermost frame.
+        raise ValueError(
+            "This worker cannot read a caller's frame (it predates --frame); update "
+            "Peeky on the worker host"
+        )
+    return shown
+
+
 def _capture(
     worker,
     stop,
@@ -1782,20 +1854,10 @@ def _capture(
 
     # Asked for by name, a local or global past the listing bound is read too; only
     # those roots are previewed (#136), and say what their addresses can tell (#302).
-    roots = _roots(selectors)
-    named = {**({"names": roots} if roots else {}), "previews": roots, "extents": roots}
+    named = _named(selectors)
 
     def inspect():
-        if not frame:
-            return worker.dispatch("inspect", {**stop, **named})
-        shown = worker.dispatch("inspect", {**stop, "frame": frame, **named})
-        if shown.get("frame") != frame:
-            # A worker that predates `frame` ignores it and reads the innermost frame.
-            raise ValueError(
-                "This worker cannot read a caller's frame (it predates --frame); update "
-                "Peeky on the worker host"
-            )
-        return shown
+        return _inspection(worker, stop, named, frame)
 
     rows, extents = [], {}
     for selector in selectors:
@@ -1986,6 +2048,74 @@ def _capture(
         if isinstance(extent, dict):
             extents[len(rows) - 1] = extent
     _pointed(rows, extents)
+    return rows
+
+
+def _capture_frames(
+    worker, stop, selectors, hit, phase, stopped, snapshot=None, unplaced=None, **options
+):
+    """Rows for a probe's ``selectors`` at one stop, in their order: those of the frame
+    the program stopped in (``stopped``, as an inspection lists it), from ``snapshot``
+    where given, then each caller frame's (`1:i`, #382), read as `session get --frame N`
+    reads it (``_caller_rows``). ``unplaced``: why the stopped frame is not read (#326),
+    so none of its selectors is."""
+    frames = {}
+    for selector in selectors:
+        frame, path = frame_selector(selector)
+        frames.setdefault(frame, []).append((selector, path))
+    rows = []
+    if 0 in frames:
+        paths = [path for _, path in frames[0]]
+        rows += (
+            _unplaced_rows(paths, hit, stopped, unplaced)
+            if unplaced
+            else _capture(worker, stop, paths, hit, phase, snapshot, **options)
+        )
+    for frame in sorted(number for number in frames if number):
+        rows += _caller_rows(worker, stop, frames[frame], hit, phase, frame, stopped, options)
+    order = {selector: index for index, selector in enumerate(selectors)}
+    return sorted(rows, key=lambda row: order[row["selector"]])
+
+
+def _caller_rows(worker, stop, pairs, hit, phase, frame, stopped, options):
+    """Rows for ``pairs`` ((selector as requested, its path)) in caller frame ``frame``,
+    read as `session get --frame N` reads them: every rule of a caller's frame applies.
+    Each row says its frame, and its own function, line and `location`; `stop_line` is
+    the line the program stopped at, where ``stopped`` (its frame) says. A frame that
+    can't be read (past the stack, outside the program's sources) is each row's error,
+    not the probe's."""
+    paths = [path for _, path in pairs]
+    line = stopped.get("line") if isinstance(stopped, dict) else None
+    shown = {"stop_line": line} if type(line) is int else {}
+    try:
+        snapshot = _inspection(worker, stop, _named(paths), frame)
+    except ValueError as exc:
+        return [
+            {
+                "hit": hit,
+                "phase": phase,
+                "selector": selector,
+                "frame": frame,
+                **shown,
+                "error": str(exc)[:2000],
+            }
+            for selector, _ in pairs
+        ]
+    rows = _capture(worker, stop, paths, hit, phase, snapshot, frame=frame, **options)
+    named = dict(zip(paths, (selector for selector, _ in pairs)))
+    for row in rows:
+        row.update(selector=named[row["selector"]], frame=frame, **shown)
+        if snapshot.get("instance"):
+            # The caller as the build names it (`tf<rc::A>`), as a stop's rows have theirs.
+            row["instance"] = snapshot["instance"]
+        # Another row of the frame that a pointer's says it is at or counted from.
+        for key in ("at_element_of", "offset_from", "read_through"):
+            if isinstance(row.get(key), dict) and row[key].get("selector") in named:
+                row[key] = {**row[key], "selector": named[row[key]["selector"]]}
+        if isinstance(row.get("read_through"), dict):
+            row["read_through"]["same_address_as"] = [
+                named.get(each, each) for each in row["read_through"].get("same_address_as", ())
+            ]
     return rows
 
 
@@ -4935,15 +5065,15 @@ def run_probe(
                 first = len(rows)
                 # The stop-validation inspection is reused for the first selectors.
                 rows.extend(
-                    _unplaced_rows(selectors, hits, frame, unplaced)
-                    if unplaced
-                    else _capture(
+                    _capture_frames(
                         worker,
                         stop,
                         selectors,
                         hits,
                         "observed",
+                        frame,
                         snapshot,
+                        unplaced=unplaced,
                         preview=previews,
                         pointers=pointers,
                     )
@@ -5071,12 +5201,13 @@ def run_probe(
                 )
             if captured and due:
                 rows.extend(
-                    _capture(
+                    _capture_frames(
                         worker,
                         stop,
                         selectors,
                         hits,
                         "after-set",
+                        frame,
                         preview=previews,
                         pointers=pointers,
                     )
@@ -5086,9 +5217,14 @@ def run_probe(
                     row.update(place)
             if captured and snapshot.get("instance"):
                 # The function as the build names it (`tf<rc::A>`, `main::{closure#1}`),
-                # for the table: the frame's own name keeps the symbol hash.
+                # for the table: the frame's own name keeps the symbol hash. A caller
+                # frame's rows (#382) have their own frame's.
                 for row in rows:
-                    if row["hit"] == hits and row.get("function") == frame.get("name"):
+                    if (
+                        row["hit"] == hits
+                        and row.get("function") == frame.get("name")
+                        and not row.get("frame")
+                    ):
                         row.setdefault("instance", snapshot["instance"])
             if len(rows) > MAX_ROWS:
                 raise ValueError("Probe row budget exceeded")
@@ -5698,7 +5834,7 @@ def run_probe(
         pauses_ms=pauses,
         **({"set_pauses_ms": set_pauses} if set_pauses else {}),
         **({"watch_pauses_ms": watch_pauses} if watch_pauses else {}),
-        by_hit=_by_hit(rows),
+        by_hit=_by_hit(rows, functions),
         rows=rows,
         interventions=changes,
         seconds=round(time.monotonic() - started, 3),
@@ -5707,16 +5843,24 @@ def run_probe(
     return result
 
 
-def _by_hit(rows):
+def _by_hit(rows, functions=None):
     """The same rows regrouped per hit: {hit, line, observed: {...}, after-set: {...},
     returned: {"(return)": ...}}; line and function are the stop's, not where the call
-    returned to (a `(return)` row's own line). A `(return)` row has its hit's stop too
-    (#174); the hit's stop is given only where every row of it has one and all agree."""
+    returned to (a `(return)` row's own line), nor a caller frame's (#382: its row's
+    `stop_line` is the stop's, and ``functions``, {function: [hits]}, the stop's
+    function). A `(return)` row has its hit's stop too (#174); the hit's stop is given
+    only where every row of it has one and all agree."""
     grouped, places = {}, {}
+    stopped_in = {hit: name for name, hits in (functions or {}).items() for hit in hits}
     for row in rows:
         places.setdefault(row["hit"], set()).add((row.get("stop"), row.get("stops")))
         entry = grouped.setdefault(row["hit"], {"hit": row["hit"], "line": None, "function": None})
-        if row["phase"] != "returned" and entry["line"] is None:
+        if row.get("frame"):
+            if entry["line"] is None and type(row.get("stop_line")) is int:
+                entry["line"] = row["stop_line"]
+            if entry["function"] is None and stopped_in.get(row["hit"]):
+                entry["function"] = stopped_in[row["hit"]]
+        elif row["phase"] != "returned" and entry["line"] is None:
             # The stop's line and function.
             entry.update(line=row.get("line"), function=row.get("function"))
         elif entry["function"] is None:
@@ -6309,7 +6453,9 @@ def main(argv=None):
     add_version(parser)
     parser.add_argument("--root", default=".", help="Source root containing the program")
     parser.add_argument("--at", required=True, help="Probe location <path>:<line>")
-    parser.add_argument("--capture", default="", help="Comma-separated selectors, e.g. a,b.c")
+    parser.add_argument(
+        "--capture", default="", help="Comma-separated selectors, e.g. a,b.c; 1:i is the caller's i"
+    )
     parser.add_argument(
         "--set",
         action="append",
