@@ -68,6 +68,9 @@ MAX_METADATA = 2 * 1024 * 1024
 # (75,000-100,000 entries), as has a Rust crate using BTreeMap.
 MAX_LINE_TEXT = 64 * 1024 * 1024
 MAX_DEBUG_INFO = 256 * 1024 * 1024
+# The longest line of that text Peeky reads (a type's name may run to tens of kilobytes):
+# what reading holds past what a parse keeps (MAX_KEPT) is a line or two and one read.
+MAX_LINE = 4 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
 CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
 OPTIMIZATIONS = ("O0", "Og", "O1", "O2")
@@ -226,9 +229,16 @@ class SymbolLimit(ValueError):
 _SMALLER = "probe a smaller program (fewer source files, standard headers or std collections)"
 
 
-def symbol_limit(limit, what, kept=False):
+def symbol_limit(limit, what, kept=False, line=False):
     """The refusal of a build whose ``what`` (`line tables`) is over ``limit`` (`64 MiB`):
-    of what Peeky reads, or (``kept``) of what it keeps of it in memory."""
+    of what Peeky reads, of one line of it (``line``), or (``kept``) of what it keeps of
+    it in memory."""
+    if line:
+        return SymbolLimit(
+            f"Peeky reads at most {limit} of one line of a build's {what}, and this build has "
+            f"a longer one: {_SMALLER}.",
+            f"a line over Peeky's limit of {limit}; {_SMALLER.split(' (')[0]}",
+        )
     if kept:
         return SymbolLimit(
             f"Peeky keeps at most {limit} of a build's {what} in memory, and this build needs "
@@ -323,19 +333,26 @@ def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what, spent=
                         total[0] += len(chunk)
                         if total[0] > limit:
                             raise symbol_limit(_size(limit), what)
-                        end = chunk.rfind(b"\n")
+                        end, first = chunk.rfind(b"\n"), chunk.find(b"\n")
+                        # A line is never held longer than MAX_LINE, nor read into one.
+                        if len(pending) + (len(chunk) if end < 0 else first) > MAX_LINE:
+                            raise symbol_limit(_size(MAX_LINE), what, line=True)
                         if end < 0:
                             pending += chunk
                             continue
                         pending += chunk[:end]
                         # Whole lines only: UTF-8 never holds a `\n` inside a character.
-                        block = bytes(pending).decode("utf-8")
+                        block = pending.decode("utf-8")
                         pending = bytearray(chunk[end + 1 :])
                         for line in block.split("\n"):
+                            if len(line) > MAX_LINE:
+                                raise symbol_limit(_size(MAX_LINE), what, line=True)
                             yield line[:-1] if line.endswith("\r") else line
                 if pending:
+                    if len(pending) > MAX_LINE:
+                        raise symbol_limit(_size(MAX_LINE), what, line=True)
                     # As split_lines keeps it: a last line's `\r` is its own.
-                    yield bytes(pending).decode("utf-8")
+                    yield pending.decode("utf-8")
                 try:
                     process.wait(timeout=max(deadline - time.monotonic(), 0.01))
                 except subprocess.TimeoutExpired:
@@ -600,6 +617,19 @@ _ENTRY_BYTES = (
 )
 # A distinct name or value's slot in the parse's pool; its text is sys.getsizeof's.
 _VALUE_BYTES = 80
+# A str's own bytes past its characters, at most (one of 4-byte characters has the most).
+_STR_BYTES = max(
+    sys.getsizeof(text) - len(text) * width
+    for text, width in (("a", 1), ("\u00e9", 1), ("\u0100", 2), ("\U00010000", 4))
+)
+
+
+def _held(raw, start, end):
+    """The most keeping ``raw[start:end]`` as a new distinct value can take, reckoned
+    before it is copied out of its line: 4 bytes a character unless the line is ASCII."""
+    return _STR_BYTES + (end - start) * (1 if raw.isascii() else 4) + _VALUE_BYTES
+
+
 # One `[low, high)` of an entry's code: its tuple, its numbers and its place in a list.
 _RANGE_BYTES = 200
 _DIE = re.compile(r"(0x[0-9a-fA-F]+):( +)(DW_TAG_\w+|NULL)")
@@ -670,12 +700,17 @@ def _dies(text):
 def _parse_dies(text, into=None):
     """``text``: dwarfdump's `--debug-info` text, or its lines as they come. ``into``: a
     DieMap to add them to (several dumps read in turn, as the text of all of them).
-    At most MAX_DIES entries, and MAX_KEPT bytes kept (SymbolLimit)."""
+    At most MAX_DIES entries, and MAX_KEPT bytes kept (SymbolLimit): each line's cost is
+    reckoned, at most, before anything of it is kept or copied."""
     dies = DieMap() if into is None else into
     stack, ranges, tail_calls, size = [], None, dies.tail_calls, dies.kept
     # One copy of each repeated name and value (a type's name, a header's path): a dump
     # of tens of megabytes repeats most of its text.
     kept = {}
+
+    def room(need):
+        if size + need > MAX_KEPT:
+            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
 
     def one(item):
         nonlocal size
@@ -688,6 +723,8 @@ def _parse_dies(text, into=None):
         if not tail_calls and "tail_call" in raw and _TAIL_CALL.search(raw):
             tail_calls = True
         if ranges is not None:
+            # At most one range a `[`, each counted before it is read.
+            room(raw.count("[") * _RANGE_BYTES)
             found = _RANGE.findall(raw)
             size += len(found) * _RANGE_BYTES
             ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
@@ -700,6 +737,7 @@ def _parse_dies(text, into=None):
                 continue
             if len(dies) >= MAX_DIES:
                 raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
+            room(_ENTRY_BYTES + _held(raw, match.start(3), match.end(3)))
             offset = int(match[1], 16)
             parent = stack[-1] if stack else None
             size += _ENTRY_BYTES
@@ -716,20 +754,26 @@ def _parse_dies(text, into=None):
             stack.append(offset)
         elif stack and _RANGES_START.match(raw):
             # A multi-line range list: `[low, high)` rows until the closing `))`.
+            room(_NAME_BYTES)
             ranges = dies[stack[-1]]["ranges"]
             size += _NAME_BYTES
         elif stack and (match := _ATTRIBUTE.match(raw)):
+            ranged = raw.startswith("DW_AT_ranges", match.start(1)) and match.end(1) == (
+                match.start(1) + len("DW_AT_ranges")
+            )
+            room(
+                _NAME_BYTES
+                + _held(raw, match.start(1), match.end(1))
+                + _held(raw, match.start(2), match.end(2))
+                + (raw.count("[", match.start(2)) * _RANGE_BYTES if ranged else 0)
+            )
             name, value = one(match[1]), one(match[2])
             size += _NAME_BYTES
             dies[stack[-1]]["attrs"].setdefault(name, value)
-            if name == "DW_AT_ranges":
+            if ranged:
                 found = _RANGE.findall(value)
                 size += len(found) * _RANGE_BYTES
                 dies[stack[-1]]["ranges"].extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
-        else:
-            continue
-        if size > MAX_KEPT:
-            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
     dies.tail_calls, dies.kept = tail_calls, size
     return dies
 

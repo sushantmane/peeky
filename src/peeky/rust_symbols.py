@@ -39,6 +39,7 @@ from peeky.native import (
     MAX_KEPT,
     MAX_LINE_TEXT,
     Kept,
+    _held,
     _LineParser,
     _metadata,
     _size,
@@ -174,7 +175,8 @@ def parse_dies(text, *, units, tally=None):
     """Parse llvm-dwarfdump DIE output by indentation; unknown rows fail closed.
     ``text``: its text, or its lines as llvm-dwarfdump writes them (#397). At most
     MAX_DIES entries and MAX_KEPT bytes kept (SymbolLimit), with ``tally`` (a native.Kept:
-    what other units of the build keep, added to here).
+    what other units of the build keep, added to here): each line's cost is reckoned, at
+    most, before anything of it is kept or copied.
 
     Attributes print at 12 + 2 + 2*depth columns independent of offset width.
     Every child list in --show-children output must end with its own NULL.
@@ -189,6 +191,10 @@ def parse_dies(text, *, units, tally=None):
     # One copy of each repeated name and value: a unit's text repeats most of itself.
     kept = {}
 
+    def room(need):
+        if size + need > MAX_KEPT:
+            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
+
     def one(item):
         nonlocal size
         if (found := kept.get(item)) is None:
@@ -197,9 +203,8 @@ def parse_dies(text, *, units, tally=None):
         return found
 
     for raw in text:
-        if size > MAX_KEPT:
-            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
-        if not raw.strip():
+        # As `not raw.strip()`, without a copy of the line.
+        if not raw or raw.isspace():
             continue
         if not seen and (raw == ".debug_info contents:" or _HEADER.fullmatch(raw)):
             continue
@@ -234,6 +239,7 @@ def parse_dies(text, *, units, tally=None):
             count += 1
             if count > MAX_DIES:
                 raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
+            room(_DIE_BYTES + _held(raw, match.start(3), match.end(3)))
             size += _DIE_BYTES
             die = _Die(int(match[1][2:-1], 16), one(match[3]), {}, [], depth=depth)
             if depth == 0:
@@ -255,27 +261,34 @@ def parse_dies(text, *, units, tally=None):
             last = die
             continue
         if match := _ATTRIBUTE.fullmatch(raw):
-            if last is None or len(match[1]) != 14 + 2 * last.depth:
+            if last is None or match.end(1) - match.start(1) != 14 + 2 * last.depth:
                 raise ValueError("DWARF attribute is not attached to an entry")
+            ranged = match.end(2) - match.start(2) == len("DW_AT_ranges") and raw.startswith(
+                "DW_AT_ranges", match.start(2)
+            )
+            room(
+                _NAME_BYTES
+                + _held(raw, match.start(2), match.end(2))
+                + _held(raw, match.start(3), match.end(3))
+                # As native._parse_dies counts the ranges it reads from such a value.
+                + (raw.count("[", match.start(3)) * _RANGE_BYTES if ranged else 0)
+            )
             if match[2] in last.attributes:
                 raise ValueError("Duplicate DWARF attribute")
             attribute, value = one(match[2]), one(match[3])
             last.attributes[attribute] = value
             size += _NAME_BYTES
-            if attribute == "DW_AT_ranges":
-                # As native._parse_dies counts the ranges it reads from such a value.
+            if ranged:
                 size += len(_NATIVE_RANGE.findall(value)) * _RANGE_BYTES
             continue
         if last is not None and last.attributes and _CONTINUATION.fullmatch(raw):
+            new = attribute not in last.continued
+            room(_held(raw, 0, len(raw)) + _RANGE_BYTES + (_CONTINUED_BYTES if new else 0))
             row = raw.strip()
-            if attribute not in last.continued:
-                size += _CONTINUED_BYTES
             last.continued.setdefault(attribute, []).append(row)
-            size += sys.getsizeof(row) + _RANGE_BYTES
+            size += sys.getsizeof(row) + _RANGE_BYTES + (_CONTINUED_BYTES if new else 0)
             continue
         raise ValueError("Unrecognized DWARF entry output")
-    if size > MAX_KEPT:
-        raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
     tally.entries, tally.bytes = count, size
     if pending is not None or not roots:
         raise ValueError("Missing DWARF unit entry")

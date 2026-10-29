@@ -45,14 +45,21 @@ The bounds are on what is kept, and on the time:
   The sizes of an entry's dicts and lists come from `sys.getsizeof` on the running Python.
 - That reckoning is never below what Python holds. A test measures it with `tracemalloc`, on a
   unit whose every value differs. On these programs it overstates what is held by 25-70%.
+- Each line's cost is reckoned before anything of it is kept or copied out of it: a value at 4
+  bytes a character unless its line is ASCII, a range for each `[`. So a value or a block of ranges
+  past what is left is refused before it is kept, and the bound is never passed. Tests check
+  that with `tracemalloc` too.
+- Reading holds one line at most 4 MiB long (`MAX_LINE`), and one 1 MiB read. A longer line is
+  refused as it is read, with `BUDGET_EXHAUSTED`. So a parse holds at most `MAX_KEPT`, and
+  reading and a line's matching a few MiB more.
 - An 8-file C++ program using the STL keeps 57-136 MB by it; the Rust crate using BTreeMap, 94-98
   MB.
 - 400,000 debug-information entries (`MAX_DIES`). These programs have 59,000-130,000.
 - 64 MiB of line-table text (`MAX_LINE_TEXT`), and 256 MiB of debug-information text
   (`MAX_DEBUG_INFO`), which bound the time. Such a program has 2-4 MB and 19-45 MB.
 - 15 s for each read, or less if the launch's deadline is nearer.
-- Rust's `prepare` applies the bounds to all the crate's units together, as the session reads
-  them again later in one go. Its reckoning of an entry is never below the native one's, so a
+- Rust's `prepare` applies the bounds to the crate's application units together, as the session
+  reads them again later in one go. Its reckoning of an entry is never below the native one's, so a
   crate that passes `prepare` passes the later reads.
 
 Over a bound (`SymbolLimit`), the message names the bound and says to probe a smaller program:

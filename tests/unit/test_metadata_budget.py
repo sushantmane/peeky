@@ -252,3 +252,84 @@ def test_process_group_eperm_is_tolerated_only_after_confirmed_absence(
             assert _metadata(sys.executable, [str(writer)], tmp_path, dict(os.environ)) == "ok"
             assert execute([sys.executable, "-c", "print('done')"], tmp_path)["stdout"] == "done\n"
         assert len(calls) == 4
+
+
+# A unit's entry, then a function's: room for both and a few ranges, never for more.
+HEAD = [
+    "0x0000000b: DW_TAG_compile_unit",
+    '              DW_AT_name\t("app.cpp")',
+    "0x00000020:   DW_TAG_subprogram",
+]
+
+
+def refused_before_kept(monkeypatch, lines, dies):
+    """Parse ``lines`` (made before measuring) with MAX_KEPT at 1 MiB: refused, and the
+    most Python held meanwhile."""
+    import tracemalloc
+
+    monkeypatch.setattr("peeky.native.MAX_KEPT", 1 << 20)
+    tracemalloc.start()
+    try:
+        with pytest.raises(SymbolLimit, match="keeps at most 1 MiB of a build's debug info"):
+            _parse_dies(iter(lines), dies)
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_a_value_over_what_is_left_is_refused_before_it_is_kept(monkeypatch):
+    # Each line's cost is reckoned before anything of it is kept or copied (review): a 10
+    # MiB name was kept, then refused, holding 21 MB against a 1 MiB bound.
+    from peeky.native import DieMap
+
+    lines = [*HEAD, '                DW_AT_name\t("' + "n" * (10 << 20) + '")']
+    dies = DieMap()
+    peak = refused_before_kept(monkeypatch, lines, dies)
+    assert peak < 1 << 20, peak
+    assert sorted(dies) == [0x0B, 0x20] and dies[0x20]["attrs"] == {}
+
+
+@pytest.mark.parametrize("one_line", [False, True])
+def test_ranges_over_what_is_left_are_refused_before_they_are_kept(monkeypatch, one_line):
+    from peeky.native import _RANGE_BYTES, DieMap
+
+    ranges = [f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(30_000)]
+    if one_line:
+        lines = [*HEAD, f"                DW_AT_ranges\t(0x00000000 {' '.join(ranges)})"]
+    else:
+        rows = [f"                   {each}" for each in ranges]
+        lines = [*HEAD, "                DW_AT_ranges\t(0x00000000", *rows[:-1], rows[-1] + ")"]
+    # What the entries and the list's start keep: the rows after it fill the rest.
+    before = _parse_dies(iter(lines[:4])).kept
+    dies = DieMap()
+    peak = refused_before_kept(monkeypatch, lines, dies)
+    # Each range is reckoned at _RANGE_BYTES: all of them would take 6 MB.
+    assert 30_000 * _RANGE_BYTES > 4 << 20 and peak < 1 << 20, peak
+    if one_line:
+        assert dies[0x20]["ranges"] == [] and dies[0x20]["attrs"] == {}
+    else:
+        # Every row that fits, and not the one that doesn't.
+        assert len(dies[0x20]["ranges"]) == ((1 << 20) - before) // _RANGE_BYTES
+
+
+def test_a_line_over_max_line_is_refused_as_it_is_read(tmp_path, monkeypatch):
+    # Reading holds a line at most MAX_LINE long, and one read: never the whole line.
+    import tracemalloc
+
+    # What reading imports the first time is no part of what it holds.
+    import peeky.agent  # noqa: F401
+
+    monkeypatch.setattr("peeky.native.MAX_LINE", 1 << 20)
+    script = tool(tmp_path, "out.write(b'a' * (10 << 20) + b'\\n')\n")
+    tracemalloc.start()
+    try:
+        with pytest.raises(SymbolLimit, match="at most 1 MiB of one line of a build's debug info"):
+            read(tmp_path, script)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 3 << 20, peak
+    refused = SymbolLimit(
+        "Peeky reads at most 1 MiB of one line of a build's debug information", ""
+    )
+    assert classify(refused)["code"] == "BUDGET_EXHAUSTED"

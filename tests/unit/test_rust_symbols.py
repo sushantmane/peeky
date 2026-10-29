@@ -348,6 +348,38 @@ def test_what_a_parse_keeps_is_never_more_than_it_reckons(monkeypatch):
                 parse_dies(iter(lines), units=False)
 
 
+@pytest.mark.parametrize("kind", ["value", "ranges", "rows"])
+def test_rust_refuses_what_is_over_what_is_left_before_it_is_kept(monkeypatch, kind):
+    # Each line's cost is reckoned before anything of it is kept or copied (review): a 10
+    # MiB name, or a block of continued rows past the bound.
+    import tracemalloc
+
+    from peeky.native import _RANGE_BYTES, Kept
+
+    lines = [
+        *entry(0x0B, 0, "DW_TAG_compile_unit", ("DW_AT_name", json.dumps(APP))),
+        *entry(0x20, 1, "DW_TAG_subprogram", ("DW_AT_name", '"main"')),
+    ]
+    ranges = [f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(30_000)]
+    if kind == "value":
+        lines += [" " * 16 + 'DW_AT_linkage_name\t("' + "n" * (10 << 20) + '")']
+    elif kind == "ranges":
+        lines += [" " * 16 + f"DW_AT_ranges\t(0x00000000 {' '.join(ranges)})"]
+    else:
+        lines += [" " * 16 + "DW_AT_ranges\t(0x00000000"]
+        lines += [" " * 19 + f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(30_000)]
+    monkeypatch.setattr("peeky.rust_symbols.MAX_KEPT", 1 << 20)
+    tally = Kept()
+    tracemalloc.start()
+    try:
+        with pytest.raises(SymbolLimit, match="keeps at most 1 MiB of a build's debug info"):
+            parse_dies(iter(lines), units=False, tally=tally)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert 30_000 * _RANGE_BYTES > 4 << 20 and peak < 1 << 20, peak
+
+
 def test_enum_layouts_follow_compiler_discriminants_and_qualify_only_i32():
     layouts = enum_layouts(option_dump(), UNIT)
     assert layouts == {
