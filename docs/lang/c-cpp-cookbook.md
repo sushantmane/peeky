@@ -753,7 +753,7 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   ([details](#change-a-field-behind-a-pointer)).
 - A refused change to a structured binding by reference says what it binds. For `v` in
   `for (auto &[k, v] : m)`, change what fills `m`. For `auto &[a, b] = p;`, change `p.b` where it
-  is settable.
+  is settable. For `auto &[at, n] = *owner;`, change it where `*owner` is owned.
 - In C, the program's sources may call the function only once. Then a refusal for a pointer
   parameter names that call:
   ``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``. If that

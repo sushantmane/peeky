@@ -2343,12 +2343,14 @@ def test_a_refused_change_says_where_a_captures_or_a_bindings_value_is():
     )
     ranged = _binding_refused("cars", "by_hour", True)
     assert ranged == (
-        "`cars` is a structured binding by reference to an element of `by_hour`, and Peeky "
-        "changes no value through a reference: change what fills `by_hour`, before the loop, or "
-        "edit the source"
+        "`cars` is a structured binding by reference to an element of `by_hour`, so it is "
+        "reached through a pointer or reference, and Peeky changes only values the frame holds "
+        "itself: change what fills `by_hour`, before the loop, or edit the source"
     )
     assert "change `p` itself where it is settable" in _binding_refused("b", "p", False)
-    assert "change what it binds before this line" in _binding_refused("t", "make(0)[0]", False)
+    # What it binds may be owned in another frame (`*owner`): never "before this line".
+    owner = _binding_refused("dropped", "*owner", False)
+    assert owner.endswith("change what it binds where that is owned, or edit the source")
     for why, hint in (
         (routed, "Change it where the message says"),
         (owned, "Change it where the message says"),

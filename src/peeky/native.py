@@ -2807,21 +2807,20 @@ def _binding_refused(name, bound, ranged):
     where the value is instead (eval 13 prep, finding 5: not before a call, as for a
     reference parameter): what it binds (``bound``, the text of `p` in `auto &[a, b] =
     p;`, of the range in a range `for`'s), which may be no value Peeky changes either
-    (a map's entry)."""
+    (a map's entry). Said as a session's refusal says it of the same binding: it is
+    reached through a pointer or reference (``_not_framed``)."""
     bound = bound if len(bound) <= 60 else bound[:59] + "…"
     if ranged:
-        return (
-            f"`{name}` is a structured binding by reference to an element of `{bound}`, and "
-            f"Peeky changes no value through a reference: change what fills `{bound}`, "
-            "before the loop, or edit the source"
-        )
-    if re.fullmatch(r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*", bound):
-        where = f"change `{bound}` itself where it is settable"
+        what, where = f"an element of `{bound}`", f"change what fills `{bound}`, before the loop"
+    elif re.fullmatch(r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*", bound):
+        what, where = f"`{bound}`", f"change `{bound}` itself where it is settable"
     else:
-        where = "change what it binds before this line"
+        # `*owner`, `p->inner`, `v[0]`: what it binds may be owned in another frame.
+        what, where = f"`{bound}`", "change what it binds where that is owned"
     return (
-        f"`{name}` is a structured binding by reference to `{bound}`, and Peeky changes no "
-        f"value through a reference: {where}, or edit the source"
+        f"`{name}` is a structured binding by reference to {what}, so it is reached through a "
+        f"pointer or reference, and Peeky changes only values the frame holds itself: {where}, "
+        "or edit the source"
     )
 
 

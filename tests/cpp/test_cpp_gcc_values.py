@@ -2049,18 +2049,19 @@ def test_a_change_to_a_binding_by_reference_says_where_its_value_is(cpp, capsys)
     assert code != 0 and result["error"]["code"] == "MUTATION_REJECTED", result
     assert result["error"]["message"] == (
         f"`v` cannot be changed at bound.cpp:{looped}, at any stop of this build: in main, "
-        "`v` is a structured binding by reference to an element of `m`, and Peeky changes no "
-        "value through a reference: change what fills `m`, before the loop, or edit the "
-        "source. Refused before the program runs: nothing ran"
+        "`v` is a structured binding by reference to an element of `m`, so it is reached "
+        "through a pointer or reference, and Peeky changes only values the frame holds itself: "
+        "change what fills `m`, before the loop, or edit the source. Refused before the "
+        "program runs: nothing ran"
     ), result["error"]
     hint = result["error"]["hint"]
     assert "call" not in hint and hint.startswith("Change what the binding refers to"), hint
     code, result = probe(source, after, "b", capsys, "--set", "b=5")
     assert result["error"]["message"] == (
         f"`b` cannot be changed at bound.cpp:{after}, at any stop of this build: in main, `b` "
-        "is a structured binding by reference to `p`, and Peeky changes no value through a "
-        "reference: change `p` itself where it is settable, or edit the source. Refused "
-        "before the program runs: nothing ran"
+        "is a structured binding by reference to `p`, so it is reached through a pointer or "
+        "reference, and Peeky changes only values the frame holds itself: change `p` itself "
+        "where it is settable, or edit the source. Refused before the program runs: nothing ran"
     ), result["error"]
     # As it says: `p.b` is settable there.
     code, result = probe(source, after, "b", capsys, "--set", "p.b=5")
