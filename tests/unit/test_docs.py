@@ -288,7 +288,8 @@ def _long_sentences(paths):
 
 
 def test_the_docs_are_written_in_short_sentences():
-    pages = [DOCS.parent / "README.md", *sorted(DOCS.glob("*.md")), *sorted(DOCS.glob("lang/*.md"))]
+    pages = [DOCS.parent / "README.md", DOCS.parent / "SECURITY.md", *sorted(DOCS.glob("*.md"))]
+    pages += sorted(DOCS.glob("lang/*.md"))
     pages = [
         page
         for page in pages
@@ -309,3 +310,19 @@ def test_the_sentence_check_finds_a_long_sentence(tmp_path):
     # 40-word sentence, the heading, the table and the code block are not checked or pass.
     found = _long_sentences([page])
     assert [count for _, count, _ in found] == [LONGEST_SENTENCE + 1, LONGEST_SENTENCE + 3]
+
+
+def test_every_ssh_tunnel_the_docs_give_exits_when_its_port_is_taken():
+    # Pre-release security review: without ExitOnForwardFailure, ssh only warns when the
+    # local port is taken, and the client sends its token to whatever process holds it.
+    root = DOCS.parent
+    pages = [root / "README.md", root / "CONTRIBUTING.md", *sorted(DOCS.rglob("*.md"))]
+    pages += sorted((root / "skills").rglob("*.md"))
+    commands = [
+        (page.name, line.strip())
+        for page in pages
+        for line in page.read_text().splitlines()
+        if re.search(r"\bssh\b[^`]*\s-L\s*\d", line)
+    ]
+    assert len(commands) >= 3, commands
+    assert [c for c in commands if "-o ExitOnForwardFailure=yes" not in c[1]] == []

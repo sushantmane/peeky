@@ -197,10 +197,12 @@ print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
 For remote use, run the worker on the target, and forward its loopback port over SSH:
 
 ```sh
-ssh -N -L 8765:127.0.0.1:8765 user@target
+ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@target
 peeky-agent --url http://127.0.0.1:8765 --model YOUR_MODEL --output runs/remote
 ```
 
+- Keep `-o ExitOnForwardFailure=yes`. Without it, ssh only warns when another process already holds
+  the local port, and the token goes to that process.
 - `peeky probe` and `peeky session start` take `--worker http://127.0.0.1:8765`, with the token in
   `PEEKY_WORKER_TOKEN` ([REMOTE.md](docs/REMOTE.md)).
 - Keep the same source on the client and the worker. The runner checks the source's identity.
@@ -215,6 +217,7 @@ peeky-agent --url http://127.0.0.1:8765 --model YOUR_MODEL --output runs/remote
   another machine through SSH forwarding.
 - `peeky-agent` sends selected source and runtime evidence to a model, and uses model credits.
   PR CI uses deterministic model fixtures and never calls a paid model.
+- To report a vulnerability privately, see [SECURITY.md](SECURITY.md).
 
 ## The optional harness: `peeky-agent`
 
@@ -232,6 +235,14 @@ peeky-agent --model YOUR_MODEL --output runs/first-investigation
 - The output directory has the decision and evidence report, the candidate source, and a diff
   after verification.
 - The original source and the verifier's files are kept.
+
+`peeky-agent` runs code the model writes, without a sandbox:
+
+- The controller applies the model's `finish` edit to a copy of the source, then runs that copy
+  with the checker. Both run with your permissions.
+- The model reads the source, the bug report, and the program's output and values. Treat all of it
+  as untrusted: text in it can steer the model (prompt injection) into writing code that then runs.
+- Run `peeky-agent` only on code and inputs you trust, or inside a container or VM.
 
 ## Project status
 

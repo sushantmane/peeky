@@ -17,6 +17,10 @@ Develop one small milestone at a time. Add a regression test for changed debugge
 
 Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Include protocol or architecture changes in the design documents. Record adversarial review findings and their resolution when changing state, permissions, transport, or execution semantics.
 
+## Security
+
+Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't open a public issue or pull request about it.
+
 ## CI budget
 
 CI starts quality, unit, Python 3.11/3.13 debugger integration, and wheel smoke jobs in parallel. Each job has a four-minute execution limit; the desired overall run is under five minutes excluding queue delays. This is a budget and measured target, not a guarantee: hosted-runner scheduling and package download delays are external. Watch the longest job's duration as tests grow. Split independent fixtures or move optional benchmarks to manually triggered jobs before increasing timeouts. Newer pushes cancel obsolete runs for the same branch or pull request.
