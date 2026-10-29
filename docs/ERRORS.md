@@ -518,7 +518,9 @@ HTTP response carries `X-Peeky-Protocol: 10`.
   too. The worker's `expand` takes `key`, and its answer names the key. A protocol 9 worker
   ignores it and gives the first entries
   ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
-- A client reads no answer whose `X-Peeky-Protocol` names another protocol, a local session's
-  worker's too. Only `version`'s answer is read, since its caller compares the protocol it
-  states.
+- A local session keeps its worker's protocol, which `session start` asks with `version`
+  before the launch. A later command to a session whose record names another protocol, or none,
+  asks the worker's `version` first. It sends nothing else to a worker of another protocol.
+- A client also reads no answer whose `X-Peeky-Protocol` names another protocol. Only
+  `version`'s answer is read, since its caller compares the protocol it states.
 - A client and a worker of different protocols refuse each other before anything runs.

@@ -1164,3 +1164,74 @@ def test_a_key_is_read_only_from_an_answer_for_that_key():
         _value_for_key(wrong, {}, variable, "m", "[5]", first_page, how)
     right = Worker({"variables": [entry(1, 5)], "key": "5", "compared": 2, "keys": ["1", "5"]})
     assert _value_for_key(right, {}, variable, "m", "[5]", first_page, how)["value"] == "10"
+
+
+@pytest.mark.parametrize("recorded", [None, 9])
+def test_a_local_session_never_sends_a_worker_of_another_protocol_anything_it_runs(
+    tmp_path, monkeypatch, capsys, recorded
+):
+    # #374 review 2: the protocol check read only the answer, after a local worker of
+    # protocol 9 had run `continue`, `step`, `set_variable` or `close`. A local session
+    # keeps its worker's protocol; a record that names another, or none, is checked with
+    # `version` first, and nothing else is sent.
+    import json
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from peeky.cli import _record, main
+
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+    asked = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            asked.append(self.path)
+            answer = json.dumps({"protocol": 9, "state": "stopped", "stop_id": "s"}).encode()
+            self.send_response(200)
+            self.send_header("X-Peeky-Protocol", "9")
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        commands = (
+            ["continue"],
+            ["step"],
+            ["set", "x=1"],
+            ["get", "x"],
+            ["inspect"],
+            ["close"],
+        )
+        for command in commands:
+            path = _record("old")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "name": "old",
+                "url": f"http://127.0.0.1:{server.server_port}",
+                "token": "t" * 32,
+                "pid": os.getpid(),
+                "session_id": "0" * 32,
+                "stop_id": "s",
+                "state": "stopped",
+                **({"protocol": recorded} if recorded else {}),
+            }
+            path.write_text(json.dumps(record))
+            os.chmod(path, 0o600)
+            assert main(["session", *command, "--name", "old", "--json"]) == 2, command
+            message = json.loads(capsys.readouterr().out)["error"]["message"]
+            assert message.startswith("Worker speaks protocol 9, this session 10: another "), (
+                message
+            )
+            assert "peeky session close --forget --name old" in message, message
+    finally:
+        server.shutdown()
+        server.server_close()
+    # Its `version` alone was asked, which changes nothing.
+    assert asked == ["/version"] * len(commands), asked

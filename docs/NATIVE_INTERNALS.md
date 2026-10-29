@@ -555,6 +555,11 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - A string whose pointer points anywhere else is withheld alone, with why: its text is in
     heap memory, which nothing proves still allocated. One destroyed in place, before a new one
     is built there, keeps a pointer to its freed text.
+  - A limit that holds for every object: Peeky can't tell that the program ended an object's
+    lifetime with an explicit destructor call (`std::destroy_at`, `p->~T()`) and hasn't yet
+    reused its storage. It shows the bytes the object last held, such as a short string's text
+    in the node. Only what such an object points at in heap memory, which may be freed, is
+    withheld here.
   - The entries come back listed as the debugger lists a container it reads right: `[0]`, a
     pair's `first` and `second`, a struct's members, `T @ 0x…` for a struct. So
     `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.
@@ -566,8 +571,10 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     selector compares one, however many there are. `m[#N]` past 511 sends `index`. Protocol 10
     added `key`.
   - The client takes an entry only from an answer that names the key it asked for, and only
-    where that entry's `first` is the key. `Client.call` reads no answer whose
-    `X-Peeky-Protocol` names another protocol, a local session's worker's too.
+    where that entry's `first` is the key. A local session keeps its worker's protocol
+    (`session start` asks `version`), and a command to one whose record names another asks
+    `version` before anything else (`cli._local_session`). `Client.call` also reads no answer
+    whose `X-Peeky-Protocol` names another protocol.
   - Otherwise the row stays `not listed`, with the note it had.
 - **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
   `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the

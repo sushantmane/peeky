@@ -735,6 +735,14 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
 - **Same-named locals:** a plain name means the declaration the code names at the stop. Write
   `name @ file:line` to select another
   ([details](#same-named-locals-which-one-a-name-means)).
+- **An object ended by an explicit destructor call** isn't told from a live one. Peeky can't tell
+  that the program ended an object's lifetime with `std::destroy_at(p)` or `p->~T()`, and hasn't
+  yet reused its storage. It shows the bytes the object last held, with no note.
+  - That holds for every object: a local, a member, an element, an entry of a container.
+  - Read such an object after the program builds a new one in its place.
+  - Where Peeky reads an unordered container's nodes itself, it withholds what an entry points
+    at in heap memory, which may be freed: a vector's elements, a long string's text
+    ([details](#standard-containers)). A short string's text in the node shows as it was.
 
 #### Change
 
@@ -975,10 +983,12 @@ That is the case for:
   - an enum as its enumerator: `Teal`. Where no enumerator holds the value, or several do, it
     shows the number, with the enum's type;
   - a pointer as its address. Peeky never reads what it points at, so `ptrs[#0][0]` is refused;
-  - a `std::string` as its text, where that text is in the node's own buffer: 15 bytes or fewer.
-    A longer one's text is in heap memory, which Peeky can't show is still allocated. A string
-    destroyed in place, before a new one is built there, keeps a pointer to its freed text. So
-    that string alone shows `<not read>`, and reading it says why:
+  - a `std::string` as its text, where that text is in its own small buffer in the node: its
+    `_M_p` points at its `_M_local_buf`, which holds up to 15 bytes. Elsewhere, its text is in
+    heap memory, which Peeky can't show is still allocated. That is so for a longer string, and
+    for a short one after `reserve()`. A string destroyed in place, before a new one is built
+    there, keeps a pointer to its freed text. So that string alone shows `<not read>`, and
+    reading it says why:
     ``lost[1]: not read: Peeky reads a string in an unordered container's node only where its
     text is in the node: this one's is outside it, in heap memory Peeky can't show is still
     allocated; print it from the program``.
@@ -1228,7 +1238,8 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
   prove how. A container whose entries hold a `long double` stays withheld. So does one longer
   than Peeky walks: 16,384 entries with lldb-dap 20, 512 with lldb-dap 18. A container held in
   an entry, other than a `std::array`, is withheld on its own, with why. So is a string whose
-  text is in heap memory, longer than 15 bytes ([details](#standard-containers)).
+  text isn't in its own small buffer in the node, where its `_M_p` doesn't point at its
+  `_M_local_buf` ([details](#standard-containers)).
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).

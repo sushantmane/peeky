@@ -1745,7 +1745,28 @@ def _load(name):
         raise ValueError(f"Session record {path} is malformed; remove it")
     if record.get("remote"):
         return record, _remote_session(name, record)
-    return record, _LocalClient(record["url"], record["token"], record.get("pid"))
+    return record, _local_session(name, record)
+
+
+def _local_session(name, record):
+    """A local session's client, once its worker speaks this client's protocol (#374
+    review). Its record names the protocol it started with; where it names another, or
+    none (a Peeky before protocol 10), the worker's `version` is asked first, which
+    changes nothing, and nothing else is sent to a worker of another protocol: it would
+    run a step or a change as it reads it, and ignore what it doesn't know."""
+    client = _LocalClient(record["url"], record["token"], record.get("pid"))
+    if record.get("protocol") == PROTOCOL_VERSION:
+        return client
+    version = client.call("version")
+    protocol = version.get("protocol") if isinstance(version, dict) else None
+    if protocol != PROTOCOL_VERSION:
+        raise ValueError(
+            f"Worker speaks protocol {protocol}, this session {PROTOCOL_VERSION}: another "
+            f"Peeky version started session {name!r}, so nothing is sent to its worker. Drop "
+            f"the record with `peeky session close --forget --name {name}` (its worker ends "
+            "after its idle timeout), then start the session again"
+        )
+    return client
 
 
 def _remote_session(name, record):
@@ -3300,6 +3321,17 @@ def _start_local(args, root, program, line, language, data, max_pause):
         record.update(
             root=str(root), program=program, language=language, cwd=os.getcwd(), line=line
         )
+        # Its worker's protocol, asked before anything runs and kept: each later command
+        # checks it before it sends a request (#374 review).
+        version = client.call("version")
+        protocol = version.get("protocol") if isinstance(version, dict) else None
+        if protocol != PROTOCOL_VERSION:
+            raise RuntimeError(
+                f"Worker speaks protocol {protocol}, this client {PROTOCOL_VERSION}: the "
+                f"worker `{sys.executable} -m peeky.worker` runs another Peeky version; "
+                "install one Peeky for both"
+            )
+        record["protocol"] = protocol
         launch = client.call(
             "launch",
             program=program,
