@@ -884,15 +884,19 @@ def test_cpp_a_range_for_binding_names_nothing_in_a_lambda_in_its_range(director
     finally:
         main(["session", "close"])
         capsys.readouterr()
-    # The binding's own row (where the debugger describes it, macOS), withheld as the
-    # outer local because a lambda on its line declares a `t`; else the outer row.
+    # In the loop's body the code names the binding `t`, not the outer local or the
+    # lambda's: where the debugger lists the binding (macOS), it reads the element (40, as
+    # the program prints FD=40), or is withheld with a note naming the structured binding;
+    # never the outer `t` (1).
     code, result = captured(capsys, path, line_of(RANGE_LAMBDA, "// FD"), "t")
     assert code == 0 and result["status"] == "completed", result.get("error")
     [observed] = result["rows"]
     if observed["type"] != "long":
         assert observed.get("value"), observed
-    else:
+    elif "error" in observed:
         assert "structured binding `t`" in observed["error"], observed
+    else:
+        assert observed.get("value") == "40", observed
 
 
 @pytest.mark.timeout(300)
