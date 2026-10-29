@@ -686,9 +686,9 @@ struct Move {
 static bool enough(Stock &stock, const std::string &part, int units) {
     return stock.count(part) > 0 && stock.at(part) >= units; // IN_CALLEE
 }
-using Prices = std::unordered_map<int, double>;
+using Prices = std::unordered_map<int, long double>;
 static double priced(const Prices &prices) {
-    return prices.at(1); // IN_PRICED
+    return (double)prices.at(1); // IN_PRICED
 }
 int main() {
     Stock on_hand;
@@ -761,8 +761,8 @@ def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_rea
         capsys.readouterr()
     reads = bool(re.fullmatch(r"size=2 \{.*\}", str(held.get("value"))))
     assert reads or compiler == "clang", held
-    # Entries Peeky never reads from the nodes (a `double`): no pointer or reference is
-    # blamed, whatever proves it (review).
+    # Entries Peeky never reads from the nodes (a `long double`, since #374 a `double`
+    # reads): no pointer or reference is blamed, whatever proves it (review).
     code, result = probe(source, line_of(DEPOT, "// IN_PRICED"), "prices", capsys)
     (row,) = result["rows"]
     if compiler == "gcc":
