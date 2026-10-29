@@ -92,6 +92,8 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - In a caller frame, a `&mut` `Vec`, `String` or slice shows its fields `[stale]`: the call under
   way may be changing them ([Rust 7.2](rust-cookbook.md#reference-parameters)). So does an owned
   `Vec` or `String` ([Rust 7.2](rust-cookbook.md#moved-dropped-and-partly-moved-values)).
+- A probe reads a caller's local as `1:pass`, by the caller-frame rules above
+  ([2.10](../COOKBOOK.md#210-values-in-a-callers-frame)).
 - A reference parameter that its function binds again shows only its pointer
   ([Rust 7.2](rust-cookbook.md#reference-parameters)).
 - A `Vec<String>` stays raw ([Rust 7.2](rust-cookbook.md#what-peeky-reads)).

@@ -113,6 +113,14 @@ class BuildManifest:
     def manifest_id(self):
         return _json_digest(asdict(self))
 
+    @property
+    def build_id(self):
+        """The manifest's digest without its artifacts, whose bytes name the fresh
+        workspace (the debug information's paths), so every build differs there: the same
+        for two builds of one recipe, the same staged sources (an edit included), tools,
+        toolchain probes and environment, and different where any differs."""
+        return _json_digest({k: v for k, v in asdict(self).items() if k != "artifacts"})
+
 
 @dataclass(frozen=True)
 class PreparedRun:

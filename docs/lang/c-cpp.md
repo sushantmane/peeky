@@ -80,6 +80,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - **A `static` local** reads where the code at the stop names it: in its block, below its
   declaration. In C++, it is `no value yet` until its initializer has run. It is never changed
   ([C and C++ 7.1](c-cpp-cookbook.md#read-a-static-local)).
+- **A caller's local:** a probe reads it as `1:pass`. It is withheld while its declaration's
+  call runs, as is a `for` loop's own variable while its body calls
+  ([C and C++ 5.1](c-cpp-cookbook.md#read-a-callers-local),
+  [2.10](../COOKBOOK.md#210-values-in-a-callers-frame)).
 - **Same-named locals:** a plain name means the declaration the code names at the stop. To select
   another one, write `name @ file:line`
   ([C and C++ 7.1](c-cpp-cookbook.md#same-named-locals-which-one-a-name-means)).
@@ -151,6 +155,30 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
   `addresses differ: it may point at another element too`, right after the real differences
   ([3.1](../COOKBOOK.md#31-two-inputs-side-by-side)). Where the text after the address reads the
   same in both runs, as a `const std::string &` that reads `"Maya"`, it is `addresses only`.
+
+## Read unordered maps and lambdas in a GCC build
+
+- An unordered map or set is read from its own nodes, as `[memory]`: `on_hand  Stock  size=4
+  {"HX-88": 0, "GS-5": 0, …}`. LLDB alone would count it as empty
+  ([C and C++ 7.1](c-cpp-cookbook.md#standard-containers)).
+- That holds for entries of integers, bools and strings, alone or in pairs and structs, up to 256
+  entries. Otherwise the row is `not listed`, with why. Then print the entries from the program,
+  or try an edit.
+- Read one entry by key, `on_hand["GS-5"]`, or by position, `on_hand[#0]`. A preview shows the
+  first few entries. A `preview:` line under the table says how to read the rest
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-a-c-map-or-set-by-key)).
+- Inside a lambda, read a capture by its name: `count`, not `this.count`. `session inspect` lists
+  the captures under `[Captures]`. A capture by reference shows what it refers to
+  ([C and C++ 7.1](c-cpp-cookbook.md#read-a-lambdas-captures)).
+- A capture by value is the lambda's copy, made when the lambda was. The outer variable may have
+  changed since. Read it in its own frame, such as with `session get --frame 1`.
+- A map ordered by a lambda shows the compiler's name for it:
+  `std::map<int, long, main()::<lambda(int, int)>>`. LLDB's `key_compare` stays in
+  `debugger_type` ([C and C++ 7.1](c-cpp-cookbook.md#maps-that-compare-keys-their-own-way)).
+- With lldb-dap 18, LLDB prints an error about `std::string`'s `_M_local_buf`. Peeky moves it out
+  of the output, with a warning: whole on a build's first probe, then short. The output stays
+  `output so far`, since lldb-dap 18 crashes as it ends
+  ([C and C++ 7.1](c-cpp-cookbook.md#71-c-and-c)).
 
 ## Change values
 

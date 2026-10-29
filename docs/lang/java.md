@@ -79,6 +79,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - Several methods can share a line, such as a lambda on its method's line. The line stops in only
   one of them, and the probe says which ([Java 7.3](java-cookbook.md#73-java-launched)).
 - Java rows have no `stop` number ([2.2](../COOKBOOK.md#22-every-iteration-of-a-loop)).
+- A probe reads the caller's local as `1:pass`, beside the stopped method's values. A caller's
+  values are never settable ([2.10](../COOKBOOK.md#210-values-in-a-callers-frame)).
 - A `step` from a block's last statement stops on the closing `}` or the loop's header. There the
   block's locals are gone, and `get` says the block ended. So read them before you step
   ([5.2](../COOKBOOK.md#52-stepping-and-running-to-a-line)).
