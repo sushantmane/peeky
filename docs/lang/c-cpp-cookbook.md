@@ -1061,6 +1061,9 @@ it says what follows the text. Those bytes are never shown as part of the text:
   again, and calls them NULs only where it read them.
 - It reads them from memory where the debugger can. Otherwise it reads them as the debugger
   lists the array's elements, at most 64 of them: lldb-dap 18 reads no memory.
+- It reads them only where nothing on the way to the array is in doubt. A pointer on the way
+  must be proven to point at a live object. The value must have no `note`, and the build must
+  be unoptimized. Otherwise the bytes after LLDB's text are `not read`.
 - So a NUL past those 64 elements is not shown, and the note says the bytes were not read.
   `text()` is NULL for such a row.
 - This holds for an array of `char`, `signed char`, `unsigned char` or a `char8_t` typedef, by

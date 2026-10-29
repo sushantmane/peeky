@@ -261,6 +261,10 @@ frame's entry: the narrowest function whose code holds the frame's address.
   shows `error: read memory from … failed`.
 - These reads share the inspection's value-view budget, or a preview's. A spent budget leaves
   the bytes `not read`.
+- The worker passes `string_value` and `preview_value` a `proven()` callback. The bytes are read
+  again only where it holds: no note, no taint, an unoptimized build, and every pointer or
+  reference on the way judged live (`bytes_reachable`, `nodes_reachable`). A prefix match alone
+  proves nothing of a value that may be leftovers.
 - `then N NUL bytes` needs every byte of the array read, all NULs after the text. A NUL with
   bytes after it not all read, or not all NULs, is `then a NUL and N bytes not shown`. No NUL
   among the bytes read is `then N bytes not read`.

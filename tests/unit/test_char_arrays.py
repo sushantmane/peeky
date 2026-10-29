@@ -263,17 +263,27 @@ def test_the_native_session_shows_a_char_array_so(language):
         3
     )
     fetch = lambda reference, start=None: pytest.fail("its elements listed")  # noqa: E731
-    found = native.string_value(variable(WARD, "char[32]"), fetch, lambda ref, n: memory[:n])
+    yes = lambda: True  # noqa: E731
+    found = native.string_value(variable(WARD, "char[32]"), fetch, lambda ref, n: memory[:n], yes)
     assert found["value"] == '"Adeyemi" (then a NUL and 24 bytes not shown)'
     assert found["buffer"].startswith('"Adeyemi\\0\\x80') and found["buffer"].endswith('\\0"')
     # Else from its elements, as the debugger lists them.
     elements = [{"name": f"[{i}]", "value": "'\\0'"} for i in range(2, 8)]
-    found = native.string_value(
-        variable('"hi"', "char[8]"), lambda reference, start=None: elements, None
-    )
+    listed = lambda reference, start=None: elements  # noqa: E731
+    found = native.string_value(variable('"hi"', "char[8]"), listed, None, yes)
     assert found == {"value": '"hi" (then 6 NUL bytes)', "buffer": '"hi' + "\\0" * 6 + '"'}
-    found = native.string_value(variable('"hi"', "char[8]"), lambda reference, start=None: [], None)
+    found = native.string_value(variable('"hi"', "char[8]"), lambda r, start=None: [], None, yes)
     assert found["value"] == '"hi" (then 6 bytes not read)'
+    # Round 2 of #390: an array reached through anything in doubt (an unproven pointer, a
+    # note, a taint, an optimized build), or by a caller that doesn't say, reads nothing
+    # more: a read at its address would prove nothing of it.
+    unread = lambda ref, n: pytest.fail("its memory read")  # noqa: E731
+    for proven in (None, lambda: False):
+        found = native.string_value(variable('"hi"', "char[8]"), fetch, unread, proven)
+        assert found == {"value": '"hi" (then 6 bytes not read)', "buffer": '"hi"...'}
+        found = native.string_value(variable(WARD, "char[32]"), fetch, unread, proven)
+        assert found["value"] == '"Adeyemi" (then a NUL and 24 bytes not shown)'
+        assert found["buffer"].endswith('\\x01"...')
     # A pointer's text, and an array under a typedef's name, stay as LLDB shows them.
     assert native.string_value(variable('0x1 "a\\0b"', "char *"), fetch, None) is None
     assert native.string_value(variable('"a\\0b"', "Tag"), fetch, None) is None

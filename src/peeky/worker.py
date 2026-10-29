@@ -3878,6 +3878,15 @@ class DebugWorker:
             judged = False
         return judged and self.pointee_unproven(variable, frame, steps) is None
 
+    def bytes_reachable(self, frame, trail, names):
+        """Whether a C or C++ character array reached by ``names`` (``trail``: the
+        debugger's variable for each) may have its bytes after LLDB's summary read again
+        (#390 review): only where every pointer and reference on the way is judged to
+        refer to a live object (``nodes_reachable``), in an unoptimized build. Its caller
+        also requires no note on it and no taint: what such a value holds may be
+        leftovers, and a read at its address would prove nothing of it."""
+        return not self.optimized() and self.nodes_reachable(frame, trail, names)
+
     def node_reader(self, frame):
         """How a runtime reads an unordered container's nodes in ``frame`` (#360):
         (a variable path's text, a memory read or None without `readMemory`)."""
@@ -4387,7 +4396,14 @@ class DebugWorker:
                 # A string the debugger shows only up to a NUL byte (#128); never one it
                 # has no value for (optimized out).
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
-                if (shown := string_value(variable, self.view_fetch, reads)) is not None:
+                way, steps = [*trail[: len(ancestry)], variable], [s for s, _ in ancestry] + [name]
+                proven = lambda: (  # noqa: E731
+                    note is None
+                    and through is None
+                    and not own
+                    and self.bytes_reachable(frame, way, steps)
+                )
+                if (shown := string_value(variable, self.view_fetch, reads, proven)) is not None:
                     for key in (
                         "value",
                         "unavailable",
@@ -4464,6 +4480,14 @@ class DebugWorker:
                                 frame, [*trail[: len(ancestry)], variable], steps
                             )
                             else None
+                        ),
+                        proven=lambda: (
+                            note is None
+                            and through is None
+                            and not own
+                            and self.bytes_reachable(
+                                frame, [*trail[: len(ancestry)], variable], steps
+                            )
                         ),
                         **self.preview_stack(),
                     )
@@ -5484,6 +5508,11 @@ class DebugWorker:
                     if not self.notes.get(args["handle"])
                     and self.nodes_reachable(frame, trail, steps)
                     else None
+                ),
+                proven=lambda: (
+                    not self.notes.get(args["handle"])
+                    and not self.taints.get(args["handle"])
+                    and self.bytes_reachable(frame, trail, steps)
                 ),
                 **self.preview_stack(),
             )
