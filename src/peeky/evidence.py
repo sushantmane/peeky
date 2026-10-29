@@ -884,10 +884,17 @@ _MOVED_TOO = (
 # says why (`<not shown: …>`). One plain column, so `kind` stays well within SQLite's
 # aggregate terms; `differs` is NULL for such a row only where the rows are shown.
 _NOT_COMPARED = ", so not a value difference"
-# `compare`'s differs and note for such a row.
+# What pairing proves apart from the values, which a run with no value to compare leaves
+# standing (review of PR #389): a type that changed, or may have. Its row stays a
+# difference, in its own tier, and its note says the values were not compared (`_UNREAD`).
+# No other kind comes with `nv`: those need a hit one run lacks, or both values read.
+_TYPED = f"COALESCE(kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%', 0)"
+_UNREAD = "COALESCE('; no value in ' || nv || ', so the values were not compared', '')"
+# `compare`'s differs and note for a row with no value to compare.
 _UNCOMPARED = (
-    "CASE WHEN nv IS NULL THEN differs END AS differs, CASE WHEN nv IS NULL THEN note ELSE "
-    f"'no value in ' || nv || '{_NOT_COMPARED}' || COALESCE('; ' || qualified, '') END AS note"
+    f"CASE WHEN nv IS NULL OR {_TYPED} THEN differs END AS differs, CASE WHEN nv IS NULL "
+    f"OR {_TYPED} THEN note || {_UNREAD} ELSE 'no value in ' || nv || '{_NOT_COMPARED}' || "
+    "COALESCE('; ' || qualified, '') END AS note"
 )
 
 
@@ -996,22 +1003,23 @@ _TYPE_FOLDED = f"""kind || CASE WHEN COUNT(*) > 1 THEN ' at ' || COUNT(*) || ' h
       || 'selector') || ': its first hit)' ELSE '' END || '; {_MOVED_TOO}'"""
 # Every row of `diff` with its rank (the tier it is in) and pos (its capture order).
 _RANKED = f"""(
-  SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
-    FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged AND nv IS NULL
-    AND (kind IS NULL OR kind LIKE 'missing%'
-      OR ((kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%') AND NOT moved))
+  SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs,
+    note || {_UNREAD} AS note, pos
+    FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
+    AND (nv IS NULL OR {_TYPED})
+    AND (kind IS NULL OR kind LIKE 'missing%' OR ({_TYPED} AND NOT moved))
   -- A pointer whose type changed, but whose values differ only in addresses (a reference
   -- an edit made a raw pointer: eleventh evaluation, prep 16), is a real difference too,
   -- but one row per selector (and stop), its first hit's, as for its addresses below.
   UNION ALL SELECT {_REAL_RANK}, hit, phase, selector, value_a, value_b, differs,
     {_TYPE_FOLDED}, MIN(pos)
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged AND kind LIKE 'type %'
-    AND moved AND nv IS NULL GROUP BY selector, phase, st, kind
+    AND moved GROUP BY selector, phase, st, kind
   -- Such a pointer whose type Peeky can't compare across store generations, likewise.
   UNION ALL SELECT {_UNTOLD_RANK}, hit, phase, selector, value_a, value_b, differs,
     {_TYPE_FOLDED}, MIN(pos)
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
-    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved AND nv IS NULL GROUP BY selector, phase, st, kind
+    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved GROUP BY selector, phase, st, kind
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -1037,12 +1045,13 @@ _RANKED = f"""(
       ELSE kind END, MIN(pos) FROM pair
     WHERE qualified IS NULL AND kind LIKE 'addresses differ:%' AND NOT unchanged AND nv IS NULL
     GROUP BY selector, phase, st, kind
-  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note || {_UNREAD},
+    pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
-    AND NOT unchanged AND nv IS NULL
-  -- A value one run has none of (`nv`), whatever else its row says: one row per selector
-  -- (and stop) and run, its first hit's, saying at how many hits; any qualified value's
-  -- note after. Its differs is unknown (NULL).
+    AND NOT unchanged AND (nv IS NULL OR {_TYPED})
+  -- A value one run has none of (`nv`), with nothing else told apart (`_TYPED`): one row
+  -- per selector (and stop) and run, its first hit's, saying at how many hits; any
+  -- qualified value's note after. Its differs is unknown (NULL).
   UNION ALL SELECT {_NO_VALUE_RANK}, hit, phase, selector, value_a, value_b, NULL,
     'no value in ' || nv || CASE WHEN alike > 1 THEN ' at ' || alike || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
@@ -1050,7 +1059,7 @@ _RANKED = f"""(
       || COALESCE('; ' || qualified, ''), pos
     FROM (SELECT hit, phase, selector, value_a, value_b, nv, qualified, st, pos,
       COUNT(*) OVER alike AS alike, ROW_NUMBER() OVER (alike ORDER BY pos) AS nth
-      FROM pair WHERE nv IS NOT NULL AND NOT unchanged
+      FROM pair WHERE nv IS NOT NULL AND NOT {_TYPED} AND NOT unchanged
       WINDOW alike AS (PARTITION BY selector, phase, st, nv))
     WHERE nth = 1
   -- hit and the values are those of the MIN(pos) row (SQLite's bare columns).
@@ -1872,7 +1881,9 @@ def near_baseline(path, run_id, source_sha256):
     run that is the same probe without its edit but for its --capture list, and shares at
     least one selector with it, else None (thirteenth evaluation: one selector more said
     only that no saved run matched). `diff` compares the selectors both captured, and
-    lists the others as `only in run a` or `b`."""
+    lists the others as `only in run a` or `b`. The shared selector is found in SQL, over
+    every retained run (at most MAX_RUNS), before the newest is taken (review of PR #389:
+    newer runs of other selectors hid it)."""
     found = query(
         path,
         "SELECT b.run_id, b.capture AS theirs, c.capture AS ours FROM runs c JOIN runs b ON "
@@ -1881,8 +1892,10 @@ def near_baseline(path, run_id, source_sha256):
         "b.args IS c.args AND b.entry IS c.entry AND b.target_identity = c.target_identity "
         "AND b.source_sha256 = :source AND b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' "
         "WHERE c.run_id = :run AND json_valid(c.target_identity) AND "
-        "json_extract(c.target_identity, '$.inputs_sha256') IS NOT NULL "
-        "ORDER BY b.run_id DESC LIMIT 20",
+        "json_extract(c.target_identity, '$.inputs_sha256') IS NOT NULL AND "
+        "json_valid(b.capture) AND json_valid(c.capture) AND EXISTS (SELECT 1 FROM "
+        "json_each(b.capture) AS x JOIN json_each(c.capture) AS y ON x.value = y.value) "
+        "ORDER BY b.run_id DESC LIMIT 1",
         {"run": run_id, "source": source_sha256},
     )["rows"]
     for row in found:
@@ -2849,7 +2862,7 @@ def _not_compared(path, params):
     rows = query(
         path,
         f"{_PAIR}\nSELECT {_A} AS ra, {_B} AS rb, selector, nv FROM pair "
-        "WHERE nv IS NOT NULL AND NOT unchanged ORDER BY pos",
+        f"WHERE nv IS NOT NULL AND NOT {_TYPED} AND NOT unchanged ORDER BY pos",
         {"a": params.get("a"), "b": params.get("b")},
         limit=MAX_ROWS,
     )["rows"]
@@ -3885,9 +3898,12 @@ def _changes_text(row, changes, shown):
 
 def _unvalued(row, column):
     """Whether ``column`` (`value_a`, `value_b`) of a `diff` or `compare` row is a value
-    its run has none of: the row's note says so."""
+    its run has none of: the row's note says so, first or after a type change's."""
     note = str(row.get("note") or "")
-    return note.startswith(("no value in either run", f"no value in run {column[-1]}"))
+    return any(
+        note.startswith(said) or f"; {said}" in note
+        for said in ("no value in either run", f"no value in run {column[-1]}")
+    )
 
 
 def _label_only(text):

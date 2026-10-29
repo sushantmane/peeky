@@ -5987,6 +5987,14 @@ class NativeSession:
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
         self.home = prepared.workspace / ".peeky-lldb-home"
         self.home.mkdir()
+        # The build without its artifacts (build.BuildManifest.build_id): what a probe's
+        # text says once per build (thirteenth evaluation).
+        self.build_id = hashlib.sha256(
+            json.dumps(
+                {"build": prepared.manifest.build_id, "target": target.target_identity},
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
         self.manifest_id = hashlib.sha256(
             json.dumps(
                 {

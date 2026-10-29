@@ -790,7 +790,8 @@ prove that it sent all of the program's output. LLVM 20's lldb-dap ends cleanly,
 
 The label stays on every such probe. The last line is whole on a build's first probe in a state
 directory, then short: `the debugger again sent more text as Peeky closed the session`. So is
-LLDB 18's warning about a GCC build's `_M_local_buf`
+LLDB 18's warning about a GCC build's `_M_local_buf`. A build is its `build_id`: a candidate, a
+changed source or another compiler is another one
 ([2.7](../COOKBOOK.md#27-json-for-scripts)). `--json` has both whole.
 
 #### Where and when to change

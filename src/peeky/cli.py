@@ -1534,20 +1534,25 @@ def _probe_text(result, quiet=False):
     ]
     # lldb-dap 18's lines about a GCC build's debug information, and the text it sends as
     # it ends, come with every probe of the build (thirteenth evaluation): whole the first
-    # time for that build in this state directory, then in short. `--json` has them whole.
-    build = hashlib.sha256(
-        json.dumps(result.get("target_identity"), sort_keys=True, default=str).encode()
-    ).hexdigest()[:16]
+    # time for that build in this state directory, then in short. A build is its
+    # `build_id`, the digest of its recipe, staged sources (an edit included) and tools;
+    # without one (an older worker), they are whole every time. `--json` has them whole.
+    build = result.get("build_id")
+    build = hashlib.sha256(build.encode()).hexdigest()[:24] if isinstance(build, str) else None
     diagnosed = result.get("debugger_diagnostics") or [""]
-    lines = hashlib.sha256(f"{build}\0{diagnosed[0]}".encode()).hexdigest()[:16]
+    lines = hashlib.sha256(f"{build}\0{diagnosed[0]}".encode()).hexdigest()[:24]
     warnings = [
         short
-        if (short := diagnostics_again(warning)) and not _first_time(f"diagnostics-{lines}")
+        if build
+        and (short := diagnostics_again(warning))
+        and not _first_time(f"diagnostics-{lines}")
         else warning
         for warning in warnings
     ]
-    sent_before = bool(result.get("output_after_disconnect")) and not _first_time(
-        f"sent-after-closing-{build}"
+    sent_before = (
+        build is not None
+        and bool(result.get("output_after_disconnect"))
+        and not _first_time(f"sent-after-closing-{build}")
     )
     if warnings != list(result.get("warnings", ())):
         result = {**result, "warnings": warnings}

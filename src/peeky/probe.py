@@ -4655,6 +4655,10 @@ def run_probe(
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if isinstance(launch.get("build_id"), str):
+            # The build by its sources and tools, not its artifacts (thirteenth evaluation):
+            # what `peeky probe`'s text says LLDB's notes once per.
+            result["build_id"] = launch["build_id"]
         if launch.get("inputs_checked"):
             result["inputs_checked"] = launch["inputs_checked"]
         if launch.get("inputs_sha256"):

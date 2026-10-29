@@ -1095,6 +1095,13 @@ directory. Its later probes say it in short: ``warning: `stderr` line of LLDB's 
 debug information was moved out of the output again (debugger_diagnostics in --json); a program
 line just like one would be too``. `--json` always has it whole.
 
+- A build is its `build_id` in `--json`: a digest of the build's recipe, its sources as built, an
+  edit included, and its tools. It leaves out the build's outputs, which name each build's fresh
+  directory.
+- So a candidate, a changed source, or another compiler is another build, whose first probe gives
+  the warning whole again.
+- A result with no `build_id`, such as one from an older worker, gives it whole every time.
+
 Branch on the exit status:
 
 | Status | Meaning |
@@ -1927,6 +1934,9 @@ as for one optimized out. With no value to compare, the row is no value differen
 - There is one row per selector and run, its first hit's. The note says at how many hits:
   `no value in run b at 9 hits (one row per selector: its first hit), so not a value
   difference`.
+- A type that changed is still a difference, in tier 3, with `differs` 1. Its note adds that the
+  values weren't compared: `type int -> long; no value in run b, so the values were not
+  compared`.
 - The table shows such a value's label alone, such as `<not shown: …>`. `queries run` and
   `--json` have it whole, with why.
 - A note counts them apart from the differences, and names the run and the selectors: ``not

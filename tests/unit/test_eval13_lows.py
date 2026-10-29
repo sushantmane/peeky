@@ -152,6 +152,51 @@ def test_both_runs_with_no_value_and_a_qualified_one(store):
     assert {row["differs"] for row in rows} == {None}
 
 
+def _typed(hit, value=None, kind="int", error=None):
+    row = {"hit": hit, "phase": "observed", "line": 40, "selector": "n", "type": kind}
+    return {**row, "unavailable": True, "error": error} if error else {**row, "value": value}
+
+
+OPTIMIZED = "no value here: optimized out or not live (debugger: variable not available)"
+
+
+@pytest.mark.parametrize("withheld", ["a", "b"])
+@pytest.mark.parametrize("error", [REASON.format("n"), OPTIMIZED], ids=["withheld", "optimized"])
+def test_a_type_change_stays_a_difference_where_a_run_has_no_value(store, withheld, error):
+    # Review of PR #389: `type int -> long` with one side withheld read `no value in run b,
+    # so not a value difference`, with differs NULL, which hid a real difference.
+    one = [_typed(1, "3"), _typed(2, "4")]
+    other = [_typed(1, kind="long", error=error), _typed(2, "4", kind="long")]
+    first, second = (other, one) if withheld == "a" else (one, other)
+    evidence.record(store, _run(first))
+    evidence.record(store, _run(second))
+    rows = evidence.run_query(store, "diff")["rows"]
+    types = "long -> int" if withheld == "a" else "int -> long"
+    assert [(row["hit"], row["differs"], row["note"]) for row in rows] == [
+        (1, 1, f"type {types}; no value in run {withheld}, so the values were not compared"),
+    ], rows
+    notes = evidence.run_query(store, "diff").get("notes", [])
+    assert not any(note.startswith("not compared:") for note in notes), notes
+    compared = evidence.run_query(store, "compare")["rows"]
+    assert (compared[0]["differs"], compared[0]["note"]) == (1, rows[0]["note"]), compared
+    # The table shows the missing value's label alone, as for any value a run has none of.
+    _, text = evidence.canned(store, "diff", table=True)
+    assert error.split(":")[0] + ": …>" in text and error[20:60] not in text, text
+
+
+def test_a_value_one_run_lacks_beside_a_type_change_elsewhere(store):
+    # A type change at one hit leaves the selector's other no-value rows in their tier.
+    one = [_typed(1, "3"), _typed(2, "4")]
+    other = [_typed(1, kind="long", error=OPTIMIZED), _typed(2, kind="int", error=OPTIMIZED)]
+    evidence.record(store, _run(one))
+    evidence.record(store, _run(other))
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(row["hit"], row["differs"], row["note"]) for row in rows] == [
+        (1, 1, "type int -> long; no value in run b, so the values were not compared"),
+        (2, None, "no value in run b, so not a value difference"),
+    ], rows
+
+
 def test_a_note_on_left_out_selectors_says_their_rows_still_show():
     # bill: "`tariff` and `over_peak` differ after the edit and may follow from it, so this
     # check leaves them out" read as contradicting the rows it came under.
@@ -295,13 +340,42 @@ def test_compare_names_the_run_whose_captures_differ(probe, capsys):
     assert "compare: no saved run is this probe without the edit" in capsys.readouterr().out
 
 
+def test_compare_finds_the_run_past_newer_runs_of_other_selectors(store):
+    # Review of PR #389: only the newest 20 runs whose captures differed were looked at, so
+    # 21 newer runs of other selectors hid the one run sharing a selector.
+    def saved(capture, candidate=False):
+        rows = [
+            {"hit": 1, "phase": "observed", "line": 40, "selector": name, "value": "1"}
+            for name in capture
+        ]
+        result = _identified(rows, candidate)
+        if candidate:
+            # As the store keeps a candidate: its edit, and the unedited source's digest.
+            result["candidate"]["diff"] = "--- a.cpp\n+++ a.cpp\n"
+        return evidence.record(store, result, language="cpp", target="/t")
+
+    first = saved(["hour", "inside"])
+    for n in range(21):
+        saved([f"other{n}"])
+    candidate = saved(["hour", "cars", "inside"], candidate=True)
+    assert evidence.baseline(store, candidate, "0" * 64) is None
+    assert evidence.near_baseline(store, candidate, "0" * 64) == (
+        first,
+        ["hour", "inside"],
+        ["hour", "cars", "inside"],
+    )
+    # With none sharing a selector, none is named.
+    lone = saved(["elsewhere"], candidate=True)
+    assert evidence.near_baseline(store, lone, "0" * 64) is None
+
+
 DIAGNOSTIC = (
     "error: program 0x00000100: DW_TAG_member '_M_local_buf' refers to type "
     "0x0000000000009a09 which extends beyond the bounds of 0x000000f7"
 )
 
 
-def _noisy(rows):
+def _noisy(rows, build="b" * 64):
     from peeky.probe import debugger_diagnostics
 
     result = _identified(rows)
@@ -310,7 +384,16 @@ def _noisy(rows):
     result.update(
         output_complete=False, program_ended=True, output_after_disconnect="free(): invalid\n"
     )
+    if build is not None:
+        result["build_id"] = build
     return result
+
+
+SHORT = (
+    "warning: `stderr` line of LLDB's about the build's debug information was moved out of the "
+    "output again (debugger_diagnostics in --json); a program line just like one would be too"
+)
+SENT = "the debugger again sent more text as Peeky closed the session (output_after_disconnect"
 
 
 def test_lldb_dap_18s_notes_are_whole_once_per_build(probe, capsys):
@@ -322,16 +405,7 @@ def test_lldb_dap_18s_notes_are_whole_once_per_build(probe, capsys):
     assert DIAGNOSTIC in first and "its own or the program's still on its way" in first, first
     assert probe(_noisy(rows), "--capture", "hour,cars,inside") == 0
     again = capsys.readouterr().out
-    assert DIAGNOSTIC not in again, again
-    assert (
-        "warning: `stderr` line of LLDB's about the build's debug information was moved out of "
-        "the output again (debugger_diagnostics in --json); a program line just like one would "
-        "be too"
-    ) in again, again
-    assert (
-        "the debugger again sent more text as Peeky closed the session "
-        "(output_after_disconnect in --json)"
-    ) in again, again
+    assert DIAGNOSTIC not in again and SHORT in again and SENT in again, again
     # The output's own caveat stays on every probe.
     assert "output so far (the program ended, but its output may still have been arriving)" in (
         again
@@ -340,11 +414,74 @@ def test_lldb_dap_18s_notes_are_whole_once_per_build(probe, capsys):
     assert probe(_noisy(rows), "--capture", "hour,cars,inside", "--json") == 0
     shown = json.loads(capsys.readouterr().out)
     assert any(DIAGNOSTIC in warning for warning in shown["warnings"]), shown["warnings"]
-    # Another build's lines are whole again.
-    other = _noisy(rows)
-    other["target_identity"] = {"language": "cpp", "optimization": "O1"}
+
+
+@pytest.mark.parametrize(
+    "why",
+    [
+        "the same target with its source changed",
+        "a candidate edit",
+        "another compiler",
+    ],
+)
+def test_another_build_of_the_same_target_gets_them_whole(probe, capsys, why):
+    # Review of PR #389: the key was the target's names and options alone, which a
+    # baseline and its candidate, or two compilers, share. Each is its own build_id (the
+    # digest of the build's recipe, staged sources and tools), with the same
+    # target_identity, inputs and source digests here.
+    rows = _bindings(False, [0, 1, 2, 3])
+    assert probe(_noisy(rows), "--capture", "hour,cars,inside") == 0
+    assert probe(_noisy(rows), "--capture", "hour,cars,inside") == 0
+    assert SHORT in capsys.readouterr().out
+    other = _noisy(rows, build=hashlib.sha256(why.encode()).hexdigest())
     assert probe(other, "--capture", "hour,cars,inside") == 0
-    assert DIAGNOSTIC in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert DIAGNOSTIC in out and SHORT not in out and SENT not in out, out
+    assert probe(other, "--capture", "hour,cars,inside") == 0
+    assert SHORT in capsys.readouterr().out
+
+
+def test_without_a_build_id_they_are_whole_every_time(probe, capsys):
+    # An older worker sends no build_id: nothing proves two probes ran one build.
+    rows = _bindings(False, [0, 1, 2, 3])
+    for _ in range(2):
+        assert probe(_noisy(rows, build=None), "--capture", "hour,cars,inside") == 0
+        out = capsys.readouterr().out
+        assert DIAGNOSTIC in out and SHORT not in out and SENT not in out, out
+
+
+def _manifest(**changed):
+    from peeky.build import BuildManifest, FileIdentity, ProbeResult, ToolIdentity
+
+    parts = {
+        "schema_version": 1,
+        "recipe_sha256": "r" * 64,
+        "original_inputs": (FileIdentity("a.cpp", "1" * 64, 10),),
+        "inputs": (FileIdentity("a.cpp", "1" * 64, 10),),
+        "artifacts": (FileIdentity("a.out", "2" * 64, 900),),
+        "tools": (ToolIdentity("/usr/bin/g++-13", "3" * 64),),
+        "probes": (ProbeResult(("g++", "--version"), "g++ 13.3", ""),),
+        "effective_environment": (("PATH", "/usr/bin"),),
+    }
+    return BuildManifest(**{**parts, **changed})
+
+
+def test_a_build_id_is_its_sources_and_tools_not_its_artifacts():
+    from peeky.build import FileIdentity, ProbeResult, ToolIdentity
+
+    base = _manifest()
+    # Every build's binary differs (its debug information names the fresh workspace).
+    rebuilt = _manifest(artifacts=(FileIdentity("a.out", "4" * 64, 901),))
+    assert rebuilt.build_id == base.build_id and rebuilt.manifest_id != base.manifest_id
+    edited = (FileIdentity("a.cpp", "5" * 64, 11),)
+    for other in (
+        _manifest(inputs=edited),
+        _manifest(original_inputs=edited, inputs=edited),
+        _manifest(tools=(ToolIdentity("/usr/bin/clang++-18", "6" * 64),)),
+        _manifest(probes=(ProbeResult(("g++", "--version"), "g++ 14.1", ""),)),
+        _manifest(recipe_sha256="7" * 64),
+    ):
+        assert other.build_id != base.build_id, other
 
 
 def test_template_arguments_split_at_their_top_level():
