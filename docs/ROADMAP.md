@@ -198,7 +198,8 @@ Sanitizer, Nsight profiling and support for ML workloads.
 ### C++ built by GCC: reading what is withheld
 
 GCC's C++ builds withhold what LLDB misreads ([gaps](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
-Reading an unordered container's entries from its own nodes would take about 2 weeks.
+What remains is reading more of an unordered container's entries from its own nodes:
+floating-point numbers, characters, enums, pointers and nested containers.
 
 GDB's DAP reads much of this right, but Peeky's native layer is built on lldb-dap. A GDB backend
 would take about 4 to 6 weeks, and is deferred.

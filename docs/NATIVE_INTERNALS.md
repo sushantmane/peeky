@@ -386,8 +386,8 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - In an optimized build, a function that declares the root's name twice leaves it unread too.
     An inner block's local of that name may be in scope there, but not listed.
   - Where the counts differ, or the count is unread, the row is withheld as `not listed`, with no
-    handle. A preview shows `<not listed>` in its place. The probe refuses its keys and
-    positions: `um[1] not read: um is not listed: …`.
+    handle, unless Peeky reads its nodes (below). A preview shows `<not listed>` in its place.
+    The probe refuses its keys and positions: `um[1] not read: um is not listed: …`.
   - A right count doesn't prove the entries right. The provider decodes each node's entry as
     its allocator's first template argument, `skip_size` bytes into the node: the size of
     `_M_nxt`.
@@ -408,6 +408,72 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     compare.
   - libc++'s formatters are LLDB's own C++ ones, and its members differ. So a libc++ build, known
     by its `std::__1` namespace, is not checked.
+- **Reading the nodes.** Where LLDB's listing isn't proven, `NativeSession._node_listing` reads
+  the entries itself (`hashed_nodes`). The worker then shows the row as a value view:
+  `view: memory`, with worker-owned handles.
+  - `unlisted_container` reads the count alone, and keeps its path and value on the
+    `Withholding` (`counted`). The worker asks `listed_container` for the nodes only once
+    nothing else withholds the row. So a row with a note (`no value yet`, leftovers, one
+    read through a value with a note) is never read from its nodes.
+  - Every C or C++ pointer, and every C++ reference, on the row's way must be judged to
+    refer to a live object (`DebugWorker.nodes_reachable`). `NativeSession.indirections`
+    names them by the debug information: `T &`, `T &&`, a typedef of one, a member.
+  - A pointer is judged by #339's `pointee_unproven`. A reference is judged the same way
+    (`referent_proven`): the address the debugger shows for it, and what `referent_of`
+    says it refers to.
+  - One the rule doesn't judge counts as unproven, as does a root local the frame reaches
+    through a pointer, which no variable stands for. A heap block may hold a container's
+    bytes, and so may a returned call's dead frame.
+  - lldb-dap 18 gives no address for a local the debugger shows with a summary, so Peeky
+    can't place a container local there. A pointer or reference to one stays unproven, and
+    nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
+  - A preview reads nested containers' nodes under the same rule: none below a note, or
+    through such a pointer.
+  - A GCC lambda's capture is read through `__closure`. Where `__closure`, or what a capture
+    by reference refers to, isn't proven live, its note withholds the nodes too. Its count
+    is the capture's own, not that of a global it shadows.
+  - Nothing is read in an optimized build, nor where a unit's preprocessed text may optimize
+    a function (`c_source.optimizes`). That is any `optimize(` or `__optimize__(` outside
+    comments and literals, in any attribute form (`[[using gnu: optimize("O2")]]`), also
+    behind a macro, and any pragma that names `optimize`.
+  - Such a function may keep a value it stores in a register while the count and the chain
+    are unchanged. Any function on the stack may be one. A function named `optimize`,
+    called, counts too: the detector would rather withhold.
+  - The nodes form one chain from `_M_h._M_before_begin._M_nxt`, in iteration order. Each node
+    is a `std::__detail::_Hash_node<_Value, cache>`. The hashtable's `_Traits`
+    (`_Hashtable_traits`) say whether it caches the hash code.
+  - No local's type reaches the node type but through a pointer. So the session adds every
+    `_Hash_node` the debug information defines to `fields.type_graph` (`hashed_nodes.node_types`).
+  - `hashed_nodes.layout` proves where a node holds its entry. The node types of that `_Value`
+    and cache, one per unit, must all place it alike. Each holds one `_Hash_node_base` at
+    offset 0, an 8-byte pointer `_M_nxt`.
+  - It also holds one `_Hash_node_value_base` of `_Value`, whose `_M_storage` is an
+    `__aligned_buffer` of `_Value`, at least its size. The entry sits there: past the link,
+    aligned for `_Value`, inside the node.
+  - The chain must end in a null `_M_nxt` after exactly `_M_element_count` nodes, at most 256.
+    Every node must be aligned.
+  - With `readMemory` (lldb-dap 20), `hashed_nodes.Memory` reads each node, 4,096 bytes a
+    request, so nodes close together cost one request. Without it (lldb-dap 18), `Words` reads
+    8-byte words through hover paths.
+  - The word 8 bytes into the first node is `us._M_h._M_before_begin._M_nxt[1]._M_nxt`. LLDB
+    reads `[1]` past a pointer, and `_M_nxt` of what is there, as `frame variable` does.
+    Nothing is evaluated in the program. `Words` reads nothing outside the nodes.
+  - `Memory` reads more: each request takes 4,096 bytes from a node's address, and a string's
+    text comes from where its data pointer points. Only bytes at the nodes' own addresses,
+    and at a string's text, are decoded.
+  - The entries must hold integers, `bool`s and libstdc++ strings, in `std::pair`s and the
+    program's structs. A struct has no base class, bitfield or anonymous member.
+  - A string's text is read from its own buffer, or where its data pointer points. Its length
+    must fit that buffer, as `local_buffer` proves it. Up to 1,024 bytes are read, as for any
+    string read from memory.
+  - The entries come back listed as the debugger lists a container it reads right: `[0]`, a
+    pair's `first` and `second`, a struct's members, `T @ 0x…` for a struct. So
+    `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.
+  - Nothing is read where a call may be changing the container (`containers_settled`).
+  - The reads have their own budget: 4,096 requests and 4 MiB per inspection or expansion
+    (`NODE_READS`), within the value view's 10 s. A hover's text is cached for the stop. With
+    lldb-dap 18, 333 entries in three containers took about 1,000 hovers and 0.25 s.
+  - Otherwise the row stays `not listed`, with the note it had.
 - **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
   `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the
   bounds of …`, though GCC's DWARF is valid.
@@ -555,7 +621,8 @@ required test calls a model.
 | `tests/cpp/test_cpp_previews.py`, with C's in `tests/native/test_native_previews.py` | Struct and class previews | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/cpp/test_cpp_containers.py` | Vectors of strings, structs, `bool` and vectors; a moved-from vector; `std::array`; maps; sets; `std::deque`; `std::list`; a struct holding a vector; a reference; a pointer; a caller frame; a destructor during `clear()`; a structured binding of a reference; an element destroyed in place; a second thread, also one held inside `emplace_back`'s relocation; a loop's next pass; an optimized build | macOS (libc++); Linux (libstdc++, lldb-dap 18 and 20) |
 | `tests/native/test_native_statics.py`, `tests/cpp/test_cpp_statics.py` | `static` locals, and GCC's `const` aggregate in read-only data: read where the code names them, a C++ one once its guard says it is initialized, and never changed | macOS (Apple clang); Linux (clang 18, gcc and g++, lldb-dap 18 and 20) |
-| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, a string's text, LLDB's errors in the output, a bitfield's binding, a pair's or tuple's bindings (by reference too: into a local container, or of a call's result), and a lambda's captures, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
+| `tests/cpp/test_cpp_gcc_values.py` | Unordered containers, also read from their nodes (types, strings, a call under way), a string's text, LLDB's errors in the output, a bitfield's binding, a pair's or tuple's bindings (by reference too: into a local container, or of a call's result), and a lambda's captures, built by clang and by g++ | Linux (libstdc++, lldb-dap 18 and 20); the clang side on macOS too |
+| `tests/unit/test_hashed_nodes.py` | Reading an unordered container's nodes: the layout proof, the chain's length, the types read, words through variable paths, and the worker's value view | Unit |
 | `tests/cpp/test_cpp_landing_pads.py` | A local declared on the stop line, after clang's landing pad, is withheld; built by clang and by g++ | macOS (Apple clang); Linux (clang 18 and g++, lldb-dap 18 and 20) |
 | The `cxx` fixture (`tests/conftest.py`) | Cases whose lines, names or notes depend on the compiler run once per compiler, with per-compiler expectations. A lane whose `PEEKY_NATIVE_CXX` is g++ runs only their GCC side | Linux; macOS runs the clang side only |
 | `test_rows_read_through_a_container_a_library_call_is_changing_are_withheld` and `test_rows_read_through_a_container_whose_element_is_destroyed_in_place_are_withheld` | Rows read through a container that something may be changing | macOS and Linux |

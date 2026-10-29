@@ -4404,7 +4404,8 @@ class NativeTarget:
                             for path in external
                         )
                     if declarations is not None:
-                        from peeky.fields import CPP_LIBRARIES, type_graph
+                        from peeky.fields import CPP_LIBRARIES, HASHED, type_graph
+                        from peeky.hashed_nodes import node_types
 
                         # The program's variables in static storage, which prove what a
                         # pointer at one points at live (#339).
@@ -4438,6 +4439,18 @@ class NativeTarget:
                         if aimed:
                             for offset, node in type_graph(
                                 _dies(info), aimed, CPP_LIBRARIES
+                            ).items():
+                                fields.setdefault(offset, node)
+                        if any(
+                            node[0] == "record" and HASHED.match(node[11] or "")
+                            for node in fields.values()
+                            if len(node) > 11
+                        ):
+                            # The node types of the unordered containers, which no
+                            # local reaches but through a pointer: their entries are
+                            # read from the nodes (#360).
+                            for offset, node in type_graph(
+                                _dies(info), node_types(_dies(info)), CPP_LIBRARIES
                             ).items():
                                 fields.setdefault(offset, node)
             except (RuntimeError, ValueError, OSError) as exc:
@@ -5896,7 +5909,8 @@ class NativeSession:
         # LLDB rebuilds a caller's frame; None where unknown.
         self.tail_calls = tail_calls
         # Whether a unit may optimize a function beyond the build's level (an `optimize`
-        # attribute or pragma: c_source.optimizes); None where unknown.
+        # attribute or pragma: c_source.optimizes); None where unknown. An unordered
+        # container's nodes are read only where it is False (#360).
         self.optimized = optimized
         # local_declarations of the build; None (unknown) never withholds a value, and
         # ``unjudged`` says why: (_UNJUDGED's key, its detail, the build's
@@ -6185,6 +6199,7 @@ class NativeSession:
         threads=None,
         kinds=None,
         raw=None,
+        nodes=None,
     ):
         """A C or C++ struct's, class's, fixed-size array's or standard container's
         preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
@@ -6202,7 +6217,8 @@ class NativeSession:
         (``containers_settled``). ``kinds``: the debugger's type of each of ``steps``;
         ``raw(path)`` reads a variable path as the debugger does (``unlisted_container``):
         an unordered container inside shows `<not listed>` where its count is not
-        proven (#167)."""
+        proven (#167), or its entries as read from its nodes (#360; ``nodes``, as for
+        ``unlisted_container``)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
@@ -6251,6 +6267,10 @@ class NativeSession:
                 variable = {**variable, "value": f"{variable.get('type')} @ {address[0]}"}
 
         def text(child):
+            if child.get("view") == "memory":
+                # An entry Peeky read from an unordered container's nodes (#360): shown
+                # as read.
+                return child.get("value")
             shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
             if shown and shown.get("unavailable"):
                 return None
@@ -6264,7 +6284,16 @@ class NativeSession:
             # as a member or an element.
             path = [*zip(steps, known_kinds), *((name, None) for name in at)]
             path[-1] = (path[-1][0], child.get("type"))
-            return self.unlisted_container(child, frame, path, raw or _unread) is not None
+            found = self.unlisted_container(child, frame, path, raw or _unread)
+            counted = getattr(found, "counted", None)
+            if counted is not None and nodes is not None:
+                # Its entries as read from its nodes (#360), shown in its place.
+                read = self._node_listing(
+                    child, frame, path, *counted, nodes, stack, deeper, threads
+                )
+                if read is not None:
+                    return read[1]
+            return found is not None
 
         return preview(variable, fetch, typed, text, containers=settled, unlisted=unlisted)
 
@@ -6563,6 +6592,48 @@ class NativeSession:
         if typed is None or typed.bits is not None or typed.entry or typed.kind() != "pointer":
             return None
         return _pointee(typed.target())
+
+    def referent_of(self, frame, steps):
+        """What the C++ reference ``steps`` names in ``frame`` refers to (`T &`, `T &&`, a
+        typedef of one, a member), as ``pointee_of`` says what a pointer points at: for
+        the rule on reading an unordered container's nodes through it (#360). None where
+        the build's debug information doesn't say."""
+        typed = self._typed(frame, list(steps))
+        if typed is None or typed.bits is not None or typed.entry:
+            return None
+        target = typed.target() if typed.kind() == "reference" else None
+        if target is None or target.kind() not in _ELEMENTS:
+            return None
+        identity, size = target.identity(), target.byte_size()
+        if identity is None or type(size) is not int or size < 1:
+            return None
+        return {"pointee": identity, "element_size": size, "count": 1}
+
+    def indirections(self, frame, steps):
+        """[(index, "pointer" or "reference")] of each of ``steps`` (a value's way from
+        its root local in ``frame``, the value itself last) that is a pointer or a
+        reference, by the build's debug information (#360). None where that can't be
+        told, or where the root local is one the frame reaches through a pointer (a
+        binding of a reference, `auto &[a, b] = *p`), which no variable stands for."""
+        function = self._function_at(frame)
+        referred = (function or {}).get("referred")
+        root = str(steps[0]) if steps else ""
+        plain = split_located(root)
+        if (
+            not steps
+            or referred is None
+            or (plain is None and looks_located(root))
+            or (plain[0] if plain else root) in referred
+        ):
+            return None
+        found = []
+        for index in range(len(steps)):
+            typed = self._typed(frame, [str(step) for step in steps[: index + 1]])
+            if typed is None:
+                return None
+            if typed.kind() in ("pointer", "reference"):
+                found.append((index, typed.kind()))
+        return found
 
     def static_ranges(self):
         """Where the program's own image is loaded (#339): [(start, end)] of each segment
@@ -6871,7 +6942,10 @@ class NativeSession:
         `_M_h._M_element_count`, read raw by ``evaluate(path)`` (lldb-dap's `hover`: a
         variable path, never code run in the program), or nothing of it is shown.
         ``variable``: the debugger's, a container or a pointer or reference to one;
-        ``steps``: its way from its root local, [(name, type)], itself last."""
+        ``steps``: its way from its root local, [(name, type)], itself last.
+
+        The Withholding keeps the count's path and the count (``counted``), with which
+        ``listed_container`` may read the entries from the container's own nodes (#360)."""
         shape = self._unordered(variable.get("type"))
         value = str(variable.get("value") or "")
         if shape is None or (value.startswith("<") and value.endswith(">")):
@@ -6910,7 +6984,88 @@ class NativeSession:
             reason = undecoded_reason(why, pointer=shape == "pointer")
         else:
             reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
-        return Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
+        withheld = Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
+        withheld.counted = (path, raw) if path is not None and raw is not None else None
+        return withheld
+
+    def listed_container(
+        self, withheld, variable, frame, steps, nodes, stack=None, deeper=None, threads=None
+    ):
+        """The value view of an unordered container ``unlisted_container`` withholds
+        (``withheld``), its entries read from its own nodes (#360): {"value", "rust_view":
+        "memory", "children"}, and "pointee" (what it points at, whole) for a pointer to
+        one. None where Peeky can't (``_node_listing``). The worker asks only once
+        nothing else withholds the row: no note, and no pointer on the way it can't show
+        points at a live object. ``nodes``: (``evaluate`` on the node-read budget,
+        ``read(reference, count)`` or None where the debugger has no `readMemory`)."""
+        counted = getattr(withheld, "counted", None)
+        if counted is None:
+            return None
+        read = self._node_listing(variable, frame, steps, *counted, nodes, stack, deeper, threads)
+        return read[0] if read is not None else None
+
+    def _node_listing(self, variable, frame, steps, path, count, nodes, stack, deeper, threads):
+        """(the row's value view, (the listing's root, fetch)) of an unordered container's
+        entries read from its own nodes (#360), or None where Peeky cannot read them so:
+        an optimized build, or one whose source asks GCC to optimize a function (a
+        value it stores may still be in a register, its nodes unchanged); a container
+        that may be part-way through a change (``containers_settled``); or a read that
+        ``hashed_nodes.read_entries`` does not prove. ``path``: the variable path of its
+        own count; ``count``: that count."""
+        from peeky.hashed_nodes import Memory, Unread, Words, read_entries, view_children, word
+        from peeky.native_previews import preview
+
+        graph = getattr(self, "fields", None)
+        suffix = "_M_h._M_element_count"
+        if graph is None or nodes is None or not path.endswith(suffix):
+            return None
+        if getattr(self.target, "optimization", "O0") != "O0":
+            return None
+        if getattr(self, "optimized", None) is not False:
+            # A function the source asks GCC to optimize (its `optimize` attribute or
+            # pragma) may hold a value in a register, whichever function is stopped in.
+            return None
+        walked = self._typed(frame, [str(name) for name, _ in steps], walked=True)
+        if walked is None:
+            return None
+        typed, indirect, _, _ = walked
+        container = typed.target() if typed.kind() in ("pointer", "reference") else typed
+        node = container.node() if container is not None else None
+        if node is None or node[0] != "record" or not container.unordered():
+            return None
+        if threads is None or not self.containers_settled(frame, indirect, stack, deeper, threads):
+            # A call may be part-way through changing it (#181): its nodes too.
+            return None
+        evaluate, read = nodes
+        base = path[: -len(suffix)] + "_M_h._M_before_begin._M_nxt"
+        try:
+            if read is not None:
+                memory = Memory(word(evaluate(base)), read)
+            else:
+                memory = Words(base, evaluate)
+            root, fetch = read_entries(graph, node, count, memory)
+        except (Unread, ValueError, RuntimeError, OSError, TimeoutError, struct.error):
+            return None
+
+        def text(child):
+            return child.get("value")
+
+        whole = preview(root, fetch, container, text) or root["value"]
+        children = view_children(graph, root, fetch)
+        value = str(variable.get("value") or "")
+        address = re.match(r"0x[0-9a-fA-F]+(?=\s|$)", value)
+        view = {"value": whole, "rust_view": "memory", "children": children}
+        if self._unordered(variable.get("type")) == "pointer":
+            # As for a pointer the debugger lists: its address and the count; what it
+            # points at, `p[0]`, is the container, shown whole.
+            if address is None:
+                return None
+            view.update(value=f"{address[0]} {root['value']}", pointee=whole)
+        elif typed.kind() == "reference":
+            if address is None:
+                return None
+            view["value"] = f"{address[0]} {whole}"
+        return view, (root, fetch)
 
     def _unproven_entries(self, variable, frame, steps):
         """Why LLDB's listing of a non-empty unordered container is not proven to decode

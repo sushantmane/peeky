@@ -542,7 +542,8 @@ class _Room:
     """The characters a preview has left, and whether it may show a standard
     container's elements (#181): ``containers``, a bool or a function asked only when a
     container is met. ``unlisted(at, child)``: whether an unordered container (``at``:
-    the debugger's names from the preview's value to it) is shown as ``UNLISTED`` (#167)."""
+    the debugger's names from the preview's value to it) is shown as ``UNLISTED`` (#167),
+    or (the container, a fetch) as read from its nodes (#360)."""
 
     def __init__(self, length, containers=True, unlisted=None):
         self.left, self.allows, self.unlisted = length, containers, unlisted
@@ -573,7 +574,9 @@ def preview(variable, fetch, typed, text, containers=True, unlisted=None):
     summary (`size=2`): a library call may be part-way through changing it.
     ``unlisted(at, child)``: whether an unordered container, the value itself (``at``
     empty) or one inside it, is withheld (#167): the value then has no preview, and one
-    inside shows `<not listed>`, never the debugger's count."""
+    inside shows `<not listed>`, never the debugger's count. Or, in a tuple, (the
+    container, a fetch for its entries) as Peeky read them from its nodes (#360), which
+    are shown in place of the debugger's."""
     reference = variable.get("variablesReference")
     if type(reference) is not int or reference <= 0 or typed is None:
         return None
@@ -594,8 +597,16 @@ def preview(variable, fetch, typed, text, containers=True, unlisted=None):
         if typed is None:
             return None
     sort = typed.kind()
-    if sort == "library" and typed.unordered() and unlisted is not None and unlisted((), variable):
-        return None
+    if sort == "library" and typed.unordered() and unlisted is not None:
+        held = unlisted((), variable)
+        if isinstance(held, tuple):
+            # Its entries as Peeky read them from its nodes (#360): listed as the
+            # debugger lists a container it reads right; a multimap by its count.
+            variable, fetch = held
+            if typed.container() is None:
+                return prefix + str(variable.get("value"))
+        elif held:
+            return None
     if sort == "library" and typed.container() is not None:
         # A standard container (#181): `size=3 [1, 2, 3]`.
         if not (containers() if callable(containers) else containers):
@@ -756,9 +767,15 @@ def _member(child, typed, fetch, text, depth, room, at):
     if is_unavailable(value):
         return "<no value>"
     sort = typed.kind()
-    if sort == "library" and typed.unordered() and room.unlisted and room.unlisted(at, child):
-        # Its count is not proven (#167): neither its summary nor its elements.
-        return UNLISTED
+    if sort == "library" and typed.unordered() and room.unlisted:
+        held = room.unlisted(at, child)
+        if isinstance(held, tuple):
+            # Its entries as Peeky read them from its nodes (#360).
+            child, fetch = held
+            value = str(child.get("value") or "")
+        elif held:
+            # Its count is not proven (#167): neither its summary nor its elements.
+            return UNLISTED
     if sort == "union":
         return "<union>"
     if sort in ("pointer", "reference"):
