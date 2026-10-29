@@ -9,8 +9,10 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   holds, where it holds them: an allocator whose first template argument is another
   type, a 16-byte-aligned `long double`, or (LLDB 18) a map whose type's name holds `set`
   decode wrongly. Otherwise Peeky reads the entries from the container's own nodes
-  (#360), where the debug information proves how and they are integers, bools and
-  strings, in pairs and structs; else no preview, key or position read, or listing.
+  (#360), where the debug information proves how: numbers, characters, enums, pointers
+  and strings, in pairs and structs, a container in one where its own layout is proven
+  (#374), and past 256 entries by position or key; else no preview, key or position read,
+  or listing.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
   length comes from the build's debug information, and lldb-dap 20, which has no
   writeMemory request, writes it with LLDB's `memory write` command.

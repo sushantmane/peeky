@@ -8,6 +8,9 @@
   - A `std::unordered_map`'s or `std::unordered_set`'s entries, read from the container's own
     nodes where the debug information proves their layout. The entries must be integers, bools
     or strings, alone or in pairs and structs (#371).
+  - More unordered-container entries from their nodes: `float`s and `double`s, characters,
+    enums, pointers, a `std::vector`, `std::array` or unordered container held in one, and more
+    than 256 entries, read by position or key (#374).
   - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
     changed inside the lambda; its refusal names the lambda's own copy where a change works
     (#369, #380).
