@@ -10,7 +10,7 @@ python3 -m venv /v >/dev/null && /v/bin/pip install -q -e '.[dev]' || exit 90
 export PATH=/v/bin:$PATH
 status=0
 lane() {
-  name=$1; shift; start=$SECONDS
+  name=$1; shift; start=$SECONDS; selected "$name" || return 0; ran="${ran:-} $name"
   if env "$@" > "/tmp/$name.log" 2>&1; then
     echo "PASS $name ($((SECONDS - start)) s): $(tail -1 "/tmp/$name.log" | cut -c1-300)"
   else
@@ -24,6 +24,8 @@ rust=(PEEKY_RUST_LINKER=/usr/bin/clang-18 PEEKY_RUST_DAP=/usr/bin/lldb-dap-18
       "PEEKY_RUST_CARGO=$(rustup which --toolchain 1.96.0 cargo)"
       "PEEKY_RUST_RUSTC=$(rustup which --toolchain 1.96.0 rustc)")
 # (Helper scripts source the 25 lines above for `native` and `rust`: keep them there.)
+# PEEKY_LANES="unit c": run only those lanes, as CI's lane jobs do; empty runs every lane.
+selected() { [ -z "${PEEKY_LANES:-}" ] || case " $PEEKY_LANES " in *" $1 "*) true ;; *) false ;; esac; }
 # What a failed lane's log says, bounded, so that a failure seen once can be diagnosed:
 # pytest's summary lines, then each failing test's section (its header, its frames'
 # `file:line` lines, its `E` lines and the start of what it printed), at most 8 tests and
@@ -72,14 +74,19 @@ lane rust-llvm20 "${rust[@]}" PEEKY_RUST_DAP=/usr/bin/lldb-dap-20 \
   PEEKY_RUST_DWARFDUMP=/usr/bin/llvm-dwarfdump-20 PEEKY_EXPECT_READ_MEMORY=1 \
   pytest -q -p no:cacheprovider tests/rust
 lane gdb-dap PEEKY_GDB=/usr/bin/gdb pytest -q -p no:cacheprovider tests/gdb
-if python scripts/setup_java_adapter.py --output /tmp/peeky-java > /tmp/java-setup.log 2>&1; then
+if ! selected java; then
+  :
+elif python scripts/setup_java_adapter.py --output /tmp/peeky-java > /tmp/java-setup.log 2>&1; then
   lane java PEEKY_JAVA_ADAPTER=/tmp/peeky-java pytest -q -p no:cacheprovider tests/java
 else
-  echo "FAIL java setup: $(tail -3 /tmp/java-setup.log)"; status=1
+  echo "FAIL java setup: $(tail -3 /tmp/java-setup.log)"; ran="${ran:-} java"; status=1
 fi
 lane wheel bash -c 'pip install -q build==1.3.0 && python -m build >/dev/null 2>&1 &&
   python3 -m venv /wheel && /wheel/bin/pip install -q dist/*.whl &&
   /wheel/bin/python -c "import peeky.client; import peeky.dap" &&
   for tool in peeky-worker peeky-agent peeky-probe peeky; do /wheel/bin/$tool --help >/dev/null || exit 1; done &&
   /wheel/bin/python scripts/smoke_wheel.py && echo "wheel ok"'
+for name in ${PEEKY_LANES:-}; do
+  case " ${ran:-} " in *" $name "*) ;; *) echo "FAIL $name: no such lane"; status=1 ;; esac
+done
 exit $status
