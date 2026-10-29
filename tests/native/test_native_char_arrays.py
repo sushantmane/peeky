@@ -106,13 +106,15 @@ struct rec { char label[16]; };
 
 int main(void) {
     long page = sysconf(_SC_PAGESIZE);
-    char *base = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    FILE *file = tmpfile();
+    if (file == NULL || ftruncate(fileno(file), page) != 0)
+        return 1;
+    /* Its second page lies past the file's end: mapped, but nothing can read it. */
+    char *base = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(file), 0);
     if (base == MAP_FAILED)
         return 1;
     char *edge = base + page - 6;
     memcpy(edge, "abcdef", 6);
-    if (mprotect(base + page, page, PROT_NONE) != 0)
-        return 1;
     struct rec *r = (struct rec *)edge;
     char local[16] = "hi";
     printf("%.6s %s\\n", r->label, local); /* EDGE */
@@ -124,9 +126,11 @@ int main(void) {
 @pytest.mark.timeout(240)
 def test_bytes_past_an_unreadable_page_are_never_called_nuls(arrays, capsys):
     # Review of #390: LLDB's summary formats what part of its read succeeded, so
-    # `r.label`, whose last 10 bytes are on a page the program made unreadable, read
+    # `r.label`, whose last 10 bytes are on a page past a mapped file's end, read
     # `"abcdef"` as if NULs followed: `"abcdef" (then 10 NUL bytes)`. Peeky reads those
     # bytes again, from memory or as the debugger lists the elements, and claims none.
+    # (A page that is only `PROT_NONE`, or unmapped, won't do: Linux's ptrace reads the
+    # one, and LLDB may map the other for itself.)
     path = arrays.with_name("edge.c")
     path.write_text(EDGE)
     arrays.unlink()
