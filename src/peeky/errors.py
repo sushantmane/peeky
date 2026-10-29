@@ -169,6 +169,13 @@ _RULES = (
         False,
     ),
     (
+        r"^At most \d+ interventions \(--set and --set-at together\)",
+        "INVALID_REQUEST",
+        "Split the changes over several probes, or make them in the source with a candidate "
+        "edit (`--old`/`--new`).",
+        False,
+    ),
+    (
         r"Other threads stopped at this breakpoint",
         "INVALID_REQUEST",
         "`peeky session continue` serves the other threads' stops; step after that.",

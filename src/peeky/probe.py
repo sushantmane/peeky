@@ -467,8 +467,11 @@ class Probe:
             object.__setattr__(self, "capture", tuple(dict.fromkeys(self.capture)))
         if not isinstance(self.set, tuple) or not isinstance(self.set_at, tuple):
             raise ValueError("Interventions are tuples")
-        if len(self.set) + len(self.set_at) > MAX_SETS:
-            raise ValueError(f"At most {MAX_SETS} interventions (--set and --set-at together)")
+        if (given := len(self.set) + len(self.set_at)) > MAX_SETS:
+            raise ValueError(
+                f"At most {MAX_SETS} interventions (--set and --set-at together) fit in one "
+                f"probe; this one has {given}"
+            )
         for point in self.set_at:
             if (
                 not isinstance(point, tuple)
@@ -2577,6 +2580,26 @@ def debugger_diagnostics(result, *sources):
             f"would be moved too: {str(lines[0])[:200]}"
         )
     return None
+
+
+# debugger_diagnostics's warning, which its count of lines starts.
+_DIAGNOSED = re.compile(r"(?:A `stderr` line|([0-9]+) `stderr` lines) with the shape of LLDB's ")
+
+
+def diagnostics_again(warning):
+    """debugger_diagnostics's ``warning`` in short, for a probe of a build whose earlier
+    probe gave it whole (thirteenth evaluation: lldb-dap 18 gave it on every GCC probe);
+    None for any other warning. It still says that a program line just like one would be
+    moved too."""
+    found = _DIAGNOSED.match(warning)
+    if found is None:
+        return None
+    many = found[1] is not None
+    return (
+        f"{found[1] + ' ' if many else ''}`stderr` line{'s' if many else ''} of LLDB's about "
+        f"the build's debug information {'were' if many else 'was'} moved out of the output "
+        "again (debugger_diagnostics in --json); a program line just like one would be too"
+    )
 
 
 def _settle_output(result, final, known_end):
@@ -5855,6 +5878,32 @@ def repeated_visible(rows, where):
     return shortened
 
 
+# A row's error shorter than this is shown whole on every row.
+_REPEAT_SHOWN = 60
+
+
+def repeated_errors(rows, shortened=()):
+    """{index: error} for the rows of ``rows`` whose whole error an earlier row of the same
+    selector gave already (none in ``shortened``): its label, then `same as at hit N`
+    (`not shown: same as at hit 1`). Text only; JSON and the store keep every error whole
+    (thirteenth evaluation: a probe's table repeated a 300-character reason on 18 rows)."""
+    seen, repeated = {}, {}
+    for index, row in enumerate(rows):
+        error = row.get("error")
+        if "value" in row or not isinstance(error, str) or index in shortened:
+            continue
+        if len(error) < _REPEAT_SHOWN:
+            continue
+        first = seen.setdefault((row.get("selector"), error), row)
+        if first is row:
+            continue
+        labelled = re.match(r"([^:<>]{1,24}): ", error)
+        repeated[index] = (
+            f"{labelled[1]}: " if labelled else ""
+        ) + f"same as at hit {first['hit']}"
+    return repeated
+
+
 def _restored(change):
     """How a probe's text marks a restore (#305): `restored, `, or `restored over the
     current 2, ` where the value it wrote over was not the one the change undone wrote:
@@ -5915,13 +5964,49 @@ def _address_only_note(result):
     )
 
 
+# A C or C++ container's preview, `size=N {…}` or `size=N […]`, cut at its own level.
+_CUT_PREVIEW = re.compile(r"size=([0-9]+) (?:\{.*…\}|\[.*…\])", re.S)
+
+
+def _more_entries(result):
+    """A line for each C or C++ container whose preview shows fewer entries than it holds
+    (thirteenth evaluation: `by_hour`'s preview stopped at 8 of 9, and nothing said how to
+    read the rest), once per selector: how to read one, and how to list them."""
+    if (result.get("target_identity") or {}).get("language") not in ("c", "cpp"):
+        return []
+    lines, said = [], set()
+    for row in result.get("rows", ()):
+        selector, value = row.get("selector"), row.get("value")
+        if selector in said or not isinstance(value, str):
+            continue
+        cut = _CUT_PREVIEW.fullmatch(value)
+        if not cut or value[-2] != "…":
+            continue
+        said.add(selector)
+        kind = _associative(row)
+        if value[-1] == "]":
+            one = f"`{selector}[N]` (index N)"
+        elif kind in _KEYED:
+            one = f"`{selector}[K]` (key K) or `{selector}[#N]` (the Nth)"
+        else:
+            one = f"`{selector}[#N]` (the Nth" + ("" if kind else "; a map's `[K]`, key K") + ")"
+        noun = "elements" if value[-1] == "]" else "entries"
+        lines.append(
+            f"preview: `{selector}` holds {cut[1]} {noun}, more than its preview shows; read one "
+            f"with {one}, or list them in a session: `peeky session get {selector}`"
+        )
+    return lines
+
+
 # The short reasons a Java field's row gives that hold at every stop (java._MEMBER_ROWS).
 _MEMBER_REASONS = ("final", "static")
 
 
-def _table(result, short_names=True):
+def _table(result, short_names=True, sent_before=False):
     """A probe result as text; ``short_names``: with the note on short frame names
-    (`_short_note`), which `peeky probe` gives once per state directory."""
+    (`_short_note`), which `peeky probe` gives once per state directory; ``sent_before``:
+    the line on text the debugger sent once Peeky began closing the session in short, as
+    `peeky probe` gives it after its first time for a build (thirteenth evaluation)."""
     lines = []
     if result.get("refused_before_launch"):
         # Refused before launch (#138): no rows, hits or timing to show, only why (seventh
@@ -5970,6 +6055,7 @@ def _table(result, short_names=True):
     ]
     left_out = len(result["rows"]) - len(kept)
     errors = repeated_visible(kept, lambda row: f"at hit {row['hit']}")
+    errors.update(repeated_errors(kept, errors))
     # A Java field's `final` or `static`, true of every row of its selector, shows on its
     # first row only (twelfth evaluation, desks 5: on every row, after-set too). JSON keeps
     # it on each.
@@ -6040,6 +6126,7 @@ def _table(result, short_names=True):
         )
     if note := _address_only_note(result):
         lines.append(note)
+    lines.extend(_more_entries(result))
     if short_names and (note := _short_note(result)):
         lines.append(note)
     named = function_labels(change.get("function") for change in result["interventions"])
@@ -6218,7 +6305,10 @@ def _table(result, short_names=True):
         lines.extend("  " + line for line in shown[-20:])
     if result.get("output_after_disconnect"):
         lines.append(
-            "the debugger sent more text once Peeky began closing the session, its own or "
+            "the debugger again sent more text as Peeky closed the session "
+            "(output_after_disconnect in --json)"
+            if sent_before
+            else "the debugger sent more text once Peeky began closing the session, its own or "
             "the program's still on its way (output_after_disconnect in --json)"
         )
     return "\n".join(lines)

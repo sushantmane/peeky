@@ -658,6 +658,46 @@ def _merged_class(first, second):
     return templates.pop() if len(templates) == 1 else "?"
 
 
+# A template argument LLDB writes as a bare name, which may be a typedef's of an unnamed
+# class; and how compilers name an unnamed class in a template's name: clang's `(lambda at
+# a.cpp:4:18)` and `(unnamed struct at a.cpp:3:1)`, GCC's `main()::<lambda(int, int)>`.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+_UNNAMED_CLASS = re.compile(
+    r"\((?:lambda|unnamed (?:struct|class|union)) at [^()]+\)|(?:[^<>,]*::)?<lambda\(.*\)>"
+)
+
+
+def _template_split(name):
+    """(what comes before its first `<`, its template arguments split at their top-level
+    commas, what follows the matching `>`) of a type's name, or None."""
+    start = name.find("<")
+    if start <= 0:
+        return None
+    arguments, depth, current = [], 0, []
+    for index in range(start, len(name)):
+        char = name[index]
+        if char in "<([":
+            depth += 1
+            if depth == 1:
+                continue
+        elif char in ">)]":
+            depth -= 1
+            if depth < 0:
+                return None
+            if not depth:
+                return (
+                    name[:start],
+                    [*arguments, "".join(current).strip()],
+                    name[index + 1 :],
+                )
+        elif char == "," and depth == 1:
+            arguments.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    return None
+
+
 def _without_templates(name):
     """``name`` with every balanced `<...>` removed (`X<int *>::P` is `X::P`)."""
     out, depth = [], 0
@@ -7625,14 +7665,58 @@ class NativeSession:
         """The element's type for a root local the build holds as a reference to a
         structured binding's element (#291): `std::tuple_element<0, std::pair<long,
         long> >::type`, as the binding is declared, where LLDB names the reference (`…
-        &&`). None for any other value, whose type stays LLDB's."""
+        &&`). A root local's type whose template argument is a lambda (or another unnamed
+        class), named as the compiler names it (``_unnamed_arguments``). None for any other
+        value, whose type stays LLDB's."""
         bare = re.fullmatch(r"(.*?\S)\s*&{1,2}\s*", str(variable.get("type") or ""))
         if top and bare is not None and variable.get("peekyCapture") is True:
             # A GCC lambda's capture by reference, shown as what it refers to (#361).
             return bare[1]
         if not top or bare is None or not isinstance(self._element_binding(variable, frame), tuple):
-            return None
+            return self._unnamed_arguments(variable, frame) if top else None
         return bare[1]
+
+    def _unnamed_arguments(self, variable, frame):
+        """The type of the root local ``variable`` with each template argument that LLDB
+        names by a typedef of an unnamed class (a lambda) named as the compiler names it in
+        the build's debug information: clang's `(lambda at nightlot.cpp:24:25)`, GCC's
+        `main()::<lambda(int, int)>`. LLDB shows such a class by the first typedef it meets
+        for it: `std::map<int, long, type>` (libc++'s `__type_identity<…>::type`),
+        `std::map<int, long, key_compare>` (libstdc++'s), which no code names (thirteenth
+        evaluation). Only an argument LLDB names by a bare identifier, where the record's
+        own name has a lambda's or an unnamed class's at the same place; None where
+        nothing changes or Peeky can't place the local's type."""
+        kind = str(variable.get("type") or "")
+        shown = _template_split(kind)
+        if shown is None or not any(_IDENTIFIER.fullmatch(each) for each in shown[1]):
+            return None
+        try:
+            offset, _, graph = self._root_type(frame, variable)
+        except Exception:
+            return None
+        for _ in range(16):
+            node = graph.get(offset) if graph is not None else None
+            if node is None or node[0] not in ("typedef", "qualifier", "reference"):
+                break
+            offset = node[2]
+        if node is None or node[0] != "record" or not node[1]:
+            return None
+        declared = _template_split(node[1])
+        if declared is None or _without_templates(declared[0]) != _without_templates(
+            shown[0].split("::")[-1].split()[-1]
+        ):
+            return None
+        arguments = [
+            named
+            if _IDENTIFIER.fullmatch(each)
+            and index < len(declared[1])
+            and _UNNAMED_CLASS.fullmatch(named := declared[1][index])
+            else each
+            for index, each in enumerate(shown[1])
+        ]
+        if arguments == shown[1]:
+            return None
+        return f"{shown[0]}<{', '.join(arguments)}>{shown[2]}"
 
     def bound_element(self, variable, frame, fetch, note=None, siblings=None, raw=None):
         """How the worker shows a root local the build holds as a reference to a

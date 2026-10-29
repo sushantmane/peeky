@@ -6,6 +6,7 @@ kitty (Rust) and runoff (Java)."""
 
 import contextlib
 import json
+import re
 import threading
 
 import pytest
@@ -193,10 +194,13 @@ def test_the_sets_row_is_short_and_interventions_come_first(store, capsys):
 
 def cells(shown, selector):
     """The ``selector`` row's value_a and value_b in a `diff` text table: each column
-    starts where its header does."""
+    starts where its header does. The (output) row runs past its columns (thirteenth
+    evaluation): its cells are apart by two spaces or more."""
     header, *table = shown.splitlines()
     (line,) = [line for line in table if f"  {selector}  " in line]
     a, b, differs = (header.index(name) for name in ("value_a", "value_b", "differs"))
+    if selector == "(output)":
+        return tuple(re.split(r"\s{2,}", line[a:])[:2])
     return line[a:b].rstrip(), line[b:differs].rstrip()
 
 
@@ -286,7 +290,7 @@ def test_values_a_change_moved_tell_nothing_of_alignment(store):
             f"- {start} between the runs at each of the 32 hits, but it reads alike at some "
             "hits, which could still trade places\n"
             f"- `db.count` differs after {short} and may follow from "
-            f"{'them' if b == 2 else 'it'}, so this check leaves it out\n"
+            f"{'them' if b == 2 else 'it'}, so it says nothing of how the hits pair (its rows above still show where it differs)\n"
             "- no captured selector tells the hits apart, so `queries join` could not pair them"
         )
 
@@ -312,7 +316,7 @@ def test_a_selector_the_change_left_alone_shows_what_pairing_by_number_does(stor
         "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
         "--param key=ms` would, but that does not prove the hits are the same moments\n"
         "- `db.stable` differs after the interventions (run 2's on `db.count` in main) and may "
-        "follow from them, so this check leaves it out"
+        "follow from them, so it says nothing of how the hits pair (its rows above still show where it differs)"
     ]
 
 
@@ -334,7 +338,7 @@ def test_a_reorder_after_an_edit_keeps_the_hits_from_lining_up(store):
         "across these hits\n"
         "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
         "--param key=key` would, but that does not prove the hits are the same moments\n"
-        "- `call` differs after the edit and may follow from it, so this check leaves it out"
+        "- `call` differs after the edit and may follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)"
     )
 
 
@@ -381,7 +385,7 @@ def test_agreement_is_said_as_agreement_between_the_runs(store):
         "across these hits\n"
         "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 "
         "--param key=e.cents` would, but that does not prove the hits are the same moments\n"
-        "- `payer` differs after the edit and may follow from it, so this check leaves it out"
+        "- `payer` differs after the edit and may follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)"
     ]
 
 
