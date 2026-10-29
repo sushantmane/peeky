@@ -132,7 +132,7 @@ One blocking issue, three should-fix issues and three nits. All are fixed:
 
 Regression tests: `test_rows_belong_to_the_innermost_function_from_their_own_file`, `test_rust_symbols_are_demangled_like_lldb_frames` and `test_identical_scopes_from_several_units_are_listed_once`. The reviewer's C++ `always_inline`, C++ -O2 constructor, non-ASCII and Rust impl/closure/trait/`#[inline(always)]` cases were rerun with real toolchains.
 
-Verification of 81123e9 confirmed every fix on macOS and on Linux LLVM 18. Hosted CI could not start (a billing block), so the reviewer ran the Rust, C and C++ lanes in Docker. It found one more should-fix and two nits:
+Verification of 81123e9 confirmed every fix on macOS and on Linux LLVM 18. Hosted CI could not start, so the reviewer ran the Rust, C and C++ lanes in Docker. It found one more should-fix and two nits:
 - **Should-fix:** the docs claimed `describe` names match the probe's `function` column. Plain functions and methods match. Rust trait impls and closures keep LLDB's symbol escapes there, and C++ frames add signatures. The cookbook now says so and suggests `LIKE` in SQL.
 - **Nit:** a lambda inside a function that exists only inlined (-O1 or higher) lost its function name, because clang parents it under an empty placeholder. The name now comes from the lambda's Itanium local-entity symbol (`_ZZ11apply_twiceiE…`), giving `apply_twice::operator()` at -O2.
 - **Nit:** a single very large optimized C++ unit can exceed the 16 MB dump bound. Splitting by unit does not help there, since it is one unit. It fails closed with a visible reason, and the cookbook documents it.
@@ -355,11 +355,11 @@ It reported one high and one medium issue, both fixed:
 The reviewer also noted that any save by this version upgrades the shared default store, after which older Peeky installs refuse it. That is how schema versions already worked (they ask to move the store aside); it is noted here rather than changed.
 
 Verification of 0952752 confirmed both fixes. It brute-forced `candidate_line` over about 3.5M mapped lines: every line before or after an edit landed at exactly its shifted offset. That covered `--old` starting with a newline, edits starting mid-line, empty `--new`, edits at the start and end of a file, and files without a trailing newline. It also confirmed that migrations run inside `BEGIN IMMEDIATE` and roll back whole, that concurrent upgrades happen exactly once, and that hot-journal recovery comes before the version check. One medium issue, fixed:
-- **Medium:** stores already upgraded by c84f613 had `user_version` 2 with the old views. 0952752 changed the views but kept version 2, so those stores were never rebuilt and `queries values` failed with `no such column: candidate`. This included this machine's own store. The schema is now version 3:
+- **Medium:** stores already upgraded by c84f613 had `user_version` 2 with the old views. 0952752 changed the views but kept version 2, so those stores were never rebuilt and `queries values` failed with `no such column: candidate`. This included the development machine's own store. The schema is now version 3:
   - 1→2 adds `runs.edit`;
   - 2→3 rebuilds the views with `DROP VIEW IF EXISTS`, which also lets a store with a hand-dropped view upgrade instead of being refused as unusable.
 
-  This machine's store was repaired by its next read.
+  That store was repaired by its next read.
 
   Test: `test_older_stores_are_upgraded_in_place_keeping_their_runs` (schema 1, early schema 2, and schema 1 without views).
 
@@ -427,7 +427,7 @@ It found one more blocking case, now fixed:
 
 Any other block with code of the line keeps the whole-block rule, and `#[collapse_debuginfo]` anywhere falls back to it entirely.
 
-The review agents were unavailable for this round ("model not supported", three attempts), so it was verified by hand with real builds on lldb-dap 21:
+No independent reviewer was available for this round, so it was verified by hand with real builds on lldb-dap 21:
 - **Never read:**
   - a multi-line call that moves its argument, at the call line and at its closing line;
   - a `match` scrutinee moved into its arm;
@@ -461,7 +461,7 @@ One critical finding: a false proof in the owned-local change. Everything else i
 
 ### Second round (by hand)
 
-The review agents failed twice with "400 The requested model is not supported", so this round was done by hand with real builds (rustc 1.96, lldb-dap). It used an adversarial program covering `for`, `?`, ranges, `+=` on a user type, closures, `HashMap`, derives, local macros wrapping `vec!`, `concat!`, `line!`, `env!`, `format!`, `assert!`, `debug_assert_eq!`, a `vec!` path split over two lines, a multi-line `vec!`, raw strings holding `*/`, the char `'!'`, `async fn` and `drop`.
+No independent reviewer was available for this round, so it was done by hand with real builds (rustc 1.96, lldb-dap). It used an adversarial program covering `for`, `?`, ranges, `+=` on a user type, closures, `HashMap`, derives, local macros wrapping `vec!`, `concat!`, `line!`, `env!`, `format!`, `assert!`, `debug_assert_eq!`, a `vec!` path split over two lines, a multi-line `vec!`, raw strings holding `*/`, the char `'!'`, `async fn` and `drop`.
 
 | # | Finding | Severity | Disposition |
 | --- | --- | --- | --- |

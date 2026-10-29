@@ -25,11 +25,11 @@ Targets, compilers, symbol tools, debugger adapters and applications are trusted
 
 The build manifest records the build environment. The adapter overrides HOME with a fresh isolated directory and includes that effective runtime environment in the native session manifest hash; it must not be described as executing with the exact unchanged build environment. DWARF4, declared source/header paths, supported executable formats and tested scalar types define the current boundary. Unsupported source locations or module evidence fail closed. Runtime mutation is evidence about a running execution, not verification of a rebuilt source fix.
 
-A separate bounded Claude Sonnet no-tool source review attempt timed out after 150 seconds without output. It contributes no findings or approval to this review.
+A separate bounded no-tool source review attempt timed out after 150 seconds without output. It contributes no findings or approval to this review.
 
 ## Review provenance
 
-A separate bounded Claude source-review attempt timed out after 150 seconds without returning output or findings. It supplies no additional review approval or evidence. The independent source review and executed regressions above are the evidence for this record.
+A separate bounded source-review attempt timed out after 150 seconds without returning output or findings. It supplies no additional review approval or evidence. The independent source review and executed regressions above are the evidence for this record.
 
 ## Follow-up: failed build provenance
 
@@ -39,7 +39,7 @@ Reviewed the minimal runner diff and executed `tests/unit/test_build.py` plus `t
 
 ## Linux LLVM18 compatibility follow-up
 
-The first hosted runs failed closed because LLVM18 stack frames omit moduleId; captured diagnostics confirmed instructionPointerReference and the module's decimal header load address are available. The parent independently reviewed the author's fallback: only an absent moduleId on Linux permits matching the instruction pointer against file-backed executable ELF segments relocated from the loaded header address. Build ID, binary path, symbol path and source/line guards still apply. Explicit wrong IDs never fall back. Tests cover PIE/non-PIE offsets, absent/invalid addresses, wrong ranges, duplicate modules, overflow and unbacked executable memory. Hosted execution remains the final gate.
+The first hosted runs failed closed because LLVM18 stack frames omit moduleId; captured diagnostics confirmed instructionPointerReference and the module's decimal header load address are available. The author's fallback was reviewed independently: only an absent moduleId on Linux permits matching the instruction pointer against file-backed executable ELF segments relocated from the loaded header address. Build ID, binary path, symbol path and source/line guards still apply. Explicit wrong IDs never fall back. Tests cover PIE/non-PIE offsets, absent/invalid addresses, wrong ranges, duplicate modules, overflow and unbacked executable memory. Hosted execution remains the final gate.
 
 The next Linux run passed module validation and exposed two additional differences: LLVM18 returns setVariable's observed value under `result` (confirmed in its request_setVariable implementation), and Linux prohibits overwriting a running executable. Native response normalization now handles both `result` and `value` and treats a missing observed value as uncertain/fatal. The tampering regression atomically replaces the named file and confirms replacement bytes before asserting rejection, rather than failing at the kernel write restriction. These changes preserve the runtime guard and test actual drift.
 

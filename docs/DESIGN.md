@@ -255,7 +255,7 @@ For Kubernetes, later:
   ([TESTING.md](TESTING.md)).
 - Real-model evaluations are manual, and report cost and latency separately. They never block a
   PR.
-- Private artifacts are built on manual delivery.
+- Wheel and source artifacts are built on manual delivery.
 - Public distribution and cluster deployment need separate product decisions.
 
 ## Language expansion

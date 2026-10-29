@@ -3,7 +3,7 @@
 ## Setup
 
 - **Agents:** three independent general-purpose coding agents, run in parallel with no shared context. Each was given `docs/AGENT_GUIDE.md`, `docs/COOKBOOK.md`, `docs/ERRORS.md`, the `peeky` CLI and one new bug (the program, an independent `check.py`, and a one-line issue). Reading the Peeky source was forbidden.
-- **Tool version:** the cookbook branch (#43, `99faeda`), from an editable install in a separate worktree.
+- **Tool version:** the cookbook branch (#43, `99faeda`), installed editable.
 - **Cases:** new and written for this run, so they are absent from the corpus and the docs:
   - `wordcount` (C): `count_words` drops the last word unless the text ends with a space.
   - `orders` (Python): a coupon larger than the order makes its total negative; the input is 30 dicts.
@@ -18,7 +18,7 @@
 | `orders` (Python) | `--hits 30` and SQL (`WHERE t.num < 0`, joined to the `order` row) found exactly one bad order: id 18, total −11. A sum query predicted 577 once totals are clamped. `--set total=0 --set-hit 19` produced `CHARGED: 577`, and a session reproduced it. | `total = max(0, total - order["coupon"])` (5 cases) | 34 (8 wasted) | about 1.05 s | 0.08 s |
 | `median` (Rust) | `answer` was 1 for `5 1 3` and 3 for `1 3 5`; `middle` was 1. `--set answer=3` fixed the output, so the wrong value comes from `answer`, not from printing. The vector's contents could not be read. | `ordered.sort_unstable();` (6 cases, plus both hashed Cargo tests) | 20 | about 1.24 s | 1.33 s |
 
-All three agents reached `passed: True` with a general fix. They worked from the cookbook's recipes, and none read the source or hit a timeout or hang. `queries diff`, `outputs` and `set_effect` and joins over `last_run` were used without help, so the heappy-style workflow carried over to debugging. The median agent noted, but did not fix, overflow in `a + b` for very large inputs; the checker does not test it.
+All three agents reached `passed: True` with a general fix. They worked from the cookbook's recipes, and none read the source or hit a timeout or hang. `queries diff`, `outputs` and `set_effect` and joins over `last_run` were used without help, so the capture-once, query-later workflow carried over to debugging. The median agent noted, but did not fix, overflow in `a + b` for very large inputs; the checker does not test it.
 
 ## Findings and dispositions
 

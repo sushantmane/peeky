@@ -1,0 +1,85 @@
+name: Bug report
+description: Peeky failed, said something untrue, or showed a wrong value without a note.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Peeky's rule is to never show a wrong or guessed value without a note, so a wrong value is always a bug.
+
+        Please leave out secrets, tokens (such as `DEBUG_TOKEN` or `PEEKY_WORKER_TOKEN`) and source code you can't share.
+  - type: input
+    id: version
+    attributes:
+      label: Peeky version
+      description: What `peeky --version` prints.
+      placeholder: peeky 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: The system and its architecture. Say if Peeky ran on a remote worker, and name both systems.
+      placeholder: macOS 15 on Apple Silicon, or Ubuntu 24.04 on x86_64
+    validations:
+      required: true
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language
+      description: The language of the program Peeky was debugging.
+      multiple: true
+      options:
+        - Python
+        - Java
+        - C
+        - C++
+        - Rust
+        - Not specific to a language
+    validations:
+      required: true
+  - type: textarea
+    id: toolchain
+    attributes:
+      label: Toolchain versions
+      description: |
+        The versions that apply to your program:
+        - Python: `python3 --version`, and SQLite: `python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'`
+        - Java: `java -version`
+        - C and C++: `clang --version` or `gcc --version`, and `lldb-dap --version`
+        - Rust: `rustc --version`, `cargo --version` and `lldb-dap --version`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `peeky` command, and the directory you ran it from.
+      placeholder: peeky probe examples/pagination_bug.py --at 8 --capture start --set start=0
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Everything the command printed. Add the `--json` output too, if you can.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened. For a wrong value, give the right value and say how you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: program
+    attributes:
+      label: A small program that shows it
+      description: Optional, but it helps most. The smallest program, and any target config, that shows the bug.
+    validations:
+      required: false

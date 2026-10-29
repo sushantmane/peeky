@@ -1,16 +1,16 @@
 # ADR 0005: Peeky is a tool that agents call, not an agent
 
-Status: accepted (owner, 2026-10-14). Supersedes the embedded model loop as the primary interface.
+Status: accepted (maintainer, 2026-10-14). Supersedes the embedded model loop as the primary interface.
 
 ## Context
 
-`peeky-agent` embedded a Codex CLI decision loop: Peeky called the model. That inverts the useful relationship. As with heappy, the model or harness (Copilot, Claude, Codex, a script) should orchestrate a standalone tool, and a person should be able to run the same commands without any model. Users should also not have to choose a mode before asking a question.
+`peeky-agent` embedded a Codex CLI decision loop: Peeky called the model. That inverts the useful relationship. As with other command-line tools, the model or harness (Copilot, Claude, Codex, a script) should orchestrate a standalone tool, and a person should be able to run the same commands without any model. Users should also not have to choose a mode before asking a question.
 
 ## Decision
 
 - `peeky` is a standalone CLI (and the same operations over HTTP for remote targets). It never calls a model.
 - There is no mode switch. Each subcommand stands alone:
-  - `peeky describe <target>`: a manifest of language, breakpoint lines, qualified value views, mutation rules and commands, the equivalent of heappy's `_manifest.json`.
+  - `peeky describe <target>`: a manifest of language, breakpoint lines, qualified value views, mutation rules and commands, the equivalent of an analysis tool's manifest.
   - `peeky probe <target> --at <path:line> --capture ... [--set ...]`: one stateless question.
   - `peeky session start|wait|inspect|get|set|continue|report|close|list`: step-by-step debugging across separate shell commands, with state held by a local worker process.
   - `peeky verify <target> --check <checker> --old ... --new ...`: a fresh build plus the independent checker (and the compiled Cargo test for Rust) for one candidate edit.
@@ -23,6 +23,6 @@ All existing guarantees are unchanged: fresh builds and provenance checks, stop/
 
 ## Consequences
 
-Agents can learn Peeky from `describe` and the guide, then call it the way they call `git` or `heappy`. Humans get the same commands. Session state lives in a local worker process and a `0600` record under `~/.peeky/sessions`. That record holds a loopback URL and a random token and must be treated as a credential.
+Agents can learn Peeky from `describe` and the guide, then call it the way they call `git`. Humans get the same commands. Session state lives in a local worker process and a `0600` record under `~/.peeky/sessions`. That record holds a loopback URL and a random token and must be treated as a credential.
 
 Java attach to a JVM started by Gradle (`--debug-jvm`) is delivered experimentally ([JAVA_ATTACH.md](../JAVA_ATTACH.md)) and has been exercised on a Venice end-to-end test. Its provenance is labeled `attached`, not freshly built. Session records are validated (loopback URL, hex session ID, `0600`, owned by you); `session close` stops the worker through a token-authenticated `shutdown` call and never signals PIDs.

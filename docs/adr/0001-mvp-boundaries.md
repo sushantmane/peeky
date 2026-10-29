@@ -8,7 +8,7 @@ Use debugpy through DAP, a small Python package, a single-owner loopback worker,
 
 ## Why
 
-This preserves the proven runtime experiment while avoiding three debugger adapters and a cluster control plane before the session contract is reliable. Python and DAP offer an executable baseline for conformance tests. Single-session ownership makes stop IDs, cleanup, and timeout semantics reviewable. Private wheel artifacts are sufficient for distributing an MVP to the owner.
+This preserves the proven runtime experiment while avoiding three debugger adapters and a cluster control plane before the session contract is reliable. Python and DAP offer an executable baseline for conformance tests. Single-session ownership makes stop IDs, cleanup, and timeout semantics reviewable. Private wheel artifacts were sufficient for distributing the MVP.
 
 ## Alternatives
 

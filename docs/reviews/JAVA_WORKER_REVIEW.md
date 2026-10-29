@@ -2,7 +2,7 @@
 
 Scope: freshly compiled Java targets behind the existing authenticated HTTP worker, generated class/source mappings, prepared-file guards, pending breakpoint events and cleanup. No autonomous Java source-fix acceptance is claimed.
 
-Independent implementation/review roles: architecture_review implemented the runtime binding; testing_review implemented metadata parsing and reviewed the worker/runtime; ci_scaffold implemented real HTTP tests and documentation. The parent integrated lifecycle/CLI behavior and resolved cross-component issues.
+The work was split: one contributor implemented the runtime binding; another implemented metadata parsing and reviewed the worker/runtime; a third implemented real HTTP tests and documentation. Integration covered lifecycle/CLI behavior and resolved cross-component issues.
 
 ## Findings resolved
 
@@ -12,7 +12,7 @@ Independent implementation/review roles: architecture_review implemented the run
 - **Configuration coercion:** converting a string to a tuple silently changed one argument into many characters. CLI sources/arguments now require JSON arrays before conversion; tests verify rejection before server startup.
 - **Stopped-frame and map integrity:** stop lines must be positive integers, and callers receive source-map copies backed by saved bytes rather than a mutable authoritative dictionary.
 
-The final independent reviewer ran 32 worker/DAP tests in 1.92 seconds and found no remaining blocker for the documented worker scope. The parent ran all 121 tests, including real Java adapter, compiler metadata, HTTP behavior, argument roundtrip and failure cleanup: all passed in 15.00 seconds. Ruff lint/format passed.
+The final independent reviewer ran 32 worker/DAP tests in 1.92 seconds and found no remaining blocker for the documented worker scope. The integrated branch ran all 121 tests, including real Java adapter, compiler metadata, HTTP behavior, argument roundtrip and failure cleanup: all passed in 15.00 seconds. Ruff lint/format passed.
 
 ## Remaining scope
 

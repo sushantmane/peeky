@@ -1,5 +1,8 @@
 # Contributing
 
+Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md). Report bugs and ask for
+features with the [issue templates](https://github.com/sushantmane/peeky/issues/new/choose).
+
 Use Python 3.11 or newer. From the repository root:
 
 ```sh
@@ -15,7 +18,7 @@ python -m build
 
 Develop one small milestone at a time. Add a regression test for changed debugger behavior; tests must terminate their subprocesses even on failure. Keep unit tests independent of real debugger processes and model APIs. Integration tests belong in `tests/integration` and use real debugpy with deterministic target programs. Hosted CI must never need model credentials or external model calls. Exercise model behavior through a fake provider in unit tests; opt-in live evaluations are separate from merge checks.
 
-Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Include protocol or architecture changes in the design documents. Record adversarial review findings and their resolution when changing state, permissions, transport, or execution semantics.
+Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Add a line to `CHANGELOG.md` under **Unreleased** for each change a user would notice. Include protocol or architecture changes in the design documents. Record adversarial review findings and their resolution when changing state, permissions, transport, or execution semantics.
 
 ## CI budget
 
@@ -25,7 +28,7 @@ Direct runtime and development versions are pinned. Keep the dev extra and `requ
 
 ## CI's Linux lanes on your machine
 
-When hosted CI cannot run (it was blocked by a GitHub billing hold on 2026-10-16), run the same Linux lanes in Docker. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
+When hosted CI cannot run, run the same Linux lanes in Docker. You need Docker or OrbStack; the debugger needs `SYS_PTRACE`:
 
 ```sh
 docker build -t peeky-ci-linux scripts/ci_linux
@@ -38,4 +41,4 @@ It runs quality, unit, integration, C, C++, Rust, Java and wheel smoke against t
 
 ## Delivery
 
-The manual `Build private artifact` workflow checks out the selected revision, reruns checks, builds distributions, smoke-tests the installed wheel, and retains them as a private repository artifact for seven days. It does not publish to a registry or deploy a worker. Run the normal CI workflow on the revision before sharing an artifact. Production deployment and release automation are later milestones and require their own environment and rollback design.
+The manual `Build artifact` workflow checks out the selected revision, reruns checks, builds distributions, smoke-tests the installed wheel, and keeps them as a workflow artifact for seven days. It does not publish to a registry or deploy a worker. Run the normal CI workflow on the revision before sharing an artifact. Production deployment and release automation are later milestones and require their own environment and rollback design.
