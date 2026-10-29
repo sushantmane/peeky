@@ -26,7 +26,9 @@ from peeky.textlines import split_lines
 # 8 (#361): a GCC lambda's captures come in a `Captures` scope, and a stop says why each
 # one it doesn't list isn't read (`closure_unread`); a protocol 7 worker reads none, and
 # a protocol 7 client would say lldb-dap doesn't list one where Peeky read none.
-PROTOCOL_VERSION = 8
+# 9 (#382): a probe's `1:i` reads `i` in caller frame 1, and its rows say `frame` and
+# `stop_line`; a protocol 8 worker refuses `1:i` as no selector.
+PROTOCOL_VERSION = 9
 
 # (pattern on the message, code, hint, retryable). First match wins.
 _RULES = (
@@ -166,6 +168,13 @@ _RULES = (
         "NOT_FOUND",
         "Run `inspect` for names. Reads take dotted paths (a.b); changes take the frame's own "
         "locals, and in Java, Rust, C and C++ their fields and elements.",
+        False,
+    ),
+    (
+        r"^At most \d+ interventions \(--set and --set-at together\)",
+        "INVALID_REQUEST",
+        "Split the changes over several probes, or make them in the source with a candidate "
+        "edit (`--old`/`--new`).",
         False,
     ),
     (

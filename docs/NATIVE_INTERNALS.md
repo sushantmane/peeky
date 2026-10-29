@@ -205,6 +205,14 @@ frame's entry: the narrowest function whose code holds the frame's address.
   and by the debug information. Peeky keeps the class that every instance's typedef names, or the
   map or set template that they all instantiate (`std::map`).
 - `std::less` is the default order, and LLDB leaves it out of the type's name.
+- LLDB names an unnamed class, such as a lambda, by the first typedef it meets for it. A map
+  ordered by a lambda is `std::map<int, long, type>` with libc++ (`__type_identity<…>::type`), or
+  `std::map<int, long, key_compare>` with libstdc++. `NativeSession._unnamed_arguments` gives a
+  root local's row the compiler's name from its record's `DW_AT_name`, argument by argument. It
+  takes one only where LLDB writes a bare identifier, and the record has a lambda's or an unnamed
+  class's name at that place: `(lambda at a.cpp:4:18)`, `main()::<lambda(int, int)>`.
+  `debugger_type` keeps LLDB's. `_order` reads neither as `std::less`, so `m[K]` reads only an
+  exact key.
 
 ## Strings in libstdc++
 

@@ -48,6 +48,9 @@ Peeky debugs Python with debugpy, Python's debugger.
   assigned it before this line, ...: the value is likely from an earlier pass`. `--set` refuses
   it. To read or change this pass's value, stop after the assignment
   ([Python 5.1](python-cookbook.md#51-stop-look-change-finish)).
+- A probe reads a caller's local as `1:i`, beside the stopped function's values. The same rules
+  apply: a local this pass assigns below the call shows that `note`
+  ([2.10](../COOKBOOK.md#210-values-in-a-callers-frame)).
 - debugpy lists only a long list's first 100 items. A higher index shows "beyond the debugger's
   visible window": the item is not missing ([guide](../AGENT_GUIDE.md#reading-probe-results)).
 - `--until hits` ends the probe at the last hit, but the program runs on until Peeky ends it. So
