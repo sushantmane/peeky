@@ -7,16 +7,19 @@ are not. Call assert_current before launch, mutation and verification. Adapters
 must additionally establish loaded-artifact identity where available.
 """
 
+import contextlib
 import functools
 import hashlib
 import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
@@ -28,6 +31,10 @@ from peeky.processes import CREDENTIAL_ENV, without_credentials
 INHERITED_ENV = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL")
 MAX_FILES = 4096
 MAX_FILE_BYTES = 256 * 1024 * 1024
+# The most build commands of one parallel group that run at once (PEEKY_BUILD_JOBS).
+MAX_JOBS = 8
+# The most toolchain probe outputs kept (reuse_probes); the oldest go first.
+MAX_KEPT_PROBES = 256
 
 
 class BuildCommandError(RuntimeError):
@@ -229,11 +236,11 @@ def real_tool(path):
     return real.resolve(strict=True)
 
 
-def _digest(path):
+def _digest(path, store=None):
     size = path.stat().st_size
     if not path.is_file() or size > MAX_FILE_BYTES:
         raise ValueError("Expected a regular file within the identity size limit")
-    return sha256_file(path), size
+    return sha256_file(path, store=store), size
 
 
 def _files(root, names):
@@ -335,11 +342,8 @@ def _validate(recipe):
         raise ValueError("Duplicate declared environment key")
 
 
-def _run(command, workspace, env, timeout=None):
-    # Temporary dependency reuse. Move execute to a shared process module when
-    # the build boundary is integrated; never import agent at module scope.
-    from peeky.agent import BUILD_RETAINED, execute
-
+def _executable(command, workspace, env):
+    """(the command's working directory, the executable it runs, resolved)."""
     cwd = _inside(workspace, command.cwd, directory=True)
     if not cwd.is_dir():
         raise ValueError("Build cwd must be an existing directory inside its workspace")
@@ -355,11 +359,24 @@ def _run(command, workspace, env, timeout=None):
         executable = shutil.which(executable, path=env.get("PATH"))
         if not executable:
             raise ValueError(f"Missing toolchain executable: {command.argv[0]}")
-    executable = Path(executable).resolve(strict=True)
+    return cwd, Path(executable).resolve(strict=True)
+
+
+def _run(command, workspace, env, timeout=None, stop=None):
+    # Temporary dependency reuse. Move execute to a shared process module when
+    # the build boundary is integrated; never import agent at module scope.
+    from peeky.agent import BUILD_RETAINED, execute
+
+    cwd, executable = _executable(command, workspace, env)
     digest, _ = _digest(executable)
     timeout = command.timeout_s if timeout is None else timeout
     result = execute(
-        [str(executable), *command.argv[1:]], cwd, timeout, env=env, retain=BUILD_RETAINED
+        [str(executable), *command.argv[1:]],
+        cwd,
+        timeout,
+        env=env,
+        retain=BUILD_RETAINED,
+        stop=stop,
     )
     try:
         unchanged = _digest(executable)[0] == digest
@@ -382,6 +399,197 @@ def _budget(command, deadline):
     return min(command.timeout_s, remaining), remaining < command.timeout_s
 
 
+def jobs():
+    """How many commands of a parallel group run at once: PEEKY_BUILD_JOBS, or the CPUs
+    this process may use, at most MAX_JOBS."""
+    configured = os.environ.get("PEEKY_BUILD_JOBS")
+    if configured:
+        if not configured.isdigit() or not 1 <= int(configured) <= 64:
+            raise ValueError("PEEKY_BUILD_JOBS must be a whole number from 1 to 64")
+        return int(configured)
+    if hasattr(os, "sched_getaffinity"):
+        count = len(os.sched_getaffinity(0))
+    else:
+        count = os.cpu_count() or 1
+    return max(1, min(count, MAX_JOBS))
+
+
+def _groups(commands, parallel):
+    """{the index of a parallel group's first command: its size}. Each group must be a
+    run of consecutive build commands, and no two may share one."""
+    starts, taken = {}, set()
+    for group in parallel:
+        group = tuple(group)
+        at = next(
+            (
+                at
+                for at in range(len(commands) - len(group) + 1)
+                if group and commands[at : at + len(group)] == group
+            ),
+            None,
+        )
+        if at is None or taken & set(range(at, at + len(group))):
+            raise ValueError(
+                "Each parallel group must be its own run of consecutive build commands"
+            )
+        taken.update(range(at, at + len(group)))
+        starts[at] = len(group)
+    return starts
+
+
+def _run_group(group, workspace, env, deadline, workers):
+    """Runs ``group``'s commands at the same time, ``workers`` at once, started in their
+    order: [(tool, result)] in that order. A failure is the earliest failing command's,
+    which is what running them one after another raises (they are independent): once
+    one fails, the commands after it are stopped, and none after it starts."""
+    outcomes = [None] * len(group)
+    stops = [threading.Event() for _ in group]
+    lock = threading.Lock()
+    # The next command to start, and the earliest that failed (len(group): none).
+    state = {"next": 0, "failed": len(group)}
+
+    def work():
+        while True:
+            with lock:
+                index = state["next"]
+                if index >= state["failed"]:
+                    return
+                state["next"] += 1
+            try:
+                timeout, limited = _budget(group[index], deadline)
+                try:
+                    outcomes[index] = _run(group[index], workspace, env, timeout, stops[index])
+                except BuildCommandError as exc:
+                    if limited and exc.result.get("timed_out"):
+                        raise TimeoutError(
+                            "Build preparation exceeded its overall deadline"
+                        ) from exc
+                    raise
+            except BaseException as exc:
+                outcomes[index] = exc
+                with lock:
+                    if index < state["failed"]:
+                        state["failed"] = index
+                        for later in stops[index + 1 :]:
+                            later.set()
+
+    threads = [threading.Thread(target=work, daemon=True) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    try:
+        for thread in threads:
+            thread.join()
+    finally:
+        if any(thread.is_alive() for thread in threads):
+            # Interrupted: start nothing more, stop what runs, and wait for it, so that
+            # nothing writes to the workspace while it is removed.
+            with lock:
+                state["failed"] = -1
+            for stop in stops:
+                stop.set()
+            for thread in threads:
+                thread.join()
+    if state["failed"] < len(group):
+        raise outcomes[state["failed"]]
+    return outcomes
+
+
+def _cache_dir(kind):
+    """Peeky's own directory for cached ``kind`` ("probes", "digests"), or None: when
+    PEEKY_NO_DIGEST_CACHE=1, or where the state directory is unusable."""
+    if os.environ.get("PEEKY_NO_DIGEST_CACHE") == "1":
+        return None
+    from peeky.cli import _private_dir
+
+    try:
+        _private_dir("cache")
+        return _private_dir(f"cache/{kind}")
+    except (OSError, ValueError):
+        return None
+
+
+def _probe_entry(command, workspace, env):
+    """(where probe ``command``'s output is kept, its key, the tool's identity), or None
+    where it is not reused. The key is everything the output may depend on: the tool's
+    path and SHA-256, its directory's identity (clang reads a configuration file beside
+    it), the arguments, the environment and the host system. A script is never reused:
+    the program it runs is not hashed. Neither is a tool inside the workspace."""
+    store = _cache_dir("probes")
+    if store is None:
+        return None
+    try:
+        _, executable = _executable(command, workspace, env)
+        if executable.is_relative_to(workspace):
+            return None
+        with open(executable, "rb") as stream:
+            if stream.read(2) == b"#!":
+                return None
+        digest, _ = _digest(executable, _cache_dir("digests"))
+        folder = executable.parent.stat()
+    except (OSError, ValueError):
+        # The command itself raises it, as it would without reuse.
+        return None
+    host = os.uname()
+    key = _json_digest(
+        {
+            "format": 1,
+            "tool": str(executable),
+            "sha256": digest,
+            "folder": [folder.st_dev, folder.st_ino, folder.st_mtime_ns, folder.st_ctime_ns],
+            "argv": list(command.argv[1:]),
+            "cwd": command.cwd,
+            "environment": sorted(env.items()),
+            "host": [host.sysname, host.release, host.version, host.machine],
+        }
+    )
+    return store / f"{key}.json", key, ToolIdentity(str(executable), digest)
+
+
+def _reused_probe(entry):
+    """(tool, result) of the probe kept at ``entry``, or None where none is kept for its key."""
+    path, key, tool = entry
+    try:
+        with open(path, encoding="utf-8") as stream:
+            kept = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if (
+        not isinstance(kept, dict)
+        or kept.get("key") != key
+        or kept.get("tool") != tool.path
+        or kept.get("sha256") != tool.sha256
+        or not isinstance(kept.get("stdout"), str)
+        or not isinstance(kept.get("stderr"), str)
+    ):
+        return None
+    return tool, {"stdout": kept["stdout"], "stderr": kept["stderr"]}
+
+
+def _keep_probe(entry, result):
+    """Keeps a probe's output at ``entry`` (atomically, the oldest beyond MAX_KEPT_PROBES
+    removed); a directory that cannot be written is skipped."""
+    path, key, tool = entry
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
+    text = {
+        "key": key,
+        "tool": tool.path,
+        "sha256": tool.sha256,
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+    }
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(text, stream)
+        os.replace(temporary, path)
+        kept = sorted(path.parent.glob("*.json"), key=lambda each: each.stat().st_mtime_ns)
+        for old in kept[: max(0, len(kept) - MAX_KEPT_PROBES)]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+
+
 def _assert_tools(tools, stage):
     """Every previously recorded tool still has its probed bytes (drivers delegate to them)."""
     try:
@@ -401,6 +609,8 @@ def prepare(
     deadline=None,
     before_command=None,
     validate_workspace=None,
+    parallel=(),
+    reuse_probes=False,
 ):
     """Copy declared inputs to a fresh workspace, build, and retain a manifest.
 
@@ -414,8 +624,17 @@ def prepare(
     additionally validates probe results before each build command, and every tool
     recorded so far plus the original and staged inputs are rechecked. Any failure
     there is fatal, never compiler feedback.
+
+    ``parallel``: groups of consecutive build commands that are independent of each
+    other (each writes its own outputs). A group's commands run at the same time
+    (``jobs()`` at once), after the checks before each of them; the checks before the
+    next command cover what any of them did. Their outputs and failures are those of
+    running them one after another. ``reuse_probes``: a toolchain probe's output is kept
+    in Peeky's state directory and reused while everything it may depend on is the same
+    (``_probe_entry``), the tool's SHA-256 first; a script tool's probe always runs.
     """
     _validate(recipe)
+    groups = _groups(recipe.build_commands, parallel)
     source_root = Path(source_root).resolve(strict=True)
     original = _files(source_root, recipe.inputs)
     if edit is not None:
@@ -463,27 +682,52 @@ def prepare(
         for command in recipe.toolchain_probes:
             check()
             timeout, limited = _budget(command, deadline)
-            try:
-                tool, result = _run(command, workspace, env, timeout)
-            except BuildCommandError as exc:
-                if limited and exc.result.get("timed_out"):
-                    raise TimeoutError("Build preparation exceeded its overall deadline") from exc
-                raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
+            entry = _probe_entry(command, workspace, env) if reuse_probes else None
+            if (reused := entry and _reused_probe(entry)) is not None:
+                tool, result = reused
+            else:
+                try:
+                    tool, result = _run(command, workspace, env, timeout)
+                except BuildCommandError as exc:
+                    if limited and exc.result.get("timed_out"):
+                        raise TimeoutError(
+                            "Build preparation exceeded its overall deadline"
+                        ) from exc
+                    raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
+                # Kept only for the bytes that answered (unchanged while it ran).
+                if entry is not None and tool == entry[2]:
+                    _keep_probe(entry, result)
             if tool not in tools:
                 tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
-        for command in recipe.build_commands:
-            check(command)
-            timeout, limited = _budget(command, deadline)
-            try:
-                tool, _ = _run(command, workspace, env, timeout)
-            except BuildCommandError as exc:
-                if limited and exc.result.get("timed_out"):
-                    raise TimeoutError("Build preparation exceeded its overall deadline") from exc
-                raise
+        commands, index = recipe.build_commands, 0
+        while index < len(commands):
+            group = commands[index : index + groups.get(index, 1)]
+            index += len(group)
+            if len(group) > 1 and (workers := min(len(group), jobs())) > 1:
+                for command in group:
+                    check(command)
+                ran = [tool for tool, _ in _run_group(group, workspace, env, deadline, workers)]
+            else:
+                ran = []
+                for command in group:
+                    check(command)
+                    timeout, limited = _budget(command, deadline)
+                    try:
+                        tool, _ = _run(command, workspace, env, timeout)
+                    except BuildCommandError as exc:
+                        if limited and exc.result.get("timed_out"):
+                            raise TimeoutError(
+                                "Build preparation exceeded its overall deadline"
+                            ) from exc
+                        raise
+                    # Each command's checks cover the tools of those before it.
+                    if tool not in tools:
+                        tools.append(tool)
             # One entry per executable: every command rechecks the whole list.
-            if tool not in tools:
-                tools.append(tool)
+            for tool in ran:
+                if tool not in tools:
+                    tools.append(tool)
         # The last command may have delegated to helpers (e.g. dsymutil via PATH);
         # recheck before its outputs are recorded against the declared tools.
         check()
@@ -595,6 +839,8 @@ def _rustc_dependencies(text):
 _CONTINUED = " \\"
 _BACKSLASHES = re.compile(r"\\*")
 _DOLLARS = re.compile(r"\$*")
+# A run of characters that stand for themselves in a rule.
+_PLAIN = re.compile(r"[^\\$#\t ]+")
 
 
 def _make_dependencies(text, base):
@@ -637,6 +883,10 @@ def _make_dependencies(text, base):
         name.clear(), raw.clear(), others.clear()
 
     while at < len(text):
+        if plain := _PLAIN.match(text, at):
+            name.append(plain[0]), raw.append(plain[0])
+            at = plain.end()
+            continue
         char = text[at]
         if char == "\\":
             run = _BACKSLASHES.match(text, at).end() - at

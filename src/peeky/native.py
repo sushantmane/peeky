@@ -4500,7 +4500,7 @@ class NativeTarget:
         # that can read a file, which no dependency file lists, is refused before
         # anything is compiled (#180; `before_command`).
         units = tuple(f"peeky-unit-{index}.i" for index in range(len(self.sources)))
-        commands = [
+        preprocesses = [
             Command((compiler, *flags, "-E", source, "-o", unit))
             for source, unit in zip(self.sources, units)
         ]
@@ -4510,7 +4510,7 @@ class NativeTarget:
             Command((compiler, *flags, "-MD", "-MF", obj + ".d", "-c", source, "-o", obj))
             for source, obj in zip(self.sources, objects)
         ]
-        commands += compiles
+        commands = [*preprocesses, *compiles]
         link_flags = (*driver, *(("-isysroot", str(sdk)) if sysroot is not None else ()))
         if sys.platform == "linux":
             link_flags = (*link_flags, "-Wl,--build-id=sha1")
@@ -4570,6 +4570,10 @@ class NativeTarget:
                 edit=edit,
                 deadline=deadline,
                 before_command=before_command,
+                # Each unit's `-E`, then each `-c`, run at the same time: each writes
+                # only its own files.
+                parallel=(tuple(preprocesses), tuple(compiles)),
+                reuse_probes=True,
             )
         except BuildCommandError as exc:
             if exc.command not in compile_commands:
@@ -4740,18 +4744,23 @@ def external_inputs(depfiles, workspace, declared):
     rechecked before every operation like the declared ones.
     """
     root = Path(workspace).resolve()
-    found, listings = {}, {}
+    inside = os.path.join(str(root), "")
+    found, listings, seen = {}, {}, set()
     for depfile in depfiles:
         for dependency in dependency_paths(depfile.read_text(), root, "make"):
+            # A file several units read is judged once, where it is first listed.
+            if (listed := str(dependency)) in seen:
+                continue
+            seen.add(listed)
             try:
                 path = dependency.resolve(strict=True)
             except OSError as exc:
                 raise UnreadDependencies(
                     f"it lists {dependency}, which Peeky cannot find ({exc.strerror})"
                 ) from None
-            try:
+            if path == root or str(path).startswith(inside):
                 relative = path.relative_to(root).as_posix()
-            except ValueError:
+            else:
                 if twin := _backslash_twin(dependency, listings):
                     raise UnreadDependencies(
                         f"clang prints a backslash in a file name as `/`, so {dependency} "
@@ -4775,10 +4784,12 @@ def _backslash_twin(path, listings):
     ``path``'s way named for the next step and a backslash (`a\\...` beside `a`), or one
     that, its backslashes read as `/`, is ``path`` or a directory on its way (`\\x.h`
     beside `x.h`; #178 review), or None. ``listings`` caches each directory's backslashed
-    names; one that cannot be listed raises UnreadDependencies."""
+    names (by the directory's path, a string: Path objects made the check slow); one
+    that cannot be listed raises UnreadDependencies."""
     parts = path.parts
+    directory = None
     for depth in range(1, len(parts)):
-        directory = Path(*parts[:depth])
+        directory = parts[0] if directory is None else os.path.join(directory, parts[depth - 1])
         if directory not in listings:
             try:
                 listings[directory] = [name for name in os.listdir(directory) if "\\" in name]
@@ -4787,9 +4798,9 @@ def _backslash_twin(path, listings):
                     f"Peeky cannot list {directory} ({exc.strerror}) to tell which file {path} is"
                 ) from None
         for name in listings[directory]:
-            printed = Path(str(directory), name.replace("\\", "/").lstrip("/"))
+            printed = Path(directory, name.replace("\\", "/").lstrip("/"))
             if name.split("\\")[0] == parts[depth] or printed == path or printed in path.parents:
-                return directory / name
+                return Path(directory) / name
     return None
 
 

@@ -112,8 +112,10 @@ _NOT_TYPES = frozenset(
 # A GNU `asm goto` (`asm volatile goto`, `__asm__ goto`, `__asm goto`): it may jump to
 # any label it lists as an operand.
 _ASM_GOTO = re.compile(rf"(?<!{_ID})(?:asm|__asm__|__asm)(?!{_ID})[^(;]*?(?<!{_ID})goto(?!{_ID})")
-# Where a comment or a literal may start.
-_OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
+# Where a comment or a literal may start. The lookahead lets the regex engine skip to
+# a character one may start with (the optional prefix first made it try every
+# position: half the inline-assembly check of a large unit).
+_OPENING = re.compile(r"""(?=[/"'uULR])(?://|/\*|["']|(?:u8|u|U|L)?R\")""")
 # A raw string's prefix and delimiter: `R"x(`, `u8R"(`.
 _RAW = re.compile(r'(?:u8|u|U|L)?R"([^ ()\\\t\v\f\n]{0,16})\(')
 # A line break as Clang (its line table, so DWARF, since Clang 9) and GCC count them:
@@ -127,8 +129,8 @@ _SPLICE = re.compile(r"\\[ \t\f\v]*\n")
 # A splice inside a token (`/\` then `*` is a comment): a file the scan cannot read.
 _SPLIT = re.compile(r"(?<=\S)\\[ \t\f\v]*\n(?=\S)")
 _LITERAL = {
-    '"': re.compile(r'"(?:[^"\\\n]|\\[ \t\f\v]*\n|\\[\s\S])*"?'),
-    "'": re.compile(r"'(?:[^'\\\n]|\\[ \t\f\v]*\n|\\[\s\S])*'?"),
+    '"': re.compile(r'"(?:[^"\\\n]+|\\[ \t\f\v]*\n|\\[\s\S])*"?'),
+    "'": re.compile(r"'(?:[^'\\\n]+|\\[ \t\f\v]*\n|\\[\s\S])*'?"),
 }
 _VISIBLE = re.compile(r"[^\n]")
 # Punctuators as the compiler reads them, longest first (`<<:` is `<<` and `:`), so that
@@ -243,7 +245,11 @@ def blank(text, raw_strings=True):
                 continue
             closing = text.find(f'){raw[1]}"', raw.end())
             end = size if closing < 0 else closing + len(raw[1]) + 2
-        pieces += [text[done:start], _VISIBLE.sub(" ", text[start:end])]
+        piece = text[start:end]
+        pieces += [
+            text[done:start],
+            _VISIBLE.sub(" ", piece) if "\n" in piece else " " * len(piece),
+        ]
         done = position = end
     pieces.append(text[done:])
     return "".join(pieces)

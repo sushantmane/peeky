@@ -57,8 +57,11 @@ Peeky is not:
 - Within one process, a file's digest is reused while its device, inode, size, mtime and ctime are
   unchanged. Its timestamps must also be more than 2 s old (`src/peeky/digest.py`).
 - Any write, replacement or rename changes those.
-- To rehash every time, set `PEEKY_NO_DIGEST_CACHE=1`. Do this, for example, on filesystems whose
-  timestamps are unreliable.
+- A C or C++ toolchain binary's digest is also kept in the state directory, so a new process
+  reuses it by the same rules. So is each tool's answer to `--version` or `--help`, keyed by the
+  tool's SHA-256. A tool that is a script is asked every time: the program it runs isn't hashed.
+- To rehash every time, set `PEEKY_NO_DIGEST_CACHE=1`. This also turns off what the state
+  directory keeps. Do this, for example, on filesystems whose timestamps are unreliable.
 - Compiled builds also record every file the compiler read:
   - Rust fails closed on any file that isn't a declared source.
   - C and C++ hash the headers they read outside the workspace, and recheck them before every
