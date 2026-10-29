@@ -122,11 +122,10 @@ the commands.
   its first line. Not in Python. Deep recursion is slow: limit `--hits`.
 - **`--json`** works on every command. stdout is then one JSON value; progress goes to stderr, and
   `--quiet` silences it.
-- **Sessions:** pass `--name` to every session command (default `default`). Each command waits up
-  to `--timeout S` (default 30) for a stop, leaving the program running (`session wait`). A
-  session's worker ends on `close`, when its start fails or is interrupted, or after 5 idle
-  minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`): set it per task to keep
-  sessions apart.
+- **Sessions:** each command waits up to `--timeout S` (default 30) for a stop, leaving the
+  program running (`session wait`). A session's worker ends on `close`, when its start fails or is
+  interrupted, or after 5 idle minutes. Records live in `$PEEKY_STATE_DIR` (default `~/.peeky`):
+  set it per task to keep sessions apart.
 - **In a session:** `get` also lists a value's children, each with the selector that reads it. It
   exits 1 if any selector failed. `--frame N` reads caller frame N.
 - **Stepping:** `step` runs to the next line; `--into` enters a call; `--out` leaves the function
@@ -250,7 +249,8 @@ probe, read its JSON. Saved runs help with large captures, comparisons and slow 
   See [REMOTE.md](REMOTE.md).
 - **Selectors** are dotted paths, indexes and keys: `request.page`, `args[0]`, `order['id']`.
   C++ `m[1]` is a map's value for key 1, and `m[#0]` its first entry. A shadowed local goes as LLDB
-  names it: `s @ main.rs:81.a`. Expressions are rejected. In zsh, quote selectors with `[...]`.
+  names it: `s @ main.rs:81.a`. A probe's `1:i` is `i` in frame 1, the caller, read as
+  `get --frame 1` reads it (2.10). Expressions are rejected. In zsh, quote selectors with `[...]`.
 
 ## Time: your tool timeout and the program's clocks
 

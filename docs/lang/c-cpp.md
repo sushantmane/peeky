@@ -77,6 +77,10 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - **A `static` local** reads where the code at the stop names it: in its block, below its
   declaration. In C++, it is `no value yet` until its initializer has run. It is never changed
   ([C and C++ 7.1](c-cpp-cookbook.md#read-a-static-local)).
+- **A caller's local:** a probe reads it as `1:pass`. It is withheld while its declaration's
+  call runs, as is a `for` loop's own variable while its body calls
+  ([C and C++ 5.1](c-cpp-cookbook.md#read-a-callers-local),
+  [2.10](../COOKBOOK.md#210-values-in-a-callers-frame)).
 - **Same-named locals:** a plain name means the declaration the code names at the stop. To select
   another one, write `name @ file:line`
   ([C and C++ 7.1](c-cpp-cookbook.md#same-named-locals-which-one-a-name-means)).
