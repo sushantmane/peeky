@@ -573,7 +573,9 @@ Read [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish) first.
 
 ### Read a caller's local
 
-In C and C++, a caller's local is withheld while its declaration's code hasn't finished:
+`session get --frame 1 result` reads a caller's local, and so does a probe's `--capture 1:result`
+([2.10](../COOKBOOK.md#210-values-in-a-callers-frame)). In C and C++, a caller's local is withheld
+while its declaration's code hasn't finished:
 
 - **A call in the declaration:** in `long result = twice(seed);`, the caller stores `result` only
   after `twice` returns. The same holds for `long multi =` on one line and `twice(seed + 1);` on

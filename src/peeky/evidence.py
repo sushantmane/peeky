@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from peeky import stored_values
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -113,11 +113,15 @@ TABLES = {
             "returned (the `(return)` row: what the call returned, read where it returned "
             "to; line is that line, function the function that returned)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
-            "runs.line is the requested line in the original file)",
+            "runs.line is the requested line in the original file). For a caller frame's "
+            "row (frame 1 or more), that frame's line, where its call is: stop_line is where "
+            "the program stopped",
             "function": "Function (frame) name, as the debugger names it (C++: its "
             "signature; Rust: with its symbol hash, and every closure of a function as "
-            "`{{closure}}`). short_function(function) drops parameters and hashes",
-            "selector": "Selector as requested, e.g. request.page or items[0]",
+            "`{{closure}}`). short_function(function) drops parameters and hashes. For a "
+            "caller frame's row, that caller's",
+            "selector": "Selector as requested, e.g. request.page or items[0]; 1:i reads i in "
+            "frame 1, the caller",
             "type": "Type as Peeky shows it: the debugger's, or as the language spells it "
             "(Rust: `usize`, `Vec<u32>`, `&rota::Engineer` and `*const T`, where LLDB says "
             "`unsigned long` and `rota::Engineer *`)",
@@ -200,6 +204,12 @@ TABLES = {
             "for a Rust reference or raw pointer alike: where such a Rust row's type is a "
             "newer Rust row's debugger_type, `diff` says it can't tell whether the type "
             "changed",
+            "frame": "Which stack frame the selector read: 0 where the program stopped, 1 its "
+            "caller, and so on (a selector such as 1:i). Every rule of `session get --frame N` "
+            "applies to a caller's values, which are never settable. NULL for runs saved "
+            "before schema 21",
+            "stop_line": "For a caller frame's row, the line where the program stopped, as "
+            "the hit's other rows' line says; NULL for other rows, whose line is that line",
         },
     ),
     "interventions": (
@@ -244,7 +254,7 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
-    "instance, selector, type, debugger_type, "
+    "instance, frame, selector, type, debugger_type, "
     "value, num, unavailable, error, view, note, identity, scope, element_size, "
     "at_element_of, element_index, offset_from, element_offset, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
@@ -258,7 +268,7 @@ VIEWS = {
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-        c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
+        c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.frame, c.selector,
         c.type, c.debugger_type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, c.element_size,
         c.at_element_of, c.element_index, c.offset_from, c.element_offset, r.args, r.sets,
@@ -275,7 +285,8 @@ _CAPTURES = """CREATE TABLE {} (
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
         error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
         stop INTEGER, element_size INTEGER, at_element_of TEXT, element_index INTEGER,
-        offset_from TEXT, element_offset INTEGER, debugger_type TEXT)"""
+        offset_from TEXT, element_offset INTEGER, debugger_type TEXT, frame INTEGER,
+        stop_line INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -325,7 +336,10 @@ _DDL = (
 # reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315);
 # version 19 adds interventions.restores_at (#305), the change a restore undid (NULL
 # for earlier runs, which made none); version 20 adds interventions.unchanged, 1 for a
-# write the worker proved changed nothing (NULL for earlier runs).
+# write the worker proved changed nothing (NULL for earlier runs); version 21 adds
+# captures.frame, the stack frame a selector read (#382: `1:i`, a caller's), and
+# stop_line, where the program stopped, for a caller frame's row (NULL for earlier runs,
+# which read only the frame the program stopped in).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -452,9 +466,10 @@ _MIGRATIONS = {
     ),
     17: (*_DROP_VIEWS, _add_columns(("debugger_type", "TEXT"))),
     18: (*_DROP_VIEWS, _add_columns(("restores_at", "TEXT"), table="interventions")),
-    19: (
+    19: (*_DROP_VIEWS, _add_columns(("unchanged", "INTEGER"), table="interventions")),
+    20: (
         *_DROP_VIEWS,
-        _add_columns(("unchanged", "INTEGER"), table="interventions"),
+        _add_columns(("frame", "INTEGER"), ("stop_line", "INTEGER")),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -473,7 +488,7 @@ _NO_CHANGE = "CASE WHEN unchanged THEN ', no change' ELSE '' END"
 # An intervention (`i`) made at a captured stop: that stop has after-set captures.
 _AT_CAPTURE = (
     "EXISTS (SELECT 1 FROM captures c WHERE c.run_id = i.run_id AND c.phase = 'after-set' "
-    "AND c.hit = i.hit AND c.line IS i.line)"
+    "AND c.hit = i.hit AND COALESCE(c.stop_line, c.line) IS i.line)"
 )
 
 
@@ -1386,9 +1401,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     (SELECT group_concat(name || ': ' || before || ' -> ' || after || {_NO_CHANGE} ||
       {_RESTORED}, '; ')
       FROM interventions i
-      WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS interventions,
+      WHERE i.run_id = o.run_id AND i.hit = o.hit
+        AND i.line IS COALESCE(o.stop_line, o.line)) AS interventions,
     (SELECT MIN(rowid) FROM interventions i
-      WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS seq, o.rowid AS pos
+      WHERE i.run_id = o.run_id AND i.hit = o.hit
+        AND i.line IS COALESCE(o.stop_line, o.line)) AS seq, o.rowid AS pos
   FROM captures o JOIN captures s ON s.run_id = o.run_id AND s.hit = o.hit
     AND s.selector = o.selector AND s.phase = 'after-set'
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
@@ -1787,8 +1804,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
             "num, unavailable, error, view, identity, scope, note, instance, stop, "
             "element_size, at_element_of, element_index, offset_from, element_offset, "
-            "debugger_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "debugger_type, frame, stop_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1815,6 +1832,12 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     *_points_into(row, "offset_from", "offset"),
                     # Every row of a run from schema 18 has one where it has a type.
                     row.get("debugger_type") or row.get("type"),
+                    # Which frame the selector read (#382): 0, where the program stopped,
+                    # unless the row names a caller's.
+                    row["frame"] if type(row.get("frame")) is int else 0,
+                    row["stop_line"]
+                    if type(row.get("stop_line")) is int and row.get("frame")
+                    else None,
                 )
                 for row in result.get("rows") or []
             ],
@@ -2335,10 +2358,12 @@ def _cells(where):
     """SQL for one row per hit, phase and selector of the captures matching ``where``:
     ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
     other than how it was read, else `note` where the row has a note); ``stop``, where
-    its rows agree on one (`_one_stop`). A selector captured twice at a hit read the same
+    its rows agree on one (`_one_stop`); ``line``, where the program stopped (a caller
+    frame's row's `stop_line`, #382). A selector captured twice at a hit read the same
     both times (``_captured`` checks): one cell."""
     return (
-        f"SELECT hit, phase, selector, MIN(line) AS line, {_one_stop()} AS stop, "
+        f"SELECT hit, phase, selector, MIN(COALESCE(stop_line, line)) AS line, "
+        f"{_one_stop()} AS stop, "
         "MAX(value) AS value,\n"
         "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
         f"    MAX({_caveat()}) AS caveat\n"
@@ -3087,8 +3112,8 @@ def _structure_apart(path, run):
     line."""
     rows = query(
         path,
-        "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
-        f"c.value, {_caveat('c')} AS caveat, r.language, c.unavailable AS withheld "
+        "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.frame, "
+        f"c.selector, c.value, {_caveat('c')} AS caveat, r.language, c.unavailable AS withheld "
         "FROM captures c JOIN runs r ON "
         "r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY c.run_id, c.hit, c.rowid",
         {"a": run["a"], "b": run["b"]},
@@ -3109,7 +3134,12 @@ def _structure_apart(path, run):
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue
-        places[here].setdefault(row["hit"], (row["function"], row["instance"], row["line"]))
+        # Where the program stopped: a caller frame's row (#382) gives its own place only
+        # to a hit with no other.
+        place = (row["frame"] or 0, row["function"], row["instance"], row["line"])
+        known = places[here].get(row["hit"])
+        if known is None or (known[0] and not place[0]):
+            places[here][row["hit"]] = place
         if row["selector"] not in captured[here]:
             captured[here].append(row["selector"])
         if row["withheld"]:
@@ -3569,8 +3599,11 @@ _KEY_SEARCH = 2_000_000
 
 
 def _place(place):
-    """Where a stop was, for a note: `in f at line 24`, an instance by its label."""
-    function, instance, line = place
+    """Where a stop was, for a note: `in f at line 24`, an instance by its label; where
+    only a caller frame was read (#382), `below main at line 30 (frame 1)`."""
+    frame, function, instance, line = place
+    if frame:
+        return f"below {instance or function} at line {line} (frame {frame})"
     return f"in {instance or function} at line {line}"
 
 

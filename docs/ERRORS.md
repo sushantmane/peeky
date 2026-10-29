@@ -1,4 +1,4 @@
-# Error codes (protocol 8)
+# Error codes (protocol 9)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -154,8 +154,8 @@ file lists what it reads.
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,
   `--at` isn't needed.
 - An evidence store that can't be used. Move it aside, or pass `--store`.
-- A client and a remote worker of different protocols: `Worker speaks protocol 7, this client 8`,
-  or, from the worker, `Client speaks protocol 7, this worker 8`. Install the same Peeky version
+- A client and a remote worker of different protocols: `Worker speaks protocol 8, this client 9`,
+  or, from the worker, `Client speaks protocol 8, this worker 9`. Install the same Peeky version
   on both hosts.
 - A request that sends the program's hash, `expect_sha256`, without the other sources' hashes,
   `expect_inputs`, or with an empty `expect_inputs`. Use the same Peeky version on both hosts.
@@ -511,4 +511,7 @@ HTTP response carries `X-Peeky-Protocol: 5`.
 - **Protocol 8** reads a GCC lambda's captures in a `Captures` scope. A stop says why each one
   it doesn't read isn't read (`closure_unread`). A protocol 7 worker reads none
   ([C and C++ 7.1](lang/c-cpp-cookbook.md#read-a-lambdas-captures)).
+- **Protocol 9** reads a caller frame's values in a probe: `1:i`. Its rows say `frame` and
+  `stop_line`. A protocol 8 worker refuses `1:i` as no selector
+  ([COOKBOOK 2.10](COOKBOOK.md#210-values-in-a-callers-frame)).
 - A client and a worker of different protocols refuse each other before anything runs.
