@@ -1,7 +1,7 @@
 """`peeky`: a standalone debugger tool that agents, harnesses and humans call.
 
 Peeky never calls a model. A model (Copilot, Claude, Codex), a script or a person
-runs these commands and decides what to do next, as with heappy. There is no mode
+runs these commands and decides what to do next, as with `git`. There is no mode
 switch: `probe` answers one question in one stateless call and saves its evidence,
 `sql` and `queries` ask follow-up questions about saved evidence (read-only SQL),
 `session` subcommands explore step by step, `verify` checks a candidate fix on a fresh

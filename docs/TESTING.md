@@ -157,12 +157,12 @@ Live model evaluation is manual only. Record:
 Evaluate several distinct bugs before calling the MVP reliable in general. Never use stored model
 answers as evidence of a fresh model run.
 
-## Private delivery
+## Artifact delivery
 
-`Private build artifact` is a manually triggered workflow. It validates, builds, and uploads wheel
+`Build artifact` is a manually triggered workflow. It validates, builds, and uploads wheel
 and sdist artifacts, which are kept for seven days.
 
-- It does not publish to PyPI, create a public release, or deploy a worker.
+- It does not publish to PyPI, create a release, or deploy a worker.
 - Later release automation should use a release checklist, and explicit decisions about the
   environment and registry.
 
@@ -190,9 +190,9 @@ These are the GitHub API's job start and completion timestamps, including each j
 teardown. This run met the under-5-minute target with plenty of room. Measure again as coverage
 grows.
 
-- **Private delivery:** the
+- **Artifact delivery:** the
   [artifact run](https://github.com/sushantmane/peeky/actions/runs/38526401333) built and
-  uploaded the private distributions, in a 29-second job.
+  uploaded the distributions, in a 29-second job.
 - **Bounded transport:** the
   [PR run](https://github.com/sushantmane/peeky/actions/runs/38528024457), commit `7e3a9d3`,
   passed all five concurrent jobs, with a 21-second execution span. Local validation was 42 tests
@@ -204,12 +204,9 @@ grows.
 
 ### Merge enforcement limitation
 
-- Requiring all five checks on `main` returned GitHub HTTP 403: branch protection for a private
-  repository needs a plan upgrade.
-- The repository stays private. No plan or visibility change was made.
-- CI runs on pushes to `main` and on PRs, but its checks are not enforced merge gates under the
-  current plan.
-- Until protection is available, use PRs, and check by hand that all checks are green.
+- While the repository was private, GitHub refused to require checks on `main` (HTTP 403).
+- CI runs on pushes to `main` and on PRs, but its checks are not yet enforced merge gates.
+- Until they are, use PRs, and check by hand that all checks are green.
 
 ## C investigation slice (2026-10-14)
 

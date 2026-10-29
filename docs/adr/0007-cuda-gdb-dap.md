@@ -76,4 +76,4 @@ Phase 1 (launch, kernel breakpoints, focus, inspection, continuation through `pe
 
 - No new protocol stack if DAP qualifies: probes, sessions, the evidence store, remote workers and error codes carry over, and CUDA adds a focus dimension to stops and selectors.
 - Peeky's safety rules hold: no expression evaluation, bounded reads, explicit stop identity and focus, refusal over guessing.
-- GPU work cannot be verified on the maintainer's Mac or in the current CI. It needs a GPU host, which is the owner's decision (cloud VM, lab machine or a hosted GPU runner).
+- GPU work cannot be verified on the maintainer's Mac or in the current CI. It needs a GPU host (a cloud VM, a lab machine or a hosted GPU runner), which is not chosen yet.

@@ -17,7 +17,7 @@ BEFORE = {
     "gcc": "::before(const Task &, const Task &)",
 }
 
-# The evaluation's case (/tmp/peeky-eval7/sched/sched.cpp): a later deadline runs first.
+# The seventh evaluation's case (sched.cpp): a later deadline runs first.
 SCHED = """#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
