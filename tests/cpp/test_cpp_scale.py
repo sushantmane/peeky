@@ -6,6 +6,7 @@ neither refused nor read without its checks."""
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -192,4 +193,50 @@ def test_debug_information_over_peekys_limit_leaves_locals_unjudged_and_says_why
         "Peeky does not judge whether this local is initialized here: it could not read the "
         "build's debug information (over Peeky's limit of 5 entries; probe a smaller program), "
         "so it may hold leftovers"
+    )
+
+
+def stand_in(tmp_path, monkeypatch, mode):
+    """PEEKY_NATIVE_DWARFDUMP as a script that runs the real tool, but for the whole debug
+    information (`--debug-info`), which it never gives: it ``mode``s (sleeps or fails)."""
+    real = os.environ.get("PEEKY_NATIVE_DWARFDUMP") or shutil.which("llvm-dwarfdump")
+    if not real:
+        pytest.skip("set PEEKY_NATIVE_DWARFDUMP to enable native conformance")
+    script = tmp_path / "tools" / "llvm-dwarfdump"
+    script.parent.mkdir()
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys, time\n"
+        "if '--debug-info' in sys.argv[1:]:\n"
+        f"    if {mode!r} == 'sleep':\n"
+        "        time.sleep(60)\n"
+        "    sys.stderr.write('llvm-dwarfdump: error: no debug information\\n')\n"
+        "    sys.exit(3)\n"
+        f"os.execv({str(shutil.which(real) or real)!r}, [{real!r}, *sys.argv[1:]])\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PEEKY_NATIVE_DWARFDUMP", str(script))
+
+
+@pytest.mark.timeout(240)
+def test_reading_debug_information_out_of_time_fails_the_launch(small, capsys, monkeypatch):
+    # Only a build over Peeky's bounds is read without its debug information; a read the
+    # time ran out on is a TIMEOUT (it was taken for unreadable debug information).
+    stand_in(small.parent, monkeypatch, "sleep")
+    monkeypatch.setattr("peeky.native._remaining", lambda deadline, limit=15: 2)
+    code, result = probe_small(capsys, small)
+    assert code != 0 and result["error"]["code"] == "TIMEOUT", result
+    assert result["error"]["message"].startswith(
+        "Reading the build's debug information timed out after 2.0 s: probe a smaller program"
+    )
+
+
+@pytest.mark.timeout(240)
+def test_a_failing_dwarfdump_fails_the_launch(small, capsys, monkeypatch):
+    stand_in(small.parent, monkeypatch, "fail")
+    code, result = probe_small(capsys, small)
+    assert code != 0 and result["error"]["code"] == "DEBUGGER_ERROR", result
+    assert (
+        "exit=3, diagnostics=llvm-dwarfdump: error: no debug information"
+        in (result["error"]["message"])
     )

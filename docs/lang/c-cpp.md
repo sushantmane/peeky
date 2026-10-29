@@ -227,8 +227,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - A probe whose build fails is refused before launch: `BUILD_FAILED`, exit 2, no table, and no run
   saved. That includes a candidate edit that doesn't compile. `verify` calls it a failed verify,
   exit 1 ([ERRORS](../ERRORS.md)).
-- Peeky reads up to 400,000 debug-information entries. An 8-file program using the STL has about
-  100,000. Over that, no local is judged or can be changed, and each says why. Over 64 MiB of line
+- Peeky keeps up to 400,000 debug-information entries, in at most 300 MiB of memory. An 8-file
+  program using the STL has about 100,000, in about 100 MB. Over that, no local is judged or can
+  be changed, and each says why. Over 64 MiB of line
   tables, the probe is refused with `BUDGET_EXHAUSTED`
   ([NATIVE_INTERNALS](../NATIVE_INTERNALS.md#reading-a-builds-symbols)).
 - To debug the optimized program, put `"optimization": "O2"` in a `--config`. Locals may then be

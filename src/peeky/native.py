@@ -226,12 +226,29 @@ class SymbolLimit(ValueError):
 _SMALLER = "probe a smaller program (fewer source files, standard headers or std collections)"
 
 
-def symbol_limit(limit, what):
-    """The refusal of a build whose ``what`` (`line tables`) is over ``limit`` (`64 MiB`)."""
+def symbol_limit(limit, what, kept=False):
+    """The refusal of a build whose ``what`` (`line tables`) is over ``limit`` (`64 MiB`):
+    of what Peeky reads, or (``kept``) of what it keeps of it in memory."""
+    if kept:
+        return SymbolLimit(
+            f"Peeky keeps at most {limit} of a build's {what} in memory, and this build needs "
+            f"more: {_SMALLER}.",
+            f"over Peeky's limit of {limit} in memory; {_SMALLER.split(' (')[0]}",
+        )
     return SymbolLimit(
         f"Peeky reads at most {limit} of a build's {what}, and this build has more: {_SMALLER}.",
         f"over Peeky's limit of {limit}; {_SMALLER.split(' (')[0]}",
     )
+
+
+class SymbolToolError(RuntimeError):
+    """llvm-dwarfdump failed while Peeky read a build's symbols: a DEBUGGER_ERROR."""
+
+
+# A read of a build's symbols that did not finish (#397): over a bound, out of time, or
+# its tool failed. Never a parse that could not read the text: an optional proof that
+# falls back without its text must let these through.
+SYMBOL_FAILURES = (SymbolLimit, TimeoutError, SymbolToolError)
 
 
 def _size(limit):
@@ -239,13 +256,14 @@ def _size(limit):
 
 
 @contextlib.contextmanager
-def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what):
+def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what, spent=None):
     """The lines llvm-dwarfdump writes for each argument list of ``commands`` in turn,
     as it writes them (#397): the text is parsed as it comes and never held whole.
     Lines end at `\\n` as ``split_lines`` ends them. At most ``limit`` bytes in all
-    (SymbolLimit), within ``timeout`` seconds (TimeoutError); a tool that fails, or
-    writes over 16,000 bytes of diagnostics, is a RuntimeError. Each tool is ended when
-    the block is left; the iterator must be read to its end."""
+    (SymbolLimit), with ``spent`` (a one-item list: bytes earlier reads of the same build
+    took of it, added to here), within ``timeout`` seconds (TimeoutError); a tool that
+    fails, or writes over 16,000 bytes of diagnostics, is a SymbolToolError. Each tool
+    is ended when the block is left; the iterator must be read to its end."""
     if type(limit) is not int or not 0 < limit <= MAX_DEBUG_INFO:
         raise ValueError("Invalid native metadata capture limit")
     if type(timeout) not in (int, float) or not 0 < timeout <= 15:
@@ -259,7 +277,7 @@ def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what):
         def failed(process, errors, why):
             with errors.open("rb") as diagnostics:
                 detail = diagnostics.read(2000).decode("utf-8", errors="replace")
-            return RuntimeError(
+            return SymbolToolError(
                 f"Native symbol command failed ({why}): exit={process.returncode}, "
                 f"diagnostics={detail}"
             )
@@ -273,7 +291,7 @@ def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what):
             return error
 
         def lines():
-            total = 0
+            total = spent if spent is not None else [0]
             for index, arguments in enumerate(commands):
                 errors = Path(scratch) / f"errors-{index}.txt"
                 with errors.open("wb") as stderr:
@@ -302,8 +320,8 @@ def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what):
                         chunk = os.read(source, 1 << 20)
                         if not chunk:
                             break
-                        total += len(chunk)
-                        if total > limit:
+                        total[0] += len(chunk)
+                        if total[0] > limit:
                             raise symbol_limit(_size(limit), what)
                         end = chunk.rfind(b"\n")
                         if end < 0:
@@ -559,8 +577,31 @@ def parse_lines(text, workspace, declared, *, limit=MAX_LINE_TEXT, rust=False):
 
 MAX_SCOPES = 300
 # The entries of a build's debug information Peeky keeps (#397): the STL-heavy 8-file C++
-# program and the Rust crate using BTreeMap have 75,000-100,000 each.
+# program and the Rust crate using BTreeMap have 59,000-130,000 each.
 MAX_DIES = 400_000
+# What Peeky keeps in memory of a build's parsed debug information (#397), reckoned as it
+# parses: never less than what Python holds for it (tests check, with tracemalloc). Those
+# programs keep 57-136 MB by this reckoning, which overstates what is held by 25-70%.
+MAX_KEPT = 300 * 1024 * 1024
+# A dict of n names (an entry's attributes) takes at most _NAMES_BASE + n * _NAME_BYTES.
+_NAME_BYTES = 56
+_NAMES_BASE = sys.getsizeof({"a": 0}) - _NAME_BYTES
+# The most one entry keeps past its attributes and values: its dict, its attributes'
+# dict's base, its two lists, its offset, its slot in the DieMap (72), its place in its
+# parent's children (9) and that list's spare room (48).
+_ENTRY_BYTES = (
+    sys.getsizeof({"tag": "", "attrs": {}, "parent": 0, "children": [], "depth": 0, "ranges": []})
+    + _NAMES_BASE
+    + 2 * sys.getsizeof([])
+    + sys.getsizeof(1 << 40)
+    + 72
+    + 9
+    + 48
+)
+# A distinct name or value's slot in the parse's pool; its text is sys.getsizeof's.
+_VALUE_BYTES = 80
+# One `[low, high)` of an entry's code: its tuple, its numbers and its place in a list.
+_RANGE_BYTES = 200
 _DIE = re.compile(r"(0x[0-9a-fA-F]+):( +)(DW_TAG_\w+|NULL)")
 _ATTRIBUTE = re.compile(r" +(DW_AT_\w+)\s+\((.*)\)$")
 _RANGES_START = re.compile(r" +DW_AT_ranges\s+\((0x[0-9a-fA-F]+)\s*$")
@@ -591,12 +632,21 @@ def _reusing_dies():
         _PARSED.last = None
 
 
+class Kept:
+    """What the parses of one build's debug information keep in all (#397): ``entries``,
+    and ``bytes`` as MAX_KEPT reckons them."""
+
+    def __init__(self):
+        self.entries = self.bytes = 0
+
+
 class DieMap(dict):
     """{offset: die} as ``_parse_dies`` reads dwarfdump's `--debug-info` text, which may
     be read as llvm-dwarfdump writes it (``read_debug_info``, #397), never held whole.
-    ``tail_calls``: has_tail_calls of that text."""
+    ``tail_calls``: has_tail_calls of that text; ``kept``: the bytes it keeps (MAX_KEPT)."""
 
     tail_calls = False
+    kept = 0
 
 
 def _dies(text):
@@ -619,21 +669,31 @@ def _dies(text):
 
 def _parse_dies(text, into=None):
     """``text``: dwarfdump's `--debug-info` text, or its lines as they come. ``into``: a
-    DieMap to add them to (several dumps read in turn, as the text of all of them)."""
+    DieMap to add them to (several dumps read in turn, as the text of all of them).
+    At most MAX_DIES entries, and MAX_KEPT bytes kept (SymbolLimit)."""
     dies = DieMap() if into is None else into
-    stack, ranges, tail_calls = [], None, dies.tail_calls
+    stack, ranges, tail_calls, size = [], None, dies.tail_calls, dies.kept
     # One copy of each repeated name and value (a type's name, a header's path): a dump
     # of tens of megabytes repeats most of its text.
     kept = {}
+
+    def one(item):
+        nonlocal size
+        if (found := kept.get(item)) is None:
+            kept[item] = found = item
+            size += sys.getsizeof(item) + _VALUE_BYTES
+        return found
+
     for raw in split_lines(text) if isinstance(text, str) else text:
         if not tail_calls and "tail_call" in raw and _TAIL_CALL.search(raw):
             tail_calls = True
         if ranges is not None:
-            ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in _RANGE.findall(raw))
+            found = _RANGE.findall(raw)
+            size += len(found) * _RANGE_BYTES
+            ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
             if raw.rstrip().endswith("))") or not _RANGE.search(raw):
                 ranges = None
-            continue
-        if match := _DIE.match(raw):
+        elif match := _DIE.match(raw):
             depth = (len(match[2]) - 1) // 2
             del stack[depth:]
             if match[3] == "NULL":
@@ -642,8 +702,9 @@ def _parse_dies(text, into=None):
                 raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
             offset = int(match[1], 16)
             parent = stack[-1] if stack else None
+            size += _ENTRY_BYTES
             dies[offset] = {
-                "tag": kept.setdefault(match[3], match[3]),
+                "tag": one(match[3]),
                 "attrs": {},
                 "parent": parent,
                 "children": [],
@@ -656,13 +717,20 @@ def _parse_dies(text, into=None):
         elif stack and _RANGES_START.match(raw):
             # A multi-line range list: `[low, high)` rows until the closing `))`.
             ranges = dies[stack[-1]]["ranges"]
+            size += _NAME_BYTES
         elif stack and (match := _ATTRIBUTE.match(raw)):
-            name, value = kept.setdefault(match[1], match[1]), match[2]
-            dies[stack[-1]]["attrs"].setdefault(name, kept.setdefault(value, value))
+            name, value = one(match[1]), one(match[2])
+            size += _NAME_BYTES
+            dies[stack[-1]]["attrs"].setdefault(name, value)
             if name == "DW_AT_ranges":
                 found = _RANGE.findall(value)
+                size += len(found) * _RANGE_BYTES
                 dies[stack[-1]]["ranges"].extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
-    dies.tail_calls = tail_calls
+        else:
+            continue
+        if size > MAX_KEPT:
+            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
+    dies.tail_calls, dies.kept = tail_calls, size
     return dies
 
 
@@ -4943,10 +5011,12 @@ class NativeTarget:
                                 _dies(info), node_types(_dies(info)), CPP_LIBRARIES
                             ).items():
                                 fields.setdefault(offset, node)
-            except (RuntimeError, ValueError, OSError) as exc:
-                # Without it, values show as the debugger reads them, each local with a
+            except (ValueError, RecursionError) as exc:
+                # Debug information over Peeky's bounds (SymbolLimit), or that its parse
+                # cannot read: values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
-                # can be changed).
+                # can be changed). A read that times out (TimeoutError), a failing
+                # dwarfdump (SymbolToolError) or another OS error fails the launch.
                 declarations, fields, prologues, code = None, None, None, None
                 statics, results = (), None
                 detail = getattr(exc, "detail", None) or str(exc)[:120] or type(exc).__name__

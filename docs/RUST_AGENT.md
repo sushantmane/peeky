@@ -957,10 +957,13 @@ the engineering probe.
 - Each table is dumped by its exact `DW_AT_stmt_list` offset, and its header's offset must match.
   The native worker's `parse_lines` then reads it, fail-closed.
 - Each unit's line table and debug information are read as dwarfdump writes them, never held
-  whole. The bounds are C's and C++'s: 400,000 entries, and 64 MiB of line tables and 256 MiB of
-  debug information as text. A crate using BTreeMap has 95,000 entries, 33 MB of text
-  ([NATIVE_INTERNALS](NATIVE_INTERNALS.md#reading-a-builds-symbols)).
-- A unit over a bound is refused with `BUDGET_EXHAUSTED`, which says to probe a smaller crate.
+  whole. The bounds are C's and C++'s: 300 MiB or 400,000 entries kept, and 64 MiB of line tables
+  and 256 MiB of debug information as text. A crate using BTreeMap has 95,000 entries, 33 MB of
+  text ([NATIVE_INTERNALS](NATIVE_INTERNALS.md#reading-a-builds-symbols)).
+- They hold for all the application units together. A crate over one is refused with
+  `BUDGET_EXHAUSTED`, which says to probe a smaller crate.
+- A later read of the units that doesn't finish (a bound, a timeout, a failing dwarfdump) fails
+  that request, as it is. It is never taken for no rows or no types.
 - The standard library's tables are never read. Fewer lines can only refuse a breakpoint or a
   stop: a standard-library line can't be taken for a declared file's.
 

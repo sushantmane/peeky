@@ -144,7 +144,7 @@ _RULES = (
     ),
     (
         # A build whose symbols are over Peeky's fixed bounds (native.symbol_limit).
-        r"^Peeky reads at most .* of a build's (?:debug information|line tables)",
+        r"^Peeky (?:reads|keeps) at most .* of a build's (?:debug information|line tables)",
         "BUDGET_EXHAUSTED",
         "Probe a smaller program: fewer source files or standard headers, or in Rust fewer "
         "std collections. These limits are fixed.",

@@ -17,6 +17,7 @@ from peeky.native import (
     parse_lines,
     read_debug_info,
     read_line_table,
+    symbol_limit,
 )
 from peeky.textlines import split_lines
 
@@ -91,6 +92,11 @@ def test_symbol_text_over_its_limit_is_refused_as_a_budget(tmp_path):
     )
     assert error["hint"].startswith("Probe a smaller program") and len(error["hint"]) <= 150
     assert refused.value.detail == "over Peeky's limit of 4 MiB; probe a smaller program"
+    kept = classify(symbol_limit("300 MiB", "debug information", kept=True))
+    assert kept["code"] == "BUDGET_EXHAUSTED" and kept["message"].startswith(
+        "Peeky keeps at most 300 MiB of a build's debug information in memory, and this build "
+        "needs more: probe a smaller program"
+    )
     assert not list(tmp_path.glob("peeky-symbols-*"))
 
 

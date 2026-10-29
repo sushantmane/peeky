@@ -40,6 +40,7 @@ from peeky.identifiers import changeable, is_located, is_name, split_located
 from peeky.names import display_function
 from peeky.native import (
     _RUST_POINTER,
+    SYMBOL_FAILURES,
     NativeSession,
     _path_name,
     _writable_integer,
@@ -155,6 +156,8 @@ _CARGO_STDERR = re.compile(
     r"|warning: `[a-z0-9_-]{1,64}` \(bin \"[a-z0-9_-]{1,64}\"\) generated [0-9]{1,6} warnings?"
 )
 SYMBOL_BUDGET_S = 10
+# How long each read of the application units after `prepare` may take (#397).
+UNIT_READ_S = 15
 _SUMMARY = re.compile(
     r"test result: (ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored; "
     r"([0-9]{1,6}) measured; ([0-9]{1,6}) filtered out; finished in [0-9]{1,6}\.[0-9]{1,3}s"
@@ -2013,7 +2016,7 @@ class RustSession(NativeSession):
             ],
             self.prepared.workspace,
             dict(self.prepared.manifest.effective_environment),
-            timeout=15,
+            timeout=UNIT_READ_S,
         )
 
     def _unit_lines(self):
@@ -2025,7 +2028,7 @@ class RustSession(NativeSession):
             self.prepared.workspace,
             dict(self.prepared.manifest.effective_environment),
             tuple(self.lines),
-            timeout=15,
+            timeout=UNIT_READ_S,
             rust=True,
         )
 
@@ -3987,7 +3990,10 @@ class RustSession(NativeSession):
                         self._unit_lines(), self.prepared.workspace, tuple(self.lines), rust=True
                     )
                 self.assert_current()
-            except (OSError, RuntimeError, ValueError):
+            except SYMBOL_FAILURES:
+                # A read over a bound, out of time or whose tool failed is never "no rows".
+                raise
+            except (ValueError, RecursionError):
                 rows = []
             self._rows = sorted(rows)
         return self._rows
@@ -4085,7 +4091,11 @@ class RustSession(NativeSession):
         if cached is None:
             try:
                 cached = self._read_field_types()
-            except (OSError, RuntimeError, ValueError) as exc:
+            except SYMBOL_FAILURES:
+                # Never kept for the session, nor a refusal of one change: said as it is.
+                raise
+            except (ValueError, RecursionError) as exc:
+                # Debug information the parse cannot read: no change that needs it.
                 cached = exc
             self._field_cache = cached
         if isinstance(cached, Exception):
@@ -4163,6 +4173,8 @@ class RustSession(NativeSession):
         if found is None:
             try:
                 self._field_types()
+            except SYMBOL_FAILURES:
+                raise
             except ValueError:
                 pass
             found = self.__dict__.get("_free_cache") or frozenset()

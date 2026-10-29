@@ -40,19 +40,33 @@ Peeky reads a build's line tables and debug information as llvm-dwarfdump writes
 
 The bounds are on what is kept, and on the time:
 
-- 400,000 debug-information entries (`MAX_DIES`). An 8-file C++ program using the STL has
-  59,000-130,000; a Rust crate using BTreeMap has 95,000.
+- 300 MiB kept in memory (`MAX_KEPT`). Each parse reckons it as it goes: each entry's dicts and
+  lists, each attribute's slot, each range, and each distinct name or value by `sys.getsizeof`.
+  The sizes of an entry's dicts and lists come from `sys.getsizeof` on the running Python.
+- That reckoning is never below what Python holds. A test measures it with `tracemalloc`, on a
+  unit whose every value differs. On these programs it overstates what is held by 25-70%.
+- An 8-file C++ program using the STL keeps 57-136 MB by it; the Rust crate using BTreeMap, 94-98
+  MB.
+- 400,000 debug-information entries (`MAX_DIES`). These programs have 59,000-130,000.
 - 64 MiB of line-table text (`MAX_LINE_TEXT`), and 256 MiB of debug-information text
-  (`MAX_DEBUG_INFO`). Such a program has 2-4 MB and 19-45 MB.
+  (`MAX_DEBUG_INFO`), which bound the time. Such a program has 2-4 MB and 19-45 MB.
 - 15 s for each read, or less if the launch's deadline is nearer.
+- Rust's `prepare` applies the bounds to all the crate's units together, as the session reads
+  them again later in one go. Its reckoning of an entry is never below the native one's, so a
+  crate that passes `prepare` passes the later reads.
 
 Over a bound (`SymbolLimit`), the message names the bound and says to probe a smaller program:
 
 - Line tables over theirs are refused with `BUDGET_EXHAUSTED`, before the launch.
 - C or C++ debug information over its bounds isn't read. The program runs, but every local is
-  marked not judged, with the bound, and no value can be changed.
+  marked not judged, with the bound, and no value can be changed. So is debug information the
+  parse can't read.
 - A Rust unit over them is refused with `BUDGET_EXHAUSTED`.
-- A read that takes too long is a `TIMEOUT`. A dwarfdump that fails is a `DEBUGGER_ERROR`.
+- A read that takes too long is a `TIMEOUT`. A dwarfdump that fails (`SymbolToolError`) is a
+  `DEBUGGER_ERROR`. Either fails the launch: neither is taken for unreadable debug information.
+- `SYMBOL_FAILURES` are these three. A later read that falls back without its text lets them
+  through: Rust's address rows, field types and text changes' borrow checks.
+- `describe` shows "function names: unavailable", with the reason, for any of them.
 
 Before, Peeky held at most 2 MiB of line tables and 16 MiB of debug information. Wall time of
 one probe, as measured on the programs in `examples/large` and a ninth C++ file using

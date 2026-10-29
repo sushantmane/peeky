@@ -90,8 +90,9 @@ The last column is the `retryable` field.
 
 - A read went past one of Peeky's bounds, such as on the children it lists. Read a narrower
   selector.
-- A build's symbols are over Peeky's bounds: 400,000 debug-information entries, or 64 MiB of line
-  tables or 256 MiB of debug information as llvm-dwarfdump writes them. The program didn't run.
+- A build's symbols are over Peeky's bounds: 300 MiB or 400,000 entries of debug information kept
+  in memory, or 64 MiB of line tables or 256 MiB of debug information as llvm-dwarfdump writes
+  them. The program didn't run.
   Probe a smaller program: fewer source files or standard headers, or in Rust fewer std
   collections.
 - A C or C++ program whose debug information is over its bounds isn't refused. It runs, but no
