@@ -2769,6 +2769,13 @@ class DebugWorker:
             if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
+                if _in_program_sources(runtime, frames[0], self.root):
+                    # The step stopped in the program's own code: only the frame asked for
+                    # is outside its sources (a library's, or `start` below main).
+                    raise ValueError(
+                        f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
+                        "program's sources; inspect one of your program's frames"
+                    )
                 if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
                     # What the function the step left returned is still shown (#155).
                     return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
@@ -2780,7 +2787,13 @@ class DebugWorker:
                         if self.stop_reason == "interrupted"
                         else "The step stopped"
                     )
-                    + f" outside the program's sources (in {selected_frame.get('name')}); "
+                    + f" outside the program's sources (in {frames[0].get('name')}"
+                    + (
+                        f"), and frame {index} ({selected_frame.get('name')}) is outside them too"
+                        if index
+                        else ")"
+                    )
+                    + "; "
                     + (
                         "`session step --out` returns to your code, or `session continue`"
                         if self.stop_returns
