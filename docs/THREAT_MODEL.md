@@ -58,8 +58,8 @@ Peeky is not:
   unchanged. Its timestamps must also be more than 2 s old (`src/peeky/digest.py`).
 - Any write, replacement or rename changes those.
 - A C or C++ toolchain binary's digest is also kept in the state directory, so a new process
-  reuses it by the same rules. So is each tool's answer to `--version` or `--help`, keyed by the
-  tool's SHA-256. A tool that is a script is asked every time: the program it runs isn't hashed.
+  reuses it by the same rules. Peeky reads an entry only if it's a regular file of yours that
+  others can't read or write. Each build still asks each tool its version.
 - To rehash every time, set `PEEKY_NO_DIGEST_CACHE=1`. This also turns off what the state
   directory keeps. Do this, for example, on filesystems whose timestamps are unreliable.
 - Compiled builds also record every file the compiler read:

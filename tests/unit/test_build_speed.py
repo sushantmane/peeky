@@ -1,6 +1,7 @@
-"""Build speed without new trust: a toolchain probe's output is reused only while
-everything it may depend on is the same, its tool's SHA-256 first; a parallel group of
-build commands gives the outputs and the failure that running them in order gives."""
+"""Build speed without new trust (#398): toolchain probes run on every build, and only
+their tools' digests are kept across processes; a parallel group of independent build
+commands starts them in order, and raises the earliest failure, as running them in order
+does."""
 
 import os
 import shutil
@@ -47,12 +48,11 @@ def python_tool(folder):
     return tool
 
 
-def probe_recipe(tool, log, **changes):
-    script = f"open({str(log)!r}, 'a').write('ran\\n'); print('probe 1')"
-    fields = {
-        "language": "fixture",
-        "inputs": ("main.c",),
-        "build_commands": (
+def probe_recipe(tool, script):
+    return BuildRecipe(
+        language="fixture",
+        inputs=("main.c",),
+        build_commands=(
             Command(
                 (
                     sys.executable,
@@ -61,87 +61,71 @@ def probe_recipe(tool, log, **changes):
                 )
             ),
         ),
-        "artifacts": (ArtifactSpec("out"),),
-        "toolchain_probes": (Command((str(tool), "-I", "-c", script)),),
-    }
-    return BuildRecipe(**{**fields, **changes})
+        artifacts=(ArtifactSpec("out"),),
+        toolchain_probes=(Command((str(tool), "-I", "-c", script)),),
+    )
 
 
-def runs(log):
-    return len(log.read_text().splitlines()) if log.exists() else 0
+def probed(recipe, source):
+    with prepare(recipe, source, keep_tool_digests=True) as run:
+        return run.manifest.probes[0].stdout, run.manifest.build_id
 
 
-def test_a_probe_is_reused_while_its_tool_is_unchanged(source, tmp_path):
-    tool, log = python_tool(tmp_path / "tools"), tmp_path / "log"
-    manifests = []
-    for _ in range(3):
-        with prepare(probe_recipe(tool, log), source, reuse_probes=True) as run:
-            manifests.append(run.manifest)
-    assert runs(log) == 1
-    assert manifests[0].probes[0].stdout == "probe 1\n"
-    # The reused output, tool and build are those of the run that answered.
-    assert manifests[1].probes == manifests[2].probes == manifests[0].probes
-    assert manifests[1].tools == manifests[0].tools
-    assert manifests[1].build_id == manifests[0].build_id
-    # Without reuse_probes, every build probes (Rust and Java do not opt in).
-    with prepare(probe_recipe(tool, log), source):
+def test_a_config_file_rewritten_in_place_is_probed_again(source, tmp_path):
+    # Review of #400: a probe's output was reused while the tool's bytes and its
+    # directory's entries were unchanged, so a clang.cfg rewritten in place went unseen.
+    tool = python_tool(tmp_path / "tools")
+    config = tool.parent / "clang.cfg"
+    config.write_text("-O0\n")
+    recipe = probe_recipe(tool, f"print('config:', open({str(config)!r}).read().strip())")
+    first = probed(recipe, source)
+    with open(config, "r+") as stream:
+        stream.write("-O2\n")
+    second = probed(recipe, source)
+    assert (first[0], second[0]) == ("config: -O0\n", "config: -O2\n")
+    assert first[1] != second[1]
+
+
+def test_a_wrappers_probe_follows_the_program_it_runs(source, tmp_path):
+    # Review of #400: a compiled wrapper's own bytes don't change when the program it
+    # runs does; the probe must ask again.
+    tool = python_tool(tmp_path / "tools")
+    delegate = tmp_path / "real-clang"
+    delegate.write_text("#!/bin/sh\necho clang version 18\n")
+    delegate.chmod(0o755)
+    script = (
+        "import subprocess, sys; "
+        f"sys.stdout.write(subprocess.run([{str(delegate)!r}], capture_output=True, text=True).stdout)"
+    )
+    recipe = probe_recipe(tool, script)
+    first = probed(recipe, source)
+    delegate.write_text("#!/bin/sh\necho clang version 19\n")
+    second = probed(recipe, source)
+    assert (first[0], second[0]) == ("clang version 18\n", "clang version 19\n")
+    assert first[1] != second[1]
+
+
+def test_a_tools_kept_digest_is_reused_by_a_new_process(source, tmp_path, monkeypatch):
+    monkeypatch.setattr(digest, "SETTLE_SECONDS", -1.0)
+    tool = python_tool(tmp_path / "tools")
+    recipe = probe_recipe(tool, "print('probe')")
+    probed(recipe, source)
+    store = tmp_path / "state/cache/digests"
+    assert {path.stat().st_mode & 0o777 for path in store.iterdir()} == {0o600}
+    digest.clear()  # a new process
+    hashed = []
+    real = digest.hashlib.sha256
+    monkeypatch.setattr(digest.hashlib, "sha256", lambda *a: hashed.append(a) or real(*a))
+    assert digest.sha256_file(tool.resolve(), store=store) == real(tool.read_bytes()).hexdigest()
+    assert [args for args in hashed if not args] == []
+    # Without opting in, or with the cache off, nothing is kept.
+    for entry in store.iterdir():
+        entry.unlink()
+    with prepare(recipe, source):
         pass
-    assert runs(log) == 2
-
-
-def test_a_probe_is_run_again_when_its_tools_bytes_change(source, tmp_path):
-    tool, log = python_tool(tmp_path / "tools"), tmp_path / "log"
-    with prepare(probe_recipe(tool, log), source, reuse_probes=True) as run:
-        before = run.manifest.tools
-    with open(tool, "ab") as stream:
-        stream.write(b"\0")
-    with prepare(probe_recipe(tool, log), source, reuse_probes=True) as run:
-        after = run.manifest.tools
-    assert runs(log) == 2
-    assert before != after
-    # And when its directory changes: clang reads a configuration file beside it.
-    (tool.parent / "clang.cfg").write_text("-O2\n")
-    with prepare(probe_recipe(tool, log), source, reuse_probes=True):
-        pass
-    assert runs(log) == 3
-
-
-def test_a_probe_is_run_again_for_another_environment_or_a_damaged_entry(source, tmp_path):
-    tool, log = python_tool(tmp_path / "tools"), tmp_path / "log"
-    with prepare(probe_recipe(tool, log), source, reuse_probes=True):
-        pass
-    changed = probe_recipe(tool, log, environment=(("LANG", "C"),))
-    with prepare(changed, source, reuse_probes=True):
-        pass
-    assert runs(log) == 2
-    for entry in (tmp_path / "state/cache/probes").glob("*.json"):
-        entry.write_text('{"key": "x", "stdout": "probe 2\\n"}')
-    with prepare(probe_recipe(tool, log), source, reuse_probes=True) as run:
-        assert run.manifest.probes[0].stdout == "probe 1\n"
-    assert runs(log) == 3
-
-
-def test_a_scripts_probe_always_runs(source, tmp_path):
-    # A script runs another program, whose bytes are not hashed.
-    log = tmp_path / "log"
-    tool = tmp_path / "tool"
-    tool.write_text(f"#!/bin/sh\necho ran >> {log}\necho probe 1\n")
-    tool.chmod(0o755)
-    recipe = probe_recipe(tool, log, toolchain_probes=(Command((str(tool),)),))
-    for _ in range(2):
-        with prepare(recipe, source, reuse_probes=True):
-            pass
-    assert runs(log) == 2
-
-
-def test_no_probe_is_kept_when_the_digest_cache_is_off(source, tmp_path, monkeypatch):
     monkeypatch.setenv("PEEKY_NO_DIGEST_CACHE", "1")
-    tool, log = python_tool(tmp_path / "tools"), tmp_path / "log"
-    for _ in range(2):
-        with prepare(probe_recipe(tool, log), source, reuse_probes=True):
-            pass
-    assert runs(log) == 2
-    assert not (tmp_path / "state/cache").exists()
+    probed(recipe, source)
+    assert list(store.iterdir()) == []
 
 
 def write(name, text, *, barrier=(), wait=0.0, fail=None):
@@ -181,7 +165,7 @@ def test_a_parallel_groups_commands_run_at_once(source, monkeypatch):
         assert [item.path for item in run.manifest.artifacts] == names
 
 
-def test_a_parallel_group_builds_what_running_in_order_builds(source, monkeypatch):
+def test_deterministic_commands_build_the_same_in_parallel_and_in_order(source, monkeypatch):
     commands = [
         write(f"out{index}", f"unit {index}\n", wait=0.05 * (3 - index)) for index in range(4)
     ]
@@ -234,6 +218,37 @@ def test_no_command_after_a_failure_starts(source, tmp_path, monkeypatch):
     assert caught.value.command == commands[0].argv
     assert time.monotonic() - started < 15
     assert list(parent.iterdir()) == []
+
+
+def test_a_command_claimed_before_an_earlier_failure_never_starts(source, monkeypatch):
+    # Review of #400: a worker claimed a command, released the group's lock, and could
+    # still start its process after a command before it had failed.
+    from peeky import agent
+
+    monkeypatch.setenv("PEEKY_BUILD_JOBS", "2")
+    commands = [write("out0", "ok", fail="error"), write("out1", "ok")]
+    real_run, real_popen = build._run, subprocess.Popen
+    waited, started = [], []
+
+    def run(command, *args, **kwargs):
+        if command == commands[1]:
+            # Claimed: held between the claim and its process's start until the
+            # failure before it is recorded (which sets its stop).
+            stop = kwargs["stop"] if "stop" in kwargs else args[3]
+            waited.append(stop.wait(20))
+        return real_run(command, *args, **kwargs)
+
+    def popen(argv, *args, **kwargs):
+        started.append(tuple(argv[1:]))
+        return real_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(build, "_run", run)
+    monkeypatch.setattr(agent.subprocess, "Popen", popen)
+    with pytest.raises(BuildCommandError) as caught:
+        prepare(group_recipe(commands), source, parallel=(tuple(commands),))
+    assert caught.value.command == commands[0].argv
+    assert waited == [True]
+    assert commands[0].argv[1:] in started and commands[1].argv[1:] not in started
 
 
 def test_a_parallel_group_past_the_deadline_is_a_timeout(source, monkeypatch):

@@ -4498,7 +4498,8 @@ class NativeTarget:
         objects = tuple(f"peeky-object-{index}.o" for index in range(len(self.sources)))
         # Each unit preprocessed first (as `preprocess_argv`), so that inline assembly
         # that can read a file, which no dependency file lists, is refused before
-        # anything is compiled (#180; `before_command`).
+        # anything is compiled (#180; `before_command`). Each command writes only its
+        # own unit's files, so the `-E`s, then the `-c`s, may run at the same time.
         units = tuple(f"peeky-unit-{index}.i" for index in range(len(self.sources)))
         preprocesses = [
             Command((compiler, *flags, "-E", source, "-o", unit))
@@ -4570,10 +4571,11 @@ class NativeTarget:
                 edit=edit,
                 deadline=deadline,
                 before_command=before_command,
-                # Each unit's `-E`, then each `-c`, run at the same time: each writes
-                # only its own files.
+                # They start in order; where several fail, the first one's error is
+                # raised, as in a build one unit at a time. What a unit's compile writes
+                # may still depend on when it runs (`__TIME__`), as in any two builds.
                 parallel=(tuple(preprocesses), tuple(compiles)),
-                reuse_probes=True,
+                keep_tool_digests=True,
             )
         except BuildCommandError as exc:
             if exc.command not in compile_commands:

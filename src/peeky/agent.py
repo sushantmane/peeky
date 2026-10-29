@@ -5,6 +5,7 @@ executes actions, and verifies a proposed fix in a fresh process.
 """
 
 import argparse
+import contextlib
 import difflib
 import hashlib
 import json
@@ -109,25 +110,29 @@ def execute(
     output_limit=1048576,
     retain=16000,
     stop=None,
+    gate=None,
 ):
     """Bound output and kill the owned POSIX process group, including descendants.
 
     The first ``retain`` bytes of each stream are kept; more than ``output_limit`` kills it.
     Setting ``stop`` (a threading.Event) kills it too; its result then has no exit code.
+    ``gate()``, a context manager, is held while the process is started; it may raise
+    to keep the process from starting.
 
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
     """
     child_env = without_credentials(os.environ if env is None else env)
-    process = subprocess.Popen(
-        command,
-        cwd=cwd,
-        env=child_env,
-        stdin=subprocess.PIPE if input_text else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=os.name == "posix",
-    )
+    with gate() if gate is not None else contextlib.nullcontext():
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=child_env,
+            stdin=subprocess.PIPE if input_text else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
     buffers = [bytearray(), bytearray()]
     overflow = threading.Event()
 

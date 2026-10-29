@@ -14,7 +14,6 @@ import json
 import math
 import os
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -33,8 +32,6 @@ MAX_FILES = 4096
 MAX_FILE_BYTES = 256 * 1024 * 1024
 # The most build commands of one parallel group that run at once (PEEKY_BUILD_JOBS).
 MAX_JOBS = 8
-# The most toolchain probe outputs kept (reuse_probes); the oldest go first.
-MAX_KEPT_PROBES = 256
 
 
 class BuildCommandError(RuntimeError):
@@ -362,13 +359,15 @@ def _executable(command, workspace, env):
     return cwd, Path(executable).resolve(strict=True)
 
 
-def _run(command, workspace, env, timeout=None, stop=None):
+def _run(command, workspace, env, timeout=None, *, stop=None, gate=None, store=None):
+    """``stop`` and ``gate``: see agent.execute. ``store``: where the executable's digest
+    is kept for later processes (digest.sha256_file)."""
     # Temporary dependency reuse. Move execute to a shared process module when
     # the build boundary is integrated; never import agent at module scope.
     from peeky.agent import BUILD_RETAINED, execute
 
     cwd, executable = _executable(command, workspace, env)
-    digest, _ = _digest(executable)
+    digest, _ = _digest(executable, store)
     timeout = command.timeout_s if timeout is None else timeout
     result = execute(
         [str(executable), *command.argv[1:]],
@@ -377,6 +376,7 @@ def _run(command, workspace, env, timeout=None, stop=None):
         env=env,
         retain=BUILD_RETAINED,
         stop=stop,
+        gate=gate,
     )
     try:
         unchanged = _digest(executable)[0] == digest
@@ -437,16 +437,29 @@ def _groups(commands, parallel):
     return starts
 
 
-def _run_group(group, workspace, env, deadline, workers):
+class _Cancelled(Exception):
+    """A command of a parallel group that did not start: one before it failed."""
+
+
+def _run_group(group, workspace, env, deadline, workers, store=None):
     """Runs ``group``'s commands at the same time, ``workers`` at once, started in their
-    order: [(tool, result)] in that order. A failure is the earliest failing command's,
-    which is what running them one after another raises (they are independent): once
-    one fails, the commands after it are stopped, and none after it starts."""
+    order: [(tool, result)] in that order. When commands fail, the earliest one's error
+    is raised: the first a build in order reaches, as the commands are independent.
+    Once one fails, the commands after it are stopped, and none after it starts: a
+    process is started only under the lock that records a failure, after checking that
+    none before it failed."""
     outcomes = [None] * len(group)
     stops = [threading.Event() for _ in group]
     lock = threading.Lock()
-    # The next command to start, and the earliest that failed (len(group): none).
+    # The next command to claim, and the earliest that failed (len(group): none).
     state = {"next": 0, "failed": len(group)}
+
+    @contextlib.contextmanager
+    def gate(index):
+        with lock:
+            if index >= state["failed"]:
+                raise _Cancelled
+            yield
 
     def work():
         while True:
@@ -458,7 +471,15 @@ def _run_group(group, workspace, env, deadline, workers):
             try:
                 timeout, limited = _budget(group[index], deadline)
                 try:
-                    outcomes[index] = _run(group[index], workspace, env, timeout, stops[index])
+                    outcomes[index] = _run(
+                        group[index],
+                        workspace,
+                        env,
+                        timeout,
+                        stop=stops[index],
+                        gate=functools.partial(gate, index),
+                        store=store,
+                    )
                 except BuildCommandError as exc:
                     if limited and exc.result.get("timed_out"):
                         raise TimeoutError(
@@ -494,100 +515,19 @@ def _run_group(group, workspace, env, deadline, workers):
     return outcomes
 
 
-def _cache_dir(kind):
-    """Peeky's own directory for cached ``kind`` ("probes", "digests"), or None: when
-    PEEKY_NO_DIGEST_CACHE=1, or where the state directory is unusable."""
+def _digest_store():
+    """Where the digests of toolchain executables are kept for later processes
+    (``keep_tool_digests``), or None: when PEEKY_NO_DIGEST_CACHE=1, or where the state
+    directory is unusable."""
     if os.environ.get("PEEKY_NO_DIGEST_CACHE") == "1":
         return None
     from peeky.cli import _private_dir
 
     try:
         _private_dir("cache")
-        return _private_dir(f"cache/{kind}")
+        return _private_dir("cache/digests")
     except (OSError, ValueError):
         return None
-
-
-def _probe_entry(command, workspace, env):
-    """(where probe ``command``'s output is kept, its key, the tool's identity), or None
-    where it is not reused. The key is everything the output may depend on: the tool's
-    path and SHA-256, its directory's identity (clang reads a configuration file beside
-    it), the arguments, the environment and the host system. A script is never reused:
-    the program it runs is not hashed. Neither is a tool inside the workspace."""
-    store = _cache_dir("probes")
-    if store is None:
-        return None
-    try:
-        _, executable = _executable(command, workspace, env)
-        if executable.is_relative_to(workspace):
-            return None
-        with open(executable, "rb") as stream:
-            if stream.read(2) == b"#!":
-                return None
-        digest, _ = _digest(executable, _cache_dir("digests"))
-        folder = executable.parent.stat()
-    except (OSError, ValueError):
-        # The command itself raises it, as it would without reuse.
-        return None
-    host = os.uname()
-    key = _json_digest(
-        {
-            "format": 1,
-            "tool": str(executable),
-            "sha256": digest,
-            "folder": [folder.st_dev, folder.st_ino, folder.st_mtime_ns, folder.st_ctime_ns],
-            "argv": list(command.argv[1:]),
-            "cwd": command.cwd,
-            "environment": sorted(env.items()),
-            "host": [host.sysname, host.release, host.version, host.machine],
-        }
-    )
-    return store / f"{key}.json", key, ToolIdentity(str(executable), digest)
-
-
-def _reused_probe(entry):
-    """(tool, result) of the probe kept at ``entry``, or None where none is kept for its key."""
-    path, key, tool = entry
-    try:
-        with open(path, encoding="utf-8") as stream:
-            kept = json.load(stream)
-    except (OSError, ValueError):
-        return None
-    if (
-        not isinstance(kept, dict)
-        or kept.get("key") != key
-        or kept.get("tool") != tool.path
-        or kept.get("sha256") != tool.sha256
-        or not isinstance(kept.get("stdout"), str)
-        or not isinstance(kept.get("stderr"), str)
-    ):
-        return None
-    return tool, {"stdout": kept["stdout"], "stderr": kept["stderr"]}
-
-
-def _keep_probe(entry, result):
-    """Keeps a probe's output at ``entry`` (atomically, the oldest beyond MAX_KEPT_PROBES
-    removed); a directory that cannot be written is skipped."""
-    path, key, tool = entry
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(4)}")
-    text = {
-        "key": key,
-        "tool": tool.path,
-        "sha256": tool.sha256,
-        "stdout": result["stdout"],
-        "stderr": result["stderr"],
-    }
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(text, stream)
-        os.replace(temporary, path)
-        kept = sorted(path.parent.glob("*.json"), key=lambda each: each.stat().st_mtime_ns)
-        for old in kept[: max(0, len(kept) - MAX_KEPT_PROBES)]:
-            old.unlink(missing_ok=True)
-    except OSError:
-        with contextlib.suppress(OSError):
-            temporary.unlink()
 
 
 def _assert_tools(tools, stage):
@@ -610,7 +550,7 @@ def prepare(
     before_command=None,
     validate_workspace=None,
     parallel=(),
-    reuse_probes=False,
+    keep_tool_digests=False,
 ):
     """Copy declared inputs to a fresh workspace, build, and retain a manifest.
 
@@ -626,12 +566,14 @@ def prepare(
     there is fatal, never compiler feedback.
 
     ``parallel``: groups of consecutive build commands that are independent of each
-    other (each writes its own outputs). A group's commands run at the same time
-    (``jobs()`` at once), after the checks before each of them; the checks before the
-    next command cover what any of them did. Their outputs and failures are those of
-    running them one after another. ``reuse_probes``: a toolchain probe's output is kept
-    in Peeky's state directory and reused while everything it may depend on is the same
-    (``_probe_entry``), the tool's SHA-256 first; a script tool's probe always runs.
+    other: each reads the inputs and writes only its own outputs. A group's commands
+    start in their order and run at the same time (``jobs()`` at once), after the checks
+    before each of them; the checks before the next command cover what any of them did.
+    When several fail, the earliest one's error is raised (``_run_group``). What a
+    command writes may still depend on when it runs (`__TIME__`), as in any two builds.
+    ``keep_tool_digests``: the digest of each executable a probe or command runs is
+    kept in Peeky's state directory, so that a new process reuses it under
+    digest.sha256_file's rules. Toolchain probes always run.
     """
     _validate(recipe)
     groups = _groups(recipe.build_commands, parallel)
@@ -679,24 +621,16 @@ def prepare(
             if not staged_unchanged:
                 raise RuntimeError("Staged inputs changed during preparation (provenance mismatch)")
 
+        store = _digest_store() if keep_tool_digests else None
         for command in recipe.toolchain_probes:
             check()
             timeout, limited = _budget(command, deadline)
-            entry = _probe_entry(command, workspace, env) if reuse_probes else None
-            if (reused := entry and _reused_probe(entry)) is not None:
-                tool, result = reused
-            else:
-                try:
-                    tool, result = _run(command, workspace, env, timeout)
-                except BuildCommandError as exc:
-                    if limited and exc.result.get("timed_out"):
-                        raise TimeoutError(
-                            "Build preparation exceeded its overall deadline"
-                        ) from exc
-                    raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
-                # Kept only for the bytes that answered (unchanged while it ran).
-                if entry is not None and tool == entry[2]:
-                    _keep_probe(entry, result)
+            try:
+                tool, result = _run(command, workspace, env, timeout, store=store)
+            except BuildCommandError as exc:
+                if limited and exc.result.get("timed_out"):
+                    raise TimeoutError("Build preparation exceeded its overall deadline") from exc
+                raise RuntimeError(f"Toolchain probe failed: {command.argv[0]}") from exc
             if tool not in tools:
                 tools.append(tool)
             probes.append(ProbeResult(command.argv, result["stdout"], result["stderr"]))
@@ -707,14 +641,15 @@ def prepare(
             if len(group) > 1 and (workers := min(len(group), jobs())) > 1:
                 for command in group:
                     check(command)
-                ran = [tool for tool, _ in _run_group(group, workspace, env, deadline, workers)]
+                ran = _run_group(group, workspace, env, deadline, workers, store)
+                ran = [tool for tool, _ in ran]
             else:
                 ran = []
                 for command in group:
                     check(command)
                     timeout, limited = _budget(command, deadline)
                     try:
-                        tool, _ = _run(command, workspace, env, timeout)
+                        tool, _ = _run(command, workspace, env, timeout, store=store)
                     except BuildCommandError as exc:
                         if limited and exc.result.get("timed_out"):
                             raise TimeoutError(

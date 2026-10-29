@@ -18,10 +18,15 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - `NativeTarget.prepare` gives `build.prepare` two parallel groups: each unit's `-E`, then each
   `-c`. `build._run_group` starts a group's commands in order, `build.jobs()` at once. Once one
   fails, it stops those after it, and raises the earliest failure, as a build in order would.
+- A worker starts a process only while holding the group's lock, after checking that no earlier
+  command failed. So no command after a recorded failure starts.
 - The checks before each command of a group run before the group starts. The checks before the
   link cover what the group did.
-- `reuse_probes` keeps each toolchain probe's output in the state directory, under `cache/probes`,
-  keyed by `build._probe_entry`. The tool's digest is kept under `cache/digests`.
+- Parallel builds promise the order commands start in, their output files, and which error is
+  reported. They don't promise byte-identical outputs: `__TIME__` differs between any two builds.
+- `keep_tool_digests` keeps the toolchain executables' digests under `cache/digests` in the state
+  directory. The toolchain probes run on every build: a tool's output may depend on files its
+  hash doesn't cover, such as a configuration file, a library or a program a wrapper runs.
 - `assembler.c_refusal` passes a unit with no `asm` keyword at once. It reads where a line came
   from only to word a refusal. Tests compare it with the earlier scan on random text.
 - The worker turns off LLDB's init files with both the LLVM 18 key and the newer one.

@@ -4228,8 +4228,7 @@ hint: Pass a literal value of the variable's type (C, C++ and Rust: a decimal in
 ```
 
 [ERRORS.md](ERRORS.md) lists all the codes. If you suspect a filesystem with unreliable timestamps,
-set `PEEKY_NO_DIGEST_CACHE=1`: Peeky then rehashes every file on every check, and asks each
-compiler and debugger its version on every build.
+set `PEEKY_NO_DIGEST_CACHE=1`: Peeky then rehashes every file on every check.
 
 ---
 

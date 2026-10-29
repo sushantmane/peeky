@@ -30,6 +30,8 @@ _CHUNK = 1024 * 1024
 _cache = {}
 _lock = threading.Lock()
 _HEX = re.compile(r"[0-9a-f]{64}")
+# The most bytes of a kept digest's entry that are read.
+_MAX_ENTRY = 64 * 1024
 
 
 def _key(info):
@@ -53,10 +55,22 @@ def _stored(store, name):
 
 
 def _kept(store, name, current):
-    """The digest ``store`` keeps for ``name`` while its identity is ``current``'s, or None."""
+    """The digest ``store`` keeps for ``name`` while its identity is ``current``'s, or None.
+    An entry that is not a regular file of this user's, closed to others, is not read."""
     try:
-        with open(_stored(store, name) + ".json", encoding="utf-8") as stream:
-            entry = json.load(stream)
+        # Neither a link followed nor a FIFO waited on.
+        descriptor = os.open(
+            _stored(store, name) + ".json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        )
+    except OSError:
+        return None
+    try:
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                return None
+            data = stream.read(_MAX_ENTRY + 1)
+        entry = json.loads(data) if len(data) <= _MAX_ENTRY else None
     except (OSError, ValueError):
         return None
     if (
