@@ -138,9 +138,7 @@ class DAP:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env={
-                k: v for k, v in (os.environ if env is None else env).items() if k != "DEBUG_TOKEN"
-            },
+            env=processes.without_credentials(os.environ if env is None else env),
             start_new_session=os.name == "posix",
         )
         os.set_blocking(self.process.stdin.fileno(), False)

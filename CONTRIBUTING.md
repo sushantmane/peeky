@@ -20,6 +20,10 @@ Develop one small milestone at a time. Add a regression test for changed debugge
 
 Run `ruff check --fix .` and `ruff format .` before submission. Describe the observed problem, the resulting behavior, and the checks you ran in each pull request. Add a line to `CHANGELOG.md` under **Unreleased** for each change a user would notice. Include protocol or architecture changes in the design documents. Record adversarial review findings and their resolution when changing state, permissions, transport, or execution semantics.
 
+## Security
+
+Report a vulnerability privately, as [SECURITY.md](SECURITY.md) describes. Don't put its details in a public issue or pull request.
+
 ## CI budget
 
 CI starts its jobs in parallel: quality, unit, debugger integration on Python 3.11 and 3.13, Java, C, C++ (clang and GCC), Rust, remote SSH e2e and wheel smoke. Every job has a four-minute timeout, except three: remote SSH e2e and C++ LLVM 18 conformance have six minutes, and C++ GCC 13 conformance has ten ([TESTING.md](docs/TESTING.md)). The desired overall run is under five minutes excluding queue delays. This is a budget and measured target, not a guarantee: hosted-runner scheduling and package download delays are external. Watch the longest job's duration as tests grow. Split independent fixtures or move optional benchmarks to manually triggered jobs before increasing timeouts. Newer pushes cancel obsolete runs for the same branch or pull request.

@@ -1,4 +1,4 @@
-include requirements-dev.txt CONTRIBUTING.md AGENTS.md
+include requirements-dev.txt CONTRIBUTING.md AGENTS.md SECURITY.md
 recursive-include examples *.py *.java *.json *.md
 recursive-include examples *.c *.h *.cpp *.hpp *.cu *.rs *.toml *.lock
 recursive-include skills *.md

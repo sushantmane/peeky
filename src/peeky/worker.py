@@ -31,6 +31,7 @@ from peeky.identifiers import (
     split_located,
 )
 from peeky.names import display_function, short_function
+from peeky.processes import without_credentials
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
 from peeky.text_sets import held_in_place, parse_text, text_kind
@@ -283,6 +284,9 @@ SOURCE_CHECKED = frozenset(
 )
 # A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
+# Each read of a request (its line, headers and body) waits at most this long: a
+# connection that sends nothing holds a thread no longer, even before it authenticates.
+REQUEST_READ_TIMEOUT_S = 10
 
 
 class DebugWorker:
@@ -2769,6 +2773,13 @@ class DebugWorker:
             if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
+                if _in_program_sources(runtime, frames[0], self.root):
+                    # The step stopped in the program's own code: only the frame asked for
+                    # is outside its sources (a library's, or `start` below main).
+                    raise ValueError(
+                        f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
+                        "program's sources; inspect one of your program's frames"
+                    )
                 if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
                     # What the function the step left returned is still shown (#155).
                     return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
@@ -2780,7 +2791,13 @@ class DebugWorker:
                         if self.stop_reason == "interrupted"
                         else "The step stopped"
                     )
-                    + f" outside the program's sources (in {selected_frame.get('name')}); "
+                    + f" outside the program's sources (in {frames[0].get('name')}"
+                    + (
+                        f"), and frame {index} ({selected_frame.get('name')}) is outside them too"
+                        if index
+                        else ")"
+                    )
+                    + "; "
                     + (
                         "`session step --out` returns to your code, or `session continue`"
                         if self.stop_returns
@@ -6929,6 +6946,9 @@ def make_server(root, token, port=8765, *, adapter=None):
             probes.release()
 
     class Handler(BaseHTTPRequestHandler):
+        # Set on the connection before the request line is read (StreamRequestHandler).
+        timeout = REQUEST_READ_TIMEOUT_S
+
         def log_message(self, *args):
             pass
 
@@ -6957,7 +6977,6 @@ def make_server(root, token, port=8765, *, adapter=None):
                     size = int(self.headers.get("Content-Length", 0))
                     if not 0 < size <= MAX_REQUEST_BYTES:
                         raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
-                    self.connection.settimeout(10)
                     body = self.rfile.read(size)
                     if len(body) != size:
                         raise ValueError("Request body ended early")
@@ -7118,7 +7137,7 @@ def _run_probe_process(root, request, adapter, cap):
         marker = Path(scratch) / "launch-requested"
         command += ["--launch-budget", str(cap - PROBE_LAUNCH_MARGIN_S)]
         command += ["--launch-marker", str(marker)]
-        env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
+        env = without_credentials(os.environ)
         process = subprocess.Popen(
             command,
             cwd=scratch,

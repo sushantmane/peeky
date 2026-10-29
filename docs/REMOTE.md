@@ -303,6 +303,8 @@ whatever process holds that port.
   `DEBUG_TOKEN`. Neither accepts it as an argument, so it can't appear in `ps` output.
 - Session records that hold it are private: `0600`, inside a `0700` directory.
 - Probe results, reports and errors never contain it. A test checks this.
+- Neither name reaches a debugger, a debuggee, a build command, a checker, a candidate or a model
+  process. A session's own local worker gets only its own token.
 
 ### Closing
 

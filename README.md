@@ -134,7 +134,11 @@ PASS: 12 independent pagination checks
   debugger service. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the trusted-code assumptions.
 - The worker takes a secret token, and listens only on loopback (`127.0.0.1`). Reach it from
   another machine through SSH forwarding.
+- Start that tunnel with `ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host`.
+  Without the option, ssh only warns when another process holds the local port, and the token goes
+  to that process.
 - Peeky itself sends nothing to a model. The optional `peeky-agent`, below, does.
+- To report a vulnerability privately, see [SECURITY.md](SECURITY.md).
 
 ## The optional harness: `peeky-agent`
 
@@ -146,6 +150,14 @@ decisions, through Codex CLI. It is not the main interface.
   `peeky-agent --model YOUR_MODEL --output runs/first-investigation`.
 - CI uses deterministic decision fixtures, and never calls a model.
 - [docs/AGENT_LOOP.md](docs/AGENT_LOOP.md) describes the loop.
+
+`peeky-agent` runs code the model writes, without a sandbox:
+
+- The controller applies the model's `finish` edit to a copy of the source, then runs that copy
+  with the checker. Both run with your permissions.
+- The model reads the source, the bug report, and the program's output and values. Treat all of it
+  as untrusted: text in it can steer the model (prompt injection) into writing code that then runs.
+- Run `peeky-agent` only on code and inputs you trust, or inside a container or VM.
 
 ## Project status
 
@@ -183,4 +195,5 @@ decisions, through Codex CLI. It is not the main interface.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the local checks and the change process. Everyone taking
 part follows the [code of conduct](CODE_OF_CONDUCT.md). Report bugs and ask for features with the
-[issue templates](https://github.com/sushantmane/peeky/issues/new/choose).
+[issue templates](https://github.com/sushantmane/peeky/issues/new/choose). Report vulnerabilities
+privately instead, as [SECURITY.md](SECURITY.md) describes.
