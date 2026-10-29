@@ -105,7 +105,7 @@ def frame_selector(selector):
     if frame == 0:
         raise ValueError(
             f"Invalid selector: {selector}. Frame 0 is where the program stopped: capture "
-            f"{path or 'the name'} without the 0: prefix"
+            f"{path} without the 0: prefix"
         )
     if found[1] != str(frame) or frame >= MAX_FRAMES:
         raise ValueError(
