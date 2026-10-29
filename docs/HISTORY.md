@@ -80,6 +80,7 @@ couldn't read Peeky's source. Each report lists what the agents found and what w
 | Tenth | [2026-10-22: each language's cookbook as a fifth doc](evaluations/2026-10-22-agent-tenth-round.md) |
 | Eleventh | [2026-10-23: C++ grades, a Rust rota, Java seats and C tides](evaluations/2026-10-23-agent-eleventh-round.md) |
 | Twelfth | [2026-10-25: Python rainfall, Rust laps, a C++ playlist and Java desks](evaluations/2026-10-25-agent-twelfth-round.md) |
+| Thirteenth | [2026-10-29: a GCC stock depot, a lambda's stale tariff, a static's leftovers and a night car park](evaluations/2026-10-29-agent-thirteenth-round.md) |
 
 ## Reviews and decisions
 
