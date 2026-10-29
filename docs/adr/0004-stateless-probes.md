@@ -1,12 +1,12 @@
 # ADR 0004: Stateless probes alongside debugger sessions
 
-Status: accepted direction (owner, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation that runs in an isolated separate process: SIGTERM at 35 s so the probe closes its debugger and debuggee, SIGKILL at 40 s, below the 45 s client timeout and `Client.probe`. Step 3 is `peeky describe`. Step 4 is delivered as the captured-evidence store (`peeky sql`, `peeky queries`, `peeky sql --schema`; see "Step 4 as delivered"). Step 5 (measured build caching) remains. Both modes are product requirements; session mode is unchanged.
+Status: accepted direction (maintainer, 2026-10-14); interface unified by [ADR 0005](0005-tool-not-agent.md) (`peeky probe`, `peeky session`, `peeky describe`). Steps 1–3 are delivered experimentally: in-process `run_probe`, the `peeky-probe` CLI, a single-flight HTTP `probe` operation that runs in an isolated separate process: SIGTERM at 35 s so the probe closes its debugger and debuggee, SIGKILL at 40 s, below the 45 s client timeout and `Client.probe`. Step 3 is `peeky describe`. Step 4 is delivered as the captured-evidence store (`peeky sql`, `peeky queries`, `peeky sql --schema`; see "Step 4 as delivered"). Step 5 (measured build caching) remains. Both modes are product requirements; session mode is unchanged.
 
 ## Context
 
 Peeky today is session-oriented: `launch` → `wait` → `inspect` → `expand` → `set_variable` → `continue` → `report` → `close`, with session/stop identities and opaque inspection handles. That is right for incremental exploration, but every question costs several round-trips and the caller must manage lifecycle, handle revocation and cleanup.
 
-The owner prefers stateless operation where possible and wants Peeky to be as easy to use as heappy, where one command answers one question, a manifest tells the agent what exists, canned queries need no syntax, and SQL works over captured data. ("Parse once, query forever" becomes "capture once, query the evidence".)
+The maintainer prefers stateless operation where possible, and wants Peeky to be as easy to use as a good command-line analysis tool: one command answers one question, a manifest tells the agent what exists, canned queries need no syntax, and SQL works over captured data. (A heap-dump analyser's "parse once, query forever" becomes "capture once, query the evidence".)
 
 ## Decision
 

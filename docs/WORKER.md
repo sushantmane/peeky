@@ -7,6 +7,42 @@ itself.
 - To run a worker on another host, see [REMOTE.md](REMOTE.md).
 - Every operation, with its inputs and results, is in [DESIGN.md](DESIGN.md#http-contract).
 
+## Start a Python worker
+
+Start a worker with a secret token, from the repository root or the unpacked source archive:
+
+```sh
+export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+peeky-worker --root "$PWD" --port 8765
+```
+
+In a second terminal, export the same `DEBUG_TOKEN` value. Then run this with the Python Peeky is
+installed in:
+
+```python
+import os
+from peeky.client import Client
+
+url, token = "http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"]
+client = Client(url, token)
+launch = client.call("launch", program="examples/pagination_bug.py", breakpoints=[{"line": 8}])
+session = {"session_id": launch["session_id"]}
+stop = client.call("wait", **session, timeout=2)
+while stop["state"] == "running":
+    stop = client.call("wait", **session, timeout=2)
+if stop["state"] == "stopped":
+    print(client.call("inspect", **session, stop_id=stop["stop_id"]))
+print(client.call("report", **session))
+client.call("close", **session)
+```
+
+A probe is one HTTP call ([ADR 0004](adr/0004-stateless-probes.md)). Its path is inside the
+worker's `--root`:
+
+```python
+print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
+```
+
 ## What the C and C++ worker does
 
 A native worker runs a fixed C or C++ target through lldb-dap:

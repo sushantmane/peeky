@@ -1,4 +1,4 @@
-name: Build private artifact
+name: Build artifact
 
 on:
   workflow_dispatch:

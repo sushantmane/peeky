@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Values Peeky now reads
+
+- **C++ built by GCC:**
+  - A `std::unordered_map`'s or `std::unordered_set`'s entries, read from the container's own
+    nodes where the debug information proves their layout. The entries must be integers, bools
+    or strings, alone or in pairs and structs (#371).
+  - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
+    changed (#369).
+  - A text set in a `std::string`'s own buffer, with lldb-dap 20. Heap strings still need
+    lldb-dap 21 (#365).
+- **C and C++:**
+  - `static` locals, in a `Statics` scope, where the code at the stop names them. They are never
+    settable (#370).
+  - In a caller's frame, a struct or array whose declaration's lines have run, in an unoptimized
+    build (#366).
+  - C++ structured bindings by reference, where Peeky proves what they refer to is alive (#368).
+
+### Other changes
+
+- **Under load:** every launch step has what remains of the launch's one deadline. A stop the
+  debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
+- **Remote protocol 8** (#369).
+- **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
+  which stays in the git history. The repository has a code of conduct, and issue and pull
+  request templates.
+
 ## 0.1.0 (2026-10-26)
 
 The first tagged version of Peeky. Peeky is a debugger for agents and people. It pauses a program,
@@ -49,8 +77,8 @@ a new bug, in Python, Rust, C++ and Java, with no wrong value shown
 - **Verification** edits one file per run.
 - **Attach** works for Java only.
 - **Not supported:** CUDA (#61), Kubernetes workers, several users per worker.
-- **CI:** Linux only. macOS is used for development but isn't in the CI matrix. Hosted CI is
-  paused by a billing limit, so this version was checked by the same Linux lanes in Docker.
+- **CI:** Linux only. macOS is used for development but isn't in the CI matrix. Hosted CI wasn't
+  running, so this version was checked by the same Linux lanes in Docker.
 
 ### Install
 

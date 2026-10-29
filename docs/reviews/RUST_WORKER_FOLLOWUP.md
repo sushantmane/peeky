@@ -4,9 +4,9 @@ Date: 2026-10-14. Reviewed committed `10a1136` (Rust implementation unchanged fr
 
 ## Review method and verification
 
-Read AGENTS, README, DESIGN, PROGRESS and the committed implementation diff. Another writer changed the shared working tree during review. The initial mixed-tree test run encountered eight artifact-API failures and is not evidence about this PR. A clean archive of committed `10a1136` was then extracted into an ignored review directory and tested with its own source on PYTHONPATH.
+Read AGENTS, README, DESIGN, the development log and the committed implementation diff. The first test run used a working tree with uncommitted changes from other work. It encountered eight artifact-API failures and is not evidence about this PR. A clean archive of committed `10a1136` was then tested with its own source.
 
-Committed-snapshot targeted tests: **179 passed in 0.73 seconds**, covering Rust symbols, Rust worker hooks/configuration, expansion, Cargo preflight and metadata budgets. This reviewer did not independently repeat real macOS/Linux debugger runs; previously reported hosted/local results remain separately attributed in TESTING and PROGRESS.
+Committed-snapshot targeted tests: **179 passed in 0.73 seconds**, covering Rust symbols, Rust worker hooks/configuration, expansion, Cargo preflight and metadata budgets. This reviewer did not independently repeat real macOS/Linux debugger runs; previously reported hosted/local results remain separately attributed in TESTING and the development log.
 
 ## Earlier review fixes verified
 
@@ -46,11 +46,11 @@ A second reviewer inspected the same committed snapshot, excluding concurrent ve
 - **Blocking input-contract issue:** validate_cargo_inputs reads originals before build.prepare captures and copies its input snapshot. A manifest change in that gap may be accepted as the build's new baseline without revalidation. Validate the exact staged manifest/lock bytes before Cargo executes and bind selected targets to that snapshot. Add a regression changing the manifest between preflight and copying.
 - Before enabling repair feedback, validate pinned tool versions before compilation and distinguish compiler diagnostics from Cargo infrastructure/configuration failures. Prior-probed-tool drift during a failed compile must remain fatal.
 
-The earlier review's dsymutil selection finding also needs disposition. No merge approval is granted by the currently passing CI. Production edits for these fixes were not made during this review because another provider was actively implementing verification in the same checkout.
+The earlier review's dsymutil selection finding also needs disposition. No merge approval is granted by the currently passing CI. Production edits for these fixes were not made during this review, because verification was being implemented on the same branch at the time.
 
-## Dispositions (Copilot, 2026-10-14)
+## Dispositions (2026-10-14)
 
-Three independent reviews covered this branch: the follow-up review above, a second rubber-duck review of `48e7429` plus the symbol fixes, and a read-only code review of the same commits. All findings are fixed with regressions; none was deferred.
+Three independent reviews covered this branch: the follow-up review above, a second independent review of `48e7429` plus the symbol fixes, and a read-only code review of the same commits. All findings are fixed with regressions; none was deferred.
 
 | Finding | Disposition |
 | --- | --- |

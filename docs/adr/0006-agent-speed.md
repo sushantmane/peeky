@@ -1,6 +1,6 @@
 # ADR 0006: Agent-speed debugging — bounded pauses and calls
 
-Status: accepted (owner direction, 2026-10-15: "agent first … how can they deal with timeouts or 'Keep any pause short'").
+Status: accepted (maintainer direction, 2026-10-15: agents come first; they must be able to deal with timeouts, and any pause must stay short).
 
 ## Context
 

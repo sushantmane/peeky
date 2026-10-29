@@ -44,10 +44,10 @@ extend it. Kubernetes stays deferred.
 
 - **Scope:**
   - the package, under `src/peeky`
-  - a private GitHub repository and a [contributing guide](../CONTRIBUTING.md)
+  - a GitHub repository and a [contributing guide](../CONTRIBUTING.md)
   - the [design](DESIGN.md) and the [threat model](THREAT_MODEL.md)
   - an adversarial review record: [INITIAL_REVIEW](reviews/INITIAL_REVIEW.md)
-  - parallel, deterministic CI, and private wheel delivery
+  - parallel, deterministic CI, and wheel delivery as workflow artifacts
 - **Accepted when:**
   - the installed package imports, and the worker and agent help work
   - the unit tests and the integration tests on real debugpy pass
@@ -165,7 +165,7 @@ extend it. Kubernetes stays deferred.
 - **Direction:** two modes over one guarded engine.
   - Stateful sessions: `peeky session`.
   - Stateless probes, one request each: `peeky probe`.
-- **Goal:** as easy as heappy: one command per question, a `describe` manifest, canned queries and
+- **Goal:** easy to use: one command per question, a `describe` manifest, canned queries and
   SQL over captured evidence.
 - **Delivered:** steps 1 to 4 of [ADR 0004][adr4], under one interface
   ([ADR 0005](adr/0005-tool-not-agent.md)). Session mode is unchanged.
@@ -228,7 +228,7 @@ order:
 - **Correlated evidence:** debugger evidence joined with code, logs and metrics
   ([ADR 0002](adr/0002-correlated-evidence.md)). Its implementation is proposed, step by step.
 - **The prepared-build cache:** step 5 of ADR 0004, above.
-- **Smaller follow-ups** are in [PROGRESS](PROGRESS.md#next-slices).
+- **Smaller follow-ups** are in the [GitHub issues](https://github.com/sushantmane/peeky/issues).
 
 ## What stays deferred
 

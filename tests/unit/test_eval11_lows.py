@@ -372,7 +372,7 @@ def test_only_a_c_or_cpp_function_its_build_gives_no_return_type_returns_nothing
 
 def test_session_paths_are_named_from_the_directory_the_session_started_in(tmp_path, monkeypatch):
     # grades 5: `session start` printed `grades.cpp:61`; a `step` run from another
-    # directory printed `outputs/peeky-eval11-cases/grades/grades.cpp:26`.
+    # directory printed `<cases directory>/grades/grades.cpp:26`.
     case = tmp_path / "outputs" / "grades"
     case.mkdir(parents=True)
     source = case / "grades.cpp"

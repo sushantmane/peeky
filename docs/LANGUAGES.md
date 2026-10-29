@@ -34,7 +34,7 @@ and an attached one.
 
 Why this order:
 
-- **Java comes second.** It fits the owner's JVM and heappy work. It also forces the architecture
+- **Java comes second.** It fits the maintainer's JVM work. It also forces the architecture
   to handle a different, managed runtime early.
 - **C sets the simplest native baseline.**
 - **C++ and Rust reuse C's adapter,** but get their own compatibility and regression tests.
