@@ -2783,7 +2783,7 @@ class DebugWorker:
                     # is outside its sources (a library's, or `start` below main).
                     raise ValueError(
                         f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
-                        "program's sources; inspect one of your program's frames"
+                        "program's sources: read one of your program's frames"
                     )
                 if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
                     # What the function the step left returned is still shown (#155).
