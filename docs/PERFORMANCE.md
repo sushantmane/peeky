@@ -162,3 +162,37 @@ Only Peeky's own CPU could shrink by rewriting Peeky in another language.
 - Most of the remaining time belongs to compilers, debug adapters and the program. They take the
   same time whichever language calls them.
 - This supports [ADR 0003](adr/0003-measure-before-rewriting.md).
+
+## C and C++ build speed, 2026-10-29
+
+Each compiled probe used to spend a third to nine tenths of its time preparing the build. Three
+costs there were Peeky's own, and each build paid them, `verify` too:
+
+- **The toolchain probes:** Peeky asked clang, lldb-dap, dwarfdump and dsymutil their versions on
+  every build. `lldb-dap-18 --help` alone took 270 ms on Linux. Peeky now keeps each answer, and
+  reuses it while the tool's SHA-256, its directory, the environment and the system are unchanged.
+  It keeps the tools' digests too, so a new process doesn't rehash clang's 125 MB.
+- **One unit at a time:** an 8-file program ran 8 `-E` commands, then 8 `-c` commands, in turn.
+  Each group now runs at the same time, up to 8 at once (`PEEKY_BUILD_JOBS`). The outputs, and
+  the error when sources fail, are those of building them in turn.
+- **The checks of preprocessed text:** the inline-assembly scan took 1.16 s for the 8 units on
+  macOS, and the check of the headers they read 0.41 s. They now take 0.25 s and 0.04 s. Both
+  check the same things: tests compare the scan with the earlier one on random text.
+
+Each row is the median wall time of 5 `peeky probe` or `peeky verify` runs, in seconds, after a
+warm-up run. macOS ran on an Apple M5 Max (Apple clang 21). Linux ran in the CI image, with 4
+CPUs (clang 18, g++ 13, lldb-dap 18). The 8-file program has 673 lines and includes about 20
+standard library headers in each file.
+
+| Run | macOS before | macOS after | Linux before | Linux after |
+| --- | ---: | ---: | ---: | ---: |
+| C probe, `examples/c/pagination_bug.c` | 1.31 | 1.19 | 0.84 | 0.45 |
+| C++ probe, `examples/cpp/pagination_bug.cpp` | 1.53 | 1.38 | 0.85 | 0.48 |
+| C++ probe, 8 files | 5.66 | 2.10 | 3.26 | 1.15 |
+| C++ verify, 8 files | 5.21 | 1.64 | 2.98 | 0.90 |
+| g++ probe, `examples/cpp/pagination_bug.cpp` | | | 0.83 | 0.46 |
+| g++ probe, 8 files | | | 3.31 | 1.23 |
+| g++ verify, 8 files | | | 3.08 | 0.93 |
+
+- The first build after a tool changes asks it again, as every build did before.
+- On macOS, a small program's probe is now mostly the debugger: lldb-dap's launch takes 0.3 s.
