@@ -28,6 +28,9 @@
   The 8-intervention error says how many were given. Probe tables give a long reason once per
   selector, and say how to read a cut container. A lambda comparator shows its compiler's name.
   lldb-dap 18's notes are whole once per build (#383, #384, #385).
+- **C and C++ char arrays:** a `char[N]` shows its text up to its first NUL, then a note of what
+  follows it, each byte as `\xNN`. `--json` keeps every byte as `buffer`, and `text()` reads it
+  (#381).
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369).

@@ -12,6 +12,9 @@ exactly what the program holds; anything else is NULL, never a guess:
   a struct, a pointer, an enumerator);
 - a string that may be cut (a Java element's 38th character `…`) or that is not text (a C
   byte `\\xff`, a lone surrogate);
+- a C or C++ character array (`char[32]`) whose note disagrees with its size: its text is
+  its bytes up to its first NUL (`"Adeyemi" (then a NUL and 24 bytes not shown)` gives
+  `Adeyemi`, thirteenth evaluation), or all of them where it holds none;
 - an integer outside SQLite's 64 bits, or a decimal that a double does not hold exactly as
   written (a `long double`'s `1e-4000` or `1.0000000000000000001`);
 - any Python value: debugpy names a value's type by its `__class__` and shows it by its
@@ -26,6 +29,8 @@ import decimal
 import json
 import math
 import re
+
+from peeky.char_arrays import NOTE, array_size
 
 KEPT = 2000
 _DEPTH = 32
@@ -148,6 +153,11 @@ class _Reader:
             return self.sequence(depth + 1)
         decoded = self.literal(inner=True)
         if decoded is not None:
+            if self.family == "c" and (note := NOTE.match(text, self.at)):
+                # A character array's text, up to its first NUL, and what follows it.
+                if "\0" in decoded:
+                    raise _Unsure()
+                self.at = note.end()
             return decoded
         if number := _NUMBER.match(text, at):
             self.at = number.end()
@@ -176,6 +186,51 @@ class _Reader:
                 raise _Unsure()
         self.at = at
         return decoded
+
+    def byte_literal(self, at, quote):
+        """(the bytes of a C literal of a character array, up to the closing ``quote``;
+        where it ends): a character as its UTF-8, an escape as its byte (`\\x01`,
+        `\\303`), `\\U` and `\\u` as their character's UTF-8."""
+        text, simple, data = self.text, _SIMPLE["c"], bytearray()
+        while True:
+            if at >= len(text):
+                raise _Unsure()
+            char = text[at]
+            if char == quote:
+                return bytes(data), at + 1
+            if char != "\\":
+                try:
+                    data += char.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise _Unsure() from exc
+                at += 1
+                continue
+            escape = text[at + 1 : at + 2]
+            if escape in simple:
+                data.append(ord(simple[escape]))
+                at += 2
+            elif octal := _OCTAL.match(text, at + 1):
+                if int(octal[0], 8) > 0xFF:
+                    raise _Unsure()
+                data.append(int(octal[0], 8))
+                at = octal.end()
+            elif escape == "x" and re.fullmatch(r"[0-9a-fA-F]{2}", text[at + 2 : at + 4]):
+                # C reads every hex digit after `\x`: Peeky writes octal before one.
+                if re.match(r"[0-9a-fA-F]", text[at + 4 : at + 5]):
+                    raise _Unsure()
+                data.append(int(text[at + 2 : at + 4], 16))
+                at += 4
+            elif escape in _HEX["c"]:
+                digits = text[at + 2 : at + 2 + _HEX["c"][escape]]
+                if not re.fullmatch(rf"[0-9a-fA-F]{{{_HEX['c'][escape]}}}", digits):
+                    raise _Unsure()
+                try:
+                    data += chr(int(digits, 16)).encode("utf-8")
+                except (ValueError, UnicodeEncodeError) as exc:
+                    raise _Unsure() from exc
+                at += 2 + len(digits)
+            else:
+                raise _Unsure()
 
     def _units(self, at, quote):
         """(code points, or a Java String's UTF-16 units, up to the closing ``quote``; where
@@ -289,7 +344,8 @@ def text(value, language, kind):
     """A string's or char's text without its quotes and escapes (`"say \\"hi\\""` gives
     `say "hi"`), where ``value`` is a literal Peeky decodes exactly for ``language`` and
     ``kind`` (the row's type), else None; never a Python value's (see the module's
-    docstring). Registered as the SQL function text(value, language, type)."""
+    docstring). A C or C++ character array's is its text up to its first NUL
+    (``_array_text``). Registered as the SQL function text(value, language, type)."""
     family = _family(value, language)
     if family is None:
         return None
@@ -307,6 +363,8 @@ def text(value, language, kind):
             return None
         return shown
     reader = _Reader(value, family)
+    if family == "c" and (size := array_size(kind)) is not None:
+        return _array_text(reader, size)
     if family == "c" and (address := _ADDRESS.match(value)):
         # The text a C or C++ pointer or reference points at.
         reader.at = address.end()
@@ -315,3 +373,39 @@ def text(value, language, kind):
     except _Unsure:
         return None
     return decoded if decoded is not None and reader.at == len(value) else None
+
+
+def _array_text(reader, size):
+    """A narrow C or C++ character array's text (a `char[N]` of ``size`` bytes): its bytes
+    up to its first NUL, or all of them where it holds none, read as UTF-8. Its value is
+    Peeky's (`"Adeyemi" (then a NUL and 24 bytes not shown)`), whose note must agree with
+    the size; or, as runs before that stored it, LLDB's literal of the bytes it read up to
+    the last that is no NUL (`"Adeyemi\\0\\x80"`). That one proves a NUL only where it
+    shows one, and no NUL only where it shows every byte: LLDB formats what part of its
+    read succeeded, so fewer bytes may end at an unreadable page, not a NUL. None for a
+    cut or other value."""
+    value = reader.text
+    if not value.startswith('"'):
+        return None
+    try:
+        data, end = reader.byte_literal(1, '"')
+    except _Unsure:
+        return None
+    nul, rest = data.find(b"\0"), value[end:]
+    if rest:
+        note = NOTE.fullmatch(rest)
+        if note is None or nul >= 0:
+            return None
+        after, nuls, whole = (None if count is None else int(count) for count in note.groups())
+        if (
+            (after is not None and len(data) + 1 + after != size)
+            or (nuls is not None and len(data) + nuls != size)
+            or (whole is not None and not len(data) == whole == size)
+        ):
+            return None
+    elif len(data) > size or (nul < 0 and len(data) != size):
+        return None
+    try:
+        return (data[:nul] if nul >= 0 else data).decode("utf-8")
+    except UnicodeDecodeError:
+        return None

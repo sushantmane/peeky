@@ -43,6 +43,8 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
+from peeky.char_arrays import array_size, proven_rest
+from peeky.char_arrays import shown as char_array
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -6201,7 +6203,7 @@ class NativeSession:
         typedefs = getattr(self, "typedefs", {})
         return "namespace::__1" in typedefs and "namespace::__cxx11" not in typedefs
 
-    def string_value(self, variable, fetch, read):
+    def string_value(self, variable, fetch, read, proven=None):
         """How to show a C or C++ value's text (see ``cxx_strings``). A libstdc++
         `std::basic_string` (#128), by its type's name, the class a typedef of it names
         (`Bytes`, `const Name &`, `Bytes *`), or, under a name Peeky cannot resolve, its
@@ -6210,7 +6212,12 @@ class NativeSession:
         literal is then spelled as C reads it, within the worker's bound, and LLDB's
         `error: summary string parsing error` is never a value. A string shown as its
         text (or as why it has none) is marked "text": the worker lists none of its
-        members, which are the library's (the sixth evaluation). None leaves the value."""
+        members, which are the library's (the sixth evaluation). A narrow character array
+        (`char[N]` by LLDB's name for its type) shows its text up to its first NUL, with
+        a note of what follows, and its every proven byte as "buffer" (``char_arrays``):
+        the bytes after its summary are read from memory, or as ``fetch(reference,
+        start)`` lists its elements, only where ``proven()`` says the array is reached
+        through nothing in doubt (else they are `not read`). None leaves the value."""
         shown = None
         language = getattr(getattr(self, "target", None), "language", None)
         if language == "cpp":
@@ -6226,6 +6233,27 @@ class NativeSession:
             # Peeky's own text (read from memory, or noted): spelled and bounded already.
             return shown
         text = variable.get("value")
+        if (
+            language in ("c", "cpp")
+            and isinstance(text, str)
+            and (size := array_size(variable.get("type"))) is not None
+            and (
+                array := char_array(
+                    text,
+                    size,
+                    lambda known, window: (
+                        proven_rest(variable, known, window, fetch, read)
+                        if proven is not None and proven()
+                        else b""
+                    ),
+                )
+            )
+            is not None
+        ):
+            # A narrow character array: its text up to its first NUL, and what follows
+            # the text as a note, never as text (thirteenth evaluation). What follows the
+            # bytes LLDB's summary shows is read again: they may be unreadable, not NULs.
+            return {**(shown or {}), **array}
         ended = False
         if (
             language in ("c", "cpp")
@@ -6258,6 +6286,7 @@ class NativeSession:
         kinds=None,
         raw=None,
         nodes=None,
+        proven=None,
     ):
         """A C or C++ struct's, class's, fixed-size array's or standard container's
         preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
@@ -6276,7 +6305,8 @@ class NativeSession:
         ``raw(path)`` reads a variable path as the debugger does (``unlisted_container``):
         an unordered container inside shows `<not listed>` where its count is not
         proven (#167), or its entries as read from its nodes (#360; ``nodes``, as for
-        ``unlisted_container``)."""
+        ``unlisted_container``). ``proven()``: whether its char arrays' bytes after their
+        summaries may be read again (``string_value``)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
@@ -6329,7 +6359,9 @@ class NativeSession:
                 # An entry Peeky read from an unordered container's nodes (#360): shown
                 # as read.
                 return child.get("value")
-            shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
+            shown = self.string_value(
+                child, lambda reference, start=0: fetch(reference, 64, start), read, proven
+            )
             if shown and shown.get("unavailable"):
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")

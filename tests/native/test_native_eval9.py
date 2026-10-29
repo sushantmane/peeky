@@ -351,7 +351,10 @@ def test_a_long_char_array_shows_where_its_text_ends(program, capsys):
     try:
         assert main(["session", "get", "out.text", "full", "--json"]) == 0
         rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
-        assert rows["out.text"]["value"] == '"    The quick brown fox"', rows["out.text"]
+        # LLDB read its first 1024 bytes: what follows the NUL is counted, not shown.
+        assert rows["out.text"]["value"] == (
+            '"    The quick brown fox" (then a NUL and 8168 bytes not shown)'
+        ), rows["out.text"]
         assert "children_error" not in rows["out.text"], rows["out.text"]
         # 2047 bytes with no NUL in LLDB's first 1024: cut, and it says so.
         assert rows["full"]["value"] == '"' + "x" * 1024 + '"...', rows["full"]["value"][-20:]
