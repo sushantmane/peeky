@@ -21,6 +21,11 @@
 
 ### Other changes
 
+- **Thirteenth evaluation's CLI fixes:** `queries diff` tells a value one run has none of from a
+  difference (`no value in run b`, `differs` NULL), after the real ones, and counts them apart.
+  The 8-intervention error says how many were given. Probe tables give a long reason once per
+  selector, and say how to read a cut container. A lambda comparator shows its compiler's name.
+  lldb-dap 18's notes are whole once per build (#383, #384, #385).
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369).

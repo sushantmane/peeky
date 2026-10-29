@@ -662,6 +662,11 @@ def _merged_class(first, second):
 # class; and how compilers name an unnamed class in a template's name: clang's `(lambda at
 # a.cpp:4:18)` and `(unnamed struct at a.cpp:3:1)`, GCC's `main()::<lambda(int, int)>`.
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+# One-word types no typedef of an unnamed class can be.
+_FUNDAMENTAL = frozenset(
+    "bool char wchar_t char8_t char16_t char32_t short int long float double void unsigned "
+    "signed".split()
+)
 _UNNAMED_CLASS = re.compile(
     r"\((?:lambda|unnamed (?:struct|class|union)) at [^()]+\)|(?:[^<>,]*::)?<lambda\(.*\)>"
 )
@@ -7688,7 +7693,9 @@ class NativeSession:
         nothing changes or Peeky can't place the local's type."""
         kind = str(variable.get("type") or "")
         shown = _template_split(kind)
-        if shown is None or not any(_IDENTIFIER.fullmatch(each) for each in shown[1]):
+        if shown is None or not any(
+            _IDENTIFIER.fullmatch(each) and each not in _FUNDAMENTAL for each in shown[1]
+        ):
             return None
         try:
             offset, _, graph = self._root_type(frame, variable)

@@ -48,10 +48,11 @@ the commands.
 3. **Change only where nothing is under way:** C/C++ at a statement's first line, Rust where the MIR
    proves it, never after `step --out`. Rows mark what can change `[settable]` on paths that don't
    panic or loop forever. A change the build rules out is refused before launch (exit 2; 2.3, 7).
-4. **`--set` applies once, at hit 1.** `--set-hit N` picks another; other hits only observe.
-   `--set-at LINE@HIT NAME=VALUE` changes at any line's hit, `--at`'s too. Repeat it per change:
-   `--set-at 9@2 n=0 --set-at 9@5 n=0`. `@all`: each stop while the probe runs, at most 100.
-   `x=@before` undoes a change, as to skip a statement (2.8).
+4. **`--set` applies once, at hit 1.** `--set-hit N` picks another, with `--hits` N or more;
+   other hits only observe. `--set-at LINE@HIT NAME=VALUE` changes at any line's hit, `--at`'s
+   too. Repeat it per change: `--set-at 9@2 n=0 --set-at 9@5 n=0`. A probe takes at most 8
+   `--set` and `--set-at`: split more over probes, or edit. `@all`: each stop while the probe
+   runs, at most 100. `x=@before` undoes a change, as to skip a statement (2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can
    stop several times per pass. Read `warnings`, and each row's `stop` and `function`. A loop
    header may stop only before its loop: probe the body's first line (2.2).
@@ -180,8 +181,7 @@ the commands.
   states and `inspect` name the stopped function. A line shared by a function and a closure or
   lambda can stop in each (Java: in one; 7.3).
 - `output_complete: false`: `output` isn't proven whole (2.6). `program_ended: true`: the program
-  ended. `--until hits` (for slow exits) adds `output_after_last_hit: true`: it ran past its last
-  hit.
+  ended. `--until hits` adds `output_after_last_hit: true`: it ran past its last hit.
 - `by_hit` groups values per hit: `{hit, line, observed: {selector: value}, after-set: {...}}`.
   `rows` has one per hit, phase (`observed`, `after-set`, `returned`) and selector. `line` is the
   stop's actual line.
@@ -200,7 +200,7 @@ the commands.
 ### Querying saved evidence (`peeky sql`, `peeky queries`)
 
 Probes not refused before launch are saved (`evidence.run_id`). **SQL is optional.** For one
-probe, read its JSON. Saved runs help with large captures, comparisons and slow runs.
+probe, read its JSON.
 
 - `peeky sql --schema` lists the tables and views. `--schema NAME ...` (or `all`) prints them
   in full (4.1). Read it before writing SQL.

@@ -927,6 +927,10 @@ output:
 With `best` at -3 from the first hit, the running maximum is right. In C, C++ and Rust,
 `--set-hit` counts stops, not passes ([2.2](#stops-not-passes)).
 
+`--set-hit N` needs `--hits` N or more, or `--hits all`: the probe captures that hit. A smaller
+`--hits` is refused before the run, and the error says to raise it. To change a later hit without
+capturing it, use `--set-at LINE@N` ([2.8](#28-change-a-value-then-restore-it)).
+
 To change a value at every stop of a line, not at one hit, use `--set-at LINE@all`
 ([2.8](#change-it-at-every-stop-all)).
 
@@ -1085,6 +1089,11 @@ that shape is moved out of `output`. The result has a warning, and `debugger_dia
 lists the first 20 such lines. `session report --json` also gives `diagnostic_count`, how many
 there were. lldb-dap sends a program's stderr as `stderr` only where it isn't a terminal. There,
 a program line of exactly that shape would be moved too, and the warning says so.
+
+A probe's text gives that warning whole the first time a build prints those lines, in a state
+directory. Its later probes say it in short: ``warning: `stderr` line of LLDB's about the build's
+debug information was moved out of the output again (debugger_diagnostics in --json); a program
+line just like one would be too``. `--json` always has it whole.
 
 Branch on the exit status:
 
@@ -1443,6 +1452,9 @@ keeps a restore as any change, with more:
 - The probe stops at every `--set-at` line as well as at `--at`, but captures values only at
   `--at`. A change at a captured stop gets `after-set` rows, as `--set` does.
 - `--set` and `--set-hit` work as usual. Together with `--set-at`, they make at most 8 changes.
+  An `@all` counts as one. More are refused before the run, and the error says how many were
+  given: `At most 8 interventions (--set and --set-at together) fit in one probe; this one has 12`.
+  Split them over several probes, or make the change in the source with a candidate edit.
 
 #### Which function's variable changes
 
@@ -1795,8 +1807,9 @@ has the last 40, since outputs often differ at their end: `…Sato=D2-7;FREE=39`
 | 3 | values that differ | Real differences, in hit order |
 | 4 | `the address of …`, `addresses differ: …` | Pointers whose addresses differ: each may point at another element |
 | 5 | `qualified (…): not evidence by itself` | Values a view or a note qualifies |
-| 6 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr, or a C pointer to the same element |
-| 7 | `only in run a` | Selectors only one run captured |
+| 6 | `no value in run b` | Values one run has none of: withheld or unavailable, so not a difference |
+| 7 | `addresses only` | Other values that differ only in addresses, such as a Python object's repr, or a C pointer to the same element |
+| 8 | `only in run a` | Selectors only one run captured |
 
 **1. How the runs differed.** Check these rows before you credit an edit with a difference. Each
 appears only where it applies:
@@ -1827,7 +1840,8 @@ window starts 60 characters before the first character that differs, at the same
 runs. It starts at the beginning when the difference is within the first 60. `…` marks a cut. So
 both show the first difference, and at least 139 characters after it where the output has them.
 The note says where the outputs differ, counted from 1: `output differs at line 4, column 13`. So
-after a `--set`, this row shows the intervention's effect.
+after a `--set`, this row shows the intervention's effect. In the table, a long `(output)` row runs
+past its columns. The other rows keep their own widths.
 
 **2. Values that only one run's `--set` changed** say `intervention only in run a` or
 `intervention only in run b`. They come before what may follow from them. Peeky leaves out an `after-set` row where, in each run that has one, it
@@ -1881,7 +1895,7 @@ element 6 in one run and at element 4 in the other.
 - To tell, compare each address's offset from a base with `address()`
   ([4.8](#48-compare-addresses-across-runs)). An offset that differs is another element's address.
 - C and C++ do that for you where both runs captured an array whose element address matches the
-  pointer: another element's address (first in this tier), or the same element's (6).
+  pointer: another element's address (first in this tier), or the same element's (7).
 - Where that array is a pointer, such as a parameter, the note shows each run's offset from it,
   by address: ``by address, `level + 6` in run a and `level + 4` in run b``. It stays here, as two
   pointers can point into separate blocks whose distance the allocator chose.
@@ -1905,7 +1919,24 @@ note says `qualified (run a: note, run b: note): not evidence by itself`.
   ([4.8](#48-compare-addresses-across-runs)). It ranks as a pointer: in tier 4, or in tier 3
   where its type changed.
 
-**6. Address-only differences** say `addresses only`. These are other values that differ only in
+**6. Values one run has none of** say `no value in run b`, or `run a`, or `either run`. Peeky
+withheld the value there, as `<not shown: …>` or `<no value yet: …>`, or the debugger had none,
+as for one optimized out. With no value to compare, the row is no value difference. Its
+`differs` is `NULL`, for unknown.
+
+- There is one row per selector and run, its first hit's. The note says at how many hits:
+  `no value in run b at 9 hits (one row per selector: its first hit), so not a value
+  difference`.
+- The table shows such a value's label alone, such as `<not shown: …>`. `queries run` and
+  `--json` have it whole, with why.
+- A note counts them apart from the differences, and names the run and the selectors: ``not
+  compared: run 4 has no value for `hour` and `cars` (18 values in all, withheld or
+  unavailable)``.
+- They tell nothing of how the hits pair, so the note on pairing leaves them out
+  ([below](#how-diff-pairs-hits)).
+- `compare` gives each such row the same note, with `differs` `NULL`.
+
+**7. Address-only differences** say `addresses only`. These are other values that differ only in
 addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java object's number.
 
 - A C or C++ pointer that holds the same element of an array both runs captured says
@@ -1925,7 +1956,7 @@ addresses, such as a Python object's repr (`<Node object at 0x…>`), or a Java 
 - Where both runs label stops, there is one row per selector and stop:
   `at 2 hits at stop 1 (one row per selector and stop: its first hit)`.
 
-**7. Selectors that only one run asked for** come last. Each has one row, `only in run a`, with its
+**8. Selectors that only one run asked for** come last. Each has one row, `only in run a`, with its
 first hit's value.
 
 #### How `diff` pairs hits
@@ -2043,12 +2074,14 @@ Only plain values count in these checks. Peeky checks each selector on its own.
 
 - A value that a view or a note qualifies is not plain. It is no evidence either way. Examples are a
   moved Rust local's bytes and a C local's leftovers.
+- Nor is a value one run has none of, withheld or unavailable. It never counts as differing.
 - A value that differs between the runs after a change may follow from the change. A change is an
   edit, or an intervention in either run. An edit is a candidate, or other source text.
 - After an edit, that is from the first hit. After an intervention, it is from the first hit after
   the change, whatever the name changed. The same selector read before the change counts like any
   other value.
-- So such a selector is left out of what agrees and of the hits that differ. The note names it.
+- So such a selector is left out of what agrees and of the hits that differ. The note names it,
+  and says that it tells nothing of how the hits pair. Its rows still show where it differs.
 - It still counts where its values line up better at other hits. The change may account for that,
   so the note says it doesn't prove a reorder.
 - Where values that agree are unique across the hits, the verdict is that the hits pair by them.
@@ -2065,7 +2098,7 @@ note: hits may not line up: the calls may have come in another order or number
   - runs 1 and 2 saw `db.stable`'s values at other hits (run 2's hit 11 matches run 1's hit 7: 1)
   - `db.stable` may differ because of the interventions (run 2's on `db.count` in main), so this does not prove a reorder
   - `level` agrees between the runs at each of the 32 hits, but it reads alike at some hits, which could still trade places
-  - `db.candidate` and `db.count` differ after the interventions and may follow from them, so this check leaves them out
+  - `db.candidate` and `db.count` differ after the interventions and may follow from them, so they say nothing of how the hits pair (their rows above still show where they differ)
   - no captured selector tells the hits apart, so `queries join` could not pair them
 ```
 
@@ -2122,7 +2155,7 @@ run_a  run_b  hit   phase     selector  value_a       value_b       differs  not
 3      5      4     observed  total     28            21            1        NULL
 note: hits pair by `i`: it agrees between the runs at each of the 4 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=3 --param b=5 --param key=i` would, but that does not prove the hits are the same moments
-  - `total` differs after the edit and may follow from it, so this check leaves it out
+  - `total` differs after the edit and may follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)
 (3 rows)
 ```
 
@@ -2168,7 +2201,7 @@ What the note says depends on the case:
   ```
   hits pair by `key`: it agrees between the runs at each of the 3 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 --param key=key` would, but that does not prove the hits are the same moments
-  - `call` differs after the edit and may follow from it, so this check leaves it out
+  - `call` differs after the edit and may follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)
   ```
 
   A key may be a counter, which agrees even where calls were reordered. So the verdict's second
@@ -2215,7 +2248,7 @@ What the note says depends on the case:
   ```
   hits pair by `ms`: it agrees between the runs at each of the 32 hits and is unique across these hits
   - pairing by hit number pairs them as `peeky queries join --param a=1 --param b=3 --param key=ms` would, but that does not prove the hits are the same moments
-  - `db.stable`, `db.candidate`, `db.count` and 1 more differ after the interventions (run 3's on `db.count` in main) and may follow from them, so this check leaves them out
+  - `db.stable`, `db.candidate`, `db.count` and 1 more differ after the interventions (run 3's on `db.count` in main) and may follow from them, so they say nothing of how the hits pair (their rows above still show where they differ)
   ```
 
 - **After an intervention that left nothing out,** the note says what agrees, what differs and which
@@ -2954,6 +2987,10 @@ The note tells you where you are. For example, this note says that a comparator'
 
 When several rows give the same `visible:` list, the later ones say `visible: as listed above`.
 A probe's table does the same: `visible: as listed at hit 1`. JSON keeps every list whole.
+
+A probe's table gives a long reason once per selector, too. A later row of that selector with the
+same reason shows its label and the hit that gave it: `<not shown: same as at hit 1>`. JSON and
+the store keep every reason whole.
 
 #### Go on to the next stop, or use another session
 
@@ -3707,6 +3744,16 @@ compare: no saved run is this probe without the edit (the same --at, --capture, 
 ```
 
 After a candidate with `--set` or `--set-at`, run it without them too.
+
+Where the saved run differs only in its `--capture`, the line names it and says what differs. Its
+`diff` compares the selectors both runs captured, and lists each other one as `only in run a` or
+`only in run b`:
+
+```
+compare: run 1 is this probe without the edit, but it didn't capture `by_hour`: `peeky queries diff --param a=1 --param b=2` compares the selectors both captured (`inside`). To compare them all, run this probe without --old/--new, then `peeky queries diff`
+```
+
+Such a run is named only where it shares a selector with the candidate.
 
 The line names no run in these cases:
 

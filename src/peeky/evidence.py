@@ -1272,7 +1272,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     ),
     "compare": (
         "Every value of two runs side by side, in hit and capture order; note says when a "
-        "value is missing from a run, qualified in either (a view or a note: not evidence "
+        "value is missing from a run, one run has none of (withheld or unavailable: `no value "
+        "in run b`, differs NULL), qualified in either (a view or a note: not evidence "
         "by itself) or differs only in memory addresses (`addresses differ: ...` where an "
         "address may be another element's: a pointer or a reference, or any C, C++ or Rust "
         "value; else `addresses only`); a C or C++ pointer at an element's address of an array "
@@ -1307,7 +1308,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "compare offsets with address(), or shows a C or C++ pointer's offsets by address from "
         "another), one row per selector (and stop); then values a "
         "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
-        "itself: leftovers, a moved Rust local's bytes); then other address-only differences (a "
+        "itself: leftovers, a moved Rust local's bytes); then values one run has none of "
+        "(withheld or unavailable: note `no value in run b`, differs NULL, no value difference), "
+        "one row per selector (and stop), with a note counting them; then other address-only "
+        "differences (a "
         "Python repr, a Java object number, a C or C++ pointer at the same element's address, "
         "or one whose text after its address reads the same), one row "
         "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
