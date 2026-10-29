@@ -912,7 +912,7 @@ def test_a_string_the_runtime_shows_keeps_its_handle_and_never_overrides_no_valu
 
     calls = []
 
-    def string_value(variable, fetch, read):
+    def string_value(variable, fetch, read, proven=None):
         calls.append((variable["name"], read))
         return {"value": '"a\\0b"', "view": "memory", "string_length": 3}
 
@@ -953,7 +953,7 @@ def test_a_string_shown_as_its_text_lists_no_members(tmp_path):
 
     from peeky.worker import DebugWorker
 
-    def string_value(variable, fetch, read):
+    def string_value(variable, fetch, read, proven=None):
         return {"text": True} if variable["name"] == "s" else None
 
     runtime = SimpleNamespace(

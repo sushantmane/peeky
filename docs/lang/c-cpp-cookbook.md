@@ -700,6 +700,8 @@ parts after it give the details.
   `this`: `this.head_`.
 - A `std::string` reads whole. A `std::vector` reads by index, and a `std::map` by key: `m[1]`,
   `ages["al"]`.
+- A `char[N]` shows its text up to its first NUL, then a note of what follows it
+  ([details](#characters)).
 - A `static` local reads where the code at the stop names it, and is never changed
   ([details](#read-a-static-local)).
 - Structs, arrays and most standard containers show their members, in probes, `inspect` and
@@ -850,7 +852,8 @@ the evidence store. The handle stays, so you still read and set fields by name: 
 
 A preview shows 8 members or elements, then `…`. It goes two levels deep, with `{…}` below that:
 `{s = {a = {…}}}`. It shows at most 40 characters of one member, and 240 in all. A char array or a
-string is cut between characters, with LLDB's `...`. A note on a string is kept whole.
+string is cut between characters, with LLDB's `...`. A note on a string or a char array is kept
+whole.
 
 - Previews have their own budget: 256 debugger requests within 3 s, per inspection or expansion.
   Past it, values keep the debugger's text. The strings' checks have a budget of their own.
@@ -1082,8 +1085,42 @@ not shown: a standard-library call below this frame (std::__1::vector<…>::clea
 
 #### Characters
 
-- A C char array shows as LLDB writes it, bounded by its size, so it needs no NUL. It is cut at
-  40 characters.
+A narrow character array, such as `char name[32]`, shows its text up to its first NUL. A note after
+it says what follows the text. Those bytes are never shown as part of the text:
+
+| What the array holds | Its value |
+| --- | --- |
+| The text, a NUL, then bytes that aren't all NULs | `"Adeyemi" (then a NUL and 24 bytes not shown)` |
+| The text, then only NULs | `"hello" (then 59 NUL bytes)` |
+| A NUL first | `"" (then a NUL and 31 bytes not shown)` |
+| No NUL | `"abcdefgh" (no NUL in its 8 bytes)` |
+| No NUL in the bytes Peeky could read | `"abcdef" (then 10 bytes not read)` |
+
+- LLDB's text shows the bytes up to the last one it read that isn't a NUL. It shows the same
+  for an array that runs into memory it can't read. So Peeky reads the bytes after that text
+  again, and calls them NULs only where it read them.
+- It reads them from memory where the debugger can. Otherwise it reads them as the debugger
+  lists the array's elements, at most 64 of them: lldb-dap 18 reads no memory.
+- It reads them only where nothing on the way to the array is in doubt. A pointer on the way
+  must be proven to point at a live object. The value must have no `note`, and the build must
+  be unoptimized. Otherwise the bytes after LLDB's text are `not read`.
+- So a NUL past those 64 elements is not shown, and the note says the bytes were not read.
+  `text()` is NULL for such a row.
+- This holds for an array of `char`, `signed char`, `unsigned char` or a `char8_t` typedef, by
+  LLDB's name for its type. An array under a typedef's own name, such as `Tag` for `char[8]`,
+  keeps LLDB's text.
+- A printable UTF-8 character shows as itself: `"Malmö"`. Every other byte is `\xNN`, or C's own
+  escape, such as `\n`. So byte 0x01 is `\x01`, never LLDB's `\U00000001`.
+- A byte before a hex digit is written in octal, `"\001a"`, so that C reads it back the same.
+- `--json` rows and `session inspect --json` keep every byte read, NULs included, as `buffer`:
+  `"Adeyemi\0\x80\xf8\xe6\xef\x01…"`. It ends `...` where the array holds bytes that weren't
+  read. The store keeps only the value.
+- LLDB reads at most an array's first 1024 bytes. In a longer array, the bytes after the NUL are
+  counted as not shown. With no NUL in those 1024 bytes, the text ends `...`, with no note.
+- In a preview, the note is kept whole, and a long text before it is cut with `...`:
+  `{label = "desk" (then a NUL and 7 bytes not shown), id = 7}`.
+- In SQL, `text(value, language, type)` gives the text up to the NUL
+  ([4.9](../COOKBOOK.md#49-a-lists-elements-and-a-strings-text)).
 - A wide character array shows element by element: `[L'a', L'\0', L'b', L'\0']`. LLDB's own text
   would stop at the first NUL: `L"a"`. This holds for any element wider than a byte. `char16_t` and
   `char32_t` arrays show element by element too: `[u'x', u'\0', u'y']`.
@@ -1787,8 +1824,9 @@ A value in double quotes is a text, in JSON's string syntax, so `\"` and `\u00e9
 writes the text in the storage the local already has, and only there.
 
 - **A `char[N]` array** takes the text and a NUL, when both fit in its N bytes. The build's debug
-  information gives N. The bytes after the NUL stay as they were, and the debugger shows them after
-  `\0`: `set name: "apple :4" -> "apple\0:4"`.
+  information gives N. The bytes after the NUL stay as they were. The change shows them as the
+  debugger does, after `\0`: `set name: "apple :4" -> "apple\0:4"`. A row of `name` then reads
+  `"apple" (then a NUL and 10 bytes not shown)` ([details](#characters)).
 - A text that doesn't fit is refused: `name` is a char[16], which holds 15 bytes of text and a
   NUL. A text with a NUL in it is refused too.
 - **A `std::string`** takes the text, a NUL and the new size, within its current capacity. Peeky

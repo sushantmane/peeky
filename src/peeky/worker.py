@@ -3669,8 +3669,10 @@ class DebugWorker:
         cache[1][key] = result[:2000]
         return cache[1][key]
 
-    def view_fetch(self, reference):
-        """Bounded raw reads used only by a runtime's trusted value-view hook.
+    def view_fetch(self, reference, start=None):
+        """Bounded raw reads used only by a runtime's trusted value-view hook: a value's
+        children, at most 64 (a value with more is refused), or, from ``start``, the next
+        64 of them (an array's elements).
 
         Count, time, item and byte budgets are shared by one inspection or expansion;
         exhaustion makes remaining views opaque instead of extending the request.
@@ -3681,9 +3683,12 @@ class DebugWorker:
         self.view_fetches += 1
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
+        if start is not None and (type(start) is not int or not 0 <= start <= 65536):
+            raise ValueError("Value view read exceeds limit")
+        window = {"start": 0, "count": 65} if start is None else {"start": start, "count": 64}
         try:
             values = self.view_request(
-                "variables", {"variablesReference": reference, "start": 0, "count": 65}, remaining
+                "variables", {"variablesReference": reference, **window}, remaining
             ).get("variables", [])
         except ResponseTimeout as exc:
             # The read was written completely; only its reply missed the view budget.
@@ -3953,6 +3958,15 @@ class DebugWorker:
         except (KeyError, TypeError, ValueError):
             judged = False
         return judged and self.pointee_unproven(variable, frame, steps) is None
+
+    def bytes_reachable(self, frame, trail, names):
+        """Whether a C or C++ character array reached by ``names`` (``trail``: the
+        debugger's variable for each) may have its bytes after LLDB's summary read again
+        (#390 review): only where every pointer and reference on the way is judged to
+        refer to a live object (``nodes_reachable``), in an unoptimized build. Its caller
+        also requires no note on it and no taint: what such a value holds may be
+        leftovers, and a read at its address would prove nothing of it."""
+        return not self.optimized() and self.nodes_reachable(frame, trail, names)
 
     def node_reader(self, frame):
         """How a runtime reads an unordered container's nodes in ``frame`` (#360):
@@ -4477,8 +4491,22 @@ class DebugWorker:
                 # A string the debugger shows only up to a NUL byte (#128); never one it
                 # has no value for (optimized out).
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
-                if (shown := string_value(variable, self.view_fetch, reads)) is not None:
-                    for key in ("value", "unavailable", "reason", "view", "string_length"):
+                way, steps = [*trail[: len(ancestry)], variable], [s for s, _ in ancestry] + [name]
+                proven = lambda: (  # noqa: E731
+                    note is None
+                    and through is None
+                    and not own
+                    and self.bytes_reachable(frame, way, steps)
+                )
+                if (shown := string_value(variable, self.view_fetch, reads, proven)) is not None:
+                    for key in (
+                        "value",
+                        "unavailable",
+                        "reason",
+                        "view",
+                        "string_length",
+                        "buffer",
+                    ):
                         if key in shown:
                             output[key] = shown[key]
                     if shown.get("text") is True:
@@ -4547,6 +4575,14 @@ class DebugWorker:
                                 frame, [*trail[: len(ancestry)], variable], steps
                             )
                             else None
+                        ),
+                        proven=lambda: (
+                            note is None
+                            and through is None
+                            and not own
+                            and self.bytes_reachable(
+                                frame, [*trail[: len(ancestry)], variable], steps
+                            )
                         ),
                         **self.preview_stack(),
                     )
@@ -4648,6 +4684,8 @@ class DebugWorker:
                 and (extent := self.value_extent(variable, frame, ancestry, name, kind))
             ):
                 output["extent"] = extent
+            if output.get("unavailable"):
+                output.pop("buffer", None)
             result.append(output)
             self.inspection_nodes += 1
         return result
@@ -5565,6 +5603,11 @@ class DebugWorker:
                     if not self.notes.get(args["handle"])
                     and self.nodes_reachable(frame, trail, steps)
                     else None
+                ),
+                proven=lambda: (
+                    not self.notes.get(args["handle"])
+                    and not self.taints.get(args["handle"])
+                    and self.bytes_reachable(frame, trail, steps)
                 ),
                 **self.preview_stack(),
             )

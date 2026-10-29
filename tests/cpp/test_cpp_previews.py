@@ -239,7 +239,9 @@ def test_types_the_debug_information_gives_never_the_names(cpp, tmp_path, capsys
     rows = {row["selector"]: row["value"] for row in result["rows"]}
     tags = ", ".join(f"{{v = […], tag = {i}}}" for i in range(5))
     assert rows["hs"] == f"[{tags}]", rows["hs"]
-    assert rows["hc"] == '[{v = "a", tag = 1}, {v = "b", tag = 2}, {v = "c", tag = 3}]', rows
+    # A char array shows its text up to its NUL, and what follows it (thirteenth evaluation).
+    held = ", ".join(f'{{v = "{c}" (then 1 NUL byte), tag = {i}}}' for i, c in enumerate("abc", 1))
+    assert rows["hc"] == f"[{held}]", rows
     assert rows["fx"] == "[{data = […]}, {data = […]}]", rows["fx"]
     assert rows["grid"] == "[[{…}, {…}, {…}], [{…}, {…}, {…}]]", rows["grid"]
     assert rows["rows"] == "[[1, 2, 3], [4, 5, 6]]", rows["rows"]
