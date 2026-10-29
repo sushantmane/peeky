@@ -15,8 +15,8 @@ class Worker:
     """One stop in add_reading, called from ward: frame 0 holds `reading`, frame 1 `i`
     (the hit's index) and `reading` (another one); there is no frame 2."""
 
-    def __init__(self, hits=2):
-        self.hits, self.stops, self.inspected = hits, 0, []
+    def __init__(self, hits=2, shift=0):
+        self.hits, self.stops, self.inspected, self.shift = hits, 0, [], shift
         self.sets = []
 
     def dispatch(self, operation, args):
@@ -43,10 +43,16 @@ class Worker:
                 )
             value = str(self.stops * 10 + (5 if self.sets else 0))
             variables = (
-                [{"name": "reading", "type": "int", "value": value, "variablesReference": 0}]
+                [
+                    {"name": "reading", "type": "int", "value": value, "variablesReference": 0},
+                    # add_reading's own `i`, which is not ward's.
+                    {"name": "i", "type": "int", "value": str(self.stops * 100 + self.shift)}
+                    | {"variablesReference": 0},
+                ]
                 if frame == 0
                 else [
-                    {"name": "i", "type": "int", "value": str(self.stops), "variablesReference": 0},
+                    {"name": "i", "type": "int", "value": str(self.stops + self.shift)}
+                    | {"variablesReference": 0},
                     {"name": "reading", "type": "int", "value": "3", "variablesReference": 0},
                 ]
             )
@@ -69,8 +75,8 @@ class Worker:
         pass
 
 
-def probed(monkeypatch, capture, **options):
-    worker = Worker()
+def probed(monkeypatch, capture, shift=0, **options):
+    worker = Worker(shift=shift)
     monkeypatch.setattr(probe_module, "DebugWorker", lambda *args, **kwargs: worker)
     probe = Probe("main.py", 2, capture, hits=2, **options)
     return worker, probe_module.run_probe("/w", probe)
@@ -230,3 +236,42 @@ def test_a_store_of_schema_20_gains_the_frame_columns(tmp_path):
         {"selector": "x", "frame": None}
     ]
     assert sqlite3.connect(store).execute("PRAGMA user_version").fetchone() == (21,)
+
+
+def test_queries_keep_a_name_and_the_callers_name_apart(monkeypatch, tmp_path):
+    # Review of #388: add_reading's `i` and ward's `1:i` are two selectors in every query.
+    store = tmp_path / "evidence.db"
+    for shift in (0, 1):
+        evidence.record(store, probed(monkeypatch, ("i", "1:i"), shift)[1], language="python")
+    diff = evidence.run_query(store, "diff", {})["rows"]
+    assert [(row["hit"], row["selector"], row["value_a"], row["value_b"]) for row in diff] == [
+        (1, "i", "100", "101"),
+        (1, "1:i", "1", "2"),
+        (2, "i", "200", "201"),
+        (2, "1:i", "2", "3"),
+    ]
+    # Paired by the caller's `i`: run 1's hit 2 is run 2's hit 1; the callee's `i` is a
+    # column of each run's.
+    joined = evidence.run_query(store, "join", {"key": "1:i", "a": 1, "b": 2})["rows"]
+    paired = sorted(
+        (row["1:i"], row["hit_a"], row["hit_b"], row["a:i"], row["b:i"]) for row in joined
+    )
+    assert paired == [
+        ("1", 1, None, "100", None),
+        ("2", 2, 1, "200", "101"),
+        ("3", None, 2, None, "201"),
+    ]
+    _, changed = probed(monkeypatch, ("i", "1:i"), set=(("reading", "0"),))
+    changed["interventions"][0].update(name="reading", before="10", after="0")
+    evidence.record(store, changed, language="python")
+    wide = evidence.run_query(store, "wide", {})["rows"]
+    assert [(row["hit"], row["phase"], row["i"], row["1:i"]) for row in wide] == [
+        (1, "observed", "100", "1"),
+        (1, "after-set", "100", "1"),
+        (2, "observed", "200", "2"),
+    ]
+    effect = evidence.run_query(store, "set_effect", {})["rows"]
+    assert [(row["selector"], row["observed"], row["interventions"]) for row in effect] == [
+        ("i", "100", "reading: 10 -> 0"),
+        ("1:i", "1", "reading: 10 -> 0"),
+    ]
