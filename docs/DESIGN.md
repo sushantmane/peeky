@@ -136,18 +136,22 @@ another protocol, or none, before it runs it ([ERRORS.md](ERRORS.md#protocol-ver
 and the error codes:
 
 ```
-$ curl -s -i -X POST -H 'Authorization: Bearer …' -d '{}' http://127.0.0.1:18766/version
+$ curl -s -i -X POST -H 'Authorization: Bearer …' -H 'X-Peeky-Protocol: 10' -d '{}' \
+    http://127.0.0.1:18766/version
 HTTP/1.0 200 OK
 ...
-X-Peeky-Protocol: 2
+X-Peeky-Protocol: 10
 ...
-{"protocol": 2, "sources": {"kind": "python"}, "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
+{"protocol": 10, "sources": {"kind": "python"}, "root": "/srv/app", "operations": ["breakpoints", "close", "continue", "expand", "inspect", "launch", "preview", "probe", "report", "set_variable", "shutdown", "step", "version", "wait"], "error_codes": ["BUDGET_EXHAUSTED", "BUSY", "DEBUGGER_ERROR", "INSPECT_REQUIRED", "INTERNAL_ERROR", "INVALID_BREAKPOINT", "INVALID_QUERY", "INVALID_REQUEST", "JOB_LOST", "MUTATION_REJECTED", "NOT_FOUND", "NO_SESSION", "PROVENANCE_CHANGED", "SESSION_ACTIVE", "STALE_HANDLE", "STALE_STOP", "TIMEOUT", "TRANSPORT_LOST", "UNAUTHORIZED", "UNREACHABLE", "UNSUPPORTED"]}
 ```
+
+`version` is answered whatever `X-Peeky-Protocol` a request names, or none. Any other request
+must name the worker's protocol: otherwise it is refused with `INVALID_REQUEST` before it runs.
 
 Without the token, the reply is `401`:
 
 ```
-{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 2}
+{"error": {"code": "UNAUTHORIZED", "message": "Missing or wrong bearer token", "hint": "Use the DEBUG_TOKEN the worker was started with.", "retryable": false, "session_closed": false}, "protocol": 10}
 ```
 
 | Operation | Required input | Result |

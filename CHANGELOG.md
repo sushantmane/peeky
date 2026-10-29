@@ -50,6 +50,9 @@
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369), and **9** (#382).
+- **Protocol 10:** `expand` takes `key`, for a map's entries Peeky read from an unordered
+  container's nodes. Every request must carry `X-Peeky-Protocol`. A worker refuses an older
+  client's requests, and a client sends an older worker nothing, except `version` (#374).
 - **C and C++ notes:** a withheld unordered container says why no node is read, and what to
   try. Refused changes to a lambda's capture or a structured binding say where the value is.
   `describe` marks statics and lists GCC captures (#380).
