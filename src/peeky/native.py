@@ -265,10 +265,12 @@ def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what):
             )
 
         def late():
-            return TimeoutError(
+            error = TimeoutError(
                 f"Reading the build's {what} timed out after {timeout:.1f} s: {_SMALLER}, "
                 "or retry when the machine is less busy"
             )
+            error.detail = f"it took over {timeout:.1f} s; {_SMALLER.split(' (')[0]}"
+            return error
 
         def lines():
             total = 0

@@ -99,6 +99,7 @@ def test_symbol_text_has_a_time_limit_and_a_failing_tool_says_why(tmp_path):
     with pytest.raises(TimeoutError, match="timed out after 0.5 s") as late:
         read(tmp_path, slow, timeout=0.5)
     assert classify(late.value)["code"] == "TIMEOUT"
+    assert late.value.detail == "it took over 0.5 s; probe a smaller program"
     failing = tool(tmp_path, "sys.stderr.write('no such file'); sys.exit(3)\n")
     with pytest.raises(RuntimeError, match="exit=3, diagnostics=no such file") as failed:
         read(tmp_path, failing)
