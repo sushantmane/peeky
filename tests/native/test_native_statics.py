@@ -130,7 +130,7 @@ def test_describe_marks_a_static_local_static(directory, capsys):
     statics = set(tick.get("statics", ()))
     assert {"calls", "count", "cs", "st"} <= statics and not {"seen", "x"} & statics, tick
     # GCC builds `ls` at compile time, in read-only data, which its rows say too.
-    assert ("ls" in statics) is is_gcc(os.environ["PEEKY_NATIVE_CC"]), tick
+    assert ("ls" in statics) is is_gcc(os.environ.get("PEEKY_NATIVE_CC", "clang")), tick
     assert main(["describe", str(path)]) == 0
     text = capsys.readouterr().out
     assert re.search(r"names in tick \(statics\.c:[0-9-]+\): calls \(long( int)?, static\)", text)
