@@ -44,8 +44,43 @@ class Client:
     def __init__(self, url, token):
         self.url = url.rstrip("/")
         self.token = token
+        # The protocol the worker's `version` states, once asked (or vouched for by the
+        # caller): nothing but `version` is sent to a worker before it is this client's
+        # (#374 review). A worker of another protocol would run a step or a change as it
+        # reads the request, and ignore what it doesn't know (`expand`'s `key`).
+        self.protocol = None
 
     def call(self, operation, **arguments):
+        if operation != "version":
+            self._preflight(operation)
+        answer = self._request(operation, arguments)
+        if (
+            operation == "version"
+            and isinstance(answer, dict)
+            and type(answer.get("protocol")) is int
+        ):
+            self.protocol = answer["protocol"]
+        return answer
+
+    def _preflight(self, operation):
+        """Ask the worker's `version` once, before anything else is sent; refuse
+        ``operation`` where the worker speaks another protocol, or doesn't say."""
+        if self.protocol is None:
+            answer = self._request("version", {})
+            found = answer.get("protocol") if isinstance(answer, dict) else None
+            self.protocol = found if type(found) is int else "unknown"
+        if self.protocol != PROTOCOL_VERSION:
+            raise ValueError(self._refusal(operation))
+
+    def _refusal(self, operation):
+        return (
+            f"Worker speaks protocol {self.protocol}, this client {PROTOCOL_VERSION}: nothing "
+            f"but its version was sent to the worker at {self.url}, not {operation!r}. Run the "
+            "same Peeky version as the worker"
+        )
+
+    def _request(self, operation, arguments):
+        """One request, as it is: its answer, or the worker's error."""
         request = Request(
             self.url + "/" + operation,
             data=json.dumps(arguments).encode(),

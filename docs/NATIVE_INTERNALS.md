@@ -571,10 +571,11 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     selector compares one, however many there are. `m[#N]` past 511 sends `index`. Protocol 10
     added `key`.
   - The client takes an entry only from an answer that names the key it asked for, and only
-    where that entry's `first` is the key. A local session keeps its worker's protocol
-    (`session start` asks `version`), and a command to one whose record names another asks
-    `version` before anything else (`cli._LocalClient`). `Client.call` also reads no answer
-    whose `X-Peeky-Protocol` names another protocol.
+    where that entry's `first` is the key. `Client.call` asks a worker's `version` once,
+    before its first other request, and sends nothing else to a worker of another protocol
+    (`Client._preflight`). A local session whose record names this protocol skips the ask
+    (`cli._LocalClient`, `verified`). `Client.call` also reads no answer whose
+    `X-Peeky-Protocol` names another protocol.
   - Otherwise the row stays `not listed`, with the note it had.
 - **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
   `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the

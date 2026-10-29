@@ -1072,18 +1072,23 @@ def test_a_failed_walks_paths_are_not_cached(tmp_path):
     assert worker.raw_values[1] == {} and paths.asked == []
 
 
-def test_a_worker_of_another_protocol_is_never_read(tmp_path):
-    # #374 review: a local session's worker of protocol 9 ignores `expand`'s `key` and
-    # answers its first entries. Every answer says its protocol: another is refused.
+def test_a_worker_of_another_protocol_is_never_sent_anything_but_its_version(tmp_path):
+    # #374 review: a worker of protocol 9 ignores `expand`'s `key` and answers its first
+    # entries, and runs `continue` as it reads it. The `Client` SDK (and `python -m
+    # peeky.client`) asks a worker's `version` before its first other request, once, and
+    # sends nothing else to a worker of another protocol.
     import json
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     from peeky.client import Client
 
+    asked = []
+
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            asked.append(self.path)
             failing = self.path == "/fail"
             answer = json.dumps(
                 {"error": {"code": "INVALID_REQUEST", "message": "no"}}
@@ -1103,11 +1108,17 @@ def test_a_worker_of_another_protocol_is_never_read(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         client = Client(f"http://127.0.0.1:{server.server_port}", "t" * 32)
-        for operation in ("expand", "fail"):
+        for operation in ("continue", "expand", "fail"):
             with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 10"):
                 client.call(operation, handle=1, key="5")
+        assert asked == ["/version"], asked
         # Its version is read: its caller compares the protocol it states.
         assert client.call("version")["protocol"] == 9
+        # An answer whose header names another protocol, from a worker whose version said
+        # this one's, is refused too.
+        client.protocol = 10
+        with pytest.raises(ValueError, match="its answer to 'continue' .* is not read"):
+            client.call("continue")
     finally:
         server.shutdown()
         server.server_close()
