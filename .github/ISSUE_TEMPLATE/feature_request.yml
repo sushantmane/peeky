@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest something Peeky should do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The debugging question you want answered, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: The command, option or output you have in mind. Say what Peeky should do when it can't prove a value.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Peeky version
+      description: What `peeky --version` prints.
+      placeholder: peeky 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15 on Apple Silicon, or Ubuntu 24.04 on x86_64
+    validations:
+      required: false
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language
+      multiple: true
+      options:
+        - Python
+        - Java
+        - C
+        - C++
+        - Rust
+        - Not specific to a language
+    validations:
+      required: true
+  - type: textarea
+    id: toolchain
+    attributes:
+      label: Toolchain versions
+      description: Optional. For example, `python3 --version`, `java -version`, `clang --version`, `rustc --version` or `lldb-dap --version`.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Optional. The `peeky` command you ran, and what it printed.
+      render: text
+    validations:
+      required: false

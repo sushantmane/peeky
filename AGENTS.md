@@ -9,4 +9,5 @@ Read README.md and docs/DESIGN.md before changing lifecycle or protocol behavior
 - Keep required CI lanes independent and track their elapsed time; do not hide slow/failing work behind a timeout.
 - Nontrivial transport, session, verification, or security-boundary changes need an independent adversarial review before merge. Record findings and dispositions in the PR.
 - Run ruff check, ruff format --check, and the relevant pytest lanes. Build/install smoke for packaging changes.
-- Do not publish packages or deploy workers as part of routine changes. Private artifact delivery is configured separately.
+- Add a line to CHANGELOG.md under Unreleased for each change a user would notice.
+- Do not publish packages or deploy workers as part of routine changes. Artifact delivery is configured separately.

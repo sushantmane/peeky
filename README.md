@@ -2,41 +2,46 @@
 
 **Let agents peek inside running programs.**
 
-Peeky is a debugger that agents and people run from the command line. You or your agent, such as
-Copilot, Claude or Codex, call it. It never calls a model. It supports Python, Java, C, C++ and
-Rust, each experimentally ([Project status](#project-status)).
+Peeky is a debugger that AI coding agents and people run from the command line. One command stops
+a program at a line, reads its values, can change one to test a hypothesis, and runs the program
+to its end. Another checks a fix with your own checker, on a fresh build. Peeky never shows a
+wrong or guessed value without a note: where it can't prove a value, it withholds it and says why.
+It supports Python, Java, C, C++ and Rust, all experimental. Peeky never calls a model. Your
+agent, such as Copilot, Claude or Codex, calls Peeky, and so can you.
 
-With Peeky you can:
-
-- stop a program at a line and read its values;
-- change a value, to test a hypothesis;
-- try an edit on a fresh copy, and see what it changes;
-- verify a fix with your own checker, in a fresh process.
-
-Runtime experiments produce evidence. A separate verifier decides whether a source change passes
-your checks.
+> **Status:** experimental. Version 0.1.0 is tagged. Peeky isn't on PyPI yet. See
+> [Project status](#project-status).
 
 ## Install
 
-Python 3.11 or later is required. macOS's built-in `python3` is 3.9. There, `pip install` fails
-with `No matching distribution found for debugpy==1.8.22`, which doesn't name the cause: install
-Python 3.11 or later, from python.org or Homebrew, and make the virtual environment with it.
+Peeky needs Python 3.11 or later. Install it from the repository:
 
-Its `sqlite3` module must have SQLite 3.30 or later, with the JSON functions, `json_each`,
-`json_tree` and window functions, for the evidence store.
-`python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version. Before SQLite
-3.41, `peeky sql` can use only the JSON and pragma table-valued functions
-([COOKBOOK 4](docs/COOKBOOK.md#4-sql-over-saved-runs)).
+```sh
+git clone https://github.com/sushantmane/peeky.git && cd peeky
+python3.11 -m venv .venv && . .venv/bin/activate
+pip install -e .
+peeky --version
+```
+
+`peeky --version` prints `peeky 0.1.0`. Run the examples below from the repository root.
+
+- **macOS:** the built-in `python3` is 3.9. There, `pip install` fails with
+  `No matching distribution found for debugpy==1.8.22`, which doesn't name the cause. Install
+  Python 3.11 or later, from python.org or Homebrew, and make the virtual environment with it.
+- **SQLite:** the evidence store needs SQLite 3.30 or later, with its JSON functions.
+  `python3 -c 'import sqlite3; print(sqlite3.sqlite_version)'` prints the version.
+- **Other languages:** Python needs nothing more. Java needs JDK 17 and an adapter bundle that a
+  script builds. C, C++ and Rust need LLVM's `lldb-dap`.
+  [COOKBOOK 0](docs/COOKBOOK.md#what-each-language-also-needs) lists what to install.
 
 ### From a release
 
-A release has a wheel, `peeky-0.1.0-py3-none-any.whl`, and a source archive,
-`peeky-0.1.0.tar.gz`. Install the wheel, with Python 3.11 or later:
+The [v0.1.0 release](https://github.com/sushantmane/peeky/releases/tag/v0.1.0) has a wheel,
+`peeky-0.1.0-py3-none-any.whl`, and a source archive, `peeky-0.1.0.tar.gz`:
 
 ```sh
 python3.11 -m venv .venv && . .venv/bin/activate
 pip install peeky-0.1.0-py3-none-any.whl
-peeky --version
 ```
 
 The wheel has the commands, but not the examples. They are in the source archive. Unpack it, and
@@ -44,23 +49,6 @@ run every example from its top directory:
 
 ```sh
 tar -xzf peeky-0.1.0.tar.gz && cd peeky-0.1.0
-```
-
-### From the repository
-
-Run these, and every example, from the repository root:
-
-```sh
-pip install -e .
-```
-
-For development and the tests, install the dev extras in a virtual environment:
-
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -e '.[dev]'
-pytest tests/unit tests/integration
 ```
 
 ## A first probe
@@ -85,18 +73,17 @@ output:
 evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
 ```
 
-- One command does it all, with no session to manage. Peeky builds fresh, stops at the line,
-  captures the values and makes the change. Then it runs the program to its end, prints the table
+- One command does it all, with no session to manage. Peeky starts a fresh run, stops at the
+  line, captures the values and makes the change. C, C++, Rust and Java targets are built first, in
+  a fresh workspace. Then it runs the program to its end, prints the table
   and cleans up.
 - `set start: 3 -> 0` and `PAGE: [10, 20, 30]` show what the change did. That is evidence about
   this run, not a verified fix.
 - Selectors are dotted paths, indexes and string keys, such as `request.page`, `args[0]` and
   `order['id']`. Peeky never evaluates them as expressions.
 - The same command works for C and C++ programs, Rust crates and Java (with `--config`).
-- Add `--hits N` or `--hits all` to capture repeated stops, `--arg` to pass program arguments, and
-  `--json` for the full result.
 
-Then check the fix with the program's checker:
+Then check a fix with the program's checker:
 
 ```sh
 peeky verify examples/pagination_bug.py --check examples/verify_pagination.py \
@@ -111,16 +98,7 @@ PASS: 12 independent pagination checks
 ...
 ```
 
-## What to read next
-
-| If you are | Read |
-| --- | --- |
-| An agent | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md), or install the [skills/peeky-debug](skills/peeky-debug/SKILL.md) skill |
-| A person | the [COOKBOOK](docs/COOKBOOK.md): copy-paste recipes with real output |
-| Debugging one language | its page: [Python](docs/lang/python.md), [Java](docs/lang/java.md), [C and C++](docs/lang/c-cpp.md), [Rust](docs/lang/rust.md) |
-| Looking up an error code | [docs/ERRORS.md](docs/ERRORS.md) |
-| Debugging a Java service or Gradle test, such as Venice's end-to-end tests | [docs/JAVA_ATTACH.md](docs/JAVA_ATTACH.md): attach to a `--debug-jvm` JVM |
-| Running Peeky on another machine | [docs/REMOTE.md](docs/REMOTE.md) |
+`verify` edits a fresh copy, so your source is left as it was.
 
 ## The commands
 
@@ -132,82 +110,23 @@ PASS: 12 independent pagination checks
 | `peeky session` | Several looks at one stop, with steps. | [COOKBOOK 5](docs/COOKBOOK.md#5-step-by-step-sessions) |
 | `peeky verify` | Checks an edit with your checker, on a fresh build. | [COOKBOOK 6](docs/COOKBOOK.md#6-verifying-a-fix) |
 
-Why Peeky is a tool and not an agent: [ADR 0005](docs/adr/0005-tool-not-agent.md).
+- Every probe not refused before launch is saved in a local SQLite store, so you can ask
+  follow-up questions without running the program again. `--no-save` opts out.
+- `peeky-worker` runs the debugger on another machine, reached through an SSH tunnel
+  ([REMOTE.md](docs/REMOTE.md)).
+- Why Peeky is a tool and not an agent: [ADR 0005](docs/adr/0005-tool-not-agent.md).
 
-## Ask follow-up questions with SQL
+## What to read next
 
-By default, every probe not refused before launch is saved with a `run_id`, and `--no-save` opts
-out. The runs go to a local SQLite store, at `$PEEKY_STATE_DIR/evidence/evidence.db`. Capture
-once, then ask as many questions as you like without running the program again, as heappy does for
-heap dumps.
-
-```sh
-peeky probe app/ --at lib/parse.py:42 --run main.py --capture n,acc --hits 50 --label input=a
-peeky sql "SELECT hit, value FROM last_run WHERE selector = 'acc' AND num > 100"
-peeky queries --help                # canned questions and their --param names: diff [a] [b], set_effect [run], ...
-peeky queries diff --param a=3 --param b=4   # first rows = first divergence between two runs
-peeky sql --schema                  # a line per table and view; --schema captures (or all) in full
-```
-
-- The store is optional: a probe's output is already the answer.
-- The store helps with large captures, where you query only what you need. It also helps to compare
-  runs, and with slow or unrepeatable runs.
-- A new question about the running program needs a new probe.
-- For a separate database, add `--store PATH`.
-- Queries are read-only, and bounded by `--limit` rows, 10 s and 16 MB per result. The newest 500
-  runs are kept. [COOKBOOK 4](docs/COOKBOOK.md#4-sql-over-saved-runs) describes the tables.
-
-## Run Peeky on another machine
-
-The debugger runs in a worker, which a client calls over JSON HTTP. Start a worker with a secret
-token, from the repository root or the unpacked source archive:
-
-```sh
-export DEBUG_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-peeky-worker --root "$PWD" --port 8765
-```
-
-In a second terminal, export the same `DEBUG_TOKEN` value, and run this with the Python Peeky is
-installed in:
-
-```python
-import os
-from peeky.client import Client
-
-url, token = "http://127.0.0.1:8765", os.environ["DEBUG_TOKEN"]
-client = Client(url, token)
-launch = client.call("launch", program="examples/pagination_bug.py", breakpoints=[{"line": 8}])
-session = {"session_id": launch["session_id"]}
-stop = client.call("wait", **session, timeout=2)
-while stop["state"] == "running":
-    stop = client.call("wait", **session, timeout=2)
-if stop["state"] == "stopped":
-    print(client.call("inspect", **session, stop_id=stop["stop_id"]))
-print(client.call("report", **session))
-client.call("close", **session)
-```
-
-A probe is one HTTP call ([ADR 0004](docs/adr/0004-stateless-probes.md)). Its path is inside the
-worker's `--root`:
-
-```python
-print(client.probe("examples/pagination_bug.py:8", ["start"], {"start": "0"}))
-```
-
-For remote use, run the worker on the target, and forward its loopback port over SSH:
-
-```sh
-ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@target
-peeky-agent --url http://127.0.0.1:8765 --model YOUR_MODEL --output runs/remote
-```
-
-- Keep `-o ExitOnForwardFailure=yes`. Without it, ssh only warns when another process already holds
-  the local port, and the token goes to that process.
-- `peeky probe` and `peeky session start` take `--worker http://127.0.0.1:8765`, with the token in
-  `PEEKY_WORKER_TOKEN` ([REMOTE.md](docs/REMOTE.md)).
-- Keep the same source on the client and the worker. The runner checks the source's identity.
-- Verification runs on the client, so its dependencies must match the target's environment.
-- The SSH setup is documented. CI tests the network interface locally, not on a live cluster.
+| If you are | Read |
+| --- | --- |
+| An agent | [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md), or install the [skills/peeky-debug](skills/peeky-debug/SKILL.md) skill |
+| A person | the [COOKBOOK](docs/COOKBOOK.md): copy-paste recipes with real output |
+| Debugging one language | its page: [Python](docs/lang/python.md), [Java](docs/lang/java.md), [C and C++](docs/lang/c-cpp.md), [Rust](docs/lang/rust.md) |
+| Looking up an error code | [docs/ERRORS.md](docs/ERRORS.md) |
+| Debugging a JVM started by Gradle with `--debug-jvm` | [docs/JAVA_ATTACH.md](docs/JAVA_ATTACH.md) |
+| Running Peeky on another machine | [docs/REMOTE.md](docs/REMOTE.md) and [docs/WORKER.md](docs/WORKER.md) |
+| Curious how it got here | [docs/HISTORY.md](docs/HISTORY.md) and the [CHANGELOG](CHANGELOG.md) |
 
 ## Safety
 
@@ -215,26 +134,22 @@ peeky-agent --url http://127.0.0.1:8765 --model YOUR_MODEL --output runs/remote
   debugger service. [THREAT_MODEL.md](docs/THREAT_MODEL.md) has the trusted-code assumptions.
 - The worker takes a secret token, and listens only on loopback (`127.0.0.1`). Reach it from
   another machine through SSH forwarding.
-- `peeky-agent` sends selected source and runtime evidence to a model, and uses model credits.
-  PR CI uses deterministic model fixtures and never calls a paid model.
+- Start that tunnel with `ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host`.
+  Without the option, ssh only warns when another process holds the local port, and the token goes
+  to that process.
+- Peeky itself sends nothing to a model. The optional `peeky-agent`, below, does.
 - To report a vulnerability privately, see [SECURITY.md](SECURITY.md).
 
 ## The optional harness: `peeky-agent`
 
-`peeky-agent` is a reference harness that drives the same operations with Codex CLI's decisions.
-It is not the main interface. To run it, install and sign in to Codex CLI, then choose a model your
-account offers:
+`peeky-agent` is an experimental reference harness. It drives the same operations with a model's
+decisions, through Codex CLI. It is not the main interface.
 
-```sh
-peeky-agent --model YOUR_MODEL --output runs/first-investigation
-```
-
-- The agent gets the bug report and the source of the bundled pagination program, which uses
-  one-based page numbers wrongly.
-- It chooses its own breakpoint and runtime change, and proposes a correction.
-- The output directory has the decision and evidence report, the candidate source, and a diff
-  after verification.
-- The original source and the verifier's files are kept.
+- It sends selected source and runtime evidence to the model, and uses model credits.
+- To run it, install and sign in to Codex CLI, then pick a model your account offers:
+  `peeky-agent --model YOUR_MODEL --output runs/first-investigation`.
+- CI uses deterministic decision fixtures, and never calls a model.
+- [docs/AGENT_LOOP.md](docs/AGENT_LOOP.md) describes the loop.
 
 `peeky-agent` runs code the model writes, without a sandbox:
 
@@ -246,64 +161,39 @@ peeky-agent --model YOUR_MODEL --output runs/first-investigation
 
 ## Project status
 
-The first version, 0.1.0, is a private GitHub release. [CHANGELOG.md](CHANGELOG.md) lists what it
-covers and its known gaps. Twelve rounds of live agent evaluation shaped it
-([docs/evaluations](docs/evaluations)).
+- **Version:** 0.1.0, tagged on 2026-10-26, with a GitHub release. The
+  [CHANGELOG](CHANGELOG.md) lists what it covers, its known gaps and what changed since.
+- **Release:** a public release, and a package on PyPI, are pending.
+- **Languages:** Python, Java, C, C++ and Rust are all experimental. Each is qualified on narrow
+  fixtures, and twelve rounds of live agent evaluation shaped them
+  ([HISTORY.md](docs/HISTORY.md#live-agent-evaluations)). None is general language support.
+- **Also experimental:** Java attach, remote workers and `peeky-agent`.
+- **Not supported:** CUDA ([planned](docs/ROADMAP.md#cuda-61)), Kubernetes workers, several users
+  per worker, and attach for languages other than Java.
+- **CI:** Linux only, with Python 3.11 and 3.13, Java 17, C, C++ (clang and GCC), Rust, a remote
+  SSH lane and a wheel smoke test. macOS is used for development, but isn't in the CI matrix.
+- **Hosted CI** on GitHub Actions is paused, and resumes when the repository is public. Until then,
+  each change is checked by the Docker mirror, `scripts/ci_linux`, with the results in the pull
+  request. It runs the same checks and test suites as CI's jobs, once each. It skips remote SSH
+  e2e, runs the integration tests on one Python, and adds lanes hosted CI doesn't have
+  ([TESTING.md](docs/TESTING.md#the-docker-mirror)).
+- **Licence:** none has been chosen yet, so none is included.
 
-- **Languages:** the minimum scope is Python, Java, C, C++ and Rust, delivered in that order in
-  incremental releases. All five have experimental investigation loops, with independent candidate
-  verification on narrow fixtures. None is general language support. See the
-  [five-language plan](docs/LANGUAGES.md).
-- **Python** runs through debugpy and the Debug Adapter Protocol (DAP).
-- **Design notes per language:**
-  - Java: the [worker](docs/WORKER.md#start-a-java-worker) and the [investigation loop](docs/AGENT_LOOP.md#java-paginationbugjava),
-    with an example in `examples/java`;
-  - C: the [worker](docs/WORKER.md) and the [investigation loop](docs/AGENT_LOOP.md#c-pagination_bugc);
-  - C++: [how Peeky reads C and C++ values](docs/NATIVE_INTERNALS.md), the
-    [worker](docs/WORKER.md#configure-a-c-target) and the
-    [investigation loop](docs/AGENT_LOOP.md#c-pagination_bugcpp);
-  - Rust: the [worker](docs/RUST_AGENT.md#the-cargo-build) and the [investigation loop](docs/AGENT_LOOP.md#rusts-two-gates).
-- **The worker:** one controller and one session per worker, with session and stop identities. It
-  offers local launch, breakpoints, bounded inspection, variable changes, continuation and evidence
-  reports.
-- **Later milestones:** Kubernetes deployment, multi-tenant workers, attach for languages other
-  than Java, and a production mutation policy.
-- **GPUs:** the [mixed-runtime direction](docs/MIXED_RUNTIME.md) covers future inference-engine
-  debugging across Python, C++ and CUDA. It is planned, not current GPU support.
-
-### CI and delivery
-
-- CI covers Linux, with Python 3.11 and 3.13 and a separate Java 17 lane. macOS is used for local
-  development, but isn't in the CI matrix yet.
-- Hosted CI is paused by the account's billing limit. Until it runs again, each change is checked
-  by the same 14 Linux lanes in Docker (`scripts/ci_linux/run_lanes.sh`), with the results in the
-  pull request.
-- Required CI runs parallel quality, unit, integration and packaging lanes, each with a
-  four-minute cutoff.
-- The target is under five minutes from jobs starting to required checks completing. Hosted-runner
-  queue time is measured separately.
-- A cutoff is not evidence of speed. The measurements are in [TESTING.md](docs/TESTING.md).
-- The current GitHub plan doesn't allow enforced branch protection for this private repository.
-  CI runs, but merge gating must be checked by hand. TESTING.md has the API result.
-- Delivery builds wheels and source archives as private GitHub Actions artifacts, and a tagged
-  version attaches them to a private GitHub release. There is no PyPI publishing, public release
-  or deployment.
-
-## Design documents
+## Documentation
 
 - [Design](docs/DESIGN.md): boundaries, lifecycle, protocol, failures and extension points.
-- [Roadmap](docs/ROADMAP.md): the delivered slices with their acceptance criteria, what comes next
-  and what stays deferred.
-- [Testing and CI budget](docs/TESTING.md): parallel lanes and measured timings.
-- [Runtime performance](docs/PERFORMANCE.md): a repeatable HTTP and debugger benchmark, with raw
-  latency samples.
-- [Code, logs and metrics](docs/adr/0002-correlated-evidence.md): the design for correlating
-  evidence.
-- [Stateless probes](docs/adr/0004-stateless-probes.md): one-request probes and the query
-  interface, beside sessions.
-- [Threat model](docs/THREAT_MODEL.md): trusted-code assumptions and remote constraints.
-- [Adversarial review](docs/reviews/INITIAL_REVIEW.md): findings and dispositions.
-- [Decision record](docs/adr/0001-mvp-boundaries.md): why Python, DAP and SSH came first.
+- [Roadmap](docs/ROADMAP.md): what is delivered, what comes next and what stays deferred.
+- [Languages](docs/LANGUAGES.md): the five-language plan and its acceptance gates.
+- [Testing](docs/TESTING.md): CI lanes and measured timings.
+- [Performance](docs/PERFORMANCE.md): a repeatable HTTP and debugger benchmark.
+- [Decision records](docs/adr/) and [reviews](docs/reviews/), with each finding's disposition.
+- [History](docs/HISTORY.md): milestones, evaluation reports and reviews.
 - [Presentation](docs/presentation/Peeky.pdf): why Peeky exists, what it is and how it works, for
   executives and engineers. The [PowerPoint](docs/presentation/Peeky.pptx) opens in Keynote too.
-- [Contributing](CONTRIBUTING.md): local checks and the change process.
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) has the local checks and the change process. Everyone taking
+part follows the [code of conduct](CODE_OF_CONDUCT.md). Report bugs and ask for features with the
+[issue templates](https://github.com/sushantmane/peeky/issues/new/choose). Report vulnerabilities
+privately instead, as [SECURITY.md](SECURITY.md) describes.

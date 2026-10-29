@@ -83,12 +83,60 @@ def _broken_links(pages):
     return broken, checked
 
 
+ROOT_PAGES = (
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "AGENTS.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+)
+
+
 def test_every_relative_link_in_the_docs_resolves():
     # M7: each language page points into the cookbooks by section; #207 moved sections
-    # between files. Every relative link, and its anchor, must land.
-    broken, checked = _broken_links(sorted(DOCS.rglob("*.md")))
+    # between files. Every relative link, and its anchor, must land, from the top-level
+    # pages too.
+    pages = [*(DOCS.parent / name for name in ROOT_PAGES), *sorted(DOCS.rglob("*.md"))]
+    broken, checked = _broken_links(pages)
     assert not broken
     assert checked > 300
+
+
+# Tracked files that may name the patterns: this test.
+PRIVATE_NOTE_EXCLUSIONS = {"tests/unit/test_docs.py"}
+PRIVATE_NOTES = (
+    # A personal path; "/users/42" in an example is a route, so case matters.
+    re.compile(r"/Users/"),
+    re.compile(r"session-state|weekly window|billing|rubber[- ]duck", re.I),
+)
+
+
+def test_the_repository_holds_no_private_notes():
+    # Before the repository went public, HISTORY.md replaced the development log, PROGRESS.md,
+    # and personal paths, usage budgets and account notes left every tracked file.
+    import subprocess
+
+    import pytest
+
+    assert not (DOCS / "PROGRESS.md").exists()
+    assert (DOCS / "HISTORY.md").is_file()
+    root = DOCS.parent
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True)
+    if listed.returncode != 0:
+        pytest.skip("not a git checkout (an unpacked sdist)")
+    found = []
+    for name in sorted(set(listed.stdout.decode().split("\0")) - {""} - PRIVATE_NOTE_EXCLUSIONS):
+        path = root / name
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b"\0" in data:
+            continue  # binary
+        for number, line in enumerate(data.decode(errors="replace").splitlines(), 1):
+            if any(pattern.search(line) for pattern in PRIVATE_NOTES):
+                found.append(f"{name}:{number}: {line.strip()[:120]}")
+    assert found == []
 
 
 def test_anchors_are_githubs_slugs():
@@ -259,8 +307,8 @@ def test_the_docs_peeky_prints_exist():
 
 # #212: the docs are written in short sentences. A sentence here is prose outside code blocks,
 # tables, headings and quotes, split at a full stop, colon or semicolon and at each list item;
-# inline code counts as one word. History records (PROGRESS, evaluations, reviews, ADRs, and
-# pages marked historical) are kept as written.
+# inline code counts as one word. History records (evaluations, reviews, ADRs, and pages marked
+# historical) are kept as written.
 LONGEST_SENTENCE = 40
 
 
@@ -290,11 +338,7 @@ def _long_sentences(paths):
 def test_the_docs_are_written_in_short_sentences():
     pages = [DOCS.parent / "README.md", DOCS.parent / "SECURITY.md", *sorted(DOCS.glob("*.md"))]
     pages += sorted(DOCS.glob("lang/*.md"))
-    pages = [
-        page
-        for page in pages
-        if page.name != "PROGRESS.md" and "> **Historical:**" not in page.read_text()[:2000]
-    ]
+    pages = [page for page in pages if "> **Historical:**" not in page.read_text()[:2000]]
     assert len(pages) > 20
     assert _long_sentences(pages) == []
 
@@ -316,7 +360,7 @@ def test_every_ssh_tunnel_the_docs_give_exits_when_its_port_is_taken():
     # Pre-release security review: without ExitOnForwardFailure, ssh only warns when the
     # local port is taken, and the client sends its token to whatever process holds it.
     root = DOCS.parent
-    pages = [root / "README.md", root / "CONTRIBUTING.md", *sorted(DOCS.rglob("*.md"))]
+    pages = [*(root / name for name in ROOT_PAGES), *sorted(DOCS.rglob("*.md"))]
     pages += sorted((root / "skills").rglob("*.md"))
     commands = [
         (page.name, line.strip())

@@ -13,7 +13,9 @@ Report it privately, through GitHub's private vulnerability reporting:
 2. Open the **Security** tab, and choose **Report a vulnerability**.
 3. Describe the problem, and send the report.
 
-Don't open a public issue, pull request or discussion about it.
+If that option isn't available, open an issue asking for a private contact, without details.
+
+Don't put the details in a public issue, pull request or discussion.
 
 A good report has:
 

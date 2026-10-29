@@ -2,7 +2,7 @@
 
 `peeky probe` records every run not refused before launch in a local SQLite database (standard library, no
 server). Questions about what was already captured are ordinary SQL over that
-database, as heappy queries an exported heap. A new question about the running
+database, as a heap-dump analyser queries a heap dump. A new question about the running
 program is a new probe. Queries are read-only, one statement at a time, and bounded
 in rows, time and value size; SQL never reaches a debugger or a debuggee.
 """
