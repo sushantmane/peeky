@@ -330,7 +330,7 @@ def test_after_a_step_in_the_sources_a_frame_outside_them_is_refused_by_its_inde
     with pytest.raises(ValueError) as caught:
         inspect(worker, frame=2)
     assert str(caught.value) == (
-        "Frame 2 (start) is not in the prepared program's sources; inspect one of your "
+        "Frame 2 (start) is not in the prepared program's sources: read one of your "
         "program's frames"
     )
     assert classify(caught.value)["code"] == "INVALID_REQUEST"
