@@ -27,7 +27,8 @@ change's details are in its pull request on GitHub.
 ### 2026-10-16: the evidence store and a whole-code review
 
 - `peeky sql` and `peeky queries`, over every saved run ([ADR 0004](adr/0004-stateless-probes.md)).
-- A [whole-code review](reviews/WHOLE_CODE_REVIEW_2026-10-16.md), with every finding fixed.
+- A [whole-code review](reviews/WHOLE_CODE_REVIEW_2026-10-16.md), with each finding and its
+  disposition recorded.
 - Remote workers tested on a second host: a Linux container, reached over SSH.
 - The [COOKBOOK](COOKBOOK.md), and stepping in sessions.
 

@@ -96,19 +96,39 @@ def test_every_relative_link_in_the_docs_resolves():
     assert checked > 300
 
 
-def test_the_public_docs_hold_no_private_notes():
+# Tracked files that may name the patterns: this test.
+PRIVATE_NOTE_EXCLUSIONS = {"tests/unit/test_docs.py"}
+PRIVATE_NOTES = (
+    # A personal path; "/users/42" in an example is a route, so case matters.
+    re.compile(r"/Users/"),
+    re.compile(r"session-state|weekly window|billing|rubber[- ]duck", re.I),
+)
+
+
+def test_the_repository_holds_no_private_notes():
     # Before the repository went public, HISTORY.md replaced the development log, PROGRESS.md,
-    # and personal paths, usage budgets and account notes left the docs.
+    # and personal paths, usage budgets and account notes left every tracked file.
+    import subprocess
+
+    import pytest
+
     assert not (DOCS / "PROGRESS.md").exists()
     assert (DOCS / "HISTORY.md").is_file()
     root = DOCS.parent
-    pages = [
-        *(root / name for name in ROOT_PAGES),
-        *DOCS.rglob("*.md"),
-        *root.glob(".github/**/*.*"),
-    ]
-    private = re.compile(r"/Users/|session-state|weekly window|billing|rubber-duck")
-    found = [(page.name, m.group()) for page in pages for m in private.finditer(page.read_text())]
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True)
+    if listed.returncode != 0:
+        pytest.skip("not a git checkout (an unpacked sdist)")
+    found = []
+    for name in sorted(set(listed.stdout.decode().split("\0")) - {""} - PRIVATE_NOTE_EXCLUSIONS):
+        path = root / name
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b"\0" in data:
+            continue  # binary
+        for number, line in enumerate(data.decode(errors="replace").splitlines(), 1):
+            if any(pattern.search(line) for pattern in PRIVATE_NOTES):
+                found.append(f"{name}:{number}: {line.strip()[:120]}")
     assert found == []
 
 

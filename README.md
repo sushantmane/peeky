@@ -73,8 +73,9 @@ output:
 evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
 ```
 
-- One command does it all, with no session to manage. Peeky builds fresh, stops at the line,
-  captures the values and makes the change. Then it runs the program to its end, prints the table
+- One command does it all, with no session to manage. Peeky starts a fresh run, stops at the
+  line, captures the values and makes the change. C, C++, Rust and Java targets are built first, in
+  a fresh workspace. Then it runs the program to its end, prints the table
   and cleans up.
 - `set start: 3 -> 0` and `PAGE: [10, 20, 30]` show what the change did. That is evidence about
   this run, not a verified fix.
@@ -160,8 +161,10 @@ decisions, through Codex CLI. It is not the main interface.
 - **CI:** Linux only, with Python 3.11 and 3.13, Java 17, C, C++ (clang and GCC), Rust, a remote
   SSH lane and a wheel smoke test. macOS is used for development, but isn't in the CI matrix.
 - **Hosted CI** on GitHub Actions is paused, and resumes when the repository is public. Until then,
-  each change is checked by the same Linux lanes in Docker (`scripts/ci_linux/run_lanes.sh`), with
-  the results in the pull request.
+  each change is checked by the Docker mirror, `scripts/ci_linux`, with the results in the pull
+  request. It runs the same checks and test suites as CI's jobs, once each. It skips remote SSH
+  e2e, runs the integration tests on one Python, and adds lanes hosted CI doesn't have
+  ([TESTING.md](docs/TESTING.md#the-docker-mirror)).
 - **Licence:** none has been chosen yet, so none is included.
 
 ## Documentation
