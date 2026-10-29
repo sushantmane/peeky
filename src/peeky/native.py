@@ -6682,8 +6682,7 @@ class NativeSession:
         ``NodesUnsettled``, where ``containers_settled`` says something may be part-way
         through changing it; else None. It names that call, and says to retry after it
         returns, where the entries may read then (eval 13 prep, finding 3): a count past
-        ``MAX_CHAIN`` by then, or a string a debugger without `readMemory` can't read,
-        still withholds them (#393 review)."""
+        what Peeky walks by then still withholds them (#393 review)."""
         count = threads() if threads is not None else None
         if count != 1:
             how = (

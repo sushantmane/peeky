@@ -199,8 +199,9 @@ Sanitizer, Nsight profiling and support for ML workloads.
 
 GCC's C++ builds withhold what LLDB misreads ([gaps](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build)).
 What remains is reading the last entries an unordered container's nodes hold: a `long double`,
-and a `std::vector`, `std::map` or other container held in an entry. A vector's buffer is a heap
-block, and reading it needs a proof that the block is still allocated.
+a `std::vector`, `std::map` or other container held in an entry, and a string longer than 15
+bytes. A vector's buffer, and a long string's text, are heap blocks: reading one needs a proof
+that the block is still allocated.
 
 GDB's DAP reads much of this right, but Peeky's native layer is built on lldb-dap. A GDB backend
 would take about 4 to 6 weeks, and is deferred.

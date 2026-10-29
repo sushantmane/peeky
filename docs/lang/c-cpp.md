@@ -13,7 +13,8 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 ([C and C++ 7.1](c-cpp-cookbook.md#what-is-different-in-a-gcc-build)):
 
 - unordered containers are read from their own nodes, except entries that hold a `long double`.
-  A container held in an entry, other than a `std::array`, is withheld on its own;
+  A container held in an entry, other than a `std::array`, is withheld on its own, as is a
+  string longer than 15 bytes;
 - a one-line function's parameters can show `no value yet` at a stop on its line;
 - GDB's DAP isn't supported.
 

@@ -964,9 +964,7 @@ That is the case for:
   - every pointer and reference on the way refers to a live object, as Peeky can show it
     ([When what a pointer points at is unproven](#when-what-a-pointer-points-at-is-unproven)).
     A heap block or a returned call's frame doesn't count. With lldb-dap 18, which gives no
-    address for a container local, neither does a pointer or reference to one;
-  - with a debugger that can't read memory, such as lldb-dap 18, each string's text is in the
-    node: 15 bytes or fewer. lldb-dap 20 reads longer ones.
+    address for a container local, neither does a pointer or reference to one.
 
   Each entry shows as the debugger shows such a value in a local:
 
@@ -976,7 +974,14 @@ That is the case for:
     show `U'\U0000fffd'`;
   - an enum as its enumerator: `Teal`. Where no enumerator holds the value, or several do, it
     shows the number, with the enum's type;
-  - a pointer as its address. Peeky never reads what it points at, so `ptrs[#0][0]` is refused.
+  - a pointer as its address. Peeky never reads what it points at, so `ptrs[#0][0]` is refused;
+  - a `std::string` as its text, where that text is in the node's own buffer: 15 bytes or fewer.
+    A longer one's text is in heap memory, which Peeky can't show is still allocated. A string
+    destroyed in place, before a new one is built there, keeps a pointer to its freed text. So
+    that string alone shows `<not read>`, and reading it says why:
+    ``lost[1]: not read: Peeky reads a string in an unordered container's node only where its
+    text is in the node: this one's is outside it, in heap memory Peeky can't show is still
+    allocated; print it from the program``.
 
   A container held in an entry is read only where it is inside the node, as a `std::array` is:
   `size=1 {1: size=2 [4, 5]}`. Any other alone shows `<not read>`, and reading it says why:
@@ -1222,8 +1227,8 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
   `std::allocator`, so it counts each one as empty. Peeky reads the entries itself where it can
   prove how. A container whose entries hold a `long double` stays withheld. So does one longer
   than Peeky walks: 16,384 entries with lldb-dap 20, 512 with lldb-dap 18. A container held in
-  an entry, other than a `std::array`, is withheld on its own, with why
-  ([details](#standard-containers)).
+  an entry, other than a `std::array`, is withheld on its own, with why. So is a string whose
+  text is in heap memory, longer than 15 bytes ([details](#standard-containers)).
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).

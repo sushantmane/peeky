@@ -11,7 +11,8 @@ reads the entries itself, where the build's debug information proves how:
   pointer, `_M_nxt`) at offset 0, and its value's storage (`_M_storage`, an
   `__aligned_buffer` of `_Value`) after it, aligned for `_Value`, inside the node;
 - the entries hold integers, bools, characters, `float`s and `double`s, enums, pointers
-  (their addresses, never followed) and `std::string`s, in pairs and structs. A
+  (their addresses, never followed) and `std::string`s (their text only from the node),
+  in pairs and structs. A
   `std::array` inside one is read from the node; any other standard container in one is
   withheld on its own, with why (``_Reader.nested``): a vector's buffer or a nested
   table's nodes are heap blocks, which nothing proves still allocated (a value destroyed
@@ -25,8 +26,9 @@ when a page, a position or a key asks for them (``Paged``), from the nodes the w
 placed. Memory is read with the debugger's `readMemory` (lldb-dap 20), or without it as
 8-byte words through variable paths that the debugger reads as `frame variable` does:
 `us._M_h._M_before_begin._M_nxt[1]._M_nxt` is the word 8 bytes into the first node.
-Nothing is evaluated in the program. Without `readMemory`, nothing outside the nodes is
-read, so a string's text must be in its own buffer, inside the node.
+Nothing is evaluated in the program, and nothing outside the nodes is read: a string's
+text is read only from its own buffer, inside the node. One whose text is in heap memory,
+which nothing proves still allocated, is withheld on its own.
 
 The entries come back as a listing shaped as the debugger lists a container it reads
 right (`[0]`, `[1]`, ...; a pair's `first` and `second`; a struct's members), which
@@ -39,7 +41,7 @@ import re
 import struct
 import unicodedata
 
-from peeky.cxx_strings import SUMMARY_UNITS, render
+from peeky.cxx_strings import render
 
 # The entries read with a container's listing, and the most elements or entries read
 # from a container held in a node.
@@ -326,8 +328,6 @@ class Memory:
         """The address node ``index`` (at ``address``) links to: its `_M_nxt`."""
         return struct.unpack("<Q", self.bytes(address, 8))[0]
 
-    at = bytes
-
 
 class Words:
     """A container's nodes as 8-byte words through variable paths, for a debugger with
@@ -336,7 +336,7 @@ class Words:
     path, read as `frame variable` reads it). Only memory inside the nodes is read."""
 
     def __init__(self, base, evaluate):
-        self.paths, self.evaluate, self.nodes = [base], evaluate, []
+        self.paths, self.evaluate = [base], evaluate
         self.first = word(evaluate(base))
 
     def link(self, index, address):
@@ -352,14 +352,7 @@ class Words:
         words = [self.link(index, address)]
         words += [word(self.evaluate(f"{path}[{k}]._M_nxt")) for k in range(1, -(-count // 8))]
         data = struct.pack(f"<{len(words)}Q", *words)
-        self.nodes.append((address, data))
         return data[:count]
-
-    def at(self, address, count):
-        for start, data in self.nodes:
-            if start <= address and address + count <= start + len(data):
-                return data[address - start : address - start + count]
-        raise Unread("outside the nodes, and this debugger cannot read memory")
 
 
 class Paged(collections.abc.Sequence):
@@ -544,7 +537,10 @@ class _Reader:
         if type(node[3]) is not int or node[3] != len(data):
             raise Unread(f"`{name}`: no size")
         if node[9] and _STRING.match(qualified or ""):
-            return {**shown, "value": self.string(node, data, address), "text": True}
+            try:
+                return {**shown, "value": self.string(node, data, address), "text": True}
+            except _Withheld as exc:
+                return {**shown, **_withheld(str(exc))}
         if node[9] and _CONTAINER.match(qualified or ""):
             try:
                 children = self.nested(node, data, address, depth)
@@ -643,9 +639,11 @@ class _Reader:
         return self.elements(held[2], data, address, size, count[3], depth)
 
     def string(self, node, data, address):
-        """A libstdc++ string's text, as Peeky shows one read from memory (#128): its
-        data pointer and length, then up to SUMMARY_UNITS bytes, from its own buffer
-        right after those words, or from where the pointer points."""
+        """A libstdc++ string's text, as Peeky shows one read from memory (#128), where its
+        data pointer points into its own buffer, right after its pointer and length,
+        inside the node. Else _Withheld: its text is in heap memory, which nothing proves
+        still allocated. A string destroyed in place (`std::destroy_at(&m[1])`), before a
+        new one is built there, keeps a pointer to its freed text (#374 review)."""
         from peeky.native import local_buffer
 
         buffer = local_buffer(self.graph, node)
@@ -664,16 +662,15 @@ class _Reader:
         ):
             raise Unread("a string Peeky does not place")
         text, length = struct.unpack_from("<QQ", data)
-        if text == address + 16:
-            if length >= buffer:
-                raise Unread("a string longer than its own buffer")
-            body = data[16 : 16 + length]
-        else:
-            if not text or length > 1 << 40:
-                raise Unread("a string with no text")
-            count = min(length, SUMMARY_UNITS)
-            body = self.memory.at(text, count) if count else b""
-        return render(body, 1, "", length > SUMMARY_UNITS)
+        if text != address + 16:
+            raise _Withheld(
+                "Peeky reads a string in an unordered container's node only where its text "
+                "is in the node: this one's is outside it, in heap memory Peeky can't show "
+                "is still allocated; print it from the program"
+            )
+        if length >= buffer or 16 + buffer > len(data):
+            raise Unread("a string longer than its own buffer")
+        return render(data[16 : 16 + length], 1, "", False)
 
 
 def _wide(name, encoding, size):
@@ -836,9 +833,9 @@ def readable(graph, offset, depth=0):
     """Whether ``read_entries`` decodes a value of type ``offset`` at all, judged by its
     type alone, as ``_Reader.value`` judges it: a number, a bool, a character, an enum
     whose enumerators were read, a pointer, a libstdc++ string Peeky places, a standard
-    container (read or withheld on its own), or a pair or a struct of them. A string's
-    text may still be too long to read without `readMemory`. For a row's advice to read
-    a container once nothing may be changing it (eval 13 prep, finding 3)."""
+    container or string (each read, or withheld on its own: a string whose text is
+    outside its node), or a pair or a struct of them. For a row's advice to read a
+    container once nothing may be changing it (eval 13 prep, finding 3)."""
     node, name = _under(graph, offset), _type_name(graph, offset)
     if node is None or not name:
         return False

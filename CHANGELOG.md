@@ -10,7 +10,8 @@
     or strings, alone or in pairs and structs (#371).
   - More unordered-container entries from their nodes: `float`s and `double`s, characters,
     enums, pointers, a `std::array` held in one, and more than 256 entries, read by position or
-    key (#374).
+    key. A string whose text is in heap memory now shows `<not read>`, as a vector there does
+    (#374).
   - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
     changed inside the lambda; its refusal names the lambda's own copy where a change works
     (#369, #380).

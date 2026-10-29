@@ -481,8 +481,7 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     to inspect, with `--frame N`, and never says which one it refers to: nothing proves it.
   - Where something may be changing the container (`containers_settled`), `_node_listing` gives
     a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to retry
-    after that call returns. A count past what Peeky walks by then, or a heap string without
-    `readMemory`, still withholds it.
+    after that call returns. A count past what Peeky walks by then still withholds it.
   - Both say so only where a proven read would succeed now (`_nodes_readable`): an `-O0` build,
     a proven layout, and entry types Peeky reads (`hashed_nodes.readable`).
   - A preview reads nested containers' nodes under the same rule: none below a note, or
@@ -528,9 +527,8 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - The word 8 bytes into the first node is `us._M_h._M_before_begin._M_nxt[1]._M_nxt`. LLDB
     reads `[1]` past a pointer, and `_M_nxt` of what is there, as `frame variable` does.
     Nothing is evaluated in the program. `Words` reads nothing outside the nodes.
-  - `Memory` reads more: each request takes the window around a node, and a string's text comes
-    from where its data pointer points. Only bytes at the nodes' own addresses, and at a
-    string's text, are decoded.
+  - `Memory` reads more: each request takes the 4,096-byte window around a node. Only bytes at
+    the nodes' own addresses are decoded.
   - The entries must hold numbers, `bool`s, characters, enums, pointers and libstdc++ strings,
     in `std::pair`s and the program's structs. A struct has no base class, bitfield or anonymous
     member. A `long double` isn't read: the debug information doesn't say its format.
@@ -551,9 +549,12 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     (`std::destroy_at(&m[1])`), before a new one is built there, keeps its old pointers. So
     both are withheld.
   - Any other container in an entry, such as a `std::map`, is withheld.
-  - A string's text is read from its own buffer, or where its data pointer points. Its length
-    must fit that buffer, as `local_buffer` proves it. Up to 1,024 bytes are read, as for any
-    string read from memory.
+  - A string's text is read only where its data pointer `_M_p` points at its own buffer,
+    `_M_local_buf`, 16 bytes into it, inside the node. Its length must fit that buffer, as
+    `local_buffer` proves it.
+  - A string whose pointer points anywhere else is withheld alone, with why: its text is in
+    heap memory, which nothing proves still allocated. One destroyed in place, before a new one
+    is built there, keeps a pointer to its freed text.
   - The entries come back listed as the debugger lists a container it reads right: `[0]`, a
     pair's `first` and `second`, a struct's members, `T @ 0x…` for a struct. So
     `native_previews` shows them as any other container: `size=1 {1: {x = 5, y = -6}}`.

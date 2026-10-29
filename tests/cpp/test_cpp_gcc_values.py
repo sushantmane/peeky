@@ -259,14 +259,19 @@ KIND_READS = {
 # fails there (`<no value>`).
 TAGGED = {"tagged": 'size=1 {3: {id = 9, name = "nine"}}', "tagged[3].name": '"nine"'}
 LONG = '"' + "x" * 40 + '"'
+HEAP_TEXT = (
+    "not read: Peeky reads a string in an unordered container's node only where its text is in "
+    "the node: this one's is outside it, in heap memory Peeky can't show is still allocated; "
+    "print it from the program"
+)
 
 
 @pytest.mark.timeout(180)
 def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, capsys):
     # #360: with GCC, each of these was `not listed` (LLDB counts them empty). Peeky now
-    # reads integers, bools and strings, in pairs and structs, from the nodes. A string's
-    # text outside its node needs `readMemory` (lldb-dap 20). #374: a `double`, and more
-    # than 256 entries, read too.
+    # reads integers, bools and strings, in pairs and structs, from the nodes. #374: a
+    # `double`, and more than 256 entries, read too; a string's text outside its node, in
+    # heap memory, is withheld on its own, with why.
     compiler, root = cpp
     source = root / "kinds.cpp"
     source.write_text(KINDS)
@@ -283,12 +288,13 @@ def test_entries_are_read_from_the_nodes_only_where_peeky_reads_their_type(cpp, 
             assert shown is None or shown == value.replace('"nine"', "<no value>"), shown
         else:
             assert rows[selector].get("value") == value, (selector, rows[selector])
-    reads = compiler == "clang" or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
-    if reads or sys.platform != "linux":
+    if compiler == "clang":
         assert rows["longs[7]"].get("value") == LONG, rows["longs[7]"]
         assert rows["longs"].get("value") == 'size=1 {7: "' + "x" * 35 + '"...}', rows["longs"]
     else:
-        assert withheld(rows["longs"], 1) and withheld(rows["longs[7]"], 1), rows
+        # Whatever the debugger: its text is in heap memory, not in the node.
+        assert rows["longs"].get("value") == "size=1 {7: <not read>}", rows["longs"]
+        assert rows["longs[7]"]["error"] == HEAP_TEXT, rows["longs[7]"]
     assert rows["ratios"].get("value") == "size=1 {1: 0.5}", rows["ratios"]
     # Where LLDB counts `big` empty (GCC's; clang's with LLDB 18), from its 300 nodes.
     assert str(rows["big"].get("value")).startswith("size=300 {"), rows["big"]
@@ -402,6 +408,9 @@ int main() {
     std::unordered_map<int, std::vector<int>> gone{{1, {2, 3}}};
     std::vector<int> *slot = &gone[1];
     std::destroy_at(slot);
+    std::unordered_map<int, std::string> lost{{1, std::string(40, 'x')}, {2, "short"}};
+    std::string *text = &lost[1];
+    std::destroy_at(text);
     std::unordered_map<int, int> big;
     for (int i = 0; i < 400; ++i)
         big[i] = 2 * i;
@@ -413,7 +422,8 @@ int main() {
         words["k" + std::to_string(i)] = i;
     std::printf("NESTED:%zu %zu %zu\\n", lists.size(), big.size(), words.size()); // HERE
     new (slot) std::vector<int>{9};
-    return (int)gone[1].size() - 1;
+    new (text) std::string("y");
+    return (int)gone[1].size() + (int)lost[1].size() - 2;
 }
 """
 HEAP_BLOCK = (
@@ -438,7 +448,7 @@ def test_a_nested_container_reads_where_proven_and_a_big_one_by_position_or_key(
     capture = (
         "lists,lists[1],names,pairs,pairs[1],groups,groups[1],trees,trees[1],gone,gone[1],big,"
         "big[399],big[#350].second,big[#400],big[5000],huge,huge[699],huge[#650].second,"
-        'words["k299"],words["nope"]'
+        'words["k299"],words["nope"],lost[1],lost[2]'
     )
     code, result = probe(source, line, capture, capsys)
     assert "NESTED:1 400 300" in result["output"] and result["exit_code"] == 0, result
@@ -464,6 +474,10 @@ def test_a_nested_container_reads_where_proven_and_a_big_one_by_position_or_key(
         assert rows[name]["value"] == "size=1 {1: <not read>}", rows[name]
         assert rows[f"{name}[1]"]["error"] == HEAP_BLOCK.format(kind), rows[f"{name}[1]"]
     assert rows["names"]["value"] == "size=1 {1: <not read>}", rows["names"]
+    # A string destroyed in place, before a new one is built there (review): its text was
+    # in heap memory, now freed; never read. A short one's text is in the node: read.
+    assert rows["lost[1]"]["error"] == HEAP_TEXT, rows["lost[1]"]
+    assert rows["lost[2]"]["value"] == '"short"', rows["lost[2]"]
     assert rows["trees"]["value"] == "size=1 {1: <not read>}", rows["trees"]
     assert rows["trees[1]"]["error"] == (
         "not read: Peeky doesn't read a `std::map` held in an unordered container's node; "

@@ -233,9 +233,6 @@ def test_words_are_read_through_variable_paths_inside_the_nodes_only():
         "us._M_h._M_before_begin._M_nxt->_M_nxt->_M_nxt",
         "us._M_h._M_before_begin._M_nxt->_M_nxt[1]._M_nxt",
     ]
-    assert memory.at(0x1008, 4) == (9).to_bytes(4, "little")
-    with pytest.raises(Unread):
-        memory.at(0x5000, 8)
     assert word("nullptr") == 0 and word("0x0000aaaaaaab12f0") == 0xAAAAAAAB12F0
     with pytest.raises(Unread):
         word("<error: invalid>")
@@ -257,17 +254,28 @@ TEXTS = {
 }
 
 
-def test_a_strings_text_is_read_from_its_own_buffer_or_where_it_points():
+HEAP_TEXT = (
+    "Peeky reads a string in an unordered container's node only where its text is in the "
+    "node: this one's is outside it, in heap memory Peeky can't show is still allocated; "
+    "print it from the program"
+)
+
+
+def test_a_strings_text_is_read_from_its_own_buffer_only():
+    # #374 review: a string's text outside its node is in heap memory nothing proves still
+    # allocated. One destroyed in place (`std::destroy_at(&m[1])`), before a new one is
+    # built there, keeps a pointer to its freed text, which read as if it were its own.
     types = graph(value=35, value_size=32, extra=TEXTS)
     heap = 0x9000
     second = struct.pack("<QQQ", 0, heap, 20) + b"\0" * 16
     first = struct.pack("<QQQ", 0x2000, 0x1000 + 24, 2) + b"al" + b"\0" * 14
     held = {0x1000: first + b"\0" * 24, 0x2000: second + b"\0" * 24, heap: b"y" * 20 + b"\0" * 12}
-    root, fetch = read_entries(types, types[6], 2, Memory(0x1000, reader(held)))
-    entries = fetch(root["variablesReference"], 8)
-    assert [entry["value"] for entry in entries] == ['"al"', '"' + "y" * 20 + '"']
-    assert all(entry["text"] and entry["type"] == STRING for entry in entries)
-    # Without `readMemory`, only what is inside the nodes: the second's text is not.
+    asked = []
+
+    def read(reference, count):
+        asked.append(int(reference, 16))
+        return reader(held)(reference, count)
+
     texts = {}
     path = "s._M_h._M_before_begin._M_nxt"
     texts[path] = "0x0000000000001000"
@@ -277,18 +285,19 @@ def test_a_strings_text_is_read_from_its_own_buffer_or_where_it_points():
         for k in range(1, 5):
             texts[f"{path}[{k}]._M_nxt"] = f"0x{struct.unpack_from('<Q', data, 8 * k)[0]:016x}"
         path += "->_M_nxt"
-    with pytest.raises(Unread):
-        read_entries(types, types[6], 2, Words("s._M_h._M_before_begin._M_nxt", texts.get))
-    root, fetch = read_entries(
-        types,
-        types[6],
-        1,
-        Words(
-            "s._M_h._M_before_begin._M_nxt",
-            {**texts, "s._M_h._M_before_begin._M_nxt->_M_nxt": "nullptr"}.get,
-        ),
-    )
-    assert fetch(root["variablesReference"], 8)[0]["value"] == '"al"'
+    # With `readMemory` or without it: the first's text, in its own buffer, reads; the
+    # second's alone is withheld, and nothing is read where its pointer points.
+    for memory in (Memory(0x1000, read), Words("s._M_h._M_before_begin._M_nxt", texts.get)):
+        root, fetch = read_entries(types, types[6], 2, memory)
+        one, two = fetch(root["variablesReference"], 8)
+        assert (one["value"], one["text"], one["type"]) == ('"al"', True, STRING), one
+        assert two["value"] is None and two["withheld"] and two["reason"] == HEAP_TEXT, two
+        assert preview(root, fetch, Typed(types, 6), text) == 'size=2 {"al", <not read>}'
+        assert [entry.get("withheld") for entry in view_children(types, root, fetch)] == [
+            None,
+            True,
+        ]
+    assert not any(heap <= address < heap + 0x1000 for address in asked), asked
     # A length its own buffer cannot hold is not read.
     held[0x1000] = struct.pack("<QQQ", 0, 0x1000 + 24, 16) + held[0x1000][24:]
     with pytest.raises(Unread):
