@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 from peeky.agent import execute
 from peeky.dap import DAP
-from peeky.native import MAX_METADATA, NativeSession, _metadata, elf_build_id
+from peeky.native import MAX_LINE_TEXT, NativeSession, _metadata, elf_build_id
 from peeky.rust_manifest import assert_cargo_ancestry_clear, validate_cargo_inputs
 from peeky.rust_symbols import (
     CONTAINER_KINDS,
@@ -129,7 +129,7 @@ def probe(args):
             )
             result["line_metadata"] = {
                 "bytes": len(line_dump.encode()),
-                "production_parser_limit_exceeded": len(line_dump.encode()) > MAX_METADATA,
+                "production_parser_limit_exceeded": len(line_dump.encode()) > MAX_LINE_TEXT,
                 "capture_limit_bytes": 16 * 1024 * 1024,
                 "sha256": hashlib.sha256(line_dump.encode()).hexdigest(),
                 "versions": sorted(set(re.findall(r"version: (\d+)", line_dump))),
@@ -144,7 +144,7 @@ def probe(args):
                 for i, text in enumerate(source.read_text().splitlines(), 1)
                 if "// OBSERVE" in text
             )
-            # Production path: application units only, unchanged 2 MiB line parser.
+            # Production path: application units only, read as dwarfdump writes them.
             symbols_started = time.monotonic()
             lines, layouts, units, blocks, interior = application_symbols(
                 str(paths["dwarfdump"]),

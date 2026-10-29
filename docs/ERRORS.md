@@ -90,6 +90,13 @@ The last column is the `retryable` field.
 
 - A read went past one of Peeky's bounds, such as on the children it lists. Read a narrower
   selector.
+- A build's symbols are over Peeky's bounds: 400,000 debug-information entries, or 64 MiB of line
+  tables or 256 MiB of debug information as llvm-dwarfdump writes them. The program didn't run.
+  Probe a smaller program: fewer source files or standard headers, or in Rust fewer std
+  collections.
+- A C or C++ program whose debug information is over its bounds isn't refused. It runs, but no
+  local is judged or can be changed, and each says why
+  ([NATIVE_INTERNALS](NATIVE_INTERNALS.md#reading-a-builds-symbols)).
 - A probe ended at the 100th stop in a row on the same signal, or C++ throw or catch filter, at
   one place in a call from one line of your code. Peeky let the program go on after each of the
   first 99, and doesn't take them for a crash.

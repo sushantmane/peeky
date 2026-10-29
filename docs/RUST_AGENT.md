@@ -956,8 +956,11 @@ the engineering probe.
   callers such as the engineering probe.
 - Each table is dumped by its exact `DW_AT_stmt_list` offset, and its header's offset must match.
   The native worker's `parse_lines` then reads it, fail-closed.
-- For Rust, dwarfdump's output and the line parser are each bounded at 16 MiB. C and C++ keep
-  their own 2 MiB limit.
+- Each unit's line table and debug information are read as dwarfdump writes them, never held
+  whole. The bounds are C's and C++'s: 400,000 entries, and 64 MiB of line tables and 256 MiB of
+  debug information as text. A crate using BTreeMap has 95,000 entries, 33 MB of text
+  ([NATIVE_INTERNALS](NATIVE_INTERNALS.md#reading-a-builds-symbols)).
+- A unit over a bound is refused with `BUDGET_EXHAUSTED`, which says to probe a smaller crate.
 - The standard library's tables are never read. Fewer lines can only refuse a breakpoint or a
   stop: a standard-library line can't be taken for a declared file's.
 
