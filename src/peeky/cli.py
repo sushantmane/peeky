@@ -1749,24 +1749,11 @@ def _load(name):
 
 
 def _local_session(name, record):
-    """A local session's client, once its worker speaks this client's protocol (#374
-    review). Its record names the protocol it started with; where it names another, or
-    none (a Peeky before protocol 10), the worker's `version` is asked first, which
-    changes nothing, and nothing else is sent to a worker of another protocol: it would
-    run a step or a change as it reads it, and ignore what it doesn't know."""
-    client = _LocalClient(record["url"], record["token"], record.get("pid"))
-    if record.get("protocol") == PROTOCOL_VERSION:
-        return client
-    version = client.call("version")
-    protocol = version.get("protocol") if isinstance(version, dict) else None
-    if protocol != PROTOCOL_VERSION:
-        raise ValueError(
-            f"Worker speaks protocol {protocol}, this session {PROTOCOL_VERSION}: another "
-            f"Peeky version started session {name!r}, so nothing is sent to its worker. Drop "
-            f"the record with `peeky session close --forget --name {name}` (its worker ends "
-            "after its idle timeout), then start the session again"
-        )
-    return client
+    """A local session's client (#374 review). Its record names the protocol its worker
+    speaks; where it names another, or none (a Peeky before protocol 10), the client asks
+    the worker's `version` before it sends anything else (``_LocalClient.call``)."""
+    unchecked = None if record.get("protocol") == PROTOCOL_VERSION else name
+    return _LocalClient(record["url"], record["token"], record.get("pid"), unchecked)
 
 
 def _remote_session(name, record):
@@ -1935,15 +1922,32 @@ def _checkout_unchanged(root, sources, expected, *, saved=False):
 
 
 class _LocalClient(Client):
-    """A session's own local worker: if its process is gone, the session is lost."""
+    """A session's own local worker: if its process is gone, the session is lost. For a
+    session whose record doesn't name this client's protocol (``unchecked``: its name),
+    the worker's `version` is asked first, which changes nothing; nothing else is sent to
+    a worker of another protocol, which would run a step or a change as it reads it, and
+    ignore what it doesn't know (#374 review)."""
 
-    def __init__(self, url, token, pid):
+    def __init__(self, url, token, pid, unchecked=None):
         super().__init__(url, token)
-        self.pid = pid
+        self.pid, self.unchecked, self.spoken = pid, unchecked, None
 
     def call(self, operation, **arguments):
         from peeky.client import TransportLost, WorkerUnreachable
 
+        if self.unchecked is not None and operation != "version":
+            if self.spoken is None:
+                version = self.call("version")
+                found = version.get("protocol") if isinstance(version, dict) else None
+                self.spoken = found if found is not None else "unknown"
+            if self.spoken != PROTOCOL_VERSION:
+                name = self.unchecked
+                raise ValueError(
+                    f"Worker speaks protocol {self.spoken}, this session {PROTOCOL_VERSION}: "
+                    f"another Peeky version started session {name!r}, so nothing is sent to its "
+                    f"worker. Drop the record with `peeky session close --forget --name {name}` "
+                    "(its worker ends after its idle timeout), then start the session again"
+                )
         try:
             return super().call(operation, **arguments)
         except (WorkerUnreachable, TransportLost):
