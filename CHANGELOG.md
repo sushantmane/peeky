@@ -21,6 +21,8 @@
 
 ### Other changes
 
+- **Frames after a step:** after a step that stopped in your code, a frame outside your sources
+  is refused by its index, as before the step. It no longer says your code left the stack (#379).
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369).

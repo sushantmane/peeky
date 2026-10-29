@@ -191,6 +191,12 @@ def test_step_out_into_the_library_shows_what_before_returned(cpp, cxx, capsys):
         text = capsys.readouterr().out
         assert f"(return): bool = {expected}" in text
         assert "a: <The step stopped outside the program's sources" in text
+        # A caller outside the sources too (std::sort's own) is named, and so is where
+        # the step stopped.
+        assert main(["session", "inspect", "--frame", "1"]) == 2
+        err = capsys.readouterr().err
+        assert "The step stopped outside the program's sources (in " in err, err
+        assert "), and frame 1 (" in err and ") is outside them too; " in err, err
     finally:
         main(["session", "close"])
         capsys.readouterr()
