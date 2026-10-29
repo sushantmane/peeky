@@ -51,7 +51,7 @@ the commands.
 4. **`--set` applies once, at hit 1.** `--set-hit N` picks another, with `--hits` N or more;
    other hits only observe. `--set-at LINE@HIT NAME=VALUE` changes at any line's hit, `--at`'s
    too. Repeat it per change: `--set-at 9@2 n=0 --set-at 9@5 n=0`. A probe takes at most 8
-   `--set` and `--set-at`: split more over probes, or edit. `@all`: each stop while the probe
+   `--set` and `--set-at`: split more over probes or edit. `@all`: each stop while the probe
    runs, at most 100. `x=@before` undoes a change, as to skip a statement (2.8).
 5. **Hits count stops, not passes.** A line with a macro's or a block's code, or a closure, can
    stop several times per pass. Read `warnings`, and each row's `stop` and `function`. A loop
@@ -250,7 +250,7 @@ probe, read its JSON.
 - **Selectors** are dotted paths, indexes and keys: `request.page`, `args[0]`, `order['id']`.
   C++ `m[1]` is a map's value for key 1, and `m[#0]` its first entry. A shadowed local goes as LLDB
   names it: `s @ main.rs:81.a`. A probe's `1:i` is `i` in frame 1, the caller, read as
-  `get --frame 1` reads it (2.10). Expressions are rejected. In zsh, quote selectors with `[...]`.
+  `get --frame 1` does (2.10). Expressions are rejected. In zsh, quote selectors with `[...]`.
 
 ## Time: your tool timeout and the program's clocks
 
