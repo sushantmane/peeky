@@ -4,6 +4,7 @@ structured binding of a bitfield with no location, and LLDB's own errors about t
 debug information, which lldb-dap 18 sends among the program's output."""
 
 import collections
+import re
 import threading
 from types import SimpleNamespace
 
@@ -1039,7 +1040,7 @@ def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
     assert dangling == (
         "the binding refers to an object Peeky can't prove is still alive: `d` binds "
         "`make(0)[0]` by reference, and Peeky proves only a local or its non-union member. Read "
-        "it where the code names that object, or bind by value (no `&`)"
+        "it where the code names that object, or print it from the program"
     )
     assert len(dangling) <= 300
     # A local object in scope, or a member of one: read through.
@@ -1493,10 +1494,16 @@ def held(optimization="O0", preprocessed=None, dwarf=HELD):
 
 
 def unproven(base, what, why):
+    # Eval 13: never "bind by value", which breaks a loop that writes through the binding.
+    element = re.fullmatch(r"an element of `(.+)`", what)
+    instead = (
+        f"Read `{element[1]}` itself, or print the value from the program"
+        if element
+        else "Read it where the code names that object, or print it from the program"
+    )
     return (
         f"the binding refers to an object Peeky can't prove is still alive: `{base}` binds "
-        f"{what} by reference, {why}. Read it where the code names that object, or bind by "
-        "value (no `&`)"
+        f"{what} by reference, {why}. {instead}"
     )
 
 
@@ -2237,3 +2244,151 @@ def test_the_worker_lists_a_maps_later_pages(tmp_path):
     assert worker.dap.requests[-1][1] == {"variablesReference": 5, "start": 64, "count": 1}
     with pytest.raises(ValueError):
         worker.preview_fetch(5, 1, start=-1)
+
+
+def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_it_reads():
+    # Eval 13 prep, findings 2 and 3: below a destructor, or through a reference Peeky
+    # can't place (lldb-dap 18), the row gave the debugger's miscount alone and said to
+    # print the entries from the program, though they read in the frame that holds them,
+    # or once the call returns.
+    from peeky.native import NodesUnsettled, Withholding, nodes_withheld
+
+    session = NativeSession.__new__(NativeSession)
+    withheld = Withholding(unlisted_reason(0, 3), UNLISTED, "refused")
+    withheld.counted, withheld.misread, withheld.name = (
+        ("on_hand", 3),
+        "the debugger counts 0 of its 3 entries",
+        "on_hand",
+    )
+    one = lambda: 1  # noqa: E731
+    session.library_call = lambda *_: ("lifetime", "Movement::~Movement()")
+    found = session.unsettled_nodes({"id": 1}, False, [], threads=one)
+    assert isinstance(found, NodesUnsettled), found
+    said = nodes_withheld(withheld, found.why, found.advice)
+    assert said == (
+        "the debugger counts 0 of its 3 entries, and Peeky doesn't read them from its nodes "
+        "while a constructor, destructor or assignment operator below this frame "
+        "(Movement::~Movement) may be part-way through changing it; retry after that call "
+        "returns"
+    )
+    assert said.label == UNLISTED and said.refusal.startswith("`on_hand` cannot be changed: ")
+    session.library_call = lambda *_: ("between", "std::vector<int, std::allocator<int> >::clear()")
+    found = session.unsettled_nodes({"id": 1}, False, [], threads=one)
+    assert "a standard-library call below this frame (std::vector<…>::clear)" in found.why
+    session.library_call = lambda *_: None
+    assert session.unsettled_nodes({"id": 1}, False, [], threads=one) is None
+    found = session.unsettled_nodes({"id": 1}, False, [], threads=lambda: 2)
+    assert found.why.endswith(
+        "the program runs 2 threads, and a stop pauses every other one "
+        "wherever it is, perhaps part-way through changing it"
+    ), found.why
+    # Through a reference: candidate locals to inspect, which it may refer to; nothing
+    # proves which (#393 review).
+    session.lldb_major, readable = 18, []
+    session._nodes_readable = lambda frame, steps, count: readable.append(count) or True
+    way = {"frame": {"id": 1}, "steps": [("stock", "Stock &")]}
+    said = session.unreached_container(
+        withheld, "stock", "reference", [(1, "main", "on_hand")], **way
+    )
+    assert readable == [3], readable
+    assert said == (
+        "the debugger counts 0 of its 3 entries, and Peeky reads its nodes only through a "
+        "reference it proves refers to a live object, not `stock`; inspect this candidate "
+        "local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to"
+    )
+    several = [(1, "main", "on_hand"), (2, "load", "spare"), (3, "f", "more")]
+    said = session.unreached_container(withheld, "stock", "reference", several, **way)
+    assert said.endswith(
+        "inspect these candidate locals, `on_hand` in main (`--frame 1`), `spare` in load "
+        "(`--frame 2`), and others: one may be what `stock` refers to"
+    ), said
+    # Long names are each cut; the hedge stays whole, within 300 characters.
+    long = [(1, "f" * 90, "l" * 90), (2, "g" * 90, "m" * 90)]
+    said = session.unreached_container(withheld, "s" * 90, "reference", long, **way)
+    assert len(said) <= 300, said
+    assert said.endswith(", and others: one may be what `" + "s" * 11 + "…` refers to"), said
+    said = session.unreached_container(withheld, "p", "pointer", [], **way)
+    assert said.endswith(
+        "a pointer it proves points at a live object, not `p`; print its entries from the program"
+    ), said
+    # Nothing more is said where no node would be read through a proven one either: its
+    # own count unread, or entries of a type Peeky doesn't read (review: a `double`).
+    session._nodes_readable = lambda frame, steps, count: False
+    assert session.unreached_container(withheld, "p", "pointer", [], **way) is withheld
+    withheld.counted = None
+    assert session.unreached_container(withheld, "p", "pointer", [], **way) is withheld
+    # Within 300 characters, however long the call's name.
+    withheld.counted = ("on_hand", 3)
+    session.library_call = lambda *_: ("lifetime", "N::" + "x" * 200 + "::~X()")
+    found = session.unsettled_nodes({"id": 1}, False, [], threads=one)
+    assert len(nodes_withheld(withheld, found.why, found.advice)) <= 300
+
+
+def test_a_refused_change_says_where_a_captures_or_a_bindings_value_is():
+    # Eval 13: a GCC lambda's capture by value was refused as "`tariff` is const", while its
+    # rows say `[not settable: capture]`; a structured binding's refusal said to change it
+    # "before the call", where no call passed it.
+    from peeky.native import _binding_refused, capture_refused
+
+    routed = capture_refused("tariff", ("main", "price", "price.__tariff.cents_per_kwh"))
+    assert routed.startswith("`tariff` is a capture of this lambda, so it is reached through")
+    assert routed.endswith(
+        "Change the lambda's own copy instead, at a stop in main once the lambda is made: "
+        "`price.__tariff.cents_per_kwh` is settable there, and is what the lambda reads where "
+        "the code calls `price` itself"
+    )
+    owned = capture_refused("over_peak")
+    assert owned.endswith(
+        "Change the value where it is owned: Peeky changes only values the frame holds itself"
+    )
+    ranged = _binding_refused("cars", "by_hour", True)
+    assert ranged == (
+        "`cars` is a structured binding by reference to an element of `by_hour`, so it is "
+        "reached through a pointer or reference, and Peeky changes only values the frame holds "
+        "itself: change what fills `by_hour`, before the loop, or edit the source"
+    )
+    assert "change `p` itself where it is settable" in _binding_refused("b", "p", False)
+    # What it binds may be owned in another frame (`*owner`): never "before this line".
+    owner = _binding_refused("dropped", "*owner", False)
+    assert owner.endswith("change what it binds where that is owned, or edit the source")
+    for why, hint in (
+        (routed, "Change it where the message says"),
+        (owned, "Change it where the message says"),
+        (ranged, "Change what the binding refers to"),
+    ):
+        error = classify(
+            ValueError(
+                f"`x` cannot be changed at a.cpp:3, at any stop of this build: in main, {why}. Refused before the program runs: nothing ran"
+            )
+        )
+        assert error["code"] == "MUTATION_REJECTED" and error["hint"].startswith(hint), error
+        assert "call" not in error["hint"] and len(error["hint"]) <= 150, error
+
+
+def test_describe_marks_static_only_a_local_at_one_fixed_address():
+    # Review of #393: any location naming `DW_OP_addr` was static, so a location list that
+    # places a local at an address for some code and in a register for the rest was too.
+    from peeky.native import _static_names
+
+    def die(tag, parent=None, children=(), **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+    dies = {
+        1: die("DW_TAG_subprogram", None, (2, 3, 4, 5, 6)),
+        2: die("DW_TAG_variable", 1, DW_AT_name='"now"', DW_AT_location="DW_OP_addr 0x4010"),
+        3: die(
+            "DW_TAG_variable",
+            1,
+            DW_AT_name='"mixed"',
+            DW_AT_location="[0x1000, 0x1010): DW_OP_addr 0x4018\n[0x1010, 0x1020): DW_OP_reg0 W0",
+        ),
+        4: die("DW_TAG_variable", 1, DW_AT_name='"zero"', DW_AT_location="DW_OP_addr 0x0"),
+        5: die(
+            "DW_TAG_variable",
+            1,
+            DW_AT_name='"tls"',
+            DW_AT_location="DW_OP_addr 0x8, DW_OP_GNU_push_tls_address",
+        ),
+        6: die("DW_TAG_variable", 1, DW_AT_name='"seen"', DW_AT_location="DW_OP_fbreg -20"),
+    }
+    assert _static_names(dies, [1]) == ["now"]

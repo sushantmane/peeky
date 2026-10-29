@@ -125,14 +125,23 @@ def placed():
 
 def withheld(row, count):
     """Whether a row is withheld as an unordered container LLDB miscounts: the container
-    itself (`not listed: ...`), or a key, position or member read in it."""
+    itself (`not listed: ...`), or a key, position or member read in it. Where Peeky
+    would read its nodes but doesn't at this stop, the row says why (eval 13)."""
     error = str(row.get("error") or "")
     reason = MISCOUNTED.format(count)
-    if row.get("value") is not None or not error.endswith(reason):
+    unread = re.compile(
+        rf"the debugger counts 0 of (?:its {count} entries|the {count} entries it points at), "
+        r"and Peeky \S.+"
+    )
+    if row.get("value") is not None:
+        return False
+    if not (error.endswith(reason) or unread.search(error)):
         return False
     pointed = f"not listed: it points at an unordered container, and {reason}"
-    return error in (f"not listed: {reason}", pointed) or re.fullmatch(
-        r"\[[^\]]+\] not read: [\w\[\]#.]+ is not listed: .+", error
+    return (
+        error in (f"not listed: {reason}", pointed)
+        or bool(re.fullmatch(f"not listed: {unread.pattern}", error))
+        or bool(re.fullmatch(r"\[[^\]]+\] not read: [\w\[\]#.]+ is not listed: .+", error))
     )
 
 
@@ -166,7 +175,9 @@ def test_an_unordered_container_is_read_whole_or_not_listed(cpp, capsys):
         assert rows[selector].get("value") == value, (selector, rows[selector])
     pointer = rows["p"]
     assert re.fullmatch(r"0x[0-9a-f]+ size=1", str(pointer.get("value"))) or (
-        pointed and withheld(pointer, 1) and pointer["error"].startswith("not listed: it points")
+        pointed
+        and withheld(pointer, 1)
+        and pointer["error"].startswith("not listed: the debugger counts 0 of the 1 entries it ")
     ), pointer
     # The evidence keeps what the rows showed.
     assert main(["sql", "SELECT selector, value, error FROM last_run", "--json"]) == 0
@@ -351,6 +362,13 @@ def test_no_entry_is_read_from_the_nodes_while_a_library_call_runs(cpp, capsys):
         capsys.readouterr()
     if compiler == "gcc":
         assert withheld(rows["um"], 1) and withheld(rows["um[1]"], 1), rows
+        # It names the call it waits for (eval 13 prep, finding 3).
+        assert re.fullmatch(
+            r"not listed: the debugger counts 0 of its 1 entries, and Peeky doesn't read them "
+            r"from its nodes while a standard-library call below this frame \(std::\S+\) may be "
+            r"part-way through changing it; retry after that call returns",
+            rows["um"]["error"],
+        ), rows["um"]
     else:
         # LLDB's summary alone, or `no value yet` for the line under way (clang's).
         assert rows["um"].get("value") in ("size=1", None), rows["um"]
@@ -377,8 +395,13 @@ int main() {
     return 0;
 }
 """
-# The note on a pointer to an unordered container whose count LLDB gets wrong.
-POINTED = f"not listed: it points at an unordered container, and {MISCOUNTED.format(1)}"
+# The note on a pointer to an unordered container whose count LLDB gets wrong, where
+# Peeky can't show it points at a live object, to read its nodes (eval 13 prep, finding 2).
+POINTED = (
+    "not listed: the debugger counts 0 of the 1 entries it points at, and Peeky reads its "
+    "nodes only through a pointer it proves points at a live object, not `{}`; print its "
+    "entries from the program"
+)
 
 
 @pytest.mark.timeout(180)
@@ -396,7 +419,8 @@ def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(
     for selector in ("heap", "heap[0]", "heap[0][#0]", "dangling", "dangling[0]"):
         assert rows[selector].get("view") != "memory", (selector, rows[selector])
     if compiler == "gcc":
-        assert rows["heap"]["error"] == POINTED and rows["dangling"]["error"] == POINTED, rows
+        assert rows["heap"]["error"] == POINTED.format("heap"), rows["heap"]
+        assert rows["dangling"]["error"] == POINTED.format("dangling"), rows["dangling"]
         for selector in ("heap[0]", "heap[0][#0]", "dangling[0]"):
             assert rows[selector].get("value") is None, (selector, rows[selector])
         if placed():
@@ -405,7 +429,13 @@ def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(
             assert rows["mine[0]"]["value"] == "size=1 {3}", rows["mine[0]"]
             assert rows["mine[0]"]["view"] == "memory", rows["mine[0]"]
         else:
-            assert rows["mine"]["error"] == POINTED, rows["mine"]
+            # lldb-dap 18 gives `local` no address: what `mine` points at isn't placed.
+            assert rows["mine"]["error"] == (
+                "not listed: the debugger counts 0 of the 1 entries it points at, and Peeky "
+                "reads its nodes only through a pointer it proves points at a live object, not "
+                "`mine`; inspect this candidate local, `local` in main (`--frame 0`): it may be "
+                "what `mine` points at"
+            ), rows["mine"]
 
 
 REFERENCES = """#include <cstdio>
@@ -476,6 +506,130 @@ def test_no_node_is_read_through_a_reference_not_proven_to_refer_to_a_live_objec
             assert row["view"] == "memory" and entry["value"] == entries[1:-1], (row, entry)
         else:
             assert withheld(row, 1) and withheld(entry, 1), (name, row, entry)
+
+
+DEPOT = """#include <cstdio>
+#include <string>
+#include <unordered_map>
+using Stock = std::unordered_map<std::string, int>;
+struct Move {
+    std::string part;
+    int units;
+    ~Move() {
+        units = 0; // IN_DTOR
+    }
+};
+static bool enough(Stock &stock, const std::string &part, int units) {
+    return stock.count(part) > 0 && stock.at(part) >= units; // IN_CALLEE
+}
+using Prices = std::unordered_map<int, double>;
+static double priced(const Prices &prices) {
+    return prices.at(1); // IN_PRICED
+}
+int main() {
+    Stock on_hand;
+    on_hand["a"] = 1;
+    on_hand["b"] = 2;
+    Prices prices;
+    prices[1] = 1.5;
+    int shipped = priced(prices) > 1.0 ? 0 : 1;
+    {
+        Move move{"a", 1};
+        if (enough(on_hand, move.part, move.units))
+            shipped++;
+    }
+    std::printf("S:%d %zu\\n", shipped, on_hand.size());
+    return 0;
+}
+"""
+# Eval 13 prep, finding 2: with lldb-dap 18, which gives a container local no address,
+# Peeky can't place what a reference parameter refers to; the row offers the caller's
+# local, which reads in its own frame, as a candidate, never as proven (#393 review).
+UNPLACED = (
+    "not listed: the debugger counts 0 of its 2 entries, and Peeky reads its nodes only "
+    "through a reference it proves refers to a live object, not `stock`; inspect this "
+    "candidate local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to"
+)
+# Finding 3: below a destructor, a caller's container is said to wait for that call.
+BELOW_DESTRUCTOR = (
+    "not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from "
+    "its nodes while a constructor, destructor or assignment operator below this frame "
+    "(Move::~Move) may be part-way through changing it; retry after that call returns"
+)
+
+
+def got(capsys):
+    """A `session get --json`'s rows, by selector."""
+    return {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+
+
+@pytest.mark.timeout(240)
+def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_reads(cpp, capsys):
+    # Eval 13 prep, findings 2 and 3: a reference parameter to an unordered container
+    # (lldb-dap 18), and a caller's container below a destructor, were withheld with the
+    # debugger's miscount alone and "print its entries from the program", though the
+    # frame that holds it, or the same frame once the call returns, reads it.
+    compiler, root = cpp
+    source = root / "depot.cpp"
+    source.write_text(DEPOT)
+    code, result = probe(source, line_of(DEPOT, "// IN_CALLEE"), 'stock,stock["a"]', capsys)
+    assert "S:1 2" in result["output"], result
+    rows = {row["selector"]: row for row in result["rows"]}
+    if compiler == "gcc" and not placed():
+        assert rows["stock"]["error"] == UNPLACED, rows["stock"]
+        assert rows['stock["a"]']["error"].endswith(UNPLACED[len("not listed: ") :]), rows
+    elif compiler == "gcc" or "value" in rows["stock"]:
+        # Read from its nodes (GCC), or listed by the debugger.
+        assert re.fullmatch(r'0x[0-9a-f]+ size=2 \{.*"a": 1.*\}', rows["stock"]["value"]), rows
+        assert rows['stock["a"]']["value"] == "1", rows
+    else:
+        # LLDB miscounts clang's typedef'd one on Linux, and Peeky reads no node of it:
+        # never sent to a frame where it wouldn't read either.
+        assert "--frame" not in rows["stock"]["error"], rows["stock"]
+    # The frame that holds it reads it, as the row says.
+    assert main(["session", "start", str(source), "--at", str(line_of(DEPOT, "IN_CALLEE"))]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "get", "on_hand", "--frame", "1", "--json"])
+        held = got(capsys)["on_hand"]
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    reads = bool(re.fullmatch(r"size=2 \{.*\}", str(held.get("value"))))
+    assert reads or compiler == "clang", held
+    # Entries Peeky never reads from the nodes (a `double`): no pointer or reference is
+    # blamed, whatever proves it (review).
+    code, result = probe(source, line_of(DEPOT, "// IN_PRICED"), "prices", capsys)
+    (row,) = result["rows"]
+    if compiler == "gcc":
+        assert row["error"] == f"not listed: {MISCOUNTED.format(1)}", row
+    assert "Peeky reads its nodes" not in str(row.get("error")), row
+    # Below `Move::~Move()`, `main`'s `on_hand` waits for that call, and reads after it.
+    assert main(["session", "start", str(source), "--at", str(line_of(DEPOT, "IN_DTOR"))]) == 0
+    capsys.readouterr()
+    try:
+        main(["session", "inspect", "--json"])
+        frames = json.loads(capsys.readouterr().out)["frames"]
+        caller = next(i for i, f in enumerate(frames) if f.get("name") == "main")
+        main(["session", "get", "on_hand", "--frame", str(caller), "--json"])
+        below = got(capsys)["on_hand"]
+        # Once that call has returned (clang's `~Move` runs in two frames).
+        assert main(["session", "continue", "--to", str(line_of(DEPOT, "S:%d"))]) == 0
+        capsys.readouterr()
+        main(["session", "get", "on_hand", "--json"])
+        after = got(capsys)["on_hand"]
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+    assert bool(re.fullmatch(r"size=2 \{.*\}", str(after.get("value")))) is reads, after
+    if compiler == "gcc":
+        assert below["error"] == BELOW_DESTRUCTOR, below
+    elif reads:
+        # The debugger's summary alone: its elements get no preview of their own (#181).
+        assert below.get("value") == "size=2" and "Peeky" not in str(below.get("error")), below
+    else:
+        # Never "retry after that call returns" where it wouldn't read then either.
+        assert below["error"] == after["error"] and "returns" not in below["error"], below
 
 
 OPTIMIZED = """#include <cstdio>
@@ -967,7 +1121,8 @@ def test_a_pair_or_tuple_binding_shows_its_element_never_its_address(cpp, capsys
     if compiler == "gcc":
         assert rows["pt.x"].get("not_settable") == "reference", rows["pt.x"]
         message = result["error"]["message"]
-        assert "is reached through a pointer or reference" in message, result
+        # Where its value is: what it binds, not the frame of some call (eval 13).
+        assert "`a` is a structured binding by reference to `three`" in message, result
         assert "Refused before the program runs" in message, result
 
 
@@ -998,7 +1153,7 @@ int main(int argc, char **argv) {
 DEAD = (
     "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
     "`{}` by reference, and Peeky proves only a local or its non-union member. Read it where "
-    "the code names that object, or bind by value (no `&`)"
+    "the code names that object, or print it from the program"
 )
 
 
@@ -1022,9 +1177,9 @@ def test_a_binding_by_reference_reads_only_what_this_frame_keeps_alive(cpp, caps
     for selector in ("g", "h"):
         row = rows[selector]
         assert row.get("value") is None, row
-        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
-            selector, "`one(argc)`", CALLED
-        ), row
+        assert hidden(compiler, row) or row["error"] == unproven(selector, "`one(argc)`", CALLED), (
+            row
+        )
     # Never `poison`'s elements, nor any value, through a temporary the line destroyed.
     bound = {
         "t": "make(0)[0]",
@@ -1167,10 +1322,22 @@ HELD_ROWS = {
     "SET_READ": ("i,j", {1: {"i": "5", "j": "6"}, 2: {"i": "7", "j": "8"}}),
     "READ": ("r,s", {1: {"r": "13", "s": "15"}}),
 }
-UNPROVEN = (
-    "not shown: the binding refers to an object Peeky can't prove is still alive: `{}` binds "
-    "{} by reference, {}. Read it where the code names that object, or bind by value (no `&`)"
-)
+
+
+def unproven(selector, what, why):
+    # Eval 13: never "bind by value", which breaks a loop that writes through the binding.
+    element = re.fullmatch(r"an element of `(.+)`", what)
+    instead = (
+        f"Read `{element[1]}` itself, or print the value from the program"
+        if element
+        else "Read it where the code names that object, or print it from the program"
+    )
+    return (
+        "not shown: the binding refers to an object Peeky can't prove is still alive: "
+        f"`{selector}` binds {what} by reference, {why}. {instead}"
+    )
+
+
 # Review of #368, round 3: the function called may keep a pointer into its result.
 CALLED = "a call's result, which the function called may keep a pointer into"
 
@@ -1216,7 +1383,7 @@ def test_a_binding_into_a_local_container_reads_where_proven(cpp, capsys):
             continue
         twin = {"d": "c", "f": "e", "h": "g", "q": "p", "z": "y"}
         what, why = changed[twin.get(row["selector"], row["selector"])]
-        assert row["error"] == UNPROVEN.format(row["selector"], what, why), row
+        assert row["error"] == unproven(row["selector"], what, why), row
 
 
 # Review of #368: a pointer into the container made before the binding, through which the
@@ -1377,9 +1544,9 @@ def test_a_binding_is_withheld_where_its_element_may_be_gone_or_another_objects(
         assert len(found) == 2, (marker, found)
         for row in found:
             assert row.get("value") is None, row
-            assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
-                row["selector"], what, why
-            ), row
+            assert hidden(compiler, row) or row["error"] == unproven(row["selector"], what, why), (
+                row
+            )
     # Passed by value (`use(long)`, `printf`'s `...`): still read.
     for row in bound_rows_of(source, REVIEWED, "PASSED", "k,x", capsys):
         assert hidden(compiler, row) or row.get("value") == {"k": "71", "x": "72"}[row["selector"]]
@@ -1426,7 +1593,7 @@ def test_a_containers_element_is_withheld_where_the_program_replaces_operator_ne
     )
     for row in found:
         assert row.get("value") is None, row
-        assert hidden(compiler, row) or row["error"] == UNPROVEN.format(
+        assert hidden(compiler, row) or row["error"] == unproven(
             row["selector"], "an element of `m`", why
         ), row
 
@@ -1638,11 +1805,17 @@ def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
     code, result = probe(source, line, "bonus", capsys, "--set", "bonus=5")
     assert code != 0 and result["status"] == "failed", result
     if compiler == "gcc":
+        # As the row marks it (eval 13), with the lambda's own copy to change instead.
         assert result["error"]["code"] == "MUTATION_REJECTED", result
-        assert (
-            "is reached through a pointer or reference (a C++ structured binding of a "
-            "reference, or of a pair or tuple, a GCC lambda's capture" in result["error"]["message"]
-        )
+        assert result["error"]["message"] == (
+            f"`bonus` cannot be changed at caps.cpp:{line}, at any stop of this build: in "
+            "main::operator(), `bonus` is a capture of this lambda, so it is reached through a "
+            "pointer or reference: GCC keeps it in the lambda's object, which this frame reads "
+            "through `__closure`, and Peeky changes only values the frame holds itself. Change "
+            "the lambda's own copy instead, at a stop in main once the lambda is made: "
+            "`m.__bonus` is settable there, and is what the lambda reads where the code calls "
+            "`m` itself. Refused before the program runs: nothing ran"
+        ), result["error"]
     assert main(["session", "start", str(source), "--at", str(line)]) == 0
     capsys.readouterr()
     try:
@@ -1667,8 +1840,232 @@ def test_a_lambdas_capture_is_never_changed_and_says_why(cpp, capsys):
         in refused[0]
     ), refused
     assert "`pt.x` cannot be changed: `pt` is a capture of this lambda" in refused[1], refused
+    assert "`m.__n` is settable there" in refused[0], refused
+    assert "`m.__pt.x` is settable there" in refused[1], refused
+    # A capture by reference has no copy of its own: where it is owned.
+    code, result = probe(source, line, "count", capsys, "--set", "count=5")
+    assert result["error"]["message"].endswith(
+        "`count` is a capture of this lambda, so it is reached through a pointer or reference: "
+        "GCC keeps it in the lambda's object, which this frame reads through `__closure`. "
+        "Change the value where it is owned: Peeky changes only values the frame holds itself. "
+        "Refused before the program runs: nothing ran"
+    ), result["error"]
+    assert result["error"]["hint"].startswith("Change it where the message says"), result
     # Nothing changed.
     assert [rows["n"]["value"], rows["pt.x"]["value"]] == ["8", "3"], rows
+
+
+PRICED = """#include <cstdio>
+struct Tariff { long cents; long peak; };
+int main() {
+    Tariff tariff{30, 2000};
+    long over = 0;
+    auto price = [=, &over](long wh) {
+        long extra = wh > tariff.peak ? wh - tariff.peak : 0;
+        if (extra > 0)
+            over++;
+        return wh * tariff.cents + extra; // IN_PRICE
+    };
+    long total = 0;
+    for (long wh = 1000; wh <= 3000; wh += 1000) {
+        total += price(wh); // CALL
+    }
+    std::printf("T:%ld %ld\\n", total, over);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(300)
+def test_a_lambdas_copy_is_changed_where_it_is_held_and_the_refusal_says_so(cpp, capsys):
+    # Eval 13 (bill): in a lambda that isn't `mutable`, a change to a capture by value
+    # was refused as "`tariff` is const", while its rows say `[not settable: capture]`;
+    # and no message said that the lambda's own copy (GCC's `price.__tariff`) is
+    # settable in the function that holds it. Nor did `describe` list the captures, nor
+    # say that GCC makes the lambda on its `};` line.
+    compiler, root = cpp
+    source = root / "priced.cpp"
+    source.write_text(PRICED)
+    inside, header = line_of(PRICED, "// IN_PRICE"), line_of(PRICED, "auto price")
+    made, call = line_of(PRICED, "    };"), line_of(PRICED, "// CALL")
+    code, result = probe(source, inside, "tariff", capsys, "--set", "tariff.cents=45")
+    assert code != 0 and result["status"] == "failed", result
+    if compiler == "gcc":
+        message = result["error"]["message"]
+        assert "is const" not in message, message
+        assert message == (
+            f"`tariff.cents` cannot be changed at priced.cpp:{inside}, at any stop of this "
+            "build: in main::operator(), `tariff` is a capture of this lambda, so it is reached "
+            "through a pointer or reference: GCC keeps it in the lambda's object, which this "
+            "frame reads through `__closure`, and Peeky changes only values the frame holds "
+            "itself. Change the lambda's own copy instead, at a stop in main once the lambda is "
+            "made: `price.__tariff.cents` is settable there, and is what the lambda reads where "
+            "the code calls `price` itself. Refused before the program runs: nothing ran"
+        ), message
+        # The route works: the lambda prices every reading at 45 from the first call.
+        code, result = probe(
+            source, call, "wh", capsys, "--hits", "1", "--set", "price.__tariff.cents=45"
+        )
+        assert code == 0 and "T:271000 1" in result["output"], result
+        # `describe` lists the captures, with how each is captured.
+        assert main(["describe", str(source)]) == 0
+        described = capsys.readouterr().out
+        assert re.search(
+            r"names in main::operator\(\) \(priced\.cpp:[0-9-]+\): extra \(long int[^)]*\), "
+            r"over \(long int &, capture by reference\), tariff \(Tariff, capture by "
+            r"value\), wh \(long int\)",
+            described,
+        ), described
+    else:
+        assert "__closure" not in json.dumps(result), result
+    # GCC builds the lambda on its `};` line, and gives its first line only the lambda's
+    # prologue: a stop there, before the copy, changes what the lambda copies.
+    code, result = probe(source, header, "wh", capsys, "--hits", "1")
+    note = (
+        f"Line {header} starts a lambda, and this build gives it only the lambda's prologue: "
+        f"a stop there is in the lambda, on its next line with code. main makes the lambda on "
+        f"line {made}: stop there, in main, to read or change what it captures by value "
+        "before the lambda copies it."
+    )
+    assert (note in result.get("warnings", [])) is (compiler == "gcc"), result.get("warnings")
+    if compiler == "gcc":
+        code, result = probe(
+            source, made, "tariff", capsys, "--hits", "1", "--set", "tariff.cents=45"
+        )
+        assert code == 0 and "T:271000 1" in result["output"], result
+        assert result["rows"][0]["function"] == "main", result["rows"]
+
+
+HELD_CAPTURES = """#include <cstdio>
+struct Acc {
+    long total = 5;
+    long run(long k) {
+        auto held = [this](long d) {
+            return total + d; // IN_THIS
+        };
+        auto implicit = [=](long d) {
+            return total + d + k; // IN_IMPLICIT
+        };
+        auto copied = [*this](long d) {
+            return total + d; // IN_COPY
+        };
+        return held(1) + implicit(2) + copied(3);
+    }
+};
+int main() {
+    Acc acc;
+    long n = 4;
+    auto init = [m = n + 1, &r = n](long d) {
+        return m + r + d; // IN_INIT
+    };
+    auto generic = [n](auto d) {
+        return n + d; // IN_GENERIC
+    };
+    std::printf("A:%ld %ld %ld\\n", acc.run(1), init(2), generic(3L));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_describe_says_how_a_lambda_captures_this_and_each_name(cpp, capsys):
+    # Review of #393: `[this]` (and an implicit `this`) looked like an ordinary local;
+    # `[*this]`'s `this` showed the variable's `const Acc *const`, and twice.
+    compiler, root = cpp
+    source = root / "held.cpp"
+    source.write_text(HELD_CAPTURES)
+    assert main(["describe", str(source), "--json"]) == 0
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    assert main(["describe", str(source)]) == 0
+    text = capsys.readouterr().out
+    if compiler != "gcc":
+        # clang's lambda lists its object as `this`: no capture is said of a name.
+        assert not any(scope.get("captures") for scope in scopes), scopes
+        assert "capture by" not in text and "capture of the object" not in text, text
+        return
+    lambdas = {
+        marker: next(
+            scope
+            for scope in scopes
+            if scope["scope"].endswith(">") or "operator()" in scope["scope"]
+            if scope["lines"][0] <= line_of(HELD_CAPTURES, marker) <= scope["lines"][1]
+        )
+        for marker in ("IN_THIS", "IN_IMPLICIT", "IN_COPY", "IN_INIT", "IN_GENERIC")
+    }
+    how = {
+        marker: {name: shown["how"] for name, shown in scope["captures"].items()}
+        for marker, scope in lambdas.items()
+    }
+    assert how == {
+        "IN_THIS": {"this": "by reference"},
+        "IN_IMPLICIT": {"k": "by value", "this": "by reference"},
+        "IN_COPY": {"this": "by value"},
+        "IN_INIT": {"m": "by value", "r": "by reference"},
+        "IN_GENERIC": {"n": "by value"},
+    }, how
+    # The type the lambda's object holds, not the body's `const` variable's.
+    assert lambdas["IN_COPY"]["captures"]["this"]["type"] == "Acc", lambdas["IN_COPY"]
+    assert lambdas["IN_INIT"]["captures"]["m"]["type"] == "long int", lambdas["IN_INIT"]
+    assert lambdas["IN_INIT"]["captures"]["r"]["type"] == "long int &", lambdas["IN_INIT"]
+    # `this` once, as the capture of the object.
+    copied = next(line for line in text.splitlines() if "this (Acc, " in line)
+    assert copied.endswith("d (long int), this (Acc, capture of the object by value)"), copied
+    assert copied.count("this (") == 1, copied
+    assert "this (Acc *, capture of the object by reference)" in text, text
+    assert "m (long int, capture by value), r (long int &, capture by reference)" in text, text
+    generic = next(line for line in text.splitlines() if "operator()<" in line)
+    assert generic.endswith("n (long int, capture by value)"), generic
+
+
+BOUND_SET = """#include <cstdio>
+#include <map>
+struct P { long a, b; };
+int main() {
+    std::map<int, long> m{{1, 10}, {2, 20}};
+    long sum = 0;
+    for (auto &[k, v] : m) {
+        v += k; // IN_LOOP
+        sum += v;
+    }
+    P p{3, 4};
+    auto &[a, b] = p;
+    sum += a + b; // AFTER
+    std::printf("B:%ld\\n", sum);
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(240)
+def test_a_change_to_a_binding_by_reference_says_where_its_value_is(cpp, capsys):
+    # Eval 13 prep, finding 5: `--set v=5` on a range `for`'s binding by reference was
+    # refused as "`v` is a reference", with the hint to change it "before the call", where
+    # no call passed it: what it binds holds the value.
+    compiler, root = cpp
+    source = root / "bound.cpp"
+    source.write_text(BOUND_SET)
+    looped, after = line_of(BOUND_SET, "// IN_LOOP"), line_of(BOUND_SET, "// AFTER")
+    code, result = probe(source, looped, "v", capsys, "--set", "v=5")
+    assert code != 0 and result["error"]["code"] == "MUTATION_REJECTED", result
+    assert result["error"]["message"] == (
+        f"`v` cannot be changed at bound.cpp:{looped}, at any stop of this build: in main, "
+        "`v` is a structured binding by reference to an element of `m`, so it is reached "
+        "through a pointer or reference, and Peeky changes only values the frame holds itself: "
+        "change what fills `m`, before the loop, or edit the source. Refused before the "
+        "program runs: nothing ran"
+    ), result["error"]
+    hint = result["error"]["hint"]
+    assert "call" not in hint and hint.startswith("Change what the binding refers to"), hint
+    code, result = probe(source, after, "b", capsys, "--set", "b=5")
+    assert result["error"]["message"] == (
+        f"`b` cannot be changed at bound.cpp:{after}, at any stop of this build: in main, `b` "
+        "is a structured binding by reference to `p`, so it is reached through a pointer or "
+        "reference, and Peeky changes only values the frame holds itself: change `p` itself "
+        "where it is settable, or edit the source. Refused before the program runs: nothing ran"
+    ), result["error"]
+    # As it says: `p.b` is settable there.
+    code, result = probe(source, after, "b", capsys, "--set", "p.b=5")
+    assert code == 0 and "B:41" in result["output"], result
 
 
 CAPTURED_CONTAINERS = """#include <cstdio>

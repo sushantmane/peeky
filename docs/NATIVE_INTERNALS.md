@@ -61,8 +61,13 @@ frame's entry: the narrowest function whose code holds the frame's address.
   function of its own, not lines the function runs as a class's member initializers.
 - GCC may fold every call of a lambda away, leaving its closure with no `operator()`. Its members
   `<lambda>` and `~<lambda>` still mark it as a closure.
-- `describe` leaves out GCC's `__closure`, and the variables GCC adds for a lambda's captures.
-  lldb-dap lists none of them, but the one for a captured `this`, which `describe` keeps.
+- `describe` leaves out GCC's `__closure`. It lists the variables GCC adds for a lambda's
+  captures as captures (`_gcc_capture_kinds`), each with the type of the member of the lambda's
+  object that holds it: a reference member is a capture by reference. lldb-dap lists none of
+  them, but GCC's `this`. That one is the object's capture: by reference for `[this]` or an
+  implicit `this` (a pointer member read through `__closure`), by value for `[*this]` (the
+  copy, `__this`). Its `statics` are the names whose every declaration is at one fixed,
+  nonzero `DW_OP_addr`, as `_static_locals` reads one (`_static_names`).
 - **A safety net:** a C++ frame on a line of the program's sources or headers withholds every
   local and parameter when its function has no entry (`_unplaced`). The row says `not shown`, and
   that Peeky can't place the function's declarations.
@@ -470,6 +475,16 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - lldb-dap 18 gives no address for a local the debugger shows with a summary, so Peeky
     can't place a container local there. A pointer or reference to one stays unproven, and
     nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
+  - Such a row says why (`nodes_unreached`, `unreached_container`). Where its address is above
+    the stack pointer, `unplaced_holders` finds the listed frames' unplaced locals of the type it
+    refers to, that read there now (`container_reads`). The row offers up to two as candidates
+    to inspect, with `--frame N`, and never says which one it refers to: nothing proves it.
+  - Where something may be changing the container (`containers_settled`), `_node_listing` gives
+    a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to retry
+    after that call returns. A count past 256 by then, or a heap string without `readMemory`,
+    still withholds it.
+  - Both say so only where a proven read would succeed now (`_nodes_readable`): an `-O0` build,
+    a proven layout, and entry types Peeky reads (`hashed_nodes.readable`).
   - A preview reads nested containers' nodes under the same rule: none below a note, or
     through such a pointer.
   - A GCC lambda's capture is read through `__closure`. Where `__closure`, or what a capture
@@ -591,8 +606,13 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - `not_yet_declared` withholds a capture where `_under_construction` would withhold clang's
     `this`. No declaration rule applies to it: the object holds it from before the call.
   - A capture's local storage is `through` in `fields.local_types`, so a `--set` is refused
-    before the run. At a stop, the scope's handle and its children's refuse it too
-    (`capture_refusal`).
+    before the run (`_capture_refused`), as the rows mark it. At a stop, the scope's handle and
+    its children's refuse it too (`capture_refusal`).
+  - Each refusal names the lambda's own copy where a change works (`_capture_route`): the
+    member of the lambda's object (`entry["closure"]`, what `__closure` points at) in the one
+    local of a function that is that object, where `settable_member` allows the path.
+  - `breakpoint_notes` warns at a lambda's first line where the function around it builds the
+    lambda on another line (GCC's `};`), and only the lambda's prologue is on the first line.
   - `captures_unread` reads none in an optimized build, where a `mutable` lambda may keep a
     capture in a register, nor in a prologue window, before the lambda stores `__closure`.
   - `_lambda_scope` follows every function around a lambda, up to `LAMBDA_NESTING` (256).

@@ -28,7 +28,7 @@ int main() {
 }
 """
 
-REFUSED = "is not in the prepared program's sources; inspect one of your program's frames"
+REFUSED = "is not in the prepared program's sources: read one of your program's frames"
 
 
 @pytest.fixture
