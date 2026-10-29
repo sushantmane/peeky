@@ -952,7 +952,9 @@ That is the case for:
   - the entries hold numbers, `bool`s, characters, enums, pointers and `std::string`s, in pairs
     and structs. A `long double` doesn't count: the debug information doesn't say which of its
     formats its bytes hold. Nor does a struct with a base class or a bitfield;
-  - its chain of nodes ends after exactly `_M_element_count` of them, at most 16,384;
+  - its chain of nodes ends after exactly `_M_element_count` of them. Peeky walks at most 16,384
+    nodes with a debugger that reads memory, as lldb-dap 20 does, and 512 with lldb-dap 18
+    (see below);
   - nothing may be changing the container
     ([A container that something may be changing](#a-container-that-something-may-be-changing));
   - the build is unoptimized, and its source asks to optimize no function: no `optimize`
@@ -976,20 +978,33 @@ That is the case for:
     shows the number, with the enum's type;
   - a pointer as its address. Peeky never reads what it points at, so `ptrs[#0][0]` is refused.
 
-  A container held in an entry, such as the `std::vector` in `std::unordered_map<int,
-  std::vector<int>>`, is read where Peeky proves how:
+  A container held in an entry is read only where it is inside the node, as a `std::array` is:
+  `size=1 {1: size=2 [4, 5]}`. Any other alone shows `<not read>`, and reading it says why:
 
-  - a `std::array` is inside the node: `size=1 {1: size=2 [4, 5]}`;
-  - a `std::vector` or an unordered container needs a debugger that reads memory, as lldb-dap 20
-    does. Its layout must be proven, and its pointers must bound at most 256 whole elements;
-  - otherwise it alone shows `<not read>`, and reading it says why:
+  - a `std::vector`'s elements, and a nested unordered container's nodes, are in heap blocks.
+    Peeky can't show such a block is still allocated. A vector destroyed in place, before a new
+    one is built there, keeps pointers to its freed buffer:
+    ``lists[1]: not read: Peeky doesn't read a `std::vector` held in an unordered container's
+    node: its elements are in a heap block, which Peeky can't show is still allocated; print it
+    from the program``;
+  - Peeky doesn't read a `std::map`, a `std::list` or another container there:
     ``trees[1]: not read: Peeky doesn't read a `std::map` held in an unordered container's node;
     print it from the program``.
 
   A container of more than 256 entries is read too. Peeky walks its whole chain to check its
   count. The row reads its first 256 entries, and a later one when a position or key asks for it:
-  `big[#650]`, `big[699]`. `big[K]` compares every key. A listing says how many entries it
-  doesn't show: `... 636 more (700 entries in all)`.
+  `big[#350]`, `big[399]`. `big[K]` compares every key. A listing says how many entries it
+  doesn't show: `... 336 more (400 entries in all)`.
+
+  How long a chain Peeky walks depends on the debugger:
+
+  - with lldb-dap 20, which reads memory, up to 16,384 nodes. Each read takes the 4,096 bytes
+    around a node, so nodes close together cost one read;
+  - with lldb-dap 18, up to 512. It reads each node through a longer variable path than the last,
+    so a walk's cost grows with the square of its length.
+
+  A walk also stops at the reads' budget: 4,096 reads and 4 MiB in one inspection. Nodes spread
+  over memory can reach it before 16,384. Past either limit, the row keeps its note.
 
   Otherwise the row has no value, and no key, position or listing is read in it. For example, in
   a GCC build:
@@ -1017,7 +1032,7 @@ That is the case for:
   - While a call may be changing the container
     ([A container that something may be changing](#a-container-that-something-may-be-changing)).
     The row names that call, and says to retry after it returns. The entries may still be
-    withheld then, for example if the container has grown past 16,384 entries:
+    withheld then, for example if the container has grown past what Peeky walks:
 
     ```
     on_hand  Stock  <not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from its nodes while a constructor, destructor or assignment operator below this frame (Movement::~Movement) may be part-way through changing it; retry after that call returns>
@@ -1205,9 +1220,10 @@ prove a value, it withholds it, and the row says why. These are the known gaps:
 
 - **Unordered containers** are read from their own nodes. LLDB finds no element type in GCC's
   `std::allocator`, so it counts each one as empty. Peeky reads the entries itself where it can
-  prove how. A container whose entries hold a `long double` stays withheld. So does one of more
-  than 16,384 entries. A container held in an entry, such as a `std::map`, may be withheld on its
-  own, with why ([details](#standard-containers)).
+  prove how. A container whose entries hold a `long double` stays withheld. So does one longer
+  than Peeky walks: 16,384 entries with lldb-dap 20, 512 with lldb-dap 18. A container held in
+  an entry, other than a `std::array`, is withheld on its own, with why
+  ([details](#standard-containers)).
 - **A one-line function or lambda** stops before it stores its parameters. They show `no value
   yet` there, and can't be changed
   ([details](#at-a-functions-start-before-it-stores-its-parameters)).

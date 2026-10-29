@@ -24,6 +24,22 @@ class TransportLost(OSError):
 _OPENER = build_opener(ProxyHandler({}))
 
 
+def _spoken(headers, operation, url):
+    """Refuse a worker's answer where the worker says it speaks another protocol (its
+    `X-Peeky-Protocol` header, on every answer), however the session started: a local
+    session's worker of an older Peeky would ignore what this client sends, such as
+    `expand`'s `key`, and answer something else (#374 review). Not `version`'s answer,
+    whose caller compares the protocol it states and says what to do."""
+    spoken = headers.get("X-Peeky-Protocol") if headers is not None else None
+    if operation == "version" or spoken is None or spoken.strip() == str(PROTOCOL_VERSION):
+        return
+    raise ValueError(
+        f"Worker speaks protocol {spoken.strip()[:20]}, this client {PROTOCOL_VERSION}: its "
+        f"answer to {operation!r} at {url} is not read. Run the same Peeky version as the "
+        "worker; for a session, close it and start it again"
+    )
+
+
 class Client:
     def __init__(self, url, token):
         self.url = url.rstrip("/")
@@ -37,6 +53,7 @@ class Client:
         )
         try:
             with _OPENER.open(request, timeout=45) as response:
+                _spoken(response.headers, operation, self.url)
                 try:
                     return json.load(response)
                 except ValueError:
@@ -47,6 +64,7 @@ class Client:
                         "(its answer is not JSON); its outcome is unknown"
                     ) from None
         except HTTPError as exc:
+            _spoken(exc.headers, operation, self.url)
             return self._http_error(exc)
         except URLError as exc:
             reason = exc.reason

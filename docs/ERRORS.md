@@ -487,7 +487,7 @@ that Peeky can't read is `TRANSPORT_LOST` instead, because its outcome is unknow
 ## Protocol version
 
 `POST /version` returns the protocol version, the supported operations and the error codes. Every
-HTTP response carries `X-Peeky-Protocol: 5`.
+HTTP response carries `X-Peeky-Protocol: 10`.
 
 - **Protocol 2** adds the source comparison for remote clients
   ([REMOTE.md](REMOTE.md#source-identity)). `version` says which sources a client hashes.
@@ -515,6 +515,10 @@ HTTP response carries `X-Peeky-Protocol: 5`.
   `stop_line`. A protocol 8 worker refuses `1:i` as no selector
   ([COOKBOOK 2.10](COOKBOOK.md#210-values-in-a-callers-frame)).
 - **Protocol 10** reads a key of a GCC build's unordered container, past its first 256 entries
-  too. The worker's `expand` takes `key`. A protocol 9 worker ignores it and gives the first
-  entries ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
+  too. The worker's `expand` takes `key`, and its answer names the key. A protocol 9 worker
+  ignores it and gives the first entries
+  ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
+- A client reads no answer whose `X-Peeky-Protocol` names another protocol, a local session's
+  worker's too. Only `version`'s answer is read, since its caller compares the protocol it
+  states.
 - A client and a worker of different protocols refuse each other before anything runs.

@@ -3796,8 +3796,22 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
             if _BUDGET.search(str(exc)):
                 raise
             raise ValueError(f"{written} not read: {exc}; {how}") from None
+        if page.get("key") != str(target) or type(page.get("compared")) is not int:
+            # Not an answer to this key (a worker that ignores `key` gives the first
+            # entries): none of it is taken for the key's entry (#374 review).
+            raise ValueError(
+                f"{written} not read: the worker's answer doesn't say it compared every key "
+                f"with {shown}; {how}"
+            )
         if page["variables"]:
-            return value_of(page["variables"][0])
+            child = page["variables"][0]
+            number, value, _ = key_of(child)
+            if number != target:
+                raise ValueError(
+                    f"{written} not read: the entry the worker gave has the key {value}, not "
+                    f"{shown}; {how}"
+                )
+            return value_of(child)
         keys, count = page.get("keys") or [], page.get("compared")
         listed = ", ".join(keys[:_LISTED_KEYS]) + (
             f", ... ({count} total)" if type(count) is int and count > _LISTED_KEYS else ""

@@ -12,12 +12,15 @@ reads the entries itself, where the build's debug information proves how:
   `__aligned_buffer` of `_Value`) after it, aligned for `_Value`, inside the node;
 - the entries hold integers, bools, characters, `float`s and `double`s, enums, pointers
   (their addresses, never followed) and `std::string`s, in pairs and structs. A
-  standard container inside one is read where its own layout is proven, or withheld on
-  its own, with why (``_Reader.nested``).
+  `std::array` inside one is read from the node; any other standard container in one is
+  withheld on its own, with why (``_Reader.nested``): a vector's buffer or a nested
+  table's nodes are heap blocks, which nothing proves still allocated (a value destroyed
+  in place, before a new one is built there, keeps its old pointers).
 
 The nodes form one singly-linked chain from `_M_before_begin._M_nxt`, in iteration
 order. The chain must end (a null `_M_nxt`) after exactly `_M_element_count` nodes, at
-most ``MAX_CHAIN``. The first ``MAX_NODES`` entries are read with the listing; the rest
+most ``MAX_CHAIN`` with `readMemory`, ``MAX_WORDS`` without it. The first ``MAX_NODES``
+entries are read with the listing; the rest
 when a page, a position or a key asks for them (``Paged``), from the nodes the walk
 placed. Memory is read with the debugger's `readMemory` (lldb-dap 20), or without it as
 8-byte words through variable paths that the debugger reads as `frame variable` does:
@@ -41,9 +44,13 @@ from peeky.cxx_strings import SUMMARY_UNITS, render
 # The entries read with a container's listing, and the most elements or entries read
 # from a container held in a node.
 MAX_NODES = 256
-# The most nodes walked to prove a container's count; past the first MAX_NODES, only
-# each one's link is read until an entry is asked for.
+# The most nodes walked to prove a container's count, by their addresses (`readMemory`);
+# past the first MAX_NODES, only each one's link is read until an entry is asked for.
 MAX_CHAIN = 16384
+# The most walked through variable paths (``Words``, lldb-dap 18): node N's path holds N
+# steps, which the debugger walks for each word, so a walk costs O(N²) in path text and
+# steps (about 1 MB of paths at 512).
+MAX_WORDS = 512
 # How many bytes one `readMemory` request reads, so that nodes close together cost one.
 WINDOW = 4096
 # Struct members read in one entry, and how deep structs nest in one.
@@ -89,11 +96,6 @@ _ESCAPES = {
 # LLDB's `target.max-zero-padding-in-float-format`: past it, a number is in scientific
 # notation (`1.0E+7`).
 _PADDING = 6
-# Why a container held in a node is not read where the debugger can't read memory.
-_NO_MEMORY = (
-    "a container held in a node is read only with a debugger that reads memory, as "
-    "lldb-dap 20 does: its elements are outside the node; print it from the program"
-)
 
 
 class Unread(ValueError):
@@ -285,16 +287,10 @@ class Memory:
     the address of the first node (or 0); ``read(reference, count)`` reads memory, a
     ``WINDOW``-aligned window at a time, so that nodes close together cost one read."""
 
-    def __init__(self, first, read, pages=None):
+    def __init__(self, first, read):
         self.first, self.read = first, read
-        # {window start: its bytes}, shared by a container held in a node (``sub``);
-        # bytes read alone where a window is not mapped whole.
-        self.pages = {} if pages is None else pages
-        self.windows = []
-
-    def sub(self, first):
-        """The nodes of a container held in one of these, read with the same windows."""
-        return Memory(first, self.read, self.pages)
+        # {window start: its bytes}; and bytes read alone where a window isn't mapped whole.
+        self.pages, self.windows = {}, []
 
     def _window(self, start):
         data = self.pages.get(start)
@@ -322,15 +318,6 @@ class Memory:
             raise Unread("short read")
         self.windows.append((address, data))
         return data[:count]
-
-    def span(self, address, count):
-        """``count`` bytes from ``address``, read ``WINDOW`` bytes at a time."""
-        parts = []
-        while count > 0:
-            piece = min(count, WINDOW)
-            parts.append(self.bytes(address, piece))
-            address, count = address + piece, count - piece
-        return b"".join(parts)
 
     def node(self, index, address, count):
         return self.bytes(address, count)
@@ -470,70 +457,6 @@ def _kind(qualified):
     return found[1] if found else qualified
 
 
-def _within(graph, node, name, at=0, depth=0):
-    """[(byte offset, type offset)] of each member named ``name`` in a record, its
-    members' records and its base classes, wherever the debug information places them;
-    None where a record on the way is not placed whole."""
-    if depth > 6 or len(node) < 14 or len(node[10]) != len(node[13]):
-        return None
-    found = []
-    for member in node[5]:
-        label, kind, offset = member[:3]
-        if label == name:
-            if type(offset) is not int or member[3]:
-                return None
-            found.append((at + offset, kind))
-        inner = _record(graph, kind)
-        if inner is not None and type(offset) is int:
-            deeper = _within(graph, inner, name, at + offset, depth + 1)
-            if deeper is None:
-                return None
-            found += deeper
-    for base, offset in zip(node[10], node[13]):
-        inner = _record(graph, base)
-        if inner is None or type(offset) is not int:
-            return None
-        deeper = _within(graph, inner, name, at + offset, depth + 1)
-        if deeper is None:
-            return None
-        found += deeper
-    return found
-
-
-def _vector_layout(graph, node):
-    """(its element type, the element's size and alignment, the offsets of `_M_start`,
-    `_M_finish` and `_M_end_of_storage`) of a libstdc++ `std::vector` record, each a
-    pointer to its `_Tp` placed once in its 24 bytes; else None (`std::vector<bool>`)."""
-    from peeky.fields import _alignment
-
-    held = _parameter(node, "type", "_Tp")
-    if node[3] != 24 or held is None or held[2] is None:
-        return None
-    size, alignment = _size(graph, held[2]), _alignment(graph, held[2])
-    if not size or not alignment:
-        return None
-    places = []
-    for name in ("_M_start", "_M_finish", "_M_end_of_storage"):
-        found = _within(graph, node, name)
-        if not found or len(found) != 1:
-            return None
-        at, kind = found[0]
-        pointer = _under(graph, kind)
-        if (
-            pointer is None
-            or pointer[0] != "pointer"
-            or pointer[3] not in (8, None)
-            or not _same(graph, pointer[2], held[2])
-            or at % 8
-            or at + 8 > 24
-        ):
-            return None
-        places.append(at)
-    if len(set(places)) != 3:
-        return None
-    return held[2], size, alignment, tuple(places)
-
-
 class _Reader:
     """Decodes a node's value into the listing the debugger would give."""
 
@@ -652,19 +575,24 @@ class _Reader:
 
     def nested(self, node, data, address, depth):
         """The elements of a standard container held in a node (#374): a `std::array`'s,
-        inside it; a `std::vector`'s, or an unordered container's entries, outside it,
-        where the debugger reads memory and the container's own layout and pointers
-        prove where. Else _Withheld, with why."""
+        inside it. Any other is _Withheld, with why: a `std::vector`'s buffer, or a nested
+        unordered container's nodes, are heap blocks that nothing proves still allocated.
+        A value destroyed in place (`std::destroy_at(&m[1])`), before a new one is built
+        there, keeps its old pointers, so its old elements would read as if they were
+        its own."""
         qualified = node[11]
+        kind = _kind(qualified)
         if _ARRAY.match(qualified):
             return self.array(node, data, address, depth)
-        if _VECTOR.match(qualified):
-            return self.vector(node, data, depth)
-        if _UNORDERED.match(qualified):
-            return self.unordered(node, data, depth)
+        if _VECTOR.match(qualified) or _UNORDERED.match(qualified):
+            raise _Withheld(
+                f"Peeky doesn't read a `{kind}` held in an unordered container's node: its "
+                "elements are in a heap block, which Peeky can't show is still allocated; "
+                "print it from the program"
+            )
         raise _Withheld(
-            f"Peeky doesn't read a `{_kind(qualified)}` held in an unordered container's node; "
-            "print it from the program"
+            f"Peeky doesn't read a `{kind}` held in an unordered container's node; print it "
+            "from the program"
         )
 
     def elements(self, kind, data, address, size, count, depth):
@@ -708,81 +636,11 @@ class _Reader:
                 "information; print it from the program"
             )
         if count[3] > MAX_NODES:
-            raise _Withheld(_too_many(count[3], "elements"))
+            raise _Withheld(
+                f"it holds {count[3]} elements, more than the {MAX_NODES} Peeky reads in a "
+                "container held in a node; print it from the program"
+            )
         return self.elements(held[2], data, address, size, count[3], depth)
-
-    def vector(self, node, data, depth):
-        from peeky.adapters import ViewBudgetExhausted
-
-        placed = _vector_layout(self.graph, node)
-        kind = _kind(node[11])
-        if placed is None:
-            raise _Withheld(
-                f"Peeky can't place this `{kind}`'s members in the build's debug information; "
-                "print it from the program"
-            )
-        if not isinstance(self.memory, Memory):
-            raise _Withheld(_NO_MEMORY)
-        held, size, alignment, places = placed
-        start, finish, end = (struct.unpack_from("<Q", data, at)[0] for at in places)
-        if not start and not finish and not end:
-            return []
-        if not start or start % alignment or not start <= finish <= end or (finish - start) % size:
-            raise _Withheld(
-                f"this `{kind}`'s pointers don't bound a whole number of its elements, so "
-                "Peeky doesn't read them; print it from the program"
-            )
-        count = (finish - start) // size
-        if count > MAX_NODES:
-            raise _Withheld(_too_many(count, "elements"))
-        try:
-            raw = self.memory.span(start, count * size)
-        except ViewBudgetExhausted:
-            raise
-        except ValueError:
-            raise _Withheld(
-                "the debugger didn't read its elements' memory; print it from the program"
-            ) from None
-        return self.elements(held, raw, start, size, count, depth)
-
-    def unordered(self, node, data, depth):
-        graph = self.graph
-        kind = _kind(node[11])
-        unplaced = _Withheld(
-            f"Peeky can't place this `{kind}`'s nodes in the build's debug information; "
-            "print it from the program"
-        )
-        try:
-            placed = layout(graph, node)
-        except Unread:
-            raise unplaced from None
-        table = _member(node, "_M_h")
-        hashtable = _record(graph, table[1], _TABLE)
-        before = _member(hashtable, "_M_before_begin")
-        counted = _member(hashtable, "_M_element_count")
-        number = _under(graph, counted[1]) if counted is not None else None
-        if (
-            number is None
-            or number[0] != "base"
-            or number[2] != "DW_ATE_unsigned"
-            or number[3] != 8
-            or any(type(part[2]) is not int for part in (table, before, counted))
-            or table[2] + max(before[2], counted[2]) + 8 > len(data)
-        ):
-            raise unplaced
-        if not isinstance(self.memory, Memory):
-            raise _Withheld(_NO_MEMORY)
-        first = struct.unpack_from("<Q", data, table[2] + before[2])[0]
-        count = struct.unpack_from("<Q", data, table[2] + counted[2])[0]
-        if count > MAX_NODES:
-            raise _Withheld(_too_many(count, "entries"))
-        try:
-            entries, _ = self.chain(placed, self.memory.sub(first), count, depth + 1, count)
-        except Unread as exc:
-            raise _Withheld(
-                f"Peeky can't read its entries from its nodes ({exc}); print it from the program"
-            ) from None
-        return entries
 
     def string(self, node, data, address):
         """A libstdc++ string's text, as Peeky shows one read from memory (#128): its
@@ -816,13 +674,6 @@ class _Reader:
             count = min(length, SUMMARY_UNITS)
             body = self.memory.at(text, count) if count else b""
         return render(body, 1, "", length > SUMMARY_UNITS)
-
-
-def _too_many(count, what):
-    return (
-        f"it holds {count} {what}, more than the {MAX_NODES} Peeky reads in a container held "
-        "in a node; print it from the program"
-    )
 
 
 def _wide(name, encoding, size):
@@ -1053,10 +904,11 @@ def read_entries(graph, container, count, memory):
     its listing) read from the nodes of the unordered container ``container`` (a
     fields.type_graph record), which counts ``count`` entries itself (its
     `_M_element_count`); ``memory``: a ``Memory`` or ``Words``. The whole chain is
-    walked, at most ``MAX_CHAIN`` nodes; the first ``MAX_NODES`` entries are read with
-    it, and any later one when it is fetched. Unread where any of it is not proven."""
+    walked, at most ``MAX_CHAIN`` nodes by address or ``MAX_WORDS`` through variable
+    paths; the first ``MAX_NODES`` entries are read with it, and any later one when it is
+    fetched. Unread where any of it is not proven."""
     placed = layout(graph, container)
-    if not 0 <= count <= MAX_CHAIN:
+    if not 0 <= count <= (MAX_CHAIN if isinstance(memory, Memory) else MAX_WORDS):
         raise Unread("too many entries")
     reader = _Reader(graph, memory)
     entries, addresses = reader.chain(placed, memory, count, 0, MAX_NODES)

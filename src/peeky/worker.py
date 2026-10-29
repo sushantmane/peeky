@@ -289,6 +289,28 @@ MAX_REQUEST_BYTES = 4 * 1024 * 1024
 REQUEST_READ_TIMEOUT_S = 10
 
 
+class _NodePaths:
+    """A variable path's text for a walk of an unordered container's nodes (#360), read
+    as a hover on the node-read budget and cached for the stop. ``forget`` drops the
+    paths a walk read where it failed: node N's path holds N steps, so a long walk's
+    paths hold O(N²) text, none of which a failed walk keeps (#374 review)."""
+
+    def __init__(self, worker, frame):
+        self.worker, self.frame, self.asked = worker, frame, []
+
+    def __call__(self, path):
+        text = self.worker.raw_value(self.frame, path, nodes=True)
+        self.asked.append(path)
+        return text
+
+    def forget(self):
+        cache = getattr(self.worker, "raw_values", None)
+        if cache is not None and cache[0] == self.worker.stop_id:
+            for path in self.asked:
+                cache[1].pop((self.frame.get("id"), path), None)
+        self.asked = []
+
+
 class DebugWorker:
     def __init__(self, root, adapter=None):
         self.root = Path(root).resolve()
@@ -3978,7 +4000,7 @@ class DebugWorker:
         """How a runtime reads an unordered container's nodes in ``frame`` (#360):
         (a variable path's text, a memory read or None without `readMemory`)."""
         reads = self.node_memory if self.capabilities.get("supports_read_memory") else None
-        return (lambda path: self.raw_value(frame, path, nodes=True)), reads
+        return _NodePaths(self, frame), reads
 
     def expose_variables(
         self,
@@ -5530,7 +5552,12 @@ class DebugWorker:
                 "start": start,
                 "truncated": start + len(page) < len(elements),
                 "remaining_nodes": 512 - self.inspection_nodes,
-                **({"compared": keyed["compared"], "keys": keyed["keys"]} if keyed else {}),
+                # The key it compared, which the client checks it asked for (#374 review).
+                **(
+                    {"key": args["key"], "compared": keyed["compared"], "keys": keyed["keys"]}
+                    if keyed
+                    else {}
+                ),
             }
         if "key" in args:
             raise ValueError("Only entries Peeky read from a container's nodes are read by key")

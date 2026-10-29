@@ -811,36 +811,37 @@ def text(child):
     return child.get("value")
 
 
-def test_a_container_held_in_a_node_is_read_where_proven_or_withheld_on_its_own():
+HEAP_BLOCK = (
+    "Peeky doesn't read a `{}` held in an unordered container's node: its elements are in a "
+    "heap block, which Peeky can't show is still allocated; print it from the program"
+)
+
+
+def test_a_container_held_in_a_node_is_read_from_it_or_withheld_on_its_own():
+    # #374 review: a vector's buffer is a heap block nothing proves still allocated. One
+    # destroyed in place (`std::destroy_at(&m[1])`), before a new one is built there,
+    # keeps its old pointers, and its freed buffer still read `size=2 [2, 3]`.
     types = mapped(77, 32, 75)
     assert readable(types, 77)
     heap = 0x9000
     data = struct.pack("<iiQQQ", 1, 0, heap, heap + 8, heap + 16)
     held = {**one_node(data), heap: struct.pack("<iiii", 2, 3, 0, 0)}
-    root, fetch = read_entries(types, types[90], 1, Memory(0x1000, reader(held)))
-    assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: size=2 [2, 3]}"
-    (entry,) = view_children(types, root, fetch)
-    second = entry["children"][1]
-    assert second["value"] == "size=2 [2, 3]"
-    assert [element["value"] for element in second["children"]] == ["2", "3"]
-    # Without `readMemory`, its elements are outside the node: it alone is withheld.
-    root, fetch = read_entries(types, types[90], 1, node_words(data, 5))
-    assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: <not read>}"
-    (entry,) = view_children(types, root, fetch)
-    second = entry["children"][1]
-    assert second["withheld"] and second["value"] is None, second
-    assert second["reason"].startswith("a container held in a node is read only with a debugger")
-    # Pointers that bound no whole number of elements, or too many: withheld, with why.
-    for start, finish, why in (
-        (heap, heap + 6, "don't bound a whole number"),
-        (heap + 8, heap, "don't bound a whole number"),
-        (heap, heap + 4 * (MAX_NODES + 1), f"holds {MAX_NODES + 1} elements"),
-    ):
-        data = struct.pack("<iiQQQ", 1, 0, start, finish, max(start, finish))
-        memory = Memory(0x1000, reader({**held, **one_node(data)}))
+    asked = []
+
+    def read(reference, count):
+        asked.append(int(reference, 16))
+        return reader(held)(reference, count)
+
+    for memory in (Memory(0x1000, read), node_words(data, 5)):
         root, fetch = read_entries(types, types[90], 1, memory)
+        assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: <not read>}"
         (entry,) = view_children(types, root, fetch)
-        assert why in entry["children"][1]["reason"], entry
+        assert [part["value"] for part in entry["children"]] == ["1", None], entry
+        second = entry["children"][1]
+        assert second["withheld"] and second["withheld_as"] == "not read", second
+        assert second["reason"] == HEAP_BLOCK.format("std::vector"), second
+    # Nothing was read where its pointers point.
+    assert not any(heap <= address < heap + 0x1000 for address in asked), asked
     # A `std::map` in a node: withheld, with why.
     types = mapped(79, 56, 78)
     memory = Memory(0x1000, reader(one_node(b"\1" + b"\0" * 55)))
@@ -851,7 +852,8 @@ def test_a_container_held_in_a_node_is_read_where_proven_or_withheld_on_its_own(
         "the program"
     )
     assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: <not read>}"
-    # A `std::array`, inside the node: read, without `readMemory` too.
+    # A `std::array` is inside the node, which the walk proves: read, without `readMemory`
+    # too.
     types = mapped(82, 12, 81)
     root, fetch = read_entries(types, types[90], 1, node_words(struct.pack("<iii", 1, 4, 5), 3))
     assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: size=2 [4, 5]}"
@@ -958,7 +960,7 @@ def test_the_worker_pages_and_finds_a_key_among_entries_read_when_asked(tmp_path
     assert 649 not in made and budgets, made
     # A key, wherever its entry is: every key compared, each as a selector compares one.
     found = worker.expand({**stop, "handle": handle, "key": "1797"}, runtime)
-    assert [entry["name"] for entry in found["variables"]] == ["[599]"]
+    assert [entry["name"] for entry in found["variables"]] == ["[599]"] and found["key"] == "1797"
     assert found["compared"] == 700 and found["keys"][:3] == ["0", "3", "6"]
     missing = worker.expand({**stop, "handle": handle, "key": "1"}, runtime)
     assert missing["variables"] == [] and missing["compared"] == 700
@@ -992,3 +994,164 @@ def test_a_listing_says_how_many_more_entries_a_container_holds():
         cli._get_lines(sets)[-1]
         == "  ... 636 more entries (700 in all); select one by name or index"
     )
+
+
+def test_a_long_walk_through_variable_paths_is_never_begun_and_a_failed_one_forgets():
+    # #374 review: without `readMemory`, node N's path holds N steps, so a walk of 16,384
+    # nodes would send about 1.2 GB of paths, each cached for the stop.
+    from types import SimpleNamespace
+
+    from peeky.hashed_nodes import MAX_WORDS
+    from peeky.native import NativeSession
+
+    types = graph()
+    asked = []
+
+    class Paths:
+        forgot = 0
+
+        def __call__(self, path):
+            asked.append(path)
+            return "nullptr" if path.endswith("->_M_nxt") else "0x0000000000001000"
+
+        def forget(self):
+            Paths.forgot += 1
+
+    with pytest.raises(Unread):
+        read_entries(types, types[6], MAX_WORDS + 1, Words("us", Paths()))
+    assert asked == ["us"]
+    session = NativeSession.__new__(NativeSession)
+    session.fields = types
+    session.target = SimpleNamespace(language="cpp", optimization="O0")
+    session.optimized = False
+    session._typed = lambda frame, steps, walked=False: (Typed(types, 6), False, None, None)
+    session.containers_settled = lambda *args: True
+    for count, words in ((MAX_WORDS + 1, None), (2, None), (MAX_WORDS + 1, lambda *a: b"")):
+        asked.clear()
+        listing = session._node_listing(
+            {"type": "std::unordered_set<int>"},
+            {"id": 1},
+            [("us", "std::unordered_set<int>")],
+            "us._M_h._M_element_count",
+            count,
+            (Paths(), words),
+            None,
+            None,
+            lambda: 1,
+        )
+        assert listing is None, (count, listing)
+        if count > MAX_WORDS and words is None:
+            # Refused before any path is read.
+            assert asked == [], asked
+    # The walk of 2 found a chain of 1, and dropped the paths it read; with `readMemory`, a
+    # longer count is walked by address.
+    assert Paths.forgot == 2, Paths.forgot
+
+
+def test_a_failed_walks_paths_are_not_cached(tmp_path):
+    from peeky.worker import DebugWorker, _NodePaths
+
+    worker = DebugWorker(tmp_path)
+    worker.stop_id = "stop1"
+    worker.reset_views()
+    worker.view_request = lambda command, arguments, remaining: {"result": "0x10"}
+    paths = _NodePaths(worker, {"id": 1})
+    assert paths("us._M_h._M_before_begin._M_nxt") == "0x10"
+    assert paths("us._M_h._M_before_begin._M_nxt->_M_nxt") == "0x10"
+    assert len(worker.raw_values[1]) == 2
+    paths.forget()
+    assert worker.raw_values[1] == {} and paths.asked == []
+
+
+def test_a_worker_of_another_protocol_is_never_read(tmp_path):
+    # #374 review: a local session's worker of protocol 9 ignores `expand`'s `key` and
+    # answers its first entries. Every answer says its protocol: another is refused.
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from peeky.client import Client
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            failing = self.path == "/fail"
+            answer = json.dumps(
+                {"error": {"code": "INVALID_REQUEST", "message": "no"}}
+                if failing
+                else {"protocol": 9, "variables": [{"name": "[0]", "value": "p"}]}
+            ).encode()
+            self.send_response(400 if failing else 200)
+            self.send_header("X-Peeky-Protocol", "9")
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = Client(f"http://127.0.0.1:{server.server_port}", "t" * 32)
+        for operation in ("expand", "fail"):
+            with pytest.raises(ValueError, match="^Worker speaks protocol 9, this client 10"):
+                client.call(operation, handle=1, key="5")
+        # Its version is read: its caller compares the protocol it states.
+        assert client.call("version")["protocol"] == 9
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_key_is_read_only_from_an_answer_for_that_key():
+    # #374 review: the client took the first entry of a worker that ignored `key` for the
+    # entry of that key.
+    from peeky.probe import _value_for_key
+
+    def entry(at, key):
+        return {
+            "name": f"[{at}]",
+            "type": "std::pair<int const, int>",
+            "value": "p",
+            "variablesReference": 10 + at,
+            "view": "memory",
+            "_key": key,
+        }
+
+    class Worker:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def dispatch(self, operation, args):
+            handle = args["handle"]
+            if handle == 1 and "key" in args:
+                return self.answer
+            if handle == 1:
+                return {"variables": [entry(0, 1)], "start": 0, "truncated": True}
+            key = {10: 1, 11: 5}[handle]
+            parts = [
+                {"name": "first", "type": "const int", "value": str(key), "view": "memory"},
+                {"name": "second", "type": "int", "value": str(key * 2), "view": "memory"},
+            ]
+            return {"variables": parts, "start": 0, "truncated": False}
+
+    variable = {
+        "name": "m",
+        "type": "std::unordered_map<int, int>",
+        "value": "size=2 {1: 2, 5: 10}",
+        "variablesReference": 1,
+        "view": "memory",
+    }
+    how = "select an entry by position with m[#N]"
+    first_page = lambda handle: {"variables": [entry(0, 1)], "truncated": True}  # noqa: E731
+    # Protocol 9's answer: its first page, with no key.
+    old = Worker({"variables": [entry(0, 1)], "start": 0, "truncated": True})
+    with pytest.raises(ValueError, match="doesn't say it compared every key with 5"):
+        _value_for_key(old, {}, variable, "m", "[5]", first_page, how)
+    # An answer for the key whose entry has another key.
+    wrong = Worker({"variables": [entry(0, 1)], "key": "5", "compared": 2, "keys": ["1", "5"]})
+    with pytest.raises(ValueError, match="has the key 1, not 5"):
+        _value_for_key(wrong, {}, variable, "m", "[5]", first_page, how)
+    right = Worker({"variables": [entry(1, 5)], "key": "5", "compared": 2, "keys": ["1", "5"]})
+    assert _value_for_key(right, {}, variable, "m", "[5]", first_page, how)["value"] == "10"

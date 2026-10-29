@@ -10,9 +10,9 @@ program's. Each case reads correctly with clang (libstdc++ on Linux, libc++ on m
   type, a 16-byte-aligned `long double`, or (LLDB 18) a map whose type's name holds `set`
   decode wrongly. Otherwise Peeky reads the entries from the container's own nodes
   (#360), where the debug information proves how: numbers, characters, enums, pointers
-  and strings, in pairs and structs, a container in one where its own layout is proven
-  (#374), and past 256 entries by position or key; else no preview, key or position read,
-  or listing.
+  and strings, in pairs and structs, a `std::array` in one, any other container there
+  withheld alone (#374), and past 256 entries by position or key; else no preview, key or
+  position read, or listing.
 - A `std::string` set: LLDB reads GCC's `_M_local_buf` (`char[16]`) as `char[0]`; its
   length comes from the build's debug information, and lldb-dap 20, which has no
   writeMemory request, writes it with LLDB's `memory write` command.
@@ -387,6 +387,8 @@ def test_numbers_characters_enums_and_pointers_are_read_from_the_nodes(cpp, caps
 IN_NODES = """#include <array>
 #include <cstdio>
 #include <map>
+#include <memory>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -397,79 +399,96 @@ int main() {
     std::unordered_map<int, std::array<int, 2>> pairs{{1, {4, 5}}};
     std::unordered_map<int, std::unordered_set<int>> groups{{1, {6}}};
     std::unordered_map<int, std::map<int, int>> trees{{1, {{7, 8}}}};
+    std::unordered_map<int, std::vector<int>> gone{{1, {2, 3}}};
+    std::vector<int> *slot = &gone[1];
+    std::destroy_at(slot);
     std::unordered_map<int, int> big;
-    for (int i = 0; i < 700; ++i)
+    for (int i = 0; i < 400; ++i)
         big[i] = 2 * i;
+    std::unordered_map<int, int> huge;
+    for (int i = 0; i < 700; ++i)
+        huge[i] = 2 * i;
     std::unordered_map<std::string, int> words;
     for (int i = 0; i < 300; ++i)
         words["k" + std::to_string(i)] = i;
     std::printf("NESTED:%zu %zu %zu\\n", lists.size(), big.size(), words.size()); // HERE
-    return 0;
+    new (slot) std::vector<int>{9};
+    return (int)gone[1].size() - 1;
 }
 """
-NO_MEMORY = (
-    "not read: a container held in a node is read only with a debugger that reads memory, as "
-    "lldb-dap 20 does: its elements are outside the node; print it from the program"
+HEAP_BLOCK = (
+    "not read: Peeky doesn't read a `{}` held in an unordered container's node: its elements "
+    "are in a heap block, which Peeky can't show is still allocated; print it from the program"
 )
 
 
 @pytest.mark.timeout(300)
 def test_a_nested_container_reads_where_proven_and_a_big_one_by_position_or_key(cpp, capsys):
-    # #374: with GCC, each of these was `not listed`. A container held in a node now reads
-    # where its own layout is proven, with a debugger that reads memory for one whose
-    # elements are outside the node; else it alone is withheld, with why. A container of
-    # more than 256 entries reads too: its count proven by its whole chain, an entry past
-    # the first 256 read when its position or key asks for it.
+    # #374: with GCC, each of these was `not listed`. A `std::array` held in a node now
+    # reads from it; any other container held there is withheld alone, with why: a
+    # vector's buffer is a heap block nothing proves still allocated, and `gone[1]`,
+    # destroyed in place, read its freed buffer as `size=2 [2, 3]` (review). A container
+    # of more than 256 entries reads too: its count proven by its whole chain (at most 512
+    # nodes without `readMemory`), an entry past the first 256 read when its position or
+    # key asks for it.
     compiler, root = cpp
     source = root / "held.cpp"
     source.write_text(IN_NODES)
     line = line_of(IN_NODES, "// HERE")
     capture = (
-        "lists,lists[1],lists[1][1],names,pairs,pairs[1],groups,trees,trees[1],big,big[699],"
-        'big[#650].second,big[#700],big[5000],words,words["k299"],words["nope"]'
+        "lists,lists[1],names,pairs,pairs[1],groups,groups[1],trees,trees[1],gone,gone[1],big,"
+        "big[399],big[#350].second,big[#400],big[5000],huge,huge[699],huge[#650].second,"
+        'words["k299"],words["nope"]'
     )
     code, result = probe(source, line, capture, capsys)
-    assert "NESTED:1 700 300" in result["output"], result
+    assert "NESTED:1 400 300" in result["output"] and result["exit_code"] == 0, result
     rows = {row["selector"]: row for row in result["rows"]}
-    if compiler == "clang" or placed():
-        assert rows["lists"]["value"] == "size=1 {1: size=2 [2, 3]}", rows["lists"]
-        assert rows["lists[1]"]["value"] == "size=2 [2, 3]", rows["lists[1]"]
-        assert rows["lists[1][1]"]["value"] == "3", rows["lists[1][1]"]
-        assert rows["names"]["value"] == 'size=1 {1: size=2 ["al", "' + "z" * 20 + '"]}', rows
-    else:
-        # lldb-dap 18 reads no memory outside the nodes: those alone are withheld.
-        assert rows["lists"]["value"] == "size=1 {1: <not read>}", rows["lists"]
-        assert rows["lists[1]"]["error"] == NO_MEMORY, rows["lists[1]"]
-        assert rows["names"]["value"] == "size=1 {1: <not read>}", rows["names"]
-    # LLDB 18 reads clang's `groups` as a set too (its name holds `set`): from its nodes.
-    if placed():
-        assert rows["groups"]["value"] == "size=1 {1: size=1 {6}}", rows["groups"]
-    else:
-        assert rows["groups"]["value"] == "size=1 {1: <not read>}", rows["groups"]
     if compiler == "clang":
+        assert rows["lists"]["value"] == "size=1 {1: size=2 [2, 3]}", rows["lists"]
+        assert rows["names"]["value"] == 'size=1 {1: size=2 ["al", "' + "z" * 20 + '"]}', rows
+        # LLDB 18 reads clang's `groups` as a set (its name holds `set`): from its nodes.
+        groups = "size=1 {1: size=1 {6}}" if placed() else "size=1 {1: <not read>}"
+        assert rows["groups"]["value"] == groups, rows["groups"]
         assert rows["trees"]["value"] == "size=1 {1: size=1 {7: 8}}", rows["trees"]
-        assert rows["big"]["value"].startswith("size=700 {"), rows["big"]
+        assert rows["big"]["value"].startswith("size=400 {"), rows["big"]
+        assert rows["huge"]["value"].startswith("size=700 {"), rows["huge"]
         return
-    # A `std::array` is inside the node; a `std::map` isn't read in one.
+    # A `std::array` is inside the node; any other container held there is withheld alone.
     assert rows["pairs"]["value"] == "size=1 {1: size=2 [4, 5]}", rows["pairs"]
     assert rows["pairs[1]"]["value"] == "size=2 [4, 5]", rows["pairs[1]"]
+    for name, kind in (
+        ("lists", "std::vector"),
+        ("groups", "std::unordered_set"),
+        ("gone", "std::vector"),
+    ):
+        assert rows[name]["value"] == "size=1 {1: <not read>}", rows[name]
+        assert rows[f"{name}[1]"]["error"] == HEAP_BLOCK.format(kind), rows[f"{name}[1]"]
+    assert rows["names"]["value"] == "size=1 {1: <not read>}", rows["names"]
     assert rows["trees"]["value"] == "size=1 {1: <not read>}", rows["trees"]
     assert rows["trees[1]"]["error"] == (
         "not read: Peeky doesn't read a `std::map` held in an unordered container's node; "
         "print it from the program"
     ), rows["trees[1]"]
-    # Past 256 entries, and past the inspection window's 512: by position and by key.
-    assert rows["big"]["value"].startswith("size=700 {"), rows["big"]
-    assert rows["big[699]"]["value"] == "1398", rows["big[699]"]
-    assert int(rows["big[#650].second"]["value"]) % 2 == 0, rows["big[#650].second"]
-    assert rows["big[#700]"]["error"] == (
-        "[#700] not found: big has 700 entries: big[#0] to big[#699]"
-    ), rows["big[#700]"]
+    # Past 256 entries: by position and by key.
+    assert rows["big"]["value"].startswith("size=400 {"), rows["big"]
+    assert rows["big[399]"]["value"] == "798", rows["big[399]"]
+    assert int(rows["big[#350].second"]["value"]) % 2 == 0, rows["big[#350].second"]
+    assert rows["big[#400]"]["error"] == (
+        "[#400] not found: big has 400 entries: big[#0] to big[#399]"
+    ), rows["big[#400]"]
     assert re.fullmatch(
         r"\[5000\] not found: big has no key 5000 \(keys: (?:[0-9]+, ){20}\.\.\. "
-        r"\(700 total\)\); in C\+\+, big\[5000\] would insert it with a default value",
+        r"\(400 total\)\); in C\+\+, big\[5000\] would insert it with a default value",
         rows["big[5000]"]["error"],
     ), rows["big[5000]"]
+    if placed():
+        # By address, past the inspection window's 512 too.
+        assert rows["huge"]["value"].startswith("size=700 {"), rows["huge"]
+        assert rows["huge[699]"]["value"] == "1398", rows["huge[699]"]
+        assert int(rows["huge[#650].second"]["value"]) % 2 == 0, rows["huge[#650].second"]
+    else:
+        # Through variable paths, at most 512 nodes: none of its paths is read.
+        assert withheld(rows["huge"], 700) and withheld(rows["huge[699]"], 700), rows
     assert rows['words["k299"]']["value"] == "299", rows['words["k299"]']
     assert "(300 total)" in rows['words["nope"]']["error"], rows['words["nope"]']
 

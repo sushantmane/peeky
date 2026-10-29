@@ -481,8 +481,8 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     to inspect, with `--frame N`, and never says which one it refers to: nothing proves it.
   - Where something may be changing the container (`containers_settled`), `_node_listing` gives
     a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to retry
-    after that call returns. A count past 16,384 by then, or a heap string without `readMemory`,
-    still withholds it.
+    after that call returns. A count past what Peeky walks by then, or a heap string without
+    `readMemory`, still withholds it.
   - Both say so only where a proven read would succeed now (`_nodes_readable`): an `-O0` build,
     a proven layout, and entry types Peeky reads (`hashed_nodes.readable`).
   - A preview reads nested containers' nodes under the same rule: none below a note, or
@@ -509,9 +509,14 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - It also holds one `_Hash_node_value_base` of `_Value`, whose `_M_storage` is an
     `__aligned_buffer` of `_Value`, at least its size. The entry sits there: past the link,
     aligned for `_Value`, inside the node.
-  - The chain must end in a null `_M_nxt` after exactly `_M_element_count` nodes, at most
-    16,384 (`MAX_CHAIN`). Every node must be aligned. A longer chain, a cycle among them, is
-    refused when it passes the count.
+  - The chain must end in a null `_M_nxt` after exactly `_M_element_count` nodes. Every node
+    must be aligned. A longer chain, a cycle among them, is refused when it passes the count.
+  - By address (`readMemory`), the walk takes at most 16,384 nodes (`MAX_CHAIN`). Through
+    variable paths, at most 512 (`MAX_WORDS`): node N's path holds N steps, which LLDB walks
+    for each word, so a walk's paths hold O(N²) text. A longer one is refused before any path
+    is read.
+  - The worker caches each path's text for the stop (`_NodePaths`). A walk that fails drops
+    the paths it read (`forget`).
   - The first 256 entries (`MAX_NODES`) are read with the listing. Past them, the walk reads only
     each node's link. An entry is read when a page, a position or a key asks for it
     (`hashed_nodes.Paged`), from the node the walk placed, on that expansion's own budget.
@@ -523,9 +528,9 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - The word 8 bytes into the first node is `us._M_h._M_before_begin._M_nxt[1]._M_nxt`. LLDB
     reads `[1]` past a pointer, and `_M_nxt` of what is there, as `frame variable` does.
     Nothing is evaluated in the program. `Words` reads nothing outside the nodes.
-  - `Memory` reads more: each request takes the window around a node, and a string's text, or a
-    nested container's elements, come from where its pointers point. Only bytes at the nodes' own
-    addresses, and at what those pointers bound, are decoded.
+  - `Memory` reads more: each request takes the window around a node, and a string's text comes
+    from where its data pointer points. Only bytes at the nodes' own addresses, and at a
+    string's text, are decoded.
   - The entries must hold numbers, `bool`s, characters, enums, pointers and libstdc++ strings,
     in `std::pair`s and the program's structs. A struct has no base class, bitfield or anonymous
     member. A `long double` isn't read: the debug information doesn't say its format.
@@ -540,10 +545,11 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     followed.
   - A standard container in an entry is read by `_Reader.nested`, or withheld alone, with why
     (`withheld_as: not read`). The entry around it still reads.
-  - A `std::array` is inside the node. A `std::vector` needs `Memory`, its three pointers
-    placed by the debug information, and whole elements between them, at most 256.
-  - A nested unordered container needs `Memory` too. Its own layout and chain are proven as the
-    outer one's are, at most 256 entries.
+  - A `std::array` is inside the node, which the walk proves, and is read.
+  - A `std::vector`'s buffer, and a nested unordered container's nodes, are heap blocks. No
+    rule proves a heap block still allocated. A value destroyed in place
+    (`std::destroy_at(&m[1])`), before a new one is built there, keeps its old pointers. So
+    both are withheld.
   - Any other container in an entry, such as a `std::map`, is withheld.
   - A string's text is read from its own buffer, or where its data pointer points. Its length
     must fit that buffer, as `local_buffer` proves it. Up to 1,024 bytes are read, as for any
@@ -558,6 +564,9 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - `m[K]` sends `expand` a `key`: `DebugWorker.keyed_entry` compares every entry's key, as a
     selector compares one, however many there are. `m[#N]` past 511 sends `index`. Protocol 10
     added `key`.
+  - The client takes an entry only from an answer that names the key it asked for, and only
+    where that entry's `first` is the key. `Client.call` reads no answer whose
+    `X-Peeky-Protocol` names another protocol, a local session's worker's too.
   - Otherwise the row stays `not listed`, with the note it had.
 - **A string's own buffer.** LLDB 18 and 20 read GCC's `_M_local_buf`, a `char[16]`, as
   `char[0]`. LLDB says `DW_TAG_member '_M_local_buf' refers to type … which extends beyond the

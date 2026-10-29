@@ -7424,15 +7424,16 @@ class NativeSession:
         withheld.misread, withheld.name = misread, str(steps[-1][0])
         return withheld
 
-    def _nodes_readable(self, frame, steps, count):
+    def _nodes_readable(self, frame, steps, count, reads=None):
         """Whether ``_node_listing`` would read the entries of the unordered container
         ``steps`` ([(name, type)] from its root local) reaches in ``frame``, counting
         ``count`` itself, once nothing else stops it: an unoptimized build whose source
         asks to optimize no function, a layout the debug information proves, and at
-        most ``MAX_CHAIN`` entries of types Peeky reads (``hashed_nodes.readable``). Only
-        then does a row say why it reads none at this stop, and what to try (eval 13 prep,
-        findings 2 and 3)."""
-        from peeky.hashed_nodes import MAX_CHAIN, Unread, layout, readable
+        most ``MAX_CHAIN`` entries (``MAX_WORDS`` where the debugger reads no memory:
+        ``reads``, else what it said it supports) of types Peeky reads
+        (``hashed_nodes.readable``). Only then does a row say why it reads none at this
+        stop, and what to try (eval 13 prep, findings 2 and 3)."""
+        from peeky.hashed_nodes import MAX_CHAIN, MAX_WORDS, Unread, layout, readable
 
         graph = getattr(self, "fields", None)
         if graph is None or type(count) is not int:
@@ -7452,7 +7453,8 @@ class NativeSession:
             held = layout(graph, node)[0]
         except Unread:
             return False
-        return 0 <= count <= MAX_CHAIN and readable(graph, held)
+        reads = getattr(self, "reads_memory", False) if reads is None else reads
+        return 0 <= count <= (MAX_CHAIN if reads else MAX_WORDS) and readable(graph, held)
 
     def unreached_container(self, withheld, name, kind, holders=(), frame=None, steps=None):
         """The Withholding of an unordered container ``unlisted_container`` withholds
@@ -7523,7 +7525,15 @@ class NativeSession:
         ``hashed_nodes.read_entries`` does not prove. A ``NodesUnsettled`` where the
         container may be part-way through a change (``containers_settled``), saying
         why. ``path``: the variable path of its own count; ``count``: that count."""
-        from peeky.hashed_nodes import Memory, Unread, Words, read_entries, view_children, word
+        from peeky.hashed_nodes import (
+            MAX_WORDS,
+            Memory,
+            Unread,
+            Words,
+            read_entries,
+            view_children,
+            word,
+        )
         from peeky.native_previews import preview
 
         graph = getattr(self, "fields", None)
@@ -7548,10 +7558,14 @@ class NativeSession:
             # A call may be part-way through changing it (#181): its nodes too. Said why,
             # with where to read it, where its entries would read then (eval 13 prep,
             # finding 3).
-            if not self._nodes_readable(frame, steps, count):
+            if not self._nodes_readable(frame, steps, count, nodes[1] is not None):
                 return None
             return self.unsettled_nodes(frame, indirect, stack, deeper, threads)
         evaluate, read = nodes
+        if read is None and not 0 <= count <= MAX_WORDS:
+            # Through variable paths, node N's path holds N steps: a walk this long costs
+            # O(N²), so none is begun (#374 review).
+            return None
         base = path[: -len(suffix)] + "_M_h._M_before_begin._M_nxt"
         try:
             if read is not None:
@@ -7560,6 +7574,10 @@ class NativeSession:
                 memory = Words(base, evaluate)
             root, fetch = read_entries(graph, node, count, memory)
         except (Unread, ValueError, RuntimeError, OSError, TimeoutError, struct.error):
+            # A failed walk keeps none of the paths it read (#374 review).
+            forget = getattr(evaluate, "forget", None)
+            if callable(forget):
+                forget()
             return None
 
         def text(child):
@@ -11733,6 +11751,9 @@ class NativeSession:
         return discarded
 
     def normalize_capabilities(self, raw):
+        # Which walk of an unordered container's nodes the debugger allows (#374): by
+        # address, or through variable paths, which costs more per node.
+        self.reads_memory = raw.get("supportsReadMemoryRequest") is True
         return {
             "supports_set_variable": raw.get("supportsSetVariable") is True,
             # lldb-dap changes a field or element as it changes a local (#105).
