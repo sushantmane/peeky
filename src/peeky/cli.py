@@ -52,6 +52,7 @@ from peeky.probe import (
     run_probe,
     split_selectors,
 )
+from peeky.processes import without_credentials
 from peeky.textlines import split_lines
 
 RUST_VERSION = "1.96.0"
@@ -2873,8 +2874,8 @@ def _remote(url):
     """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
     if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
         raise ValueError(
-            "--worker must be a loopback URL such as http://127.0.0.1:8765; reach remote "
-            "workers through an SSH tunnel (ssh -N -L 8765:127.0.0.1:8765 user@host)"
+            "--worker must be a loopback URL (http://127.0.0.1:PORT); for a remote worker, "
+            "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
         )
     token = os.environ.get(WORKER_TOKEN_ENV, "")
     if len(token) < 16:
@@ -3242,7 +3243,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
     process = subprocess.Popen(
         command,
-        env={**os.environ, "DEBUG_TOKEN": token},
+        # Its own token, by the name the worker reads; never a remote worker's.
+        env={**without_credentials(os.environ), "DEBUG_TOKEN": token},
         stdout=subprocess.PIPE,
         stderr=log,
         text=True,

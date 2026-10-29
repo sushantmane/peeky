@@ -23,6 +23,7 @@ from pathlib import Path
 from peeky import add_version
 from peeky.client import Client
 from peeky.errors import PeekyError
+from peeky.processes import without_credentials
 from peeky.textlines import read_source, source_lines, split_lines
 from peeky.verification import __file__ as verification_script
 from peeky.worker import load_java_target, load_native_target, load_rust_target, make_server
@@ -108,8 +109,7 @@ def execute(
     Targets are trusted development code, not sandboxed. A child deliberately
     escaping the process group is outside the MVP ownership guarantee.
     """
-    child_env = dict(os.environ if env is None else env)
-    child_env.pop("DEBUG_TOKEN", None)
+    child_env = without_credentials(os.environ if env is None else env)
     process = subprocess.Popen(
         command,
         cwd=cwd,
@@ -248,8 +248,8 @@ class CodexDecision:
         ]
         if self.model:
             command[2:2] = ["--model", self.model]
-        # The model subprocess has no debugger credential; only controller uses it.
-        env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
+        # The model subprocess has no worker credential; only the controller uses it.
+        env = without_credentials(os.environ)
         prompt = INSTRUCTIONS + "\nINPUT DATA:\n" + json.dumps(context)
         outcome = execute(command, self.scratch, self.timeout, input_text=prompt, env=env)
         (self.scratch / "model.log").write_text(outcome["stdout"] + outcome["stderr"])

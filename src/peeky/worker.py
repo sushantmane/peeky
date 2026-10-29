@@ -31,6 +31,7 @@ from peeky.identifiers import (
     split_located,
 )
 from peeky.names import display_function, short_function
+from peeky.processes import without_credentials
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
 from peeky.text_sets import held_in_place, parse_text, text_kind
@@ -283,6 +284,9 @@ SOURCE_CHECKED = frozenset(
 )
 # A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
+# Each read of a request (its line, headers and body) waits at most this long: a
+# connection that sends nothing holds a thread no longer, even before it authenticates.
+REQUEST_READ_TIMEOUT_S = 10
 
 
 class DebugWorker:
@@ -6934,6 +6938,9 @@ def make_server(root, token, port=8765, *, adapter=None):
             probes.release()
 
     class Handler(BaseHTTPRequestHandler):
+        # Set on the connection before the request line is read (StreamRequestHandler).
+        timeout = REQUEST_READ_TIMEOUT_S
+
         def log_message(self, *args):
             pass
 
@@ -6962,7 +6969,6 @@ def make_server(root, token, port=8765, *, adapter=None):
                     size = int(self.headers.get("Content-Length", 0))
                     if not 0 < size <= MAX_REQUEST_BYTES:
                         raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
-                    self.connection.settimeout(10)
                     body = self.rfile.read(size)
                     if len(body) != size:
                         raise ValueError("Request body ended early")
@@ -7123,7 +7129,7 @@ def _run_probe_process(root, request, adapter, cap):
         marker = Path(scratch) / "launch-requested"
         command += ["--launch-budget", str(cap - PROBE_LAUNCH_MARGIN_S)]
         command += ["--launch-marker", str(marker)]
-        env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
+        env = without_credentials(os.environ)
         process = subprocess.Popen(
             command,
             cwd=scratch,

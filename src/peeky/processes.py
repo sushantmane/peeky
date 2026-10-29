@@ -22,6 +22,17 @@ from peeky.textlines import split_lines
 # lists the processes Peeky ends.
 _POPEN = subprocess.Popen
 
+# The worker's token, by the name the worker reads (DEBUG_TOKEN) and the name a client
+# reads (PEEKY_WORKER_TOKEN). Neither reaches a debugger, a debuggee, a build, a checker,
+# a candidate or a model.
+CREDENTIAL_ENV = frozenset({"DEBUG_TOKEN", "PEEKY_WORKER_TOKEN"})
+
+
+def without_credentials(environment):
+    """A copy of ``environment`` (a mapping, or key and value pairs) without the worker's
+    token under either name."""
+    return {key: value for key, value in dict(environment).items() if key not in CREDENTIAL_ENV}
+
 
 def _ps(*arguments):
     """``ps`` output with the C locale, or None if it cannot run within 5 s."""

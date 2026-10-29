@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from peeky.processes import without_credentials
 from peeky.textlines import split_lines
 
 PYTHON_LITERAL_NODES = (
@@ -842,7 +843,8 @@ class PythonCandidate:
     def _interpreter(self, script, pythonpath, *args):
         """The JSON ``script`` prints, run by the program's interpreter in the copy with
         ``pythonpath``; None (with a note) if it cannot run."""
-        environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        environment = without_credentials(os.environ)
+        environment.pop("PYTHONPATH", None)
         if pythonpath:
             environment["PYTHONPATH"] = pythonpath
         timeout = 120
