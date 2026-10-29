@@ -5991,7 +5991,12 @@ class NativeSession:
         # text says once per build (thirteenth evaluation).
         self.build_id = hashlib.sha256(
             json.dumps(
-                {"build": prepared.manifest.build_id, "target": target.target_identity},
+                {
+                    "build": prepared.manifest.build_id,
+                    # Headers outside the target (system, SDK, absolute): review 2 of #389.
+                    "external_inputs": self.external_inputs,
+                    "target": target.target_identity,
+                },
                 sort_keys=True,
             ).encode()
         ).hexdigest()

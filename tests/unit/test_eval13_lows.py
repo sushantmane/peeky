@@ -197,6 +197,64 @@ def test_a_value_one_run_lacks_beside_a_type_change_elsewhere(store):
     ], rows
 
 
+def test_a_type_peeky_cant_tell_changed_is_no_difference_where_a_run_has_no_value(store):
+    # Review 2 of PR #389: a Rust run saved before Rust type spellings (no debugger_type)
+    # against a newer one whose value is unavailable got differs 1 and ranked first, though
+    # its note says Peeky can't tell whether the type changed.
+    import sqlite3
+
+    def rust(kind, **value):
+        rows = [
+            {"hit": 1, "phase": "observed", "line": 40, "selector": "n", "type": "u32", **n}
+            for n in ({"value": "0"} if "value" in value else {"value": "1"},)
+        ]
+        rows.append({"hit": 1, "phase": "observed", "line": 40, "selector": "e", "type": kind})
+        rows[-1].update(value)
+        return {**_run(rows), "target_identity": {"language": "rust"}}
+
+    evidence.record(store, rust("rota::Engineer *", value="0x00000001004151e0"), language="rust")
+    connection = sqlite3.connect(store)
+    connection.execute("UPDATE captures SET debugger_type = NULL WHERE run_id = 1")
+    connection.commit()
+    connection.close()
+    evidence.record(
+        store,
+        rust(
+            "&rota::Engineer",
+            debugger_type="rota::Engineer *",
+            unavailable=True,
+            error=OPTIMIZED,
+        ),
+        language="rust",
+    )
+    untold = (
+        "the older run predates Rust type spellings, so Peeky can't tell whether the type "
+        "changed (`rota::Engineer *` then, `&rota::Engineer` now)"
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(row["selector"], row["differs"], row["note"]) for row in rows] == [
+        ("n", 1, None),
+        ("e", None, f"no value in run b, so the values were not compared; {untold}"),
+    ], rows
+    compared = {row["selector"]: row for row in evidence.run_query(store, "compare")["rows"]}
+    assert (compared["e"]["differs"], compared["e"]["note"]) == (None, rows[1]["note"])
+    # A proven type change still is one.
+    evidence.record(store, rust("&rota::Engineer", value="0x00000001004151e0"), language="rust")
+    evidence.record(
+        store, rust("*const rota::Engineer", unavailable=True, error=OPTIMIZED), language="rust"
+    )
+    rows = evidence.run_query(store, "diff")["rows"]
+    assert [(row["selector"], row["differs"], row["note"]) for row in rows] == [
+        ("n", 1, None),
+        (
+            "e",
+            1,
+            "type &rota::Engineer -> *const rota::Engineer; no value in run b, so the values "
+            "were not compared",
+        ),
+    ], rows
+
+
 def test_a_note_on_left_out_selectors_says_their_rows_still_show():
     # bill: "`tariff` and `over_peak` differ after the edit and may follow from it, so this
     # check leaves them out" read as contradicting the rows it came under.

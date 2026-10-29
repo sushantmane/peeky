@@ -1096,8 +1096,10 @@ debug information was moved out of the output again (debugger_diagnostics in --j
 line just like one would be too``. `--json` always has it whole.
 
 - A build is its `build_id` in `--json`: a digest of the build's recipe, its sources as built, an
-  edit included, and its tools. It leaves out the build's outputs, which name each build's fresh
-  directory.
+  edit included, the headers it read from outside the target, and its tools. It leaves out the
+  build's outputs, which name each build's fresh directory.
+- `build_id` is a best-effort identity, used only to shorten notes a probe repeats. It is not a
+  complete or hermetic identity of the build.
 - So a candidate, a changed source, or another compiler is another build, whose first probe gives
   the warning whole again.
 - A result with no `build_id`, such as one from an older worker, gives it whole every time.
@@ -1937,6 +1939,9 @@ as for one optimized out. With no value to compare, the row is no value differen
 - A type that changed is still a difference, in tier 3, with `differs` 1. Its note adds that the
   values weren't compared: `type int -> long; no value in run b, so the values were not
   compared`.
+- A type Peeky can't tell changed, against a Rust run saved before schema 18, proves nothing. Its
+  row stays here, with `differs` `NULL`, and its note says why after: `no value in run b, so the
+  values were not compared; the older run predates Rust type spellings, …`.
 - The table shows such a value's label alone, such as `<not shown: …>`. `queries run` and
   `--json` have it whole, with why.
 - A note counts them apart from the differences, and names the run and the selectors: ``not

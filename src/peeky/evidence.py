@@ -885,16 +885,25 @@ _MOVED_TOO = (
 # aggregate terms; `differs` is NULL for such a row only where the rows are shown.
 _NOT_COMPARED = ", so not a value difference"
 # What pairing proves apart from the values, which a run with no value to compare leaves
-# standing (review of PR #389): a type that changed, or may have. Its row stays a
-# difference, in its own tier, and its note says the values were not compared (`_UNREAD`).
-# No other kind comes with `nv`: those need a hit one run lacks, or both values read.
-_TYPED = f"COALESCE(kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%', 0)"
+# standing (review of PR #389): a type that changed. Its row stays a difference, in tier 3,
+# and its note says the values were not compared (`_UNREAD`). A type Peeky can't tell
+# changed (`_UNTOLD`) proves nothing: with `nv`, its row is one of the values a run has
+# none of, differs NULL, its note kept after (`_UNSURE`; review 2 of PR #389). No other
+# kind comes with `nv`: those need a hit one run lacks, or both values read.
+_TYPED = "COALESCE(kind LIKE 'type %', 0)"
 _UNREAD = "COALESCE('; no value in ' || nv || ', so the values were not compared', '')"
+_UNSURE = f"CASE WHEN kind LIKE '{_UNTOLD_SAYS}%' THEN kind END"
+# What follows `no value in run b` for such a row: `, so not a value difference`, or for a
+# type Peeky can't tell changed, that the values were not compared, then why.
+_NO_VALUE_TAIL = (
+    "CASE WHEN {0} IS NULL THEN '" + _NOT_COMPARED + "' ELSE ', so the values were not "
+    "compared; ' || {0} END"
+)
 # `compare`'s differs and note for a row with no value to compare.
 _UNCOMPARED = (
     f"CASE WHEN nv IS NULL OR {_TYPED} THEN differs END AS differs, CASE WHEN nv IS NULL "
-    f"OR {_TYPED} THEN note || {_UNREAD} ELSE 'no value in ' || nv || '{_NOT_COMPARED}' || "
-    "COALESCE('; ' || qualified, '') END AS note"
+    f"OR {_TYPED} THEN note || {_UNREAD} ELSE 'no value in ' || nv || "
+    f"{_NO_VALUE_TAIL.format(_UNSURE)} || COALESCE('; ' || qualified, '') END AS note"
 )
 
 
@@ -1007,7 +1016,8 @@ _RANKED = f"""(
     note || {_UNREAD} AS note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
     AND (nv IS NULL OR {_TYPED})
-    AND (kind IS NULL OR kind LIKE 'missing%' OR ({_TYPED} AND NOT moved))
+    AND (kind IS NULL OR kind LIKE 'missing%'
+      OR ((kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%') AND NOT moved))
   -- A pointer whose type changed, but whose values differ only in addresses (a reference
   -- an edit made a raw pointer: eleventh evaluation, prep 16), is a real difference too,
   -- but one row per selector (and stop), its first hit's, as for its addresses below.
@@ -1019,7 +1029,7 @@ _RANKED = f"""(
   UNION ALL SELECT {_UNTOLD_RANK}, hit, phase, selector, value_a, value_b, differs,
     {_TYPE_FOLDED}, MIN(pos)
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
-    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved GROUP BY selector, phase, st, kind
+    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved AND nv IS NULL GROUP BY selector, phase, st, kind
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -1050,17 +1060,19 @@ _RANKED = f"""(
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
     AND NOT unchanged AND (nv IS NULL OR {_TYPED})
   -- A value one run has none of (`nv`), with nothing else told apart (`_TYPED`): one row
-  -- per selector (and stop) and run, its first hit's, saying at how many hits; any
-  -- qualified value's note after. Its differs is unknown (NULL).
+  -- per selector (and stop), run and any doubt about its type (`_UNSURE`), its first
+  -- hit's, saying at how many hits; any qualified value's note after. Its differs is
+  -- unknown (NULL).
   UNION ALL SELECT {_NO_VALUE_RANK}, hit, phase, selector, value_a, value_b, NULL,
     'no value in ' || nv || CASE WHEN alike > 1 THEN ' at ' || alike || ' hits'
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
-      || 'selector') || ': its first hit)' ELSE '' END || '{_NOT_COMPARED}'
+      || 'selector') || ': its first hit)' ELSE '' END || {_NO_VALUE_TAIL.format("unsure")}
       || COALESCE('; ' || qualified, ''), pos
     FROM (SELECT hit, phase, selector, value_a, value_b, nv, qualified, st, pos,
-      COUNT(*) OVER alike AS alike, ROW_NUMBER() OVER (alike ORDER BY pos) AS nth
+      {_UNSURE} AS unsure, COUNT(*) OVER alike AS alike,
+      ROW_NUMBER() OVER (alike ORDER BY pos) AS nth
       FROM pair WHERE nv IS NOT NULL AND NOT {_TYPED} AND NOT unchanged
-      WINDOW alike AS (PARTITION BY selector, phase, st, nv))
+      WINDOW alike AS (PARTITION BY selector, phase, st, nv, {_UNSURE}))
     WHERE nth = 1
   -- hit and the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, differs,
