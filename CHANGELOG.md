@@ -9,7 +9,8 @@
     nodes where the debug information proves their layout. The entries must be integers, bools
     or strings, alone or in pairs and structs (#371).
   - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
-    changed (#369).
+    changed inside the lambda; its refusal names the lambda's own copy where a change works
+    (#369, #380).
   - A text set in a `std::string`'s own buffer, with lldb-dap 20. Heap strings still need
     lldb-dap 21 (#365).
 - **C and C++:**
@@ -31,6 +32,9 @@
   `DEBUG_TOKEN` was. The worker bounds each read of a request at 10 s, before the token check too.
   The tunnel command adds `-o ExitOnForwardFailure=yes`. [SECURITY.md](SECURITY.md) says how to
   report a vulnerability (#378).
+- **C and C++ notes:** a withheld unordered container says why no node is read, and where it
+  reads. Refused changes to a lambda's capture or a structured binding say where the value is.
+  `describe` marks statics and lists GCC captures (#380).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

@@ -112,6 +112,22 @@ def test_a_static_local_is_never_changed_in_cpp(directory, cxx, capsys):
         capsys.readouterr()
 
 
+@pytest.mark.timeout(240)
+def test_describe_marks_a_static_local_static(directory, cxx, capsys):
+    # Eval 13 (#385): `describe` listed a `static` local as if it were the frame's own.
+    path = directory / "statics.cpp"
+    path.write_text(STATICS)
+    assert main(["describe", str(path), "--json"]) == 0
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    tick = next(scope for scope in scopes if scope["scope"].startswith("tick"))
+    statics = set(tick.get("statics", ()))
+    assert {"calls", "w"} <= statics and "x" not in statics, tick
+    # GCC builds `cs` at compile time, in read-only data; clang, in the frame.
+    assert ("cs" in statics) is (cxx == "gcc"), tick
+    run = next(scope for scope in scopes if scope["scope"].endswith("run"))
+    assert run.get("statics") == ["calls"], run
+
+
 # Review of PR #370: two instances of a template, each with its own `calls`, which share
 # their declaration's file and line; LLDB names g++'s by its symbol,
 # `long tick<int>(int)::calls`.

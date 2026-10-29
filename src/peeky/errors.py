@@ -444,6 +444,18 @@ _MUTATION_HINTS = (
         "`session step` to it.",
     ),
     (
+        # A GCC lambda's capture (eval 13): the lambda's own copy, or what it refers to.
+        r"is a capture of this lambda",
+        "Change it where the message says (the lambda's own copy, or what a capture by "
+        "reference refers to), or edit the source with `--old`/`--new`.",
+    ),
+    (
+        # A structured binding by reference (eval 13): no call passed it.
+        r"is a structured binding by reference",
+        "Change what the binding refers to where it is [settable], or what fills it, before "
+        "this line; or edit the source with `--old`/`--new`.",
+    ),
+    (
         r"in a caller's frame",
         "Change it in its own frame, before the call: `--at <its line> --hits N --set-hit "
         "N`, N counting that line's stops.",

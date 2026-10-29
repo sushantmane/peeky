@@ -913,7 +913,18 @@ def _describe_text(manifest):
                 parts.append(_block_span_text(spans[name]))
             if name in scope.get("globals", ()):
                 parts.append("module global")
+            if name in scope.get("statics", ()):
+                # In static storage: read where the code names it, never changed (#364).
+                parts.append("static")
             shown.append(f"{name} ({', '.join(parts)})" if parts else name)
+        # A GCC lambda's captures, which a selector names inside it, and how each is
+        # captured (eval 13); among the names, in order.
+        for name, capture in (scope.get("captures") or {}).items():
+            parts = [spell(capture["type"])] if capture.get("type") else []
+            parts.append(f"capture {capture.get('how')}")
+            shown.append(f"{name} ({', '.join(parts)})")
+        if scope.get("captures"):
+            shown.sort(key=lambda text: text.split(" ", 1)[0])
         lines.append(f"names in {scope['scope']}{where}: {', '.join(shown) or '-'}")
     from peeky.probe import optimization_level
 

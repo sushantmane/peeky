@@ -749,6 +749,9 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   `auto &[at, n] = *owner`. Such fields are marked `[not settable: reference]`. To change one, set
   it in the frame that owns the struct, before the call
   ([details](#change-a-field-behind-a-pointer)).
+- A refused change to a structured binding by reference says what it binds. For `v` in
+  `for (auto &[k, v] : m)`, change what fills `m`. For `auto &[a, b] = p;`, change `p.b` where it
+  is settable.
 - In C, the program's sources may call the function only once. Then a refusal for a pointer
   parameter names that call:
   ``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``. If that
@@ -959,6 +962,27 @@ That is the case for:
   withheld the same way. Where Peeky can't read the container's own count, the row is withheld
   too, and says so. That happens for one reached through a base class or an anonymous member.
 
+  Where Peeky would read the nodes but can't at this stop, the row says why, and where to read
+  them:
+
+  - Through a pointer or reference that Peeky can't show refers to a live object. With lldb-dap
+    18, which gives a container local no address, a reference parameter to one is such a case.
+    The row then names the local it may refer to, where that local reads:
+
+    ```
+    stock  Stock &  <not listed: the debugger counts 0 of its 3 entries, and Peeky reads its nodes only through a reference to a live object, and can't place what `stock` refers to: `on_hand` in main (frame 1) may be it, which this debugger gives no address (lldb-dap 20 does); read `on_hand` there (`--frame 1`)>
+    ```
+
+  - While a call may be changing the container
+    ([A container that something may be changing](#a-container-that-something-may-be-changing)).
+    The row names that call, and says to read it after the call returns:
+
+    ```
+    on_hand  Stock  <not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from its nodes while a constructor, destructor or assignment operator below this frame (Movement::~Movement) may be part-way through changing it; read it after that call returns>
+    ```
+
+  Elsewhere it says to print the entries from the program.
+
   A right count isn't enough. LLDB decodes each entry as the allocator's first template
   argument, at a fixed place in each node. So Peeky uses LLDB's listing only where the debug
   information proves that type and place right. These are read from the nodes instead, or
@@ -1035,6 +1059,8 @@ not shown: a standard-library call below this frame (std::__1::vector<…>::clea
 - Through a pointer or reference, it ends:
   `… while a standard-library call runs on this thread (…)`.
 - For a lifetime under way, it names `a constructor, destructor or assignment operator`.
+- An unordered container that Peeky reads from its own nodes says so of itself:
+  ``… and Peeky doesn't read them from its nodes while a standard-library call below this frame (…) may be part-way through changing it; read it after that call returns``.
 - With several threads, it says:
   ``the program runs 2 threads: a stop pauses every other one wherever it is, perhaps part-way through changing `shared` …``.
 - Such a row has no handle. So a selector below it is refused with the same reason. A map's key
@@ -1116,7 +1142,12 @@ Some things only look different:
 - **A lambda's captures** are read through `__closure`, which lldb-dap doesn't list
   ([details](#read-a-lambdas-captures)). In an optimized build, and at a one-line lambda's first
   stop, a captured name is `not found`, and the row says why. To see a by-value capture there,
-  stop on the line that creates the lambda, or print it inside the lambda.
+  stop where the lambda is made, or print it inside the lambda.
+- **Where a lambda is made:** GCC builds the lambda on its last line, `};`, in the function around
+  it. It gives the lambda's first line only the lambda's prologue. So `--at` that first line
+  stops inside the lambda, on its next line, and the probe warns where the lambda is made. A stop
+  on the `};` line in the outer function comes before the lambda copies what it captures by
+  value.
 - **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
   no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
   once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
@@ -1190,8 +1221,10 @@ Some things only look different:
     to. In an optimized build, only an object of the frame is read.
   - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary
     that its line destroys. Such a row shows `not shown: the binding refers to an object Peeky
-    can't prove is still alive`, and why. Read it where the code names that object, or bind by
-    value.
+    can't prove is still alive`, and why. Read that object where the code names it. For a
+    container's element, the row says to read the container itself, such as the map a loop
+    walks. Or print the value from the program. Binding by value instead would break a loop
+    that writes through the binding.
   - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
     tell whether that pass has set its reference yet.
   - Peeky reads the binding's line to tell it from a reference the code declares with the
@@ -1583,6 +1616,8 @@ hit  phase     line  function  selector  type        value
 - A `static` local is never changed: Peeky changes only values a frame holds itself. Its rows say
   `[not settable: static]`. `--set calls=5` is refused before the program runs. A `const` one's
   fields are refused as const.
+- `describe` marks it among the function's names: `calls (long, static)`. So it marks a `const`
+  aggregate GCC builds in read-only data.
 - A lambda is a function of its own: a `static` of the function around it isn't read there.
 
 ### Read C++ members
@@ -1607,6 +1642,9 @@ member of `this`:
 - clang lists the lambda's object as `this`. A bare `count` there says to select `this.count`.
 - GCC passes the lambda's object as `__closure`, which lldb-dap doesn't list. Peeky reads it as a
   hover, which runs nothing. `session inspect` lists the captures under `[Captures]`.
+- In a GCC build, `describe` lists the captures among the lambda's names, with how each is
+  captured: `tariff (const Tariff, capture by value)`, `over_peak (long int &, capture by
+  reference)`.
 - A capture by value shows the lambda's copy. The program may have changed the outer variable
   since the lambda was made.
 - A capture by reference shows what it refers to: `count  long  25`. The `type` is that value's,
@@ -1628,8 +1666,16 @@ member of `this`:
   its block, as C++ reads it. Above it in the block, and after the block, the name reads the
   capture. So does a stop whose code isn't the block's, as after a macro's `if (int x = 9) …`.
   Where Peeky can't tell, as in the block on the declaration's own line, the row says why.
-- No capture can be changed, by value or by reference. The lambda's object holds it, which the
-  frame reaches through a pointer. A `--set` is refused before the program runs. Change the outer
+- No capture can be changed inside the lambda, by value or by reference. The lambda's object
+  holds it, which the frame reaches through a pointer. Its rows say `[not settable: capture]`, and
+  a `--set` is refused before the program runs, saying the same.
+- A capture by value is the lambda's own copy, a member of the lambda's object: GCC 13 names it
+  `__tariff`, clang `tariff`. Where a local of the function around the lambda is that object,
+  `describe` lists its integer fields as settable there: `main: price.__tariff.cents_per_kwh`.
+- Change that copy at a stop in that function once the lambda is made:
+  `--set-at 61@4 price.__tariff.cents_per_kwh=45`. It reaches the lambda where the code calls
+  `price` itself, not a copy of it. A GCC build's refusal names this route.
+- For a capture by reference, change what it refers to where that is owned. Or change the outer
   variable before the lambda is made, or edit the source.
 - Peeky reads no capture in an optimized build, where a `mutable` lambda may keep one in a
   register. Nor at a one-line lambda's first stop, before it stores `__closure`. There a capture

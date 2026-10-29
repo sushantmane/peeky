@@ -325,8 +325,8 @@ class DebugWorker:
         self.global_handles = set()
         # Scope handles of a GCC lambda's captures (#361): read through `__closure`,
         # never changed; and the note on what is read through each listed frame's
-        # `__closure`, by frame id, for the stop of ``pointee_stop``.
-        self.capture_handles = set()
+        # `__closure`, by frame id, for the stop of ``pointee_stop``. Each handle's frame.
+        self.capture_handles = {}
         self.closure_notes = {}
         # Scope handles of a frame's variables in static storage (C, C++, #364), with the
         # frame: read, never changed.
@@ -2930,7 +2930,7 @@ class DebugWorker:
                 pending.append((handle, scope, exposed, len(variables)))
             # A GCC lambda's captures, which lldb-dap doesn't list (#361): read through
             # `__closure`, in a scope of their own that no change is made through.
-            self.capture_handles = set()
+            self.capture_handles = {}
             captured, unread = self.read_captures(runtime, selected_frame, plan)
             if (
                 index == 0
@@ -3141,7 +3141,8 @@ class DebugWorker:
                 refusal := getattr(runtime, "capture_refusal", None)
             ):
                 # A GCC lambda's capture (#361): its object holds it, read through a pointer.
-                raise ValueError(f"{args['name']!r} cannot be changed: {refusal(args['name'])}")
+                why = refusal(args["name"], frame=self.capture_handles[ref])
+                raise ValueError(f"{args['name']!r} cannot be changed: {why}")
             if ref in self.static_handles:
                 # A C or C++ variable in static storage (#364).
                 raise ValueError(
@@ -3809,20 +3810,95 @@ class DebugWorker:
 
     def nodes_reachable(self, frame, trail, names):
         """Whether Peeky may read the nodes of an unordered container reached by ``names``
-        in ``frame`` (#360): ``trail`` holds the debugger's variable for each name, the
-        container (or a pointer or reference to it) last. Every C or C++ pointer and C++
-        reference on the way (``indirections``) must be judged to refer to a live object
-        (#339's rule), never left unjudged: a live heap block, or the dead frame a
-        dangling one holds, may hold bytes that read as entries."""
+        in ``frame`` (#360): ``nodes_unreached`` finds no step that stops it."""
+        return self.nodes_unreached(frame, trail, names) is None
+
+    def nodes_unreached(self, frame, trail, names):
+        """None where Peeky may read the nodes of an unordered container reached by
+        ``names`` in ``frame`` (#360): ``trail`` holds the debugger's variable for each
+        name, the container (or a pointer or reference to it) last. Every C or C++
+        pointer and C++ reference on the way (``indirections``) must be judged to refer
+        to a live object (#339's rule), never left unjudged: a live heap block, or the
+        dead frame a dangling one holds, may hold bytes that read as entries. Else which
+        step stops it: (its name, "pointer" or "reference", the locals Peeky couldn't place
+        that may be what it refers to, ``unplaced_holders``), or () where the build can't
+        say which steps are pointers or references."""
         found = getattr(self.runtime, "indirections", None)
         steps = found(frame, list(names)) if found and len(trail) == len(names) else None
         if steps is None:
-            return False
+            return ()
         for index, kind in steps:
             proven = self.pointee_proven if kind == "pointer" else self.referent_proven
             if not proven(trail[index], frame, names[: index + 1]):
-                return False
-        return True
+                holders = self.unplaced_holders(trail[index], frame, names[: index + 1], kind)
+                return (str(names[index]), kind, holders)
+        return None
+
+    def unplaced_holders(self, variable, frame, steps, kind):
+        """The listed frames' locals Peeky couldn't place (the debugger gave no address
+        for them, as lldb-dap 18 gives none for a container, #339) that may hold what the
+        pointer or reference ``variable`` refers to, where its address is near the stack
+        pointer and above it, in a live call's frame: [(frame index, its function, the
+        local's name)] of those whose own type is what it refers to, and which read
+        there (``container_reads``), for where to read it instead (eval 13 prep, finding
+        2). At most two."""
+        value = variable.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        sp = self.stop_stack_pointer() if held is not None else None
+        if type(sp) is not int or not sp <= int(held[0], 16) < sp + STACK_NEAR:
+            # Below the stack pointer is no live call's but the innermost's red zone.
+            return []
+        reached = getattr(self.runtime, "pointee_of" if kind == "pointer" else "referent_of", None)
+        try:
+            pointer = reached(frame, [str(step) for step in steps]) if reached else None
+        except (KeyError, TypeError, ValueError):
+            pointer = None
+        held_extents = getattr(self.runtime, "held_extents", None)
+        if not isinstance(pointer, dict) or held_extents is None or self.held_stop != self.stop_id:
+            # The listed frames' locals are read for this stop's judgement (``stop_bases``).
+            return []
+        pointer = {**pointer, "character": False}
+        state, found = self.pointee_state(), []
+        for identity, extras in self.held_extras.items():
+            for name, local in extras["unplaced"]:
+                if state["placed"].get((identity, name)) is not None or len(found) >= 2:
+                    continue
+                try:
+                    extents = held_extents(local, extras["frame"], name, address=1)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                # The local itself, not a member of it, is of what it refers to's type.
+                if not any(
+                    selector == name and extent.get("element") == pointer.get("pointee")
+                    for selector, extent in extents
+                ):
+                    continue
+                if self.container_reads(local, extras["frame"], name):
+                    shown = display_function(extras["frame"].get("name")) or "a frame"
+                    found.append((extras["index"], shown, str(name)))
+        return found
+
+    def container_reads(self, variable, frame, name):
+        """Whether the unordered container local ``name`` of the listed ``frame`` (the
+        debugger's ``variable``) reads at this stop, as its row there would: the debugger
+        lists it right, or Peeky reads its entries from its own nodes (#360). Only then
+        does a row send the reader there (``unplaced_holders``)."""
+        runtime = self.runtime
+        unlisted = getattr(runtime, "unlisted_container", None)
+        lister = getattr(runtime, "listed_container", None)
+        if unlisted is None or lister is None:
+            return False
+        steps = [(name, variable.get("type"))]
+        try:
+            withheld = unlisted(variable, frame, steps, lambda path: self.raw_value(frame, path))
+            if withheld is None:
+                return True
+            view = lister(
+                withheld, variable, frame, steps, self.node_reader(frame), **self.preview_stack()
+            )
+        except (ValueError, RuntimeError, OSError, TimeoutError):
+            return False
+        return isinstance(view, dict)
 
     def referent_proven(self, variable, frame, steps):
         """Whether the C++ reference ``variable`` (whose value the debugger gives as the
@@ -4039,7 +4115,10 @@ class DebugWorker:
                 # value view. Never with a note (its count may be leftovers too), nor
                 # through a pointer not proven to point at a live object (#339).
                 way = [*trail[: len(ancestry)], variable]
-                if self.nodes_reachable(frame, way, [step for step, _ in ancestry] + [name]):
+                unreached = self.nodes_unreached(
+                    frame, way, [step for step, _ in ancestry] + [name]
+                )
+                if unreached is None:
                     listed = lister(
                         unlisted,
                         variable,
@@ -4048,7 +4127,18 @@ class DebugWorker:
                         self.node_reader(frame),
                         **self.preview_stack(),
                     )
-                if listed is not None:
+                elif unreached and (said := getattr(self.runtime, "unreached_container", None)):
+                    # Withheld all the same, with why Peeky reads no node through that
+                    # step and where it does (eval 13 prep, finding 2).
+                    listed = said(
+                        unlisted, *unreached, frame=frame, steps=[*ancestry, (name, kind)]
+                    )
+                if isinstance(listed, str):
+                    # Peeky's own reason no node is read here, in place of the debugger's
+                    # miscount alone.
+                    changing = unlisted = listed
+                    listed = None
+                elif listed is not None:
                     changing = None
             if changing and not reason:
                 reason, note, carried = changing, None, None
@@ -5100,7 +5190,7 @@ class DebugWorker:
         if not variables:
             return None, unread
         self.reference_counter += 1
-        self.capture_handles.add(self.reference_counter)
+        self.capture_handles[self.reference_counter] = frame
         return {
             "name": CAPTURES_SCOPE[0],
             "reference": self.reference_counter,
@@ -5779,7 +5869,8 @@ class DebugWorker:
         ):
             # Inside a GCC lambda's capture (#361), which the lambda's object holds.
             selector = member_selector(record[2], args["name"])
-            raise ValueError(f"`{selector}` cannot be changed: {refusal(record[2][0][0])}")
+            why = refusal(record[2][0][0], frame=record[0], selector=selector)
+            raise ValueError(f"`{selector}` cannot be changed: {why}")
         if record[0].get("id") != self.innermost_frame:
             raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
         if level := self.optimized():

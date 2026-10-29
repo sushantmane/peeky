@@ -216,6 +216,12 @@ class _Lambda:
     def validate_member(self, *args, **kwargs):
         raise AssertionError("a capture's member is never judged for a change")
 
+    def _function_at(self, frame):
+        # No build's declarations: no route to the lambda's own copy is told.
+        return None
+
+    _capture_route = NativeSession._capture_route
+
     capture_refusal = NativeSession.capture_refusal
     never_settable_row = NativeSession.never_settable_row
 
