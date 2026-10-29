@@ -1444,3 +1444,38 @@ def test_a_partial_stack_page_is_never_the_whole_stack(tmp_path):
     worker = DebugWorker(tmp_path)
     worker.dap, worker.thread_id, worker.whole_frames = PagedDap(5, fail=True), 1, None
     assert worker.whole_stack(1024).complete is False
+
+
+@pytest.mark.parametrize("sent", [b"", b"POST /version HTTP/1.1\r\nAuthorization: Bea"])
+def test_a_connection_that_stalls_before_its_token_is_closed(tmp_path, monkeypatch, sent):
+    # Pre-release security review: nothing bounded the reads before authentication, so
+    # any local process could hold a worker thread open by sending nothing.
+    import socket
+    import threading
+    import time
+
+    from peeky import worker as worker_module
+    from peeky.client import Client
+
+    monkeypatch.setattr(worker_module, "REQUEST_READ_TIMEOUT_S", 0.5, raising=False)
+    server = make_server(tmp_path, "t" * 16, 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with socket.create_connection(("127.0.0.1", server.server_port)) as connection:
+            connection.sendall(sent)
+            connection.settimeout(5)
+            started = time.monotonic()
+            assert connection.recv(1024) == b""
+            assert time.monotonic() - started < 4
+        version = Client(f"http://127.0.0.1:{server.server_port}", "t" * 16).call("version")
+        assert "protocol" in version
+    finally:
+        server.shutdown()
+        server.server_close()
+        server.worker.close()
+
+
+def test_the_worker_bounds_each_read_at_ten_seconds():
+    from peeky import worker as worker_module
+
+    assert worker_module.REQUEST_READ_TIMEOUT_S == 10

@@ -3006,6 +3006,8 @@ peeky: [INVALID_REQUEST] Frame 2 is out of range: this stop lists 2 frame(s), 0 
 ```
 
 - A frame past the stack is refused with `INVALID_REQUEST`, which says how many frames there are.
+- In C, C++, Rust and Java, a frame outside your sources, such as libc's or `start` below `main`,
+  is refused with `INVALID_REQUEST`, which names it. After a step, it is refused in any language.
 - A caller's values can't be changed. `session set` takes no `--frame`, and a change to a caller's
   value is refused with `MUTATION_REJECTED`. So caller listings never say `[settable]`.
 - Rust's proofs for owned locals and `Box`es hold only in the innermost frame. So a caller's `Vec`
@@ -3209,6 +3211,8 @@ A step can leave your sources: into a library, into Rust's standard library, or 
 - Nothing there is read or changed. The one exception is what your function returned when the step
   left it ([2.9](#29-what-a-function-returned)).
 - To get back, use `step --out` or `continue`.
+- `--frame N` still reads a frame of your code further down. Another frame outside your sources is
+  refused, and the refusal names where the step stopped.
 - In C, C++ and Rust, `step --out` leaves one frame at a time, also in a library. While your code
   is still on the stack, `step --out` returns to it.
 - Past `main`, the state says so, and `continue` finishes.
