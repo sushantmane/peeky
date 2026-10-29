@@ -466,7 +466,7 @@ def test_function_scopes_are_bounded(tmp_path, monkeypatch):
     scopes = native.function_scopes(info, line, tmp_path, ("app.cpp",))
     assert scopes[-1] == {"omitted": 2} and len(scopes) == 2
     monkeypatch.setattr(native, "MAX_DIES", 3)
-    with pytest.raises(ValueError, match="Too many debug-info entries"):
+    with pytest.raises(native.SymbolLimit, match="at most 3 entries of a build's debug info"):
         native.function_scopes(info, line, tmp_path, ("app.cpp",))
 
 

@@ -27,19 +27,28 @@ from fractions import Fraction
 from pathlib import Path
 
 from peeky.adapters import ViewBudgetExhausted
-from peeky.native import _metadata, parse_lines
+from peeky.native import (
+    MAX_DEBUG_INFO,
+    MAX_DIES,
+    MAX_LINE_TEXT,
+    _LineParser,
+    _metadata,
+    _symbol_text,
+    parse_lines,
+    symbol_limit,
+)
 from peeky.rust_chars import ESCAPED
 from peeky.rust_lexer import code_only
 from peeky.textlines import octal_string, split_lines
 
-# An application unit's own DWARF: a program using std's collections has megabytes of
-# monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
-# tens of milliseconds, inside the symbol deadline.
+# The text of the units' index, and of a unit given as text. An application unit's own
+# DWARF is read as llvm-dwarfdump writes it (#397), within native.MAX_DEBUG_INFO and
+# MAX_DIES: a crate using std's collections has megabytes of monomorphized types (33 MB
+# of text, 95,000 entries, for one using BTreeMap).
 RUST_METADATA = 16 * 1024 * 1024
 
 MAX_UNITS = 4096
 MAX_APPLICATION_UNITS = 16
-MAX_DIES = 200_000
 MAX_DEPTH = 64
 MAX_LAYOUTS = 4096
 SYMBOL_DEADLINE_S = 30
@@ -129,15 +138,20 @@ def _close_deeper(stack, depth):
 
 def parse_dies(text, *, units):
     """Parse llvm-dwarfdump DIE output by indentation; unknown rows fail closed.
+    ``text``: its text, or its lines as llvm-dwarfdump writes them (#397).
 
     Attributes print at 12 + 2 + 2*depth columns independent of offset width.
     Every child list in --show-children output must end with its own NULL.
     """
-    if len(text.encode()) > RUST_METADATA:
-        raise ValueError("Rust debug information exceeds limit")
+    if isinstance(text, str):
+        if len(text.encode()) > RUST_METADATA:
+            raise ValueError("Rust debug information exceeds limit")
+        text = split_lines(text)
     roots, stack, pending, last, seen, count = [], [], None, None, False, 0
     attribute = None
-    for raw in split_lines(text):
+    # One copy of each repeated name and value: a unit's text repeats most of itself.
+    kept = {}
+    for raw in text:
         if not raw.strip():
             continue
         if not seen and (raw == ".debug_info contents:" or _HEADER.fullmatch(raw)):
@@ -172,8 +186,9 @@ def parse_dies(text, *, units):
                 continue
             count += 1
             if count > MAX_DIES:
-                raise ValueError("Too many DWARF entries")
-            die = _Die(int(match[1][2:-1], 16), match[3], {}, [], depth=depth)
+                raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
+            tag = kept.setdefault(match[3], match[3])
+            die = _Die(int(match[1][2:-1], 16), tag, {}, [], depth=depth)
             if depth == 0:
                 if units:
                     if pending is None:
@@ -197,8 +212,8 @@ def parse_dies(text, *, units):
                 raise ValueError("DWARF attribute is not attached to an entry")
             if match[2] in last.attributes:
                 raise ValueError("Duplicate DWARF attribute")
-            last.attributes[match[2]] = match[3]
-            attribute = match[2]
+            attribute, value = kept.setdefault(match[2], match[2]), match[3]
+            last.attributes[attribute] = kept.setdefault(value, value)
             continue
         if last is not None and last.attributes and _CONTINUATION.fullmatch(raw):
             last.continued.setdefault(attribute, []).append(raw.strip())
@@ -1670,31 +1685,39 @@ def application_symbols(
         raise ValueError("Rust symbol extraction has no remaining time budget")
     deadline = _clock() + budget
 
-    def dump(arguments):
-        remaining = deadline - _clock()
-        if remaining <= 0:
+    def remaining():
+        left = deadline - _clock()
+        if left <= 0:
             raise ValueError("Rust symbol extraction exceeded its shared deadline")
-        return _metadata(
-            dwarfdump,
-            arguments,
-            workspace,
-            env,
-            max_bytes=RUST_METADATA,
-            timeout=min(15, remaining),
+        return min(15, left)
+
+    def stream(arguments, what, limit):
+        # Read as llvm-dwarfdump writes it (#397): never the whole text at once.
+        return _symbol_text(
+            dwarfdump, [arguments], workspace, env, limit=limit, timeout=remaining(), what=what
         )
 
-    index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
+    index = _metadata(
+        dwarfdump,
+        ["--debug-info", "--recurse-depth=0", str(symbols)],
+        workspace,
+        env,
+        max_bytes=RUST_METADATA,
+        timeout=remaining(),
+    )
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
-    tables, layouts, blocks, interior = [], {}, {}, {}
+    tables, layouts, blocks, interior = _LineParser(workspace, declared, rust=True), {}, {}, {}
     for unit in units:
-        table = dump([f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)])
-        offsets = re.findall(r"^debug_line\[0x([0-9a-f]{8,16})\]$", table, re.MULTILINE)
-        if [int(offset, 16) for offset in offsets] != [unit.stmt_list]:
+        before = len(tables.headers)
+        arguments = [f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)]
+        with stream(arguments, "line tables", MAX_LINE_TEXT) as lines:
+            tables.feed(lines)
+        if tables.headers[before:] != [unit.stmt_list]:
             raise ValueError("Rust line table does not match its application unit")
-        tables.append(table)
-        info = dump([f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)])
-        (root,) = parse_dies(info, units=False)
-        found = {**enum_layouts(info, unit, root), **container_layouts(info, unit, root)}
+        arguments = [f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)]
+        with stream(arguments, "debug information", MAX_DEBUG_INFO) as lines:
+            (root,) = parse_dies(lines, units=False)
+        found = {**enum_layouts(None, unit, root), **container_layouts(None, unit, root)}
         for name, layout in found.items():
             if layouts.get(name, layout) != layout:
                 layout = {"kind": "unqualified"}
@@ -1714,7 +1737,7 @@ def application_symbols(
             interior = None
         for name, entry in types.items() if interior is not None else ():
             merge_layout(interior, name, entry)
-    lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA, rust=True)
+    lines = parse_lines(tables.table(), workspace, declared, rust=True)
     return lines, layouts, units, blocks, interior
 
 

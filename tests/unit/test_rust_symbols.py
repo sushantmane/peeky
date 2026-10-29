@@ -263,6 +263,20 @@ def test_die_parser_tolerates_only_attribute_range_continuations():
         parse_dies(" " * (MAX_METADATA + 1), units=False)
 
 
+def test_a_unit_read_as_it_is_written_is_the_texts_and_bounded(monkeypatch):
+    # Its lines as llvm-dwarfdump writes them (#397), as its whole text gives them.
+    from peeky.native import SymbolLimit
+    from peeky.textlines import split_lines
+
+    text = option_dump()
+    assert parse_dies(iter(split_lines(text)), units=False) == parse_dies(text, units=False)
+    # Its bound is the number of entries, not the text's size: a unit using BTreeMap has 33
+    # MB of text, and 95,000 entries.
+    monkeypatch.setattr("peeky.rust_symbols.MAX_DIES", 3)
+    with pytest.raises(SymbolLimit, match="at most 3 entries of a build's debug information"):
+        parse_dies(iter(split_lines(text)), units=False)
+
+
 def test_enum_layouts_follow_compiler_discriminants_and_qualify_only_i32():
     layouts = enum_layouts(option_dump(), UNIT)
     assert layouts == {
@@ -368,7 +382,8 @@ def fake_dwarfdump(tmp_path, files):
         "name = 'index' if '--recurse-depth=0' in args else args[0].split('=', 1)[1]\n"
         "if '--debug-line=' in args[0]: name = 'line-' + name\n"
         "source = pathlib.Path(os.environ['FAKE_DWARF']) / name\n"
-        "pathlib.Path(args[args.index('-o') + 1]).write_text(source.read_text())\n"
+        "if '-o' in args: pathlib.Path(args[args.index('-o') + 1]).write_text(source.read_text())\n"
+        "else: sys.stdout.write(source.read_text())\n"
     )
     script.chmod(0o755)
     return str(script), {**os.environ, "FAKE_DWARF": str(data)}

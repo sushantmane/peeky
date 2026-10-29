@@ -143,6 +143,14 @@ _RULES = (
         True,
     ),
     (
+        # A build whose symbols are over Peeky's fixed bounds (native.symbol_limit).
+        r"^Peeky reads at most .* of a build's (?:debug information|line tables)",
+        "BUDGET_EXHAUSTED",
+        "Probe a smaller program: fewer source files or standard headers, or in Rust fewer "
+        "std collections. These limits are fixed.",
+        False,
+    ),
+    (
         r"budget exhausted|budget exceeded|exceeds bounded expansion|exceeds limit|beyond the bounded",
         "BUDGET_EXHAUSTED",
         "Narrow the request (fewer selectors, smaller expansion) or inspect again.",

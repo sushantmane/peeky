@@ -41,11 +41,12 @@ from peeky.names import display_function
 from peeky.native import (
     _RUST_POINTER,
     NativeSession,
-    _metadata,
     _path_name,
     _writable_integer,
     function_scopes,
     module_identity,
+    read_debug_info,
+    read_line_table,
 )
 from peeky.rust_ir import ir_locals
 from peeky.rust_lexer import without_comments
@@ -68,7 +69,6 @@ from peeky.rust_symbols import (
     OPTIMIZED_ADVICE,
     OWNED_CONTAINERS,
     REFERENCE_PARAMETERS,
-    RUST_METADATA,
     RUST_SCALARS,
     STRUCT_PREFIX,
     UNIQUE_SCALARS,
@@ -2001,38 +2001,46 @@ class RustSession(NativeSession):
     # Why the crate may have unsafe code, or None (``unsafe_source``; #156 review).
     unsafe_code = None
 
+    def _unit_symbols(self):
+        """The application units' debug information (a native DieMap), read as
+        llvm-dwarfdump writes it (#397): a unit holds every std generic the crate
+        instantiates (`sort_by_key`, iterators, BTreeMap), tens of megabytes of text."""
+        return read_debug_info(
+            _absolute_tool(self.target.dwarfdump, "dwarfdump"),
+            [
+                [f"--debug-info=0x{unit.die:08x}", "--show-children", str(self.symbols)]
+                for unit in self.units
+            ],
+            self.prepared.workspace,
+            dict(self.prepared.manifest.effective_environment),
+            timeout=15,
+        )
+
+    def _unit_lines(self):
+        """The application units' line tables, as a native LineTable of the declared
+        sources, read as llvm-dwarfdump writes them."""
+        return read_line_table(
+            _absolute_tool(self.target.dwarfdump, "dwarfdump"),
+            [[f"--debug-line=0x{unit.stmt_list:08x}", str(self.symbols)] for unit in self.units],
+            self.prepared.workspace,
+            dict(self.prepared.manifest.effective_environment),
+            tuple(self.lines),
+            timeout=15,
+            rust=True,
+        )
+
     def function_scopes(self):
         """Functions of the application units only, as `prepare` read them: the whole
         binary's debug info is mostly the standard library (megabytes)."""
-        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
-        env = dict(self.prepared.manifest.effective_environment)
-        workspace, symbols = self.prepared.workspace, str(self.symbols)
-        infos, tables = [], []
-        for unit in self.units:
-            tables.append(
-                _metadata(
-                    dwarfdump, [f"--debug-line=0x{unit.stmt_list:08x}", symbols], workspace, env
-                )
-            )
-            infos.append(
-                _metadata(
-                    dwarfdump,
-                    [f"--debug-info=0x{unit.die:08x}", "--show-children", symbols],
-                    workspace,
-                    env,
-                    # A unit holds every std generic the crate instantiates (`sort_by_key`,
-                    # iterators): megabytes for a small crate, as `prepare` allows.
-                    max_bytes=RUST_METADATA,
-                )
-            )
-        if not infos:
+        if not self.units:
             raise ValueError("No application units were recorded for this build")
         from peeky.fields import RUST_LIBRARIES
 
+        info, table = self._unit_symbols(), self._unit_lines()
         return function_scopes(
-            "\n".join(infos),
-            "\n".join(tables),
-            workspace,
+            info,
+            table,
+            self.prepared.workspace,
             tuple(self.lines),
             hidden=self._macro_binding(),
             never=self._register_names,
@@ -2060,32 +2068,13 @@ class RustSession(NativeSession):
             raise ValueError("Peeky cannot place the program among the crate's sources")
         if self._optimized():
             raise ValueError("this is an optimized build")
-        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
-        env = dict(self.prepared.manifest.effective_environment)
-        workspace, symbols = self.prepared.workspace, str(self.symbols)
-        infos, tables = [], []
-        for unit in self.units:
-            tables.append(
-                _metadata(
-                    dwarfdump, [f"--debug-line=0x{unit.stmt_list:08x}", symbols], workspace, env
-                )
-            )
-            infos.append(
-                _metadata(
-                    dwarfdump,
-                    [f"--debug-info=0x{unit.die:08x}", "--show-children", symbols],
-                    workspace,
-                    env,
-                    max_bytes=RUST_METADATA,
-                )
-            )
-        if not infos:
+        if not self.units:
             raise ValueError("no application units were recorded for this build")
         windows = []
         dies, functions, _, _, _, rows = _function_entries(
-            "\n".join(infos),
-            "\n".join(tables),
-            workspace,
+            self._unit_symbols(),
+            self._unit_lines(),
+            self.prepared.workspace,
             tuple(self.lines),
             rust=True,
             prologues=windows,
@@ -3993,18 +3982,9 @@ class RustSession(NativeSession):
 
             rows = []
             try:
-                dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
-                env = dict(self.prepared.manifest.effective_environment)
-                for unit in self.units:
-                    table = _metadata(
-                        dwarfdump,
-                        [f"--debug-line=0x{unit.stmt_list:08x}", str(self.symbols)],
-                        self.prepared.workspace,
-                        env,
-                        max_bytes=RUST_METADATA,
-                    )
-                    rows += _line_rows(
-                        table, self.prepared.workspace, tuple(self.lines), RUST_METADATA, rust=True
+                if self.units:
+                    rows = _line_rows(
+                        self._unit_lines(), self.prepared.workspace, tuple(self.lines), rust=True
                     )
                 self.assert_current()
             except (OSError, RuntimeError, ValueError):
@@ -4191,23 +4171,9 @@ class RustSession(NativeSession):
 
     def _read_field_types(self):
         from peeky.fields import RUST_LIBRARIES, local_types, type_graph
-        from peeky.native import _chain, _code_ranges, _first, _parse_dies, _text
+        from peeky.native import _chain, _code_ranges, _first, _text
 
-        dwarfdump = _absolute_tool(self.target.dwarfdump, "dwarfdump")
-        env = dict(self.prepared.manifest.effective_environment)
-        dies = {}
-        for unit in self.units:
-            dies.update(
-                _parse_dies(
-                    _metadata(
-                        dwarfdump,
-                        [f"--debug-info=0x{unit.die:08x}", "--show-children", str(self.symbols)],
-                        self.prepared.workspace,
-                        env,
-                        max_bytes=RUST_METADATA,
-                    )
-                )
-            )
+        dies = self._unit_symbols()
         self.assert_current()
         functions, kinds = {}, set()
         for offset, die in dies.items():
