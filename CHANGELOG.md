@@ -22,10 +22,9 @@
 
 ### Other changes
 
-- **Faster C and C++ builds:** sources preprocess and compile in parallel. Each tool's answer
-  to `--version` or `--help` is reused while its SHA-256 is unchanged, and the checks of
-  preprocessed text are 4× faster. An 8-file C++ probe takes 2.1 s on macOS, down from 5.7 s
-  (#398).
+- **Faster C and C++ builds:** sources preprocess and compile in parallel, the checks of
+  preprocessed text are 4× faster, and a new process doesn't rehash the toolchain binaries. An
+  8-file C++ probe takes 2.3 s on macOS, down from 6.1 s (#398).
 - **Frames after a step:** after a step that stopped in your code, a frame outside your sources
   is refused by its index, as before the step. It no longer says your code left the stack (#379).
 - **Thirteenth evaluation's CLI fixes:** `queries diff` tells a value one run has none of from a
