@@ -13,6 +13,7 @@ from peeky.hashed_nodes import (
     Words,
     layout,
     read_entries,
+    readable,
     view_children,
     word,
 )
@@ -565,3 +566,29 @@ def test_no_node_is_read_in_a_build_that_may_be_optimized():
         assert listing is None, (optimization, optimizing)
     # Only the unoptimized build whose source asks for no optimization gets past it.
     assert walked == [["us"]], walked
+
+
+def test_a_row_says_to_read_a_container_later_only_where_its_entries_read_at_all():
+    # Eval 13 prep, finding 3: "read it after that call returns" is said only where Peeky
+    # reads entries of that type at all, as read_entries does, by their type alone.
+    point = {
+        40: record("Pt", 16, [("x", 1, 0), ("y", 43, 8)], library=False),
+        41: record("std::__pair_base<int const, Pt>", 1),
+        42: record(
+            "std::pair<int const, Pt>", 24, [("first", 14, 0), ("second", 40, 8)], bases=[(41, 0)]
+        ),
+        43: ("base", "long int", "DW_ATE_signed", 8),
+        44: record("Based", 16, [("x", 1, 0)], bases=[(40, 0)], library=False),
+        45: ("base", "char32_t", "DW_ATE_unsigned", 4),
+    }
+    types = graph(extra=point)
+    assert readable(types, 1) and readable(types, 9) and readable(types, 42), types
+    # A floating-point number, a wide character, a struct with a base class: never read.
+    assert not readable(types, 13) and not readable(types, 45) and not readable(types, 44)
+    # As read_entries finds them, value by value.
+    data = struct.pack("<QiiiIq", 0, 3, 0, 5, 0, -6)
+    paired = graph(value=42, value_size=24, extra=point)
+    read_entries(paired, paired[6], 1, Memory(0x1000, reader({0x1000: data + b"\0" * 8})))
+    based = graph(value=44, value_size=16, extra=point)
+    with pytest.raises(Unread):
+        read_entries(based, based[6], 1, Memory(0x1000, reader({0x1000: data})))

@@ -118,6 +118,25 @@ def test_a_static_local_is_read_where_the_code_names_it(directory, capsys):
     ), rows["calls"]
 
 
+@pytest.mark.timeout(240)
+def test_describe_marks_a_static_local_static(directory, capsys):
+    # Eval 13 (#385): `describe` listed `now (struct vitals)`, a `static` local, as if it
+    # were the frame's own; its rows say `[not settable: static]`.
+    path = directory / "statics.c"
+    path.write_text(STATICS)
+    assert main(["describe", str(path), "--json"]) == 0
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    tick = next(scope for scope in scopes if scope["scope"] == "tick")
+    statics = set(tick.get("statics", ()))
+    assert {"calls", "count", "cs", "st"} <= statics and not {"seen", "x"} & statics, tick
+    # GCC builds `ls` at compile time, in read-only data, which its rows say too.
+    assert ("ls" in statics) is is_gcc(os.environ.get("PEEKY_NATIVE_CC", "clang")), tick
+    assert main(["describe", str(path)]) == 0
+    text = capsys.readouterr().out
+    assert re.search(r"names in tick \(statics\.c:[0-9-]+\): calls \(long( int)?, static\)", text)
+    assert re.search(r", seen \(long( int)?\)", text), text
+
+
 @pytest.mark.timeout(300)
 def test_a_static_local_is_never_changed(directory, capsys):
     path = directory / "statics.c"

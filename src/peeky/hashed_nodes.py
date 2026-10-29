@@ -431,6 +431,59 @@ def _scalar(node, data):
     raise Unread(f"`{name}`")
 
 
+def readable(graph, offset, depth=0):
+    """Whether ``read_entries`` decodes a value of type ``offset`` at all, judged by its
+    type alone, as ``_Reader.value`` judges it: an integer or a bool, a libstdc++ string
+    Peeky places, or a pair or a struct of them. A string's text may still be too long
+    to read without `readMemory`. For a row's advice to read a container once nothing
+    may be changing it (eval 13 prep, finding 3)."""
+    node, name = _under(graph, offset), _type_name(graph, offset)
+    if node is None or not name:
+        return False
+    if node[0] == "base":
+        _, base, encoding, size = node
+        if encoding == "DW_ATE_boolean":
+            return size == 1
+        return (
+            encoding in ("DW_ATE_signed", "DW_ATE_unsigned")
+            and size in (2, 4, 8)
+            and (base not in _CHARACTERS)
+        )
+    if node[0] != "record" or node[2] == "union" or node[7] or node[8] or depth > DEPTH:
+        return False
+    qualified = node[11] if len(node) > 11 else ""
+    if type(node[3]) is not int:
+        return False
+    if node[9] and _STRING.match(qualified or ""):
+        from peeky.native import local_buffer
+
+        plus = _member(node, "_M_dataplus")
+        hider = _record(graph, plus[1]) if plus is not None else None
+        pointer = _member(hider, "_M_p") if hider is not None else None
+        aimed = _under(graph, pointer[1]) if pointer is not None else None
+        character = _under(graph, aimed[2]) if aimed is not None and aimed[0] == "pointer" else None
+        return (
+            local_buffer(graph, node) is not None
+            and pointer[2] == 0
+            and character is not None
+            and character[0] == "base"
+            and character[2] in ("DW_ATE_signed_char", "DW_ATE_unsigned_char")
+            and character[3] == 1
+        )
+    if node[9] and not (_PAIR.match(qualified or "") and all(_empty(graph, b) for b in node[10])):
+        return False
+    if (not node[9] and node[10]) or len(node[5]) > MEMBERS:
+        return False
+    for member in node[5]:
+        label, kind, at, bitfield = member[:4]
+        size = _size(graph, kind)
+        if not label or bitfield or type(at) is not int or not size or at + size > node[3]:
+            return False
+        if not readable(graph, kind, depth + 1):
+            return False
+    return not node[9] or [member[0] for member in node[5]] == ["first", "second"]
+
+
 def read_entries(graph, container, count, memory):
     """(the container as the debugger lists one it reads right: {"value": "size=N",
     "variablesReference": ...}, ``fetch(reference, count)`` for its listing) read from

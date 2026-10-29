@@ -9,7 +9,8 @@
     nodes where the debug information proves their layout. The entries must be integers, bools
     or strings, alone or in pairs and structs (#371).
   - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
-    changed (#369).
+    changed inside the lambda; its refusal names the lambda's own copy where a change works
+    (#369, #380).
   - A text set in a `std::string`'s own buffer, with lldb-dap 20. Heap strings still need
     lldb-dap 21 (#365).
 - **C and C++:**
@@ -45,6 +46,9 @@
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369), and **9** (#382).
+- **C and C++ notes:** a withheld unordered container says why no node is read, and what to
+  try. Refused changes to a lambda's capture or a structured binding say where the value is.
+  `describe` marks statics and lists GCC captures (#380).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.
