@@ -9,7 +9,8 @@
     nodes where the debug information proves their layout. The entries must be integers, bools
     or strings, alone or in pairs and structs (#371).
   - A lambda's captures, through GCC's `__closure`, in a `Captures` scope. A capture is never
-    changed (#369).
+    changed inside the lambda; its refusal names the lambda's own copy where a change works
+    (#369, #380).
   - A text set in a `std::string`'s own buffer, with lldb-dap 20. Heap strings still need
     lldb-dap 21 (#365).
 - **C and C++:**
@@ -21,9 +22,33 @@
 
 ### Other changes
 
+- **Frames after a step:** after a step that stopped in your code, a frame outside your sources
+  is refused by its index, as before the step. It no longer says your code left the stack (#379).
+- **Thirteenth evaluation's CLI fixes:** `queries diff` tells a value one run has none of from a
+  difference (`no value in run b`, `differs` NULL), after the real ones, and counts them apart.
+  The 8-intervention error says how many were given. Probe tables give a long reason once per
+  selector, and say how to read a cut container. A lambda comparator shows its compiler's name.
+  lldb-dap 18's notes are whole once per build (#383, #384, #385).
+- **C and C++ char arrays:** a `char[N]` shows its text up to its first NUL, then a note of what
+  follows it, each byte as `\xNN`. `--json` keeps every byte as `buffer`, and `text()` reads it
+  (#381).
 - **Under load:** every launch step has what remains of the launch's one deadline. A stop the
   debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
 - **Remote protocol 8** (#369).
+- **Security:** `PEEKY_WORKER_TOKEN`, a client's name for the worker's token, is now removed from
+  the environments of debuggers, debuggees, builds, checkers, candidates and the model, as
+  `DEBUG_TOKEN` was. The worker bounds each read of a request at 10 s, before the token check too.
+  The tunnel command adds `-o ExitOnForwardFailure=yes`. [SECURITY.md](SECURITY.md) says how to
+  report a vulnerability (#378).
+- **Probes read a caller's frame:** `--capture 'reading,1:i'` reads `i` in frame 1, the caller,
+  beside the stopped frame's values, by the rules `session get --frame 1` applies. Rows say
+  `frame`; the store keeps `captures.frame` (schema 21) (#382).
+- **Under load:** every launch step has what remains of the launch's one deadline. A stop the
+  debugger doesn't describe in time now fails with `TIMEOUT`, rather than losing its place (#367).
+- **Remote protocol 8** (#369), and **9** (#382).
+- **C and C++ notes:** a withheld unordered container says why no node is read, and what to
+  try. Refused changes to a lambda's capture or a structured binding say where the value is.
+  `describe` marks statics and lists GCC captures (#380).
 - **Docs:** [docs/HISTORY.md](docs/HISTORY.md) replaces the development log, `docs/PROGRESS.md`,
   which stays in the git history. The repository has a code of conduct, and issue and pull
   request templates.

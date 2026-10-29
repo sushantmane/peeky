@@ -124,6 +124,8 @@ Requests are JSON objects with `Authorization: Bearer <token>`.
 - The worker binds only to `127.0.0.1`.
 - The token authorizes control of that worker. It is not a per-target policy.
 - Request sizes are bounded: at most 4 MiB, enough for a remote client's source hashes.
+- Each read of a request waits at most 10 s. When the request line or headers stall, the worker
+  closes the connection, before any token check. A stalled body is an `INVALID_REQUEST`.
 - Errors are JSON with a stable `code`, a `hint`, `retryable` and `session_closed`. Every response
   carries the protocol version. [ERRORS.md](ERRORS.md) lists the codes.
 - The HTTP status and the code tell invalid requests apart from uncertain adapter failures.

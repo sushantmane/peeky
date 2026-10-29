@@ -194,11 +194,12 @@ def test_structs_unions_and_arrays_preview_without_guessing(c_program, capsys):
         for selector in ("n", "w"):
             assert " @ 0x" in rows[selector]["value"], rows[selector]
         # Pointers inside show their addresses, never what they point at; a char array
-        # shows as LLDB writes it (no NUL in `name`: its 8 bytes), cut at 40 characters.
+        # shows its text up to its NUL and a note (no NUL in `name`: its 8 bytes), the text
+        # cut to keep the note within 40 characters.
         named = rows["nm"]["value"]
-        assert named.startswith('{name = "abcdefgh", text = 0x'), named
+        assert named.startswith('{name = "abcdefgh" (no NUL in its 8 bytes), text = 0x'), named
         assert '"txt"' not in named and "where = 0x" in named and "x = 1" not in named
-        assert 'long_name = "' + "z" * 35 + '"...}' in named, named
+        assert 'long_name = "' + "z" * 17 + '"... (then 1 NUL byte)}' in named, named
         # Declared below the stop: its storage holds leftovers, so nothing is shown.
         assert rows["later"].get("unavailable") and "value" not in rows["later"], rows["later"]
         # The listing of a 2-D array previews each row.

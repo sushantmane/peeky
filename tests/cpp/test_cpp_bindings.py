@@ -75,6 +75,10 @@ def test_a_structured_binding_of_a_reference_is_never_changed(cpp, capsys):
         # Refused before the program runs: nothing ran.
         assert code != 0 and error["code"] == "MUTATION_REJECTED", result
         assert THROUGH in error["message"] and "before the program runs" in error["message"]
+        # What it binds holds the value (eval 13): `*owner`, owned by the caller.
+        if assignment == "dropped=50":
+            assert "`dropped` is a structured binding by reference to `*owner`" in error["message"]
+            assert "change what it binds where that is owned" in error["message"], error
         assert "T " not in json.dumps(result), result
     assert main([*probe, "--capture", "b", "--set", "b=40"]) == 0
     result = json.loads(capsys.readouterr().out)

@@ -42,6 +42,7 @@ from peeky.probe import (
     candidate_line,
     combine_edits,
     debugger_diagnostics,
+    diagnostics_again,
     keeps_lines,
     parse_hits,
     parse_selector,
@@ -51,6 +52,7 @@ from peeky.probe import (
     run_probe,
     split_selectors,
 )
+from peeky.processes import without_credentials
 from peeky.textlines import split_lines
 
 RUST_VERSION = "1.96.0"
@@ -890,6 +892,7 @@ def _describe_text(manifest):
         else:
             where = f" (lines {span})" if span else ""
         types, spans = scope.get("types", {}), scope.get("spans", {})
+        captures = scope.get("captures") or {}
         typed = scope.get("typed_spans") or {}
         shown = []
         ambiguous = scope.get("ambiguous") or {}
@@ -912,7 +915,20 @@ def _describe_text(manifest):
                 parts.append(_block_span_text(spans[name]))
             if name in scope.get("globals", ()):
                 parts.append("module global")
+            if name in scope.get("statics", ()):
+                # In static storage: read where the code names it, never changed (#364).
+                parts.append("static")
+            if name == "this" and name in captures:
+                # A lambda's `this` is its capture of the object, said of the one name.
+                parts = _capture_parts(captures[name], name, spell)
             shown.append(f"{name} ({', '.join(parts)})" if parts else name)
+        # A GCC lambda's other captures, which a selector names inside it, and how each
+        # is captured (eval 13); among the names, in order.
+        for name, capture in captures.items():
+            if name != "this" or name not in scope["names"]:
+                shown.append(f"{name} ({', '.join(_capture_parts(capture, name, spell))})")
+        if captures:
+            shown.sort(key=lambda text: text.split(" ", 1)[0])
         lines.append(f"names in {scope['scope']}{where}: {', '.join(shown) or '-'}")
     from peeky.probe import optimization_level
 
@@ -1057,6 +1073,15 @@ def _describe_text(manifest):
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
     return "\n".join(lines)
+
+
+def _capture_parts(capture, name, spell):
+    """`describe`'s words on a GCC lambda's capture (eval 13): its type, as the lambda's
+    object holds it, and how it is captured; `this` is the object, by reference
+    (`[this]`) or by value (`[*this]`)."""
+    parts = [spell(capture["type"])] if capture.get("type") else []
+    whose = "capture of the object" if name == "this" else "capture"
+    return [*parts, f"{whose} {capture.get('how')}"]
 
 
 def _block_span_text(spans):
@@ -1400,6 +1425,15 @@ def _keep_evidence(args, result, root, language):
                 " and without its --set/--set-at" if probe.get("set") or probe.get("set_at") else ""
             )
             apart = evidence.stops_apart(path, before, run_id) if before is not None else None
+            # The same probe with other captures (thirteenth evaluation): named, with what
+            # differs, since `diff` compares the selectors both captured.
+            near = (
+                evidence.near_baseline(path, run_id, result.get("source_sha256"))
+                if before is None and result.get("inputs_sha256")
+                else None
+            )
+            if near is not None and evidence.stops_apart(path, near[0], run_id) is not None:
+                near = None
         except Exception:
             return
         result["evidence"]["compare"] = (
@@ -1416,6 +1450,8 @@ def _keep_evidence(args, result, root, language):
                 f"{evidence.stop_text(apart['stop_b'])}, so hits do not pair by number",
             }
             if before is not None
+            else {"run": None, "hint": _near_hint(near, run_id, without)}
+            if near is not None
             else {
                 "run": None,
                 "hint": "no saved run is this probe without the edit (the same --at, "
@@ -1427,6 +1463,28 @@ def _keep_evidence(args, result, root, language):
                 f"run this probe without --old/--new{without}, then `peeky queries diff`",
             }
         )
+
+
+def _near_hint(near, run_id, without):
+    """`compare:`'s line where the saved run that is a candidate's probe without the edit
+    captured other selectors (``near``: evidence.near_baseline's): which run, what differs,
+    and the `diff` of the selectors both captured."""
+    from peeky.evidence import _quoted
+
+    run, theirs, ours = near
+    shared = [selector for selector in ours if selector in theirs]
+    missing = [selector for selector in ours if selector not in theirs]
+    extra = [selector for selector in theirs if selector not in ours]
+    differs = [
+        *([f"didn't capture {_quoted(missing)}"] if missing else []),
+        *([f"captured {_quoted(extra)} too"] if extra else []),
+    ] or ["lists the same selectors in another order"]
+    return (
+        f"run {run} is this probe without the edit, but it {' and '.join(differs)}: "
+        f"`peeky queries diff --param a={run} --param b={run_id}` compares the selectors both "
+        f"captured ({_quoted(shared)}). To compare them all, run this probe without "
+        f"--old/--new{without}, then `peeky queries diff`"
+    )
 
 
 def _first_time(name):
@@ -1498,9 +1556,31 @@ def _probe_text(result, quiet=False):
             and _first_time("python-copy-" + hashlib.sha256(warning.encode()).hexdigest()[:16])
         )
     ]
+    # lldb-dap 18's lines about a GCC build's debug information, and the text it sends as
+    # it ends, come with every probe of the build (thirteenth evaluation): whole the first
+    # time for that build in this state directory, then in short. A build is its
+    # `build_id`, the digest of its recipe, staged sources (an edit included) and tools;
+    # without one (an older worker), they are whole every time. `--json` has them whole.
+    build = result.get("build_id")
+    build = hashlib.sha256(build.encode()).hexdigest()[:24] if isinstance(build, str) else None
+    diagnosed = result.get("debugger_diagnostics") or [""]
+    lines = hashlib.sha256(f"{build}\0{diagnosed[0]}".encode()).hexdigest()[:24]
+    warnings = [
+        short
+        if build
+        and (short := diagnostics_again(warning))
+        and not _first_time(f"diagnostics-{lines}")
+        else warning
+        for warning in warnings
+    ]
+    sent_before = (
+        build is not None
+        and bool(result.get("output_after_disconnect"))
+        and not _first_time(f"sent-after-closing-{build}")
+    )
     if warnings != list(result.get("warnings", ())):
         result = {**result, "warnings": warnings}
-    text = _table(result, short_names=short_names)
+    text = _table(result, short_names=short_names, sent_before=sent_before)
     if result.get("refused_before_launch"):
         return text
     if candidate := result.get("candidate"):
@@ -2817,8 +2897,8 @@ def _remote(url):
     """A client for a worker reached over loopback (e.g. an SSH -L tunnel)."""
     if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", url or ""):
         raise ValueError(
-            "--worker must be a loopback URL such as http://127.0.0.1:8765; reach remote "
-            "workers through an SSH tunnel (ssh -N -L 8765:127.0.0.1:8765 user@host)"
+            "--worker must be a loopback URL (http://127.0.0.1:PORT); for a remote worker, "
+            "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
         )
     token = os.environ.get(WORKER_TOKEN_ENV, "")
     if len(token) < 16:
@@ -3186,7 +3266,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
     log = os.fdopen(os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w")
     process = subprocess.Popen(
         command,
-        env={**os.environ, "DEBUG_TOKEN": token},
+        # Its own token, by the name the worker reads; never a remote worker's.
+        env={**without_credentials(os.environ), "DEBUG_TOKEN": token},
         stdout=subprocess.PIPE,
         stderr=log,
         text=True,
@@ -3963,8 +4044,9 @@ def main(argv=None, _job=False, _edits=None):
     sub.add_argument(
         "--capture",
         default="",
-        help="Comma-separated selectors, e.g. a,b.c,d[0]; `return`: what the function holding "
-        "the line returns, each call (C, C++, Rust, Java)",
+        help="Comma-separated selectors, e.g. a,b.c,d[0]; 1:i reads i in frame 1, the caller "
+        "(2:i its caller), as `session get --frame 1 i` does; `return`: what the function "
+        "holding the line returns, each call (C, C++, Rust, Java)",
     )
     sub.add_argument(
         "--set",

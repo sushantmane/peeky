@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from peeky import stored_values
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 MAX_RUNS = 500
 DEFAULT_ROWS = 200
 MAX_ROWS = 10000
@@ -113,11 +113,15 @@ TABLES = {
             "returned (the `(return)` row: what the call returned, read where it returned "
             "to; line is that line, function the function that returned)",
             "line": "Line where the program actually stopped (a candidate run's own numbering; "
-            "runs.line is the requested line in the original file)",
+            "runs.line is the requested line in the original file). For a caller frame's "
+            "row (frame 1 or more), that frame's line, where its call is: stop_line is where "
+            "the program stopped",
             "function": "Function (frame) name, as the debugger names it (C++: its "
             "signature; Rust: with its symbol hash, and every closure of a function as "
-            "`{{closure}}`). short_function(function) drops parameters and hashes",
-            "selector": "Selector as requested, e.g. request.page or items[0]",
+            "`{{closure}}`). short_function(function) drops parameters and hashes. For a "
+            "caller frame's row, that caller's",
+            "selector": "Selector as requested, e.g. request.page or items[0]; 1:i reads i in "
+            "frame 1, the caller",
             "type": "Type as Peeky shows it: the debugger's, or as the language spells it "
             "(Rust: `usize`, `Vec<u32>`, `&rota::Engineer` and `*const T`, where LLDB says "
             "`unsigned long` and `rota::Engineer *`)",
@@ -200,6 +204,12 @@ TABLES = {
             "for a Rust reference or raw pointer alike: where such a Rust row's type is a "
             "newer Rust row's debugger_type, `diff` says it can't tell whether the type "
             "changed",
+            "frame": "Which stack frame the selector read: 0 where the program stopped, 1 its "
+            "caller, and so on (a selector such as 1:i). Every rule of `session get --frame N` "
+            "applies to a caller's values, which are never settable. NULL for runs saved "
+            "before schema 21",
+            "stop_line": "For a caller frame's row, the line where the program stopped, as "
+            "the hit's other rows' line says; NULL for other rows, whose line is that line",
         },
     ),
     "interventions": (
@@ -244,7 +254,7 @@ TABLES = {
 }
 _EVIDENCE_COLUMNS = (
     "run_id, started_at, label, program, line, status, hit, stop, phase, function, "
-    "instance, selector, type, debugger_type, "
+    "instance, frame, selector, type, debugger_type, "
     "value, num, unavailable, error, view, note, identity, scope, element_size, "
     "at_element_of, element_index, offset_from, element_offset, args, sets, "
     "artifact_manifest_id, source_sha256, candidate, language"
@@ -258,7 +268,7 @@ VIEWS = {
     "last_run": "The evidence rows of the newest run",
 }
 _EVIDENCE_VIEW = """CREATE VIEW evidence AS SELECT c.run_id, r.started_at, r.label, r.program,
-        c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.selector,
+        c.line, r.status, c.hit, c.stop, c.phase, c.function, c.instance, c.frame, c.selector,
         c.type, c.debugger_type, c.value, c.num,
         c.unavailable, c.error, c.view, c.note, c.identity, c.scope, c.element_size,
         c.at_element_of, c.element_index, c.offset_from, c.element_offset, r.args, r.sets,
@@ -275,7 +285,8 @@ _CAPTURES = """CREATE TABLE {} (
         selector TEXT, type TEXT, value TEXT, num NUMERIC, unavailable INTEGER NOT NULL,
         error TEXT, view TEXT, identity INTEGER, scope TEXT, note TEXT, instance TEXT,
         stop INTEGER, element_size INTEGER, at_element_of TEXT, element_index INTEGER,
-        offset_from TEXT, element_offset INTEGER, debugger_type TEXT)"""
+        offset_from TEXT, element_offset INTEGER, debugger_type TEXT, frame INTEGER,
+        stop_line INTEGER)"""
 _CAPTURE_INDEXES = (
     "CREATE INDEX captures_run ON captures (run_id, hit)",
     "CREATE INDEX captures_selector ON captures (selector)",
@@ -325,7 +336,10 @@ _DDL = (
 # reference or raw pointer as the debugger does: eleventh evaluation, review of PR #315);
 # version 19 adds interventions.restores_at (#305), the change a restore undid (NULL
 # for earlier runs, which made none); version 20 adds interventions.unchanged, 1 for a
-# write the worker proved changed nothing (NULL for earlier runs).
+# write the worker proved changed nothing (NULL for earlier runs); version 21 adds
+# captures.frame, the stack frame a selector read (#382: `1:i`, a caller's), and
+# stop_line, where the program stopped, for a caller frame's row (NULL for earlier runs,
+# which read only the frame the program stopped in).
 # Views name columns of the newest tables, so earlier steps only drop them and the
 # last creates them.
 _DROP_VIEWS = ("DROP VIEW IF EXISTS last_run", "DROP VIEW IF EXISTS evidence")
@@ -452,9 +466,10 @@ _MIGRATIONS = {
     ),
     17: (*_DROP_VIEWS, _add_columns(("debugger_type", "TEXT"))),
     18: (*_DROP_VIEWS, _add_columns(("restores_at", "TEXT"), table="interventions")),
-    19: (
+    19: (*_DROP_VIEWS, _add_columns(("unchanged", "INTEGER"), table="interventions")),
+    20: (
         *_DROP_VIEWS,
-        _add_columns(("unchanged", "INTEGER"), table="interventions"),
+        _add_columns(("frame", "INTEGER"), ("stop_line", "INTEGER")),
         _EVIDENCE_VIEW,
         _LAST_RUN_VIEW,
     ),
@@ -473,7 +488,7 @@ _NO_CHANGE = "CASE WHEN unchanged THEN ', no change' ELSE '' END"
 # An intervention (`i`) made at a captured stop: that stop has after-set captures.
 _AT_CAPTURE = (
     "EXISTS (SELECT 1 FROM captures c WHERE c.run_id = i.run_id AND c.phase = 'after-set' "
-    "AND c.hit = i.hit AND c.line IS i.line)"
+    "AND c.hit = i.hit AND COALESCE(c.stop_line, c.line) IS i.line)"
 )
 
 
@@ -877,19 +892,54 @@ _MOVED_TOO = (
 )
 
 
+# A row with no value to compare (`u`, `unavailable`): Peeky withheld it (`not shown`, `no
+# value yet`), or the debugger had none (optimized out). Against another run's value it is
+# no value difference (thirteenth evaluation: 18 of a candidate's 25 `diff` rows were
+# `differs 1` only because its structured bindings were `not shown`). The value's own text
+# says why (`<not shown: …>`). One plain column, so `kind` stays well within SQLite's
+# aggregate terms; `differs` is NULL for such a row only where the rows are shown.
+_NOT_COMPARED = ", so not a value difference"
+# What pairing proves apart from the values, which a run with no value to compare leaves
+# standing (review of PR #389): a type that changed. Its row stays a difference, in tier 3,
+# and its note says the values were not compared (`_UNREAD`). A type Peeky can't tell
+# changed (`_UNTOLD`) proves nothing: with `nv`, its row is one of the values a run has
+# none of, differs NULL, its note kept after (`_UNSURE`; review 2 of PR #389). No other
+# kind comes with `nv`: those need a hit one run lacks, or both values read.
+_TYPED = "COALESCE(kind LIKE 'type %', 0)"
+_UNREAD = "COALESCE('; no value in ' || nv || ', so the values were not compared', '')"
+_UNSURE = f"CASE WHEN kind LIKE '{_UNTOLD_SAYS}%' THEN kind END"
+# What follows `no value in run b` for such a row: `, so not a value difference`, or for a
+# type Peeky can't tell changed, that the values were not compared, then why.
+_NO_VALUE_TAIL = (
+    "CASE WHEN {0} IS NULL THEN '" + _NOT_COMPARED + "' ELSE ', so the values were not "
+    "compared; ' || {0} END"
+)
+# `compare`'s differs and note for a row with no value to compare.
+_UNCOMPARED = (
+    f"CASE WHEN nv IS NULL OR {_TYPED} THEN differs END AS differs, CASE WHEN nv IS NULL "
+    f"OR {_TYPED} THEN note || {_UNREAD} ELSE 'no value in ' || nv || "
+    f"{_NO_VALUE_TAIL.format(_UNSURE)} || COALESCE('; ' || qualified, '') END AS note"
+)
+
+
 _PAIR = f"""WITH a AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
     at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo,
-    debugger_type AS dt
+    debugger_type AS dt, unavailable AS u
     FROM captures s WHERE run_id = {_A}),
   b AS (SELECT hit, phase, selector, {_shown("s")} AS v, type AS t, rowid AS pos,
     {_caveat("s")} AS c, {_SAME} AS same, CASE WHEN {_BOTH_STOPPED} THEN {_HIT_STOP} END AS st,
     at_element_of AS pi, element_index AS ei, offset_from AS ofs, element_offset AS eo,
-    debugger_type AS dt
+    debugger_type AS dt, unavailable AS u
     FROM captures s WHERE run_id = {_B}),
   k AS (SELECT hit, phase, selector, st FROM a UNION SELECT hit, phase, selector, st FROM b),
   kinds AS (SELECT k.hit, k.phase, k.selector, k.st, a.v AS value_a, b.v AS value_b,
     a.v IS NOT b.v AS differs, COALESCE(a.pos, b.pos) AS pos,
+    -- Which run has no value to compare, where both have the row and its texts differ
+    -- (`run b`, or `either run`), else NULL: a column of its own, never in `kind`, which
+    -- the tiers' GROUP BY reads whole.
+    CASE WHEN a.pos IS NULL OR b.pos IS NULL OR a.v IS b.v THEN NULL WHEN a.u AND b.u
+      THEN 'either run' WHEN b.u THEN 'run b' WHEN a.u THEN 'run a' END AS nv,
     CASE WHEN a.v IS NOT b.v AND {_POINTER_TYPE.format(t="a.t")}
       AND {_POINTER_TYPE.format(t="b.t")} AND no_addresses(a.v, {_LANGUAGE.format(_A)})
       IS no_addresses(b.v, {_LANGUAGE.format(_B)}) THEN 1 ELSE 0 END AS moved,
@@ -965,6 +1015,8 @@ _PAIR_ORDER = " ORDER BY hit, phase = 'after-set', pos"
 # real divergences, a pointer whose type Peeky can't compare across store generations
 # (`_UNTOLD`), whose values differ only in addresses: maybe a change, never the first.
 _REAL_RANK, _UNTOLD_RANK, _ONLY_IN_RANK = 10, 10.5, 15
+# A value one run has none of: after the qualified values, before the address-only ones.
+_NO_VALUE_RANK = 13.5
 # The pointers whose addresses differ: another element's address of a captured array
 # (`_element_first` names an earlier hit of theirs), then the others.
 _ELEMENT_RANK, _ADDRESS_RANK = 11, 12
@@ -975,8 +1027,10 @@ _TYPE_FOLDED = f"""kind || CASE WHEN COUNT(*) > 1 THEN ' at ' || COUNT(*) || ' h
       || 'selector') || ': its first hit)' ELSE '' END || '; {_MOVED_TOO}'"""
 # Every row of `diff` with its rank (the tier it is in) and pos (its capture order).
 _RANKED = f"""(
-  SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs, note, pos
+  SELECT {_REAL_RANK} AS rank, hit, phase, selector, value_a, value_b, differs,
+    note || {_UNREAD} AS note, pos
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
+    AND (nv IS NULL OR {_TYPED})
     AND (kind IS NULL OR kind LIKE 'missing%'
       OR ((kind LIKE 'type %' OR kind LIKE '{_UNTOLD_SAYS}%') AND NOT moved))
   -- A pointer whose type changed, but whose values differ only in addresses (a reference
@@ -990,7 +1044,7 @@ _RANKED = f"""(
   UNION ALL SELECT {_UNTOLD_RANK}, hit, phase, selector, value_a, value_b, differs,
     {_TYPE_FOLDED}, MIN(pos)
     FROM pair WHERE differs AND qualified IS NULL AND NOT unchanged
-    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved GROUP BY selector, phase, st, kind
+    AND kind LIKE '{_UNTOLD_SAYS}%' AND moved AND nv IS NULL GROUP BY selector, phase, st, kind
   -- More than 3 alike (a --set-at LINE@all's, #265) are one row, its first hit's: hit and
   -- the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 6, hit, phase, selector, value_a, value_b, differs,
@@ -1005,6 +1059,7 @@ _RANKED = f"""(
   UNION ALL SELECT {_ELEMENT_RANK}, hit, phase, selector, value_a, value_b, differs, kind, pos
     FROM pair
     WHERE differs AND qualified IS NULL AND NOT unchanged AND kind LIKE 'the address of %'
+    AND nv IS NULL
   -- As rank 14 below, but the count goes after `addresses differ`, before what to do. With
   -- no qualified value, note is kind: named once, the GROUP BY's terms stay well within
   -- SQLite's limit, the column limit Peeky sets (#302).
@@ -1013,11 +1068,27 @@ _RANKED = f"""(
       || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
       || 'selector') || ': its first hit)' || substr(kind, length('addresses differ') + 1)
       ELSE kind END, MIN(pos) FROM pair
-    WHERE qualified IS NULL AND kind LIKE 'addresses differ:%' AND NOT unchanged
+    WHERE qualified IS NULL AND kind LIKE 'addresses differ:%' AND NOT unchanged AND nv IS NULL
     GROUP BY selector, phase, st, kind
-  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note, pos FROM pair
+  UNION ALL SELECT 13, hit, phase, selector, value_a, value_b, differs, note || {_UNREAD},
+    pos FROM pair
     WHERE differs AND qualified IS NOT NULL AND (kind IS NULL OR kind NOT LIKE 'only in%')
-    AND NOT unchanged
+    AND NOT unchanged AND (nv IS NULL OR {_TYPED})
+  -- A value one run has none of (`nv`), with nothing else told apart (`_TYPED`): one row
+  -- per selector (and stop), run and any doubt about its type (`_UNSURE`), its first
+  -- hit's, saying at how many hits; any qualified value's note after. Its differs is
+  -- unknown (NULL).
+  UNION ALL SELECT {_NO_VALUE_RANK}, hit, phase, selector, value_a, value_b, NULL,
+    'no value in ' || nv || CASE WHEN alike > 1 THEN ' at ' || alike || ' hits'
+      || COALESCE(' at stop ' || st || ' (one row per selector and stop', ' (one row per '
+      || 'selector') || ': its first hit)' ELSE '' END || {_NO_VALUE_TAIL.format("unsure")}
+      || COALESCE('; ' || qualified, ''), pos
+    FROM (SELECT hit, phase, selector, value_a, value_b, nv, qualified, st, pos,
+      {_UNSURE} AS unsure, COUNT(*) OVER alike AS alike,
+      ROW_NUMBER() OVER (alike ORDER BY pos) AS nth
+      FROM pair WHERE nv IS NOT NULL AND NOT {_TYPED} AND NOT unchanged
+      WINDOW alike AS (PARTITION BY selector, phase, st, nv, {_UNSURE}))
+    WHERE nth = 1
   -- hit and the values are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT 14, hit, phase, selector, value_a, value_b, differs,
     CASE WHEN COUNT(*) > 1 THEN 'addresses only, at ' || COUNT(*) || ' hits'
@@ -1025,7 +1096,7 @@ _RANKED = f"""(
       || 'selector') || ': its first hit)' || substr(kind, length('addresses only') + 1)
       ELSE kind END, MIN(pos) FROM pair
     WHERE qualified IS NULL AND (kind = 'addresses only' OR kind LIKE 'addresses only:%')
-    AND NOT unchanged
+    AND NOT unchanged AND nv IS NULL
     GROUP BY selector, phase, st, kind
   -- hit, the values and qualified are those of the MIN(pos) row (SQLite's bare columns).
   UNION ALL SELECT {_ONLY_IN_RANK}, hit, phase, selector, value_a, value_b, 1,
@@ -1237,7 +1308,8 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     ),
     "compare": (
         "Every value of two runs side by side, in hit and capture order; note says when a "
-        "value is missing from a run, qualified in either (a view or a note: not evidence "
+        "value is missing from a run, one run has none of (withheld or unavailable: `no value "
+        "in run b`, differs NULL), qualified in either (a view or a note: not evidence "
         "by itself) or differs only in memory addresses (`addresses differ: ...` where an "
         "address may be another element's: a pointer or a reference, or any C, C++ or Rust "
         "value; else `addresses only`); a C or C++ pointer at an element's address of an array "
@@ -1250,7 +1322,7 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "`outputs` says it; requests that read alike are said to be made alike only where "
         "both runs recorded how (runs.set_outcomes)",
         f"{_PAIR}\nSELECT {_PAIR_COLUMNS} FROM (SELECT hit, phase, selector, value_a, "
-        f"value_b, differs, note, pos FROM pair UNION ALL SELECT * FROM ({_STATUS_ROW}) "
+        f"value_b, {_UNCOMPARED}, pos FROM pair UNION ALL SELECT * FROM ({_STATUS_ROW}) "
         f"UNION ALL SELECT * FROM ({_SETS_ROW} AND (asked_a > 0 OR asked_b > 0))){_PAIR_ORDER}",
         _PAIR_PARAMS,
         (),
@@ -1272,7 +1344,10 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
         "compare offsets with address(), or shows a C or C++ pointer's offsets by address from "
         "another), one row per selector (and stop); then values a "
         "view or a note qualifies in either run (note: qualified (run a: note), not evidence by "
-        "itself: leftovers, a moved Rust local's bytes); then other address-only differences (a "
+        "itself: leftovers, a moved Rust local's bytes); then values one run has none of "
+        "(withheld or unavailable: note `no value in run b`, differs NULL, no value difference), "
+        "one row per selector (and stop), with a note counting them; then other address-only "
+        "differences (a "
         "Python repr, a Java object number, a C or C++ pointer at the same element's address, "
         "or one whose text after its address reads the same), one row "
         "per selector (and stop); last, selectors only one run captured. Hits pair by number, and "
@@ -1326,9 +1401,11 @@ WINDOW w AS (PARTITION BY selector ORDER BY hit) ORDER BY selector, hit""",
     (SELECT group_concat(name || ': ' || before || ' -> ' || after || {_NO_CHANGE} ||
       {_RESTORED}, '; ')
       FROM interventions i
-      WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS interventions,
+      WHERE i.run_id = o.run_id AND i.hit = o.hit
+        AND i.line IS COALESCE(o.stop_line, o.line)) AS interventions,
     (SELECT MIN(rowid) FROM interventions i
-      WHERE i.run_id = o.run_id AND i.hit = o.hit AND i.line IS o.line) AS seq, o.rowid AS pos
+      WHERE i.run_id = o.run_id AND i.hit = o.hit
+        AND i.line IS COALESCE(o.stop_line, o.line)) AS seq, o.rowid AS pos
   FROM captures o JOIN captures s ON s.run_id = o.run_id AND s.hit = o.hit
     AND s.selector = o.selector AND s.phase = 'after-set'
   WHERE o.run_id = {_RUN} AND o.phase = 'observed'
@@ -1727,8 +1804,8 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
             "INSERT INTO captures (run_id, hit, phase, line, function, selector, type, value, "
             "num, unavailable, error, view, identity, scope, note, instance, stop, "
             "element_size, at_element_of, element_index, offset_from, element_offset, "
-            "debugger_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "debugger_type, frame, stop_line) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (
                     run_id,
@@ -1755,6 +1832,12 @@ def record(path, result, *, language=None, target=None, label=None, worker=None)
                     *_points_into(row, "offset_from", "offset"),
                     # Every row of a run from schema 18 has one where it has a type.
                     row.get("debugger_type") or row.get("type"),
+                    # Which frame the selector read (#382): 0, where the program stopped,
+                    # unless the row names a caller's.
+                    row["frame"] if type(row.get("frame")) is int else 0,
+                    row["stop_line"]
+                    if type(row.get("stop_line")) is int and row.get("frame")
+                    else None,
                 )
                 for row in result.get("rows") or []
             ],
@@ -1826,6 +1909,38 @@ def baseline(path, run_id, source_sha256):
         {"run": run_id, "source": source_sha256},
     )["rows"]
     return found[0]["run_id"] if found else None
+
+
+def near_baseline(path, run_id, source_sha256):
+    """Where ``baseline`` finds none: (run, its captures, the candidate's) for the newest
+    run that is the same probe without its edit but for its --capture list, and shares at
+    least one selector with it, else None (thirteenth evaluation: one selector more said
+    only that no saved run matched). `diff` compares the selectors both captured, and
+    lists the others as `only in run a` or `b`. The shared selector is found in SQL, over
+    every retained run (at most MAX_RUNS), before the newest is taken (review of PR #389:
+    newer runs of other selectors hid it)."""
+    found = query(
+        path,
+        "SELECT b.run_id, b.capture AS theirs, c.capture AS ours FROM runs c JOIN runs b ON "
+        "b.run_id < c.run_id AND b.target IS c.target AND b.language IS c.language AND "
+        "b.program IS c.program AND b.line IS c.line AND b.capture IS NOT c.capture AND "
+        "b.args IS c.args AND b.entry IS c.entry AND b.target_identity = c.target_identity "
+        "AND b.source_sha256 = :source AND b.edit IS NULL AND COALESCE(b.sets, '[]') = '[]' "
+        "WHERE c.run_id = :run AND json_valid(c.target_identity) AND "
+        "json_extract(c.target_identity, '$.inputs_sha256') IS NOT NULL AND "
+        "json_valid(b.capture) AND json_valid(c.capture) AND EXISTS (SELECT 1 FROM "
+        "json_each(b.capture) AS x JOIN json_each(c.capture) AS y ON x.value = y.value) "
+        "ORDER BY b.run_id DESC LIMIT 1",
+        {"run": run_id, "source": source_sha256},
+    )["rows"]
+    for row in found:
+        try:
+            theirs, ours = json.loads(row["theirs"]), json.loads(row["ours"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(theirs, list) and isinstance(ours, list) and set(theirs) & set(ours):
+            return row["run_id"], theirs, ours
+    return None
 
 
 _ALLOWED = {
@@ -2243,10 +2358,12 @@ def _cells(where):
     """SQL for one row per hit, phase and selector of the captures matching ``where``:
     ``value``; ``reason``, why it has none; ``caveat``, what qualifies a value (a view
     other than how it was read, else `note` where the row has a note); ``stop``, where
-    its rows agree on one (`_one_stop`). A selector captured twice at a hit read the same
+    its rows agree on one (`_one_stop`); ``line``, where the program stopped (a caller
+    frame's row's `stop_line`, #382). A selector captured twice at a hit read the same
     both times (``_captured`` checks): one cell."""
     return (
-        f"SELECT hit, phase, selector, MIN(line) AS line, {_one_stop()} AS stop, "
+        f"SELECT hit, phase, selector, MIN(COALESCE(stop_line, line)) AS line, "
+        f"{_one_stop()} AS stop, "
         "MAX(value) AS value,\n"
         "    CASE WHEN MAX(value) IS NULL THEN COALESCE(MAX(error), 'no value') END AS reason,\n"
         f"    MAX({_caveat()}) AS caveat\n"
@@ -2730,6 +2847,7 @@ def _run(path, name, params, limit):
     if name in ("compare", "diff"):
         notes += _labels(path, bound)
     if name == "diff":
+        notes += _not_compared(path, bound)
         ranked = query(path, _DIFF_RANKS, bound, limit=MAX_ROWS)["rows"]
         notes += _element_first(ranked)
         unaligned, counted = _unaligned(path, bound)
@@ -2771,6 +2889,42 @@ def _labels(path, params):
         for row in rows
     ]
     return ["labels: " + "; ".join(named)]
+
+
+def _not_compared(path, params):
+    """For `diff`: a note counting the values one run has none of (withheld or unavailable),
+    apart from the differences (thirteenth evaluation: 18 of a candidate's 25 rows read as
+    differences only because its structured bindings were `not shown`), with the selectors
+    and the run."""
+    rows = query(
+        path,
+        f"{_PAIR}\nSELECT {_A} AS ra, {_B} AS rb, selector, nv FROM pair "
+        f"WHERE nv IS NOT NULL AND NOT {_TYPED} AND NOT unchanged ORDER BY pos",
+        {"a": params.get("a"), "b": params.get("b")},
+        limit=MAX_ROWS,
+    )["rows"]
+    if not rows:
+        return []
+    sides = {}
+    for row in rows:
+        side = {"run a": row["ra"], "run b": row["rb"]}.get(row["nv"])
+        sides.setdefault(side, []).append(row["selector"])
+    parts = [
+        f"run {side} has no value for {_quoted(list(dict.fromkeys(named)))}"
+        if side is not None
+        else f"neither run has one for {_quoted(list(dict.fromkeys(named)))}"
+        for side, named in sides.items()
+    ]
+    many = len(rows) > 1
+    run = next(iter(sides)) if len(sides) == 1 and None not in sides else None
+    return [
+        f"not compared: {_listed(parts)} ({len(rows)} value{'s' if many else ''} in all, "
+        f"withheld or unavailable), so {'they are' if many else 'it is'} no value "
+        f"difference{'s' if many else ''}; {'their rows come' if many else 'its row comes'} "
+        "after the real differences, and `queries run"
+        + (f" --param run={run}" if run is not None else "")
+        + "` says why"
+    ]
 
 
 # How `join` is named where hits may not pair: one selector, or several together (#201).
@@ -2958,8 +3112,9 @@ def _structure_apart(path, run):
     line."""
     rows = query(
         path,
-        "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.selector, "
-        f"c.value, {_caveat('c')} AS caveat, r.language FROM captures c JOIN runs r ON "
+        "SELECT c.run_id, c.hit, c.phase, c.line, c.function, c.instance, c.frame, "
+        f"c.selector, c.value, {_caveat('c')} AS caveat, r.language, c.unavailable AS withheld "
+        "FROM captures c JOIN runs r ON "
         "r.run_id = c.run_id WHERE c.run_id IN (:a, :b) ORDER BY c.run_id, c.hit, c.rowid",
         {"a": run["a"], "b": run["b"]},
         limit=MAX_ROWS,
@@ -2979,9 +3134,18 @@ def _structure_apart(path, run):
         cells[here][(row["hit"], row["phase"], row["selector"])] = masked
         if row["phase"] != "observed":
             continue
-        places[here].setdefault(row["hit"], (row["function"], row["instance"], row["line"]))
+        # Where the program stopped: a caller frame's row (#382) gives its own place only
+        # to a hit with no other.
+        place = (row["frame"] or 0, row["function"], row["instance"], row["line"])
+        known = places[here].get(row["hit"])
+        if known is None or (known[0] and not place[0]):
+            places[here][row["hit"]] = place
         if row["selector"] not in captured[here]:
             captured[here].append(row["selector"])
+        if row["withheld"]:
+            # No value to compare (thirteenth evaluation): it tells nothing either way.
+            untold[here].add((row["selector"], row["hit"]))
+            continue
         if masked is None:
             continue
         if row["caveat"] is not None:
@@ -3274,8 +3438,10 @@ def _after_change(shown, paired, loose, agreed, changes, edited, left_out, hedge
         one = len(others) == 1
         return (
             f"{_quoted(others)} {'differs' if one else 'differ'} after "
-            f"{_cause(changes, edited, detail)} and may follow from {it}, so this check leaves "
-            f"{'it' if one else 'them'} out"
+            f"{_cause(changes, edited, detail)} and may follow from {it}, so "
+            f"{'it says' if one else 'they say'} nothing of how the hits pair "
+            f"({'its' if one else 'their'} rows above still show where "
+            f"{'it differs' if one else 'they differ'})"
         )
 
     if not shown and not hedged:
@@ -3433,8 +3599,11 @@ _KEY_SEARCH = 2_000_000
 
 
 def _place(place):
-    """Where a stop was, for a note: `in f at line 24`, an instance by its label."""
-    function, instance, line = place
+    """Where a stop was, for a note: `in f at line 24`, an instance by its label; where
+    only a caller frame was read (#382), `below main at line 30 (frame 1)`."""
+    frame, function, instance, line = place
+    if frame:
+        return f"below {instance or function} at line {line} (frame {frame})"
     return f"in {instance or function} at line {line}"
 
 
@@ -3600,8 +3769,10 @@ def schema(path):
             "or a pointer gives NULL, and so does any Python value (see text)",
             "text(value, language, type)": "A Java, C, C++ or Rust string's or char's text "
             "without its quotes and escapes, by the row's language and type: a C++ "
-            'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a Java char its '
-            "character. NULL for other values, and where Peeky can't decode the text exactly: "
+            'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a C `char[N]` its text '
+            'up to its first NUL (`"Ada" (then a NUL and 4 bytes not shown)` gives `Ada`); a '
+            "Java char its character. NULL for other values, and where Peeky can't decode the "
+            "text exactly: "
             "cut short, or bytes that are no text (`\\xff`). NULL for every Python value: "
             "debugpy names a type by its __class__ and shows a value by its own __repr__, and "
             "a class can set them to `str` and `'Évora'`. Match Python's text as stored: "
@@ -3772,6 +3943,24 @@ def _changes_text(row, changes, shown):
     return "; ".join(_change_text(change, shown) for change in made) if made else None
 
 
+def _unvalued(row, column):
+    """Whether ``column`` (`value_a`, `value_b`) of a `diff` or `compare` row is a value
+    its run has none of: the row's note says so, first or after a type change's."""
+    note = str(row.get("note") or "")
+    return any(
+        note.startswith(said) or f"; {said}" in note
+        for said in ("no value in either run", f"no value in run {column[-1]}")
+    )
+
+
+def _label_only(text):
+    """`<not shown: …>` for a no-value text that starts with a short label, else the text
+    cut at 40 characters."""
+    if labelled := re.match(r"<([^:<>]{1,24}): ", text):
+        return f"<{labelled[1]}: …>"
+    return text if len(text) <= 40 else text[:38] + "…>"
+
+
 def table(result, width=120, changes=None, short_note=None, runs=None):
     """A plain-text table of a query result. A `function` column shows each frame's
     short name (see ``names.function_labels``), with a note: the result keeps it whole.
@@ -3818,6 +4007,11 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
             # differ, at one offset in both runs: whole, as COOKBOOK 3.1 says (twelfth
             # evaluation: a second cut at ``width`` hid the tail of both).
             return shown(value)
+        if query_name in ("diff", "compare") and column in paired and _unvalued(row, column):
+            # A value a run has none of says only its label here (`<not shown: …>`); the
+            # row's note says so, and `queries run` gives why (thirteenth evaluation: a
+            # 300-character reason padded the column on every row).
+            return _label_only(shown(value))
         if column in paired and value is not None and row.get(paired[column]) is not None:
             return _window(shown(value), shown(row[paired[column]]), width)
         if query_name == "set_effect" and column == "interventions" and changes:
@@ -3830,7 +4024,18 @@ def table(result, width=120, changes=None, short_note=None, runs=None):
         return text(value)
 
     cells = [[cell(row, column) for column in columns] for row in result["rows"]]
-    widths = [max(len(item[i]) for item in [columns, *cells]) for i in range(len(columns))]
+    # `diff`'s (output) row shows up to 200 characters of each output whole: it runs past
+    # its columns rather than widen them on every other row (thirteenth evaluation: every
+    # row was padded to 118 characters).
+    sized = [
+        item
+        for item, row in zip(cells, result["rows"])
+        if query_name != "diff" or row.get("selector") != "(output)"
+    ]
+    widths = [
+        max(len(item[i]) for item in [columns, *(sized if column in paired else cells)])
+        for i, column in enumerate(columns)
+    ]
     lines = [
         "  ".join(c.ljust(w) for c, w in zip(item, widths)).rstrip() for item in [columns, *cells]
     ]

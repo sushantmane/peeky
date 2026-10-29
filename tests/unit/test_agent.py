@@ -63,16 +63,60 @@ def test_no_fix_without_intervention(tmp_path):
         investigation.finish("x = 1", "x = 2")
 
 
+# The worker's token by the worker's name and by a client's (pre-release security review).
+TOKENS = {"DEBUG_TOKEN": "never-inherit-me", "PEEKY_WORKER_TOKEN": "never-inherit-me-either"}
+SHOW_TOKENS = 'import os; print(os.getenv("DEBUG_TOKEN"), os.getenv("PEEKY_WORKER_TOKEN"))'
+
+
 def test_execute_bounds_output_and_strips_token(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEBUG_TOKEN", "never-inherit-me")
-    result = execute([sys.executable, "-c", 'import os; print(os.getenv("DEBUG_TOKEN"))'], tmp_path)
-    assert result["stdout"].strip() == "None"
+    for name, value in TOKENS.items():
+        monkeypatch.setenv(name, value)
+    result = execute([sys.executable, "-c", SHOW_TOKENS], tmp_path)
+    assert result["stdout"].strip() == "None None"
+    result = execute([sys.executable, "-c", SHOW_TOKENS], tmp_path, env=dict(os.environ))
+    assert result["stdout"].strip() == "None None"
     result = execute(
         [sys.executable, "-c", 'while True: print("x"*10000)'], tmp_path, output_limit=32768
     )
     assert result["output_limit_exceeded"]
     assert result["exit_code"] is None
     assert len(result["stdout"]) <= 16000
+
+
+def test_the_checker_and_the_candidate_get_no_token(tmp_path, monkeypatch):
+    for name, value in TOKENS.items():
+        monkeypatch.setenv(name, value)
+    check = tmp_path / "check.py"
+    check.write_text("import runpy, sys\nrunpy.run_path(sys.argv[1])\n")
+    candidate = tmp_path / "candidate.py"
+    candidate.write_text(
+        "import os\nleft = sorted({'DEBUG_TOKEN', 'PEEKY_WORKER_TOKEN'} & set(os.environ))\n"
+        "assert not left, left\n"
+    )
+    result = verify(check, candidate, tmp_path)
+    assert result["passed"], result["checker"]
+
+
+def test_the_model_process_gets_no_token(tmp_path, monkeypatch):
+    from peeky.agent import CodexDecision
+
+    for name, value in TOKENS.items():
+        monkeypatch.setenv(name, value)
+    # A stand-in for Codex CLI that answers with the token names it was given.
+    fake = tmp_path / "fake_codex.py"
+    fake.write_text(
+        "import json, os, sys\nsys.stdin.read()\n"
+        "answer = sys.argv[sys.argv.index('--output-last-message') + 1]\n"
+        "names = sorted({'DEBUG_TOKEN', 'PEEKY_WORKER_TOKEN'} & set(os.environ))\n"
+        "open(answer, 'w').write(json.dumps({'tokens': names}))\n"
+    )
+    (tmp_path / "bin").mkdir()
+    codex = tmp_path / "bin" / "codex"
+    codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+    codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    (tmp_path / "scratch").mkdir()
+    assert CodexDecision(tmp_path / "scratch")({"task": "none"}) == {"tokens": []}
 
 
 @pytest.mark.skipif(os.name != "posix", reason="MVP process-group ownership is POSIX")

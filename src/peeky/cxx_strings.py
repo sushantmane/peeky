@@ -214,11 +214,12 @@ def shorten(text, room):
     start = located.end() if located else 0
     lexed = _lex(text, start, spelled=True)
     if lexed is not None and (not text[lexed[3] :] or text[lexed[3] :].startswith(" (")):
-        prefix, tokens, _, end = lexed
+        prefix, tokens, capped, end = lexed
         note = text[end:]
-        # A note is never cut: the literal keeps a few characters before it.
+        # A note is never cut: the literal keeps a few characters before it, and is
+        # marked cut only where it is.
         room = max(room - start - len(note), 12 if note else 0)
-        return text[:start] + _literal(prefix, tokens, True, room) + note
+        return text[:start] + _literal(prefix, tokens, capped, room) + note
     return text[: max(room - 1, 0)] + "…"
 
 

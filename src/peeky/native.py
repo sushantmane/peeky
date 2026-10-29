@@ -43,6 +43,8 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
+from peeky.char_arrays import array_size, proven_rest
+from peeky.char_arrays import shown as char_array
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -658,6 +660,51 @@ def _merged_class(first, second):
     return templates.pop() if len(templates) == 1 else "?"
 
 
+# A template argument LLDB writes as a bare name, which may be a typedef's of an unnamed
+# class; and how compilers name an unnamed class in a template's name: clang's `(lambda at
+# a.cpp:4:18)` and `(unnamed struct at a.cpp:3:1)`, GCC's `main()::<lambda(int, int)>`.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+# One-word types no typedef of an unnamed class can be.
+_FUNDAMENTAL = frozenset(
+    "bool char wchar_t char8_t char16_t char32_t short int long float double void unsigned "
+    "signed".split()
+)
+_UNNAMED_CLASS = re.compile(
+    r"\((?:lambda|unnamed (?:struct|class|union)) at [^()]+\)|(?:[^<>,]*::)?<lambda\(.*\)>"
+)
+
+
+def _template_split(name):
+    """(what comes before its first `<`, its template arguments split at their top-level
+    commas, what follows the matching `>`) of a type's name, or None."""
+    start = name.find("<")
+    if start <= 0:
+        return None
+    arguments, depth, current = [], 0, []
+    for index in range(start, len(name)):
+        char = name[index]
+        if char in "<([":
+            depth += 1
+            if depth == 1:
+                continue
+        elif char in ">)]":
+            depth -= 1
+            if depth < 0:
+                return None
+            if not depth:
+                return (
+                    name[:start],
+                    [*arguments, "".join(current).strip()],
+                    name[index + 1 :],
+                )
+        elif char == "," and depth == 1:
+            arguments.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    return None
+
+
 def _without_templates(name):
     """``name`` with every balanced `<...>` removed (`X<int *>::P` is `X::P`)."""
     out, depth = [], 0
@@ -866,6 +913,125 @@ def _locals(dies, offset, hidden=None, label=None):
 
 # Operators whose operand never runs: a call there is no caller.
 _UNEVALUATED = frozenset(("sizeof", "_Alignof", "alignof", "typeof", "__typeof__", "__typeof"))
+
+
+def _static_names(dies, bodies, hidden=None):
+    """The names ``_locals`` lists for these function bodies whose every declaration
+    there is in static storage, at one fixed address (`DW_OP_addr`, nonzero, as
+    ``_static_locals`` reads one): a `static` local, or a `const` one GCC builds at
+    compile time, which the rows mark `[not settable: static]` (#364). `describe` marks
+    them so (eval 13). Never a thread-local one, nor one a location list places."""
+    storages, pending = (
+        {},
+        [child for body in dict.fromkeys(bodies) for child in dies[body]["children"]],
+    )
+    while pending and len(storages) < 512:
+        child = pending.pop()
+        die = dies[child]
+        if die["tag"] == "DW_TAG_lexical_block":
+            pending.extend(die["children"])
+            continue
+        if die["tag"] not in ("DW_TAG_formal_parameter", "DW_TAG_variable"):
+            continue
+        if hidden and hidden(child):
+            continue
+        chain = _chain(dies, child)
+        name = _text(_first(dies, chain, "DW_AT_name"))
+        if not name or name.startswith("$"):
+            continue
+        if any("DW_AT_artificial" in dies[at]["attrs"] for at in chain) and (
+            (die["tag"] == "DW_TAG_variable" and name != "this") or name == "__closure"
+        ):
+            continue
+        location = die["attrs"].get("DW_AT_location") or ""
+        # One fixed, nonzero address, as the rows read statics (_static_locals): never a
+        # location list, which may place it in a register for some of its code.
+        placed = _FIXED_ADDRESS.fullmatch(location) if die["tag"] == "DW_TAG_variable" else None
+        storages.setdefault(name, set()).add(placed is not None and int(placed[1], 16) != 0)
+    return sorted(name for name, fixed in storages.items() if fixed == {True})
+
+
+def _gcc_capture_kinds(dies, entry):
+    """{capture: {"type", "how"}} of a GCC lambda's call operator (``entry``), which
+    `describe` lists among the lambda's names (eval 13). Each capture's type is that of
+    the member of the lambda's object that holds it (`Tariff`, `long int &`), not that of
+    the variable GCC declares for the body (`const Tariff`); it is captured "by
+    reference" where that member is a reference, else "by value". `this` is the object:
+    "by reference" for `[this]` and an implicit capture of it, where GCC declares a
+    `this` read through `__closure` at a pointer member; "by value" for `[*this]`, whose
+    member is the object's copy. A capture whose member Peeky can't tell has no type.
+    Empty for any other function, and for clang's lambdas."""
+    at = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
+    pointer = int(at[1], 16) if at else None
+    if pointer not in dies or _text(dies[pointer]["attrs"].get("DW_AT_name")) != "__closure":
+        return {}
+    record = _pointed_record(dies, _first(dies, _chain(dies, pointer), "DW_AT_type"))
+    members, offsets = {}, {}
+    for child in (record or {}).get("children") or ():
+        die = dies[child]
+        if die["tag"] == "DW_TAG_member" and (name := _text(die["attrs"].get("DW_AT_name"))):
+            members.setdefault(name, []).append(die["attrs"].get("DW_AT_type"))
+            offset = _offset_text(die["attrs"].get("DW_AT_data_member_location"))
+            offsets.setdefault(offset, []).append(die["attrs"].get("DW_AT_type"))
+
+    def shown(reference, how=None):
+        bare = _bare_type(dies, _type_at(reference))
+        if how is None:
+            references = ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type")
+            how = "by reference" if bare is not None and bare["tag"] in references else "by value"
+        kind = _c_tagged(dies, reference, _type_name(dies, reference))
+        return {"type": kind, "how": how} if kind else {"how": how}
+
+    found = {}
+    held = {name: member for name, member, _ in _gcc_capture_members(dies, entry)}
+    for name in _gcc_captures(dies, entry):
+        types = members.get(held.get(name)) or []
+        if len(types) == 1:
+            # `[*this]`'s `this` is its member `__this`, the object's copy.
+            found[name] = shown(types[0], "by value" if name == "this" else None)
+        elif name == "this":
+            found[name] = {"how": "by value"}
+        else:
+            # Its member not told: how, from the body's variable, without a type.
+            found[name] = {"how": _variable_how(dies, entry, name)}
+    # `[this]`, or `this` captured implicitly: lldb-dap lists GCC's `this`, which reads
+    # the object pointer the lambda's object holds, through `__closure`.
+    location = (dies[pointer]["attrs"].get("DW_AT_location") or "").strip()
+    if not re.fullmatch(r"DW_OP_fbreg -?[0-9]+", location):
+        return dict(sorted(found.items()))
+    read = re.compile(
+        re.escape(location) + r", DW_OP_deref(?:, DW_OP_plus_uconst (0x[0-9a-fA-F]+|[0-9]+))?"
+    )
+    for body in dict.fromkeys(entry["bodies"]):
+        for child in dies[body]["children"]:
+            die = dies[child]
+            if (
+                die["tag"] != "DW_TAG_variable"
+                or "DW_AT_artificial" not in die["attrs"]
+                or _text(die["attrs"].get("DW_AT_name")) != "this"
+                or not (place := read.fullmatch((die["attrs"].get("DW_AT_location") or "").strip()))
+            ):
+                continue
+            types = offsets.get(_offset_text(place[1]) if place[1] else 0) or []
+            target = _bare_type(dies, _type_at(types[0])) if len(types) == 1 else None
+            if target is not None and target["tag"] == "DW_TAG_pointer_type":
+                found["this"] = shown(types[0], "by reference")
+    return dict(sorted(found.items()))
+
+
+def _variable_how(dies, entry, name):
+    """How the GCC lambda ``entry`` captures ``name``, by the type of the variable GCC
+    declares for it in the body: "by reference" for a reference, else "by value"."""
+    for body in dict.fromkeys(entry["bodies"]):
+        for child in dies[body]["children"]:
+            die = dies[child]
+            if die["tag"] == "DW_TAG_variable" and _text(die["attrs"].get("DW_AT_name")) == name:
+                bare = _bare_type(dies, _type_at(die["attrs"].get("DW_AT_type")))
+                references = ("DW_TAG_reference_type", "DW_TAG_rvalue_reference_type")
+                return (
+                    "by reference" if bare is not None and bare["tag"] in references else "by value"
+                )
+    return "by value"
 
 
 def _arguments(text, opening):
@@ -1742,6 +1908,13 @@ def function_scopes(
             # A selector names none of several bindings on one line (#215 review).
             **({"ambiguous": dict(sorted(ambiguous.items()))} if ambiguous else {}),
         }
+        if not rust:
+            # Its locals in static storage, and a GCC lambda's captures with how each is
+            # captured, which `describe` says (eval 13).
+            statics = _static_names(dies, (*entry["bodies"], root), skip)
+            captures = _gcc_capture_kinds(dies, entry)
+            scope.update({"statics": statics} if statics else {})
+            scope.update({"captures": captures} if captures else {})
         # Instantiations of one generic function (Rust's names drop the generic
         # arguments) are one scope; their types join (`&[i32] or &[char]`), and so do
         # their blocks' lines (code a constant condition removes differs between them).
@@ -2100,6 +2273,8 @@ def local_declarations(info, line_text, workspace, declared, prologues=None, cod
                 "captures": _gcc_captures(dies, entry),
                 # Which member of the lambda's object holds each (_gcc_capture_members).
                 "capture_members": _gcc_capture_members(dies, entry),
+                # The class of that object (_closure_record).
+                "closure": _closure_record(dies, entry),
                 # Its variables in static storage, which lldb-dap lists among no frame's
                 # locals (_static_locals, #364).
                 "statics": _static_locals(dies, (*entry["bodies"], root), files, workspace),
@@ -2220,21 +2395,35 @@ def _offset_text(text):
     return int(text) if re.fullmatch(r"[0-9]+", text) else None
 
 
-def _pointed_record(dies, value):
+def _pointed_record(dies, value, offset=False):
     """The class or struct DIE a pointer type (``value``, a DW_AT_type) points at, past
-    qualifiers and typedefs on either side of the pointer; None for any other type."""
-    found, pointer = dies.get(_type_at(value)), False
+    qualifiers and typedefs on either side of the pointer; None for any other type. With
+    ``offset``, the DIE's offset instead."""
+    at = _type_at(value)
+    found, pointer = dies.get(at), False
     for _ in range(16):
         if found is None:
             return None
         if found["tag"] == "DW_TAG_pointer_type" and not pointer:
             pointer = True
         elif found["tag"] in ("DW_TAG_structure_type", "DW_TAG_class_type"):
-            return found if pointer else None
+            return (at if offset else found) if pointer else None
         elif found["tag"] not in ("DW_TAG_const_type", "DW_TAG_volatile_type", "DW_TAG_typedef"):
             return None
-        found = dies.get(_type_at(found["attrs"].get("DW_AT_type")))
+        at = _type_at(found["attrs"].get("DW_AT_type"))
+        found = dies.get(at)
     return None
+
+
+def _closure_record(dies, entry):
+    """The offset of the class a GCC lambda's call operator (``entry``) is a member of:
+    what its object pointer, `__closure`, points at (#361). The function that holds the
+    lambda holds a local of it (eval 13 prep, finding 4). None for any other function."""
+    at = _REFERENCE.fullmatch(_first(dies, entry["chain"], "DW_AT_object_pointer") or "")
+    pointer = int(at[1], 16) if at else None
+    if pointer not in dies or _text(dies[pointer]["attrs"].get("DW_AT_name")) != "__closure":
+        return None
+    return _pointed_record(dies, _first(dies, _chain(dies, pointer), "DW_AT_type"), offset=True)
 
 
 def _gcc_capture_members(dies, entry):
@@ -2613,6 +2802,54 @@ def _frame_key(frame):
     if not isinstance(frame, dict):
         return None
     return frame.get("id"), frame.get("instructionPointerReference")
+
+
+def _binding_refused(name, bound, ranged):
+    """Why a change to the C++ structured binding by reference ``name`` is refused, and
+    where the value is instead (eval 13 prep, finding 5: not before a call, as for a
+    reference parameter): what it binds (``bound``, the text of `p` in `auto &[a, b] =
+    p;`, of the range in a range `for`'s), which may be no value Peeky changes either
+    (a map's entry). Said as a session's refusal says it of the same binding: it is
+    reached through a pointer or reference (``_not_framed``)."""
+    bound = bound if len(bound) <= 60 else bound[:59] + "…"
+    if ranged:
+        what, where = f"an element of `{bound}`", f"change what fills `{bound}`, before the loop"
+    elif re.fullmatch(r"[A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*", bound):
+        what, where = f"`{bound}`", f"change `{bound}` itself where it is settable"
+    else:
+        # `*owner`, `p->inner`, `v[0]`: what it binds may be owned in another frame.
+        what, where = f"`{bound}`", "change what it binds where that is owned"
+    return (
+        f"`{name}` is a structured binding by reference to {what}, so it is reached through a "
+        f"pointer or reference, and Peeky changes only values the frame holds itself: {where}, "
+        "or edit the source"
+    )
+
+
+def capture_refused(name, route=None):
+    """Why a change to the GCC lambda capture ``name`` (or what it holds) is refused
+    (#361), as its row marks it, `[not settable: capture]`: at a stop, and before the
+    program runs (eval 13: not "`tariff` is const", nor the list of what a frame reaches
+    through a pointer). ``route``: (the function that holds the lambda, its local of the
+    lambda's object, the selector there) where its own copy can be changed instead
+    (``NativeSession._capture_route``)."""
+    head = (
+        f"`{name}` is a capture of this lambda, so it is reached through a pointer or "
+        "reference: GCC keeps it in the lambda's object, which this frame reads through "
+        "`__closure`"
+    )
+    if route is None:
+        return (
+            f"{head}. Change the value where it is owned: Peeky changes only values the "
+            "frame holds itself"
+        )
+    function, local, selector = route
+    return (
+        f"{head}, and Peeky changes only values the frame holds itself. Change the lambda's "
+        f"own copy instead, at a stop in {function} once the lambda is made: `{selector}` "
+        f"is settable there, and is what the lambda reads where the code calls `{local}` "
+        "itself"
+    )
 
 
 def _not_framed(name, storages):
@@ -5107,6 +5344,39 @@ def unlisted_reason(shown, raw, pointer=False):
     )
 
 
+def nodes_withheld(withheld, why, advice):
+    """The Withholding of an unordered container ``unlisted_container`` withholds
+    (``withheld``) whose entries Peeky would read from its own nodes (#360) but doesn't
+    here: what the debugger gets wrong, ``why`` Peeky reads no node (what follows
+    "Peeky"), and ``advice``, what to try (eval 13 prep, findings 2 and 3), within 300
+    characters: ``why`` alone is cut, so a hedge in ``advice`` is always said whole."""
+    misread = getattr(withheld, "misread", None) or "the debugger misreads its entries"
+    room = 300 - len(misread) - len(advice) - len(", and Peeky ; ")
+    if len(why) > room:
+        why = why[: max(0, room - 1)] + "…"
+    reason = f"{misread}, and Peeky {why}; {advice}"
+    name = getattr(withheld, "name", None)
+    refusal = f"`{name}` cannot be changed: {reason}" if name else withheld.refusal
+    made = Withholding(reason, UNLISTED, refusal)
+    made.counted, made.misread, made.name = None, misread, name
+    return made
+
+
+def _cut_name(text, size):
+    """``text`` cut to ``size`` characters for a reason, `…` marking the cut."""
+    text = str(text)
+    return text if len(text) <= size else text[: size - 1] + "…"
+
+
+class NodesUnsettled:
+    """Why ``NativeSession._node_listing`` reads no node at this stop, where something
+    may be part-way through changing the container (#181): ``why`` (what follows
+    "Peeky") and ``advice``, for nodes_withheld."""
+
+    def __init__(self, why, advice):
+        self.why, self.advice = why, advice
+
+
 class Advised(str):
     """A ``mid_statement`` reason with its own ``advice``: where to change the value
     instead, as no other stop on the statement helps (a stop in a prologue, #279)."""
@@ -5176,15 +5446,24 @@ def _unproven(base, what, why):
 
     def say(shown):
         bound = f"an element of `{shown}`" if element else f"`{shown}`"
+        # Never "bind by value": a loop that writes through the binding would then
+        # change nothing (eval 13).
+        instead = (
+            f"Read `{shown}` itself, or print the value from the program"
+            if element
+            else "Read it where the code names that object, or print it from the program"
+        )
         return (
             f"the binding refers to an object Peeky can't prove is still alive: `{base}` "
-            f"binds {bound} by reference, {why}. Read it where the code names that object, "
-            "or bind by value (no `&`)"
+            f"binds {bound} by reference, {why}. {instead}"
         )
 
     message = say(text)
     if len(message) > 300 and len(text) > 12:
-        message = say(text[: max(11, len(text) - (len(message) - 299))] + "…")
+        # The text appears twice where it is a container's.
+        times = 2 if element else 1
+        over = -(-(len(message) - 300) // times) + 1
+        message = say(text[: max(11, len(text) - over)] + "…")
     return Withholding(message, "not shown", None)
 
 
@@ -5490,15 +5769,51 @@ class NativeSession:
             return None
         return _pointee(target.target())
 
-    def capture_refusal(self, name):
-        """Why a change to the GCC lambda capture ``name`` (or what it holds) is refused
-        (#361), as _not_framed says it of a structured binding of a reference."""
-        return (
-            f"`{name}` is a capture of this lambda, so it is reached through a pointer or "
-            "reference: GCC keeps it in the lambda's object, which this frame reads through "
-            "`__closure`. Change the value where it is owned: Peeky changes only values the "
-            "frame holds itself"
-        )
+    def capture_refusal(self, name, frame=None, selector=None):
+        """Why a change to the GCC lambda capture ``name`` (or what it holds: the
+        selector ``selector`` rooted at it) is refused (#361), as _not_framed says it of
+        a structured binding of a reference: ``capture_refused``, with where the lambda's
+        own copy can be changed instead where ``frame`` runs that lambda
+        (``_capture_route``)."""
+        entry = self._function_at(frame) if frame is not None else None
+        return capture_refused(name, self._capture_route(entry, name, selector or name))
+
+    def _capture_route(self, entry, name, selector):
+        """(the function that holds the GCC lambda ``entry`` runs, its local of the
+        lambda's object, the selector there) where a change to ``selector`` (rooted at
+        the capture ``name``) can be made on the lambda's own copy instead: the object's
+        member that holds the capture (GCC 13's `__tariff`), where `set` may change that
+        path, as `describe`'s `mutable:` line lists it (eval 13 prep, finding 4). None for
+        a capture by reference, whose member is a reference, and where no one local of a
+        function in the build's sources is that object (none, or several: a copy)."""
+        from peeky.fields import Unsettable, debugger_steps, settable_member
+        from peeky.probe import parse_selector
+
+        graph = getattr(self, "fields", None)
+        closure = (entry or {}).get("closure")
+        members = {each: member for each, member, _ in (entry or {}).get("capture_members") or ()}
+        if graph is None or closure is None or name not in members:
+            return None
+        holders = [
+            (function, local, kind)
+            for function in self.declarations or ()
+            for local, declared in (function.get("types") or {}).items()
+            for kind, storage, _ in declared
+            if storage in ("automatic", "parameter") and _resolved(graph, kind) == closure
+        ]
+        if len(holders) != 1 or not str(selector).startswith(name):
+            return None
+        function, local, kind = holders[0]
+        routed = f"{local}.{members[name]}{str(selector)[len(name) :]}"
+        try:
+            steps = parse_selector(routed)[1:]
+            named = debugger_steps(graph, kind, local, steps)
+            if named is None:
+                return None
+            settable_member(graph, kind, local, named)
+        except (Unsettable, ValueError):
+            return None
+        return function.get("name") or "the function", local, routed
 
     def static_locals(self, frame):
         """The names the function a frame runs declares in static storage (a fixed
@@ -5942,6 +6257,19 @@ class NativeSession:
         self._lines_data, self.module_identity = json.dumps(lines, sort_keys=True), identity
         self.home = prepared.workspace / ".peeky-lldb-home"
         self.home.mkdir()
+        # The build without its artifacts (build.BuildManifest.build_id): what a probe's
+        # text says once per build (thirteenth evaluation).
+        self.build_id = hashlib.sha256(
+            json.dumps(
+                {
+                    "build": prepared.manifest.build_id,
+                    # Headers outside the target (system, SDK, absolute): review 2 of #389.
+                    "external_inputs": self.external_inputs,
+                    "target": target.target_identity,
+                },
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
         self.manifest_id = hashlib.sha256(
             json.dumps(
                 {
@@ -6143,7 +6471,7 @@ class NativeSession:
         typedefs = getattr(self, "typedefs", {})
         return "namespace::__1" in typedefs and "namespace::__cxx11" not in typedefs
 
-    def string_value(self, variable, fetch, read):
+    def string_value(self, variable, fetch, read, proven=None):
         """How to show a C or C++ value's text (see ``cxx_strings``). A libstdc++
         `std::basic_string` (#128), by its type's name, the class a typedef of it names
         (`Bytes`, `const Name &`, `Bytes *`), or, under a name Peeky cannot resolve, its
@@ -6152,7 +6480,12 @@ class NativeSession:
         literal is then spelled as C reads it, within the worker's bound, and LLDB's
         `error: summary string parsing error` is never a value. A string shown as its
         text (or as why it has none) is marked "text": the worker lists none of its
-        members, which are the library's (the sixth evaluation). None leaves the value."""
+        members, which are the library's (the sixth evaluation). A narrow character array
+        (`char[N]` by LLDB's name for its type) shows its text up to its first NUL, with
+        a note of what follows, and its every proven byte as "buffer" (``char_arrays``):
+        the bytes after its summary are read from memory, or as ``fetch(reference,
+        start)`` lists its elements, only where ``proven()`` says the array is reached
+        through nothing in doubt (else they are `not read`). None leaves the value."""
         shown = None
         language = getattr(getattr(self, "target", None), "language", None)
         if language == "cpp":
@@ -6168,6 +6501,27 @@ class NativeSession:
             # Peeky's own text (read from memory, or noted): spelled and bounded already.
             return shown
         text = variable.get("value")
+        if (
+            language in ("c", "cpp")
+            and isinstance(text, str)
+            and (size := array_size(variable.get("type"))) is not None
+            and (
+                array := char_array(
+                    text,
+                    size,
+                    lambda known, window: (
+                        proven_rest(variable, known, window, fetch, read)
+                        if proven is not None and proven()
+                        else b""
+                    ),
+                )
+            )
+            is not None
+        ):
+            # A narrow character array: its text up to its first NUL, and what follows
+            # the text as a note, never as text (thirteenth evaluation). What follows the
+            # bytes LLDB's summary shows is read again: they may be unreadable, not NULs.
+            return {**(shown or {}), **array}
         ended = False
         if (
             language in ("c", "cpp")
@@ -6200,6 +6554,7 @@ class NativeSession:
         kinds=None,
         raw=None,
         nodes=None,
+        proven=None,
     ):
         """A C or C++ struct's, class's, fixed-size array's or standard container's
         preview (#136, #181, ``native_previews``), or None to keep the debugger's text.
@@ -6218,7 +6573,8 @@ class NativeSession:
         ``raw(path)`` reads a variable path as the debugger does (``unlisted_container``):
         an unordered container inside shows `<not listed>` where its count is not
         proven (#167), or its entries as read from its nodes (#360; ``nodes``, as for
-        ``unlisted_container``)."""
+        ``unlisted_container``). ``proven()``: whether its char arrays' bytes after their
+        summaries may be read again (``string_value``)."""
         from peeky.native_previews import preview
 
         if getattr(getattr(self, "target", None), "language", None) not in ("c", "cpp"):
@@ -6271,7 +6627,9 @@ class NativeSession:
                 # An entry Peeky read from an unordered container's nodes (#360): shown
                 # as read.
                 return child.get("value")
-            shown = self.string_value(child, lambda reference: fetch(reference, 64), read)
+            shown = self.string_value(
+                child, lambda reference, start=0: fetch(reference, 64, start), read, proven
+            )
             if shown and shown.get("unavailable"):
                 return None
             return shown["value"] if shown and "value" in shown else child.get("value")
@@ -6291,7 +6649,7 @@ class NativeSession:
                 read = self._node_listing(
                     child, frame, path, *counted, nodes, stack, deeper, threads
                 )
-                if read is not None:
+                if isinstance(read, tuple):
                     return read[1]
             return found is not None
 
@@ -6307,6 +6665,60 @@ class NativeSession:
         if threads is None or threads() != 1:
             return False
         return self.library_call(frame, indirect, stack, deeper) is None
+
+    def unsettled_nodes(self, frame, indirect, stack, deeper=None, threads=None):
+        """Why Peeky reads no node of an unordered container ``frame`` holds (#360), as a
+        ``NodesUnsettled``, where ``containers_settled`` says something may be part-way
+        through changing it; else None. It names that call, and says to retry after it
+        returns, where the entries may read then (eval 13 prep, finding 3): a count past
+        ``MAX_NODES`` by then, or a string a debugger without `readMemory` can't read,
+        still withholds them (#393 review)."""
+        count = threads() if threads is not None else None
+        if count != 1:
+            how = (
+                "Peeky cannot tell how many threads the program runs"
+                if count is None
+                else f"the program runs {count} threads"
+            )
+            return NodesUnsettled(
+                f"doesn't read them from its nodes: {how}, and a stop pauses every other one "
+                "wherever it is, perhaps part-way through changing it",
+                "retry where the program runs one thread",
+            )
+        found = self.library_call(frame, indirect, stack, deeper)
+        if found is None:
+            return None
+        where, name = found
+        name = _short_frame(name)
+        name = name if len(name) <= 60 else name[:59] + "…"
+        if where in ("between", "lifetime"):
+            call = (
+                "a standard-library call"
+                if where == "between"
+                else "a constructor, destructor or assignment operator"
+            )
+            return NodesUnsettled(
+                f"doesn't read them from its nodes while {call} below this frame ({name}) may "
+                "be part-way through changing it",
+                "retry after that call returns",
+            )
+        if where in ("stack", "lifetime-stack"):
+            call = (
+                "a standard-library call"
+                if where == "stack"
+                else "a constructor, destructor or assignment operator"
+            )
+            # Said of a container not in this frame's own storage too (a static's).
+            return NodesUnsettled(
+                f"doesn't read them from its nodes while {call} runs on this thread ({name}), "
+                "which may be part-way through changing it",
+                "retry where none runs",
+            )
+        return NodesUnsettled(
+            "doesn't read them from its nodes: it cannot read every frame of this stop to rule "
+            "out a call part-way through changing it",
+            "print it from the program",
+        )
 
     def library_call(self, frame, indirect, stack, deeper=None):
         """A call that may be part-way through changing a container a value of
@@ -6982,11 +7394,94 @@ class NativeSession:
             if why is None:
                 return None
             reason = undecoded_reason(why, pointer=shape == "pointer")
+            misread = "the debugger would misread " + (
+                "the entries it points at" if shape == "pointer" else "its entries"
+            )
         else:
             reason = unlisted_reason(shown, raw, pointer=shape == "pointer")
+            held = "the {} entries it points at" if shape == "pointer" else "its {} entries"
+            misread = (
+                None
+                if raw is None
+                else f"the debugger counts {shown} of {held.format(raw)}"
+                if shown is not None
+                else f"the debugger lists none of {held.format(raw)}"
+            )
         withheld = Withholding(reason, UNLISTED, f"`{steps[-1][0]}` cannot be changed: {reason}")
         withheld.counted = (path, raw) if path is not None and raw is not None else None
+        # What the debugger gets wrong, and the row's name, for nodes_withheld.
+        withheld.misread, withheld.name = misread, str(steps[-1][0])
         return withheld
+
+    def _nodes_readable(self, frame, steps, count):
+        """Whether ``_node_listing`` would read the entries of the unordered container
+        ``steps`` ([(name, type)] from its root local) reaches in ``frame``, counting
+        ``count`` itself, once nothing else stops it: an unoptimized build whose source
+        asks to optimize no function, a layout the debug information proves, and at
+        most ``MAX_NODES`` entries of types Peeky reads (``hashed_nodes.readable``). Only
+        then does a row say why it reads none at this stop, and what to try (eval 13 prep,
+        findings 2 and 3)."""
+        from peeky.hashed_nodes import MAX_NODES, Unread, layout, readable
+
+        graph = getattr(self, "fields", None)
+        if graph is None or type(count) is not int:
+            return False
+        if getattr(getattr(self, "target", None), "optimization", "O0") != "O0":
+            return False
+        if getattr(self, "optimized", None) is not False:
+            return False
+        typed = self._typed(frame, [str(name) for name, _ in steps])
+        if typed is None:
+            return False
+        container = typed.target() if typed.kind() in ("pointer", "reference") else typed
+        node = container.node() if container is not None else None
+        if node is None or node[0] != "record" or not container.unordered():
+            return False
+        try:
+            held = layout(graph, node)[0]
+        except Unread:
+            return False
+        return 0 <= count <= MAX_NODES and readable(graph, held)
+
+    def unreached_container(self, withheld, name, kind, holders=(), frame=None, steps=None):
+        """The Withholding of an unordered container ``unlisted_container`` withholds
+        (``withheld``) whose nodes Peeky doesn't read (#360): the ``kind`` ("pointer" or
+        "reference") ``name`` on its way isn't proven to refer to a live object. Where the
+        listed frames hold locals Peeky couldn't place, of the type it refers to, which
+        read in their own frames (``holders``: [(frame index, function, name)]), as with
+        lldb-dap 18, which gives a container local no address, the row offers them as
+        candidates to inspect, one of which it may refer to: Peeky doesn't prove which
+        (eval 13 prep, finding 2; #393 review). Only where a proven one would read the
+        nodes (``_nodes_readable``: ``steps``, [(name, type)] from the root local of
+        ``frame``); else ``withheld`` as it is."""
+        verb = "points at" if kind == "pointer" else "refers to"
+        counted = getattr(withheld, "counted", None)
+        if counted is None or steps is None or not self._nodes_readable(frame, steps, counted[1]):
+            # No node would be read through a proven one either: the row says why already.
+            return withheld
+        for size, count in ((32, 2), (20, 2), (20, 1), (12, 1)):
+            # Each name cut on its own, and the hedge kept whole, within 300 characters.
+            named = _cut_name(name, size)
+            why = f"reads its nodes only through a {kind} it proves {verb} a live object, not `{named}`"
+            if not holders:
+                advice = "print its entries from the program"
+            else:
+                shown = [
+                    f"`{_cut_name(local, size)}` in {_cut_name(function, size)} (`--frame {index}`)"
+                    for index, function, local in holders[:count]
+                ]
+                if len(holders) > count:
+                    shown.append("and others")
+                advice = (
+                    f"inspect this candidate local, {shown[0]}: it may be what `{named}` {verb}"
+                    if len(shown) == 1
+                    else f"inspect these candidate locals, {', '.join(shown)}: one may be what "
+                    f"`{named}` {verb}"
+                )
+            made = nodes_withheld(withheld, why, advice)
+            if made.endswith(why + "; " + advice):
+                return made
+        return made
 
     def listed_container(
         self, withheld, variable, frame, steps, nodes, stack=None, deeper=None, threads=None
@@ -6994,7 +7489,9 @@ class NativeSession:
         """The value view of an unordered container ``unlisted_container`` withholds
         (``withheld``), its entries read from its own nodes (#360): {"value", "rust_view":
         "memory", "children"}, and "pointee" (what it points at, whole) for a pointer to
-        one. None where Peeky can't (``_node_listing``). The worker asks only once
+        one. None where Peeky can't (``_node_listing``); a Withholding of its own where
+        something may be changing the container, which names that and says to retry.
+        The worker asks only once
         nothing else withholds the row: no note, and no pointer on the way it can't show
         points at a live object. ``nodes``: (``evaluate`` on the node-read budget,
         ``read(reference, count)`` or None where the debugger has no `readMemory`)."""
@@ -7002,16 +7499,19 @@ class NativeSession:
         if counted is None:
             return None
         read = self._node_listing(variable, frame, steps, *counted, nodes, stack, deeper, threads)
+        if isinstance(read, NodesUnsettled):
+            # Why no node is read at this stop, and where it reads.
+            return nodes_withheld(withheld, read.why, read.advice)
         return read[0] if read is not None else None
 
     def _node_listing(self, variable, frame, steps, path, count, nodes, stack, deeper, threads):
         """(the row's value view, (the listing's root, fetch)) of an unordered container's
         entries read from its own nodes (#360), or None where Peeky cannot read them so:
         an optimized build, or one whose source asks GCC to optimize a function (a
-        value it stores may still be in a register, its nodes unchanged); a container
-        that may be part-way through a change (``containers_settled``); or a read that
-        ``hashed_nodes.read_entries`` does not prove. ``path``: the variable path of its
-        own count; ``count``: that count."""
+        value it stores may still be in a register, its nodes unchanged); or a read that
+        ``hashed_nodes.read_entries`` does not prove. A ``NodesUnsettled`` where the
+        container may be part-way through a change (``containers_settled``), saying
+        why. ``path``: the variable path of its own count; ``count``: that count."""
         from peeky.hashed_nodes import Memory, Unread, Words, read_entries, view_children, word
         from peeky.native_previews import preview
 
@@ -7034,8 +7534,12 @@ class NativeSession:
         if node is None or node[0] != "record" or not container.unordered():
             return None
         if threads is None or not self.containers_settled(frame, indirect, stack, deeper, threads):
-            # A call may be part-way through changing it (#181): its nodes too.
-            return None
+            # A call may be part-way through changing it (#181): its nodes too. Said why,
+            # with where to read it, where its entries would read then (eval 13 prep,
+            # finding 3).
+            if not self._nodes_readable(frame, steps, count):
+                return None
+            return self.unsettled_nodes(frame, indirect, stack, deeper, threads)
         evaluate, read = nodes
         base = path[: -len(suffix)] + "_M_h._M_before_begin._M_nxt"
         try:
@@ -7625,14 +8129,60 @@ class NativeSession:
         """The element's type for a root local the build holds as a reference to a
         structured binding's element (#291): `std::tuple_element<0, std::pair<long,
         long> >::type`, as the binding is declared, where LLDB names the reference (`…
-        &&`). None for any other value, whose type stays LLDB's."""
+        &&`). A root local's type whose template argument is a lambda (or another unnamed
+        class), named as the compiler names it (``_unnamed_arguments``). None for any other
+        value, whose type stays LLDB's."""
         bare = re.fullmatch(r"(.*?\S)\s*&{1,2}\s*", str(variable.get("type") or ""))
         if top and bare is not None and variable.get("peekyCapture") is True:
             # A GCC lambda's capture by reference, shown as what it refers to (#361).
             return bare[1]
         if not top or bare is None or not isinstance(self._element_binding(variable, frame), tuple):
-            return None
+            return self._unnamed_arguments(variable, frame) if top else None
         return bare[1]
+
+    def _unnamed_arguments(self, variable, frame):
+        """The type of the root local ``variable`` with each template argument that LLDB
+        names by a typedef of an unnamed class (a lambda) named as the compiler names it in
+        the build's debug information: clang's `(lambda at nightlot.cpp:24:25)`, GCC's
+        `main()::<lambda(int, int)>`. LLDB shows such a class by the first typedef it meets
+        for it: `std::map<int, long, type>` (libc++'s `__type_identity<…>::type`),
+        `std::map<int, long, key_compare>` (libstdc++'s), which no code names (thirteenth
+        evaluation). Only an argument LLDB names by a bare identifier, where the record's
+        own name has a lambda's or an unnamed class's at the same place; None where
+        nothing changes or Peeky can't place the local's type."""
+        kind = str(variable.get("type") or "")
+        shown = _template_split(kind)
+        if shown is None or not any(
+            _IDENTIFIER.fullmatch(each) and each not in _FUNDAMENTAL for each in shown[1]
+        ):
+            return None
+        try:
+            offset, _, graph = self._root_type(frame, variable)
+        except Exception:
+            return None
+        for _ in range(16):
+            node = graph.get(offset) if graph is not None else None
+            if node is None or node[0] not in ("typedef", "qualifier", "reference"):
+                break
+            offset = node[2]
+        if node is None or node[0] != "record" or not node[1]:
+            return None
+        declared = _template_split(node[1])
+        if declared is None or _without_templates(declared[0]) != _without_templates(
+            shown[0].split("::")[-1].split()[-1]
+        ):
+            return None
+        arguments = [
+            named
+            if _IDENTIFIER.fullmatch(each)
+            and index < len(declared[1])
+            and _UNNAMED_CLASS.fullmatch(named := declared[1][index])
+            else each
+            for index, each in enumerate(shown[1])
+        ]
+        if arguments == shown[1]:
+            return None
+        return f"{shown[0]}<{', '.join(arguments)}>{shown[2]}"
 
     def bound_element(self, variable, frame, fetch, note=None, siblings=None, raw=None):
         """How the worker shows a root local the build holds as a reference to a
@@ -8874,6 +9424,64 @@ class NativeSession:
         except (OSError, ValueError):
             return None
 
+    def breakpoint_notes(self, program, breakpoints):
+        """Notes on the requested lines (display only): a GCC lambda's first line, which
+        holds only the lambda's prologue, where the function around it doesn't make the
+        lambda (eval 13 prep, finding 7). The debugger moves a breakpoint there into the
+        lambda, and a stop "where the lambda is made", before it copies what it captures
+        by value, is on the line where the function around it builds the lambda: its
+        `};`, in GCC 13."""
+        source = self._relative(program)
+        if source is None or not self.declarations:
+            return []
+        text = None
+        notes = []
+        for point in breakpoints[:16]:
+            line = point.get("line") if isinstance(point, dict) else None
+            if type(line) is not int:
+                continue
+            entries = [entry for entry, _ in self._line_places(source, line)]
+            if len({entry.get("root") for entry in entries}) != 1:
+                continue
+            made = entries[0]
+            span = tuple(made.get("span") or ())
+            if made.get("closure") is None or made.get("source") != source or len(span) != 2:
+                continue
+            if span[0] != line or span[1] <= line:
+                continue
+            if text is None:
+                text = source_lines(self._source_text(source) or "", False)
+            # No statement of the lambda's own on its first line: it ends at its `{`.
+            if line > len(text) or not re.search(r"\{\s*(?://.*)?$", text[line - 1]):
+                continue
+            holders = [
+                function
+                for function in self.declarations
+                if function.get("source") == source
+                and len(around := tuple(function.get("span") or ())) == 2
+                and around[0] < line
+                and around[1] >= span[1]
+            ]
+            built = {}
+            for function in holders:
+                rows = {
+                    number
+                    for _, where, number in function.get("order", ())
+                    if where == source and line < number <= span[1]
+                }
+                if rows:
+                    built[function.get("name") or "the function around it"] = min(rows)
+            if len(built) != 1:
+                continue
+            ((holder, at),) = built.items()
+            notes.append(
+                f"Line {line} starts a lambda, and this build gives it only the lambda's "
+                "prologue: a stop there is in the lambda, on its next line with code. "
+                f"{holder} makes the lambda on line {at}: stop there, in {holder}, to read or "
+                "change what it captures by value before the lambda copies it."
+            )
+        return notes
+
     def never_settable(self, program, lines, names, text=False):
         """Why a probe's `--set` of one of ``names`` can change nothing at any stop of
         ``lines`` of ``program`` in this build (#138), or None: a field or element whose
@@ -8914,6 +9522,11 @@ class NativeSession:
                     continue
                 failures = []
                 for entry, shown in places:
+                    if (capture := self._capture_refused(entry, root, name)) is not None:
+                        # A GCC lambda's capture (#361), said as its rows mark it, and
+                        # where its own copy can be changed instead (eval 13).
+                        failures.append((entry.get("name") or "this function", capture))
+                        continue
                     if not steps:
                         # A root is judged at the stop (its declaration's progress), but
                         # one the frame reaches through a pointer or reference, or whose
@@ -8924,6 +9537,12 @@ class NativeSession:
                             why = _not_framed(root, storages)
                         elif text or not (why := self._root_never_integer(entry, root, shown)):
                             break
+                        if storages != {"static"} and (
+                            bound := self._reference_binding(entry, root, shown)
+                        ):
+                            # A structured binding by reference: what it binds, not a call,
+                            # is where the value is (eval 13 prep, finding 5).
+                            why = _binding_refused(root, *bound)
                         failures.append((entry.get("name") or "this function", why))
                         continue
                     try:
@@ -8970,6 +9589,55 @@ class NativeSession:
                         f"build: {reasons}{later}. Refused before the program runs: nothing ran"
                     )
         return None
+
+    def _reference_binding(self, entry, root, shown):
+        """(the text of what it binds, whether a range `for`'s) of the C++ structured
+        binding by reference (`auto &[k, v]`, `const auto &`, `auto &&`) that declares
+        ``root`` in the function ``entry`` (``shown``: the declaration the stop names,
+        where it declares several), read from its line in the source
+        (c_source.Statements.binding); else None. Where the build gives the declaration
+        no line (clang 18's), the one binding of that name in the function's lines."""
+        if getattr(getattr(self, "target", None), "language", None) != "cpp":
+            return None
+        source = (entry or {}).get("source")
+        places = {each[2] for each in ((entry or {}).get("types") or {}).get(root) or ()}
+        if shown is not None and len(places) > 1:
+            places = {each for each in places if each == (Path(str(shown[0])).name, shown[1])}
+        if len(places) != 1 or not isinstance(source, str):
+            return None
+        statements = self._statements(source)
+        if statements is None:
+            return None
+        place = next(iter(places))
+        if isinstance(place, tuple) and len(place) == 2:
+            name, line = place
+            if name != Path(source).name or type(line) is not int:
+                return None
+        else:
+            span = tuple((entry or {}).get("span") or ())
+            if len(span) != 2 or span[1] - span[0] > 2000:
+                return None
+            lines = [at for at in range(span[0], span[1] + 1) if statements.binds(at, root)]
+            if len(lines) != 1:
+                return None
+            line = lines[0]
+        read = statements.binding(line, root)
+        return (read[1], read[2]) if read and read[0] else None
+
+    def _capture_refused(self, entry, root, selector):
+        """``capture_refused`` for a change to ``selector`` (rooted at ``root``) in the
+        function ``entry`` (a declarations entry), where ``root`` names only a capture
+        of the GCC lambda it runs: every declaration of that name there is the capture's
+        own variable, which reaches the lambda's object through `__closure`. Else None."""
+        if root not in ((entry or {}).get("captures") or ()):
+            return None
+        kinds = {kind for each, _, kind in entry.get("capture_members") or () if each == root}
+        declared = (entry.get("types") or {}).get(root) or ()
+        if not kinds or not declared:
+            return None
+        if any(kind not in kinds or storage != "through" for kind, storage, _ in declared):
+            return None
+        return capture_refused(root, self._capture_route(entry, root, selector))
 
     def _root_never_integer(self, entry, root, shown):
         """The stop's refusal of a number for the root local ``root`` of the function

@@ -573,7 +573,9 @@ Read [COOKBOOK 5.1](../COOKBOOK.md#51-stop-look-change-finish) first.
 
 ### Read a caller's local
 
-In C and C++, a caller's local is withheld while its declaration's code hasn't finished:
+`session get --frame 1 result` reads a caller's local, and so does a probe's `--capture 1:result`
+([2.10](../COOKBOOK.md#210-values-in-a-callers-frame)). In C and C++, a caller's local is withheld
+while its declaration's code hasn't finished:
 
 - **A call in the declaration:** in `long result = twice(seed);`, the caller stores `result` only
   after `twice` returns. The same holds for `long multi =` on one line and `twice(seed + 1);` on
@@ -698,6 +700,8 @@ parts after it give the details.
   `this`: `this.head_`.
 - A `std::string` reads whole. A `std::vector` reads by index, and a `std::map` by key: `m[1]`,
   `ages["al"]`.
+- A `char[N]` shows its text up to its first NUL, then a note of what follows it
+  ([details](#characters)).
 - A `static` local reads where the code at the stop names it, and is never changed
   ([details](#read-a-static-local)).
 - Structs, arrays and most standard containers show their members, in probes, `inspect` and
@@ -749,6 +753,9 @@ Peeky doesn't guess. Where it can't vouch for a local's value, it withholds it o
   `auto &[at, n] = *owner`. Such fields are marked `[not settable: reference]`. To change one, set
   it in the frame that owns the struct, before the call
   ([details](#change-a-field-behind-a-pointer)).
+- A refused change to a structured binding by reference says what it binds. For `v` in
+  `for (auto &[k, v] : m)`, change what fills `m`. For `auto &[a, b] = p;`, change `p.b` where it
+  is settable. For `auto &[at, n] = *owner;`, change it where `*owner` is owned.
 - In C, the program's sources may call the function only once. Then a refusal for a pointer
   parameter names that call:
   ``push has one caller: m.c:15 in main, which passes `&r`, where `r.tail` is settable``. If that
@@ -787,6 +794,12 @@ may still have been arriving):`. A last line says that the debugger sent more te
 true: lldb-dap 18 crashes as Peeky closes the session (`free(): invalid pointer`). So Peeky can't
 prove that it sent all of the program's output. LLVM 20's lldb-dap ends cleanly, and the label is
 `output:`.
+
+The label stays on every such probe. The last line is whole on a build's first probe in a state
+directory, then short: `the debugger again sent more text as Peeky closed the session`. So is
+LLDB 18's warning about a GCC build's `_M_local_buf`. A build is its `build_id`, a best-effort
+identity used only for this: a candidate, a changed source or another compiler is another one
+([2.7](../COOKBOOK.md#27-json-for-scripts)). `--json` has both whole.
 
 #### Where and when to change
 
@@ -839,7 +852,8 @@ the evidence store. The handle stays, so you still read and set fields by name: 
 
 A preview shows 8 members or elements, then `…`. It goes two levels deep, with `{…}` below that:
 `{s = {a = {…}}}`. It shows at most 40 characters of one member, and 240 in all. A char array or a
-string is cut between characters, with LLDB's `...`. A note on a string is kept whole.
+string is cut between characters, with LLDB's `...`. A note on a string or a char array is kept
+whole.
 
 - Previews have their own budget: 256 debugger requests within 3 s, per inspection or expansion.
   Past it, values keep the debugger's text. The strings' checks have a budget of their own.
@@ -913,6 +927,11 @@ That is the case for:
   `size=2 [size=2 [1, 2], size=1 [3]]`.
 - A `std::map` or `std::unordered_map` shows its entries in iteration order, as `key: value`:
   `size=3 {1: 10, 2: 20, 5: 50}`, `{"a": {x = 1, y = 2}}`.
+- A container that holds more than its preview shows ends with `…`. Under a probe's table, a line
+  says how to read the rest:
+  ``preview: `by_hour` holds 9 entries, more than its preview shows; read one with `by_hour[K]`
+  (key K) or `by_hour[#N]` (the Nth), or list them in a session: `peeky session get by_hour` ``.
+  A sequence's line names `v[N]` instead.
 - A set (`std::set`, `std::multiset`, `std::unordered_set`, `std::unordered_multiset`) shows its
   elements: `size=2 {1, 3}`.
 - A `std::multimap` keeps its summary, `size=2`: its keys repeat.
@@ -958,6 +977,28 @@ That is the case for:
   Inside a preview it shows `<not listed>`: `{us = <not listed>, n = 2}`. A pointer to one is
   withheld the same way. Where Peeky can't read the container's own count, the row is withheld
   too, and says so. That happens for one reached through a base class or an anonymous member.
+
+  Where Peeky would read the nodes but can't at this stop, the row says why, and what to try:
+
+  - Through a pointer or reference that Peeky can't show refers to a live object. With lldb-dap
+    18, which gives a container local no address, a reference parameter to one is such a case.
+    Where the listed frames hold locals of its type that Peeky couldn't place, and that read
+    there, the row offers them to inspect. Peeky doesn't prove which one, if any, it refers to:
+
+    ```
+    stock  Stock &  <not listed: the debugger counts 0 of its 3 entries, and Peeky reads its nodes only through a reference it proves refers to a live object, not `stock`; inspect this candidate local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to>
+    ```
+
+  - While a call may be changing the container
+    ([A container that something may be changing](#a-container-that-something-may-be-changing)).
+    The row names that call, and says to retry after it returns. The entries may still be
+    withheld then, for example if the container has grown past 256 entries:
+
+    ```
+    on_hand  Stock  <not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from its nodes while a constructor, destructor or assignment operator below this frame (Movement::~Movement) may be part-way through changing it; retry after that call returns>
+    ```
+
+  Elsewhere it says to print the entries from the program.
 
   A right count isn't enough. LLDB decodes each entry as the allocator's first template
   argument, at a fixed place in each node. So Peeky uses LLDB's listing only where the debug
@@ -1035,6 +1076,8 @@ not shown: a standard-library call below this frame (std::__1::vector<…>::clea
 - Through a pointer or reference, it ends:
   `… while a standard-library call runs on this thread (…)`.
 - For a lifetime under way, it names `a constructor, destructor or assignment operator`.
+- An unordered container that Peeky reads from its own nodes says so of itself:
+  ``… and Peeky doesn't read them from its nodes while a standard-library call below this frame (…) may be part-way through changing it; retry after that call returns``.
 - With several threads, it says:
   ``the program runs 2 threads: a stop pauses every other one wherever it is, perhaps part-way through changing `shared` …``.
 - Such a row has no handle. So a selector below it is refused with the same reason. A map's key
@@ -1042,8 +1085,42 @@ not shown: a standard-library call below this frame (std::__1::vector<…>::clea
 
 #### Characters
 
-- A C char array shows as LLDB writes it, bounded by its size, so it needs no NUL. It is cut at
-  40 characters.
+A narrow character array, such as `char name[32]`, shows its text up to its first NUL. A note after
+it says what follows the text. Those bytes are never shown as part of the text:
+
+| What the array holds | Its value |
+| --- | --- |
+| The text, a NUL, then bytes that aren't all NULs | `"Adeyemi" (then a NUL and 24 bytes not shown)` |
+| The text, then only NULs | `"hello" (then 59 NUL bytes)` |
+| A NUL first | `"" (then a NUL and 31 bytes not shown)` |
+| No NUL | `"abcdefgh" (no NUL in its 8 bytes)` |
+| No NUL in the bytes Peeky could read | `"abcdef" (then 10 bytes not read)` |
+
+- LLDB's text shows the bytes up to the last one it read that isn't a NUL. It shows the same
+  for an array that runs into memory it can't read. So Peeky reads the bytes after that text
+  again, and calls them NULs only where it read them.
+- It reads them from memory where the debugger can. Otherwise it reads them as the debugger
+  lists the array's elements, at most 64 of them: lldb-dap 18 reads no memory.
+- It reads them only where nothing on the way to the array is in doubt. A pointer on the way
+  must be proven to point at a live object. The value must have no `note`, and the build must
+  be unoptimized. Otherwise the bytes after LLDB's text are `not read`.
+- So a NUL past those 64 elements is not shown, and the note says the bytes were not read.
+  `text()` is NULL for such a row.
+- This holds for an array of `char`, `signed char`, `unsigned char` or a `char8_t` typedef, by
+  LLDB's name for its type. An array under a typedef's own name, such as `Tag` for `char[8]`,
+  keeps LLDB's text.
+- A printable UTF-8 character shows as itself: `"Malmö"`. Every other byte is `\xNN`, or C's own
+  escape, such as `\n`. So byte 0x01 is `\x01`, never LLDB's `\U00000001`.
+- A byte before a hex digit is written in octal, `"\001a"`, so that C reads it back the same.
+- `--json` rows and `session inspect --json` keep every byte read, NULs included, as `buffer`:
+  `"Adeyemi\0\x80\xf8\xe6\xef\x01…"`. It ends `...` where the array holds bytes that weren't
+  read. The store keeps only the value.
+- LLDB reads at most an array's first 1024 bytes. In a longer array, the bytes after the NUL are
+  counted as not shown. With no NUL in those 1024 bytes, the text ends `...`, with no note.
+- In a preview, the note is kept whole, and a long text before it is cut with `...`:
+  `{label = "desk" (then a NUL and 7 bytes not shown), id = 7}`.
+- In SQL, `text(value, language, type)` gives the text up to the NUL
+  ([4.9](../COOKBOOK.md#49-a-lists-elements-and-a-strings-text)).
 - A wide character array shows element by element: `[L'a', L'\0', L'b', L'\0']`. LLDB's own text
   would stop at the first NUL: `L"a"`. This holds for any element wider than a byte. `char16_t` and
   `char32_t` arrays show element by element too: `[u'x', u'\0', u'y']`.
@@ -1116,7 +1193,12 @@ Some things only look different:
 - **A lambda's captures** are read through `__closure`, which lldb-dap doesn't list
   ([details](#read-a-lambdas-captures)). In an optimized build, and at a one-line lambda's first
   stop, a captured name is `not found`, and the row says why. To see a by-value capture there,
-  stop on the line that creates the lambda, or print it inside the lambda.
+  stop where the lambda is made, or print it inside the lambda.
+- **Where a lambda is made:** GCC builds the lambda on its last line, `};`, in the function around
+  it. It gives the lambda's first line only the lambda's prologue. So `--at` that first line
+  stops inside the lambda, on its next line, and the probe warns where the lambda is made. A stop
+  on the `};` line in the outer function comes before the lambda copies what it captures by
+  value.
 - **A caller's aggregate** declared over several lines, such as `struct trio t = {seed, {…}}`, gets
   no code on its first line. Peeky reads its elements' lines instead, and a caller frame shows it
   once all of their code comes before the call ([details](#read-a-callers-local)). In an optimized
@@ -1190,8 +1272,10 @@ Some things only look different:
     to. In an optimized build, only an object of the frame is read.
   - Anything else may be gone by the stop. `auto &[t, u] = make(0)[0];` refers into a temporary
     that its line destroys. Such a row shows `not shown: the binding refers to an object Peeky
-    can't prove is still alive`, and why. Read it where the code names that object, or bind by
-    value.
+    can't prove is still alive`, and why. Read that object where the code names it. For a
+    container's element, the row says to read the container itself, such as the map a loop
+    walks. Or print the value from the program. Binding by value instead would break a loop
+    that writes through the binding.
   - In an optimized build, a stop on the binding's own line shows `no value yet`. Peeky can't
     tell whether that pass has set its reference yet.
   - Peeky reads the binding's line to tell it from a reference the code declares with the
@@ -1201,6 +1285,9 @@ Some things only look different:
   cut at a NUL keeps its note: `"a" (shown up to a NUL at byte 1 of 3)`.
 - **A const pointer:** GCC's `this` is `Widget *const`. A change through it is refused as a
   pointer's, as clang's is.
+- **A map ordered by a lambda:** LLDB names the lambda `key_compare`. A root local's row shows
+  GCC's name for it, `std::map<int, long, main()::<lambda(int, int)>>`
+  ([details](#maps-that-compare-keys-their-own-way)).
 
 Peeky's C++ support doesn't cover these:
 
@@ -1583,6 +1670,8 @@ hit  phase     line  function  selector  type        value
 - A `static` local is never changed: Peeky changes only values a frame holds itself. Its rows say
   `[not settable: static]`. `--set calls=5` is refused before the program runs. A `const` one's
   fields are refused as const.
+- `describe` marks it among the function's names: `calls (long, static)`. So it marks a `const`
+  aggregate GCC builds in read-only data.
 - A lambda is a function of its own: a `static` of the function around it isn't read there.
 
 ### Read C++ members
@@ -1607,6 +1696,11 @@ member of `this`:
 - clang lists the lambda's object as `this`. A bare `count` there says to select `this.count`.
 - GCC passes the lambda's object as `__closure`, which lldb-dap doesn't list. Peeky reads it as a
   hover, which runs nothing. `session inspect` lists the captures under `[Captures]`.
+- In a GCC build, `describe` lists the captures among the lambda's names, with how each is
+  captured and the type the lambda's object holds: `tariff (Tariff, capture by value)`,
+  `over_peak (long int &, capture by reference)`. `this` is the object's capture: `this (Acc *,
+  capture of the object by reference)` for `[this]`, `this (Acc, capture of the object by
+  value)` for `[*this]`.
 - A capture by value shows the lambda's copy. The program may have changed the outer variable
   since the lambda was made.
 - A capture by reference shows what it refers to: `count  long  25`. The `type` is that value's,
@@ -1628,8 +1722,16 @@ member of `this`:
   its block, as C++ reads it. Above it in the block, and after the block, the name reads the
   capture. So does a stop whose code isn't the block's, as after a macro's `if (int x = 9) …`.
   Where Peeky can't tell, as in the block on the declaration's own line, the row says why.
-- No capture can be changed, by value or by reference. The lambda's object holds it, which the
-  frame reaches through a pointer. A `--set` is refused before the program runs. Change the outer
+- No capture can be changed inside the lambda, by value or by reference. The lambda's object
+  holds it, which the frame reaches through a pointer. Its rows say `[not settable: capture]`, and
+  a `--set` is refused before the program runs, saying the same.
+- A capture by value is the lambda's own copy, a member of the lambda's object: GCC 13 names it
+  `__tariff`, clang `tariff`. Where a local of the function around the lambda is that object,
+  `describe` lists its integer fields as settable there: `main: price.__tariff.cents_per_kwh`.
+- Change that copy at a stop in that function once the lambda is made:
+  `--set-at 61@4 price.__tariff.cents_per_kwh=45`. It reaches the lambda where the code calls
+  `price` itself, not a copy of it. A GCC build's refusal names this route.
+- For a capture by reference, change what it refers to where that is owned. Or change the outer
   variable before the lambda is made, or edit the source.
 - Peeky reads no capture in an optimized build, where a `mutable` lambda may keep one in a
   register. Nor at a one-line lambda's first stop, before it stores `__closure`. There a capture
@@ -1722,8 +1824,9 @@ A value in double quotes is a text, in JSON's string syntax, so `\"` and `\u00e9
 writes the text in the storage the local already has, and only there.
 
 - **A `char[N]` array** takes the text and a NUL, when both fit in its N bytes. The build's debug
-  information gives N. The bytes after the NUL stay as they were, and the debugger shows them after
-  `\0`: `set name: "apple :4" -> "apple\0:4"`.
+  information gives N. The bytes after the NUL stay as they were. The change shows them as the
+  debugger does, after `\0`: `set name: "apple :4" -> "apple\0:4"`. A row of `name` then reads
+  `"apple" (then a NUL and 10 bytes not shown)` ([details](#characters)).
 - A text that doesn't fit is refused: `name` is a char[16], which holds 15 bytes of text and a
   NUL. A text with a NUL in it is refused too.
 - **A `std::string`** takes the text, a NUL and the new size, within its current capacity. Peeky
@@ -1825,6 +1928,18 @@ reads an exact key: `am[-1]`. But it never says that a key is missing. In C++, `
 entry whose key `ByAbs` treats as equal, `-1`. So Peeky's `am[1]` says that no key equals 1
 exactly, and names `am[#N]`. `not found ... would insert it` comes only with `std::less`,
 `std::greater`, or `std::hash` with `std::equal_to`.
+
+A comparator that is a lambda shows as the compiler names it. LLDB names it by a typedef no code
+writes: `type` with libc++, `key_compare` with libstdc++. So a root local's row reads its type
+from the build's debug information instead:
+
+| Build | `type` | `debugger_type` |
+| --- | --- | --- |
+| clang | `std::map<int, long, (lambda at hours.cpp:6:18)>` | `std::map<int, long, type>` |
+| GCC | `std::map<int, long, main()::<lambda(int, int)>>` | `std::map<int, long, key_compare>` |
+
+A field's type, and the lambda's own local, keep LLDB's name. A candidate's lambda is named by
+the candidate's lines.
 
 #### Sets, multisets and multimaps
 

@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
 from peeky.digest import sha256_file
+from peeky.processes import CREDENTIAL_ENV, without_credentials
 
 # Inherited flags (JAVA_TOOL_OPTIONS, CFLAGS, etc.) require explicit declaration.
 INHERITED_ENV = ("PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL")
@@ -111,6 +112,14 @@ class BuildManifest:
     @property
     def manifest_id(self):
         return _json_digest(asdict(self))
+
+    @property
+    def build_id(self):
+        """The manifest's digest without its artifacts, whose bytes name the fresh
+        workspace (the debug information's paths), so every build differs there: the same
+        for two builds of one recipe, the same staged sources (an edit included), tools,
+        toolchain probes and environment, and different where any differs."""
+        return _json_digest({k: v for k, v in asdict(self).items() if k != "artifacts"})
 
 
 @dataclass(frozen=True)
@@ -319,7 +328,7 @@ def _validate(recipe):
             or "\x00" in value
         ):
             raise ValueError("Invalid declared environment")
-        if key == "DEBUG_TOKEN":
+        if key in CREDENTIAL_ENV:
             raise ValueError("Worker credentials cannot be passed to builds")
         keys.append(key)
     if len(set(keys)) != len(keys):
@@ -431,7 +440,7 @@ def prepare(
         tools, probes = [], []
         env = {key: os.environ[key] for key in INHERITED_ENV if key in os.environ}
         env.update(dict(recipe.environment))
-        env.pop("DEBUG_TOKEN", None)
+        env = without_credentials(env)
 
         def check(command=None):
             # Runs before each command: an earlier command or callback must not have

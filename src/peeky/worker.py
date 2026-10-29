@@ -31,6 +31,7 @@ from peeky.identifiers import (
     split_located,
 )
 from peeky.names import display_function, short_function
+from peeky.processes import without_credentials
 from peeky.text_sets import Memory as TextMemory
 from peeky.text_sets import change as change_text
 from peeky.text_sets import held_in_place, parse_text, text_kind
@@ -283,6 +284,9 @@ SOURCE_CHECKED = frozenset(
 )
 # A remote client's request holds the sha256 of every source (#249): up to 4096 of them.
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
+# Each read of a request (its line, headers and body) waits at most this long: a
+# connection that sends nothing holds a thread no longer, even before it authenticates.
+REQUEST_READ_TIMEOUT_S = 10
 
 
 class DebugWorker:
@@ -321,8 +325,8 @@ class DebugWorker:
         self.global_handles = set()
         # Scope handles of a GCC lambda's captures (#361): read through `__closure`,
         # never changed; and the note on what is read through each listed frame's
-        # `__closure`, by frame id, for the stop of ``pointee_stop``.
-        self.capture_handles = set()
+        # `__closure`, by frame id, for the stop of ``pointee_stop``. Each handle's frame.
+        self.capture_handles = {}
         self.closure_notes = {}
         # Scope handles of a frame's variables in static storage (C, C++, #364), with the
         # frame: read, never changed.
@@ -2519,6 +2523,11 @@ class DebugWorker:
                     **({"entry_lines": watched} if watched is not None else {}),
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
+                    **(
+                        {"build_id": build}
+                        if isinstance(build := getattr(runtime, "build_id", None), str)
+                        else {}
+                    ),
                     "source_manifest": getattr(runtime, "source_manifest", None),
                     **({"inputs_checked": inputs_checked} if inputs_checked else {}),
                     **(
@@ -2769,6 +2778,13 @@ class DebugWorker:
             if self.stop_reason in STEP_STOPS and not _in_program_sources(
                 runtime, selected_frame, self.root
             ):
+                if _in_program_sources(runtime, frames[0], self.root):
+                    # The step stopped in the program's own code: only the frame asked for
+                    # is outside its sources (a library's, or `start` below main).
+                    raise ValueError(
+                        f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
+                        "program's sources: read one of your program's frames"
+                    )
                 if index == 0 and (shown := self.library_stop(runtime, frames)) is not None:
                     # What the function the step left returned is still shown (#155).
                     return {**shown, **({"depth": self.stack_depth()} if args.get("depth") else {})}
@@ -2780,7 +2796,13 @@ class DebugWorker:
                         if self.stop_reason == "interrupted"
                         else "The step stopped"
                     )
-                    + f" outside the program's sources (in {selected_frame.get('name')}); "
+                    + f" outside the program's sources (in {frames[0].get('name')}"
+                    + (
+                        f"), and frame {index} ({selected_frame.get('name')}) is outside them too"
+                        if index
+                        else ")"
+                    )
+                    + "; "
                     + (
                         "`session step --out` returns to your code, or `session continue`"
                         if self.stop_returns
@@ -2801,7 +2823,7 @@ class DebugWorker:
                 # a request the stop cannot serve, not a debugger failure.
                 raise ValueError(
                     f"Frame {index} ({selected_frame.get('name')}) is not in the prepared "
-                    "program's sources; inspect one of your program's frames"
+                    "program's sources: read one of your program's frames"
                 ) from exc
             if validate_debugger := getattr(runtime, "validate_debugger", None):
                 validate_debugger(self.dap, selected_frame)
@@ -2913,7 +2935,7 @@ class DebugWorker:
                 pending.append((handle, scope, exposed, len(variables)))
             # A GCC lambda's captures, which lldb-dap doesn't list (#361): read through
             # `__closure`, in a scope of their own that no change is made through.
-            self.capture_handles = set()
+            self.capture_handles = {}
             captured, unread = self.read_captures(runtime, selected_frame, plan)
             if (
                 index == 0
@@ -3124,7 +3146,8 @@ class DebugWorker:
                 refusal := getattr(runtime, "capture_refusal", None)
             ):
                 # A GCC lambda's capture (#361): its object holds it, read through a pointer.
-                raise ValueError(f"{args['name']!r} cannot be changed: {refusal(args['name'])}")
+                why = refusal(args["name"], frame=self.capture_handles[ref])
+                raise ValueError(f"{args['name']!r} cannot be changed: {why}")
             if ref in self.static_handles:
                 # A C or C++ variable in static storage (#364).
                 raise ValueError(
@@ -3646,8 +3669,10 @@ class DebugWorker:
         cache[1][key] = result[:2000]
         return cache[1][key]
 
-    def view_fetch(self, reference):
-        """Bounded raw reads used only by a runtime's trusted value-view hook.
+    def view_fetch(self, reference, start=None):
+        """Bounded raw reads used only by a runtime's trusted value-view hook: a value's
+        children, at most 64 (a value with more is refused), or, from ``start``, the next
+        64 of them (an array's elements).
 
         Count, time, item and byte budgets are shared by one inspection or expansion;
         exhaustion makes remaining views opaque instead of extending the request.
@@ -3658,9 +3683,12 @@ class DebugWorker:
         self.view_fetches += 1
         if type(reference) is not int or reference <= 0:
             raise ValueError("Variable is not expandable")
+        if start is not None and (type(start) is not int or not 0 <= start <= 65536):
+            raise ValueError("Value view read exceeds limit")
+        window = {"start": 0, "count": 65} if start is None else {"start": start, "count": 64}
         try:
             values = self.view_request(
-                "variables", {"variablesReference": reference, "start": 0, "count": 65}, remaining
+                "variables", {"variablesReference": reference, **window}, remaining
             ).get("variables", [])
         except ResponseTimeout as exc:
             # The read was written completely; only its reply missed the view budget.
@@ -3792,20 +3820,95 @@ class DebugWorker:
 
     def nodes_reachable(self, frame, trail, names):
         """Whether Peeky may read the nodes of an unordered container reached by ``names``
-        in ``frame`` (#360): ``trail`` holds the debugger's variable for each name, the
-        container (or a pointer or reference to it) last. Every C or C++ pointer and C++
-        reference on the way (``indirections``) must be judged to refer to a live object
-        (#339's rule), never left unjudged: a live heap block, or the dead frame a
-        dangling one holds, may hold bytes that read as entries."""
+        in ``frame`` (#360): ``nodes_unreached`` finds no step that stops it."""
+        return self.nodes_unreached(frame, trail, names) is None
+
+    def nodes_unreached(self, frame, trail, names):
+        """None where Peeky may read the nodes of an unordered container reached by
+        ``names`` in ``frame`` (#360): ``trail`` holds the debugger's variable for each
+        name, the container (or a pointer or reference to it) last. Every C or C++
+        pointer and C++ reference on the way (``indirections``) must be judged to refer
+        to a live object (#339's rule), never left unjudged: a live heap block, or the
+        dead frame a dangling one holds, may hold bytes that read as entries. Else which
+        step stops it: (its name, "pointer" or "reference", the locals Peeky couldn't place
+        that may be what it refers to, ``unplaced_holders``), or () where the build can't
+        say which steps are pointers or references."""
         found = getattr(self.runtime, "indirections", None)
         steps = found(frame, list(names)) if found and len(trail) == len(names) else None
         if steps is None:
-            return False
+            return ()
         for index, kind in steps:
             proven = self.pointee_proven if kind == "pointer" else self.referent_proven
             if not proven(trail[index], frame, names[: index + 1]):
-                return False
-        return True
+                holders = self.unplaced_holders(trail[index], frame, names[: index + 1], kind)
+                return (str(names[index]), kind, holders)
+        return None
+
+    def unplaced_holders(self, variable, frame, steps, kind):
+        """The listed frames' locals Peeky couldn't place (the debugger gave no address
+        for them, as lldb-dap 18 gives none for a container, #339) that may hold what the
+        pointer or reference ``variable`` refers to, where its address is near the stack
+        pointer and above it, in a live call's frame: [(frame index, its function, the
+        local's name)] of those whose own type is what it refers to, and which read
+        there (``container_reads``): candidates to inspect, which nothing proves it refers
+        to (eval 13 prep, finding 2). At most three."""
+        value = variable.get("value")
+        held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
+        sp = self.stop_stack_pointer() if held is not None else None
+        if type(sp) is not int or not sp <= int(held[0], 16) < sp + STACK_NEAR:
+            # Below the stack pointer is no live call's but the innermost's red zone.
+            return []
+        reached = getattr(self.runtime, "pointee_of" if kind == "pointer" else "referent_of", None)
+        try:
+            pointer = reached(frame, [str(step) for step in steps]) if reached else None
+        except (KeyError, TypeError, ValueError):
+            pointer = None
+        held_extents = getattr(self.runtime, "held_extents", None)
+        if not isinstance(pointer, dict) or held_extents is None or self.held_stop != self.stop_id:
+            # The listed frames' locals are read for this stop's judgement (``stop_bases``).
+            return []
+        pointer = {**pointer, "character": False}
+        state, found = self.pointee_state(), []
+        for identity, extras in self.held_extras.items():
+            for name, local in extras["unplaced"]:
+                if state["placed"].get((identity, name)) is not None or len(found) >= 3:
+                    continue
+                try:
+                    extents = held_extents(local, extras["frame"], name, address=1)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                # The local itself, not a member of it, is of what it refers to's type.
+                if not any(
+                    selector == name and extent.get("element") == pointer.get("pointee")
+                    for selector, extent in extents
+                ):
+                    continue
+                if self.container_reads(local, extras["frame"], name):
+                    shown = display_function(extras["frame"].get("name")) or "a frame"
+                    found.append((extras["index"], shown, str(name)))
+        return found
+
+    def container_reads(self, variable, frame, name):
+        """Whether the unordered container local ``name`` of the listed ``frame`` (the
+        debugger's ``variable``) reads at this stop, as its row there would: the debugger
+        lists it right, or Peeky reads its entries from its own nodes (#360). Only then
+        does a row send the reader there (``unplaced_holders``)."""
+        runtime = self.runtime
+        unlisted = getattr(runtime, "unlisted_container", None)
+        lister = getattr(runtime, "listed_container", None)
+        if unlisted is None or lister is None:
+            return False
+        steps = [(name, variable.get("type"))]
+        try:
+            withheld = unlisted(variable, frame, steps, lambda path: self.raw_value(frame, path))
+            if withheld is None:
+                return True
+            view = lister(
+                withheld, variable, frame, steps, self.node_reader(frame), **self.preview_stack()
+            )
+        except (ValueError, RuntimeError, OSError, TimeoutError):
+            return False
+        return isinstance(view, dict)
 
     def referent_proven(self, variable, frame, steps):
         """Whether the C++ reference ``variable`` (whose value the debugger gives as the
@@ -3855,6 +3958,15 @@ class DebugWorker:
         except (KeyError, TypeError, ValueError):
             judged = False
         return judged and self.pointee_unproven(variable, frame, steps) is None
+
+    def bytes_reachable(self, frame, trail, names):
+        """Whether a C or C++ character array reached by ``names`` (``trail``: the
+        debugger's variable for each) may have its bytes after LLDB's summary read again
+        (#390 review): only where every pointer and reference on the way is judged to
+        refer to a live object (``nodes_reachable``), in an unoptimized build. Its caller
+        also requires no note on it and no taint: what such a value holds may be
+        leftovers, and a read at its address would prove nothing of it."""
+        return not self.optimized() and self.nodes_reachable(frame, trail, names)
 
     def node_reader(self, frame):
         """How a runtime reads an unordered container's nodes in ``frame`` (#360):
@@ -4022,7 +4134,10 @@ class DebugWorker:
                 # value view. Never with a note (its count may be leftovers too), nor
                 # through a pointer not proven to point at a live object (#339).
                 way = [*trail[: len(ancestry)], variable]
-                if self.nodes_reachable(frame, way, [step for step, _ in ancestry] + [name]):
+                unreached = self.nodes_unreached(
+                    frame, way, [step for step, _ in ancestry] + [name]
+                )
+                if unreached is None:
                     listed = lister(
                         unlisted,
                         variable,
@@ -4031,7 +4146,18 @@ class DebugWorker:
                         self.node_reader(frame),
                         **self.preview_stack(),
                     )
-                if listed is not None:
+                elif unreached and (said := getattr(self.runtime, "unreached_container", None)):
+                    # Withheld all the same, with why Peeky reads no node through that
+                    # step and where it does (eval 13 prep, finding 2).
+                    listed = said(
+                        unlisted, *unreached, frame=frame, steps=[*ancestry, (name, kind)]
+                    )
+                if isinstance(listed, str):
+                    # Peeky's own reason no node is read here, in place of the debugger's
+                    # miscount alone.
+                    changing = unlisted = listed
+                    listed = None
+                elif listed is not None:
                     changing = None
             if changing and not reason:
                 reason, note, carried = changing, None, None
@@ -4365,8 +4491,22 @@ class DebugWorker:
                 # A string the debugger shows only up to a NUL byte (#128); never one it
                 # has no value for (optimized out).
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
-                if (shown := string_value(variable, self.view_fetch, reads)) is not None:
-                    for key in ("value", "unavailable", "reason", "view", "string_length"):
+                way, steps = [*trail[: len(ancestry)], variable], [s for s, _ in ancestry] + [name]
+                proven = lambda: (  # noqa: E731
+                    note is None
+                    and through is None
+                    and not own
+                    and self.bytes_reachable(frame, way, steps)
+                )
+                if (shown := string_value(variable, self.view_fetch, reads, proven)) is not None:
+                    for key in (
+                        "value",
+                        "unavailable",
+                        "reason",
+                        "view",
+                        "string_length",
+                        "buffer",
+                    ):
                         if key in shown:
                             output[key] = shown[key]
                     if shown.get("text") is True:
@@ -4435,6 +4575,14 @@ class DebugWorker:
                                 frame, [*trail[: len(ancestry)], variable], steps
                             )
                             else None
+                        ),
+                        proven=lambda: (
+                            note is None
+                            and through is None
+                            and not own
+                            and self.bytes_reachable(
+                                frame, [*trail[: len(ancestry)], variable], steps
+                            )
                         ),
                         **self.preview_stack(),
                     )
@@ -4536,6 +4684,8 @@ class DebugWorker:
                 and (extent := self.value_extent(variable, frame, ancestry, name, kind))
             ):
                 output["extent"] = extent
+            if output.get("unavailable"):
+                output.pop("buffer", None)
             result.append(output)
             self.inspection_nodes += 1
         return result
@@ -5083,7 +5233,7 @@ class DebugWorker:
         if not variables:
             return None, unread
         self.reference_counter += 1
-        self.capture_handles.add(self.reference_counter)
+        self.capture_handles[self.reference_counter] = frame
         return {
             "name": CAPTURES_SCOPE[0],
             "reference": self.reference_counter,
@@ -5454,6 +5604,11 @@ class DebugWorker:
                     and self.nodes_reachable(frame, trail, steps)
                     else None
                 ),
+                proven=lambda: (
+                    not self.notes.get(args["handle"])
+                    and not self.taints.get(args["handle"])
+                    and self.bytes_reachable(frame, trail, steps)
+                ),
                 **self.preview_stack(),
             )
         except ValueError:
@@ -5762,7 +5917,8 @@ class DebugWorker:
         ):
             # Inside a GCC lambda's capture (#361), which the lambda's object holds.
             selector = member_selector(record[2], args["name"])
-            raise ValueError(f"`{selector}` cannot be changed: {refusal(record[2][0][0])}")
+            why = refusal(record[2][0][0], frame=record[0], selector=selector)
+            raise ValueError(f"`{selector}` cannot be changed: {why}")
         if record[0].get("id") != self.innermost_frame:
             raise ValueError(_CALLER_SET.format(name=repr(args["name"])))
         if level := self.optimized():
@@ -6929,6 +7085,9 @@ def make_server(root, token, port=8765, *, adapter=None):
             probes.release()
 
     class Handler(BaseHTTPRequestHandler):
+        # Set on the connection before the request line is read (StreamRequestHandler).
+        timeout = REQUEST_READ_TIMEOUT_S
+
         def log_message(self, *args):
             pass
 
@@ -6957,7 +7116,6 @@ def make_server(root, token, port=8765, *, adapter=None):
                     size = int(self.headers.get("Content-Length", 0))
                     if not 0 < size <= MAX_REQUEST_BYTES:
                         raise ValueError(f"Request body must be 1..{MAX_REQUEST_BYTES} bytes")
-                    self.connection.settimeout(10)
                     body = self.rfile.read(size)
                     if len(body) != size:
                         raise ValueError("Request body ended early")
@@ -7118,7 +7276,7 @@ def _run_probe_process(root, request, adapter, cap):
         marker = Path(scratch) / "launch-requested"
         command += ["--launch-budget", str(cap - PROBE_LAUNCH_MARGIN_S)]
         command += ["--launch-marker", str(marker)]
-        env = {k: v for k, v in os.environ.items() if k != "DEBUG_TOKEN"}
+        env = without_credentials(os.environ)
         process = subprocess.Popen(
             command,
             cwd=scratch,

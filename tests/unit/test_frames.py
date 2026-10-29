@@ -320,6 +320,52 @@ def test_a_frame_outside_the_program_is_named_by_its_index(worker):
         inspect(worker, frame=1)
 
 
+@pytest.mark.parametrize("reason", ["step", "interrupted"])
+def test_after_a_step_in_the_sources_a_frame_outside_them_is_refused_by_its_index(worker, reason):
+    # After a step that stopped in the program's own code, a frame outside its sources was
+    # refused as if the step had left them ("your code is no longer on the stack").
+    (worker.root / "app.py").write_text("")
+    worker.stop_reason, worker.stop_returns = reason, False
+    worker.dap.frames[2].update(name="start", source={"path": "/usr/lib/dyld"})
+    with pytest.raises(ValueError) as caught:
+        inspect(worker, frame=2)
+    assert str(caught.value) == (
+        "Frame 2 (start) is not in the prepared program's sources: read one of your "
+        "program's frames"
+    )
+    assert classify(caught.value)["code"] == "INVALID_REQUEST"
+    assert not any(operation == "scopes" for operation, _ in worker.dap.calls)
+    # The step's own stop and its callers in the sources are read as before.
+    assert inspect(worker)["function"] == "normalize"
+    assert inspect(worker, frame=1)["function"] == "main"
+
+
+def test_after_a_step_out_of_the_sources_its_refusal_names_where_the_step_stopped(worker):
+    (worker.root / "app.py").write_text("")
+    worker.stop_reason, worker.stop_returns = "step", True
+    worker.dap.frames[0].update(name="printf", source={"path": "/usr/lib/libc.c"})
+    worker.dap.frames[2].update(name="start", source={"path": "/usr/lib/dyld"})
+    with pytest.raises(ValueError) as caught:
+        inspect(worker, frame=2)
+    assert str(caught.value) == (
+        "The step stopped outside the program's sources (in printf), and frame 2 (start) is "
+        "outside them too; `session step --out` returns to your code, or `session continue`"
+    )
+    assert classify(caught.value)["code"] == "INVALID_REQUEST"
+    with pytest.raises(ValueError, match=r"^The step stopped outside the program's sources "):
+        inspect(worker)
+    worker.stop_returns = False
+    with pytest.raises(ValueError) as caught:
+        inspect(worker)
+    assert str(caught.value) == (
+        "The step stopped outside the program's sources (in printf); your code is no longer "
+        "on the stack: `session continue`"
+    )
+    assert not any(operation == "scopes" for operation, _ in worker.dap.calls)
+    # Its caller in the sources is read.
+    assert inspect(worker, frame=1)["function"] == "main"
+
+
 def test_a_module_listing_of_only_debugpys_groups_reads_plainly():
     from peeky.probe import _visible
 

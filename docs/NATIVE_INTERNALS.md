@@ -61,8 +61,13 @@ frame's entry: the narrowest function whose code holds the frame's address.
   function of its own, not lines the function runs as a class's member initializers.
 - GCC may fold every call of a lambda away, leaving its closure with no `operator()`. Its members
   `<lambda>` and `~<lambda>` still mark it as a closure.
-- `describe` leaves out GCC's `__closure`, and the variables GCC adds for a lambda's captures.
-  lldb-dap lists none of them, but the one for a captured `this`, which `describe` keeps.
+- `describe` leaves out GCC's `__closure`. It lists the variables GCC adds for a lambda's
+  captures as captures (`_gcc_capture_kinds`), each with the type of the member of the lambda's
+  object that holds it: a reference member is a capture by reference. lldb-dap lists none of
+  them, but GCC's `this`. That one is the object's capture: by reference for `[this]` or an
+  implicit `this` (a pointer member read through `__closure`), by value for `[*this]` (the
+  copy, `__this`). Its `statics` are the names whose every declaration is at one fixed,
+  nonzero `DW_OP_addr`, as `_static_locals` reads one (`_static_names`).
 - **A safety net:** a C++ frame on a line of the program's sources or headers withholds every
   local and parameter when its function has no entry (`_unplaced`). The row says `not shown`, and
   that Peeky can't place the function's declarations.
@@ -200,6 +205,14 @@ frame's entry: the narrowest function whose code holds the frame's address.
   and by the debug information. Peeky keeps the class that every instance's typedef names, or the
   map or set template that they all instantiate (`std::map`).
 - `std::less` is the default order, and LLDB leaves it out of the type's name.
+- LLDB names an unnamed class, such as a lambda, by the first typedef it meets for it. A map
+  ordered by a lambda is `std::map<int, long, type>` with libc++ (`__type_identity<…>::type`), or
+  `std::map<int, long, key_compare>` with libstdc++. `NativeSession._unnamed_arguments` gives a
+  root local's row the compiler's name from its record's `DW_AT_name`, argument by argument. It
+  takes one only where LLDB writes a bare identifier, and the record has a lambda's or an unnamed
+  class's name at that place: `(lambda at a.cpp:4:18)`, `main()::<lambda(int, int)>`.
+  `debugger_type` keeps LLDB's. `_order` reads neither as `std::less`, so `m[K]` reads only an
+  exact key.
 
 ## Strings in libstdc++
 
@@ -237,6 +250,41 @@ frame's entry: the narrowest function whose code holds the frame's address.
   libstdc++, and by the members in libstdc++.
 - Map keys need no member. The worker's `string_length`, or `view: memory`, carries the length
   that `_string_bytes` read from `_M_string_length`.
+
+## Character arrays
+
+- LLDB's summary of a `char[N]` (`signed`, `unsigned`, or a `char8_t` typedef) reads its first N
+  bytes, at most `target.max-string-summary-length` (1024), and adds `...` past that.
+  `CopyStringDataToBufferSP` drops the trailing NULs (`rtrim('\0')`).
+- It escapes a NUL as `\0`, a byte that starts no UTF-8 character as `\xNN`, and a control
+  character as `\U000000NN`. Each escape stands for one byte, or one character's UTF-8.
+- Peeky's lldb-dap sources no init file (`sourceInitFile: false`), so these settings and
+  `escape-non-printables` keep LLDB's defaults.
+- LLDB's summary formats whatever part of its read succeeded: `GetPointeeData` keeps a partial
+  read, and the DAP value doesn't say how much was read. So an array that runs into an
+  unreadable page shows the bytes before it, as if NULs followed.
+- `peeky.char_arrays` reads the bytes back from that summary. A character LLDB would have
+  escaped, shown as itself, means the text isn't its summary: the value stays LLDB's.
+- Those bytes are proven: LLDB read them. A NUL among them is the first one.
+- `proven_rest` reads the bytes after them up to the window, `min(N, 1024)`. With `readMemory`,
+  that is one read of the whole window from the variable's `memoryReference`. Every byte must
+  come back, and its start must match the summary's bytes.
+- Otherwise it reads one page of elements, at most 64, from where the summary's bytes end. Each
+  must be named `[i]` in order and read as a char literal. An unreadable one ends them: lldb-dap
+  shows `error: read memory from … failed`.
+- These reads share the inspection's value-view budget, or a preview's. A spent budget leaves
+  the bytes `not read`.
+- The worker passes `string_value` and `preview_value` a `proven()` callback. The bytes are read
+  again only where it holds: no note, no taint, an unoptimized build, and every pointer or
+  reference on the way judged live (`bytes_reachable`, `nodes_reachable`). A prefix match alone
+  proves nothing of a value that may be leftovers.
+- `then N NUL bytes` needs every byte of the array read, all NULs after the text. A NUL with
+  bytes after it not all read, or not all NULs, is `then a NUL and N bytes not shown`. No NUL
+  among the bytes read is `then N bytes not read`.
+- `NativeSession.string_value` matches the array by LLDB's type name. `buffer` spells every
+  byte read, and ends `...` where the array holds more.
+- `stored_values.text` checks the note's count against the row's type. A run saved before the
+  note proves a NUL only where LLDB's literal shows one, and no NUL only where it shows N bytes.
 
 ## Locals reached through a pointer
 
@@ -427,6 +475,16 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - lldb-dap 18 gives no address for a local the debugger shows with a summary, so Peeky
     can't place a container local there. A pointer or reference to one stays unproven, and
     nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
+  - Such a row says why (`nodes_unreached`, `unreached_container`). Where its address is above
+    the stack pointer, `unplaced_holders` finds the listed frames' unplaced locals of the type it
+    refers to, that read there now (`container_reads`). The row offers up to two as candidates
+    to inspect, with `--frame N`, and never says which one it refers to: nothing proves it.
+  - Where something may be changing the container (`containers_settled`), `_node_listing` gives
+    a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to retry
+    after that call returns. A count past 256 by then, or a heap string without `readMemory`,
+    still withholds it.
+  - Both say so only where a proven read would succeed now (`_nodes_readable`): an `-O0` build,
+    a proven layout, and entry types Peeky reads (`hashed_nodes.readable`).
   - A preview reads nested containers' nodes under the same rule: none below a note, or
     through such a pointer.
   - A GCC lambda's capture is read through `__closure`. Where `__closure`, or what a capture
@@ -548,8 +606,13 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
   - `not_yet_declared` withholds a capture where `_under_construction` would withhold clang's
     `this`. No declaration rule applies to it: the object holds it from before the call.
   - A capture's local storage is `through` in `fields.local_types`, so a `--set` is refused
-    before the run. At a stop, the scope's handle and its children's refuse it too
-    (`capture_refusal`).
+    before the run (`_capture_refused`), as the rows mark it. At a stop, the scope's handle and
+    its children's refuse it too (`capture_refusal`).
+  - Each refusal names the lambda's own copy where a change works (`_capture_route`): the
+    member of the lambda's object (`entry["closure"]`, what `__closure` points at) in the one
+    local of a function that is that object, where `settable_member` allows the path.
+  - `breakpoint_notes` warns at a lambda's first line where the function around it builds the
+    lambda on another line (GCC's `};`), and only the lambda's prologue is on the first line.
   - `captures_unread` reads none in an optimized build, where a `mutable` lambda may keep a
     capture in a register, nor in a prologue window, before the lambda stores `__closure`.
   - `_lambda_scope` follows every function around a lambda, up to `LAMBDA_NESTING` (256).
