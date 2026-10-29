@@ -59,6 +59,9 @@ compiler. A C++ compiler that is neither clang nor GCC is refused before anythin
 - An array shows its declared length, whatever the program wrote. Past what it filled, elements
   are leftovers: capture the count, and read only below it
   ([C and C++ 7.1](c-cpp-cookbook.md#what-a-preview-shows)).
+- A `char[N]` shows its text up to its first NUL, then a note of what follows it:
+  `"Adeyemi" (then a NUL and 24 bytes not shown)`. `--json` rows keep every byte in `buffer`, and
+  SQL's `text()` gives the text ([C and C++ 7.1](c-cpp-cookbook.md#characters)).
 - A container that something may be changing right now shows only its size. Its elements are
   `not shown`, with the reason. That something can be a library call, a constructor or destructor,
   or another thread

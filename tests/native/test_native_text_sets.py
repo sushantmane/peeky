@@ -68,7 +68,8 @@ def test_a_char_array_takes_a_text_and_a_nul_that_fit(texts, capsys):
         ("code", '"ab"', '"12345"'),
     ]
     after = {row["selector"]: row for row in result["rows"] if row["phase"] == "after-set"}
-    assert after["code"]["value"] == '"12345"' and after["code"]["settable"] is True
+    assert after["code"]["value"] == '"12345" (then 1 NUL byte)', after["code"]
+    assert after["code"]["settable"] is True
     # The evidence keeps both, as for any change.
     assert main(["sql", "SELECT name, before, after FROM interventions", "--json"]) == 0
     stored = json.loads(capsys.readouterr().out)["rows"]

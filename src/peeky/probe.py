@@ -1851,6 +1851,10 @@ def _capture(
                 )
             else:
                 row.update(value=variable["value"], type=variable.get("type"))
+                if isinstance(variable.get("buffer"), str):
+                    # A narrow character array's every byte, which its value shows only up
+                    # to its first NUL (thirteenth evaluation).
+                    row["buffer"] = variable["buffer"]
                 # What its address can tell (C, C++: #302), for `_pointed` below.
                 extent = variable.get("extent")
                 if isinstance(variable.get("past_end"), dict):

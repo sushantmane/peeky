@@ -43,6 +43,8 @@ from peeky.build import (
     real_tool,
 )
 from peeky.c_source import Preprocessed, Statements, macro_hazards, optimizes, returning_twice
+from peeky.char_arrays import array_size
+from peeky.char_arrays import shown as char_array
 from peeky.cxx_strings import (
     SUMMARY_UNITS,
     libstdcxx_string,
@@ -6152,7 +6154,10 @@ class NativeSession:
         literal is then spelled as C reads it, within the worker's bound, and LLDB's
         `error: summary string parsing error` is never a value. A string shown as its
         text (or as why it has none) is marked "text": the worker lists none of its
-        members, which are the library's (the sixth evaluation). None leaves the value."""
+        members, which are the library's (the sixth evaluation). A narrow character array
+        (`char[N]` by LLDB's name for its type) shows its text up to its first NUL, with
+        a note of what follows, and its every byte as "buffer" (``char_arrays``). None
+        leaves the value."""
         shown = None
         language = getattr(getattr(self, "target", None), "language", None)
         if language == "cpp":
@@ -6168,6 +6173,15 @@ class NativeSession:
             # Peeky's own text (read from memory, or noted): spelled and bounded already.
             return shown
         text = variable.get("value")
+        if (
+            language in ("c", "cpp")
+            and isinstance(text, str)
+            and (size := array_size(variable.get("type"))) is not None
+            and (array := char_array(text, size)) is not None
+        ):
+            # A narrow character array: its text up to its first NUL, and what follows
+            # the text as a note, never as text (thirteenth evaluation).
+            return {**(shown or {}), **array}
         ended = False
         if (
             language in ("c", "cpp")

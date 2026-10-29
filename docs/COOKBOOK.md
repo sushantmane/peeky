@@ -2553,7 +2553,7 @@ The program's output is not in `evidence`. Read it from `runs.output`.
 | `object_ref(value)` | The Java object a value is, such as `Balance$Worker@100`. Within one run, equal means the same object. |
 | `address(value)` | The first `0x` token in the value, as an integer, to compare addresses across runs ([4.8](#48-compare-addresses-across-runs)). Call it on a pointer's own selector. NULL where there is none, or it is zero. |
 | `elements(value, language)` | A Java, C, C++ or Rust list's or array's elements as a JSON array, for `json_each` ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL unless Peeky reads every element exactly. |
-| `text(value, language, type)` | A Java, C, C++ or Rust string's text without its quotes and escapes ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL for other values, and for every Python value. |
+| `text(value, language, type)` | A Java, C, C++ or Rust string's text without its quotes and escapes, and a C or C++ `char[N]`'s text up to its first NUL ([4.9](#49-a-lists-elements-and-a-strings-text)). NULL for other values, and for every Python value. |
 
 `object_ref(b.value) = object_ref(w.value)` tells a copy from the list's own element
 ([Java 4.6](lang/java-cookbook.md#46-same-object-or-a-copy-java-python)). Python records which
@@ -2812,6 +2812,8 @@ It reads these values:
 
 - An element may be a number, a string, a char, a boolean, null or a nested list. A number keeps
   its text: `1.0E10` stays `1.0E10`.
+- A C or C++ 2-D char array's row gives its text up to its NUL: `["ab" (then 4 NUL bytes)]` gives
+  `["ab"]`.
 - It is NULL unless Peeky reads every element exactly. A preview cut short is NULL: Java, C and C++
   show at most 8 elements, then `…`. Rust ends `...] (first 40 of 300)`.
 - Any other element makes it NULL too: a Java object (`Seat@71`), a struct, a pointer, an
@@ -2835,6 +2837,11 @@ hit  value
 - A Java String is java-debug's text between quotes, unescaped. `text` drops the quotes.
 - A Java `char` shows bare, as `+`. Its `type` is `char`, and `text` gives the character.
 - After a C or C++ pointer's or reference's address, as in `0x… "Maya"`, it gives the text there.
+- A C or C++ `char[N]` gives its text up to its first NUL:
+  `"Adeyemi" (then a NUL and 24 bytes not shown)` gives `Adeyemi`. An array with no NUL gives all
+  its bytes.
+- The note's count must add up to the N in the row's type, or `text` is NULL. A run saved before
+  Peeky wrote the note holds LLDB's text of every byte: `"Adeyemi\0\x80…"` gives `Adeyemi` too.
 - It is NULL for any other value. It is NULL too where the text may be cut, as in C's `"abc"...`
   or Rust's `"abc" (first 3 of 9 bytes)`, or where its bytes are no text, as in C's `"\xff"`.
 - Both functions are NULL for every Python value. debugpy names a value's type by its `__class__`,

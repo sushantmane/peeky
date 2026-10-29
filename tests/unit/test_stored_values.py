@@ -90,6 +90,13 @@ def _call(store, function, value, language, kind=None):
         ("[L'a', L'\\0', U'é', 'b']", "cpp", ["a", "\0", "é", "b"]),
         ('[u8"Åsa", L"Łódź"]', "cpp", ["Åsa", "Łódź"]),
         ("[true, false]", "c", [True, False]),
+        # A 2-D char array: each row's text up to its first NUL (thirteenth evaluation).
+        (
+            '["ab" (then 4 NUL bytes), "cde" (then a NUL and 2 bytes not shown)]',
+            "c",
+            ["ab", "cde"],
+        ),
+        ('["abcdef" (no NUL in its 6 bytes)]', "c", ["abcdef"]),
         # Rust: a Vec or slice of numbers, chars and bools.
         ("[1, 2]", "rust", [1, 2]),
         ("[]", "rust", []),
@@ -169,6 +176,9 @@ def test_elements_reads_each_languages_list_exactly(store, value, language, list
         # An exponent past what Decimal compares.
         pytest.param("[1e-" + "9" * 1900 + "]", "cpp", id="1900-digit-exponent"),
         pytest.param("[1." + "9" * 1900 + "]", "c", id="1900-digit-mantissa"),
+        # A char array's row cut to keep its note, or with a NUL in its text before a note.
+        ('["abcdefghijklmnop"... (then 1 NUL byte)]', "c"),
+        ('["a\\0b" (then 1 NUL byte)]', "c"),
         # Not a list, or not this language's notation.
         ("{7}", "cpp"),
         ("490", "java"),
@@ -203,7 +213,9 @@ def test_elements_is_null_unless_every_element_is_read_exactly(store, value, lan
         ('"Zürich"', "c", "char[16]", "Zürich"),
         ('L"Žilina"', "cpp", "const wchar_t *", "Žilina"),
         ('u"Ålesund"', "cpp", "std::u16string", "Ålesund"),
-        ('"a\\tb\\000c\\"d"', "c", "char[8]", 'a\tb\0c"d'),
+        ('"a\\tb\\000c\\"d"', "cpp", "std::string", 'a\tb\0c"d'),
+        # A character array's text ends at its first NUL (thirteenth evaluation).
+        ('"a\\tb\\000c\\"d"', "c", "char[8]", "a\tb"),
         ('"\\U0001f600"', "cpp", "std::string", "😀"),
         ('0x0000000100003f80 "Nîmes"', "c", "const char *", "Nîmes"),
         ("'A'", "c", "char", "A"),
@@ -278,6 +290,65 @@ def test_text_needs_the_rows_type(store, value, language, kind):
 def test_text_is_null_unless_decoded_exactly(store, value, language):
     kind = {"python": "str", "java": "String"}.get(language, "char *")
     assert _call(store, "text", value, language, kind) is None
+
+
+@pytest.mark.parametrize(
+    "value, kind, shown",
+    [
+        # Thirteenth evaluation: a `char name[32]` gave NULL. Its text is its bytes up to
+        # its first NUL, as Peeky shows it, with the note's count matching the size.
+        ('"Adeyemi" (then a NUL and 24 bytes not shown)', "char[32]", "Adeyemi"),
+        ('"Malmö" (then 10 NUL bytes)', "char[16]", "Malmö"),
+        ('"" (then a NUL and 5 bytes not shown)', "char[6]", ""),
+        ('"abcd" (no NUL in its 4 bytes)', "char[4]", "abcd"),
+        ('"hi" (then 1 NUL byte)', "signed char[3]", "hi"),
+        ('"ok" (then 2 NUL bytes)', "const unsigned char[4]", "ok"),
+        ('"a\\001b" (then 1 NUL byte)', "char[4]", "a\x01b"),
+        ('"caf\\303\\251" (then 2 NUL bytes)', "char8_t[7]", "café"),
+        # As runs before this stored it: LLDB's literal of every byte up to the last that
+        # is no NUL.
+        ('"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001\\0\\0\\0\\U00000001"', "char[32]", "Adeyemi"),
+        ('"apple\\0:4"', "char[16]", "apple"),
+        ('"Zürich"', "char[16]", "Zürich"),
+        ('"abcd"', "char[4]", "abcd"),
+    ],
+)
+def test_text_of_a_char_array_ends_at_its_first_nul(store, value, kind, shown):
+    assert _call(store, "text", value, "c", kind) == shown
+    assert _call(store, "text", value, "cpp", kind) == shown
+
+
+@pytest.mark.parametrize(
+    "value, kind",
+    [
+        # A note whose count does not match the array's size, or a text with a NUL in it
+        # before a note.
+        ('"Adeyemi" (then a NUL and 23 bytes not shown)', "char[32]"),
+        ('"Malmö" (then 9 NUL bytes)', "char[16]"),
+        ('"abcd" (no NUL in its 4 bytes)', "char[5]"),
+        ('"a\\0b" (then 1 NUL byte)', "char[4]"),
+        # Cut, by LLDB or within the value's room.
+        ('"xxxx"...', "char[2048]"),
+        ('"xx"... (then a NUL and 3 bytes not shown)', "char[8]"),
+        # More bytes than the array holds; bytes that are no UTF-8 text before the NUL.
+        ('"abcde"', "char[4]"),
+        ('"ok\\x80\\x01" (then a NUL and 1 byte not shown)', "unsigned char[6]"),
+        ('"\\xc2\\205a\\xe2\\x82" (no NUL in its 5 bytes)', "char[5]"),
+        # Another note, a wide array's elements, a 2-D array's preview.
+        ('"a" (shown up to a NUL at byte 1 of 3)', "char[4]"),
+        ("[L'a', L'\\0']", "wchar_t[2]"),
+        ('["ab" (then 6 NUL bytes)]', "char[1][8]"),
+        ('"\\x41a"', "char[4]"),
+    ],
+)
+def test_text_of_a_char_array_is_null_unless_its_bytes_are_proven(store, value, kind):
+    assert _call(store, "text", value, "c", kind) is None
+
+
+def test_a_char_arrays_note_never_reads_as_a_pointers_text(store):
+    # The note is the array's: after a pointer's text, it is no text.
+    value = '"Adeyemi" (then a NUL and 24 bytes not shown)'
+    assert _call(store, "text", value, "c", "char *") is None
 
 
 cities_shown = ("Lisboa", "Évora", "Faro")

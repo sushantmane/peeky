@@ -3600,7 +3600,9 @@ def schema(path):
             "or a pointer gives NULL, and so does any Python value (see text)",
             "text(value, language, type)": "A Java, C, C++ or Rust string's or char's text "
             "without its quotes and escapes, by the row's language and type: a C++ "
-            'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a Java char its '
+            'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a C `char[N]` its text '
+            'up to its first NUL (`"Ada" (then a NUL and 4 bytes not shown)` gives `Ada`); a '
+            "Java char its "
             "character. NULL for other values, and where Peeky can't decode the text exactly: "
             "cut short, or bytes that are no text (`\\xff`). NULL for every Python value: "
             "debugpy names a type by its __class__ and shows a value by its own __repr__, and "

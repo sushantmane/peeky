@@ -4366,7 +4366,14 @@ class DebugWorker:
                 # has no value for (optimized out).
                 reads = self.view_read if self.capabilities.get("supports_read_memory") else None
                 if (shown := string_value(variable, self.view_fetch, reads)) is not None:
-                    for key in ("value", "unavailable", "reason", "view", "string_length"):
+                    for key in (
+                        "value",
+                        "unavailable",
+                        "reason",
+                        "view",
+                        "string_length",
+                        "buffer",
+                    ):
                         if key in shown:
                             output[key] = shown[key]
                     if shown.get("text") is True:
@@ -4536,6 +4543,8 @@ class DebugWorker:
                 and (extent := self.value_extent(variable, frame, ancestry, name, kind))
             ):
                 output["extent"] = extent
+            if output.get("unavailable"):
+                output.pop("buffer", None)
             result.append(output)
             self.inspection_nodes += 1
         return result
