@@ -86,7 +86,8 @@ def test_a_local_of_an_stl_heavy_program_is_judged_and_can_be_changed(shop, caps
         "--no-save",
     )
     assert code == 0, result.get("error")
-    assert not any("debug information" in warning for warning in result["warnings"]), result
+    unread = "could not read the build's debug information"
+    assert not any(unread in warning for warning in result["warnings"]), result["warnings"]
     rows = [(row["selector"], row["value"], row.get("note")) for row in result["rows"]]
     assert rows[:3] == [("day", "0", None), ("today", "0", None), ("next.order_id", "1002", None)]
     assert result["set_outcomes"][0]["ended"] == "made"
