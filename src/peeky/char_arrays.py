@@ -13,7 +13,8 @@ writes stands for one byte or one UTF-8 character, and Peeky's lldb-dap sources 
 init file, so its escaping and its limit are LLDB's defaults). It shows the text before
 the first NUL, then a note of what follows it, never as text:
 
-- `"Adeyemi" (then a NUL and 24 bytes not shown)`: a byte after the NUL is not a NUL;
+- `"Adeyemi" (then a NUL and 24 bytes not shown)`: some byte after the NUL is not one, or
+  LLDB did not read them all;
 - `"hello" (then 59 NUL bytes)`: every byte after the text is a NUL;
 - `"abcdefgh" (no NUL in its 8 bytes)`.
 
@@ -63,7 +64,8 @@ def summary_bytes(text):
     """(the bytes, whether LLDB cut them at its limit) of LLDB's summary of a narrow
     character array (`"a\\0\\xff\\U00000001"...`), or None for any other text, or a
     character LLDB would have escaped, shown as itself."""
-    lexed = _lex(str(text or ""))
+    text = str(text or "")
+    lexed = _lex(text)
     if lexed is None:
         return None
     prefix, tokens, capped, end = lexed

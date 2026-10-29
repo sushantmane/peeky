@@ -3602,8 +3602,8 @@ def schema(path):
             "without its quotes and escapes, by the row's language and type: a C++ "
             'reference\'s `0x… "Évora"` gives `Évora` (COOKBOOK 4.9); a C `char[N]` its text '
             'up to its first NUL (`"Ada" (then a NUL and 4 bytes not shown)` gives `Ada`); a '
-            "Java char its "
-            "character. NULL for other values, and where Peeky can't decode the text exactly: "
+            "Java char its character. NULL for other values, and where Peeky can't decode the "
+            "text exactly: "
             "cut short, or bytes that are no text (`\\xff`). NULL for every Python value: "
             "debugpy names a type by its __class__ and shows a value by its own __repr__, and "
             "a class can set them to `str` and `'Évora'`. Match Python's text as stored: "
