@@ -3840,8 +3840,8 @@ class DebugWorker:
         pointer or reference ``variable`` refers to, where its address is near the stack
         pointer and above it, in a live call's frame: [(frame index, its function, the
         local's name)] of those whose own type is what it refers to, and which read
-        there (``container_reads``), for where to read it instead (eval 13 prep, finding
-        2). At most two."""
+        there (``container_reads``): candidates to inspect, which nothing proves it refers
+        to (eval 13 prep, finding 2). At most three."""
         value = variable.get("value")
         held = _NONZERO_ADDRESS.match(value) if isinstance(value, str) else None
         sp = self.stop_stack_pointer() if held is not None else None
@@ -3861,7 +3861,7 @@ class DebugWorker:
         state, found = self.pointee_state(), []
         for identity, extras in self.held_extras.items():
             for name, local in extras["unplaced"]:
-                if state["placed"].get((identity, name)) is not None or len(found) >= 2:
+                if state["placed"].get((identity, name)) is not None or len(found) >= 3:
                     continue
                 try:
                     extents = held_extents(local, extras["frame"], name, address=1)

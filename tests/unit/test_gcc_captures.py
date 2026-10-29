@@ -521,3 +521,97 @@ def test_a_hover_of_closure_that_fails_or_times_out_says_so(tmp_path):
         worker.dap = Hover(failure)
         _, unread = worker.read_captures(worker.runtime, frame, worker.runtime.capture_plan(frame))
         assert unread["bonus"] == why
+
+
+def _kind(offset, name):
+    return f'0x{offset:08x} "{name}"'
+
+
+def test_describe_tells_how_each_capture_is_held_by_the_lambdas_object():
+    # Review of #393: `describe` gave a capture the body's variable's type (`const Pt`,
+    # `[*this]`'s `const Acc *const`), and left `[this]` as an ordinary local.
+    from peeky.native import _gcc_capture_kinds
+
+    entry = {"chain": [0x16], "bodies": [0x16]}
+    found = _gcc_capture_kinds(closure_dies({0x14: {"DW_AT_type": _kind(0x50, "long")}}), entry)
+    # The member's type (`int`, not the variable's `const int`), and how it is held. A
+    # capture whose member isn't told says how, from its variable, with no type.
+    assert {name: shown["how"] for name, shown in found.items()} == {
+        "bonus": "by value",
+        "grade": "by reference",
+        "n": "by value",
+        "odd": "by value",
+        "pt": "by value",
+    }
+    assert "type" not in found["n"] and "this" not in found, found
+    # `[this]`, or `this` captured implicitly: GCC's `this` reads a pointer member.
+    held = closure_dies(
+        {
+            0x1D: {
+                "DW_AT_location": "DW_OP_fbreg -24, DW_OP_deref, DW_OP_plus_uconst 0x28",
+                "DW_AT_type": _kind(0x72, "Acc *const"),
+            }
+        }
+    )
+    held[0x0A]["children"].append(0x21)
+    held[0x21] = die(
+        "DW_TAG_member",
+        0x0A,
+        DW_AT_name='"__this"',
+        DW_AT_type=_kind(0x71, "Acc *"),
+        DW_AT_data_member_location="0x28",
+    )
+    held[0x71] = die("DW_TAG_pointer_type", 0x01, DW_AT_type=_kind(0x80, "Acc"))
+    held[0x72] = die("DW_TAG_const_type", 0x01, DW_AT_type=_kind(0x71, "Acc *"))
+    held[0x80] = die("DW_TAG_structure_type", 0x01, DW_AT_name='"Acc"')
+    assert _gcc_capture_kinds(held, entry)["this"] == {"type": "Acc *", "how": "by reference"}
+    # `[*this]`: no location, and its member is the object's copy.
+    copied = closure_dies({0x1D: {"DW_AT_type": _kind(0x73, "const Acc *const")}})
+    del copied[0x1D]["attrs"]["DW_AT_location"]
+    copied[0x0A]["children"].append(0x21)
+    copied[0x21] = {
+        **held[0x21],
+        "attrs": {**held[0x21]["attrs"], "DW_AT_type": _kind(0x80, "Acc")},
+    }
+    copied[0x80] = held[0x80]
+    copied[0x73] = die("DW_TAG_const_type", 0x01, DW_AT_type=_kind(0x74, "const Acc *"))
+    copied[0x74] = die("DW_TAG_pointer_type", 0x01, DW_AT_type=_kind(0x75, "const Acc"))
+    copied[0x75] = die("DW_TAG_const_type", 0x01, DW_AT_type=_kind(0x80, "Acc"))
+    assert _gcc_capture_kinds(copied, entry)["this"] == {"type": "Acc", "how": "by value"}
+    # clang's lambda: no `__closure`, no captures of this kind.
+    assert _gcc_capture_kinds(closure_dies({0x17: {"DW_AT_name": '"this"'}}), entry) == {}
+
+
+def test_describe_lists_this_once_as_the_lambdas_capture_of_the_object():
+    from peeky import cli
+
+    def text(captures, names=("d", "this")):
+        return cli._describe_text(
+            {
+                "language": "cpp",
+                "root": "/w",
+                "breakpoint_lines": {},
+                "scopes": [
+                    {
+                        "scope": "Acc::run::operator()",
+                        "lines": [6, 8],
+                        "names": list(names),
+                        "types": {"d": "long int", "this": "const Acc *const"},
+                        "captures": captures,
+                    }
+                ],
+                "mutable_types": "integer root locals",
+                "commands": {},
+                "timing": {"advice": "fast"},
+            }
+        )
+
+    copied = text(
+        {"this": {"type": "Acc", "how": "by value"}, "k": {"type": "long", "how": "by value"}}
+    )
+    assert (
+        "names in Acc::run::operator() (lines 6-8): d (long int), k (long, capture by value), "
+        "this (Acc, capture of the object by value)\n" in copied
+    ), copied
+    held = text({"this": {"type": "Acc *", "how": "by reference"}})
+    assert "this (Acc *, capture of the object by reference)" in held and held.count("this (") == 1

@@ -366,7 +366,7 @@ def test_no_entry_is_read_from_the_nodes_while_a_library_call_runs(cpp, capsys):
         assert re.fullmatch(
             r"not listed: the debugger counts 0 of its 1 entries, and Peeky doesn't read them "
             r"from its nodes while a standard-library call below this frame \(std::\S+\) may be "
-            r"part-way through changing it; read it after that call returns",
+            r"part-way through changing it; retry after that call returns",
             rows["um"]["error"],
         ), rows["um"]
     else:
@@ -399,8 +399,8 @@ int main() {
 # Peeky can't show it points at a live object, to read its nodes (eval 13 prep, finding 2).
 POINTED = (
     "not listed: the debugger counts 0 of the 1 entries it points at, and Peeky reads its "
-    "nodes only through a pointer to a live object, which it can't show `{}` points at; print "
-    "its entries from the program"
+    "nodes only through a pointer it proves points at a live object, not `{}`; print its "
+    "entries from the program"
 )
 
 
@@ -432,9 +432,9 @@ def test_no_node_is_read_through_a_pointer_not_proven_to_point_at_a_live_object(
             # lldb-dap 18 gives `local` no address: what `mine` points at isn't placed.
             assert rows["mine"]["error"] == (
                 "not listed: the debugger counts 0 of the 1 entries it points at, and Peeky "
-                "reads its nodes only through a pointer to a live object, and can't place what "
-                "`mine` points at: `local` in main (frame 0) may be it, which this debugger "
-                "gives no address (lldb-dap 20 does); read `local` there (`--frame 0`)"
+                "reads its nodes only through a pointer it proves points at a live object, not "
+                "`mine`; inspect this candidate local, `local` in main (`--frame 0`): it may be "
+                "what `mine` points at"
             ), rows["mine"]
 
 
@@ -543,19 +543,18 @@ int main() {
 }
 """
 # Eval 13 prep, finding 2: with lldb-dap 18, which gives a container local no address,
-# Peeky can't place what a reference parameter refers to; the row names the caller's
-# local it may be, which reads in its own frame.
+# Peeky can't place what a reference parameter refers to; the row offers the caller's
+# local, which reads in its own frame, as a candidate, never as proven (#393 review).
 UNPLACED = (
     "not listed: the debugger counts 0 of its 2 entries, and Peeky reads its nodes only "
-    "through a reference to a live object, and can't place what `stock` refers to: "
-    "`on_hand` in main (frame 1) may be it, which this debugger gives no address (lldb-dap "
-    "20 does); read `on_hand` there (`--frame 1`)"
+    "through a reference it proves refers to a live object, not `stock`; inspect this "
+    "candidate local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to"
 )
 # Finding 3: below a destructor, a caller's container is said to wait for that call.
 BELOW_DESTRUCTOR = (
     "not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from "
     "its nodes while a constructor, destructor or assignment operator below this frame "
-    "(Move::~Move) may be part-way through changing it; read it after that call returns"
+    "(Move::~Move) may be part-way through changing it; retry after that call returns"
 )
 
 
@@ -629,7 +628,7 @@ def test_an_unordered_container_peeky_reads_no_node_of_says_why_and_where_it_rea
         # The debugger's summary alone: its elements get no preview of their own (#181).
         assert below.get("value") == "size=2" and "Peeky" not in str(below.get("error")), below
     else:
-        # Never "read it after that call returns" where it wouldn't read then either.
+        # Never "retry after that call returns" where it wouldn't read then either.
         assert below["error"] == after["error"] and "returns" not in below["error"], below
 
 
@@ -1913,7 +1912,7 @@ def test_a_lambdas_copy_is_changed_where_it_is_held_and_the_refusal_says_so(cpp,
         described = capsys.readouterr().out
         assert re.search(
             r"names in main::operator\(\) \(priced\.cpp:[0-9-]+\): extra \(long int[^)]*\), "
-            r"over \(long int &, capture by reference\), tariff \(const Tariff, capture by "
+            r"over \(long int &, capture by reference\), tariff \(Tariff, capture by "
             r"value\), wh \(long int\)",
             described,
         ), described
@@ -1935,6 +1934,87 @@ def test_a_lambdas_copy_is_changed_where_it_is_held_and_the_refusal_says_so(cpp,
         )
         assert code == 0 and "T:271000 1" in result["output"], result
         assert result["rows"][0]["function"] == "main", result["rows"]
+
+
+HELD_CAPTURES = """#include <cstdio>
+struct Acc {
+    long total = 5;
+    long run(long k) {
+        auto held = [this](long d) {
+            return total + d; // IN_THIS
+        };
+        auto implicit = [=](long d) {
+            return total + d + k; // IN_IMPLICIT
+        };
+        auto copied = [*this](long d) {
+            return total + d; // IN_COPY
+        };
+        return held(1) + implicit(2) + copied(3);
+    }
+};
+int main() {
+    Acc acc;
+    long n = 4;
+    auto init = [m = n + 1, &r = n](long d) {
+        return m + r + d; // IN_INIT
+    };
+    auto generic = [n](auto d) {
+        return n + d; // IN_GENERIC
+    };
+    std::printf("A:%ld %ld %ld\\n", acc.run(1), init(2), generic(3L));
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(180)
+def test_describe_says_how_a_lambda_captures_this_and_each_name(cpp, capsys):
+    # Review of #393: `[this]` (and an implicit `this`) looked like an ordinary local;
+    # `[*this]`'s `this` showed the variable's `const Acc *const`, and twice.
+    compiler, root = cpp
+    source = root / "held.cpp"
+    source.write_text(HELD_CAPTURES)
+    assert main(["describe", str(source), "--json"]) == 0
+    scopes = json.loads(capsys.readouterr().out)["scopes"]
+    assert main(["describe", str(source)]) == 0
+    text = capsys.readouterr().out
+    if compiler != "gcc":
+        # clang's lambda lists its object as `this`: no capture is said of a name.
+        assert not any(scope.get("captures") for scope in scopes), scopes
+        assert "capture by" not in text and "capture of the object" not in text, text
+        return
+    lambdas = {
+        marker: next(
+            scope
+            for scope in scopes
+            if scope["scope"].endswith(">") or "operator()" in scope["scope"]
+            if scope["lines"][0] <= line_of(HELD_CAPTURES, marker) <= scope["lines"][1]
+        )
+        for marker in ("IN_THIS", "IN_IMPLICIT", "IN_COPY", "IN_INIT", "IN_GENERIC")
+    }
+    how = {
+        marker: {name: shown["how"] for name, shown in scope["captures"].items()}
+        for marker, scope in lambdas.items()
+    }
+    assert how == {
+        "IN_THIS": {"this": "by reference"},
+        "IN_IMPLICIT": {"k": "by value", "this": "by reference"},
+        "IN_COPY": {"this": "by value"},
+        "IN_INIT": {"m": "by value", "r": "by reference"},
+        "IN_GENERIC": {"n": "by value"},
+    }, how
+    # The type the lambda's object holds, not the body's `const` variable's.
+    assert lambdas["IN_COPY"]["captures"]["this"]["type"] == "Acc", lambdas["IN_COPY"]
+    assert lambdas["IN_INIT"]["captures"]["m"]["type"] == "long int", lambdas["IN_INIT"]
+    assert lambdas["IN_INIT"]["captures"]["r"]["type"] == "long int &", lambdas["IN_INIT"]
+    # `this` once, as the capture of the object.
+    copied = next(line for line in text.splitlines() if "this (Acc, " in line)
+    assert copied.endswith("d (long int), this (Acc, capture of the object by value)"), copied
+    assert copied.count("this (") == 1, copied
+    assert "this (Acc *, capture of the object by reference)" in text, text
+    assert "m (long int, capture by value), r (long int &, capture by reference)" in text, text
+    generic = next(line for line in text.splitlines() if "operator()<" in line)
+    assert generic.endswith("n (long int, capture by value)"), generic
 
 
 BOUND_SET = """#include <cstdio>

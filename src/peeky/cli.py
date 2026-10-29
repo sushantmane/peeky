@@ -891,6 +891,7 @@ def _describe_text(manifest):
         else:
             where = f" (lines {span})" if span else ""
         types, spans = scope.get("types", {}), scope.get("spans", {})
+        captures = scope.get("captures") or {}
         typed = scope.get("typed_spans") or {}
         shown = []
         ambiguous = scope.get("ambiguous") or {}
@@ -916,14 +917,16 @@ def _describe_text(manifest):
             if name in scope.get("statics", ()):
                 # In static storage: read where the code names it, never changed (#364).
                 parts.append("static")
+            if name == "this" and name in captures:
+                # A lambda's `this` is its capture of the object, said of the one name.
+                parts = _capture_parts(captures[name], name, spell)
             shown.append(f"{name} ({', '.join(parts)})" if parts else name)
-        # A GCC lambda's captures, which a selector names inside it, and how each is
-        # captured (eval 13); among the names, in order.
-        for name, capture in (scope.get("captures") or {}).items():
-            parts = [spell(capture["type"])] if capture.get("type") else []
-            parts.append(f"capture {capture.get('how')}")
-            shown.append(f"{name} ({', '.join(parts)})")
-        if scope.get("captures"):
+        # A GCC lambda's other captures, which a selector names inside it, and how each
+        # is captured (eval 13); among the names, in order.
+        for name, capture in captures.items():
+            if name != "this" or name not in scope["names"]:
+                shown.append(f"{name} ({', '.join(_capture_parts(capture, name, spell))})")
+        if captures:
             shown.sort(key=lambda text: text.split(" ", 1)[0])
         lines.append(f"names in {scope['scope']}{where}: {', '.join(shown) or '-'}")
     from peeky.probe import optimization_level
@@ -1069,6 +1072,15 @@ def _describe_text(manifest):
     lines.extend(f"{name}: {usage}" for name, usage in manifest["commands"].items())
     lines.append(f"timing: {manifest['timing']['advice']}")
     return "\n".join(lines)
+
+
+def _capture_parts(capture, name, spell):
+    """`describe`'s words on a GCC lambda's capture (eval 13): its type, as the lambda's
+    object holds it, and how it is captured; `this` is the object, by reference
+    (`[this]`) or by value (`[*this]`)."""
+    parts = [spell(capture["type"])] if capture.get("type") else []
+    whose = "capture of the object" if name == "this" else "capture"
+    return [*parts, f"{whose} {capture.get('how')}"]
 
 
 def _block_span_text(spans):

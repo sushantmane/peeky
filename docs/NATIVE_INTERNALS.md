@@ -62,10 +62,12 @@ frame's entry: the narrowest function whose code holds the frame's address.
 - GCC may fold every call of a lambda away, leaving its closure with no `operator()`. Its members
   `<lambda>` and `~<lambda>` still mark it as a closure.
 - `describe` leaves out GCC's `__closure`. It lists the variables GCC adds for a lambda's
-  captures as captures, with how each is captured (`_gcc_capture_kinds`): a reference type is a
-  capture by reference. lldb-dap lists none of them, but the one for a captured `this`, which
-  `describe` keeps as a name. Its `statics` are the names whose every declaration is at a fixed
-  address (`_static_names`).
+  captures as captures (`_gcc_capture_kinds`), each with the type of the member of the lambda's
+  object that holds it: a reference member is a capture by reference. lldb-dap lists none of
+  them, but GCC's `this`. That one is the object's capture: by reference for `[this]` or an
+  implicit `this` (a pointer member read through `__closure`), by value for `[*this]` (the
+  copy, `__this`). Its `statics` are the names whose every declaration is at one fixed,
+  nonzero `DW_OP_addr`, as `_static_locals` reads one (`_static_names`).
 - **A safety net:** a C++ frame on a line of the program's sources or headers withholds every
   local and parameter when its function has no entry (`_unplaced`). The row says `not shown`, and
   that Peeky can't place the function's declarations.
@@ -432,11 +434,14 @@ in the [cookbook](lang/c-cpp-cookbook.md#what-is-different-in-a-gcc-build).
     nothing is read through it. lldb-dap 20 gives each local's `memoryReference`.
   - Such a row says why (`nodes_unreached`, `unreached_container`). Where its address is above
     the stack pointer, `unplaced_holders` finds the listed frames' unplaced locals of the type it
-    refers to. Only one that reads there now (`container_reads`) is named, with `--frame N`.
+    refers to, that read there now (`container_reads`). The row offers up to two as candidates
+    to inspect, with `--frame N`, and never says which one it refers to: nothing proves it.
   - Where something may be changing the container (`containers_settled`), `_node_listing` gives
-    a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to read
-    it after that call returns. It does so only where its layout and entry types are ones Peeky
-    reads (`hashed_nodes.layout`, `readable`).
+    a `NodesUnsettled`: the row names the call, as `changing_container` does, and says to retry
+    after that call returns. A count past 256 by then, or a heap string without `readMemory`,
+    still withholds it.
+  - Both say so only where a proven read would succeed now (`_nodes_readable`): an `-O0` build,
+    a proven layout, and entry types Peeky reads (`hashed_nodes.readable`).
   - A preview reads nested containers' nodes under the same rule: none below a note, or
     through such a pointer.
   - A GCC lambda's capture is read through `__closure`. Where `__closure`, or what a capture

@@ -2268,7 +2268,7 @@ def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_
     assert said == (
         "the debugger counts 0 of its 3 entries, and Peeky doesn't read them from its nodes "
         "while a constructor, destructor or assignment operator below this frame "
-        "(Movement::~Movement) may be part-way through changing it; read it after that call "
+        "(Movement::~Movement) may be part-way through changing it; retry after that call "
         "returns"
     )
     assert said.label == UNLISTED and said.refusal.startswith("`on_hand` cannot be changed: ")
@@ -2282,7 +2282,8 @@ def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_
         "the program runs 2 threads, and a stop pauses every other one "
         "wherever it is, perhaps part-way through changing it"
     ), found.why
-    # Through a reference: the local it may refer to, where that reads.
+    # Through a reference: candidate locals to inspect, which it may refer to; nothing
+    # proves which (#393 review).
     session.lldb_major, readable = 18, []
     session._nodes_readable = lambda frame, steps, count: readable.append(count) or True
     way = {"frame": {"id": 1}, "steps": [("stock", "Stock &")]}
@@ -2292,14 +2293,23 @@ def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_
     assert readable == [3], readable
     assert said == (
         "the debugger counts 0 of its 3 entries, and Peeky reads its nodes only through a "
-        "reference to a live object, and can't place what `stock` refers to: `on_hand` in main "
-        "(frame 1) may be it, which this debugger gives no address (lldb-dap 20 does); read "
-        "`on_hand` there (`--frame 1`)"
+        "reference it proves refers to a live object, not `stock`; inspect this candidate "
+        "local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to"
     )
+    several = [(1, "main", "on_hand"), (2, "load", "spare"), (3, "f", "more")]
+    said = session.unreached_container(withheld, "stock", "reference", several, **way)
+    assert said.endswith(
+        "inspect these candidate locals, `on_hand` in main (`--frame 1`), `spare` in load "
+        "(`--frame 2`), and others: one may be what `stock` refers to"
+    ), said
+    # Long names are each cut; the hedge stays whole, within 300 characters.
+    long = [(1, "f" * 90, "l" * 90), (2, "g" * 90, "m" * 90)]
+    said = session.unreached_container(withheld, "s" * 90, "reference", long, **way)
+    assert len(said) <= 300, said
+    assert said.endswith(", and others: one may be what `" + "s" * 11 + "…` refers to"), said
     said = session.unreached_container(withheld, "p", "pointer", [], **way)
     assert said.endswith(
-        "a pointer to a live object, which it can't show `p` points at; print its entries from "
-        "the program"
+        "a pointer it proves points at a live object, not `p`; print its entries from the program"
     ), said
     # Nothing more is said where no node would be read through a proven one either: its
     # own count unread, or entries of a type Peeky doesn't read (review: a `double`).
@@ -2351,3 +2361,32 @@ def test_a_refused_change_says_where_a_captures_or_a_bindings_value_is():
         )
         assert error["code"] == "MUTATION_REJECTED" and error["hint"].startswith(hint), error
         assert "call" not in error["hint"] and len(error["hint"]) <= 150, error
+
+
+def test_describe_marks_static_only_a_local_at_one_fixed_address():
+    # Review of #393: any location naming `DW_OP_addr` was static, so a location list that
+    # places a local at an address for some code and in a register for the rest was too.
+    from peeky.native import _static_names
+
+    def die(tag, parent=None, children=(), **attrs):
+        return {"tag": tag, "parent": parent, "attrs": attrs, "children": list(children)}
+
+    dies = {
+        1: die("DW_TAG_subprogram", None, (2, 3, 4, 5, 6)),
+        2: die("DW_TAG_variable", 1, DW_AT_name='"now"', DW_AT_location="DW_OP_addr 0x4010"),
+        3: die(
+            "DW_TAG_variable",
+            1,
+            DW_AT_name='"mixed"',
+            DW_AT_location="[0x1000, 0x1010): DW_OP_addr 0x4018\n[0x1010, 0x1020): DW_OP_reg0 W0",
+        ),
+        4: die("DW_TAG_variable", 1, DW_AT_name='"zero"', DW_AT_location="DW_OP_addr 0x0"),
+        5: die(
+            "DW_TAG_variable",
+            1,
+            DW_AT_name='"tls"',
+            DW_AT_location="DW_OP_addr 0x8, DW_OP_GNU_push_tls_address",
+        ),
+        6: die("DW_TAG_variable", 1, DW_AT_name='"seen"', DW_AT_location="DW_OP_fbreg -20"),
+    }
+    assert _static_names(dies, [1]) == ["now"]

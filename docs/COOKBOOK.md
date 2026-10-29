@@ -218,9 +218,9 @@ Closures and lambdas are listed under their function. A function inlined into an
 `#[inline(always)]` or `always_inline`, keeps its own lines.
 
 In C and C++, a local in static storage is marked: `calls (long, static)`. A GCC lambda's
-captures are among its names, with how each is captured: `tariff (const Tariff, capture by
-value)`. With `--json`, a scope's `statics` lists the first, and `captures` maps each capture to
-its `type` and `how` ([C and C++](lang/c-cpp-cookbook.md#read-a-lambdas-captures)).
+captures are among its names, with how each is captured: `tariff (Tariff, capture by value)`.
+With `--json`, a scope's `statics` lists the first, and `captures` maps each capture to its
+`type` and `how` ([C and C++](lang/c-cpp-cookbook.md#read-a-lambdas-captures)).
 
 If the debug information can't be read, the text says `function names: unavailable (reason)`. A
 very large optimized C++ unit can exceed the 16 MB bound on reading it.

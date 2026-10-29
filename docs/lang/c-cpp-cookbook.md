@@ -962,23 +962,24 @@ That is the case for:
   withheld the same way. Where Peeky can't read the container's own count, the row is withheld
   too, and says so. That happens for one reached through a base class or an anonymous member.
 
-  Where Peeky would read the nodes but can't at this stop, the row says why, and where to read
-  them:
+  Where Peeky would read the nodes but can't at this stop, the row says why, and what to try:
 
   - Through a pointer or reference that Peeky can't show refers to a live object. With lldb-dap
     18, which gives a container local no address, a reference parameter to one is such a case.
-    The row then names the local it may refer to, where that local reads:
+    Where the listed frames hold locals of its type that Peeky couldn't place, and that read
+    there, the row offers them to inspect. Peeky doesn't prove which one, if any, it refers to:
 
     ```
-    stock  Stock &  <not listed: the debugger counts 0 of its 3 entries, and Peeky reads its nodes only through a reference to a live object, and can't place what `stock` refers to: `on_hand` in main (frame 1) may be it, which this debugger gives no address (lldb-dap 20 does); read `on_hand` there (`--frame 1`)>
+    stock  Stock &  <not listed: the debugger counts 0 of its 3 entries, and Peeky reads its nodes only through a reference it proves refers to a live object, not `stock`; inspect this candidate local, `on_hand` in main (`--frame 1`): it may be what `stock` refers to>
     ```
 
   - While a call may be changing the container
     ([A container that something may be changing](#a-container-that-something-may-be-changing)).
-    The row names that call, and says to read it after the call returns:
+    The row names that call, and says to retry after it returns. The entries may still be
+    withheld then, for example if the container has grown past 256 entries:
 
     ```
-    on_hand  Stock  <not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from its nodes while a constructor, destructor or assignment operator below this frame (Movement::~Movement) may be part-way through changing it; read it after that call returns>
+    on_hand  Stock  <not listed: the debugger counts 0 of its 2 entries, and Peeky doesn't read them from its nodes while a constructor, destructor or assignment operator below this frame (Movement::~Movement) may be part-way through changing it; retry after that call returns>
     ```
 
   Elsewhere it says to print the entries from the program.
@@ -1060,7 +1061,7 @@ not shown: a standard-library call below this frame (std::__1::vector<…>::clea
   `… while a standard-library call runs on this thread (…)`.
 - For a lifetime under way, it names `a constructor, destructor or assignment operator`.
 - An unordered container that Peeky reads from its own nodes says so of itself:
-  ``… and Peeky doesn't read them from its nodes while a standard-library call below this frame (…) may be part-way through changing it; read it after that call returns``.
+  ``… and Peeky doesn't read them from its nodes while a standard-library call below this frame (…) may be part-way through changing it; retry after that call returns``.
 - With several threads, it says:
   ``the program runs 2 threads: a stop pauses every other one wherever it is, perhaps part-way through changing `shared` …``.
 - Such a row has no handle. So a selector below it is refused with the same reason. A map's key
@@ -1643,8 +1644,10 @@ member of `this`:
 - GCC passes the lambda's object as `__closure`, which lldb-dap doesn't list. Peeky reads it as a
   hover, which runs nothing. `session inspect` lists the captures under `[Captures]`.
 - In a GCC build, `describe` lists the captures among the lambda's names, with how each is
-  captured: `tariff (const Tariff, capture by value)`, `over_peak (long int &, capture by
-  reference)`.
+  captured and the type the lambda's object holds: `tariff (Tariff, capture by value)`,
+  `over_peak (long int &, capture by reference)`. `this` is the object's capture: `this (Acc *,
+  capture of the object by reference)` for `[this]`, `this (Acc, capture of the object by
+  value)` for `[*this]`.
 - A capture by value shows the lambda's copy. The program may have changed the outer variable
   since the lambda was made.
 - A capture by reference shows what it refers to: `count  long  25`. The `type` is that value's,
