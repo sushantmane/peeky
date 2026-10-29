@@ -135,7 +135,7 @@ def test_a_value_an_intervention_changed_is_no_sign_the_hits_do_not_line_up(stor
         "the 8 hits\n"
         "- but they read alike at some hits, which could still trade places\n"
         "- `lay.width` differs after the edit and the interventions (run 1's on `lay.width`) "
-        "and may follow from them, so this check leaves it out"
+        "and may follow from them, so it says nothing of how the hits pair (its rows above still show where it differs)"
     ]
     rows = evidence.run_query(store, "diff", {"a": 1, "b": 2})["rows"]
     assert {row["selector"] for row in rows if row["hit"] is not None} == {"lay.width"}
@@ -204,7 +204,7 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
         "- pairing by hit number pairs them as `peeky queries join --param a=3 --param b=4 "
         "--param key=gleich` would, but that does not prove the hits are the same moments\n"
         "- `x` and `call` differ after the interventions (run 4's on `x`) and may follow from "
-        "them, so this check leaves them out"
+        "them, so they say nothing of how the hits pair (their rows above still show where they differ)"
     ]
     # A reorder among hits that read alike is said too.
     saved(
@@ -285,8 +285,8 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     roster(["5", "6", "3"], "he3b8016ca05e3946", edit="--- a/src/main.rs\n")
     roster(["5", "6", "9"], "hb7185e602e967d61")
     assert alignment(notes(store, 1, 2)) == [
-        f"{titled(1, 2)}\n- `width` differs after the edit and may follow from it, so this check "
-        "leaves it out"
+        f"{titled(1, 2)}\n- `width` differs after the edit and may follow from it, so it says "
+        "nothing of how the hits pair (its rows above still show where it differs)"
     ]
     # roster 5 and 6: the fix counts characters, so every name's `width` is one less (6 7
     # 3 -> 5 6 3), which lines up at other hits. The edit may account for that (tenth
@@ -294,8 +294,8 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     # beside a key it read as a reorder); `width` is left out.
     roster(["6", "7", "3"], "hb7185e602e967d61", label="original-43")
     assert alignment(notes(store, 1, 3)) == [
-        f"{titled(1, 3)}\n- `width` differs after the edit and may follow from it, so this "
-        "check leaves it out"
+        f"{titled(1, 3)}\n- `width` differs after the edit and may follow from it, so it says "
+        "nothing of how the hits pair (its rows above still show where it differs)"
     ]
     # roster 4: the widths set by --set-at instead, each after its hit's read. A like
     # name is no proof that a later read is of the changed variable (each hit is a new
@@ -314,7 +314,7 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     )
     assert alignment(notes(store, 4, 1)) == [
         f"{titled(4, 1)}\n- `width` differs after the edit and the interventions (run 4's on "
-        "`width`) and may follow from them, so this check leaves it out"
+        "`width`) and may follow from them, so it says nothing of how the hits pair (its rows above still show where it differs)"
     ]
     # Nothing differs: nothing to say.
     roster(["6", "7", "3"], "hb7185e602e967d61")
@@ -567,11 +567,11 @@ VERDICTS = (
 # What each case's note says last: every selector the edit may have moved is left out,
 # the one whose values line up better at other hits too.
 LEFT_OUT = {
-    "grades": "- `quiz` and `stats.lowest` differ after the edit and may follow from it, so this "
-    "check leaves them out",
-    "rota": "- `pick` differs after the edit and may follow from it, so this check leaves it out",
-    "seats": "- `r` and `first` differ after the edit and may follow from it, so this check "
-    "leaves them out",
+    "grades": "- `quiz` and `stats.lowest` differ after the edit and may follow from it, so they say "
+    "nothing of how the hits pair (their rows above still show where they differ)",
+    "rota": "- `pick` differs after the edit and may follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)",
+    "seats": "- `r` and `first` differ after the edit and may follow from it, so they say "
+    "nothing of how the hits pair (their rows above still show where they differ)",
 }
 
 
@@ -763,7 +763,7 @@ def test_a_key_that_pairs_every_hit_leaves_another_order_out(store):
         "- pairing by hit number pairs them as `peeky queries join --param a=1 --param b=2 "
         "--param key=p.name` would, but that does not prove the hits are the same moments\n"
         "- `desk` and `free` differ after the interventions (run 2's on `desk`) and may follow "
-        "from them, so this check leaves them out"
+        "from them, so they say nothing of how the hits pair (their rows above still show where they differ)"
     ), note
     # The same after an edit (the candidate's `desk` 0 at hit 4), and after an edit that
     # swaps two calls where a counter-like key (`gleich`) agrees: review of PR #308, 2
@@ -772,8 +772,8 @@ def test_a_key_that_pairs_every_hit_leaves_another_order_out(store):
     (note,) = alignment(notes(store, 1, 3))
     assert note.startswith("hits pair by `p.name`: "), note
     assert note.endswith(
-        "\n- `desk` and `free` differ after the edit and may follow from it, so this check "
-        "leaves them out"
+        "\n- `desk` and `free` differ after the edit and may follow from it, so they say "
+        "nothing of how the hits pair (their rows above still show where they differ)"
     ), note
     saved(store, [{"gleich": "1", "call": "'A'"}, {"gleich": "2", "call": "'B'"}])
     saved(
@@ -784,7 +784,7 @@ def test_a_key_that_pairs_every_hit_leaves_another_order_out(store):
     (note,) = alignment(notes(store, 4, 5))
     assert note.endswith(
         "does not prove the hits are the same moments\n- `call` differs after the edit and may "
-        "follow from it, so this check leaves it out"
+        "follow from it, so it says nothing of how the hits pair (its rows above still show where it differs)"
     ), note
     for said in ("saw ", "another order", "reordered", "weak", "strong"):
         assert said not in note, note

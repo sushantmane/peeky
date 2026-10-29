@@ -790,6 +790,12 @@ true: lldb-dap 18 crashes as Peeky closes the session (`free(): invalid pointer`
 prove that it sent all of the program's output. LLVM 20's lldb-dap ends cleanly, and the label is
 `output:`.
 
+The label stays on every such probe. The last line is whole on a build's first probe in a state
+directory, then short: `the debugger again sent more text as Peeky closed the session`. So is
+LLDB 18's warning about a GCC build's `_M_local_buf`. A build is its `build_id`, a best-effort
+identity used only for this: a candidate, a changed source or another compiler is another one
+([2.7](../COOKBOOK.md#27-json-for-scripts)). `--json` has both whole.
+
 #### Where and when to change
 
 - Change a value only at a statement's first instruction. A breakpoint on the statement's first
@@ -915,6 +921,11 @@ That is the case for:
   `size=2 [size=2 [1, 2], size=1 [3]]`.
 - A `std::map` or `std::unordered_map` shows its entries in iteration order, as `key: value`:
   `size=3 {1: 10, 2: 20, 5: 50}`, `{"a": {x = 1, y = 2}}`.
+- A container that holds more than its preview shows ends with `…`. Under a probe's table, a line
+  says how to read the rest:
+  ``preview: `by_hour` holds 9 entries, more than its preview shows; read one with `by_hour[K]`
+  (key K) or `by_hour[#N]` (the Nth), or list them in a session: `peeky session get by_hour` ``.
+  A sequence's line names `v[N]` instead.
 - A set (`std::set`, `std::multiset`, `std::unordered_set`, `std::unordered_multiset`) shows its
   elements: `size=2 {1, 3}`.
 - A `std::multimap` keeps its summary, `size=2`: its keys repeat.
@@ -1203,6 +1214,9 @@ Some things only look different:
   cut at a NUL keeps its note: `"a" (shown up to a NUL at byte 1 of 3)`.
 - **A const pointer:** GCC's `this` is `Widget *const`. A change through it is refused as a
   pointer's, as clang's is.
+- **A map ordered by a lambda:** LLDB names the lambda `key_compare`. A root local's row shows
+  GCC's name for it, `std::map<int, long, main()::<lambda(int, int)>>`
+  ([details](#maps-that-compare-keys-their-own-way)).
 
 Peeky's C++ support doesn't cover these:
 
@@ -1827,6 +1841,18 @@ reads an exact key: `am[-1]`. But it never says that a key is missing. In C++, `
 entry whose key `ByAbs` treats as equal, `-1`. So Peeky's `am[1]` says that no key equals 1
 exactly, and names `am[#N]`. `not found ... would insert it` comes only with `std::less`,
 `std::greater`, or `std::hash` with `std::equal_to`.
+
+A comparator that is a lambda shows as the compiler names it. LLDB names it by a typedef no code
+writes: `type` with libc++, `key_compare` with libstdc++. So a root local's row reads its type
+from the build's debug information instead:
+
+| Build | `type` | `debugger_type` |
+| --- | --- | --- |
+| clang | `std::map<int, long, (lambda at hours.cpp:6:18)>` | `std::map<int, long, type>` |
+| GCC | `std::map<int, long, main()::<lambda(int, int)>>` | `std::map<int, long, key_compare>` |
+
+A field's type, and the lambda's own local, keep LLDB's name. A candidate's lambda is named by
+the candidate's lines.
 
 #### Sets, multisets and multimaps
 

@@ -42,6 +42,7 @@ from peeky.probe import (
     candidate_line,
     combine_edits,
     debugger_diagnostics,
+    diagnostics_again,
     keeps_lines,
     parse_hits,
     parse_selector,
@@ -1401,6 +1402,15 @@ def _keep_evidence(args, result, root, language):
                 " and without its --set/--set-at" if probe.get("set") or probe.get("set_at") else ""
             )
             apart = evidence.stops_apart(path, before, run_id) if before is not None else None
+            # The same probe with other captures (thirteenth evaluation): named, with what
+            # differs, since `diff` compares the selectors both captured.
+            near = (
+                evidence.near_baseline(path, run_id, result.get("source_sha256"))
+                if before is None and result.get("inputs_sha256")
+                else None
+            )
+            if near is not None and evidence.stops_apart(path, near[0], run_id) is not None:
+                near = None
         except Exception:
             return
         result["evidence"]["compare"] = (
@@ -1417,6 +1427,8 @@ def _keep_evidence(args, result, root, language):
                 f"{evidence.stop_text(apart['stop_b'])}, so hits do not pair by number",
             }
             if before is not None
+            else {"run": None, "hint": _near_hint(near, run_id, without)}
+            if near is not None
             else {
                 "run": None,
                 "hint": "no saved run is this probe without the edit (the same --at, "
@@ -1428,6 +1440,28 @@ def _keep_evidence(args, result, root, language):
                 f"run this probe without --old/--new{without}, then `peeky queries diff`",
             }
         )
+
+
+def _near_hint(near, run_id, without):
+    """`compare:`'s line where the saved run that is a candidate's probe without the edit
+    captured other selectors (``near``: evidence.near_baseline's): which run, what differs,
+    and the `diff` of the selectors both captured."""
+    from peeky.evidence import _quoted
+
+    run, theirs, ours = near
+    shared = [selector for selector in ours if selector in theirs]
+    missing = [selector for selector in ours if selector not in theirs]
+    extra = [selector for selector in theirs if selector not in ours]
+    differs = [
+        *([f"didn't capture {_quoted(missing)}"] if missing else []),
+        *([f"captured {_quoted(extra)} too"] if extra else []),
+    ] or ["lists the same selectors in another order"]
+    return (
+        f"run {run} is this probe without the edit, but it {' and '.join(differs)}: "
+        f"`peeky queries diff --param a={run} --param b={run_id}` compares the selectors both "
+        f"captured ({_quoted(shared)}). To compare them all, run this probe without "
+        f"--old/--new{without}, then `peeky queries diff`"
+    )
 
 
 def _first_time(name):
@@ -1499,9 +1533,31 @@ def _probe_text(result, quiet=False):
             and _first_time("python-copy-" + hashlib.sha256(warning.encode()).hexdigest()[:16])
         )
     ]
+    # lldb-dap 18's lines about a GCC build's debug information, and the text it sends as
+    # it ends, come with every probe of the build (thirteenth evaluation): whole the first
+    # time for that build in this state directory, then in short. A build is its
+    # `build_id`, the digest of its recipe, staged sources (an edit included) and tools;
+    # without one (an older worker), they are whole every time. `--json` has them whole.
+    build = result.get("build_id")
+    build = hashlib.sha256(build.encode()).hexdigest()[:24] if isinstance(build, str) else None
+    diagnosed = result.get("debugger_diagnostics") or [""]
+    lines = hashlib.sha256(f"{build}\0{diagnosed[0]}".encode()).hexdigest()[:24]
+    warnings = [
+        short
+        if build
+        and (short := diagnostics_again(warning))
+        and not _first_time(f"diagnostics-{lines}")
+        else warning
+        for warning in warnings
+    ]
+    sent_before = (
+        build is not None
+        and bool(result.get("output_after_disconnect"))
+        and not _first_time(f"sent-after-closing-{build}")
+    )
     if warnings != list(result.get("warnings", ())):
         result = {**result, "warnings": warnings}
-    text = _table(result, short_names=short_names)
+    text = _table(result, short_names=short_names, sent_before=sent_before)
     if result.get("refused_before_launch"):
         return text
     if candidate := result.get("candidate"):

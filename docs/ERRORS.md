@@ -147,6 +147,8 @@ file lists what it reads.
 
 - Malformed arguments, such as a `--frame` past the stack. The message says how many frames there
   are.
+- More than 8 interventions in one probe, `--set` and `--set-at` together. The message says how
+  many were given. Split them over several probes, or make the change with a candidate edit.
 - A `verify` of a directory whose config declares several sources, without `--at`. The message
   lists them, and says which one to pass: `verify needs --at <source> (one of: a/One.java,
   b/Two.java) for this target: pass --at <the source containing --old>, …`. With one source,

@@ -2523,6 +2523,11 @@ class DebugWorker:
                     **({"entry_lines": watched} if watched is not None else {}),
                     "protocol": PROTOCOL_VERSION,
                     "artifact_manifest_id": runtime.manifest_id,
+                    **(
+                        {"build_id": build}
+                        if isinstance(build := getattr(runtime, "build_id", None), str)
+                        else {}
+                    ),
                     "source_manifest": getattr(runtime, "source_manifest", None),
                     **({"inputs_checked": inputs_checked} if inputs_checked else {}),
                     **(
