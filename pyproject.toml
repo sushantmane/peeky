@@ -3,7 +3,7 @@ requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "peeky"
+name = "peeky-debug"
 dynamic = ["version"]
 description = "A debugger worker and runtime experimentation client for coding agents"
 readme = "README.md"

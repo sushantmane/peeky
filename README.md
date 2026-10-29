@@ -34,6 +34,12 @@ peeky --version
   script builds. C, C++ and Rust need LLVM's `lldb-dap`.
   [COOKBOOK 0](docs/COOKBOOK.md#what-each-language-also-needs) lists what to install.
 
+### The package name
+
+On PyPI the package will be `peeky-debug`, because `peeky` there is an unrelated project. Its
+commands (`peeky`, `peeky-worker`, `peeky-probe`, `peeky-agent`) and its Python module (`peeky`)
+keep the name Peeky. Once it is published, `pip install peeky-debug` installs it.
+
 ### From a release
 
 The [v0.1.0 release](https://github.com/sushantmane/peeky/releases/tag/v0.1.0) has a wheel,
