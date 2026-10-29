@@ -2464,12 +2464,15 @@ _GET_ELEMENTS = 8
 
 def _element_count(row):
     """An array's length where its type or value states it: C and C++ `Track[100]`, Rust
-    `[u32; 100]`, Java `int[100]@55 …`; else None."""
+    `[u32; 100]`, Java `int[100]@55 …`; a C++ container's count its value states
+    (`size=700 {…}`, which Peeky checked against the chain of one it read from its
+    nodes, #374); else None."""
     kind, value = str(row.get("type") or ""), str(row.get("value") or "")
     found = (
         re.fullmatch(r"[^\[\]]+\[([0-9]+)\]", kind)
         or re.fullmatch(r"\[[^;\[\]]+; ([0-9]+)\]", kind)
         or re.match(r"[\w.$]+\[([0-9]+)\]@[0-9]+ ", value)
+        or re.match(r"(?:0x[0-9a-fA-F]+ )?size=([0-9]{1,9})(?: [\[{]|$)", value)
     )
     return int(found[1]) if found else None
 
@@ -2551,11 +2554,16 @@ def _get_lines(row, session="default"):
         # #350).
         first, last = hidden[0]["selector"], hidden[-1]["selector"]
         size = _element_count(row)
+        # A C++ container's count (`size=700 {…}`): how many more, and of what (#374).
+        counted = str(row.get("value") or "").startswith("size=") and size
+        keyed = counted and "{" in str(row["value"])
         lines.append(
-            f"  ... {len(hidden)} more listed, {first} to {last}, then more"
-            + (f" ({size} elements in all)" if size else "")
-            + f": `--json` has only the first {len(elements)}; read any element by index, "
-            f"as `peeky session get {_shell_word(first)}{options}`"
+            f"  ... {len(hidden)} more listed, {first} to {last}, then "
+            + (f"{size - len(elements)} more" if counted and size > len(elements) else "more")
+            + (f" ({size} {'entries' if keyed else 'elements'} in all)" if size else "")
+            + f": `--json` has only the first {len(elements)}; read any "
+            + ("entry by key" if keyed else "element by index")
+            + f", as `peeky session get {_shell_word(first)}{options}`"
         )
     elif hidden:
         first, last = hidden[0]["selector"], hidden[-1]["selector"]
@@ -2564,7 +2572,13 @@ def _get_lines(row, session="default"):
             f"{_shell_word(first)}{options}` reads one; `--json` lists them all"
         )
     elif row.get("children_truncated"):
-        lines.append("  ... more children; select one by name or index")
+        size = _element_count(row) if str(row.get("value") or "").startswith("size=") else None
+        lines.append(
+            f"  ... {size - len(children)} more entries ({size} in all); select one by name or "
+            "index"
+            if size and size > len(children)
+            else "  ... more children; select one by name or index"
+        )
     if row.get("children_grouped") and not row.get("children"):
         # Said only where nothing else is listed (ninth evaluation: on every dataclass,
         # it was noise); `--json` always has `children_grouped`.

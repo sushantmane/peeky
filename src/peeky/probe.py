@@ -1106,6 +1106,14 @@ def _resolve(worker, stop, snapshot, segments, pointers=False):
             shown = f"; value {value[:80]}" if isinstance(value, str) and view is None else ""
             if view == "unproven":
                 raise ValueError(f"cannot expand {variable['name']!r}: {_unproven_text(variable)}")
+            if view == "memory" and segment.startswith("[") and _c_pointee(variable) is not None:
+                # A pointer Peeky read from an unordered container's node (#374).
+                raise ValueError(
+                    f"{_shown(segment)} not read: {path} ({variable.get('type')}) is a pointer "
+                    "read from an unordered container's node, shown by its address alone; "
+                    "Peeky never follows one, since nothing shows that what it points at is "
+                    "alive; print what it points at from the program"
+                )
             keyed = (
                 f"; {path} is the value for that key, as in C++ (an entry's key and value are "
                 f"{variable['_map']}[#N].first and .second)"
@@ -3549,7 +3557,9 @@ def _entry(worker, stop, variable, path, segment, kind, first_page, whole=False)
         position = int(segment[2:-1])
         if (found := _entry_at(worker, stop, variable, position)[0]) is not None:
             return {**found, "name": segment}
-        count = sum(1 for _ in _listed_entries(worker, stop, variable, path, first_page))
+        count = _summary_size(variable) if variable.get("view") == "memory" else None
+        if count is None:
+            count = sum(1 for _ in _listed_entries(worker, stop, variable, path, first_page))
         span = f": {path}[#0] to {path}[#{count - 1}]" if count else ""
         raise ValueError(f"{segment} not found: {path} has {count} entries{span}")
     how = f"select an entry by position with {path}[#N] (`peeky session get {path}` lists them)"
@@ -3588,10 +3598,14 @@ def _summary_size(variable):
 
 def _entry_at(worker, stop, variable, position):
     """Entry ``position`` of a C++ map as LLDB lists it (one node), with whether more
-    follow it; (None, False) past the last."""
-    page = worker.dispatch(
-        "expand", {**stop, "handle": variable["variablesReference"], "start": position, "count": 1}
+    follow it; (None, False) past the last. Of entries Peeky read from an unordered
+    container's nodes, any position, past the inspection window's 512 too (#374)."""
+    where = (
+        {"index": position}
+        if variable.get("view") == "memory" and position > 511
+        else {"start": position, "count": 1}
     )
+    page = worker.dispatch("expand", {**stop, "handle": variable["variablesReference"], **where})
     child = next((c for c in page["variables"] if c["name"] == f"[{position}]"), None)
     return child, bool(page["truncated"])
 
@@ -3771,6 +3785,24 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
         return {**_entry_part(worker, stop, child, "second", path), "name": segment, "_map": path}
 
     target = wanted if compared == "integer" else f'"{wanted}"'
+    if variable.get("view") == "memory":
+        # Entries Peeky read from an unordered container's own nodes (#374): the worker
+        # compares every key, however many, each as `key_of` does.
+        try:
+            page = worker.dispatch(
+                "expand", {**stop, "handle": variable["variablesReference"], "key": str(target)}
+            )
+        except ValueError as exc:
+            if _BUDGET.search(str(exc)):
+                raise
+            raise ValueError(f"{written} not read: {exc}; {how}") from None
+        if page["variables"]:
+            return value_of(page["variables"][0])
+        keys, count = page.get("keys") or [], page.get("compared")
+        listed = ", ".join(keys[:_LISTED_KEYS]) + (
+            f", ... ({count} total)" if type(count) is int and count > _LISTED_KEYS else ""
+        )
+        return _no_key(variable, path, written, shown, listed, how)
     order = _order(variable)
     if compared == "integer" and order and size and size > _LISTED_KEYS:
         # Sorted by key: a bisection reads about log2(size) entries, not all of them. A
@@ -3841,6 +3873,12 @@ def _value_for_key(worker, stop, variable, path, segment, first_page, how, whole
     )
     if compared == "string" and not whole:
         listed += "; each as the debugger shows it, up to a NUL byte"
+    return _no_key(variable, path, written, shown, listed, how)
+
+
+def _no_key(variable, path, written, shown, listed, how):
+    """Raise that no key of the map ``path`` equals ``shown`` (its keys: ``listed``):
+    not found where its comparison is the standard one, else not read."""
     if (why := _comparison(variable)) is not None:
         raise ValueError(
             f"{written} not read: no key equals {shown} exactly (keys of {path}: {listed}), "

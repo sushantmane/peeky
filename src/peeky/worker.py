@@ -2230,6 +2230,12 @@ class DebugWorker:
                 value = args.get(key, default)
                 if type(value) is not int or value < low or (high is not None and value > high):
                     raise ValueError(f"Invalid expansion {key}")
+        if operation == "expand" and "key" in args:
+            # A map's key as the debugger shows one (#374), for entries a view read.
+            if not isinstance(args["key"], str) or not 0 < len(args["key"]) <= 600:
+                raise ValueError("Invalid expansion key")
+            if "start" in args or "index" in args or "count" in args:
+                raise ValueError("Pass key, or start, count or index, not both")
         if operation == "set_variable":
             # A root local by its scope's reference, or a member by its parent's handle.
             if ("reference" in args) == ("handle" in args):
@@ -4270,7 +4276,11 @@ class DebugWorker:
                         if writable and writable(view) and type(raw) is int and raw > 0
                         else None
                     )
-                    self.children[handle] = ("view", list(view["children"][:512]), source)
+                    entries = view["children"]
+                    # An unordered container's entries past those read with its listing
+                    # are read when asked for (#374): kept as they are.
+                    kept = list(entries[:512]) if isinstance(entries, list) else entries
+                    self.children[handle] = ("view", kept, source)
                     if isinstance(view.get("pointee"), str):
                         # What a pointer points at, shown whole where a selector reads it
                         # (`p[0]`, #360).
@@ -5457,10 +5467,22 @@ class DebugWorker:
             # Elements a value view already decoded at this stop: nothing to re-read.
             runtime.assert_current()
             elements = record[1]
-            start = args.get("index", args.get("start", 0))
-            count = (
-                1 if "index" in args else min(args.get("count", 64), 512 - self.inspection_nodes)
-            )
+            if not isinstance(elements, list):
+                # Entries read from an unordered container's nodes when first asked for
+                # (#374): on this expansion's own budget.
+                self.reset_views()
+            keyed = None
+            if "key" in args:
+                # The entry with this key, wherever it is in the map (#374).
+                keyed = self.keyed_entry(elements, args["key"])
+                start, count = keyed["index"] or 0, int(keyed["index"] is not None)
+            else:
+                start = args.get("index", args.get("start", 0))
+                count = (
+                    1
+                    if "index" in args
+                    else min(args.get("count", 64), 512 - self.inspection_nodes)
+                )
             settable = self.preview_settable(record, runtime, elements[start : start + count])
             # LLDB's names for the fields of a value read from memory, as a field it lists
             # raw shows beside the language's (seventh evaluation, review of finding 18).
@@ -5508,7 +5530,10 @@ class DebugWorker:
                 "start": start,
                 "truncated": start + len(page) < len(elements),
                 "remaining_nodes": 512 - self.inspection_nodes,
+                **({"compared": keyed["compared"], "keys": keyed["keys"]} if keyed else {}),
             }
+        if "key" in args:
+            raise ValueError("Only entries Peeky read from a container's nodes are read by key")
         trail = []
         frame, scope_identity, ancestry, reference, indexed = self.walk(record, runtime, trail)
         start = args.get("start", 0)
@@ -5553,6 +5578,42 @@ class DebugWorker:
             # reads a pointer's pointee whole (`p[0]`) marks it too.
             **({"unproven_read": through} if through else {}),
         }
+
+    @staticmethod
+    def keyed_entry(elements, key):
+        """Where the entry whose key the debugger would show as ``key`` (`5`, `"al"`) is
+        among a map's entries a value view read (#374), comparing each key as a selector
+        does (an integer by its number, a string by its text): {"index": its position,
+        or None, "compared": how many keys, "keys": the first 20}. Refused where an
+        entry's key is not read, or reads as no key of ``key``'s kind."""
+        number = re.fullmatch(r"-?[0-9]{1,20}", key)
+        found, keys = [], []
+        for start in range(0, len(elements), 64):
+            for index, element in enumerate(elements[start : start + 64], start):
+                parts = element.get("children") or []
+                first = parts[0] if parts and parts[0].get("name") == "first" else None
+                text = first.get("value") if first is not None else None
+                if element.get("unavailable") or first is None or first.get("unavailable"):
+                    why = element.get("reason") or (first or {}).get("reason")
+                    raise ValueError(
+                        f"the key of entry [#{index}] is not read"
+                        + (f": {why}" if why else ": it holds no `first`")
+                    )
+                if not isinstance(text, str) or not (
+                    re.fullmatch(r"-?[0-9]{1,20}", text) if number else text.startswith('"')
+                ):
+                    raise ValueError(
+                        f"the key of entry [#{index}] shows as {text!r}, which Peeky cannot compare"
+                    )
+                if (int(text) == int(key)) if number else text == key:
+                    found.append(index)
+                if len(keys) < 20:
+                    keys.append(text)
+        if len(found) > 1:
+            raise ValueError(
+                f"{len(found)} entries show the key {key}, which Peeky cannot tell apart"
+            )
+        return {"index": found[0] if found else None, "compared": len(elements), "keys": keys}
 
     def preview(self, args, runtime):
         """The preview of the value an expansion handle names (#136), as `inspect` would

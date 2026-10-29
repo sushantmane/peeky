@@ -4686,10 +4686,21 @@ class NativeTarget:
                             # The node types of the unordered containers, which no
                             # local reaches but through a pointer: their entries are
                             # read from the nodes (#360).
-                            for offset, node in type_graph(
-                                _dies(info), node_types(_dies(info)), CPP_LIBRARIES
-                            ).items():
+                            hashed = type_graph(_dies(info), node_types(_dies(info)), CPP_LIBRARIES)
+                            for offset, node in hashed.items():
                                 fields.setdefault(offset, node)
+                            # And what an entry's pointer points at, which names its
+                            # type (`Pt *`); never read (#374).
+                            aimed = {
+                                node[2]
+                                for node in hashed.values()
+                                if node[0] == "pointer" and node[2] is not None
+                            } - set(fields)
+                            if aimed:
+                                for offset, node in type_graph(
+                                    _dies(info), aimed, CPP_LIBRARIES
+                                ).items():
+                                    fields.setdefault(offset, node)
             except (RuntimeError, ValueError, OSError) as exc:
                 # Without it, values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
@@ -6671,7 +6682,7 @@ class NativeSession:
         ``NodesUnsettled``, where ``containers_settled`` says something may be part-way
         through changing it; else None. It names that call, and says to retry after it
         returns, where the entries may read then (eval 13 prep, finding 3): a count past
-        ``MAX_NODES`` by then, or a string a debugger without `readMemory` can't read,
+        ``MAX_CHAIN`` by then, or a string a debugger without `readMemory` can't read,
         still withholds them (#393 review)."""
         count = threads() if threads is not None else None
         if count != 1:
@@ -7418,10 +7429,10 @@ class NativeSession:
         ``steps`` ([(name, type)] from its root local) reaches in ``frame``, counting
         ``count`` itself, once nothing else stops it: an unoptimized build whose source
         asks to optimize no function, a layout the debug information proves, and at
-        most ``MAX_NODES`` entries of types Peeky reads (``hashed_nodes.readable``). Only
+        most ``MAX_CHAIN`` entries of types Peeky reads (``hashed_nodes.readable``). Only
         then does a row say why it reads none at this stop, and what to try (eval 13 prep,
         findings 2 and 3)."""
-        from peeky.hashed_nodes import MAX_NODES, Unread, layout, readable
+        from peeky.hashed_nodes import MAX_CHAIN, Unread, layout, readable
 
         graph = getattr(self, "fields", None)
         if graph is None or type(count) is not int:
@@ -7441,7 +7452,7 @@ class NativeSession:
             held = layout(graph, node)[0]
         except Unread:
             return False
-        return 0 <= count <= MAX_NODES and readable(graph, held)
+        return 0 <= count <= MAX_CHAIN and readable(graph, held)
 
     def unreached_container(self, withheld, name, kind, holders=(), frame=None, steps=None):
         """The Withholding of an unordered container ``unlisted_container`` withholds

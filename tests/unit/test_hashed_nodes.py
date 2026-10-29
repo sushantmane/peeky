@@ -7,6 +7,7 @@ import struct
 import pytest
 
 from peeky.hashed_nodes import (
+    MAX_CHAIN,
     MAX_NODES,
     Memory,
     Unread,
@@ -141,9 +142,9 @@ def test_a_chain_longer_or_shorter_than_the_count_is_not_read():
     held[0x1080] = struct.pack("<Q", 0x1000) + held[0x1080][8:]
     with pytest.raises(Unread):
         read_entries(types, types[6], 3, Memory(first, reader(held)))
-    # More entries than Peeky reads: not even its chain.
+    # More entries than Peeky walks: not even its chain.
     with pytest.raises(Unread):
-        read_entries(types, types[6], MAX_NODES + 1, Memory(first, reader(held)))
+        read_entries(types, types[6], MAX_CHAIN + 1, Memory(first, reader(held)))
 
 
 @pytest.mark.parametrize(
@@ -196,16 +197,11 @@ def test_two_node_types_that_disagree_are_not_read():
     assert layout(types, types[6]) == (1, 8, 4, 4)
 
 
-def test_only_integers_bools_strings_pairs_and_structs_are_read():
-    for kind in (13, 14):
-        types = graph(value=kind, value_size=8 if kind == 13 else 4)
-        held, first = nodes(1, size=8 if kind == 13 else 4)
-        if kind == 13:
-            with pytest.raises(Unread):
-                read_entries(types, types[6], 1, Memory(first, reader(held)))
-        else:
-            root, fetch = read_entries(types, types[6], 1, Memory(first, reader(held)))
-            assert fetch(root["variablesReference"], 1)[0]["type"] == "const int"
+def test_a_const_value_is_read_with_its_qualifier():
+    types = graph(value=14)
+    held, first = nodes(1)
+    root, fetch = read_entries(types, types[6], 1, Memory(first, reader(held)))
+    assert fetch(root["variablesReference"], 1)[0]["type"] == "const int"
 
 
 def test_words_are_read_through_variable_paths_inside_the_nodes_only():
@@ -583,8 +579,12 @@ def test_a_row_says_to_read_a_container_later_only_where_its_entries_read_at_all
     }
     types = graph(extra=point)
     assert readable(types, 1) and readable(types, 9) and readable(types, 42), types
-    # A floating-point number, a wide character, a struct with a base class: never read.
-    assert not readable(types, 13) and not readable(types, 45) and not readable(types, 44)
+    # A `double` and a wide character are read (#374); a struct with a base class, a
+    # `long double` and a `char8_t` never are.
+    assert readable(types, 13) and readable(types, 45) and not readable(types, 44)
+    types.update({46: ("base", "long double", "DW_ATE_float", 16)})
+    types.update({47: ("base", "char8_t", "DW_ATE_UTF", 1)})
+    assert not readable(types, 46) and not readable(types, 47)
     # As read_entries finds them, value by value.
     data = struct.pack("<QiiiIq", 0, 3, 0, 5, 0, -6)
     paired = graph(value=42, value_size=24, extra=point)
@@ -592,3 +592,403 @@ def test_a_row_says_to_read_a_container_later_only_where_its_entries_read_at_all
     based = graph(value=44, value_size=16, extra=point)
     with pytest.raises(Unread):
         read_entries(based, based[6], 1, Memory(0x1000, reader({0x1000: data})))
+
+
+# #374: more kinds of entries, read where proven, each as LLDB shows one it reads itself.
+
+
+@pytest.mark.parametrize(
+    "packed, shown",
+    [
+        # As lldb-dap 18 and 20 show these locals (real builds, Linux and macOS).
+        (struct.pack("<f", 0.1), "0.100000001"),
+        (struct.pack("<f", 1e10), "1.0E+10"),
+        (struct.pack("<f", 1234567.0), "1234567"),
+        (struct.pack("<f", 1e-3), "0.00100000005"),
+        (struct.pack("<f", float("inf")), "+Inf"),
+        (struct.pack("<d", 0.1), "0.10000000000000001"),
+        (struct.pack("<d", 100.0), "100"),
+        (struct.pack("<d", 1e6), "1000000"),
+        (struct.pack("<d", 1e7), "1.0E+7"),
+        (struct.pack("<d", 1e-7), "9.9999999999999995E-8"),
+        (struct.pack("<d", 0.0001), "0.0001"),
+        (struct.pack("<d", 1 / 3), "0.33333333333333331"),
+        (struct.pack("<d", -2.5), "-2.5"),
+        (struct.pack("<d", -0.0), "-0"),
+        (struct.pack("<d", 1e300), "1.0000000000000001E+300"),
+        (struct.pack("<d", 5e-324), "4.9406564584124654E-324"),
+        (struct.pack("<d", float("-inf")), "-Inf"),
+        (struct.pack("<d", float("nan")), "NaN"),
+    ],
+)
+def test_a_float_or_double_is_shown_as_lldb_shows_one(packed, shown):
+    from peeky.hashed_nodes import float_text
+
+    assert float_text(packed) == shown
+
+
+def test_every_float_and_double_shown_reads_back_as_itself():
+    import random
+
+    from peeky.hashed_nodes import float_text
+
+    chosen = random.Random(374)
+    for _ in range(20000):
+        data = chosen.getrandbits(64).to_bytes(8, "little")
+        (number,) = struct.unpack("<d", data)
+        if number == number:
+            assert float(float_text(data).replace("Inf", "inf")) == number, number
+        data = chosen.getrandbits(32).to_bytes(4, "little")
+        (number,) = struct.unpack("<f", data)
+        if number == number:
+            back = struct.unpack(
+                "<f", struct.pack("<f", float(float_text(data).replace("Inf", "inf")))
+            )
+            assert back[0] == number, number
+
+
+def test_a_character_is_shown_with_exact_escapes():
+    from peeky.hashed_nodes import character_text
+
+    # A `char` as LLDB shows one.
+    shown = [character_text(code) for code in (97, 0, 39, 92, 10, 27, 0xC8, 0x7F, 1)]
+    assert shown == [
+        "'a'",
+        "'\\0'",
+        "'''",
+        "'\\'",
+        "'\\n'",
+        "'\\e'",
+        "'\\xc8'",
+        "'\\x7f'",
+        "'\\x01'",
+    ]
+    # A wide one: its literal; never LLDB's `\U0000fffd`, nor nothing, for an invalid one.
+    assert character_text(0xE9, "L") == "L'é'" and character_text(0x1F600, "U") == "U'😀'"
+    assert character_text(0xFFFFFFFF, "L") == "L'\\xffffffff'"
+    assert character_text(0xD800, "u") == "u'\\xd800'"
+    assert character_text(0x110000, "U") == "U'\\x110000'"
+    assert character_text(0xA0, "U") == "U'\\xa0'" and character_text(10, "u") == "u'\\n'"
+
+
+def kinds_graph(value, value_size, extra):
+    types = graph(value=value, value_size=value_size, extra=extra)
+    return types
+
+
+def one_node(data, at=8):
+    """A chain of one node holding ``data`` ``at`` bytes in, at 0x1000."""
+    return {0x1000: struct.pack("<Q", 0) + b"\0" * (at - 8) + data + b"\0" * 64}
+
+
+def test_numbers_characters_enums_and_pointers_are_read():
+    kinds = {
+        50: ("base", "double", "DW_ATE_float", 8),
+        51: ("base", "char", "DW_ATE_unsigned_char", 1),
+        52: ("base", "wchar_t", "DW_ATE_signed", 4),
+        53: ("base", "char16_t", "DW_ATE_UTF", 2),
+        54: (
+            "enum",
+            "Color",
+            4,
+            (("Red", 0), ("Green", 5), ("Blue", 5), ("Teal", 6)),
+            False,
+            "Color",
+        ),
+        55: ("enum", "Neg", 4, (("Minus", -1),), True, "ns::Neg"),
+        56: ("pointer", "", 1, 8),
+        57: ("qualifier", "const", 51),
+        58: ("pointer", "", 57, 8),
+        59: ("qualifier", "const", 58),
+        60: ("pointer", "", 56, 8),
+    }
+    cases = [
+        (50, struct.pack("<d", 0.5), "double", "0.5"),
+        (51, b"\xc8", "char", "'\\xc8'"),
+        (52, struct.pack("<i", -1), "wchar_t", "L'\\xffffffff'"),
+        (53, struct.pack("<H", 0x61), "char16_t", "u'a'"),
+        (54, struct.pack("<I", 6), "Color", "Teal"),
+        # Two enumerators hold 5: neither is told, the number is.
+        (54, struct.pack("<I", 5), "Color", "5"),
+        (54, struct.pack("<I", 9), "Color", "9"),
+        (55, struct.pack("<i", -1), "ns::Neg", "Minus"),
+        (55, struct.pack("<i", -5), "ns::Neg", "-5"),
+        (56, struct.pack("<Q", 0xAAAAAAAB12F0), "int *", "0x0000aaaaaaab12f0"),
+        (59, struct.pack("<Q", 0), "const char *const", "0x0000000000000000"),
+        (60, struct.pack("<Q", 0x10), "int **", "0x0000000000000010"),
+    ]
+    for kind, data, name, value in cases:
+        types = kinds_graph(kind, len(data), kinds)
+        assert readable(types, kind), name
+        root, fetch = read_entries(types, types[6], 1, Memory(0x1000, reader(one_node(data))))
+        (entry,) = fetch(root["variablesReference"], 8)
+        assert (entry["type"], entry["value"]) == (name, value), (entry, value)
+        assert entry["variablesReference"] == 0, entry
+    # An enum whose enumerators weren't read, or whose sign isn't known for a value with
+    # its top bit set, a `long double` and a pointer to a member: never read.
+    unknown = {54: ("enum", "Color", 4, None, False, "Color")}
+    unsigned = {54: ("enum", "Color", 4, (("Red", 0),), None, "Color")}
+    for extra, data in ((unknown, struct.pack("<I", 0)), (unsigned, struct.pack("<I", 1 << 31))):
+        types = kinds_graph(54, 4, extra)
+        with pytest.raises(Unread):
+            read_entries(types, types[6], 1, Memory(0x1000, reader(one_node(data))))
+    for kind, data in (
+        (61, b"\0" * 16),
+        (62, b"\0" * 8),
+    ):
+        types = kinds_graph(
+            kind,
+            len(data),
+            {61: ("base", "long double", "DW_ATE_float", 16), 62: ("pointer", "", None, 8)},
+        )
+        assert not readable(types, kind)
+        with pytest.raises(Unread):
+            read_entries(
+                types,
+                types[6],
+                1,
+                Memory(0x1000, reader(one_node(data, at=16 if kind == 61 else 8))),
+            )
+
+
+VECTOR = "std::vector<int, std::allocator<int> >"
+NESTED = {
+    # Each entry a std::pair<int const, T>, T placed as libstdc++ places it.
+    70: ("pointer", "", 1, 8),
+    71: record(
+        "std::_Vector_base<int, std::allocator<int> >::_Vector_impl_data",
+        24,
+        [("_M_start", 70, 0), ("_M_finish", 70, 8), ("_M_end_of_storage", 70, 16)],
+    ),
+    72: record("std::allocator<int>", 1),
+    73: record(
+        "std::_Vector_base<int, std::allocator<int> >::_Vector_impl", 24, bases=[(72, 0), (71, 0)]
+    ),
+    74: record("std::_Vector_base<int, std::allocator<int> >", 24, [("_M_impl", 73, 0)]),
+    75: record(VECTOR, 24, bases=[(74, 0)], parameters=[("type", "_Tp", 1, None)]),
+    76: record("std::__pair_base<int const, std::vector<int> >", 1),
+    77: record(
+        "std::pair<int const, std::vector<int> >",
+        32,
+        [("first", 14, 0), ("second", 75, 8)],
+        bases=[(76, 0)],
+    ),
+    78: record("std::map<int, int>", 48),
+    79: record(
+        "std::pair<int const, std::map<int, int> >", 56, [("first", 14, 0), ("second", 78, 8)]
+    ),
+    80: ("array", "", 1, (2,), False),
+    81: record(
+        "std::array<int, 2>",
+        8,
+        [("_M_elems", 80, 0)],
+        parameters=[("type", "_Tp", 1, None), ("value", "_Nm", 12, 2)],
+    ),
+    82: record(
+        "std::pair<int const, std::array<int, 2> >", 12, [("first", 14, 0), ("second", 81, 4)]
+    ),
+}
+
+
+def mapped(value, value_size, held):
+    """``graph``'s types, with a `std::unordered_map<int, held>` (90) of ``value`` entries."""
+    types = graph(value=value, value_size=value_size, extra=NESTED)
+    parameters = [("type", "_Key", 1, None), ("type", "_Tp", held, None)]
+    types[90] = record("std::unordered_map<int, T>", 56, [("_M_h", 5, 0)], [], parameters)
+    return types
+
+
+def node_words(data, words):
+    """A ``Words`` over one node at 0x1000 holding ``data`` 8 bytes in, ``words`` long."""
+    node = one_node(data)[0x1000]
+    texts = {"m": "0x1000", "m->_M_nxt": "nullptr"}
+    for k in range(1, words):
+        texts[f"m[{k}]._M_nxt"] = f"0x{struct.unpack_from('<Q', node, 8 * k)[0]:x}"
+    return Words("m", texts.get)
+
+
+def text(child):
+    return child.get("value")
+
+
+def test_a_container_held_in_a_node_is_read_where_proven_or_withheld_on_its_own():
+    types = mapped(77, 32, 75)
+    assert readable(types, 77)
+    heap = 0x9000
+    data = struct.pack("<iiQQQ", 1, 0, heap, heap + 8, heap + 16)
+    held = {**one_node(data), heap: struct.pack("<iiii", 2, 3, 0, 0)}
+    root, fetch = read_entries(types, types[90], 1, Memory(0x1000, reader(held)))
+    assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: size=2 [2, 3]}"
+    (entry,) = view_children(types, root, fetch)
+    second = entry["children"][1]
+    assert second["value"] == "size=2 [2, 3]"
+    assert [element["value"] for element in second["children"]] == ["2", "3"]
+    # Without `readMemory`, its elements are outside the node: it alone is withheld.
+    root, fetch = read_entries(types, types[90], 1, node_words(data, 5))
+    assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: <not read>}"
+    (entry,) = view_children(types, root, fetch)
+    second = entry["children"][1]
+    assert second["withheld"] and second["value"] is None, second
+    assert second["reason"].startswith("a container held in a node is read only with a debugger")
+    # Pointers that bound no whole number of elements, or too many: withheld, with why.
+    for start, finish, why in (
+        (heap, heap + 6, "don't bound a whole number"),
+        (heap + 8, heap, "don't bound a whole number"),
+        (heap, heap + 4 * (MAX_NODES + 1), f"holds {MAX_NODES + 1} elements"),
+    ):
+        data = struct.pack("<iiQQQ", 1, 0, start, finish, max(start, finish))
+        memory = Memory(0x1000, reader({**held, **one_node(data)}))
+        root, fetch = read_entries(types, types[90], 1, memory)
+        (entry,) = view_children(types, root, fetch)
+        assert why in entry["children"][1]["reason"], entry
+    # A `std::map` in a node: withheld, with why.
+    types = mapped(79, 56, 78)
+    memory = Memory(0x1000, reader(one_node(b"\1" + b"\0" * 55)))
+    root, fetch = read_entries(types, types[90], 1, memory)
+    (entry,) = view_children(types, root, fetch)
+    assert entry["children"][1]["reason"] == (
+        "Peeky doesn't read a `std::map` held in an unordered container's node; print it from "
+        "the program"
+    )
+    assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: <not read>}"
+    # A `std::array`, inside the node: read, without `readMemory` too.
+    types = mapped(82, 12, 81)
+    root, fetch = read_entries(types, types[90], 1, node_words(struct.pack("<iii", 1, 4, 5), 3))
+    assert preview(root, fetch, Typed(types, 90), text) == "size=1 {1: size=2 [4, 5]}"
+
+
+def test_a_container_of_more_than_256_entries_is_walked_whole_and_read_when_asked():
+    from peeky.hashed_nodes import Paged
+
+    types = graph()
+    count = MAX_NODES + 44
+    held, first = nodes(*range(count))
+    asked = []
+
+    def read(reference, size):
+        asked.append(int(reference, 16))
+        return reader(held)(reference, size)
+
+    root, fetch = read_entries(types, types[6], count, Memory(first, read))
+    assert root["value"] == f"size={count}" and root["length"] == count
+    listed = view_children(types, root, fetch)
+    assert isinstance(listed, Paged) and len(listed) == count
+    # Only the first 256 were read with the listing; each later one when asked for.
+    assert listed[:2] == [
+        {"name": "[0]", "type": "int", "value": "0"},
+        {"name": "[1]", "type": "int", "value": "1"},
+    ]
+    assert [e["value"] for e in listed[count - 2 :]] == [str(count - 2), str(count - 1)]
+    assert listed[-1]["name"] == f"[{count - 1}]"
+    # Its count is proven by the whole chain: one node more or fewer, and nothing reads.
+    for wrong in (count - 1, count + 1):
+        with pytest.raises(Unread):
+            read_entries(types, types[6], wrong, Memory(first, reader(held)))
+    # A later node that doesn't read, or whose link isn't the one the walk read, is
+    # withheld alone, with why.
+    last, before = 0x1000 + 0x40 * (count - 1), 0x1000 + 0x40 * (count - 2)
+    root, fetch = read_entries(types, types[6], count, Memory(first, reader(held)))
+    listed = view_children(types, root, fetch)
+    del held[last]
+    held[before] = struct.pack("<Q", 0x5000) + held[before][8:]
+    assert listed[count - 1]["withheld"] and listed[count - 1]["value"] is None
+    assert listed[count - 1]["reason"].startswith("the debugger didn't read this entry's node")
+    assert listed[count - 2]["reason"] == (
+        "Peeky can't read this entry from its node (its link is not the one the walk read); "
+        "print it from the program"
+    )
+
+
+def test_the_worker_pages_and_finds_a_key_among_entries_read_when_asked(tmp_path):
+    # #374: past 256 entries, a view's entries are read when a page, a position or a key
+    # asks for them, on that expansion's own budget, past the inspection window too.
+    from types import SimpleNamespace
+
+    from peeky.hashed_nodes import Paged
+    from peeky.native import UNLISTED, Withholding
+    from peeky.worker import DebugWorker
+
+    made, budgets = [], []
+
+    def entry(at):
+        made.append(at)
+        parts = [
+            {"name": "first", "type": "const int", "value": str(at * 3)},
+            {"name": "second", "type": "int", "value": str(at)},
+        ]
+        return {
+            "name": f"[{at}]",
+            "type": "std::pair<int const, int>",
+            "value": "p",
+            "children": parts,
+        }
+
+    def page(start, stop):
+        budgets.append(worker.view_deadline)
+        return [entry(at) for at in range(start, stop)]
+
+    def listed_container(withheld, variable, frame, steps, nodes, **stop):
+        children = Paged(700, [entry(at) for at in range(256)], page)
+        return {"value": "size=700 {…}", "rust_view": "memory", "children": children}
+
+    runtime = SimpleNamespace(
+        assert_current=lambda: None,
+        reports_unavailable_as_text=True,
+        unlisted_container=lambda variable, frame, steps, evaluate: Withholding(
+            "it counts 0 entries", UNLISTED, "cannot be changed"
+        ),
+        listed_container=listed_container,
+        indirections=lambda frame, steps: [],
+    )
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.state, worker.stop_id = runtime, "stopped", "stop1"
+    worker.listed_frames = [{"id": 1, "name": "main"}]
+    worker.reset_views()
+    row = {"name": "m", "type": "std::unordered_map<int, int>", "value": "size=0"}
+    (m,) = worker.expose_variables(
+        [{**row, "variablesReference": 4}], {"id": 1}, ("Locals", None), ()
+    )
+    assert m["view"] == "memory" and max(made) == 255, (m, max(made))
+    stop, handle = {"stop_id": "stop1"}, m["variablesReference"]
+    first = worker.expand({**stop, "handle": handle}, runtime)
+    assert len(first["variables"]) == 64 and first["truncated"] and max(made) == 255
+    # One entry by its position, past the inspection window's 512: read alone.
+    (one,) = worker.expand({**stop, "handle": handle, "index": 650}, runtime)["variables"]
+    assert one["name"] == "[650]" and one["view"] == "memory" and 650 in made
+    assert 649 not in made and budgets, made
+    # A key, wherever its entry is: every key compared, each as a selector compares one.
+    found = worker.expand({**stop, "handle": handle, "key": "1797"}, runtime)
+    assert [entry["name"] for entry in found["variables"]] == ["[599]"]
+    assert found["compared"] == 700 and found["keys"][:3] == ["0", "3", "6"]
+    missing = worker.expand({**stop, "handle": handle, "key": "1"}, runtime)
+    assert missing["variables"] == [] and missing["compared"] == 700
+    with pytest.raises(ValueError, match="cannot compare"):
+        worker.expand({**stop, "handle": handle, "key": '"a"'}, runtime)
+    # A key only for entries a view read; never with a page's bounds.
+    with pytest.raises(ValueError, match="key, or start"):
+        worker.dispatch("expand", {**stop, "handle": handle, "key": "3", "start": 0})
+
+
+def test_a_listing_says_how_many_more_entries_a_container_holds():
+    # #374: a container read from its nodes counts its entries by its whole chain; the
+    # listing's last line says how many it doesn't list, and how to read one.
+    from peeky import cli
+
+    child = {"type": "int", "value": "2"}
+    row = {
+        "selector": "big",
+        "type": "std::unordered_map<int, int>",
+        "value": "size=700 {699: 1398, …}",
+        "children": [{**child, "selector": f"big[{699 - at}]"} for at in range(64)],
+        "children_truncated": True,
+    }
+    assert cli._get_lines(row)[-1] == (
+        "  ... 56 more listed, big[691] to big[636], then 636 more (700 entries in all): "
+        "`--json` has only the first 64; read any entry by key, as `peeky session get "
+        "'big[691]'`"
+    )
+    sets = {**row, "children": [{**child, "selector": f"s[#{at}]"} for at in range(64)]}
+    assert (
+        cli._get_lines(sets)[-1]
+        == "  ... 636 more entries (700 in all); select one by name or index"
+    )

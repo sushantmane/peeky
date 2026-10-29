@@ -764,6 +764,10 @@ def _member(child, typed, fetch, text, depth, room, at):
     from peeky.worker import is_unavailable
 
     value = str(child.get("value") or "")
+    if child.get("withheld") and child.get("value") is None:
+        # Withheld on its own, with why (#374): a container held in an unordered
+        # container's node that Peeky doesn't read.
+        return "<not read>"
     if is_unavailable(value):
         return "<no value>"
     sort = typed.kind()

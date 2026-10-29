@@ -1,4 +1,4 @@
-# Error codes (protocol 9)
+# Error codes (protocol 10)
 
 Every Peeky failure carries the same error object: from the HTTP worker, from the SDK
 (`peeky.errors.PeekyError`), and from the CLI. With `--json`, the CLI prints `{"error": {...}}`.
@@ -514,4 +514,7 @@ HTTP response carries `X-Peeky-Protocol: 5`.
 - **Protocol 9** reads a caller frame's values in a probe: `1:i`. Its rows say `frame` and
   `stop_line`. A protocol 8 worker refuses `1:i` as no selector
   ([COOKBOOK 2.10](COOKBOOK.md#210-values-in-a-callers-frame)).
+- **Protocol 10** reads a key of a GCC build's unordered container, past its first 256 entries
+  too. The worker's `expand` takes `key`. A protocol 9 worker ignores it and gives the first
+  entries ([C and C++ 7.1](lang/c-cpp-cookbook.md#standard-containers)).
 - A client and a worker of different protocols refuse each other before anything runs.
