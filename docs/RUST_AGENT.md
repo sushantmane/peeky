@@ -461,7 +461,7 @@ used again. Such a temporary is:
   view that only reads, as `ChunksExact` or `btree_map::Iter`, writes nothing.
 - What a callee reaches only through a shared `&` it writes only if it may take a value through
   one: a raw pointer, a cell, or what holds one (below). `_may_write`'s `shared`, and
-  `_unshared` within a type: `&&mut Vec<u32>` writes nothing. `_reached` walks what an argument
+  `_shared_reference`: `&&mut Vec<u32>` writes nothing. `_reached` walks what an argument
   was made from, noting where it passed a shared borrow or a shared reference type. So
   `look(&h, x)` with `h = Hold { p: &mut v }` writes nothing, while `keep(h, x)`,
   `poke(&mut h, x)`, and `&h` with a `*mut` or `&Cell` field may.
@@ -833,8 +833,8 @@ holding a cell, a lock, an atomic or a once-cell, a `static mut`, or a `thread_l
 - Peeky builds crates without dependencies, so the standard library's is the only other code.
   Another crate's could run a trait `impl` through state it keeps (`log`'s logger), which these
   rules would have to count, were dependencies allowed.
-- `impls` leaves out an inherent `impl` (`_inherent`) and one of a trait the crate defines
-  (`_impl_trait`, `_own_trait`): no other crate can name that trait, so only the crate's code
+- `impls` leaves out an inherent `impl` and one of a trait the crate defines (`_impl_trait`,
+  `_own_trait`): no other crate can name that trait, so only the crate's code
   calls its functions, by their names. The trait's name must be one the crate's sources define
   (`_crate_traits`), with no `use` of a path outside the crate naming it, and no glob one for a
   bare name. A prelude trait's name (`_PRELUDE_TRAITS`) and a derive's never count as the
