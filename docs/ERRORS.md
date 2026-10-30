@@ -42,7 +42,7 @@ The last column is the `retryable` field.
 | `INVALID_REQUEST` | The arguments are malformed, or the evidence store can't be used ([details](#invalid_request)). | Fix the request. | no |
 | `INVALID_QUERY` | `peeky sql` or `peeky queries`: bad SQL, a write, a missing or unknown `--param`, an unknown `--schema` name, or a query over its time bound. | Fix the query. `peeky sql --schema` lists the tables and views, and `peeky queries --help` each canned query's parameters. | no |
 | `INTERNAL_ERROR` | A Peeky bug: an unexpected exception type. | Report it with the message. Don't retry, and don't change your request. | no |
-| `UNREACHABLE` | No connection reached the worker: the tunnel or the worker is down. Nothing was applied, and the session is kept. | Restore the tunnel or the worker, and retry. | yes |
+| `UNREACHABLE` | No connection reached the worker: no tunnel holds the local port, or a local worker is down. Nothing was applied, and the session is kept. A tunnel whose remote worker is down gives `TRANSPORT_LOST` instead. | Restore the tunnel or the worker, and retry. | yes |
 | `TRANSPORT_LOST` | The connection broke mid-request. The outcome is unknown. | Reconnect, then `inspect` or `wait`. Never repeat a change blindly. | no |
 | `JOB_LOST` | A `--background` job's process died before it finished. | Rerun the command. | no |
 
@@ -136,14 +136,14 @@ The last column is the `retryable` field.
   - llvm-dwarfdump failing while Peeky reads a C, C++ or Rust build's symbols (`Native symbol
     command failed`), with its exit status and diagnostics.
 - If values are huge, capture narrower selectors.
-- For Java, keep `debugger_events` for Peeky's issue #27. See
+- For Java, keep `debugger_events` for a bug report. See
   [Two Java debugger failures](#two-java-debugger-failures).
 
 ### UNSUPPORTED
 
 | Case | What to do |
 | --- | --- |
-| An operation or capability that isn't offered, such as `--capture return` for Python | Call `version` to see what is offered, or do what the message names |
+| An operation or capability that isn't offered, such as `--capture return` for Python, or `verify` on an attached JVM | Call `version` to see what is offered, or do what the message names |
 | A Java adapter bundle built before a required java-debug patch | Rebuild the adapter with `scripts/setup_java_adapter.py` |
 | A C++ target whose compiler is neither clang nor GCC: `C++ targets need clang++ or g++ …`, refused before building ([C and C++ 7.1](lang/c-cpp-cookbook.md#which-c-builds-peeky-supports)) | Set `PEEKY_NATIVE_CXX` to clang++ or g++ |
 | Inline assembly that can read a file: `Inline assembly that can read a file …`, refused before building | Take the directive out of the inline assembly, and put the data in a declared source or header |
@@ -353,8 +353,9 @@ frame for the change. It points to `describe`'s `mutable:` line instead.
 ## Two Java debugger failures
 
 Two java-debug failures end with `DEBUGGER_ERROR` at once, instead of a timeout. See
-[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events). Peeky's issue #27 covers both: java-debug
-dropping lifecycle events, such as an attached JVM's stop or a launched JVM's exit.
+[JAVA_ATTACH.md](JAVA_ATTACH.md#lost-stop-events). java-debug may also drop a launched JVM's
+exit. That isn't an error: Peeky infers the exit, with a warning that its exit code is unknown,
+and the result stands.
 
 ### `java-debug's event thread died (…)`
 
@@ -377,7 +378,7 @@ thread, its location, the session's breakpoint, and how long the stop has gone u
 - Later requests on the session repeat the error.
 - `report` still returns the session as it was: `state: detached`, `lost_stop`, `history` and
   `debugger_events`. `close` ends the session.
-- A failed probe carries `debugger_events` too. Keep it for Peeky's issue #27.
+- A failed probe carries `debugger_events` too. Keep it for a bug report.
 
 ## How Peeky ends a session's processes
 

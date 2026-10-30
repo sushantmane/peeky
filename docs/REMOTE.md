@@ -34,7 +34,8 @@ peeky session start ./app --at lib/parse.py:42 --worker http://127.0.0.1:8765
 peeky session inspect; peeky session continue; peeky session close
 ```
 
-Results look as they do without a worker. For example, a probe through a worker:
+Results look as they do without a worker, and a Python result adds a warning on what isn't
+compared ([Source identity](#source-identity)). For example, a probe through a worker:
 
 ```
 $ peeky probe pagination_bug.py --at 8 --capture start,page --set start=0 --worker http://127.0.0.1:18765
@@ -45,6 +46,7 @@ hit  phase      line  function  selector  type  value
 after-set: 1 number, flag, null or text row equal to the observed value left out; `--json` has all
 set start: 3 -> 0
 status: completed  hits: 1  seconds: 1.072  max pause: 14.1 ms
+warning: Only the .py files under the target's directory are compared with yours. Not compared: installed packages, any directory holding a pyvenv.cfg, the standard library, and compiled modules (.so, .pyc).
 output:
   PAGE: [10, 20, 30]
 evidence: saved as run 1; query it with `peeky queries run --param run=1` or `peeky sql` (see `peeky sql --schema`)
@@ -142,8 +144,8 @@ the same keys as `--config`. Its paths are relative to `--root`.
 | C or C++ | `--native-config` | `sources`, `headers`, `compiler`, `adapter`, `dwarfdump`; `"language": "cpp"` for C++ |
 | A Cargo crate | `--rust-config` | `sources`, `tests`, and every tool: `cargo`, `rustc`, `linker`, `adapter`, `dwarfdump` |
 
-- The host needs the toolchain: clang, lldb-dap and llvm-dwarfdump, and for Rust, cargo and rustc
-  ([WORKER.md](WORKER.md#start-a-c-or-c-worker)).
+- The host needs the toolchain: a C or C++ compiler (clang or GCC), lldb-dap and llvm-dwarfdump,
+  and for Rust, cargo, rustc and a linker ([WORKER.md](WORKER.md#start-a-c-or-c-worker)).
 - On your machine, no `--config` is needed. The worker says which files to hash.
 - The files compared are listed in [Source identity](#source-identity): a C header or a Rust module
   that differs is refused by name.
@@ -178,9 +180,9 @@ start: i32 = 3  [settable]
 of the sources on its host. Still, the session above stopped at `src/main.rs:5` in your checkout,
 not in that copy. Other paths are marked `worker:` ([Paths in results](#paths-in-results)).
 
-**In a container,** LLDB turns off address randomization for the program it launches. Docker's
-default seccomp profile refuses that call, so run the container with `--cap-add=SYS_PTRACE
---security-opt seccomp=unconfined`.
+**In a container,** LLDB calls `personality(2)` as it launches the program, and Docker's default
+seccomp profile refuses that call (`personality set failed`). So run the container with
+`--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`.
 
 ### Source identity
 
@@ -404,8 +406,7 @@ The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ an
 | The host's source differs | `peeky probe … --set start=0 --worker URL` | 2 | 0.05 | `PROVENANCE_CHANGED`, refused before launching; the host's changed program never ran |
 | Worker stopped behind a live tunnel | `peeky probe … --worker URL` | 2 | 0.002 | `TRANSPORT_LOST`, `session_closed: false` |
 
-- All step results matched the first recorded run, of 2026-10-16, except the changed-source
-  probe's exit status, which changed from 1 to 2. A probe refused before launch exits 2.
+- A probe refused before launch exits 2.
 - The token never appears in any command's output. Every step asserts this.
 - This run's module took 9.6 s, including starting the container and sshd, with the image already
   built.
@@ -433,8 +434,6 @@ The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ an
   it.
 - With the Java tests, the module took 8.0 s locally, with both images already built. A cold build
   of the `java` image took 17 s, with its base images already pulled.
-- On 2026-10-16, five consecutive local runs took 4.6–5.0 s. On GitHub's `ubuntu-latest` runner,
-  with an x86_64 client and container, the module took 21.7 s including the image build.
 
 **C, C++ and Rust** (2026-10-22), with the `native` target's container. Each language has a
 `main` file and a header or module it reads: `page.h`, `page.hpp` or `src/page.rs`.
@@ -459,7 +458,6 @@ The Java steps are saved beside it, in `remote-run-java.json`, and the C, C++ an
 - With all three images built, the whole module took 19.8 s locally: 21 tests, 12 of them C, C++
   and Rust.
 - Cold builds, with the base images already pulled, took 94 s in all: 12 s for `host`, 9 s for
-  `java` and 73 s for `native`. The `native` stage took 35–37 s in two earlier builds; most of it
-  is downloading. The image is 1.8 GB.
+  `java` and 73 s for `native`. The image is 1.8 GB.
 - The `native` stage installs its toolchain before Peeky. So a change to Peeky's source rebuilds it
   in about 5 s. A cold rebuild of the stage, with the checked rustup-init, took 45 s.
