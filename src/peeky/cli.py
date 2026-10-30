@@ -551,148 +551,44 @@ def adapter_for(language, data):
     return NativeTarget(**data)
 
 
-def _parse_error(path, exc):
-    return ValueError(f"{path} does not parse as Python: {exc.msg} (line {exc.lineno})")
+def python_adapter(root, option=None):
+    """The PythonAdapter that runs a program under ``root`` on its interpreter
+    (python_interpreter): ``option`` is `--python`."""
+    from peeky.adapters import PythonAdapter
+    from peeky.python_interpreter import find
+
+    return PythonAdapter.on(find(root, option))
 
 
-def _python_lines(path):
-    try:
-        code = compile(path.read_text(), str(path), "exec")
-    except SyntaxError as exc:
-        raise _parse_error(path, exc) from exc
-    lines, stack = set(), [code]
-    while stack:
-        item = stack.pop()
-        lines.update(line for _, _, line in item.co_lines() if line)
-        stack.extend(c for c in item.co_consts if hasattr(c, "co_lines"))
-    return sorted(lines)
-
-
-MAX_SCOPES = 300
-
-
-def _python_scopes(path):
-    """Names each Python function (and the module) can see, for choosing selectors.
-
-    Static: lists parameters and assigned locals, not values or attributes, and the
-    module globals a function reads that the module assigns (`globals`: a probe reads them,
-    `[module global]`): names the module binds (`MAX_GAP = 30`, not
-    `globals()["x"] = 1`) that the function's compiled code loads as globals (its generator
-    expressions' and comprehensions' too), so not in code the compiler drops (`if False:`);
-    nothing runs. Methods are qualified by class
-    (`IPv6Address.is_private`); listed in source order, first MAX_SCOPES only.
-    """
-    import ast
-    import dis
-    import symtable
-    import warnings
-
-    text = path.read_text()
-    try:
-        tree = ast.parse(text, str(path))
-        table = symtable.symtable(text, str(path), "exec")
-    except SyntaxError as exc:
-        raise _parse_error(path, exc) from exc
-    # Names the module itself binds (`MAX_GAP = 30`), not its functions, classes or
-    # imports, nor a name a target only reads (`globals()["x"] = 1`, `counts[0] = 1`):
-    # what a function may read as a module global.
-    assigned = set()
-    for node in tree.body:
-        targets = (
-            node.targets
-            if isinstance(node, ast.Assign)
-            else [node.target]
-            if isinstance(node, (ast.AnnAssign, ast.AugAssign))
-            else []
+def _python_option(args, language):
+    """Refuse a `--python` that would not be used: for another language, or on a
+    worker, which chooses its own."""
+    option = getattr(args, "python", None)
+    if option is None:
+        return
+    if language != "python":
+        raise ValueError(f"--python is for Python programs; this target is {language}")
+    if getattr(args, "worker", None) is not None:
+        raise ValueError(
+            "--python is for a program run here; a worker runs Python programs on the "
+            "interpreter it was started with (peeky-worker --python), or its root's .venv"
         )
-        for target in targets:
-            for name in ast.walk(target):
-                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
-                    assigned.add(name.id)
-    # The globals each function's compiled code loads, by (name, first line) as the
-    # compiler numbers it: a decorated function's code starts at its first decorator.
-    try:
-        with warnings.catch_warnings():
-            # A program's own syntax warnings (`"\d"`) are not describe's to print.
-            warnings.simplefilter("ignore")
-            compiled = compile(text, str(path), "exec", dont_inherit=True)
-    except (SyntaxError, ValueError):
-        compiled = None
-    # A generator expression's code is its own (a comprehension's too, before 3.12), but
-    # it is the enclosing function's: its loads count there.
-    loads, codes = {}, [(compiled, None)] if compiled is not None else []
-    while codes:
-        code, into = codes.pop()
-        if into is None or code.co_name not in (
-            "<genexpr>",
-            "<listcomp>",
-            "<setcomp>",
-            "<dictcomp>",
-        ):
-            into = set()
-            loads.setdefault((code.co_name, code.co_firstlineno), []).append(into)
-        into.update(
-            instruction.argval
-            for instruction in dis.get_instructions(code)
-            if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS")
-        )
-        codes.extend((each, into) for each in code.co_consts if hasattr(each, "co_code"))
-    spans, starts = {}, {}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            name = getattr(node, "name", "lambda")
-            spans.setdefault((node.lineno, name), node.end_lineno)
-            first = min([d.lineno for d in getattr(node, "decorator_list", ())] + [node.lineno])
-            starts.setdefault(
-                (node.lineno, name), ("<lambda>" if name == "lambda" else name, first)
-            )
-    found, stack = [], [(table, "")]
-    while stack and len(found) < 20000:
-        item, prefix = stack.pop()
-        kind = item.get_type()
-        name = item.get_name()
-        qualified = f"{prefix}{name}"
-        # Only functions and classes name a level; PEP 695 type-parameter scopes and the
-        # module pass their prefix through unchanged.
-        child_prefix = f"{qualified}." if kind in ("function", "class") else prefix
-        stack.extend((child, child_prefix) for child in item.get_children())
-        end = spans.get((item.get_lineno(), name))
-        if kind == "module":
-            found.append((0, "<module>", None, item))
-        elif kind == "function" and end is not None:
-            # Generator expressions and annotation scopes have no source span: skipped.
-            found.append((item.get_lineno(), qualified, [item.get_lineno(), end], item))
-    found.sort(key=lambda entry: entry[0])
-    scopes = []
-    for _, qualified, lines, item in found[:MAX_SCOPES]:
-        names = sorted(
-            s.get_name()
-            for s in item.get_symbols()
-            if s.is_parameter()
-            or s.is_assigned()
-            or (item.get_type() == "module" and s.is_imported())
-        )
-        # One code object of that name and first line, else none listed: two lambdas on
-        # a line cannot be told apart.
-        matched = loads.get(starts.get((item.get_lineno(), item.get_name())), [])
-        read = (
-            sorted(matched[0] & assigned)
-            if item.get_type() != "module" and len(matched) == 1
-            else []
-        )
-        scope = {
-            "scope": qualified,
-            "lines": lines,
-            "names": (names + [name for name in read if name not in names])[:100],
-        }
-        if read:
-            scope["globals"] = read
-        scopes.append(scope)
-    if len(found) > MAX_SCOPES:
-        scopes.append(
-            {"scope": "...", "lines": None, "names": [], "omitted": len(found) - MAX_SCOPES}
-        )
-    return scopes
+
+
+def _launched_python(launch):
+    """The interpreter a launch ran a Python program on (its target identity, as a
+    run's `python`), else None."""
+    identity = launch.get("target_identity") if isinstance(launch, dict) else None
+    if not isinstance(identity, dict) or identity.get("language") != "python":
+        return None
+    return {key: value for key, value in identity.items() if key != "language"} or None
+
+
+def _python_line(identity):
+    from peeky.python_interpreter import text
+
+    shown = text(identity)
+    return f"python: {shown}" if shown else ""
 
 
 def _entry(root, run, language):
@@ -728,6 +624,7 @@ def _default_program(program, data, command):
 def describe(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     program = _confined(root, _default_program(program, data, "describe"))
+    _python_option(args, language)
     run = (
         " [--run <script.py>] [--arg A ...]"
         if language == "python"
@@ -737,6 +634,8 @@ def describe(args):
     )
     # The commands repeat the --config this describe was given (Java, explicit targets).
     target = f"{args.target} --config {args.config}" if args.config else args.target
+    if args.python is not None:
+        target += f" --python {args.python}"
     # A file target is the file to edit; a directory needs --at to name it, but where
     # verify picks this program without it: a config's one source, a one-file crate.
     single = (
@@ -794,8 +693,23 @@ def describe(args):
         "evidence about one run, never a verified fix",
     }
     if language == "python":
-        manifest["breakpoint_lines"] = {program: _python_lines(root / program)}
-        manifest["scopes"] = _python_scopes(root / program)
+        from peeky.python_interpreter import Readings, Unavailable, find
+
+        # As the program's interpreter compiles it: lines and scopes differ by version and
+        # optimization level.
+        interpreter = find(root, args.python)
+        read = Readings(interpreter.executable, interpreter)
+        try:
+            manifest["breakpoint_lines"] = {program: read("lines", str(root / program))}
+            manifest["scopes"] = read("scopes", str(root / program))
+        except Unavailable as exc:
+            raise RuntimeError(
+                f"Peeky could not read {program} in the program's interpreter, "
+                f"{interpreter.path} ({exc})"
+            ) from None
+        finally:
+            read.close()
+        manifest["python"] = interpreter.identity()
         manifest["mutable_types"] = (
             "Python literals: numbers, strings, bytes, True/False/None and lists/tuples/dicts/sets of them"
         )
@@ -874,6 +788,8 @@ def describe(args):
 
 def _describe_text(manifest):
     lines = [f"language: {manifest['language']}", f"root: {manifest['root']}"]
+    if python := _python_line(manifest.get("python")):
+        lines.append(python)
     for source, numbers in manifest["breakpoint_lines"].items():
         lines.append(f"breakpoint lines in {source}: {_ranges(numbers) or 'none'}")
     if views := manifest.get("value_views"):
@@ -1270,6 +1186,7 @@ def _probe_request(args):
     )
     if line is None:
         raise ValueError("probe requires --at <path>:<line>")
+    _python_option(args, language)
     edit, original = _probe_edit(args, root, program, line, language)
     set_at = _set_at(args, root, program)
     _member_sets([*args.set, *(f"{name}={value}" for _, _, name, value in set_at)], language)
@@ -1291,7 +1208,13 @@ def _probe_request(args):
         set_at=set_at,
         expect_inputs=_expect_inputs(args),
     )
-    adapter = adapter_for(language, data) if args.worker is None else None
+    adapter = None
+    if args.worker is None:
+        adapter = (
+            python_adapter(root, args.python)
+            if language == "python"
+            else adapter_for(language, data)
+        )
     return root, request, edit, original, language, adapter
 
 
@@ -3191,10 +3114,14 @@ def _start_remote(args, root, program, line, language, max_pause):
     record.update(session_id=launch["session_id"], state="running", stop_id=None)
     if launch.get("optimized"):
         record["optimized"] = launch["optimized"]
+    if python := _launched_python(launch):
+        record["python"] = python
     _save(record)
     state, complete = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
+    if record.get("python"):
+        state["python"] = record["python"]
     if launch.get("warnings"):
         state["warnings"] = launch["warnings"]
     if moved := _moved_start(launch, state, line, program):
@@ -3207,7 +3134,9 @@ def _start_remote(args, root, program, line, language, max_pause):
         {"session": args.name, "language": language, "worker": args.worker, **state},
         args.json,
         lambda s: (
-            f"session {s['session']} ({s['language']}, remote): " + _state_text(s, s["session"])
+            f"session {s['session']} ({s['language']}, remote): "
+            + _state_text(s, s["session"])
+            + (f"\n{line}" if (line := _python_line(s.get("python"))) else "")
         ),
     )
     return 0 if complete else 3
@@ -3270,6 +3199,7 @@ def _start(args):
     )
     if line is None:
         raise ValueError("session start requires --at <path>:<line>")
+    _python_option(args, language)
     _seconds(args.timeout)
     max_pause = _max_pause(args.max_pause, language)
     _reserve(args.name)
@@ -3289,7 +3219,11 @@ def _start(args):
     _emit(
         {"session": args.name, "language": language, **state},
         args.json,
-        lambda s: f"session {s['session']} ({s['language']}): " + _state_text(s, s["session"]),
+        lambda s: (
+            f"session {s['session']} ({s['language']}): "
+            + _state_text(s, s["session"])
+            + (f"\n{line}" if (line := _python_line(s.get("python"))) else "")
+        ),
     )
     # 3: the session exists but is not at the requested hit (see the note).
     return 3 if state.pop("incomplete", False) else 0
@@ -3331,6 +3265,11 @@ def _start_local(args, root, program, line, language, data, max_pause):
     command += ["--root", str(root), "--port", "0"]
     # A session's own worker ends with the session, including after its idle timeout.
     command.append("--exit-when-idle")
+    if (python := getattr(args, "python", None)) is not None:
+        from peeky.python_interpreter import absolute_option
+
+        # The worker runs in another directory.
+        command += ["--python", absolute_option(python)]
     if data is not None:
         config = _state_dir() / f"{args.name}.target.json"
         _private_write(config, json.dumps(data, default=list))
@@ -3382,6 +3321,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
         record.update(session_id=launch["session_id"], state="running", stop_id=None)
         if launch.get("optimized"):
             record["optimized"] = launch["optimized"]
+        if python := _launched_python(launch):
+            record["python"] = python
         _save(record)
     except BaseException as exc:
         _stop_worker(process)
@@ -3397,6 +3338,8 @@ def _start_local(args, root, program, line, language, data, max_pause):
     state, complete = _until_hit(record, client, args.hit, args.timeout)
     if record.get("optimized"):
         state["optimized"] = record["optimized"]
+    if record.get("python"):
+        state["python"] = record["python"]
     if not complete:
         state["incomplete"] = True
     if launch.get("warnings"):
@@ -3597,7 +3540,10 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
     if language == "python":
         from peeky.agent import digest
         from peeky.agent import verify as run_checker
+        from peeky.python_interpreter import find
 
+        # The checker runs the candidate on the program's interpreter, as a probe does.
+        interpreter = find(root, args.python)
         original = digest(source)
         text = source.read_text()
         if args.old is not None and (text.count(args.old) != 1 or args.old == args.new):
@@ -3608,10 +3554,11 @@ def _verify_candidate(args, root, program, language, data, source, check, destin
         candidate.write_text(text if args.old is None else text.replace(args.old, args.new, 1))
         candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
         result = {
-            **run_checker(check, candidate, root, deadline=deadline),
+            **run_checker(check, candidate, root, deadline=deadline, python=interpreter.executable),
             "candidate": str(candidate),
         }
         result["candidate_sha256"] = candidate_sha256
+        result["python"] = interpreter.identity()
         if digest(source) != original:
             raise RuntimeError("Original source changed during verification")
         return result
@@ -3637,6 +3584,7 @@ def verify(args):
     root, program, _, language, data = resolve(args.target, args.at, args.config)
     if language == "java-attach":
         raise ValueError("Attached JVMs cannot verify edits; verify with a fresh build target")
+    _python_option(args, language)
     program = _default_program(program, data, "verify")
     source, check = (root / program).resolve(strict=True), Path(args.check).resolve(strict=True)
     original = source.read_text()
@@ -3698,6 +3646,8 @@ def _verify_text(result, keep=False):
         f"passed: {result['passed']}  stage: {result['stage']}"
         + (f"  seconds: {result['seconds']}" if "seconds" in result else "")
     ]
+    if python := _python_line(result.get("python")):
+        lines.append(python)
     if tests := result.get("tests"):
         lines.extend(_tests_text(tests))
     elif result.get("language") == "rust" and result.get("stage") == "verification":
@@ -4207,6 +4157,14 @@ def _main(argv, _job, _edits):
             help="Return a job id at once; collect the result with `peeky job wait <id>`",
         )
 
+    def python_option(sub):
+        sub.add_argument(
+            "--python",
+            metavar="PATH",
+            help="Python: the program's interpreter (default: the root's .venv or venv, else "
+            "$VIRTUAL_ENV, else Peeky's own); `peeky`: Peeky's own",
+        )
+
     def common(sub, target=True):
         if target:
             sub.add_argument("target", help="Program file, Cargo crate or project directory")
@@ -4228,6 +4186,7 @@ def _main(argv, _job, _edits):
     sub = commands.add_parser("describe", help="Manifest: language, breakpoint lines, views")
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
+    python_option(sub)
     # Accepted everywhere: describe prints no progress, so it changes nothing here.
     sub.add_argument("--quiet", action="store_true", help=argparse.SUPPRESS)
     sub = commands.add_parser("probe", help="One stateless question: stop, capture, set, report")
@@ -4279,6 +4238,7 @@ def _main(argv, _job, _edits):
     sub.add_argument(
         "--run", help="Python: script to run when --at is in a module it imports (e.g. main.py)"
     )
+    python_option(sub)
     sub.add_argument(
         "--worker",
         help="Probe on a running worker at this loopback URL (e.g. through ssh -L); token "
@@ -4371,6 +4331,7 @@ def _main(argv, _job, _edits):
     common(start)
     start.add_argument("--at", required=True)
     start.add_argument("--run", help="Python: script to run when --at is in an imported module")
+    python_option(start)
     start.add_argument(
         "--worker",
         help="Use a running worker at this loopback URL (e.g. through ssh -L) instead of "
@@ -4482,7 +4443,8 @@ def _main(argv, _job, _edits):
         help="Fresh build + independent checker for one edit (--baseline: the unedited program)",
         usage="%(prog)s target --check CHECK (--old OLD --new NEW [--old OLD --new NEW ...] | "
         "--baseline)\n                    [--at AT] [--config CONFIG] [--json] [--keep] "
-        "[--details] [--timeout TIMEOUT]\n                    [--quiet] [--background]",
+        "[--details] [--timeout TIMEOUT]\n                    [--python PATH] [--quiet] "
+        "[--background]",
         description="Build the program fresh with the edit and run the trusted checker on it. "
         "--old and --new (or --old-file/--new-file) are required, once per edit, unless "
         "--baseline, which checks the unedited program instead: the checker should fail there "
@@ -4491,6 +4453,7 @@ def _main(argv, _job, _edits):
     common(sub)
     sub.add_argument("--at", help="Program path (for multi-file targets)")
     sub.add_argument("--check", required=True, help="Trusted checker script")
+    python_option(sub)
     sub.add_argument(
         "--old",
         action="append",

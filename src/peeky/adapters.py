@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from peeky.processes import without_credentials
@@ -153,11 +153,66 @@ _IMPURE_NAMES = frozenset(
 COPY_NOTE = "This Python candidate ran from a copy of "
 
 
-def _self_contained(text):
+def _shadowed(names, places):
+    """Whether a module of one of ``names`` may not be the standard library's where the
+    program imports it: a module or package of that name (any case: a volume may ignore
+    it) is in one of ``places``, which come before the standard library on the program's
+    path (its script's directory, its working directory, `PYTHONPATH`'s entries), or one
+    of them is not a directory Peeky can list (a file, an entry inside a zip archive); or
+    this interpreter finds it outside its standard library."""
+    import importlib.machinery
+    import importlib.util
+    import sysconfig
+
+    wanted = {name.casefold() for name in names}
+    files = {
+        name + suffix.casefold() for name in wanted for suffix in importlib.machinery.all_suffixes()
+    }
+    for place in places:
+        try:
+            entries = os.listdir(place)
+        except FileNotFoundError:
+            # Nothing to import from where nothing is, unless a file on the way (a zip
+            # archive: `libs.zip/vendor`) holds it.
+            above = Path(place).parent
+            while not os.path.lexists(above) and above != above.parent:
+                above = above.parent
+            if not os.path.isdir(above):
+                return True
+            continue
+        except OSError:
+            # Not a directory Peeky can list (a file, an entry inside an archive).
+            return True
+        for entry in entries:
+            low = entry.casefold()
+            if low in files or (low in wanted and os.path.isdir(os.path.join(place, entry))):
+                return True
+    stdlib = {os.path.realpath(sysconfig.get_paths()[key]) for key in ("stdlib", "platstdlib")}
+    for name in names:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError):
+            return True
+        origin = getattr(spec, "origin", None)
+        if spec is None or (
+            origin not in ("built-in", "frozen")
+            and not (
+                isinstance(origin, str)
+                and any(os.path.realpath(origin).startswith(each + os.sep) for each in stdlib)
+                and not {"site-packages", "dist-packages"} & set(Path(origin).parts)
+            )
+        ):
+            return True
+    return False
+
+
+def _self_contained(text, places=()):
     """True only where the script ``text`` cannot reach anything outside its own file:
     it imports only _PURE_MODULES (none of their private names or submodules, and of
     `sys` only _PURE_SYS) and names nothing in _IMPURE_NAMES, `__file__` or another
-    dunder (but `__name__` and `__init__`). False where unsure."""
+    dunder (but `__name__` and `__init__`); and none of the modules it imports may be
+    another of that name than the standard library's (``_shadowed``: a `json.py` in its
+    directory, the root or on `PYTHONPATH`, ``places``). False where unsure."""
     import importlib
     import types
 
@@ -177,16 +232,18 @@ def _self_contained(text):
             return False
         return not isinstance(found, types.ModuleType)
 
-    modules, bases = {}, set()
+    modules, bases, imported = {}, set(), set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name not in _PURE_MODULES or (alias.asname is None and "." in alias.name):
                     return False
                 modules[alias.asname or alias.name] = alias.name
+                imported.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
             if node.level or node.module not in _PURE_MODULES:
                 return False
+            imported.add(node.module.split(".")[0])
             for alias in node.names:
                 if node.module != "__future__" and not public(node.module, alias.name):
                     return False
@@ -212,7 +269,7 @@ def _self_contained(text):
             and not public(modules[node.value.id], node.attr)
         ):
             return False
-    return True
+    return not _shadowed(sorted(imported), places)
 
 
 MAX_COPIED_FILES = 20_000
@@ -359,8 +416,9 @@ class PythonCandidate:
         )
         # A script that reaches nothing outside its own file needs no note (a candidate
         # runs the --at file itself: launch_args).
-        alone = _self_contained(text.replace(edit.old, edit.new, 1))
-        if (above is not None or not project) and not alone:
+        if (above is not None or not project) and not self._self_contained(
+            text.replace(edit.old, edit.new, 1)
+        ):
             target, at = (above, self.original.relative_to(above)) if above else (None, None)
             self.warnings.append(
                 f"{COPY_NOTE}{root}/ only"
@@ -838,6 +896,37 @@ class PythonCandidate:
                     "loader, serves it ahead of every import path, and may rebuild there"
                 )
 
+    def _self_contained(self, text):
+        """_self_contained, as the program's interpreter imports the standard modules, with
+        what comes before them on the program's path: the copy's script directory and
+        root (its working directory), and its `PYTHONPATH` (relative entries mean the
+        root); False where it cannot say."""
+        from peeky.python_interpreter import Unavailable
+
+        pythonpath = self._pythonpath
+        if pythonpath is None:
+            pythonpath = os.environ.get("PYTHONPATH")
+        places = [str(self.staged.parent), str(self.root)]
+        places += [
+            entry if os.path.isabs(entry) else os.path.join(str(self.root), entry)
+            for entry in (pythonpath.split(os.pathsep) if pythonpath else ())
+        ]
+        try:
+            return (
+                self.adapter.readings(
+                    "self_contained", text, places, timeout=self._interpreter_timeout()
+                )
+                is True
+            )
+        except (Unavailable, ValueError):
+            return False
+
+    def _interpreter_timeout(self):
+        if self._deadline is None:
+            return 120
+        # Leave the debugger's launch its share of the budget.
+        return min(120, max(1.0, self._deadline - time.monotonic() - 15))
+
     def _project_copy(self, entry):
         """The copy of an absolute path inside the root and not in an environment or
         site directory (those are links to the user's files either way); else None."""
@@ -858,10 +947,7 @@ class PythonCandidate:
         environment.pop("PYTHONPATH", None)
         if pythonpath:
             environment["PYTHONPATH"] = pythonpath
-        timeout = 120
-        if self._deadline is not None:
-            # Leave the debugger's launch its share of the budget.
-            timeout = min(timeout, max(1.0, self._deadline - time.monotonic() - 15))
+        timeout = self._interpreter_timeout()
         try:
             return json.loads(
                 subprocess.run(
@@ -908,8 +994,12 @@ class PythonCandidate:
         return launch
 
     def close(self):
-        _make_removable(self.scratch)
-        shutil.rmtree(self.scratch, ignore_errors=True)
+        try:
+            _make_removable(self.scratch)
+            shutil.rmtree(self.scratch, ignore_errors=True)
+        finally:
+            # The launch's readings end with it.
+            self.adapter.close()
 
 
 class _NotPrivate(Exception):
@@ -1072,7 +1162,7 @@ def locals_only(scopes):
 
 
 # Code that runs in a frame of its own inside a function (a comprehension before Python
-# 3.12): PythonAdapter.entry_lines does not watch its calls.
+# 3.12): python_entry_lines does not watch its calls.
 _PYTHON_INNER_SCOPES = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
@@ -1101,9 +1191,80 @@ def _resumed(function):
     return False
 
 
+def python_entry_lines(program, lines, optimize=0):
+    """{line: the first line of the function that holds it}: its first
+    statement after any docstring, which each call runs first; the module's first
+    statement at module level. A probe watches it, so a value is restored only in
+    the call that changed it. ValueError where calls cannot be seen begin there: a
+    generator or coroutine (each resumption runs on part-way through it), a lambda,
+    comprehension or class body; or, at the program's ``optimize`` level above 0, where
+    that line has no code (`-O` leaves out an `assert`)."""
+    path = Path(program)
+    try:
+        # Bytes: the source's own encoding declaration decides how it reads.
+        data = path.read_bytes()
+        tree = ast.parse(data, str(path))
+        coded = None
+        if optimize:
+            from peeky.python_scopes import code_lines
+
+            coded = code_lines(data, str(path), optimize)
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise ValueError(f"Peeky could not read {path.name} ({str(exc)[:200]})") from None
+    found = {}
+    for line in lines:
+        holder, inner = tree, None
+        for node in ast.walk(tree):
+            start, end = getattr(node, "lineno", None), getattr(node, "end_lineno", None)
+            if start is None or end is None or not start <= line <= end:
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                # The body's lines, not a decorator's or the signature's.
+                if (
+                    node.body
+                    and node.body[0].lineno <= line
+                    and (holder is tree or node.lineno > holder.lineno)
+                ):
+                    holder = node
+            elif isinstance(node, _PYTHON_INNER_SCOPES) and inner is None:
+                inner = node
+        if inner is not None:
+            raise ValueError(
+                f"line {line} is in a {type(inner).__name__.lower()} (line {inner.lineno}), "
+                "whose calls Peeky does not watch"
+            )
+        if isinstance(holder, ast.ClassDef):
+            raise ValueError(f"line {line} is in the body of class `{holder.name}`")
+        if holder is not tree and _resumed(holder):
+            raise ValueError(
+                f"line {line} is in `{holder.name}`, a generator or coroutine: each "
+                "resumption runs on part-way through it, so Peeky cannot tell its calls apart"
+            )
+        body = list(holder.body)
+        if holder is not tree and body and _docstring(body[0]):
+            body = body[1:]
+        body = [s for s in body if not isinstance(s, (ast.Global, ast.Nonlocal))]
+        if not body:
+            raise ValueError(f"Peeky cannot place the first line of the code holding {line}")
+        if coded is not None and body[0].lineno not in coded:
+            raise ValueError(
+                f"the first statement of the code holding line {line} (line "
+                f"{body[0].lineno}) has no code at the program's optimization level "
+                f"({optimize}: -O leaves out an assert), so Peeky cannot watch its calls"
+            )
+        found[line] = [body[0].lineno]
+    return found
+
+
 @dataclass(frozen=True)
 class PythonAdapter:
+    # The program's interpreter (python_interpreter): debugpy's adapter runs on Peeky's own,
+    # and runs the program on this one.
     interpreter: str = sys.executable
+    # How it was chosen, and its version (python_interpreter.Interpreter.identity): the
+    # run's `python` and target identity; None where not identified (an adapter made by
+    # hand).
+    identity: dict | None = field(default=None, compare=False)
     # debugpy's adapter exits 1 when Peeky ends its input as it answers `disconnect`: its
     # handler goes on to report its sockets (debugpy's own event) on the channel that end
     # closed, and fails. Its stderr (debugpy 1.8.22) shows each of these lines;
@@ -1124,12 +1285,39 @@ class PythonAdapter:
     environment = None
     manifest_id = None
     source_manifest = None
-    target_identity = None
     # Candidate probes (`probe --old/--new`) run an edited copy of the target root.
     supports_edits = True
 
     # A candidate asks the interpreter about imports within the launch's budget.
     supports_deadline = True
+
+    @property
+    def readings(self):
+        """Its readings of the program's code (python_interpreter.Readings), closed with
+        the launch (``close``). Not a field: made at the first reading, where this
+        adapter's interpreter is asked, unless ``on`` identified it."""
+        found = self.__dict__.get("_readings")
+        if found is None:
+            from peeky.python_interpreter import Readings
+
+            found = Readings(self.interpreter)
+            object.__setattr__(self, "_readings", found)
+        return found
+
+    @classmethod
+    def on(cls, interpreter):
+        """The adapter running a program on ``interpreter`` (a python_interpreter.Interpreter
+        identified for this launch): on the file it reported running, which a shim can't
+        change afterwards, with readings made as it was identified."""
+        from peeky.python_interpreter import Readings
+
+        made = cls(interpreter.executable, interpreter.identity())
+        object.__setattr__(made, "_readings", Readings(interpreter.executable, interpreter))
+        return made
+
+    @property
+    def target_identity(self):
+        return None if self.identity is None else {"language": "python", **self.identity}
 
     def prepare(self, program, root, edit=None, *, deadline=None):
         if edit is None:
@@ -1200,64 +1388,29 @@ class PythonAdapter:
         same. Only locals change in Python."""
         return f"the local `{(variable or {}).get('name')}`"
 
-    @staticmethod
-    def entry_lines(program, lines):
-        """{line: the first line of the function that holds it}: its first
-        statement after any docstring, which each call runs first; the module's first
-        statement at module level. A probe watches it, so a value is restored only in
-        the call that changed it. ValueError where calls cannot be seen begin there: a
-        generator or coroutine (each resumption runs on part-way through it), a lambda,
-        comprehension or class body."""
-        path = Path(program)
+    def entry_lines(self, program, lines):
+        """{line: the first line of the function that holds it} (python_entry_lines), as
+        the program's interpreter parses its source; ValueError where calls cannot be
+        seen to begin there, or that interpreter could not read it."""
+        from peeky.python_interpreter import Unavailable
+
         try:
-            # Bytes: the source's own encoding declaration decides how it reads.
-            tree = ast.parse(path.read_bytes(), str(path))
-        except (OSError, SyntaxError, ValueError) as exc:
-            raise ValueError(f"Peeky could not read {path.name} ({str(exc)[:200]})") from None
-        found = {}
-        for line in lines:
-            holder, inner = tree, None
-            for node in ast.walk(tree):
-                start, end = getattr(node, "lineno", None), getattr(node, "end_lineno", None)
-                if start is None or end is None or not start <= line <= end:
-                    continue
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    # The body's lines, not a decorator's or the signature's.
-                    if (
-                        node.body
-                        and node.body[0].lineno <= line
-                        and (holder is tree or node.lineno > holder.lineno)
-                    ):
-                        holder = node
-                elif isinstance(node, _PYTHON_INNER_SCOPES) and inner is None:
-                    inner = node
-            if inner is not None:
-                raise ValueError(
-                    f"line {line} is in a {type(inner).__name__.lower()} (line {inner.lineno}), "
-                    "whose calls Peeky does not watch"
-                )
-            if isinstance(holder, ast.ClassDef):
-                raise ValueError(f"line {line} is in the body of class `{holder.name}`")
-            if holder is not tree and _resumed(holder):
-                raise ValueError(
-                    f"line {line} is in `{holder.name}`, a generator or coroutine: each "
-                    "resumption runs on part-way through it, so Peeky cannot tell its calls apart"
-                )
-            body = list(holder.body)
-            if holder is not tree and body and _docstring(body[0]):
-                body = body[1:]
-            body = [s for s in body if not isinstance(s, (ast.Global, ast.Nonlocal))]
-            if not body:
-                raise ValueError(f"Peeky cannot place the first line of the code holding {line}")
-            found[line] = [body[0].lineno]
-        return found
+            found = self.readings("entry_lines", str(program), list(lines))
+        except Unavailable as exc:
+            raise ValueError(
+                f"Peeky could not read {Path(program).name} in the program's interpreter ({exc})"
+            ) from None
+        return {line: first for line, first in found}
 
     def close(self):
-        pass
+        """End the launch's readings (and their helper)."""
+        if (found := self.__dict__.get("_readings")) is not None:
+            found.close()
 
     @property
     def command(self):
-        return (self.interpreter, "-m", "debugpy.adapter")
+        # Peeky's own debugpy: the program's interpreter need not have it.
+        return (sys.executable, "-m", "debugpy.adapter")
 
     def initialize_args(self):
         return {
@@ -1277,8 +1430,10 @@ class PythonAdapter:
             "redirectOutput": True,
             "justMyCode": True,
             "subProcess": False,
-            # A debugged run writes no __pycache__ into the root.
+            # A debugged run writes no __pycache__ into the root (PROGRAM_ENV).
             "env": {"PYTHONDONTWRITEBYTECODE": "1"},
+            # debugpy runs its launcher and the program on it, from Peeky's own install.
+            **({"python": [self.interpreter]} if self.interpreter != sys.executable else {}),
         }
 
     # Listing nodes the worker walks through without counting them as a level of depth.
@@ -1335,21 +1490,26 @@ class PythonAdapter:
         around the frame's line has not assigned before the line, and assigns on every
         path through the rest of the pass before reading it, so its value is likely an
         earlier pass's (see python_passes); else None. Its string says why a change to
-        it is refused. Judged only where the program's interpreter compiles as this one
-        does; a breakpoint's stop is where its line begins."""
-        from peeky.python_passes import same_compiler, stale_note
+        it is refused. Judged by the program's interpreter (python_interpreter), and none
+        where it cannot judge; a breakpoint's stop is where its line begins."""
+        from peeky.python_interpreter import Unavailable
+        from peeky.python_passes import PassNote
 
         frame = frame or {}
-        if not same_compiler(self.interpreter):
+        try:
+            found = self.readings(
+                "stale_note",
+                (frame.get("source") or {}).get("path"),
+                str(frame.get("name") or ""),
+                frame.get("line"),
+                variable.get("name"),
+                loaded_by,
+                bool(innermost and stop == "breakpoint"),
+            )
+        except (Unavailable, ValueError):
+            # A note is only ever added: code its interpreter did not read gets none.
             return None
-        return stale_note(
-            (frame.get("source") or {}).get("path"),
-            str(frame.get("name") or ""),
-            frame.get("line"),
-            variable.get("name"),
-            loaded_by=loaded_by,
-            entered=innermost and stop == "breakpoint",
-        )
+        return None if found is None else PassNote(*found)
 
     def validate_mutation_target(self, variable, frame, loaded_by=None):
         """Refuse a change the code overwrites before reading it, judged as at any
@@ -1357,21 +1517,29 @@ class PythonAdapter:
         if (stale := self.not_yet_declared(variable, frame, loaded_by=loaded_by)) is not None:
             raise ValueError(f"{variable.get('name')!r} cannot be changed at this stop: {stale}")
 
-    @staticmethod
-    def globals_proof(frame, listed, names, loaded_by=None):
+    def globals_proof(self, frame, listed, names, loaded_by=None):
         """How the frame's function sees each of ``names``, missing from its locals:
         `{"names": {name: null or {"kind", "owner"}}}`, null meaning it reads that name
-        from its module's globals (see python_scopes.classify); or `{"unproven":
-        reason}`. ``loaded_by``: when the program started (a source changed since may
-        not be the code running)."""
-        from peeky.python_scopes import classify
+        from its module's globals (see python_scopes.classify, as the program's
+        interpreter makes its scopes); or `{"unproven": reason}`. ``loaded_by``: when the
+        program started (a source changed since may not be the code running)."""
+        from peeky.python_interpreter import Unavailable
 
         path, line = (frame.get("source") or {}).get("path"), frame.get("line")
         if not isinstance(path, str) or not path or type(line) is not int:
             return {"unproven": "the debugger gave no source line for this frame"}
-        found, reason = classify(
-            path, str(frame.get("name") or ""), line, names, listed, loaded_by=loaded_by
-        )
+        try:
+            found, reason = self.readings(
+                "classify",
+                path,
+                str(frame.get("name") or ""),
+                line,
+                sorted(names),
+                sorted(listed),
+                loaded_by,
+            )
+        except (Unavailable, ValueError) as exc:
+            return {"unproven": f"the program's interpreter could not read its scopes ({exc})"}
         if found is None:
             return {"unproven": reason}
         return {

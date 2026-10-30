@@ -20,7 +20,8 @@ Peeky is not:
   `PEEKY_WORKER_TOKEN`.
 - `peeky-worker`, `peeky` and `peeky-agent` take both names out of their own environment first.
   Each process Peeky starts also gets an environment without them. So no debugger, debuggee,
-  build, tool Peeky asks, checker, candidate, probe process or model process gets the token.
+  build, tool Peeky asks, checker, candidate, probe process or model process gets the token. Nor
+  does a Python program's interpreter, or Peeky's helper that reads the program's code in it.
 - Two processes get one on purpose. A session's own local worker gets its own token, as
   `DEBUG_TOKEN`. A `--background` job gets the client's, as `PEEKY_WORKER_TOKEN`, since it is the
   same `peeky` command.
@@ -36,6 +37,16 @@ Peeky is not:
   back.
 - Request fields are forwarded and echoed as sent, and program output and values are never
   changed.
+
+**A Python program's interpreter**
+
+- A Python program runs on its project's interpreter: `--python`, else the root's `.venv` or
+  `venv`, else `$VIRTUAL_ENV` ([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
+- It is the project's code, as the program is, and runs as the program does. Its startup, such as
+  an environment's `.pth` files, also runs in the helper that reads the program's code.
+- Peeky looks for an environment in the root only, never in a directory above it. It follows links
+  only to report where they lead.
+- A request to a worker can't name an interpreter. Only the worker's `--python` and its root do.
 
 **The worker proves it holds the token (protocol 11)**
 

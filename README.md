@@ -31,10 +31,10 @@ An environment of its own keeps Peeky and your other packages apart. Peeky needs
 exactly, the version its Python support is verified with. Another package on PyPI also has a
 module named `peeky` (see The package name, below).
 
-- **Python programs** run on the interpreter running `peeky`. In Peeky's own environment, a
-  program can't import packages installed elsewhere, such as in its project's `.venv`. For such a
-  program, install Peeky into that environment instead: activate it, and run
-  `pip install /path/to/peeky`, the clone.
+- **Python programs** run on their project's interpreter, so they import what the project
+  installs. That is the root's `.venv` or `venv`, else the active virtual environment, else
+  Peeky's own. `--python PATH` names another, and the output says which one ran. It must be
+  CPython 3.11 or later. The project needs no debugpy of its own ([Python][python]).
 - **macOS:** the built-in `python3` is 3.9, too old for Peeky. There, `pip install` fails with
   `No matching distribution found for debugpy==1.8.22`, which doesn't name the cause. Install
   Python 3.11 or later, from python.org or Homebrew, and name it:

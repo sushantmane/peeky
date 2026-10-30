@@ -193,9 +193,10 @@ def execute(
     }
 
 
-def verify(check, candidate, cwd, *, env=None, deadline=None):
+def verify(check, candidate, cwd, *, env=None, deadline=None, python=None):
     # Completion is written only after the trusted checker returns normally.
     # This detects premature exit; it is not isolation from hostile candidate code.
+    # ``python``: the interpreter that runs the checker and the candidate (Peeky's own).
     timeout, limited = 20, False
     if deadline is not None:
         remaining = deadline - time.monotonic()
@@ -205,7 +206,8 @@ def verify(check, candidate, cwd, *, env=None, deadline=None):
     with tempfile.TemporaryDirectory(prefix="peeky-check-") as scratch:
         completion = Path(scratch) / "completion.json"
         result = execute(
-            [sys.executable, verification_script, str(check), str(candidate), str(completion)],
+            [python or sys.executable, verification_script]
+            + [str(check), str(candidate), str(completion)],
             cwd,
             timeout,
             env=env,
@@ -274,13 +276,25 @@ class CodexDecision:
 
 class Investigation:
     def __init__(
-        self, client, program, source, check, destination, decide, max_steps=8, *, execution=None
+        self,
+        client,
+        program,
+        source,
+        check,
+        destination,
+        decide,
+        max_steps=8,
+        *,
+        execution=None,
+        python=None,
     ):
         self.client, self.program = client, program
         self.source, self.check = Path(source).resolve(), Path(check).resolve()
         self.destination, self.decide = Path(destination), decide
         self.max_steps = max_steps
         self.execution = execution
+        # A Python program's interpreter, for its baseline run and checks (Peeky's own).
+        self.python = python or sys.executable
         self.session = None
         self.context = None
         self.snapshot = None
@@ -441,7 +455,7 @@ class Investigation:
             candidate = self.destination / "candidate.py"
             candidate.write_text(source.replace(old, new, 1))
             candidate_hash = digest(candidate)
-            result = verify(self.check, candidate.resolve(), self.source.parent)
+            result = verify(self.check, candidate.resolve(), self.source.parent, python=self.python)
             if not candidate.is_file() or digest(candidate) != candidate_hash:
                 raise RuntimeError("Candidate changed during verification")
         self.require_unchanged()
@@ -478,9 +492,11 @@ class Investigation:
             if self.execution:
                 baseline, baseline_check = self.execution.baseline(self.source, self.check)
             else:
-                baseline = execute([sys.executable, str(self.source)], self.source.parent)
+                baseline = execute([self.python, str(self.source)], self.source.parent)
                 self.require_unchanged()
-                baseline_check = verify(self.check, self.source, self.source.parent)
+                baseline_check = verify(
+                    self.check, self.source, self.source.parent, python=self.python
+                )
             self.require_unchanged()
             self.report.update(issue=issue, baseline=baseline, baseline_check=baseline_check)
             self.save()
@@ -642,6 +658,15 @@ def main():
                 "remove optimization/opt_level from the config"
             )
     source, check = (source_root / args.program).resolve(), (source_root / args.check).resolve()
+    python = None
+    if execution is None:
+        from peeky.python_interpreter import find
+
+        # The one its own worker chooses too: the root's virtual environment, or Peeky's.
+        try:
+            python = find(source_root).executable
+        except ValueError as exc:
+            parser.error(str(exc))
     destination = Path(args.output).resolve()
     if destination.exists() and any(destination.iterdir()):
         parser.error("Choose a new empty --output directory to preserve earlier evidence")
@@ -666,6 +691,7 @@ def main():
                 CodexDecision(scratch, model=model),
                 args.max_steps,
                 execution=execution,
+                python=python,
             )
             report = runner.run(args.issue)
             print(f"{report['status'].upper()}: {destination / 'report.json'}", flush=True)

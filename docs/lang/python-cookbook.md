@@ -11,6 +11,8 @@ Peeky debugs Python with debugpy, Python's debugger.
 
 ## Contents
 
+- [Setup](#0-setup)
+  - [Which interpreter runs the program](#which-interpreter-runs-the-program)
 - [1.1 What Can I Ask?](#11-what-can-i-ask)
   - [See which module globals a function reads](#see-which-module-globals-a-function-reads)
 - [2.1 Fields and Indexes](#21-fields-and-indexes)
@@ -30,6 +32,111 @@ Peeky debugs Python with debugpy, Python's debugger.
   - [What happens to repositories](#what-happens-to-repositories)
   - [What else is copied, linked or left out](#what-else-is-copied-linked-or-left-out)
   - [When the result warns that nothing above the root was copied](#when-the-result-warns-that-nothing-above-the-root-was-copied)
+
+## 0. Setup
+
+Read [COOKBOOK 0](../COOKBOOK.md#0-setup) first.
+
+### Which interpreter runs the program
+
+A Python program runs on its project's interpreter, so it imports what the project installs. Peeky
+installed as a tool, with pipx or uv, can't import those itself. Peeky takes the first of these:
+
+| Interpreter | When |
+| --- | --- |
+| `--python PATH` | Given. A name on `PATH` works too: `--python python3.12` |
+| The root's `.venv/bin/python`, then `venv/bin/python` | The directory holds `pyvenv.cfg`, as a virtual environment does |
+| `$VIRTUAL_ENV/bin/python` | A virtual environment is active, and it isn't Peeky's own |
+| The interpreter running `peeky` | Otherwise, or with `--python peeky` |
+
+- `probe`, `session start`, `verify` and `describe` take `--python`. A worker takes it as
+  `peeky-worker --python`, and a client's `--python` is refused with `--worker`
+  ([WORKER.md](../WORKER.md#start-a-python-worker)).
+- Peeky looks in the root only, never above it. For `peeky probe src/app.py`, the root is `src`,
+  so a `.venv` beside `src` isn't used. Give the project as the target instead:
+  `peeky probe . --at src/app.py:12`. Or pass `--python .venv/bin/python`.
+- The output names a `.venv` above the root that it didn't use. Where that is Peeky's own, as
+  when Peeky runs from a checkout's `.venv`, the output says Peeky's own is that environment.
+- A shim, such as pyenv's `python`, picks its Python from the directory it runs in. Peeky asks it
+  in the root, where debugpy starts the program. debugpy then runs the file it picked, which the
+  output names: `python: ~/.pyenv/shims/python (runs …/3.12.4/bin/python3.12), …`.
+- A wrapper that changes how Python runs is refused, such as `exec python -O "$@"` or one that
+  exports `PYTHONPATH`. debugpy runs the file it starts, which would lose those settings. Peeky asks
+  that file too, run alone. It refuses when its flags (`sys.flags`), its import path (`sys.path`)
+  or any `PYTHON*` environment variable differ. Pass that file as `--python`, and set the options
+  in the environment.
+- Other variables a wrapper sets aren't kept either, since debugpy runs the interpreter itself. A
+  shim may change `PATH`, so Peeky doesn't compare them. If the program needs one, pass the
+  interpreter itself, and set the variable in your environment.
+
+The output says which interpreter ran the program:
+
+```
+python: /home/me/shop/.venv/bin/python, Python 3.12.4 (the root's .venv)
+```
+
+With `--json`, a probe, `session start`, `describe` and `verify` give `python`:
+
+| Key | Holds |
+| --- | --- |
+| `interpreter` | The path chosen. A virtual environment's `python` is a link, which isn't followed |
+| `executable` | The file it said it runs, where that differs, as a pyenv shim's pick does. debugpy runs that file |
+| `version` | Its version, such as `3.12.4` |
+| `optimize` | The program's optimization level, 0 to 2, from `PYTHONOPTIMIZE`. The text shows `-O` or `-OO` |
+| `chosen` | `--python`, `.venv`, `venv`, `VIRTUAL_ENV` or `peeky` |
+| `resolved` | Where the path's links lead, when they lead elsewhere. It is only reported |
+| `unused` | A virtual environment above the root, named but not used |
+| `environment` | Peeky's own virtual environment, where that is the one above the root |
+
+A probe's `target_identity` holds the same. So a run on another interpreter is never compared as
+the same program.
+
+The interpreter must be CPython 3.11 or later. Peeky reads the program's code with it, and it reads
+only what 3.11 and later compile. Another one is refused before anything runs, with
+`UNSUPPORTED`:
+
+```
+[UNSUPPORTED] Peeky runs Python programs on CPython 3.11 or later, and /usr/bin/python3 (--python) is CPython 3.9.6: …
+```
+
+The project needs no debugpy. Peeky's own debugpy starts the program on the interpreter. debugpy's
+compiled speedups are built for Peeky's Python version only. On another version, debugpy uses its
+pure-Python tracer instead, which is slower.
+
+#### How Peeky reads the code
+
+Peeky reads some of a program's code without running it:
+
+- which scope a name missing from the locals is read from;
+- a loop's locals that this pass hasn't assigned yet;
+- the lines and scopes that `describe` lists;
+- a function's first line, which a `@before` restore watches;
+- the lambdas, generator expressions and comprehensions on a line, which the debugger names alike.
+
+Bytecode and line tables differ between Python versions, builds and optimization levels. So the
+program's interpreter makes these readings, at the program's level. Peeky asks the interpreter for
+it as the program runs, with the program's environment: `PYTHONOPTIMIZE=1` leaves out each
+`assert`. Every reading compiles at that level, whatever Peeky's own is.
+
+Peeky reads in its own process only where the interpreter is Peeky's own file, and reports
+Peeky's compiler and optimization level. Otherwise a helper process of that interpreter reads them,
+with Peeky's code by its path. A reading that depends on the environment, what an import finds,
+is always the helper's. No reading made by one Python version is applied to another.
+
+Peeky asks the interpreter once per launch, as the program runs: in the root, with the program's
+environment. Its answer is a record of its own, after a newline and with a nonce of the call's.
+So a `.pth` file's output, or an exit handler's, can't be taken for it. The helper's answers are
+framed the same way. Peeky notes the file it runs, and each reading checks that file again. A
+`.venv` made again at the same path is asked again at the next launch. The launch's readings and
+their helper end with it.
+
+If the interpreter can't read, Peeky claims nothing. A module global is withheld, with why. A
+loop's local gets no note. Where a line's lambdas can't be read, a warning says their stops may be
+counted together. A reading that failed isn't remembered: the next one asks again.
+
+The interpreter and its environment are your project's code, as the program is. They get the same
+environment as the program, without the worker's token. An environment's `.pth` files run in the
+helper too.
 
 ## 1.1 What Can I Ask?
 
@@ -318,10 +425,9 @@ read or change this pass's value, stop after the line that assigns it.
 
 #### How Peeky decides
 
-Peeky reads the function's bytecode. It compiles the source as the program's interpreter does,
-both plain and with `-O`, and the two must agree. It does this only when Peeky itself runs on an
-interpreter that compiles alike. That means the same implementation, exact version and build, and
-bytecode magic number.
+Peeky reads the function's bytecode. The program's interpreter compiles the source, both plain and
+with `-O`, and the two must agree
+([How Peeky reads the code](#how-peeky-reads-the-code)).
 
 The debugger reports a line, not an instruction. So the stop may be at any instruction of the line.
 A breakpoint stops only where the line begins. All of the line's instructions must be in the same
@@ -463,7 +569,10 @@ There is no warning in two cases:
 - The root is a project's: it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`, and no
   repository above it holds it. A package inside a monorepo still gets the warning.
 - The edited script is self-contained. It imports only standard modules that open no file, start no
-  process and reach no network. It also names nothing that could reach one.
+  process and reach no network. It also names nothing that could reach one. And no file shadows a
+  module it imports: a module or package of that name (`json.py`, `json/`) in its own directory,
+  the root or a `PYTHONPATH` entry comes first on the program's path. A path entry Peeky can't
+  list, such as a zip archive or a directory inside one, counts as one that may.
 
 Text output shows the warning once per root and state directory (`~/.peeky`, or
 `PEEKY_STATE_DIR`), and never with `--quiet`. `--json` always has it.

@@ -27,6 +27,12 @@
 
 ### Other changes
 
+- **A Python program runs on its project's interpreter (protocol 12):** `--python PATH`, else the
+  root's `.venv` or `venv`, else the active virtual environment, else Peeky's own. So Peeky
+  installed with pipx or uv runs a program that imports its project's packages. The output names
+  the interpreter (`python`). Peeky reads the program's code with it, at the program's
+  optimization level, asked again at each launch. It refuses one older than CPython 3.11.
+  `peeky-worker --python` chooses a worker's (#437).
 - **Java from a wheel:** `peeky setup-java` builds the Java adapter from the installed package,
   into `~/.peeky/java-adapter`. A Java config without `bundle` uses it. Each build is a version
   there, switched to in one step under a lock; a session keeps the version it started with, and

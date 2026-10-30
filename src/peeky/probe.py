@@ -27,6 +27,7 @@ from peeky.errors import Refused, UnplacedStop, classify
 from peeky.identifiers import invisible, is_name, name_end, twin_hint
 from peeky.java import _JAVA_OBJECT, JAVA_ARRAY, JAVA_LIST, java_list, java_preview
 from peeky.names import changes_named, display_function, function_labels, hits_named, shortened_note
+from peeky.python_interpreter import text as python_text
 from peeky.textlines import split_lines
 from peeky.worker import (
     CRASH_STOPS,
@@ -4237,15 +4238,6 @@ def probe_exit_code(result):
 
 
 _HASHED = re.compile(r"::(h[0-9a-f]{16})$")
-# What Python's debugger names alike, by the node making the code: two lambdas on a line
-# are both `<lambda>`, and its frames give no column (debugpy reports 1).
-_PYTHON_ALIKE = {
-    ast.Lambda: "<lambda>",
-    ast.GeneratorExp: "<genexpr>",
-    ast.ListComp: "<listcomp>",
-    ast.SetComp: "<setcomp>",
-    ast.DictComp: "<dictcomp>",
-}
 
 
 def _function_labels(names, instances):
@@ -4265,27 +4257,23 @@ def _function_labels(names, instances):
     return distinct
 
 
-def _python_alike(text, lines):
+def _python_alike(text, lines, readings=None):
     """{line: {code name: how many}} of the code on ``lines`` of a Python source that
     Python's debugger names alike (two lambdas on one line), whose stops it cannot tell
-    apart; {} where none, or the source does not parse."""
+    apart; {} where none. Read by the program's interpreter (``readings``, a launch's;
+    else Peeky's own), at its optimization level (python_scopes.anonymous_code).
+    ValueError where the source does not compile there; python_interpreter.Unavailable
+    where the interpreter could not read it."""
+    from peeky.python_interpreter import Readings
+
+    own = readings is None
+    readings = Readings(sys.executable) if own else readings
     try:
-        tree = ast.parse(text)
-    except (SyntaxError, ValueError):
-        return {}
-    found = {}
-    for node in ast.walk(tree):
-        name = _PYTHON_ALIKE.get(type(node))
-        if name is None:
-            continue
-        for number in set(range(node.lineno, (node.end_lineno or node.lineno) + 1)) & set(lines):
-            counts = found.setdefault(number, {})
-            counts[name] = counts.get(name, 0) + 1
-    return {
-        number: {name: count for name, count in counts.items() if count > 1}
-        for number, counts in found.items()
-        if any(count > 1 for count in counts.values())
-    }
+        found = readings("anonymous", text, sorted(set(lines)))
+    finally:
+        if own:
+            readings.close()
+    return {line: counts for line, counts in found}
 
 
 def _stops_by_function(functions, labels, word, alike=None):
@@ -4920,6 +4908,11 @@ def run_probe(
             target_identity=launch["target_identity"],
             source_sha256=launch["source_sha256"],
         )
+        if isinstance(identity := launch["target_identity"], dict) and (
+            identity.get("language") == "python"
+        ):
+            # Which interpreter ran the program, and how it was chosen (python_interpreter).
+            result["python"] = {key: value for key, value in identity.items() if key != "language"}
         if isinstance(launch.get("build_id"), str):
             # The build by its sources and tools, not its artifacts: what `peeky probe`'s
             # text says LLDB's notes once per.
@@ -5775,17 +5768,40 @@ def run_probe(
         instances,
     )
     # Python code the debugger names alike on a line (two lambdas), which no frame tells
-    # apart: said, never listed as one function.
+    # apart: said, never listed as one function. Read by the program's interpreter, whose
+    # readings end here, with the launch.
     alike = {}
     if probe.program.endswith(".py") and (functions or set_functions):
+        from peeky.python_interpreter import Unavailable
+
+        adapter = getattr(worker, "adapter", None)
+        readings = adapter.readings if isinstance(adapter, PythonAdapter) else None
         try:
             source = (Path(root) / probe.program).read_text()
             if probe.edit:
                 old, new = combine_edits(source, probe.edit)
                 source = source.replace(old, new, 1)
-            alike = _python_alike(source, [line, *set_functions])
-        except (OSError, ValueError):
-            alike = {}
+            alike = _python_alike(source, [line, *set_functions], readings)
+        except (OSError, ValueError, Unavailable) as exc:
+            # Unread: whether two of a line's anonymous functions are alike is not known.
+            anonymous = sorted(
+                {
+                    number
+                    for number, named in [(line, functions), *set_functions.items()]
+                    if any(str(name).startswith("<") for name in named)
+                }
+            )
+            if anonymous:
+                warnings.append(
+                    f"Peeky could not read {probe.program} with the program's interpreter "
+                    f"({str(exc)[:200]}), so it cannot tell apart two lambdas, generator "
+                    f"expressions or comprehensions on line{'s' if len(anonymous) > 1 else ''} "
+                    f"{', '.join(map(str, anonymous))}: the debugger names them alike, so "
+                    "stops counted for one of them may be another's."
+                )
+        finally:
+            if readings is not None:
+                readings.close()
     for change in changes:
         number = next(
             (p["build_line"] for p in points if any(made is change for made in p["changes"])),
@@ -6657,6 +6673,8 @@ def _table(result, short_names=True, sent_before=False):
             else ""
         )
     )
+    if python := python_text(result.get("python")):
+        lines.append(f"python: {python}")
     for warning in result.get("warnings", ()):
         lines.append(f"warning: {warning}")
     if error := result.get("error"):
@@ -6799,6 +6817,12 @@ def main(argv=None):
     targets.add_argument("--java-config", type=Path)
     targets.add_argument("--native-config", type=Path)
     targets.add_argument("--rust-config", type=Path)
+    targets.add_argument(
+        "--python",
+        metavar="PATH",
+        help="Python: the program's interpreter (default: the root's .venv or venv, else "
+        "$VIRTUAL_ENV, else this one); `peeky`: this one",
+    )
     args = parser.parse_args(argv)
     try:
         program, line = parse_location(args.at)
@@ -6829,6 +6853,10 @@ def main(argv=None):
             adapter = load_native_target(args.native_config)
         elif args.rust_config:
             adapter = load_rust_target(args.rust_config)
+        elif args.python is not None:
+            from peeky.python_interpreter import find
+
+            adapter = PythonAdapter.on(find(Path(args.root).resolve(), args.python))
     except (OSError, ValueError, TypeError) as exc:
         parser.error(str(exc))
     result = run_probe(args.root, probe, adapter=adapter)

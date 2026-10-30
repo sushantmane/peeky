@@ -18,6 +18,22 @@ Peeky debugs Python with debugpy, Python's debugger.
 - Pass program arguments after `--`, or with repeated `--arg`. Write `--arg=-v` for a value that
   starts with a dash ([2.5](../COOKBOOK.md#25-a-module-imported-by-a-script-with-arguments)).
 
+## Choose the interpreter
+
+- A program runs on its project's interpreter: `--python PATH`, else the root's `.venv` or `venv`,
+  else the active virtual environment, else Peeky's own. `--python peeky` keeps Peeky's own
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- Only the root is looked in. A `.venv` above it is named in the output, not used. Give the project
+  as the target, or pass `--python`
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- A shim, such as pyenv's, is asked in the root, and the Python it picks there runs the program
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- The output says which one ran: `python: …` in text, `python` in `--json`
+  ([Python 0](python-cookbook.md#which-interpreter-runs-the-program)).
+- It must be CPython 3.11 or later, and needs no debugpy. Peeky reads the program's code with it,
+  at the program's optimization level (`PYTHONOPTIMIZE`)
+  ([Python 0](python-cookbook.md#how-peeky-reads-the-code)).
+
 ## Read values
 
 - Select a dict entry by its key: `order['id']`. If you write `order.id`, the row names
@@ -96,7 +112,9 @@ Peeky debugs Python with debugpy, Python's debugger.
 - Nothing above the root is copied, and a warning says so. There is no warning when the root is a
   project's (it holds `.git`, `pyproject.toml`, `setup.py` or `setup.cfg`) that no repository
   above it holds. Nor when the edited script is self-contained: it imports only standard modules
-  that open no file, and names nothing that could
+  that open no file, and names nothing that could. A file of a module's name in its directory, the
+  root or on `PYTHONPATH`, such as `json.py`, shadows that module, so the warning stays. So does a
+  path entry Peeky can't list, such as one inside a zip archive
   ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).
 - Text shows the warning once per root. `--json` always has it
   ([Python 6.6](python-cookbook.md#66-see-what-a-fix-does-before-making-it)).

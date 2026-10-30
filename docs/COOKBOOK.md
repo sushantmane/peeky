@@ -56,7 +56,7 @@ peeky verify <target> --check <checker.py> --old '<text>' --new '<text>'   # you
 ## Table of Contents
 
 0. [Setup](#0-setup): install Peeky and the debugger or toolchain each language needs
-   - [Install Peeky](#install-peeky): Python 3.11 or later; pipx or uv, or pip for a program's own environment
+   - [Install Peeky](#install-peeky): Python 3.11 or later, with pipx or uv; a Python program runs on its project's interpreter
    - [What each language also needs](#what-each-language-also-needs): the tools for C, C++, Rust and Java, and how Peeky finds them
    - [Keep a task's runs apart](#keep-a-tasks-runs-apart): `PEEKY_STATE_DIR`
    - [How Peeky tells the language](#how-peeky-tells-the-language): from the target's path, or `--config`
@@ -127,13 +127,16 @@ Python targets. Install it as a tool, in an environment of its own, from the rep
 pipx install .    # or: uv tool install .
 ```
 
-A Python program runs on the interpreter running `peeky`. If the program imports packages from
-its own environment, install Peeky there instead:
+A Python program runs on its project's interpreter, so it imports what its project installs.
+That is the root's `.venv` or `venv`, else the active virtual environment, else Peeky's own. Name
+another with `--python`, and the output says which one ran:
 
 ```sh
-. .venv/bin/activate          # the program's environment
-pip install /path/to/peeky    # the clone
+peeky probe app.py --at 12 --capture total --python ../envs/app/bin/python
 ```
+
+It must be CPython 3.11 or later. The project needs no debugpy of its own
+([Python 0](lang/python-cookbook.md#which-interpreter-runs-the-program)).
 
 From a release, install the wheel, `peeky_debug-VERSION-py3-none-any.whl`, instead. The wheel has
 no examples or scripts. Run the recipes from the unpacked source archive,
@@ -143,7 +146,7 @@ no examples or scripts. Run the recipes from the unpacked source archive,
 
 | Language | Also needs | Peeky finds it from |
 | --- | --- | --- |
-| Python | nothing | the interpreter running `peeky` |
+| Python | nothing | `--python`, else the root's `.venv` or `venv`, else `$VIRTUAL_ENV`, else the interpreter running `peeky` |
 | C, C++ | clang (or GCC: set `PEEKY_NATIVE_CC` or `PEEKY_NATIVE_CXX`), lldb-dap and dwarfdump: on macOS the Command Line Tools, on Linux LLVM 18 | `xcrun` or `PATH`. Set `PEEKY_NATIVE_*` to override |
 | Rust | the rustup toolchain 1.96.0, and lldb-dap | `rustup which`. Set `PEEKY_RUST_*` to override |
 | Java | JDK 17 or later, and the [adapter bundle](lang/java.md#words-used-here), which `peeky setup-java` builds once | the target's `--config target.json`; its `bundle`, else the one `peeky setup-java` built |
