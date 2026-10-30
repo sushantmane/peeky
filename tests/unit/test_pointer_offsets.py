@@ -1,7 +1,7 @@
-"""Which element of a captured array a C or C++ pointer holds the address of (#302).
+"""Which element of a captured array a C or C++ pointer holds the address of.
 
-Eleventh evaluation: tides' `turn const int * 0x…7040` showed nothing that tied it to
-`level`, the agent divided by a hard-coded `sizeof(int)` (the store had no element size),
+Tides' `turn const int * 0x…7040` showed nothing that tied it to
+`level`, the store had no element size to divide an offset by,
 and `queries diff` sent it to address() for `turn` and `level`; grades' `const std::string
 &name`, whose text agreed in both runs, was sent there too and ranked as a near-real
 difference.
@@ -234,7 +234,7 @@ def test_a_pointer_base_a_qualified_value_or_itself_proves_nothing():
     ],
 )
 def test_an_address_two_captured_bases_share_names_neither(second):
-    # Review of PR #312: the first in capture order was named, as if the address told
+    # The first in capture order was named, as if the address told
     # which object the pointer designates.
     a = {"address": 0x1000, "length": 4, "element": 1, "element_size": 4}
     at = 0x1010 if second["address"] == 0x1010 else 0x1000
@@ -524,7 +524,7 @@ def test_diff_says_which_element_a_pointer_holds_in_each_run(store):
         # The real differences: `count`, in hit order.
         (1, "count", None),
         (2, "count", None),
-        # Review 2 of PR #312: another element's address may come from layout alone (the
+        # Another element's address may come from layout alone (the
         # array moved), so it ranks with the addresses that differ, first among them.
         (1, "turn", f"the address of `level[6]` in run a, of `level[4]` in run b{MOVED}"),
         (2, "turn", f"the address of `level[17]` in run a, of `level[16]` in run b{MOVED}"),
@@ -561,7 +561,7 @@ MOVED = "; by address alone: the pointer or the array may have moved"
 
 
 def test_another_elements_address_where_only_the_array_moved_is_no_difference(store):
-    # Review 2 of PR #312: the pointer holds 0x1018 in both runs, and `level` moved from
+    # The pointer holds 0x1018 in both runs, and `level` moved from
     # 0x1000 to 0x1008, so the index went from 6 to 4 with no change to the pointer. It was
     # a real difference (`differs` 1); it is said where the runs are compared side by side,
     # and `diff`, which keeps the values that differ, leaves it out.
@@ -622,7 +622,7 @@ def playlist(base, nows, queues):
 
 
 def test_an_element_address_before_the_first_real_difference_is_named(store):
-    # Twelfth evaluation, playlist: at hit 4 `now` held `queue[3]`'s address in one run
+    # playlist: at hit 4 `now` held `queue[3]`'s address in one run
     # and `queue[2]`'s in the other, but its row came after the real differences (`queue`
     # at hits 5 and 6), though AGENT_GUIDE said `diff` puts the first divergence first.
     # The row keeps its tier, as layout alone can change an address, and a note names
@@ -708,14 +708,14 @@ def test_the_alignment_note_reads_element_addresses_and_offsets_masked(store, ke
             "it may or may not be another element"
             for hit in (0, 1, 2)
         ]
-    # An address fact either way (review 2 of PR #312): the note reads `word` with its
+    # An address fact either way: the note reads `word` with its
     # addresses masked, as it reads any pointer.
     assert "`word` agrees" in notes, notes
 
 
 def test_diff_shows_offsets_by_address_but_ranks_them_with_addresses(store):
     # tides' line 40: `level` is a parameter, so no element is proven, but `turn` is 6
-    # ints past it in one run and 4 in the other. Review of PR #312: unrelated pointers of
+    # ints past it in one run and 4 in the other. Unrelated pointers of
     # one type (`src`, `dst`: two heap blocks within the cap) differ by the allocator's
     # layout, so another offset ranks with the addresses that differ, showing both.
     def run(base, turns, firsts, gap, output):
@@ -788,7 +788,7 @@ READS_ALIKE = (
 
 @pytest.mark.parametrize("language", ["c", "cpp"])
 def test_a_reference_whose_text_agrees_ranks_with_addresses_only(store, language):
-    # grades: `name` reads "Maya" in both runs. It may still be another element named
+    # `name` reads "Maya" in both runs. It may still be another element named
     # Maya, but no offset is needed to see that its text agrees.
     def run(base, quiz):
         rows = []
@@ -877,10 +877,10 @@ def test_a_schema_16_store_gains_the_columns_and_keeps_its_runs(store):
 
 
 def test_the_diff_needs_no_materialized_cte_and_stays_within_the_column_limit(store):
-    # Review of PR #312: `pair AS MATERIALIZED` needs SQLite 3.35, while Python 3.11 may link
+    # `pair AS MATERIALIZED` needs SQLite 3.35, while Python 3.11 may link
     # an older one. Without it, the tiers' GROUP BY read every term behind `note`, and
     # newer SQLite counts aggregate terms against the column limit Peeky sets (100). The
-    # tiers now name `kind` where `note` is `kind`: the rows are the same, far within it.
+    # tiers name `kind` where `note` is `kind`: the rows are the same, far within it.
     for name, (sql, _, _, _) in evidence.QUERIES.items():
         assert "MATERIALIZED" not in str(sql).upper(), name
     assert "MATERIALIZED" not in evidence._DIFF_RANKS.upper()

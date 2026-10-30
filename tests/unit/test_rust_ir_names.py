@@ -1,4 +1,4 @@
-r"""#191: LLVM IR quotes a local whose name is not plain ASCII (`%"gr\C3\B6\C3\9Fe"`, its
+r"""LLVM IR quotes a local whose name is not plain ASCII (`%"gr\C3\B6\C3\9Fe"`, its
 bytes in hex) and writes its debug-info name so too: the IR's proofs (kept in memory,
 a reference parameter's entry spill) matched only plain names, so `größe` was never
 proven, and its reads stayed raw."""
@@ -84,7 +84,7 @@ def declare(pointer, variable):
 
 def test_a_shadow_never_declared_revokes_a_parameters_proof(tmp_path):
     # `let é: &Vec<i64>;` (written e + U+0301; rustc normalises it to NFC): rustc
-    # emits its variable, but no declaration, as it is never stored (#194 review).
+    # emits its variable, but no declaration, as it is never stored.
     body = declare('"\\C3\\A9.dbg.spill"', "!50")
     assert proofs(tmp_path, body, parameter(50, "\\C3\\A9")) == {"é": 11}
     assert proofs(tmp_path, body, parameter(50, "\\C3\\A9") + local(51, "\\C3\\A9")) == {}
@@ -202,7 +202,7 @@ start:
 
 
 def test_each_declaration_says_where_its_piece_is(tmp_path):
-    # Review of PR #335: every declaration of a name was a slot or a `.dbg.spill` copy,
+    # Every declaration of a name was a slot or a `.dbg.spill` copy,
     # whatever its expression: a closure's capture, declared through its environment's
     # pointer (`DW_OP_deref, DW_OP_deref`), read as a copy kept in a register.
     path = tmp_path / "demo.ll"

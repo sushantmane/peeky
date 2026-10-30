@@ -1,9 +1,9 @@
 """What is read through a C or C++ pointer is marked `[unproven]` where Peeky can't show the
-pointer points at a live object (#339).
+pointer points at a live object.
 
-Peeky read any non-NULL pointee and showed it as a plain value: a pointer into a call that
-had returned, into a freed heap block, or two past an array's end showed leftover bytes as
-the object. It still reads them, since an agent may need them, but marks them with why: the
+A pointer into a call that had returned, into a freed heap block, or two past an array's
+end can show leftover bytes as the object. Peeky reads them, since an agent may need them,
+but marks them with why: the
 pointer is proven to point at a live object only inside an array or object a listed frame
 holds (of its type), in the program's static storage, or in `main`'s arguments.
 """
@@ -38,7 +38,6 @@ LONG, CELL, CHAR = (
 )
 POINTS_LONG = {"pointee": LONG, "element_size": 8, "count": 1}
 ARR = ("arr", {"address": 0x1000, "length": 4, "element": LONG, "element_size": 8}, {})
-CELLS = ("cells", {"address": 0x2000, "length": 3, "element": CELL, "element_size": 16}, {})
 X = ("x", {"address": 0x3000, "element": LONG, "element_size": 8}, {})
 CALLER = {"frame": 1, "function": "main"}
 DOUBLE = "base double DW_ATE_float 8"
@@ -64,7 +63,7 @@ def at(address):
         (0x1000, POINTS_LONG, True),
         (0x1018, POINTS_LONG, True),
         (0x3000, POINTS_LONG, True),
-        # One past the end (#336's), two past, before, between elements: not.
+        # One past the end (test_past_end.py's), two past, before, between elements: not.
         (0x1020, POINTS_LONG, False),
         (0x1030, POINTS_LONG, False),
         (0xFF8, POINTS_LONG, False),
@@ -80,7 +79,7 @@ def at(address):
         (0x1003, CHARS, True),
         (0x1020, CHARS, False),
         # A global is exactly its type's extent: past it, or another type, proves nothing
-        # (review of PR #341: a whole load segment did).
+        # (a whole load segment would).
         (0x8008, POINTS_LONG, True),
         (0x8010, POINTS_LONG, False),
         (0x8000, {**POINTS_LONG, "pointee": DOUBLE}, False),
@@ -117,7 +116,7 @@ def test_outside_an_array_says_how_far():
         "elements": 2,
         **CALLER,
     }
-    # One past the end is #336's (withheld); another type, a misaligned address, a single
+    # One past the end is withheld (test_past_end.py); another type, a misaligned address, a single
     # object, or one too far: none.
     assert pointee_past(0x1020, POINTS_LONG, [ARR]) is None
     assert pointee_past(0x1030, {**POINTS_LONG, "pointee": CHAR}, [ARR]) is None
@@ -290,7 +289,7 @@ def test_a_string_literal_is_proven_only_in_a_section_of_strings(tmp_path):
 
     # An ELF64 with a `.rodata` of other constants (at 0x500: "ab" then padding and a
     # number, flags SHF_ALLOC), and a `.rodata.str1.1` of strings (at 0x400: "ab\0cd\0",
-    # SHF_ALLOC | SHF_MERGE | SHF_STRINGS, entries of one byte). Review of PR #341: any
+    # SHF_ALLOC | SHF_MERGE | SHF_STRINGS, entries of one byte). Any
     # `.rodata` counted, so padding or a pointer past a literal followed by a NUL did.
     strings, constants = b"ab\0cd\0", b"ab\0\0\x07\0\0\0"
     header = bytearray(64)
@@ -367,7 +366,7 @@ def test_a_unions_members_are_held_but_marked():
     assert found["b.u.i"]["union"] is True and found["b.u.d"]["union"] is True
     assert "union" not in found["b.n"]
     # An array of unions: each element listed is a union a pointer at a member is in
-    # (review of PR #341: `&a[0].d` fell through to the stack note).
+    # (`&a[0].d` doesn't fall through to the stack note).
     graph[5] = ("array", "", 3, (2,), False)
     native._typed = lambda frame, steps, walked=False: (Typed(graph, 5), False)
     found = dict(native.held_extents({"value": "u[2] @ 0x2000", "type": "u[2]"}, {}, "a"))
@@ -394,7 +393,8 @@ def test_a_2d_arrays_rows_and_their_members_are_placed():
         "names",
         {"address": 0x1000, "length": 64, "element": CHAR, "element_size": 1, "dims": [4, 16]},
     )
-    # `char *row = names[1]` is in it; past its end is #336's; no index names an element.
+    # `char *row = names[1]` is in it; past its end is test_past_end.py's; no index names an
+    # element.
     pointer = {"pointee": CHAR, "element_size": 1, "count": 1}
     assert pointee_proven(0x1010, pointer, [(*names, {})]) is True
     assert pointee_past(0x1042, pointer, [(*names, {})]) is None
@@ -719,7 +719,7 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     # Where no text was read through it, only why there is none: nothing to mark.
     assert "view" not in shown["ps"]
     # A `char *` into one of `main`'s argument strings: no mark; read through it as a
-    # `long *`, it is (review of PR #341: the vector's address plus 1 MiB proved any type).
+    # `long *`, it is (the vector's address plus 1 MiB proves no type).
     assert "view" not in shown["arg"]
     assert [a["expression"] for op, a in stopped.dap.calls if op == "evaluate"].count(
         "argv[2]"
@@ -753,8 +753,8 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
     assert "below the stack pointer" in expand("dang")["variables"][0]["note"]
     assert "the address of `arr[6]`, past the end of `arr`" in expand("two")["unproven_read"]
     assert "into the stack of the frames Peeky lists" in expand("gap")["unproven_read"]
-    # A global's element: no mark; two past its end, or into code: marked (review of PR
-    # #341: any address in a load segment passed).
+    # A global's element: no mark; two past its end, or into code: marked
+    # (an address merely in a load segment isn't enough).
     assert "unproven_read" not in expand("tp")
     assert "the address of `table[3]`, past the end of `table`" in expand("tpast")["unproven_read"]
     assert expand("code")["unproven_read"].endswith(IMAGE)
@@ -774,7 +774,7 @@ def test_the_worker_marks_what_it_reads_through_an_unproven_pointer(stopped):
 
 def test_a_read_that_did_not_come_is_asked_again(stopped):
     # The stack pointer's reply doesn't come in time: nothing is kept of that judgement, and
-    # the next inspection of the stop asks again (review: a timeout left `dang` unplaced).
+    # the next inspection of the stop asks again (a timeout doesn't leave `dang` unplaced).
     request, slow = stopped.dap.request, [1]
 
     def answer(operation, args, timeout=None):
@@ -835,8 +835,8 @@ def test_the_locals_peeky_places_by_asking_are_bounded(stopped):
     # `dup`'s text: a `char *` may point into any local, so each is asked for, up to the
     # bound; nothing more at this stop.
     assert len(hovered) + asked(stopped, "&n") + asked(stopped, "&text") == PLACED_HOVERS
-    # A local left unplaced may be where it points: the note says only that (review of PR
-    # #341: it said "no local … Peeky could place").
+    # A local left unplaced may be where it points: the note says only that,
+    # not "no local … Peeky could place".
     assert shown["dup"]["note"].endswith(LIMIT)
     call(stopped, "expand", handle=shown["pn"]["variablesReference"], start=0)
     assert len(hovered) + asked(stopped, "&n") + asked(stopped, "&text") == PLACED_HOVERS
@@ -850,7 +850,7 @@ IMAGE = (
 
 
 def test_the_loaded_image_note_guides_truly_for_code_and_literals():
-    # Review of PR #341: it said to read "the global it should point at", which a Linux
+    # It said to read "the global it should point at", which a Linux
     # string literal, or a deliberate code pointer, has none of. The guidance is a hint's
     # length.
     for text in (False, True):
@@ -872,7 +872,7 @@ def test_a_bound_on_locals_leaves_only_the_limit_note(stopped):
     )
     many = [{"name": f"v{i}", "type": "long", "value": "0"} for i in range(300)]
     # More than 256 locals, more than 64 the debugger gives no address for, or a caller's
-    # scope longer than 256 (review of PR #341: `whole` said they all came): cut short.
+    # scope longer than 256 (`whole` doesn't say they all came): cut short.
     assert stopped.frame_held(many, {"id": 1})[1] is True
     assert stopped.frame_held(many[:3], {"id": 1})[1] is False
     stopped.runtime.unplaced_local = lambda variable, frame, name: True
@@ -898,7 +898,7 @@ ARGUMENT_LIMIT = (
 
 def test_more_argument_strings_than_the_bound_say_so_apart(stopped):
     # 70 arguments: the 64 Peeky reads don't place them all. That is no local left
-    # unplaced (review of PR #341: the note said "didn't place every local").
+    # unplaced (the note doesn't say "didn't place every local").
     from peeky.worker import ARGUMENT_STRINGS
 
     request, read = stopped.dap.request, []
@@ -1009,7 +1009,7 @@ def test_session_get_marks_each_child_and_says_why_once():
 
 def test_session_get_says_why_a_members_text_is_marked():
     # A struct whose `char *` member's text is read from a heap block: the member is marked,
-    # and the row says why (review: it said Rust's note).
+    # and the row says why (not with Rust's note).
     text = unproven_text("r.name", {"kind": "unplaced", "statics": True}, text=True)
     name = {"name": "name", "type": "char *", "value": f'{at(0x9200)} "heap"'}
     name.update(variablesReference=0, view="unproven", unproven_read=True, note=text)

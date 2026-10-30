@@ -1,4 +1,4 @@
-"""#326: a `session step` from the line before `let y = mclone!(x) + 1;`, with
+"""A `session step` from the line before `let y = mclone!(x) + 1;`, with
 `macro_rules! mclone { ($v:expr) => {{ $v.clone() }}; }`, stops at the inlined `clone`'s first
 instruction. LLDB shows that stop on the line the call is made from: the macro's definition,
 which has no row of its own in the line table. `session inspect` then failed with
@@ -125,7 +125,7 @@ def test_a_stop_at_an_inlined_calls_site_is_the_builds(tmp_path):
 
 
 def test_the_stops_pc_must_be_in_the_inlined_calls_code(tmp_path, monkeypatch):
-    # #326 review: line 11 is `bump`'s site, but a pc at line 12's row (0x1d0), outside
+    # Line 11 is `bump`'s site, but a pc at line 12's row (0x1d0), outside
     # `bump`'s code (0x1c0..0x1c8), is not a stop there; nor is the macro's line 1 at a pc
     # outside `clone`'s code, though the source defines a macro there.
     for line, pc in ((11, 0x1D0), (11, 0x1BC), (11, 0x1C8), (1, 0x1D0), (1, 0x1B8)):
@@ -364,8 +364,8 @@ NOTE = (
 class MacroStops:
     """A probe's worker stopping at line 3 of src/main.rs once per entry of ``order``: in
     `demo::own`, where the line has code of its own, or in `demo::inlined`, where the
-    debugger shows the stop inside the macro's definition, whose frame `inspect` refuses
-    (#326 review). ``at`` moves an inline-only stop to another line."""
+    debugger shows the stop inside the macro's definition, whose frame `inspect` refuses.
+    ``at`` moves an inline-only stop to another line."""
 
     adapter = None
 
@@ -438,7 +438,7 @@ def probed(monkeypatch, worker, request):
 
 
 def test_a_probe_withholds_a_stop_inside_a_macros_definition_and_goes_on(monkeypatch):
-    # #326 review: a macro's line placed in one function, where it has code of its own, and
+    # A macro's line placed in one function, where it has code of its own, and
     # inline-only in another, where the debugger shows the stop inside the macro's
     # definition. Its `inspect` refusal failed the whole probe and closed its session.
     from peeky.probe import Probe, _table
@@ -481,7 +481,7 @@ def test_a_probe_withholds_a_stop_inside_a_macros_definition_and_goes_on(monkeyp
 
 
 def test_the_state_names_a_macro_stop_only_where_its_address_proves_it(tmp_path, monkeypatch):
-    # #326 review round 2: the state is built before anything validates the stop. Line 1
+    # The state is built before anything validates the stop. Line 1
     # claimed at line 12's pc (0x1d0), before the load bias was read, still said the stop
     # was inside `mclone!`'s definition; only `inspect` then found the mismatch.
     worker, session, _ = stopped_worker(tmp_path, monkeypatch, 1, 0x1D0)

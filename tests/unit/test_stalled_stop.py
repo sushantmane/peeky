@@ -1,4 +1,4 @@
-"""#356 review: a debugger stalled at a stop. A read of the stop that times out is never
+"""A debugger stalled at a stop. A read of the stop that times out is never
 dropped as if the stop were whole, and no read keeps a stop paused past its pause budget
 (--max-pause), which the pause guard cannot enforce while a request holds the lock."""
 
@@ -97,7 +97,7 @@ def stopped(tmp_path, dap, max_pause=None):
 def test_a_stop_the_debugger_does_not_describe_in_time_fails_and_is_never_shown_whole(
     tmp_path, stalled
 ):
-    # Review of #356: a `stackTrace` that timed out was dropped, so `wait` returned a live
+    # A `stackTrace` that timed out was dropped, so `wait` returned a live
     # stop with no line, function or `place` (a probe's row with no `stop`), as if that
     # were all of it; so was where the stop's breakpoint locations are, asked again at it.
     dap = StalledDap(stall=stalled == "frame")
@@ -137,7 +137,7 @@ def test_a_stop_the_debugger_does_not_describe_in_time_fails_and_is_never_shown_
 
 
 def test_a_stalled_read_never_holds_a_stop_past_its_pause_budget(tmp_path):
-    # Review of #356: `wait` holds the worker's lock while it reads the stop, and the pause
+    # `wait` holds the worker's lock while it reads the stop, and the pause
     # guard needs that lock, so a stalled `stackTrace` kept the program paused for the
     # whole read (2 s, then 15) past --max-pause, then returned it as a live stop.
     dap = StalledDap(sleep=True)
@@ -175,7 +175,7 @@ def test_a_stalled_read_never_holds_a_stop_past_its_pause_budget(tmp_path):
 def test_a_stop_with_another_threads_queued_is_auto_resumed_only_once_the_program_runs(
     tmp_path, by
 ):
-    # Review 2 of #367: two threads stopped at breakpoints in one all-threads stop. The
+    # Two threads stopped at breakpoints in one all-threads stop. The
     # first's `continue` serves the second and resumes nothing, yet it was recorded as
     # auto-resumed and `wait` said "running" while every thread stayed paused. The second,
     # made at the same time, is past the budget too: it is resumed in turn, and only then

@@ -1,8 +1,8 @@
 """The worker's token, by either of its names, reaches no child that does not need it.
 
-Pre-release security review: only `DEBUG_TOKEN` (the worker's name for the token) was
-removed from children's environments. `PEEKY_WORKER_TOKEN` (a client's name for the same
-secret) reached a session's local worker, and through it the debugger and the debuggee,
+Removing only `DEBUG_TOKEN` (the worker's name for the token) from children's
+environments isn't enough: `PEEKY_WORKER_TOKEN` (a client's name for the same secret)
+would reach a session's local worker, and through it the debugger and the debuggee,
 the probe process, a Python candidate's interpreter, checkers, candidates and the model.
 """
 

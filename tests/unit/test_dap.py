@@ -71,7 +71,7 @@ def test_output_flood_does_not_evict_lifecycle_events():
 
 
 def test_a_run_of_continued_events_is_one_entry_and_never_evicts_stops():
-    # #162 round 2: LLDB says `continued` after each of its own stops in a step out of a
+    # LLDB says `continued` after each of its own stops in a step out of a
     # deep recursion (a breakpoint each deeper call returns past); 2,000 of them evicted
     # the step's own stop and failed the session.
     dap = transport()
@@ -314,7 +314,7 @@ while True:
 
 
 def test_bounded_polls_and_their_notes_never_flood_the_trace(monkeypatch):
-    # #27: the trace is how a lost event is diagnosed; Peeky's own lost-stop polls
+    # The trace is how a lost event is diagnosed; Peeky's own lost-stop polls
     # (hundreds of requests each) must not evict it.
     import subprocess
     import sys
@@ -341,7 +341,7 @@ def test_bounded_polls_and_their_notes_never_flood_the_trace(monkeypatch):
 
 
 def test_threads_a_thread_event_says_started_are_kept():
-    # Review of #181: a second thread started since launch means the program runs
+    # A second thread started since launch means the program runs
     # several, whatever a `threads` reply says.
     dap = transport()
     for thread in (1, 2, 2):
@@ -352,7 +352,7 @@ def test_threads_a_thread_event_says_started_are_kept():
     assert dap.started_threads == {1, 2}
 
 
-# A debugger whose last messages follow the program's end (#203). `late`: `exited`,
+# A debugger whose last messages follow the program's end. `late`: `exited`,
 # `terminated`, then output, all before Peeky disconnects; `exit-later`: after
 # `terminated`, `exited` comes once it answered; `noisy`: after it answered, text of its
 # own (lldb-dap 18 on Linux prints its crash as `stderr` output); `answering`: that text
@@ -430,7 +430,7 @@ if mode.startswith("provoked"):
 
 
 # What debugpy 1.8.22's adapter prints on stderr when Peeky ends its input as it answers
-# `disconnect` and it exits 1 (#213: Linux, Docker), the lines its signature checks kept.
+# `disconnect` and it exits 1 (Linux, Docker), the lines its signature checks kept.
 DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Client[1]/
              Handler 'Client.disconnect_request' (file '/v/debugpy/adapter/components.py', line 700)
              couldn't handle #11 request "disconnect" from Client[1]:
@@ -465,10 +465,10 @@ DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Clien
         ("late", False, True, True, "early\nlate\n", 0, "", 0),
         ("exit-later", False, True, True, "early\n", 7, "", 0),
         ("noisy", False, True, False, "early\n", None, "free(): invalid pointer\n", None),
-        # #213 review: what comes from the disconnect on is not the program's, even
+        # What comes from the disconnect on is not the program's, even
         # before the adapter's answer.
         ("answering", False, True, False, "early\n", None, "free(): invalid pointer\n", None),
-        # #213 review: a clean end of its stream, then a failed exit, is not whole: on
+        # A clean end of its stream, then a failed exit, is not whole: on
         # its own before Peeky ends its input, or in the moment it does so (any adapter's
         # status 2, debugpy's included), or after (status 1, not debugpy's).
         ("crash", False, True, False, "early\n", None, "", 2),
@@ -483,7 +483,7 @@ DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Clien
         ("provoked-bare", True, True, False, "early\n", None, "", 1),
         ("provoked-other", True, True, False, "early\n", None, "", 1),
         ("open", False, True, False, "early\n", None, "", None),
-        # Review of PR #335: an `exited` event alone never makes the output whole, whatever
+        # An `exited` event alone never makes the output whole, whatever
         # the adapter; only a clean end of its stream does. lldb-dap 18 on Linux, and any
         # other adapter that prints after the disconnect and aborts, leave it partial.
         ("lldb", False, True, False, "early\n", 0, "free(): invalid pointer\n", None),
@@ -494,7 +494,7 @@ DEBUGPY_PROVOKED = """E+00001.227: /handling #11 request "disconnect" from Clien
 def test_close_reads_the_output_to_the_adapters_end(
     tmp_path, monkeypatch, mode, debugpy, ended, drained, output, code, after, status
 ):
-    # #203: output can follow `terminated`, and `exited` can come after it: what close
+    # Output can follow `terminated`, and `exited` can come after it: what close
     # leaves is whole only once the adapter ended its stream with nothing more after
     # Peeky's disconnect, never a guess; what came after is kept apart.
     import subprocess
@@ -540,7 +540,7 @@ def test_close_reads_the_output_to_the_adapters_end(
     assert (final["ended"], final["drained"]) == (ended, drained)
     assert (final["output"], final["exit_code"], final["after_disconnect"]) == (output, code, after)
     # The stream ended cleanly in each case with an exit status the adapter chose; only
-    # an exit before Peeky ended its input counts (#213 review: debugpy exits 1 when its
+    # an exit before Peeky ended its input counts (debugpy exits 1 when its
     # input ends while it still handles the disconnect).
     assert final["stream_drained"] is (status is not None)
     if status is not None:

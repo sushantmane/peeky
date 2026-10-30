@@ -1,9 +1,8 @@
 """Launch preparation and DAP stages share a budget; cleanup gets its own grace.
 
-Ported from 339def3 and adapted to main's single worker-owned launch deadline
-(``DebugWorker.launch_deadline_s``, passed to ``supports_deadline`` adapters and
-to every DAP launch phase as the remaining budget) instead of an adapter-declared
-``launch_budget_s`` and a transport-level ``DAP.deadline``.
+The budget is the worker's own launch deadline (``DebugWorker.launch_deadline_s``),
+passed to ``supports_deadline`` adapters and to every DAP launch phase as the remaining
+budget.
 """
 
 import json
@@ -163,7 +162,7 @@ def test_real_dap_process_shares_absolute_deadline_and_disconnects_after_expiry(
 
 
 def test_a_debuggee_slow_to_start_has_the_launchs_whole_deadline(tmp_path, monkeypatch):
-    # #356: each launch step was capped at 15 s inside the launch's 40 s deadline, so a
+    # Each launch step was capped at 15 s inside the launch's 40 s deadline, so a
     # debuggee that a loaded machine started in 20 s failed the launch with half of its
     # time left: "did not start: the debugger never initialized it within the launch's
     # 15 s" (reproduced with debugpy on one CPU shared with 32 busy loops).

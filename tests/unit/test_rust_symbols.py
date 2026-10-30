@@ -12,6 +12,7 @@ from peeky.rust_symbols import (
     UNQUALIFIED,
     UNVERIFIED,
     RustUnit,
+    _partial_elements,
     active_variant,
     application_symbols,
     application_units,
@@ -258,13 +259,13 @@ def test_die_parser_tolerates_only_attribute_range_continuations():
         )
     with pytest.raises(ValueError, match="exceeds"):
         parse_dies(" " * (RUST_METADATA + 1), units=False)
-    # A program using std's collections has megabytes of its own DWARF (eval 3 follow-up).
+    # A program using std's collections has megabytes of its own DWARF.
     with pytest.raises(ValueError, match="Missing DWARF unit"):  # past the size check
         parse_dies(" " * (MAX_METADATA + 1), units=False)
 
 
 def test_a_unit_read_as_it_is_written_is_the_texts_and_bounded(monkeypatch):
-    # Its lines as llvm-dwarfdump writes them (#397), as its whole text gives them.
+    # Its lines as llvm-dwarfdump writes them, as its whole text gives them.
     from peeky.native import SymbolLimit
     from peeky.textlines import split_lines
 
@@ -308,7 +309,7 @@ def unit_of_unique_names(count):
 
 
 def test_what_a_parse_keeps_is_never_more_than_it_reckons(monkeypatch):
-    # MAX_KEPT is a bound on what Python holds (#397 review): each parse reckons it as it
+    # MAX_KEPT is a bound on what Python holds: each parse reckons it as it
     # goes, and Rust's never below the native one's for the same text (what passes in
     # `prepare` passes when the session reads the units again).
     import tracemalloc
@@ -350,7 +351,7 @@ def test_what_a_parse_keeps_is_never_more_than_it_reckons(monkeypatch):
 
 @pytest.mark.parametrize("kind", ["value", "ranges", "rows"])
 def test_rust_refuses_what_is_over_what_is_left_before_it_is_kept(monkeypatch, kind):
-    # Each line's cost is reckoned before anything of it is kept or copied (review): a 10
+    # Each line's cost is reckoned before anything of it is kept or copied: a 10
     # MiB name, or a block of continued rows past the bound.
     import tracemalloc
 
@@ -607,7 +608,7 @@ def test_application_symbols_dump_only_selected_tables(tmp_path):
     assert layouts[OPTION]["kind"] == "option"
     assert [unit.stmt_list for unit in units] == [0]
     assert blocks == {}
-    # The unit's own types are read too (#321): its `Option<i32>` is the standard one.
+    # The unit's own types are read too: its `Option<i32>` is the standard one.
     assert interior == {}
     assert not list(workspace.glob("peeky-symbols-*"))
 
@@ -846,7 +847,7 @@ def test_non_enum_and_unqualified_enum_values_do_not_fetch_raw_storage():
         "variablesReference": 0,
         "value": UNQUALIFIED,
         "rust_view": "opaque",
-        # #303: why, and what to read instead; the debugger gave no address.
+        # Why, and what to read instead; the debugger gave no address.
         "why": "Peeky decodes `Option<i32>`, and an `Option` of a tuple or struct your crate "
         "defines whose layout the debug information proves; it does not decode this "
         "`Option<&i32>`. Its address is not known; read what an `if let Some(x)` on it binds "
@@ -1354,17 +1355,17 @@ def test_describe_lists_the_reference_parameters_it_reads_from_memory():
         }
     )
     [line] = [line for line in text.splitlines() if line.startswith("read from memory")]
-    # As the program spells them (#183): `&Vec<i32>`, not the debug information's path.
+    # As the program spells them: `&Vec<i32>`, not the debug information's path.
     assert line.endswith(": &[i32], &Vec<i32>, &mut Vec<i32>"), line
     assert "reference parameters, owned" in line and "MIR proves" in line
-    # And such fields of either (#156).
+    # And such fields of either.
     assert "such fields of either (self.values)" in line
     [line] = [line for line in text.splitlines() if line.startswith("qualified enum views")]
     assert line == "qualified enum views: Option<i32>", line
 
 
 def test_describe_lists_the_options_of_structs_it_reads_from_memory():
-    # #303: `describe` said "qualified enum views: none" for rota.
+    # `describe` said "qualified enum views: none" for rota.
     from peeky.cli import _describe_text
 
     manifest = {
@@ -1686,7 +1687,7 @@ def test_owned_composites_take_their_layout_from_the_mir_type_not_lldbs_name():
 def test_composites_are_read_only_from_the_crate_and_never_beside_an_unreadable_twin():
     from peeky.rust_symbols import active_variant, container_layouts
 
-    # Review of #98: `Range<usize>` passes the field checks but has its own Debug.
+    # `Range<usize>` passes the field checks but has its own Debug.
     std = (
         "el",
         "DW_TAG_structure_type",
@@ -1711,7 +1712,7 @@ def test_composites_are_read_only_from_the_crate_and_never_beside_an_unreadable_
         ],
     )
     assert container_layouts(*_tree_dump(tree)) == {}
-    # Review of #98: a struct in a function's body shares its path with a module's
+    # A struct in a function's body shares its path with a module's
     # (`crate::parse::Token`); when only one is readable, neither is read.
     readable = INTERVAL
     unreadable = _struct("el2", "Interval", "0x08", _member("g0", "p", "u_ptr", "0x00"))
@@ -1750,7 +1751,7 @@ def test_composites_are_read_only_from_the_crate_and_never_beside_an_unreadable_
     assert twins(readable, unreadable) == {"kind": "unqualified"}
     alone = _struct("el", "Interval", "0x08", _member("g0", "p", "u_ptr", "0x00"))
     alone = container_layouts(*composite_dump(alone, "&[peeky_pagination::Interval]"))
-    # Recorded for previews too (#106), under a key no type name has.
+    # Recorded for previews too, under a key no type name has.
     assert alone == {
         "&[peeky_pagination::Interval]": {"kind": "unread"},
         "struct:peeky_pagination::Interval": {"kind": "unread"},
@@ -1803,7 +1804,7 @@ TEXT = {"size": 0x18, "data": 8, "length": 0x10, "capacity": 0}
 
 def element_dump():
     """The crate `pp`'s slices of structs and a tuple with a `String` field, and of a
-    struct with fields Peeky does not read (#260)."""
+    struct with fields Peeky does not read."""
     slices = (
         _slice("friends", "&mut [peeky_pagination::Friend]", "friend"),
         _slice("expenses", "&[peeky_pagination::Expense]", "expense"),
@@ -1822,7 +1823,7 @@ def element_dump():
 
 
 def test_elements_with_a_string_field_keep_its_layout_and_leave_the_rest_unread():
-    # #260: `&mut [Friend]` with a `name: String` was unread, so `friends[1].name` and
+    # `&mut [Friend]` with a `name: String` was unread, so `friends[1].name` and
     # even `friends[1].paid` were not found.
     from peeky.rust_symbols import container_layouts
 
@@ -1856,7 +1857,7 @@ def test_elements_with_a_string_field_keep_its_layout_and_leave_the_rest_unread(
         "tuple",
         [["__0", 0, "alloc::string::String"], ["__1", 0x18, "i64"]],
     )
-    # A struct's own preview (#106) still reads only a struct of scalars.
+    # A struct's own preview still reads only a struct of scalars.
     assert layouts["struct:peeky_pagination::Friend"] == {"kind": "unread"}
 
 
@@ -1959,7 +1960,7 @@ def test_string_fields_of_elements_read_as_text_and_other_fields_say_why(monkeyp
 
 
 def test_text_that_is_not_utf8_is_never_shown_in_part():
-    # Review of #260: a String or &str whose bytes are not UTF-8 says so, with no prefix.
+    # A String or &str whose bytes are not UTF-8 says so, with no prefix.
     from peeky.rust_symbols import container_view
 
     for kind, layout, name in (
@@ -1985,7 +1986,7 @@ def test_text_that_is_not_utf8_is_never_shown_in_part():
 
 
 def test_a_proven_container_of_elements_peeky_does_not_read_says_why():
-    # #260: a slice parameter of enums stayed raw with a note telling to read it as a
+    # A slice parameter of enums stayed raw with a note telling to read it as a
     # `&[T]` parameter, which it was.
     from peeky.rust_symbols import container_view
 
@@ -2037,7 +2038,7 @@ RANGE = _struct(
 
 
 def test_struct_and_tuple_layouts_are_kept_for_previews():
-    # #106: the crate's structs and every tuple whose fields are qualified scalars.
+    # The crate's structs and every tuple whose fields are qualified scalars.
     from peeky.rust_symbols import STRUCT_PREFIX
 
     pair = _struct(
@@ -2165,7 +2166,7 @@ def test_a_preview_takes_its_layout_from_the_mir_type_not_lldbs_name():
 
 
 def test_a_preview_finds_its_struct_by_the_path_the_mir_prints():
-    # Review 5 of #106: the MIR names a type from its nearest uniquely named ancestor,
+    # The MIR names a type from its nearest uniquely named ancestor,
     # and a raw identifier with `r#`.
     from peeky.rust_symbols import struct_name
 
@@ -2276,7 +2277,7 @@ def test_a_preview_needs_a_proof_a_plain_layout_and_agreeing_addresses():
     ],
 )
 def test_lldbs_name_must_spell_the_layouts_type(name, shown, spelled):
-    # Review of #106: LLDB names a generic's primitive arguments the C way, and a tuple
+    # LLDB names a generic's primitive arguments the C way, and a tuple
     # as the DWARF does; `_lossy` let `Pair<char32_t>` pass for `Pair<i8>`.
     from peeky.rust_symbols import _spelled
 
@@ -2284,7 +2285,7 @@ def test_lldbs_name_must_spell_the_layouts_type(name, shown, spelled):
 
 
 def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
-    # Review of #106: `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`.
+    # `struct Num { __0: u32 }` has the DWARF of `struct Num(u32)`.
     from peeky.rust_symbols import without_numbered_structs
 
     layouts = {
@@ -2302,12 +2303,12 @@ def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
         '#[cfg(feature = "x")]\nfn f() {}\nlet t = "feature(x)"; // #![feature(y)]\n'
     )
     assert without_numbered_structs(layouts, [plain]) == layouts
-    # Fields a macro declares from the names it is given (review 2).
+    # Fields a macro declares from the names it is given.
     generated = without_numbered_structs(layouts, [plain, "fields!(Num, __0, __1);\n"])
     assert generated["&[peeky_pagination::Num]"] == {"kind": "unread"}
     declared = "struct Num {\n    __0: u32,\n}\n"
     assert without_numbered_structs(layouts, [plain, declared]) == unread
-    # Review 5: a nightly feature gate (`${concat(__, "0")}` writes no `__0`), however
+    # A nightly feature gate (`${concat(__, "0")}` writes no `__0`), however
     # spelled, and a source not lexed.
     for gate in (
         "#![feature(macro_metavar_expr_concat)]\n",
@@ -2319,7 +2320,7 @@ def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
         "fn main() { /* not closed\n",
     ):
         assert without_numbered_structs(layouts, [plain, gate]) == unread, gate
-    # Review 6: Cargo.toml and Cargo.lock, which `include!` reads as Rust, are searched as
+    # Cargo.toml and Cargo.lock, which `include!` reads as Rust, are searched as
     # plain text: they need not lex as Rust, and a `__0` in their strings counts too.
     manifest = '[package]\nname = "demo" # don\'t\nversion = "0.1.0"\n'
     assert without_numbered_structs(layouts, [plain], [manifest]) == layouts
@@ -2333,7 +2334,7 @@ def test_tuple_structs_are_unread_where_a_source_names_a_field_like_theirs():
 
 
 def test_a_packed_struct_is_never_previewed_even_when_aligned():
-    # Review of #106: `#[repr(packed)] struct Pk { a: u32, b: u32 }` has aligned fields.
+    # `#[repr(packed)] struct Pk { a: u32, b: u32 }` has aligned fields.
     from peeky.rust_symbols import STRUCT_PREFIX
 
     packed = (
@@ -2427,7 +2428,7 @@ def blocks_dump(*, ranges=True):
 
 
 def test_a_function_s_lexical_blocks_name_their_variables_and_code(tmp_path):
-    # #115: which DWARF lexical block a stop's address is in tells a macro's own stops
+    # Which DWARF lexical block a stop's address is in tells a macro's own stops
     # apart (`println!`'s `args`); an inlined call's own blocks are its callee's.
     (root,) = parse_dies(blocks_dump(), units=False)
     found = code_blocks(root, RustUnit(0, 0x0B, 0x1000, 0, APP))
@@ -2455,7 +2456,7 @@ def test_a_function_s_lexical_blocks_name_their_variables_and_code(tmp_path):
 
 
 def test_an_inlined_call_keeps_its_site():
-    # #324: where an inlined call is made from (file, line, column), which tells the code
+    # Where an inlined call is made from (file, line, column), which tells the code
     # of a line's own calls that runs below its breakpoint (`x.clone()` at -O0).
     high = "DW_AT_high_pc\t(0x0000000100000e5c)"
     pad = " " * 26
@@ -2488,7 +2489,7 @@ def test_an_inlined_call_keeps_its_site():
 
 
 def test_describe_lists_the_locals_no_stop_can_change_per_function():
-    # #138: the `mutable:` line names each function's locals kept in a register.
+    # The `mutable:` line names each function's locals kept in a register.
     from peeky.cli import _describe_text
 
     text = _describe_text(
@@ -2524,16 +2525,16 @@ def test_describe_lists_the_locals_no_stop_can_change_per_function():
     assert (
         "rust-cookbook 6.6): limiter::allow: limit, now; bind::shadow: n. Never settable, a" in line
     )
-    # Review round 3: as the rows say, the binding to black-box, and inlining.
+    # As the rows say, the binding to black-box, and inlining.
     assert "every one in memory, rust-cookbook 6.6): bind::shadow: x (line 4). Never" in line
     assert "change the value in the caller): bind::other::far: a, y. Never settable, held" in line
     assert "a local after the `.await`): app::aw::{{closure}}: k. A Vec's" in line, line
-    # #183: where nothing can change, the edit that can (rust-cookbook 6.6).
+    # Where nothing can change, the edit that can (rust-cookbook 6.6).
     assert "nor is anything in limiter::allow, app::aw::{{closure}}," in line, line
     assert line.endswith("keeps a local in memory: rust-cookbook 6.6)"), line
 
 
-# #303 (eleventh evaluation, rota): `last: Option<Engineer>` read `<unqualified Rust enum
+# rota's `last: Option<Engineer>` read `<unqualified Rust enum
 # layout>`. rustc stores its `None` in a niche: the capacity of `name`, a String nested
 # four structs deep, holds 0x8000000000000000, which no capacity can be.
 ENGINEER = _struct(
@@ -3138,9 +3139,46 @@ def test_rust_sessions_read_an_option_only_under_an_owned_locals_proofs():
     ],
 )
 def test_an_opaque_enum_names_the_binding_its_own_kind_has(kind, top, advice):
-    # Review of #303: a `Result` or a user enum was told to read an `if let`'s binding
+    # A `Result` or a user enum was told to read an `if let`'s binding
     # only for `Option`s, and was given a `match` without its arm.
     variable = {"name": "v", "type": kind, "memoryReference": "0x10", "value": ""}
     view = active_variant(variable, None, {kind: {"kind": "unqualified"}}, top=top)
     assert view["value"] == UNQUALIFIED, view
     assert view["why"].endswith(f"It is stored at 0x0000000000000010; {advice}"), view
+
+
+LAYOUT = {
+    "kind": "vec",
+    "shape": "struct",
+    "shown": "Engineer",
+    "element": "rota::Engineer",
+    "element_size": 32,
+    "fields": [
+        ("shifts", 0, "u32"),
+        ("leave", 8, "alloc::vec::Vec<u32, alloc::alloc::Global>"),
+    ],
+}
+
+
+def _leave(item, holder=None):
+    _, children = _partial_elements(LAYOUT, [bytes(32)] * 2, None, item=item, holder=holder)
+    return {member["name"]: member for member in children[1]["children"]}["leave"]["reason"]
+
+
+def test_an_unread_field_names_the_for_loops_item_in_scope():
+    # `team[1].leave` said to read it "through a reference to the element, such as
+    # a for loop's item", while the loop's `e` was in scope, and `e.leave` read. Nothing
+    # proves the loop goes over `team` (`for e in backups.iter()`), nor
+    # which element `e` is at a stop, so the note says so.
+    assert _leave("e", "team").endswith(
+        "read it through a reference to the element: if the `for` loop's item `e` is "
+        "`team[1]` at a stop, read `e.leave`; Peeky can't prove it is"
+    )
+    assert _leave("e").endswith(
+        "if the `for` loop's item `e` is `this element` at a stop, "
+        "read `e.leave`; Peeky can't prove it is"
+    )
+    # Without one in scope, the hint stays general.
+    assert _leave(None, "team").endswith(
+        "read it through a reference to the element, such as a `for` loop's item"
+    )

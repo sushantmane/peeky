@@ -278,7 +278,7 @@ def refused_before_kept(monkeypatch, lines, dies):
 
 
 def test_a_value_over_what_is_left_is_refused_before_it_is_kept(monkeypatch):
-    # Each line's cost is reckoned before anything of it is kept or copied (review): a 10
+    # Each line's cost is reckoned before anything of it is kept or copied: a 10
     # MiB name was kept, then refused, holding 21 MB against a 1 MiB bound.
     from peeky.native import DieMap
 
@@ -337,7 +337,7 @@ def test_a_line_over_max_line_is_refused_as_it_is_read(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("one_line", [True, False])
 def test_ranges_near_the_bound_are_read_within_it(monkeypatch, one_line):
-    # Accepted, a line's ranges are read one at a time (review): all 30,000 of a line's
+    # Accepted, a line's ranges are read one at a time: all 30,000 of a line's
     # matches at once took a parse with an 8 MiB bound to 10.7 MB.
     import tracemalloc
 

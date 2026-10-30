@@ -414,7 +414,7 @@ def test_field_rows_say_whether_set_can_change_them(member_worker):
 
 def test_members_the_runtime_refuses_are_never_written(member_worker):
     _, child = inspected(member_worker)
-    # The whole selector, not the debugger's name alone (#261).
+    # The whole selector, not the debugger's name alone.
     with pytest.raises(ValueError, match="`request.nested` cannot be changed: it is final"):
         call(member_worker, "set_variable", handle=child, name="nested", value="2")
     _, child = inspected(member_worker)
@@ -443,7 +443,7 @@ def test_an_unconfirmed_field_write_closes_the_session(worker):
 
 
 def test_a_java_write_tells_the_launcher_what_is_left_of_the_pause_budget(member_worker):
-    # #204 review round 2: the launcher's search for what refers to an array must end
+    # The launcher's search for what refers to an array must end
     # within the session's pause budget (an attached JVM's 10 s).
     import time
 
@@ -484,7 +484,7 @@ class HolderBackend(MemberBackend):
 
 
 class HolderRuntime(MemberRuntime):
-    """Asks what holds an array before marking its elements (Java's launcher, #261);
+    """Asks what holds an array before marking its elements (Java's launcher);
     ``settled``: whether every thread was suspended, so the verdict lasts the stop."""
 
     def __init__(self, held, settled=True):
@@ -505,7 +505,7 @@ def array_handle(worker):
     "held", [None, "its array is held by java.util.Fake.a (the JDK's own state)"]
 )
 def test_an_elements_mark_follows_what_holds_its_array(member_worker, held):
-    # #261: an element was marked [settable] by its path alone, then the launcher refused
+    # An element was marked [settable] by its path alone, then the launcher refused
     # the write (the array was in a list an unmodifiable view wraps).
     member_worker.dap, member_worker.runtime = HolderBackend(), HolderRuntime(held)
     handle = array_handle(member_worker)
@@ -521,7 +521,7 @@ def test_an_elements_mark_follows_what_holds_its_array(member_worker, held):
 
 
 def test_a_verdict_made_while_other_threads_run_is_asked_again(member_worker):
-    # #261 review: a verdict cached for the stop went stale when a background thread
+    # A verdict cached for the stop went stale when a background thread
     # wrapped the array's list in an unmodifiable view: `get` said settable, `set` refused.
     from peeky.java import Unproven
 
@@ -541,7 +541,7 @@ def test_a_verdict_made_while_other_threads_run_is_asked_again(member_worker):
 
 
 def test_an_element_whose_holder_is_not_known_is_maybe_settable(member_worker):
-    # #261: where the launcher could not tell in time (or an older one cannot tell before
+    # Where the launcher could not tell in time (or an older one cannot tell before
     # a change), neither mark is promised: the row says why, and `set` decides.
     from peeky.java import Unproven
 
@@ -557,7 +557,7 @@ def test_an_element_whose_holder_is_not_known_is_maybe_settable(member_worker):
 
 
 def test_a_refused_member_write_names_the_whole_selector(member_worker):
-    # #261: "The debugger refused to change '1'" named the element's index alone.
+    # "The debugger refused to change '1'" named the element's index alone.
     member_worker.dap, member_worker.runtime = HolderBackend(), HolderRuntime(None)
     member_worker.dap.refusal = "the array is held by java.util.Fake.a, a JDK class's field"
     with pytest.raises(ValueError, match=r"refused to change `xs\[1\]` \(the array is held"):

@@ -1,10 +1,8 @@
-"""SQL's elements(value, language) and text(value, language, type) (twelfth evaluation,
-desks 1 and rainfall 6): a stored value is its language's notation, never JSON, and a
-Python string keeps its quotes, so `json_each(substr(value, instr(value, '[')))` failed
-with `malformed JSON` on `int[3]@55 [490, 484, 497]`, and `value = 'Göteborg'` matched
-nothing. Review of PR #347: debugpy shows a Python value by its own `__repr__`, which a
-class may write as `1` or `'Göteborg'`; a C `long double`'s `1e-4000` read as 0; and a
-Java char is bare (`+`)."""
+"""SQL's elements(value, language) and text(value, language, type): a stored value is its language's
+notation, never JSON, and a Python string keeps its quotes, so `json_each(substr(value, instr(value,
+'[')))` failed with `malformed JSON` on `int[3]@55 [490, 484, 497]`, and `value = 'Göteborg'`
+matched nothing. debugpy shows a Python value by its own `__repr__`, which a class may write as `1`
+or `'Göteborg'`; a C `long double`'s `1e-4000` read as 0; and a Java char is bare (`+`)."""
 
 import json
 import re
@@ -90,7 +88,7 @@ def _call(store, function, value, language, kind=None):
         ("[L'a', L'\\0', U'é', 'b']", "cpp", ["a", "\0", "é", "b"]),
         ('[u8"Åsa", L"Łódź"]', "cpp", ["Åsa", "Łódź"]),
         ("[true, false]", "c", [True, False]),
-        # A 2-D char array: each row's text up to its first NUL (thirteenth evaluation).
+        # A 2-D char array: each row's text up to its first NUL.
         (
             '["ab" (then 4 NUL bytes), "cde" (then a NUL and 2 bytes not shown)]',
             "c",
@@ -215,7 +213,7 @@ def test_elements_is_null_unless_every_element_is_read_exactly(store, value, lan
         ('L"Žilina"', "cpp", "const wchar_t *", "Žilina"),
         ('u"Ålesund"', "cpp", "std::u16string", "Ålesund"),
         ('"a\\tb\\000c\\"d"', "cpp", "std::string", 'a\tb\0c"d'),
-        # A character array's text ends at its first NUL (thirteenth evaluation).
+        # A character array's text ends at its first NUL.
         ('"a\\tb\\000c\\"d"', "c", "char[8]", "a\tb"),
         ('"\\U0001f600"', "cpp", "std::string", "😀"),
         ('0x0000000100003f80 "Nîmes"', "c", "const char *", "Nîmes"),
@@ -296,7 +294,7 @@ def test_text_is_null_unless_decoded_exactly(store, value, language):
 @pytest.mark.parametrize(
     "value, kind, shown",
     [
-        # Thirteenth evaluation: a `char name[32]` gave NULL. Its text is its bytes up to
+        # A `char name[32]` gave NULL. Its text is its bytes up to
         # its first NUL, as Peeky shows it, with the note's count matching the size.
         ('"Adeyemi" (then a NUL and 24 bytes not shown)', "char[32]", "Adeyemi"),
         ('"Malmö" (then 10 NUL bytes)', "char[16]", "Malmö"),
@@ -335,7 +333,7 @@ def test_text_of_a_char_array_ends_at_its_first_nul(store, value, kind, shown):
         ('"abcde"', "char[4]"),
         ('"ok\\x80\\x01" (then a NUL and 1 byte not shown)', "unsigned char[6]"),
         ('"\\xc2\\205a\\xe2\\x82" (no NUL in its 5 bytes)', "char[5]"),
-        # Review of #390: LLDB's literal with fewer bytes than the array, and no NUL shown.
+        # LLDB's literal with fewer bytes than the array, and no NUL shown.
         # LLDB formats what part of its read succeeded, so the next byte may be unreadable.
         ('"Zürich"', "char[16]"),
         ('""', "char[4]"),

@@ -1,4 +1,4 @@
-"""Where a C or C++ declaration statement ends, from its source (#104 review, round 3)."""
+"""Where a C or C++ declaration statement ends, from its source."""
 
 import re
 
@@ -72,7 +72,7 @@ def test_blanking_keeps_lines_and_columns():
     assert blanked == "a =     \n  ;     \n     b =    ;     \nc;\n"
 
 
-# Review of #104 (round 4): text the compiler reads differently from the scan gives no end.
+# Text the compiler reads differently from the scan gives no end.
 
 
 def test_a_line_splice_gives_no_end():
@@ -95,7 +95,7 @@ def test_trigraphs_are_read_as_c_reads_them_and_not_in_cpp():
     assert Statements(source, raw_strings=False).end(1, "t") is None
     assert Statements(source, raw_strings=False).blanked.split("\n")[1].strip() == ""
     assert Statements(source).end(1, "t") == 2
-    # #126 review: one `"huh??!"` no longer hides the whole file.
+    # One `"huh??!"` doesn't hide the whole file.
     elsewhere = 'long a = f(\n    1);\nconst char *q = "what??!";\n'
     assert Statements(elsewhere, raw_strings=False).end(1, "a") == 2
     assert Statements("int x = a ??( 1 ??) ;\n", raw_strings=False).end(1, "x") == 1
@@ -165,7 +165,7 @@ def test_c_has_no_raw_strings():
     assert Statements(source, raw_strings=False).end(1, "s") == 1
 
 
-# Review of #104 (round 5): lines are counted as Clang's line table (so DWARF) and GCC count
+# Lines are counted as Clang's line table (so DWARF) and GCC count
 # them: `\r\n`, a lone `\r`, or `\n`.
 
 
@@ -204,7 +204,7 @@ def test_a_splice_before_newline_and_carriage_return_is_unreadable():
     assert macro_hazards(["#define N 1\r#define O {\r\n#define P 2\n\r"])["brackets"] == {"O"}
 
 
-# #121: the frame stopped in. A declaration has run once its own part has, so a body's
+# The frame stopped in. A declaration has run once its own part has, so a body's
 # lines are past a header's variable; a jump past it leaves it unset.
 
 HEADERS = """int main(void) {
@@ -338,9 +338,6 @@ def test_macro_hazards_name_what_each_expansion_hides():
     assert hazards["labels"] == {"LBL", "CASE", "WRAP"} and hazards["gotos"] == {"JUMP"}
 
 
-# Review of #126 (round 1).
-
-
 def test_a_goto_back_into_a_block_from_after_it_reaches_its_label():
     source = """long back(int pass) {
   long out = 0;
@@ -409,12 +406,9 @@ def test_a_statement_expression_macro_keeps_its_semicolons_inside():
     assert Statements(source, hazards=hazards).declared_through(1, "m") == 2
 
 
-# Review of #126 (round 2).
-
-
 def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
-    # Review of PR #214: a name in the initializer may be a macro that calls (`INIT`,
-    # a library's `errno`), so `k = m` and `n = x` are no longer taken as settled.
+    # A name in the initializer may be a macro that calls (`INIT`,
+    # a library's `errno`), so `k = m` and `n = x` aren't taken as settled.
     source = """int f(void) {
   for (int i = 0; i < 3; i++) g(i);
   for (long i = twice(1); i < 20; i += 7) g(i);
@@ -460,7 +454,7 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
             (18, "i"),
         )
     }
-    # Review round 2 of PR #214: each declarator is judged with those before it
+    # Each declarator is judged with those before it
     # (`j = i` names `i`, but `i = 0` is set first; `j = INIT` runs before `i = 0`),
     # and one with no initializer (`int i;`) is never set by the header.
     assert settled == {
@@ -484,7 +478,7 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
         (17, "i"): False,
         (18, "i"): False,
     }
-    # Review round 3: in C++ constructing a declarator before it may call (`X j = 0`
+    # In C++ constructing a declarator before it may call (`X j = 0`
     # runs `X::X(int)` before `i` is set), so only the first counts; C keeps each judged
     # with those before it.
     c = Statements(source, raw_strings=False)
@@ -502,7 +496,7 @@ def test_a_header_variable_is_settled_only_without_a_call_or_a_while():
 
 
 def test_a_jump_into_a_headers_statement_past_its_declaration_is_found():
-    # Review round 2 of PR #214: `goto inside;` to a label in a one-line loop's body
+    # `goto inside;` to a label in a one-line loop's body
     # skips `int i = 0`, so a header's variable is live mid-line only where no jump can
     # enter its statement past the declaration (as `jumped_past` judges a label).
     source = """#define JUMP goto out
@@ -545,7 +539,7 @@ int macrojump(void) {
     # A switch after the loop, and a label no `goto` names, cannot enter it; a macro
     # that may hold a label, or an `#include`, leaves it unknown.
     assert found == {4: False, 10: 10, 13: 13, 17: 17, 20: False, 24: None, 27: None, 32: 32}
-    # Review round 3: a GNU `asm goto` lists its labels as operands, which no `goto
+    # A GNU `asm goto` lists its labels as operands, which no `goto
     # label` names: any label after the declaration counts then.
     source = """int asmjump(void) {
   for (int i = 0; ; ) { inside: g(&i); }
@@ -594,7 +588,7 @@ out:
 
 
 def test_a_class_extent_runs_from_its_head_to_its_closing_brace():
-    # Review of #126 (round 3): a local class's member initializers are not the
+    # A local class's member initializers are not the
     # function's own lines.
     source = """void f(void) {
   struct D : public B<int>, C {
@@ -669,7 +663,7 @@ int Klass::get() const {
 
 
 def test_a_line_continuing_a_statement_is_told_from_one_starting_it():
-    # Review of #105: a stop on `+ f();` under `long t = s.a` is part-way through the
+    # A stop on `+ f();` under `long t = s.a` is part-way through the
     # statement, which already read `s.a`.
     statements = Statements(BEGINS)
     verdicts = {}
@@ -749,7 +743,7 @@ STATEMENT_EXPRESSIONS = """int main(void) {
 
 
 def test_every_bracket_up_to_the_function_body_must_be_a_block_of_statements():
-    # Review of #105 (round 2): `if (c) {` inside `({`, `new long[1]{`, `decltype(W{}){`
+    # `if (c) {` inside `({`, `new long[1]{`, `decltype(W{}){`
     # and `(long)(struct W){` each passed as a block of statements.
     statements = Statements(STATEMENT_EXPRESSIONS, raw_strings=True)
     lines = STATEMENT_EXPRESSIONS.splitlines()
@@ -811,7 +805,7 @@ int main(void) {
 
 
 def test_a_function_like_brace_is_a_body_only_at_file_scope_or_in_a_class():
-    # Review of #105 (round 3): `REPEAT(k, 1) {` inside `({` read as a function's body.
+    # `REPEAT(k, 1) {` inside `({` read as a function's body.
     statements = Statements(ROUND3, raw_strings=True)
     lines = ROUND3.splitlines()
 
@@ -830,7 +824,7 @@ def test_a_function_like_brace_is_a_body_only_at_file_scope_or_in_a_class():
 
 
 def test_a_function_try_block_and_its_handlers_are_function_bodies():
-    # Review of #105 (round 4): `long tryfun(P p) try {` read as a `try` statement's block
+    # `long tryfun(P p) try {` read as a `try` statement's block
     # outside any function, so its statements "continued" one.
     text = (
         "long tryfun(P p) try {\n"
@@ -856,7 +850,7 @@ def test_a_function_try_block_and_its_handlers_are_function_bodies():
 
 
 def test_a_functions_first_line_holds_the_statements_after_its_body_opens():
-    # Review of #105 (round 3): `long one(struct P p) { long t =` / `p.x + g();` ends on
+    # `long one(struct P p) { long t =` / `p.x + g();` ends on
     # the next line; `{ return p.x + g(); }` on its own.
     statements = Statements(ROUND3, raw_strings=True)
     lines = ROUND3.splitlines()
@@ -918,7 +912,7 @@ BLOCK_STORAGE = """int main(void) {
 
 
 def test_a_blocks_static_or_extern_of_an_outer_locals_name_is_found():
-    # Review of PR #140: the code reads the block's own `static`/`extern`, which lldb-dap
+    # The code reads the block's own `static`/`extern`, which lldb-dap
     # does not list; the outer local of that name was shown under it.
     hazards = {"declares": {"KEEP"}, "expands": {"KEEP": frozenset({"static", "long", "n"})}}
     statements = Statements(BLOCK_STORAGE, raw_strings=False, hazards=hazards)
@@ -1046,7 +1040,7 @@ int main(void) {
 
 
 def test_names_a_block_declares_that_hide_an_outer_local_are_told_apart():
-    # Review of PR #144: a block opening on the stop line, a declarator after a type's
+    # A block opening on the stop line, a declarator after a type's
     # body, an enumerator and a function declaration each hide the outer local; `#if 0`
     # text, a prototype's parameter and a macro whose expansion names another do not.
     from peeky.c_source import macro_hazards
@@ -1085,7 +1079,7 @@ def test_a_cheap_read_finds_declarators_after_braces_enumerators_and_functions()
     assert not storage_named("{ long r = 1; use(r); }", "q")
 
 
-# Review of PR #144 (round 2): what Peeky reads is the translation unit as the compiler
+# What Peeky reads is the translation unit as the compiler
 # preprocessed it; Clang's output for a function, with a system header, a fragment
 # included in a block and a `_Pragma` splitting a line.
 PREPROCESSED = b"""# 1 "dir/a.c"
@@ -1174,7 +1168,7 @@ NESTED_ENUMS = """long run(void) {
 
 
 def test_c_gives_enumerators_anywhere_in_a_block_its_scope_and_cpp_a_class_name():
-    # Review of PR #144 (round 2): in C an enum nested in a struct's body (or a cast)
+    # In C an enum nested in a struct's body (or a cast)
     # declares its enumerators in the block; in C++ they are the class's. A C++ class a
     # block declares hides the outer local; a C struct's tag does not.
     c = Statements(NESTED_ENUMS, raw_strings=False, trigraphs=False)
@@ -1222,7 +1216,7 @@ SCOPES = """int f(int k) {
 
 
 def test_a_declarations_scope_ends_with_its_block_or_its_header_statement():
-    # Review of PR #159: clang gives a `while`'s or a `switch`'s condition variable no
+    # clang gives a `while`'s or a `switch`'s condition variable no
     # block of its own, so the source says where its scope ends: with its statement.
     statements = Statements(SCOPES, raw_strings=True)
     expected = {
@@ -1265,7 +1259,7 @@ SAME_LINE = """int f(int k) {
 
 
 def test_a_scope_is_read_from_the_statement_that_declares_the_name():
-    # Review of PR #159 (round 3): a later statement on the line that only names it (a
+    # A later statement on the line that only names it (a
     # header, a block) is not its declaration; two that declare it tell nothing.
     statements = Statements(SAME_LINE, raw_strings=True)
     assert statements.scope_lines(4, "t") == (4, 6)
@@ -1297,7 +1291,7 @@ BODY_SCOPES = """int f(int c) {
 
 
 def test_a_bodys_declaration_without_braces_is_scoped_to_its_statement():
-    # Review of PR #159 (round 4): clang gives a `while`'s, a `do`'s or a `switch`'s
+    # clang gives a `while`'s, a `do`'s or a `switch`'s
     # body no block; a declaration that is the whole body ends with its `;`.
     statements = Statements(BODY_SCOPES, raw_strings=True)
     assert [statements.scope_lines(line, "t") for line in (3, 4, 5, 8, 11)] == [
@@ -1326,7 +1320,7 @@ BINDING_SOURCE = """int f() {
 
 
 def test_a_structured_binding_hides_an_outer_local_where_it_is_in_scope():
-    # Review of PR #159 (round 4): LLDB may list no binding (clang 18 on Linux).
+    # LLDB may list no binding (clang 18 on Linux).
     statements = Statements(BINDING_SOURCE, raw_strings=True)
     assert statements.block_storage(4, "t", 2) == ("binding", 3)
     assert statements.block_storage(8, "t", 2) == ("binding", 7)
@@ -1347,7 +1341,7 @@ LAMBDA_SOURCE = """int f() {
 
 
 def test_what_braces_in_a_statement_declare_hides_nothing_in_its_block():
-    # Review of PR #159 (round 5): a lambda's binding hid the function's `t` after it.
+    # A lambda's binding hid the function's `t` after it.
     statements = Statements(LAMBDA_SOURCE, raw_strings=True)
     assert statements.block_storage(4, "t", 2) is False
     assert statements.block_storage(4, "t2", 2) is False
@@ -1372,7 +1366,7 @@ BINDS_SOURCE = """int main() {
 
 
 def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
-    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &&`:
+    # Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &&`:
     # only the line tells that it names the element, not a reference the code declares.
     statements = Statements(BINDS_SOURCE, raw_strings=True)
     names = ("t", "u", "r", "s", "a", "b", "c", "d", "k", "v", "w", "w2", "z", "m", "n")
@@ -1407,7 +1401,7 @@ def test_a_line_binds_a_name_only_by_a_structured_bindings_brackets():
 
 
 def test_a_binding_says_how_it_binds_and_what():
-    # Review of #296: a binding by reference may refer into a temporary its line destroys.
+    # A binding by reference may refer into a temporary its line destroys.
     source = """int main() {
     auto &[t, u] = make(0)[0];
     auto [x, y] = p;
@@ -1486,7 +1480,7 @@ def kept(source, container, declared, line, bound):
         ("", "use(m.find(k)->second);", "", False),
         ("", "m.at(k) = 3;", "", False),
         ("", "for (auto &[a, b] : m) use(a);", "", False),
-        # Review of #368, round 2: an operator Peeky can't prove built in, as any with an
+        # An operator Peeky can't prove built in, as any with an
         # operand of another type may be an overload that takes the name by reference.
         ("", "sink << v;", "", False),
         ("", "std::cout << k;", "", False),
@@ -1537,8 +1531,8 @@ def kept(source, container, declared, line, bound):
 def test_a_loop_over_a_container_is_proven_only_where_the_code_leaves_it(
     before, body, after, expected
 ):
-    # #297: a range `for` over a local container binds each element by reference; the code
-    # must leave that element alive while the binding is in scope. Review of #368: nor may
+    # A range `for` over a local container binds each element by reference; the code
+    # must leave that element alive while the binding is in scope. Nor may
     # it keep a pointer, iterator or reference to one, through the container or a name.
     source = LOOP_OVER_M.replace("BEFORE", before).replace("BODY", body).replace("AFTER", after)
     assert kept(source, "m", 2, 4, "k") is expected
@@ -1579,7 +1573,7 @@ SUBSCRIPT = """int main() {
         # Anything in the binding's scope that may add or remove one.
         ("v[0]", "", "v.push_back({});", False),
         ("v[0]", "", "v.reserve(9);", False),
-        # Review of #368: an alias made before the binding, through which code may end
+        # An alias made before the binding, through which code may end
         # the element's life: `std::destroy_at(p)`, then `new (p) P{13, 14}`.
         ("v[0]", "P *p = v.data();", "std::destroy_at(p);", False),
         ("v[0]", "P *p = v.data();", "", False),
@@ -1612,7 +1606,7 @@ def test_a_subscripts_binding_is_proven_only_where_the_code_leaves_it(
 
 
 def test_a_binding_lists_its_names_and_a_user_literal_is_no_number():
-    # Review of #368, round 3: `v + 1_sink` calls `operator""_sink`, whose class may bring
+    # `v + 1_sink` calls `operator""_sink`, whose class may bring
     # an `operator+(long &, Sink)` that keeps `v`'s address; only the language's own
     # literals and suffixes are numbers.
     source = "int main() {\n    auto &&[c, d] = one(1);\n    use(c + d);\n}\n"
@@ -1661,7 +1655,7 @@ RANGE_LAMBDA_SOURCE = """int f() {
 
 
 def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
-    # #169: the header's binding hid a lambda's own `t` in the range's expression.
+    # The header's binding hid a lambda's own `t` in the range's expression.
     statements = Statements(RANGE_LAMBDA_SOURCE, raw_strings=True)
     # In the lambda's frame (a function wholly on the line): only its body counts.
     assert statements.block_storage(3, "t", 3, True, body=True) is False
@@ -1669,7 +1663,7 @@ def test_a_range_for_binding_names_nothing_in_its_range_or_a_lambda_there():
     # Read as the enclosing function's line, the binding is named there.
     assert statements.block_storage(3, "t", 2, True) == ("binding", 3)
     # Two bodies open on the line: it is read as any other, but which one the frame runs,
-    # and so whether what is found is its own, cannot be told (review of PR #299).
+    # and so whether what is found is its own, cannot be told.
     assert statements.block_storage(7, "t", 2, True, body=True) == ("bodies", 7)
     # The binding's own row, declared on a line where a lambda declares a `t` too.
     assert statements.block_storage(4, "t", 3, True) is False
@@ -1710,7 +1704,7 @@ RANGE_HEADER_SOURCE = """int f(P p, P *q) {
 
 
 def test_a_range_for_header_says_where_it_names_the_outer_local():
-    # #283: a range-`for` header naming the outer `t` outside its binding runs that code
+    # A range-`for` header naming the outer `t` outside its binding runs that code
     # before the binding exists. A mention is not a read (`sizeof`, `decltype`, a lambda's
     # body, a lambda's own `t`), so each one counts, but no member's or qualified name.
     statements = Statements(RANGE_HEADER_SOURCE, raw_strings=True)
@@ -1771,7 +1765,7 @@ STATEMENT_HEADER_CPP = """long f(long x, P p, P *q) {
 
 
 def test_a_statement_header_says_where_it_names_the_outer_local_before_its_line_hides_it():
-    # #286: `if (t) { static long t = 5; use(t); }` named the static at the line's first
+    # `if (t) { static long t = 5; use(t); }` named the static at the line's first
     # instruction, though its header runs first and names the outer `t` there. Any
     # statement's header naming it before the line's declaration hides it counts; a
     # `while`'s condition and a `for`'s condition or increment run on each pass.
@@ -1846,7 +1840,7 @@ LAMBDA_BLOCK_SOURCE = """long f(long x) {
 
 
 def test_a_lambdas_block_is_scoped_to_the_lambda():
-    # #290: a block in a lambda wholly on the line counted for the function holding the
+    # A block in a lambda wholly on the line counted for the function holding the
     # lambda (`others`: that function goes on past the line), and in the lambda's own
     # frame (``body``) it was skipped, as though its statements were the lambda's only.
     statements = Statements(LAMBDA_BLOCK_SOURCE, raw_strings=True)
@@ -1872,7 +1866,7 @@ def test_a_lambdas_block_is_scoped_to_the_lambda():
     assert storage(8, 2, others=True) == ("static", 8)
     assert storage(9, 2, others=True) == ("static", 9)
     # A lambda's frame on a line holding another lambda: which one it runs, and so whose
-    # `static` that is, cannot be told (review of PR #299).
+    # `static` that is, cannot be told.
     assert storage(11, None, body=True) == ("bodies", 11)
 
 
@@ -1892,7 +1886,7 @@ SPECIFIED_LAMBDAS = """long f(long x) {
 
 
 def test_a_lambdas_specifiers_keep_its_body_a_lambdas():
-    # Review of PR #299: `[](long t) constexpr {` was no lambda's body (`_QUALIFIED`
+    # `[](long t) constexpr {` was no lambda's body (the specifiers read
     # lacked `constexpr`), nor was `-> decltype(t) {` or `noexcept(true) {` (the last `)`
     # before the brace was taken for the parameters'), nor a generic lambda's (read as a
     # template function's): their blocks still counted for the function holding them.
@@ -1926,10 +1920,10 @@ NESTED_SPECIFIERS = """long f(long x) {
 
 
 def test_a_lambdas_specifiers_are_read_to_their_paired_brackets():
-    # Review round 2 of PR #299: `noexcept(...)` and `__attribute__((...))` were read by a
+    # `noexcept(...)` and `__attribute__((...))` were read by a
     # regular expression three parentheses deep, so a deeper group left the brace `other`
-    # (and the lambda's blocks counted for `f`). Each group is read to its paired bracket
-    # now, however deep; a word that is no specifier still makes no lambda's head.
+    # (and the lambda's blocks counted for `f`). Each group is read to its paired bracket,
+    # however deep; a word that is no specifier still makes no lambda's head.
     statements = Statements(NESTED_SPECIFIERS, raw_strings=True)
     code = statements._code()[0]
     kinds = {
@@ -1955,7 +1949,7 @@ IF_CONSTEXPR_SOURCE = """long f(long x) {
 
 
 def test_an_if_constexpr_or_consteval_block_hides_the_outer_local():
-    # #289: the block of `if constexpr (...)` was read as a function's body (its `(...)`
+    # The block of `if constexpr (...)` was read as a function's body (its `(...)`
     # as parameters), and that of `if consteval` as none of a statement's: what such a
     # block declares on the stop's line hid nothing, and the outer `t` showed its value.
     statements = Statements(IF_CONSTEXPR_SOURCE, raw_strings=True)
@@ -1967,7 +1961,7 @@ def test_an_if_constexpr_or_consteval_block_hides_the_outer_local():
     code = statements._code()[0]
     braces = [at for at, char in enumerate(code) if char == "{"]
     assert [statements._brace(at) for at in braces[1:]] == ["statement"] * 7, braces
-    # The header names `t` before the `typedef` (#286).
+    # The header names `t` before the `typedef`.
     assert statements.header_before(8, "t", 2) == ("if", 8, 8, False)
 
 
@@ -2008,7 +2002,7 @@ SAME_LINE_SCOPES_CPP = """long f(long x) {
 
 @pytest.mark.parametrize("raw_strings", [False, True])
 def test_a_line_naming_the_local_outside_a_declarations_scope_says_where(raw_strings):
-    # #293: `do { static long t = 5; use(t); } while (t-- > 0);` and `use(t); { static long
+    # `do { static long t = 5; use(t); } while (t-- > 0);` and `use(t); { static long
     # t = 6; use(t); }` said the code names the block's `static`, though the `while`
     # condition runs after that `t` leaves scope, and the first call before the block:
     # both name the outer `t`. Where the line names the local outside the scope of the
@@ -2055,7 +2049,7 @@ def test_a_line_naming_the_local_outside_a_declarations_scope_says_where(raw_str
 
 
 def test_a_cpp_line_naming_the_local_outside_a_declarations_scope_says_where():
-    # #293 in C++: a structured binding's scope is its block, or its loop; a lambda's
+    # In C++ a structured binding's scope is its block, or its loop; a lambda's
     # block is its own, and in its frame (``body``) only its body counts.
     statements = Statements(SAME_LINE_SCOPES_CPP, raw_strings=True)
     found = {line: statements.named_outside(line, "t", 2) for line in range(3, 9)}
@@ -2070,7 +2064,7 @@ def test_a_cpp_line_naming_the_local_outside_a_declarations_scope_says_where():
         8: "both",
     }, found
     assert statements.block_storage(5, "t", 2, True) == ("binding", 5)
-    # The function holding a lambda: nothing its block declares hides `t` (#290).
+    # The function holding a lambda: nothing its block declares hides `t`.
     assert statements.named_outside(7, "t", 2, others=True) is None
     # The lambda's own frame (its parameter `t`): `long r = t` before its block, and
     # `return r + t` after it; not the call's argument, outside the body.
@@ -2105,16 +2099,16 @@ SAME_LINE_OPERANDS_CPP = """long f(long x, bool ok) {
 
 
 def test_a_name_counts_as_a_declarator_only_where_it_surely_is_one():
-    # Review of PR #319: a name taken for a declarator (`_declarator`, which leans that way)
+    # A name taken for a declarator (`_declarator`, which leans that way)
     # was no mention, so a comma expression (`return use(0), t;`, also from a macro), or
     # C++'s `ok and t`, kept the plain note after a block's `static`. Only a name surely
-    # declared there is left out now (`_declaring`); any other counts.
+    # declared there is left out (`_declaring`); any other counts.
     for source, raw_strings in ((SAME_LINE_OPERANDS, False), (SAME_LINE_OPERANDS_CPP, True)):
         statements = Statements(source, raw_strings=raw_strings)
         lines = range(3, len(source.splitlines()) - 1)
         found = {line: statements.named_outside(line, "t", 2) for line in lines}
         before = {7, 8} if not raw_strings else set()
-        # Round 2: `A<B> t` may compare (`(A < B) > t`) with no keyword or `::` beside it.
+        # `A<B> t` may compare (`(A < B) > t`) with no keyword or `::` beside it.
         declared = set() if not raw_strings else {8, 9}
         assert found == {
             line: None if line in declared else "before" if line in before else "after"
@@ -2177,7 +2171,7 @@ IF_DO_SCOPES = """long f(long x, bool ok) {
 
 
 def test_a_do_loop_an_if_controls_ends_at_its_while():
-    # Review round 2 of PR #319: where an `if` controls a `do` loop, where it ends was
+    # Where an `if` controls a `do` loop, where it ends was
     # unknown, and the binding was taken to be in scope after it: on `if (auto [t, u] =
     # make(); ok) do { use(u); } while (false); use(t);` the last `use(t)` reads the outer
     # `t`, but the note named the binding. A `do` loop ends at its `while (...);`, and a
@@ -2221,7 +2215,7 @@ LABELLED_SCOPES = """long f(long x, bool ok) {
 
 
 def test_a_labelled_statement_a_header_controls_ends_where_its_statement_does():
-    # Review round 3 of PR #319: a label before the statement a header controls was read
+    # A label before the statement a header controls was read
     # as the start of a plain statement, run on to the next `;` past the block: on `if
     # (auto [t, u] = make(); ok) label: { use(u); } use(t);` the last `use(t)` reads the
     # outer `t`, but the binding was taken to be in scope there. A label (`case N::k ? 1 :
@@ -2258,7 +2252,7 @@ def test_a_labelled_statement_a_header_controls_ends_where_its_statement_does():
 
 
 def test_where_a_headers_statement_ends_is_unknown_its_scope_is_too():
-    # Review round 2 of PR #319: where Peeky cannot tell where the statement a header
+    # Where Peeky cannot tell where the statement a header
     # controls ends, its declaration was taken to be in scope there. Now that is unknown:
     # on the line, the code may name the outer local ("unsure"); below it, nothing can be
     # told (None). Here a `try` with no handler, which no compiler takes.
@@ -2295,7 +2289,7 @@ IF_INIT_SCOPES = """long f(long x, bool ok) {
 
 
 def test_an_if_headers_binding_is_in_scope_in_its_else():
-    # Review of PR #319: a header's declaration counted only in the header's own
+    # A header's declaration counted only in the header's own
     # statement, so in `if (auto [t, u] = make(); ok) { use(u); } else use(t);` the
     # `else` was read as past the binding's scope, and the note said so. It is in scope
     # through all the `if` controls, its `else` (or `else if`) included.
@@ -2317,7 +2311,7 @@ def test_an_if_headers_binding_is_in_scope_in_its_else():
 
 
 def test_a_range_for_header_says_where_its_declaration_and_colon_are():
-    # Review of PR #287: a range-`for`'s implicit code (its `begin`/`end` setup, each pass's
+    # A range-`for`'s implicit code (its `begin`/`end` setup, each pass's
     # test and binding, its range's cleanup), all emitted after its range expression,
     # carries its declaration's and its `:`'s columns; a classic `for`'s `?:` is no `:`.
     text = """void f(void) {
@@ -2370,7 +2364,7 @@ OWN_STATIC = """long work(long a) {
 
 
 def test_a_static_kept_as_a_constant_is_its_own_rows_declaration():
-    # Review of PR #175: at -O1 lldb-dap lists a block's `static` it keeps as a constant
+    # At -O1 lldb-dap lists a block's `static` it keeps as a constant
     # as a local (`t @ oc.c:4`); its own declaration does not hide it.
     statements = Statements(OWN_STATIC, raw_strings=False)
     assert statements.block_storage(5, "t", 4) == ("static", 4)
@@ -2390,7 +2384,7 @@ def test_a_static_kept_as_a_constant_is_its_own_rows_declaration():
 
 
 def test_identifiers_in_any_script_are_read_as_names():
-    # #195: `ñ` and an NFD `größe` (a combining mark) are identifiers to Clang.
+    # `ñ` and an NFD `größe` (a combining mark) are identifiers to Clang.
     from peeky.c_source import storage_named
 
     nfd = "gro\u0308\u00dfe"
@@ -2430,12 +2424,12 @@ def test_identifiers_in_any_script_are_read_as_names():
 def test_a_unit_that_may_optimize_a_function_on_its_own_is_found(unit, found):
     from peeky.c_source import optimizes
 
-    # Review of PR #366: `__attribute__((optimize(...)))` and `#pragma GCC optimize`
+    # `__attribute__((optimize(...)))` and `#pragma GCC optimize`
     # optimize a function beyond the build's -O0, where its code may leave source order.
     assert optimizes(unit.encode()) is found
 
 
-# `blank` as it was before its regexes were tuned for speed (#398): what it gives must
+# `blank` as it was before its regexes were tuned for speed: what it gives must
 # not change.
 _REFERENCE_OPENING = re.compile(r"""//|/\*|["']|(?:u8|u|U|L)?R\"""")
 _REFERENCE_LITERAL = {

@@ -109,8 +109,8 @@ def test_companion_header_is_frozen_at_investigation_creation(investigation):
 
 
 def test_a_long_build_failure_stays_bounded_with_the_compilers_errors_first(investigation):
-    # Review of #80: builds keep up to 1 MiB per stream, which used to reach the verify
-    # text (`reason:` was the exception's repr of the whole result), JSON and prompts.
+    # Builds keep up to 1 MiB per stream; the verify text, JSON and prompts keep only a
+    # bounded part, the compiler's errors first.
     _, target, _, _, _ = investigation
     error = json.dumps(
         {

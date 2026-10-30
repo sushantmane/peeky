@@ -1,11 +1,11 @@
 """A C or C++ pointer's notes never contradict each other, and a value read through a
 pointer says which other captured pointer holds its address.
 
-Twelfth evaluation, playlist: `end … [now + 0 by address; same array not proven; at the
+playlist: `end … [now + 0 by address; same array not proven; at the
 address one past queue's end]` said "same array not proven" beside a fact that both
-pointers are one past `queue`'s end, in words that read like code (2); and `now.title
+pointers are one past `queue`'s end, in words that read like code; and `now.title
 "Coda"`, read through `now` while it held `end`'s address, one past the last track the
-program counts, showed nothing to tie it to `end` (3).
+program counts, showed nothing to tie it to `end`.
 """
 
 import itertools
@@ -83,7 +83,7 @@ def facts(offset, element, end, through):
         ("zero", "none", "none", "none", "same address as `now`"),
         ("after", "none", "none", "none", "now + 6 by address; same array not proven"),
         ("before", "none", "none", "none", "now - 2 by address; same array not proven"),
-        # The evaluation's row: both pointers are one past `queue`'s end.
+        # playlist's row: both pointers are one past `queue`'s end.
         (
             "zero",
             "none",
@@ -199,7 +199,7 @@ def stop(*rows_and_extents):
 
 
 def test_two_pointers_one_past_the_same_array_say_one_address():
-    # The evaluation's 32 tracks, then `<`: `now` and `end` both one past `queue`'s end,
+    # playlist's 32 tracks, then `<`: `now` and `end` both one past `queue`'s end,
     # `queue` not captured (the worker's `past_end` says where).
     past = {"selector": "queue", "length": 32}
     rows = stop(
@@ -220,7 +220,7 @@ def test_two_pointers_one_past_the_same_array_say_one_address():
 
 
 def test_a_value_read_through_a_pointer_says_which_others_hold_its_address():
-    # The evaluation's hit 4: after `-4`, `end` is at queue[3], and `<` from the first
+    # playlist's hit 4: after `-4`, `end` is at queue[3], and `<` from the first
     # track set `now` there too. `now.title` is "Coda", a track the program no longer counts.
     rows = stop(
         (row("now", at(0x1060)), TRACK),
@@ -295,7 +295,7 @@ ITEM_POINTER = {"pointee": 99, "element_size": 8, "indirect": True}
 
 
 def test_the_nearest_captured_pointer_is_the_one_read_through():
-    # Review of PR #354: `slots[0].uses` said nothing, as only `slots` (an array) was
+    # `slots[0].uses` said nothing, as only `slots` (an array) was
     # looked for; and `pp[0].uses` was tied to `pp`, whose alias `qq` holds another
     # address than the `Item` read.
     slots = {"address": 0x2000, "length": 3, "element": 99, "element_size": 8}
@@ -353,7 +353,7 @@ def test_a_value_read_through_a_captured_second_pointer_says_so():
 
 
 def test_session_get_says_it_of_the_children_it_lists():
-    # Review of PR #354: `session get now end` listed `now.title` under `now` with nothing.
+    # `session get now end` listed `now.title` under `now` with nothing.
     def listed(name, address):
         return row(
             name,
@@ -373,7 +373,7 @@ def test_session_get_says_it_of_the_children_it_lists():
                     "value": at(address),
                     "type": "Track *",
                 },
-                # Review round 2 of PR #354: a child not read keeps a placeholder value.
+                # A child not read keeps a placeholder value.
                 {
                     "name": "lost",
                     "selector": f"{name}.lost",

@@ -1,14 +1,16 @@
-"""What a function returned (#155): shown only where Peeky can tie it to the function a
+"""What a function returned: shown only where Peeky can tie it to the function a
 step left, and captured by probes once per call (`--capture return`)."""
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from peeky import cli, evidence
 from peeky.errors import classify
 from peeky.java import JavaSession
 from peeky.native import NativeSession, _instructions, _return_paths
-from peeky.probe import RETURN, Probe, run_probe
+from peeky.probe import RETURN, Probe, _returned_row, run_probe
 from peeky.rust import RustSession
 from peeky.worker import DebugWorker, _method_name
 
@@ -55,7 +57,7 @@ def test_a_value_is_shown_only_for_a_return_one_frame_up(tmp_path):
         "type": "bool",
         "value": "false",
     }
-    # LLDB went on past the caller (libc++'s hidden frames, before #155): Apple's LLDB
+    # LLDB went on past the caller (libc++'s hidden frames): Apple's LLDB
     # then listed `true` for a comparator that returned false. Never shown.
     past = worker.returned_value(worker.runtime, [frame("std::sort", "0x40", 946)], VALUE)
     assert past["unavailable"] and "did not stop where this function returned" in past["reason"]
@@ -171,7 +173,7 @@ def watched(tmp_path, seen, reason, ids=None):
 
 def test_a_call_its_caller_went_on_without_is_never_credited_with_a_later_value(tmp_path):
     # f(0) threw; its caller caught it and called again from the same place, which
-    # LLDB's step out would take for f(0)'s return (#155 round 1): the watch on that
+    # LLDB's step out would take for f(0)'s return: the watch on that
     # call stops first, in the caller's frame, and nothing is credited.
     worker = watched(tmp_path, {"pc": 0x18, "sp": 0x1000}, "breakpoint", [41])
     assert worker.stop_reason == "step" and worker.runtime.unwatched == [[41]]
@@ -199,7 +201,7 @@ def test_a_return_is_shown_only_where_the_callers_stack_pointer_is_back(tmp_path
 
 
 def test_a_breakpoint_in_the_call_a_step_out_was_leaving_is_proven_by_its_watch(tmp_path):
-    # #174: the line's next breakpoint location, in the same call, interrupted the step
+    # The line's next breakpoint location, in the same call, interrupted the step
     # out of it. The watch held, and the stopped frame's caller is at the stack pointer
     # the call's caller had: no other call could return to that frame unseen.
     def held(seen):
@@ -304,7 +306,7 @@ def below(depth):
 
 
 def test_a_refused_python_probe_of_returns_keeps_no_run(monkeypatch, tmp_path, capsys):
-    # Round 1 of #162: the refusal saved an empty run in the evidence.
+    # The refusal saved an empty run in the evidence.
     import json
 
     from peeky.cli import main
@@ -312,7 +314,7 @@ def test_a_refused_python_probe_of_returns_keeps_no_run(monkeypatch, tmp_path, c
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     (tmp_path / "a.py").write_text("def f():\n    return 1\nf()\n")
     command = ["probe", str(tmp_path), "--at", "a.py:2", "--capture", "return", "--json"]
-    # Refused before the program runs: exit 2, as any refusal (#165, finding 14).
+    # Refused before the program runs: exit 2, as any refusal.
     assert main(command) == 2
     shown = json.loads(capsys.readouterr().out)
     assert shown["error"]["code"] == "UNSUPPORTED" and "evidence" not in shown
@@ -323,8 +325,8 @@ class Scripted:
     """A worker whose program stops as scripted: ("hit", depth), ("step", depth,
     returned), ("set", depth) (a --set-at line's stop) or ("end",); a stop may end with
     {"thread": n} (else thread 1), {"place": (k, n)} (its line's breakpoint location k
-    of n, #157), {"same": True} (the worker proves it in the call the last step out was
-    leaving, #174), {"caller": "other"} (another frame under it) or {"function":
+    of n), {"same": True} (the worker proves it in the call the last step out was
+    leaving), {"caller": "other"} (another frame under it) or {"function":
     name} (stopped in another function). Records how each stop was resumed; `refuse`
     names steps the worker refuses because other threads stopped too."""
 
@@ -433,7 +435,7 @@ def test_recursive_calls_each_get_their_own_return(monkeypatch, tmp_path):
 
 
 def test_a_void_return_is_no_value_the_debugger_failed_to_read(monkeypatch, tmp_path):
-    # Eleventh evaluation (grades 4): a `void` function's `(return)` row says it returns
+    # A `void` function's `(return)` row says it returns
     # nothing; the warning about selectors the debugger could not read is not for it.
     void = {"function": "fact", "type": "void", "unavailable": True}
     void["reason"] = "the function returns nothing"
@@ -452,7 +454,7 @@ def test_a_void_return_is_no_value_the_debugger_failed_to_read(monkeypatch, tmp_
 def test_a_line_reached_again_before_the_return_is_never_attributed(monkeypatch, tmp_path):
     # A loop's next pass, or a call that ended by an exception and the next call: not
     # proven either way (no watch said so), so the earlier hit gets no value, and the
-    # reason claims neither (#174).
+    # reason claims neither.
     script = [("hit", 3), ("hit", 3), ("step", 2, value("7")), ("end",)]
     _, returns, _ = probe_with(monkeypatch, tmp_path, script)
     error = returns[1]["error"]
@@ -467,7 +469,7 @@ def test_a_line_reached_again_before_the_return_is_never_attributed(monkeypatch,
 
 
 def test_a_later_stop_of_a_multi_stop_line_says_so_and_claims_no_pass(monkeypatch, tmp_path):
-    # #174: the line's second breakpoint location (#160) came before the call returned.
+    # The line's second breakpoint location came before the call returned.
     # The reason was a loop's next pass; with no proof of the same call, it names the
     # stop and claims neither a later location of this call nor a next pass.
     script = [
@@ -495,7 +497,7 @@ def test_a_later_stop_of_a_multi_stop_line_says_so_and_claims_no_pass(monkeypatc
         "withheld: the line stopped again at the same depth in another call (the frames "
         "under it are not this call's) before this call returned"
     )
-    # Review of PR #198: another function stopped (a closure on the line), with the same
+    # Another function stopped (a closure on the line), with the same
     # frames under it: said as such, not as other frames.
     script[1] = ("hit", 3, {"place": (2, 2), "function": "fact::{closure#0}"})
     _, returns, _ = probe_with(monkeypatch, tmp_path, script)
@@ -506,7 +508,7 @@ def test_a_later_stop_of_a_multi_stop_line_says_so_and_claims_no_pass(monkeypatc
 
 
 def test_a_return_is_followed_across_the_lines_stops_in_the_same_call(monkeypatch, tmp_path):
-    # #174: the step out of hit 1's call was interrupted at the line's second location,
+    # The step out of hit 1's call was interrupted at the line's second location,
     # and its watch proves the stop is in that call: both hits get the call's return.
     script = [
         ("hit", 3, {"place": (1, 2)}),
@@ -612,7 +614,7 @@ def test_a_return_into_another_frame_is_never_credited(monkeypatch, tmp_path):
 
 
 def test_a_step_out_another_threads_stop_interrupted_is_withheld(monkeypatch, tmp_path):
-    # The worker reports the step as interrupted (#162 round 3): the probe withholds
+    # The worker reports the step as interrupted: the probe withholds
     # that call and goes on to serve the other thread's stop.
     script = [
         ("hit", 3),
@@ -627,7 +629,7 @@ def test_a_step_out_another_threads_stop_interrupted_is_withheld(monkeypatch, tm
 
 
 def test_a_return_still_awaited_when_the_probe_times_out_is_withheld(monkeypatch, tmp_path):
-    # #162 round 3: a program that ends gave its pending calls a row; one that
+    # A program that ends gave its pending calls a row; one that
     # outlasted the probe's --timeout gave them none.
     result, returns, _ = probe_with(monkeypatch, tmp_path, [("hit", 3), ("running",)], timeout=0.5)
     assert result["status"] == "timeout" and returns[1]["unavailable"]
@@ -640,7 +642,6 @@ def test_optimized_builds_capture_no_returns(monkeypatch, tmp_path):
 
 
 def test_a_return_row_is_stored_and_queried_with_the_hits(tmp_path):
-    from peeky import evidence
 
     store = tmp_path / "evidence.db"
     rows = [
@@ -719,7 +720,7 @@ def test_a_frames_stack_pointer_is_read_as_the_debugger_gives_it():
 
 
 def test_a_watch_dropped_for_a_deep_recursion_withholds_the_return(tmp_path):
-    # #162 round 2: LLDB dropped the watch after a recursion through the caller ran its
+    # LLDB dropped the watch after a recursion through the caller ran its
     # watched call WATCH_TRAPS times; the step ends normally, its return is not followed.
     worker = watched(tmp_path, {"pc": 0x20, "sp": 0x1000, "dropped": 128}, "step")
     returned = worker.returned_value(worker.runtime, RETURNED, VALUE)
@@ -800,7 +801,7 @@ def test_a_step_interrupted_on_another_thread_is_discarded_on_that_thread():
 
 
 def test_a_mutual_recursions_outer_calls_get_their_returns(monkeypatch, tmp_path):
-    # f -> c -> f (#162 round 2): the inner f's step out ends in c (depth 4), above the
+    # f -> c -> f: the inner f's step out ends in c (depth 4), above the
     # outer f's frame (3): step out again, to the outer f, then out of it.
     script = [
         ("hit", 3),
@@ -882,7 +883,7 @@ class Stepping:
 
 @pytest.mark.parametrize("left, reason", [(True, "interrupted"), (False, "step")])
 def test_a_step_still_under_way_at_another_threads_stop_is_interrupted(tmp_path, left, reason):
-    # #162 round 3 (`th/t2.c`): lldb-dap reported the stepping thread first, as a step's
+    # lldb-dap reported the stepping thread first, as a step's
     # end inside `usleep`; Peeky took it for one and kept LLDB's step, which a later
     # `continue` ended. Every stepping thread's step is discarded at every stop, and a
     # step that LLDB still had is reported as interrupted, not ended.
@@ -898,3 +899,85 @@ def test_a_step_still_under_way_at_another_threads_stop_is_interrupted(tmp_path,
 
     if left:
         assert "the step was interrupted here" in _state_text(state)
+
+
+class _Void:
+    """A native runtime whose step origin is a function returning nothing (or not)."""
+
+    reports_unavailable_as_text = True
+    target_identity = {"language": "cpp"}
+
+    def __init__(self, void):
+        self.void = void
+
+    @staticmethod
+    def return_entry(variable):
+        return NativeSession.return_entry(variable)
+
+    def returns_nothing(self, frame):
+        return self.void and frame["name"] == "Stats::reset()"
+
+
+def _stepped_out(tmp_path, runtime, frame=True):
+    origin = [
+        {"name": "Stats::reset()", "instructionPointerReference": "0x10", "line": 26},
+        {"name": "main", "instructionPointerReference": "0x30", "line": 61},
+    ]
+    worker = DebugWorker(tmp_path)
+    worker.runtime, worker.thread_id, worker.stop_reason = runtime, 7, "step"
+    worker.step_origin = {
+        "thread": 7,
+        "function": "Stats::reset()",
+        "frames": [(f["name"], f["instructionPointerReference"], f["line"]) for f in origin],
+        "kind": "out",
+        **({"frame": origin[0]} if frame else {}),
+    }
+    return worker, origin[1:]
+
+
+def test_a_void_function_returns_no_value_rather_than_a_withheld_one(tmp_path):
+    # `session step --out` from `void reset()` printed `(return):  = <withheld:
+    # the debugger reported no value …>`, with an empty type.
+    worker, frames = _stepped_out(tmp_path, _Void(True))
+    returned = worker.returned_value(worker.runtime, frames, None)
+    assert returned == {
+        "function": "Stats::reset()",
+        "type": "void",
+        "unavailable": True,
+        "reason": "the function returns nothing",
+    }
+    row = _returned_row(
+        {"hit": 1, "phase": "returned", "selector": "(return)"},
+        {"returned": returned, "frames": [frames[0]]},
+    )
+    assert row["type"] == "void" and "value" not in row and row["unavailable"] is True
+    assert row["error"] == "no value: the function returns nothing"
+    assert cli._get_lines(row) == ["(return): void (no value: the function returns nothing)"]
+    assert cli._returned_text(returned) == (
+        "Stats::reset() returned: void (no value: the function returns nothing)"
+    )
+    # Not proven void (another function, or no origin frame to judge): withheld as before.
+    for worker, frames in (
+        _stepped_out(tmp_path, _Void(False)),
+        _stepped_out(tmp_path, _Void(True), frame=False),
+    ):
+        returned = worker.returned_value(worker.runtime, frames, None)
+        assert "type" not in returned and "reported no value" in returned["reason"], returned
+
+
+def test_only_a_c_or_cpp_function_its_build_gives_no_return_type_returns_nothing():
+    class Session:
+        returns_nothing = NativeSession.returns_nothing
+
+        def __init__(self, language, found):
+            self.target, self.found = SimpleNamespace(language=language), found
+
+        def _function_at(self, frame):
+            return self.found
+
+    assert Session("cpp", {"returns_nothing": True}).returns_nothing({}) is True
+    assert Session("c", {"returns_nothing": True}).returns_nothing({}) is True
+    assert Session("cpp", {"returns_nothing": False}).returns_nothing({}) is False
+    # A frame Peeky cannot place, or a Rust function (whose unit return is not `void`).
+    assert Session("cpp", None).returns_nothing({}) is False
+    assert Session("rust", {"returns_nothing": True}).returns_nothing({}) is False

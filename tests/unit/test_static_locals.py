@@ -1,4 +1,4 @@
-"""Locals in static storage (#364): which one the code at a stop names, read from the debug
+"""Locals in static storage: which one the code at a stop names, read from the debug
 information and the source as the compiler preprocessed it; a C++ `static`'s guard; the
 debugger's row that is it; the program's symbols for data; and what a probe says of one it
 doesn't read."""
@@ -123,7 +123,7 @@ def test_a_static_is_named_only_where_its_block_holds_the_stop_too(tmp_path):
 
 
 def test_a_static_is_named_in_whichever_copy_of_its_function_holds_the_stop(tmp_path):
-    # Review of PR #370: a function inlined twice, or copied, declares its block's
+    # A function inlined twice, or copied, declares its block's
     # `static` in each copy, each with its own code. Each copy whose code doesn't hold the
     # stop made the name unsure, though another copy holds it: one declaration, held
     # where any copy holds it.
@@ -135,7 +135,7 @@ def test_a_static_is_named_in_whichever_copy_of_its_function_holds_the_stop(tmp_
         # The copy whose block holds the stop.
         assert why is None and chosen[:5] == INNER[:5] and chosen[5] == block, why
     # Copies may be placed apart too (a `const` aggregate a clone or an inlined call keeps
-    # in read-only data of its own; review of PR #370, round 2): the copy whose block holds
+    # in read-only data of its own): the copy whose block holds
     # the stop is read, at its own address.
     moved = (*INNER[:3], 0x4018, INNER[4], ((0x180, 0x1A0),), INNER[6])
     native = session(tmp_path, (OUTER, first, moved))
@@ -244,7 +244,7 @@ def test_the_debuggers_row_of_a_static_is_its_declaration_and_address(tmp_path):
     assert native.static_rows(qualified, frame(tmp_path, 7, name="f()"), []) == []
 
     # A template's instances share its file and line: a row its symbol names must be
-    # this frame's function's own, by name or by address (review of PR #370).
+    # this frame's function's own, by name or by address.
     def instance(owner, address=None, value="1"):
         found = row(f"{owner}::calls", 6, address=address, value=value)
         return found
@@ -452,7 +452,7 @@ def test_the_frames_static_storage_is_listed_where_its_function_declares_some():
 
 
 def test_an_inlined_functions_static_is_held_by_each_copy_of_its_block():
-    # Review of PR #370: GCC declares an inlined (or copied) function's block `static` in
+    # GCC declares an inlined (or copied) function's block `static` in
     # its abstract instance, whose block has no code; each copy's block, which names it
     # as its origin, has. A copy may declare the variable again, as clang's does.
     def die(tag, parent, children=(), **attrs):

@@ -1,4 +1,4 @@
-"""#249: a remote client and its worker compare every source the target reads, not only
+"""A remote client and its worker compare every source the target reads, not only
 the breakpoint's file, before anything launches."""
 
 import hashlib
@@ -76,7 +76,7 @@ def test_a_python_worker_compares_every_module_under_its_root(app):
 
 
 def test_the_worker_names_only_the_compared_sources_in_a_remote_result(tmp_path):
-    # #268 review: paths were mapped by prefix, so `..`, links, virtual environments and
+    # Paths were mapped by prefix, so `..`, links, virtual environments and
     # files never compared were shown as the client's.
     from peeky.worker import _source_names
 
@@ -173,7 +173,7 @@ def test_the_client_shows_its_own_copy_only_of_a_compared_source(tmp_path):
 
 
 def test_a_program_that_differs_is_named_by_its_path_under_the_root(app):
-    # #252: a crate's src/main.rs was named `main.rs`, which other directories may hold.
+    # A crate's src/main.rs was named `main.rs`, which other directories may hold.
     (app / "src").mkdir()
     (app / "src" / "main.py").write_text(MAIN)
     worker = DebugWorker(app)
@@ -190,8 +190,8 @@ def test_a_program_that_differs_is_named_by_its_path_under_the_root(app):
 
 
 def test_only_virtual_environments_are_left_out(app):
-    # #254 review: hidden directories and names like `env` were skipped, so a program
-    # in .hidden/ imported a .hidden/helper.py that was never compared; round 2: .git too.
+    # Hidden directories and names like `env` were skipped, so a program
+    # in .hidden/ imported a .hidden/helper.py that was never compared; .git too.
     for directory in (".git", "__pycache__", ".hidden", "env", "site-packages", "node_modules"):
         (app / directory).mkdir()
         (app / directory / "mod.py").write_text("z = 3\n")
@@ -363,10 +363,10 @@ def old_worker(protocol):
 @pytest.mark.parametrize("protocol", [1, 2, 3, 4, 5, 6, 7, 8, 9])
 def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, capsys, protocol):
     # Protocol 1 compared only the program; protocol 2 named paths as this client can't
-    # tell from its own (#252); protocol 3 took a restore's `@before` for a value (#305);
-    # protocol 4 read what a C pointer one past an array's end points at (#336); protocol
-    # 5 showed what any other C pointer points at with no mark (#339); protocol 6 didn't say
-    # which C pointers point at a pointer (#344).
+    # tell from its own; protocol 3 took a restore's `@before` for a value;
+    # protocol 4 read what a C pointer one past an array's end points at; protocol
+    # 5 showed what any other C pointer points at with no mark; protocol 6 didn't say
+    # which C pointers point at a pointer.
     server = old_worker(protocol)
     try:
         url = f"http://127.0.0.1:{server.server_port}"
@@ -381,7 +381,7 @@ def test_a_worker_of_an_older_protocol_is_refused_before_anything_runs(app, caps
 
 
 def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, monkeypatch):
-    # #268 review: a protocol 2 client accepted this worker, and showed its `source:`
+    # A protocol 2 client accepted this worker, and showed its `source:`
     # names as paths. That client refuses at `version`, as a protocol 2 client does:
     monkeypatch.setattr("peeky.cli.PROTOCOL_VERSION", 2)
     server = make_server(app, TOKEN, 0)
@@ -426,7 +426,7 @@ def test_a_client_of_an_older_protocol_is_refused_by_this_worker(app, capsys, mo
 
 
 def test_a_restore_reaches_no_worker_of_another_protocol(app, capsys, monkeypatch):
-    # #305: a protocol 3 worker would take `@before` for a value to write, and knows no
+    # A protocol 3 worker would take `@before` for a value to write, and knows no
     # `entry_lines`, `restorable` or `target`. Each side refuses the other before launch.
     restore = ["--set-at", "2@1", "x=0", "--set-at", "3@1", "x=@before"]
     asked = []
@@ -544,11 +544,8 @@ def test_a_confirmed_result_is_kept(app, capsys, monkeypatch):
     assert "expect_inputs" not in result["probe"]
 
 
-# Regressions from the #254 review: each passed on its first head.
-
-
 def test_a_result_without_the_sources_it_read_is_discarded(app, capsys, monkeypatch):
-    # Blocking 1: a missing inputs_sha256 was accepted.
+    # A missing inputs_sha256 was accepted.
     code, result = probe_against(
         monkeypatch,
         capsys,
@@ -562,7 +559,7 @@ def test_a_result_without_the_sources_it_read_is_discarded(app, capsys, monkeypa
 
 @pytest.mark.parametrize("operation", ["launch", "probe"])
 def test_an_empty_manifest_is_refused(served, operation):
-    # Blocking 2: `expect_inputs: {}` passed the guard, and /probe then compared nothing.
+    # `expect_inputs: {}` passed the guard, and /probe then compared nothing.
     arguments = {"program": "main.py", "breakpoints": [{"line": 2}]}
     if operation == "probe":
         arguments = {"at": "main.py:2", "capture": ["x"]}
@@ -607,7 +604,7 @@ class BuiltRuntime:
 
 
 def test_a_source_changed_between_the_check_and_the_build_is_refused(tmp_path, monkeypatch):
-    # Blocking 3: the worker hashed the live sources, then built later; a change in
+    # The worker hashed the live sources, then built later; a change in
     # between reached the debugger. The hook runs right after the check, before prepare.
     from peeky.errors import classify
 
@@ -659,7 +656,7 @@ def write_record(name, **fields):
 
 
 def test_a_remote_session_from_before_protocol_2_is_refused(app, capsys):
-    # Blocking 4: a resumed remote session skipped the handshake.
+    # A resumed remote session skipped the handshake.
     write_record("legacy")
     assert main(["session", "get", "x", "--name", "legacy", "--json"]) == 2
     message = json.loads(capsys.readouterr().out)["error"]["message"]
@@ -693,7 +690,7 @@ def test_a_remote_session_checks_the_workers_protocol_on_every_command(app, caps
 
 
 def test_the_program_must_be_among_the_compared_sources(app):
-    # Blocking 6b: a program in a virtual environment was never compared, but ran.
+    # A program in a virtual environment was never compared, but ran.
     (app / "tools").mkdir()
     (app / "tools" / "pyvenv.cfg").write_text("home = /usr/bin\n")
     (app / "tools" / "run.py").write_text("x = 1\nprint(x)\n")
@@ -737,7 +734,7 @@ def test_frames_in_uncompared_files_under_the_root_are_refused(app):
 
 
 def test_your_checkout_changing_during_a_compiled_probe_discards_it(tmp_path, capsys, monkeypatch):
-    # Round 2: only Python results were checked against a fresh hash of your checkout.
+    # Only Python results were checked against a fresh hash of your checkout.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
     root = tmp_path / "loop"
     root.mkdir()
@@ -795,9 +792,9 @@ def test_the_bytecode_cache_is_never_in_the_root_and_goes_at_close(app, tmp_path
 def test_a_worker_that_reads_through_c_pointers_unmarked_is_refused(
     tmp_path, monkeypatch, capsys, protocol
 ):
-    # #336: a protocol 4 worker reads `end[0]`, `pend.x` and LLDB's text one past an array's
-    # end as values; #339: a protocol 5 worker shows what any other C pointer points at
-    # (a freed block, a call that returned) with no mark; #344: a protocol 6 worker doesn't
+    # A protocol 4 worker reads `end[0]`, `pend.x` and LLDB's text one past an array's
+    # end as values; a protocol 5 worker shows what any other C pointer points at
+    # (a freed block, a call that returned) with no mark; a protocol 6 worker doesn't
     # say which pointers point at a pointer, so `pp[0].uses` would be tied to `pp`'s alias.
     # This client refuses each, for a probe and a session, before either runs.
     monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
@@ -880,7 +877,7 @@ def fake_worker(protocol, delay=0.0, lost=()):
 
 
 def test_concurrent_requests_ask_the_version_once_and_each_decides_on_it():
-    # #374 review 4: the first ask and the protocol it caches are under the client's lock:
+    # The first ask and the protocol it caches are under the client's lock:
     # eight threads asked the worker's `version` eight times, each deciding on its own.
     server = fake_worker(PROTOCOL_VERSION, delay=0.2)
     try:
@@ -906,7 +903,7 @@ def test_concurrent_requests_ask_the_version_once_and_each_decides_on_it():
 
 
 def test_a_lost_connection_forgets_the_workers_protocol():
-    # #374 review 4: after a lost connection, another worker may answer at that address:
+    # After a lost connection, another worker may answer at that address:
     # the next request asks its `version` again, and a worker of another protocol is sent
     # nothing else.
     from peeky.client import TransportLost, WorkerUnreachable
@@ -940,7 +937,7 @@ def test_a_lost_connection_forgets_the_workers_protocol():
 
 @pytest.mark.parametrize("header", [None, "9", "eleven"])
 def test_this_worker_refuses_a_request_of_another_protocol_before_it_runs_it(app, header):
-    # #374 review 4: each request names its client's protocol (`X-Peeky-Protocol`). From
+    # Each request names its client's protocol (`X-Peeky-Protocol`). From
     # protocol 10, a worker refuses one that names another, or none, before dispatch: a
     # client of another protocol never runs anything, whatever it cached.
     import http.client

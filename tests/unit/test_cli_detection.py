@@ -63,7 +63,7 @@ def test_java_targets_without_a_config_say_what_the_config_needs(tmp_path):
 
 
 def test_state_lines_name_the_stopped_function(tmp_path, monkeypatch):
-    # A file below the working directory is named relative to it (ninth evaluation):
+    # A file below the working directory is named relative to it:
     # outside it, `/w/...` stays whole, wherever the tests run (Docker's cwd is `/w`).
     monkeypatch.chdir(tmp_path)
     state = {

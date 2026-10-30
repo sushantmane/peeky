@@ -1,4 +1,4 @@
-"""libstdc++ strings with a NUL byte (#128), as lldb-dap shows them and Peeky reads them."""
+"""libstdc++ strings with a NUL byte, as lldb-dap shows them and Peeky reads them."""
 
 import struct
 from types import SimpleNamespace
@@ -116,7 +116,7 @@ def test_a_string_the_debugger_cuts_at_a_nul_is_read_from_memory():
 
 
 def test_a_whole_text_is_left_as_the_debugger_shows_it():
-    # Checked: map keys compare it (#119).
+    # Checked: map keys compare it.
     shown = libstdcxx_string(variable('"abc"'), lambda reference: libstdcxx(3), None)
     assert shown == {"string_length": 3}
     # LLDB's limit (1024 bytes), marked `...`, is no NUL.
@@ -176,7 +176,7 @@ def test_libcxx_builds_keep_lldbs_strings():
     native = NativeSession.__new__(NativeSession)
     native.target = SimpleNamespace(language="cpp")
     native.typedefs = {"namespace::__1": ("other", "")}
-    # Its text, as LLDB shows it (members never read): only marked as text (eval 6).
+    # Its text, as LLDB shows it (members never read): only marked as text.
     fetch = lambda reference: pytest.fail("libc++'s members read")  # noqa: E731
     assert native.string_value(variable('"a"'), fetch, None) == {"text": True}
     native.typedefs = {"namespace::__cxx11": ("other", "")}
@@ -184,7 +184,7 @@ def test_libcxx_builds_keep_lldbs_strings():
     assert shown == {"value": '"a" (shown up to a NUL at byte 1 of 3)', "text": True}
 
 
-# Review of #128 (PR #131): typedef'd names, the C reading of an escape, long text.
+# Typedef'd names, the C reading of an escape, long text.
 @pytest.mark.parametrize(
     "text, shown",
     [
@@ -333,7 +333,7 @@ def test_peekys_own_text_is_spelled_once():
 
 
 def test_a_string_shown_as_its_text_is_marked_so():
-    # Eval 6, finding 15: its members are the library's, never listed.
+    # Its members are the library's, never listed.
     from peeky.cxx_strings import shows_text
     from peeky.native import NativeSession
 

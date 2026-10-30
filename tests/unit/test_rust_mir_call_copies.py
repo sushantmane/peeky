@@ -1471,7 +1471,7 @@ fn held(_1: u32) -> u32 {
 }
 """
 
-# #320 review: a crate whose own `String` and `Vec` have a `len` that returns what it reads,
+# A crate whose own `String` and `Vec` have a `len` that returns what it reads,
 # and rustc 1.96.0's MIR of its `texts` and `items`.
 OWNED = """use std::env;
 
@@ -1797,7 +1797,7 @@ fn items(_1: u32) -> usize {
 }
 """.replace("{ALLOC}", ALLOC)
 
-# #320 review round 2: a crate module named `alloc`, whose `str::Chars` holds a value beside
+# A crate module named `alloc`, whose `str::Chars` holds a value beside
 # a reference, and the standard library's iterator adapters; rustc 1.96.0's MIR of its
 # `shadowed`, `reversed`, `mapped` and `lent`.
 ADAPTERS = """use std::env;
@@ -2461,7 +2461,7 @@ def why(text, name, line, statement, source=SOURCE, variable="x"):
 
 def kept(name, lines, pointing=False):
     """The refusal of a binding of the program's own that may hold a copy of `x`; or with
-    ``pointing``, only point into it, which Peeky can't tell apart (#320 review)."""
+    ``pointing``, only point into it, which Peeky can't tell apart."""
     unless = f", unless `{name}` only points into it" if pointing else ""
     return (
         f"the program's own `{name}` (at {lines}) may hold a copy of it that it goes on with"
@@ -2474,7 +2474,7 @@ def kept(name, lines, pointing=False):
 def test_what_clone_or_ptr_read_returns_from_a_pointer_into_the_local_may_be_a_copy():
     # `let y = x.clone();` (`<u32 as Clone>::clone(move _6)`, `_6 = &_2`) and `let y =
     # unsafe { std::ptr::read(&x) };`: then `let k = other();`, `y + k`, and `x` is only
-    # lent to `black_box`. On #316's head neither `y` was a copy, and `x` was settable.
+    # lent to `black_box`.
     for text, name, line, stop, y in (
         (CLONED, "cloned", 12, "_7 = other()", 5),
         (READ, "read", 31, "_7 = other()", 4),
@@ -2507,8 +2507,8 @@ def test_a_text_a_call_makes_and_another_stores_is_a_copy():
 
 
 def test_mem_take_gives_its_result_the_copy_and_leaves_the_default_behind():
-    # `let mut a = x; let b = std::mem::take(&mut a);`, then `a + b + k`. The refusal
-    # named `a` (#316's head: "the program's own `a` (at line 39)"); `b` holds the copy.
+    # `let mut a = x; let b = std::mem::take(&mut a);`, then `a + b + k`. `b` holds
+    # the copy, not `a`.
     body = body_of(TAKEN)
     at = place(body, "_8 = other()")
     assert body.direct_copies_at(2, at) == {5}
@@ -2531,7 +2531,7 @@ def test_a_call_given_a_pointer_another_call_made_may_store_a_copy_into_a_value(
     at = place(body, "_11 = other()")
     assert body.direct_copies_at(2, at) == {4}
     assert why(EXTENDED, "extended", 60, "_11 = other()") == kept("v", "lines 58 and 59")
-    # Into a `Vec<&u32>`, it may have stored the pointer itself (#164: `v.push(&s[2..])`):
+    # Into a `Vec<&u32>`, it may have stored the pointer itself (`v.push(&s[2..])`):
     # that is no copy.
     pointers = body_of(EXTENDED.replace("_4: std::vec::Vec<u32>;", "_4: std::vec::Vec<&u32>;"))
     assert pointers.direct_copies_at(2, at) == set()
@@ -2608,7 +2608,7 @@ def test_only_a_standard_method_of_a_standard_type_is_a_measure():
 
 
 def test_a_result_holding_a_value_beside_a_reference_may_be_a_copy():
-    # #320 review: `hybrid(&x) -> (u32, &'static ())` and `hybrid_struct(&x) -> Hybrid<'_>
+    # `hybrid(&x) -> (u32, &'static ())` and `hybrid_struct(&x) -> Hybrid<'_>
     # { v: u32, r: &u32 }` return a copy of `x` beside a reference. A type showing a
     # reference was taken for one holding only pointers, so `x` stayed settable there.
     for text, name, line in ((PAIRED, "paired", 97), (HELD, "held", 106)):
@@ -2656,7 +2656,7 @@ def test_only_a_type_holding_nothing_but_pointers_holds_no_copy():
 
 
 def test_box_new_returns_only_what_it_is_given():
-    # #164's `Box::new(move || check("boxed", t))` with `t = &s[2..]`: what it returns
+    # `Box::new(move || check("boxed", t))` with `t = &s[2..]`: what it returns
     # holds the closure, which holds only the pointer; no copy of `s`.
     body = body_of(CLONED)
     body.types[9] = "std::boxed::Box<{closure@src/main.rs:25:51: 25:58}>"
@@ -2672,7 +2672,7 @@ def test_box_new_returns_only_what_it_is_given():
 
 
 def test_a_short_type_name_the_crate_gives_its_own_proves_no_measure():
-    # #320 review: `struct String;` with `fn len(s: &std::string::String) -> usize`, and a
+    # `struct String;` with `fn len(s: &std::string::String) -> usize`, and a
     # `struct Vec;` likewise: the dump's `String::len(move _5)`, given a `&std::string::
     # String`, is the crate's, which returns what it parsed out of `x`'s text.
     for text, name, line in ((OWNED_TEXTS, "texts", 31), (OWNED_ITEMS, "items", 40)):
@@ -2705,7 +2705,7 @@ def test_a_short_type_name_the_crate_gives_its_own_proves_no_measure():
 
 
 def test_a_crate_module_named_like_a_standard_crate_proves_no_view():
-    # #320 review round 2: `mod alloc { pub mod str { pub struct Chars<'a> { v: u32, r: &'a
+    # `mod alloc { pub mod str { pub struct Chars<'a> { v: u32, r: &'a
     # () } } }`, returned by `shadow(&x)`: the dump's `alloc::str::Chars<'_>` was taken for
     # the standard library's view, holding only pointers, so `x` stayed settable after it.
     assert why(SHADOWED, "shadowed", 35, "_7 = other()", ADAPTERS) == kept("c", "line 34", True)
@@ -2727,7 +2727,7 @@ def test_a_crate_module_named_like_a_standard_crate_proves_no_view():
 
 
 def test_a_standard_adapter_holds_only_what_it_was_given():
-    # #320 review round 2: `let it = s.chars().rev();` was "the program's own `it` … may
+    # `let it = s.chars().rev();` was "the program's own `it` … may
     # hold a copy of `s`", though `Rev<Chars<'_>>` holds only the borrowing `Chars`. The
     # crate's `mod alloc` leaves its `std::` paths the standard library's.
     body, owned = owned_for(REVERSED, "reversed", ADAPTERS)
@@ -2775,7 +2775,7 @@ def test_a_refusal_that_may_only_point_advises_no_copy_to_change():
 
 
 def test_each_standard_proof_needs_only_the_root_it_uses():
-    # #320 review round 3: `mod alloc {}` made every standard proof unproven, so `n` of `let n
+    # `mod alloc {}` made every standard proof unproven, so `n` of `let n
     # = a.len() + a.contains(&5) as usize;` (`core::slice::<impl [u32]>::len`) was said to
     # "may hold a copy of `x`". It needs `core` only; a `mod core {}` leaves it unproven.
     alloc = SOURCE.replace("use std::env;", "use std::env;\nmod alloc {}")
@@ -2813,7 +2813,7 @@ def test_each_standard_proof_needs_only_the_root_it_uses():
 
 def test_a_slice_element_needs_the_std_root_its_iterator_is_named_under():
     # `_SLICE_NEXT` names `std::slice::Iter`: a crate's `mod std` may be what it names,
-    # whatever other root stays the standard library's (#320 review round 3).
+    # whatever other root stays the standard library's.
     from peeky.rust import _slice_element
 
     class Proofs:
@@ -2840,8 +2840,8 @@ def test_a_slice_element_needs_the_std_root_its_iterator_is_named_under():
 
 
 def test_the_call_helpers_keep_their_own_names():
-    # Merging #325 brought a second module-level `_callee` (a call's last path segment),
-    # which replaced #320's (path, arguments) one, so no call was proven a measure.
+    # A second module-level `_callee` (a call's last path segment) would replace the
+    # (path, arguments) one, and no call would be proven a measure.
     import ast
     import inspect
 

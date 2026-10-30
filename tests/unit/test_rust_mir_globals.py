@@ -1,7 +1,7 @@
-"""#329 (found fixing #321): a copy a call stores in a `static` or a `thread_local!`, which a
+"""A copy a call stores in a `static` or a `thread_local!`, which a
 later call reads, was missed. `local_set(&SLOT, x)` keeps `x` in a thread-local `Cell`, and
 `SLOT.with(|c| c.get())` reads it back: `x` was `[settable]` after the call, and `--set x=100`
-printed the old value. The copy analysis tracked locals only. Now each place that may store a
+printed the old value. Each place that may store a
 value in global state with interior mutability (a call given a pointer into it, a function of
 the crate's that names it, however deep, a store through such a pointer) stands for one more
 holder, which any later code that may read global state uses. A call that provably touches
@@ -1220,8 +1220,9 @@ fn <impl at src/main.rs:12:10: 12:15>::fmt(_1: &Wrap, _2: &mut Formatter<'_>) ->
 """
 
 
-# Review: the copy reached global state another way. rustc 1.96.0's MIR of this crate, as above.
-REVIEW_SOURCE = """use std::cell::Cell;
+# The `routes` crate: the copy reaches global state another way. rustc 1.96.0's MIR of
+# this crate, as above.
+ROUTES_SOURCE = """use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -2569,7 +2570,7 @@ fn inner::<impl at src/main.rs:29:5: 29:38>::fmt(_1: &Hidden, _2: &mut Formatter
 
 
 HASH = "h0123456789abcdef"
-# `Wrap`, as the build's debug information shows it: a `u32`, no cell (#321).
+# `Wrap`, as the build's debug information shows it: a `u32`, no cell.
 LAYOUTS = {"Wrap": CrateType(payloads=frozenset(), parts=frozenset({("prim", "u32")}))}
 STD_MACROS = "/rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library/std/src/macros.rs"
 # Every body of the crate the analysis reads.
@@ -2688,7 +2689,7 @@ def test_what_each_function_may_touch_of_the_crates_global_state():
 
 
 def test_a_copy_a_call_stores_in_a_thread_local_withholds_the_local():
-    # The issue: `local_set(&SLOT, x)` (line 37) keeps `x` in the thread-local, and line 40's
+    # `local_set(&SLOT, x)` (line 37) keeps `x` in the thread-local, and line 40's
     # `SLOT.with(|c| c.get())` reads it. At line 38, `x` was settable, and a change was lost.
     owned = owned_of(LOCAL, "local", "StorageLive(_9)")
     body = owned.body(HASH)
@@ -2895,15 +2896,15 @@ def test_a_refusal_by_global_state_advises_a_change_before_the_call():
     ) == ("Change it before the program uses it (a stop on an earlier line, or `--set-at` there).")
 
 
-# What the debug information gives of the review crate's types.
-REVIEW_LAYOUTS = {
+# What the debug information gives of the `routes` crate's types.
+ROUTES_LAYOUTS = {
     "Job": CrateType(own=frozenset({"interior"})),
     **{
         name: CrateType(payloads=frozenset(), parts=frozenset({("prim", "u32")}))
         for name in ("Wrap", "inner::Hidden", "::Hidden")
     },
 }
-REVIEW = tuple(each for name, each in sorted(globals().items()) if name.startswith("R_"))
+ROUTES = tuple(each for name, each in sorted(globals().items()) if name.startswith("R_"))
 
 
 def first_at(text, line):
@@ -2917,7 +2918,7 @@ def first_at(text, line):
 
 
 def test_a_copy_that_reaches_global_state_another_way_withholds_the_local():
-    # Review: each left `x` settable. A `&'static` a call returned into a temporary
+    # Each left `x` settable. A `&'static` a call returned into a temporary
     # (`lock_set(slot(), x)`, `registry().lock().unwrap().push(x)`); a value carrying both the
     # pointer and the copy (`run(Job { a: &A, v: x })`, a closure capturing `&A` and `x`); a
     # function item a standard call runs (`once(x).for_each(direct_set)`); a trait `impl` the
@@ -2934,7 +2935,7 @@ def test_a_copy_that_reaches_global_state_another_way_withholds_the_local():
     ):
         text = globals()[f"R_{name.upper()}"]
         found = why(
-            text, name, line, first_at(text, line), "x", REVIEW, (), REVIEW_SOURCE, REVIEW_LAYOUTS
+            text, name, line, first_at(text, line), "x", ROUTES, (), ROUTES_SOURCE, ROUTES_LAYOUTS
         )
         assert found == (
             f"a static or thread-local may hold a copy of it (from {made}) that the program "
@@ -2949,20 +2950,20 @@ def test_a_copy_that_reaches_global_state_another_way_withholds_the_local():
         123,
         first_at(R_OWNED, 123),
         "x",
-        REVIEW,
+        ROUTES,
         (),
-        REVIEW_SOURCE,
-        REVIEW_LAYOUTS,
+        ROUTES_SOURCE,
+        ROUTES_LAYOUTS,
     )
     assert found == (None, None)
     state = owned_of(
-        R_OWNED, "owned", first_at(R_OWNED, 123), REVIEW, (), REVIEW_SOURCE, REVIEW_LAYOUTS
+        R_OWNED, "owned", first_at(R_OWNED, 123), ROUTES, (), ROUTES_SOURCE, ROUTES_LAYOUTS
     )._globals()
     # `From` and the module's `Display` are trait `impl`s.
     assert state.impls == {"&std::thread::LocalKey<std::cell::Cell<u32>>"}
 
 
-# The `traits` crate (#329 review): a trait of the crate's own, whose `impl` for `Global`
+# The `traits` crate: a trait of the crate's own, whose `impl` for `Global`
 # stores in `A`. Formatting and the standard library's `Vec::push` can't run it; only the
 # crate's code calls it, by its name (`s.put(x)` through a `&dyn Sink`).
 TRAITS_SOURCE = """use std::sync::atomic::{AtomicU32, Ordering};
@@ -3520,7 +3521,7 @@ def test_the_trait_an_impl_block_implements():
     assert _own_trait(("Sink", False), _crate_traits({**texts, "src/m.rs": "use crate::Sink;"}))
 
 
-# The `paths` crate (#340 review): two modules with functions and methods of one name, one
+# The `paths` crate: two modules with functions and methods of one name, one
 # storing in `A`; pointers a call returns, into a static or a leaked `Box`; and a global that
 # is read after the stop that isn't the one the copy went to.
 PATHS_SOURCE = """use std::sync::Mutex;
@@ -4961,8 +4962,8 @@ def test_a_call_is_told_by_its_path_not_its_name():
 
 def test_a_later_read_of_another_global_leaves_the_copy_unused():
     # `lock_set(&S, x)` keeps `x` in `S`, and `other()` reads only `FLAG`, of another type:
-    # it no longer counts as reading the copy (``reads_global``), as any call touching global
-    # state did. `x + k` reads `x` first, so the program sees a change either way.
+    # it doesn't count as reading the copy (``reads_global``), as any call touching global
+    # state would. `x + k` reads `x` first, so the program sees a change either way.
     assert paths_why(P_UNRELATED, "unrelated", 85) == (None, None)
     owned = owned_of(
         P_UNRELATED, "unrelated", first_at(P_UNRELATED, 85), PATHS, (), PATHS_SOURCE, PATHS_LAYOUTS
@@ -4977,7 +4978,7 @@ def test_a_later_read_of_another_global_leaves_the_copy_unused():
     assert body.global_use(*place(body, "_9 = other()")) == {ATOMIC}
 
 
-# The `keeps` crate (#340 review 2): a pointer `fresh()` returned (a leaked `Box`), into which
+# The `keeps` crate: a pointer `fresh()` returned (a leaked `Box`), into which
 # `lock_set(r, x)` stores `x`, handed to a thread the frame spawns, or to `later(r)`, which
 # spawns one; and compared by the standard library's `ptr::eq`, which keeps nothing.
 KEEPS_SOURCE = """use std::sync::Mutex;
@@ -5738,7 +5739,7 @@ def test_the_standard_librarys_ptr_eq_hands_a_pointer_to_nothing():
     assert body._escapes(r)
 
 
-# The `kept` crate (#340 review 3): a crate function named `spawn` that keeps nothing beside
+# The `kept` crate: a crate function named `spawn` that keeps nothing beside
 # the standard library's; `mem::forget(r)` and a discarded `Box::leak`; and a stop before
 # `ptr::eq(r, q)`.
 KEPT_SOURCE = """use std::sync::Mutex;

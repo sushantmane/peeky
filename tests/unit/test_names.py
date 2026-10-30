@@ -29,7 +29,7 @@ def test_an_optimized_rust_frame_reads_as_on_linux():
     assert display_function("main [opt]") == "main [opt]"
 
 
-# Eval 6, finding 16: a C++ frame's signature (`trim_left(std::__1::basic_string<char,
+# A C++ frame's signature (`trim_left(std::__1::basic_string<char,
 # std::__1::char_traits<char>, std::__1::allocator<char>> const&)`) doubled a table's width.
 LIBCXX_STRING = (
     "std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>"
@@ -129,7 +129,7 @@ def test_the_note_says_how_sql_matches_a_short_name():
     note = shortened_note(labels)
     assert "short_function(function) = 'twice'" in note and "whole name" in note
     assert "''" in shortened_note({"o'k(int)": "o'k"})
-    # #151 review 4: a closure or generic instance the table shows is matched by
+    # A closure or generic instance the table shows is matched by
     # `instance`; short_function merges a function's closures.
     note = shortened_note({"cz::main::h0123456789abcdef": "cz::main"}, "cz::main::{closure#0}")
     assert "short_function(function) = 'cz::main'" in note, note
@@ -142,7 +142,7 @@ def test_the_note_says_how_sql_matches_a_short_name():
 
 
 def test_a_gcc_static_function_reads_as_clangs():
-    # Twelfth evaluation's preparation: GCC's `static int list(...)` showed as `::list` in
+    # GCC's `static int list(...)` showed as `::list` in
     # the function column and in the note's `short_function(function) = '::list'`.
     from peeky.names import shortened_note
 

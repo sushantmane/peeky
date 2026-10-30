@@ -1,5 +1,5 @@
 """`queries diff` judging whether two runs' hits line up, and `queries join` by several
-selectors (#201). The ninth agent evaluation's stores, cut down: wrap (C), whose
+selectors. Stores cut down from three programs' runs: wrap (C), whose
 `--set-at` changed `lay.width`; roster (Rust), whose fix shifted every `width`; and
 rechnung (Java), whose fix made one call fewer, so 20 of `diff`'s 22 rows were at
 later hits."""
@@ -86,8 +86,8 @@ def alignment(found):
     return [note for note in found if not note.startswith("labels:")]
 
 
-# wrap: `fits(word, column, lay)` at line 29, 8 calls; `--set-at 75@1 lay.width=16`
-# (run 2) and the fix (run 3) wrap the same way; run 1 is the issue's input.
+# `fits(word, column, lay)` at line 29, 8 calls; `--set-at 75@1 lay.width=16`
+# (run 2) and the fix (run 3) wrap the same way; run 1 is the failing input.
 COLUMN = {1: [3, 9, 15, 19, 5, 10, 14, 19], 2: [3, 9, 15, 3, 9, 14, 3, 8]}
 WORD = [5, 5, 3, 5, 4, 3, 4, 3]
 RETURNS = {1: [1, 1, 1, 0, 1, 1, 1, 0], 2: [1, 1, 0, 1, 1, 0, 1, 1]}
@@ -116,10 +116,10 @@ REORDER = "hits may not line up: the calls may have come in another order or num
 
 
 def test_a_value_an_intervention_changed_is_no_sign_the_hits_do_not_line_up(store):
-    # #201, wrap 2 and 3: `lay.width` 16 against 20 at all 8 hits, from run 2's
+    # wrap's runs 2 and 3: `lay.width` 16 against 20 at all 8 hits, from run 2's
     # --set-at in main before the first hit (capture hit 0), was taken for "the runs'
     # values differ at 8 of 8 hits"; `column`, `word` and `(return)` are alike at every
-    # hit. After an intervention, what follows from it is unknown (review of PR #209):
+    # hit. After an intervention, what follows from it is unknown:
     # the note says what agrees and what was left out, not that the hits line up.
     wrap(
         store,
@@ -142,11 +142,10 @@ def test_a_value_an_intervention_changed_is_no_sign_the_hits_do_not_line_up(stor
 
 
 def test_values_alike_at_every_hit_and_one_that_moved_are_both_said(store):
-    # #201, wrap 1 and 3: `run 3's hit 6 matches run 1's hit 7: 14`, though `word` is
-    # alike at every hit. Which of them names the call is not known (review of PR
-    # #209): the note says both. `column` differs after the edit, which may account for
-    # its values at other hits (tenth evaluation), but they still keep the note from
-    # saying the hits line up (review of PR #269).
+    # wrap's runs 1 and 3: `run 3's hit 6 matches run 1's hit 7: 14`, though `word` is alike at
+    # every hit. Which of them names the call is not known: the note says both. `column` differs
+    # after the edit, which may account for its values at other hits, but they still keep the note
+    # from saying the hits line up.
     wrap(store, 1, 20, label="issue-input")
     wrap(store, 2, 20, edit="--- a/wrap.c\n+++ b/wrap.c\n", label="candidate")
     (note,) = alignment(notes(store, 1, 2))
@@ -171,7 +170,7 @@ def test_values_alike_at_every_hit_and_one_that_moved_are_both_said(store):
 
 
 def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
-    # Review of PR #209, 2: `key` 1, 2 in both runs (a counter, or alike by chance) hid
+    # `key` 1, 2 in both runs (a counter, or alike by chance) hid
     # `call` A, B against B, A: "the hits line up by `key`".
     saved(store, [{"key": "1", "call": "'A'"}, {"key": "2", "call": "'B'"}])
     saved(store, [{"key": "1", "call": "'B'"}, {"key": "2", "call": "'A'"}])
@@ -186,9 +185,9 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
     # `key` tells the hits apart, so `join` could pair them by it: it is named.
     assert note.endswith("\n- " + JOIN.format(1, 2)), note
     # The same where `key` follows from a value an intervention set (`gleich` from `x`):
-    # `call`'s order may follow from it too (tenth evaluation). Nothing says the hits line
-    # up (review of PR #269); `gleich` pairs every hit, so `call`'s other order is left out
-    # with `x` (twelfth evaluation: it read as a reorder beside a key).
+    # `call`'s order may follow from it too. Nothing says the hits line
+    # up; `gleich` pairs every hit, so `call`'s other order is left out
+    # with `x` (beside a key, it would read as a reorder).
     saved(
         store, [{"x": "0", "gleich": "1", "call": "'A'"}, {"x": "0", "gleich": "2", "call": "'B'"}]
     )
@@ -220,7 +219,7 @@ def test_a_value_alike_at_every_hit_never_hides_another_pairing(store):
 
 
 def test_a_qualified_value_tells_nothing_and_matches_nothing(store):
-    # Review of PR #209, 1: `stale_key` 1, 2 (a moved Rust local's bytes) at both hits
+    # `stale_key` 1, 2 (a moved Rust local's bytes) at both hits
     # gave "the hits line up by `stale_key`" over `call` A, B against B, A, and `join`
     # paired on it.
     saved(
@@ -246,7 +245,7 @@ def test_a_qualified_value_tells_nothing_and_matches_nothing(store):
 
 
 def test_values_read_before_an_intervention_still_tell(store):
-    # Review of PR #209, 3: `x` A, B, C against B, A, Z, set after run 2's hit 2: every
+    # `x` A, B, C against B, A, Z, set after run 2's hit 2: every
     # hit of `x` was left out, and the reorder at hits 1 and 2 with it. Only hit 3's is.
     saved(store, [{"x": "'A'"}, {"x": "'B'"}, {"x": "'C'"}])
     saved(
@@ -263,7 +262,7 @@ def test_values_read_before_an_intervention_still_tell(store):
 
 
 def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(store):
-    # #201, roster: `title` is alike at every hit and unique across the hits.
+    # roster: `title` is alike at every hit and unique across the hits.
     titles = ['"Name"', '"City"', '"Pts"']
 
     def roster(widths, symbol, **options):
@@ -273,7 +272,7 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
         )
 
     # Nothing else suggests another pairing, but `width` differs after the edit and is
-    # left out: what agrees is said, never that the hits line up (review of PR #269).
+    # left out: what agrees is said, never that the hits line up.
     def titled(a, b):
         return (
             "hits pair by `title`: it agrees between the runs at each of the 3 hits and is "
@@ -288,16 +287,16 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
         f"{titled(1, 2)}\n- `width` differs after the edit and may follow from it, so it says "
         "nothing of how the hits pair (its rows above still show where it differs)"
     ]
-    # roster 5 and 6: the fix counts characters, so every name's `width` is one less (6 7
-    # 3 -> 5 6 3), which lines up at other hits. The edit may account for that (tenth
-    # evaluation), and `title` pairs every hit, so that is not said (twelfth evaluation:
-    # beside a key it read as a reorder); `width` is left out.
+    # roster: the fix counts characters, so every name's `width` is one less (6 7 3 -> 5
+    # 6 3), which lines up at other hits. The edit may account for that, and `title` pairs
+    # every hit, so that is not said (beside a key it would read as a reorder); `width` is
+    # left out.
     roster(["6", "7", "3"], "hb7185e602e967d61", label="original-43")
     assert alignment(notes(store, 1, 3)) == [
         f"{titled(1, 3)}\n- `width` differs after the edit and may follow from it, so it says "
         "nothing of how the hits pair (its rows above still show where it differs)"
     ]
-    # roster 4: the widths set by --set-at instead, each after its hit's read. A like
+    # The widths set by --set-at instead, each after its hit's read. A like
     # name is no proof that a later read is of the changed variable (each hit is a new
     # call of `widest`), so `width` is left out, as the change may account for it.
     roster(
@@ -321,7 +320,7 @@ def test_values_alike_at_every_hit_and_different_at_each_say_the_hits_line_up(st
     assert alignment(notes(store, 3, 5)) == []
 
 
-# rechnung: `zusammenfassen` compares each pair of items (line 56): the bug compares
+# `zusammenfassen` compares each pair of items (line 56): the bug compares
 # `Integer`s with `==`, so the two Schraube items are not merged; the fix merges them,
 # and makes one comparison fewer per later item.
 S, M, V = '"Schraube"', '"Mutter"', '"Versand"'
@@ -360,7 +359,7 @@ def rechnung(store, pairs, fixed):
 
 
 def test_diff_says_how_many_rows_come_after_the_first_difference(store):
-    # #201, rechnung 1: run 1 stopped 8 times, the fix 6; 20 of the 22 rows were at
+    # rechnung: run 1 stopped 8 times, the fix 6; 20 of the 22 rows were at
     # later hits after the first difference (hit 4), comparing other calls.
     rechnung(store, BEFORE, False)
     rechnung(store, FIXED, True)
@@ -382,7 +381,7 @@ def test_diff_says_how_many_rows_come_after_the_first_difference(store):
 
 
 def test_join_pairs_by_several_selectors_and_says_when_its_key_repeats(store):
-    # #201, rechnung 1: `queries join --param key=neu.bezeichnung` gave 16 rows, every
+    # rechnung: `queries join --param key=neu.bezeichnung` gave 16 rows, every
     # comparison with the same second item paired with every other: no one selector
     # names a comparison. Two do, but for the first and seventh.
     rechnung(store, BEFORE, False)
@@ -438,7 +437,7 @@ def test_join_keys_split_only_outside_brackets_and_quotes(store):
 
 
 def test_values_alike_at_every_hit_say_nothing_where_most_others_differ(store):
-    # Review 2 of PR #209, 1: `key` 1, 2 alike in both runs, and `call` A, B against
+    # `key` 1, 2 alike in both runs, and `call` A, B against
     # C, D (no value of one at another hit of the other): "the hits line up by `key`",
     # though nothing else agreed.
     saved(store, [{"key": "1", "call": "'A'"}, {"key": "2", "call": "'B'"}])
@@ -453,10 +452,10 @@ def test_values_alike_at_every_hit_say_nothing_where_most_others_differ(store):
 
 
 def test_an_intervention_on_another_functions_variable_never_hides_a_reorder(store):
-    # Review 2 of PR #209, 2: a --set-at of `helper`'s local `x` left every hit of the
+    # A --set-at of `helper`'s local `x` left every hit of the
     # probed line's `main` `x` out, so its reorder (A, B against B, A) went unsaid. A
-    # change may account for it (tenth evaluation), but the reorder is still said, with
-    # where the change was (review of PR #269).
+    # change may account for it, but the reorder is still said, with
+    # where the change was.
     saved(store, [{"x": "'A'"}, {"x": "'B'"}], function="main")
     saved(
         store,
@@ -485,7 +484,7 @@ def test_an_intervention_on_another_functions_variable_never_hides_a_reorder(sto
 
 
 def test_selectors_that_differ_together_withhold_the_claim(store):
-    # Review 3 of PR #209: `key` 1 to 6, alike and different at every hit; `p` and `q`
+    # `key` 1 to 6, alike and different at every hit; `p` and `q`
     # each line up best hit by hit, and differ at only 3 of 6 hits, but (p, q) together
     # pair 4 hits elsewhere against 3 hit by hit. Combinations are not checked, so where
     # two selectors differ the claim is withheld.
@@ -510,21 +509,20 @@ def test_selectors_that_differ_together_withhold_the_claim(store):
     assert "together was not checked" not in note, note
 
 
-# The eleventh evaluation: three agents could not find the verdict in the note's one long
-# sentence, where a key paired every hit and the sign of a reorder was the edit's doing.
+# Three programs where a key pairs every hit and the sign of a reorder is the edit's doing.
 # rota (Rust), line 47: `week` 1 to 10; the fix swaps `pick` at weeks 6 and 7. grades
 # (C++), line 66: `name` per student; the fix resets `stats.lowest`, and `quiz` 88 comes at
 # another hit. seats (Java), line 54: `name` per group; the fix moves `r` and `first`.
 PICKS = ["0", "2", "3", "0", "1", "1", "2", "3", "0", "1"]
 STUDENTS = ['"Maya"', '"Leon"', '"Ines"', '"Omar"']
 # grades' `name` is a `const std::string &`: its address, then its text; the addresses
-# differ between the runs (review 2 of PR #308).
+# differ between the runs.
 NAMED = {
     run: [f"0x000000{base}{n}0 {name}" for n, name in enumerate(STUDENTS, 1)]
     for run, base in (("a", "1010e156"), ("b", "1055715f"))
 }
 GROUPS = ['"Kim"', '"Okafor"', '"Lund"', '"Ng"', '"Sato"']
-EVAL11 = {
+KEYED = {
     "rota": (
         [{"week": str(week), "pick": pick} for week, pick in enumerate(PICKS, 1)],
         [
@@ -578,7 +576,7 @@ LEFT_OUT = {
 def short(note):
     """The note's lines, after checking its shape: a verdict, then each detail on a line
     of its own after `- `, in sentences of at most 40 words (inline code is one word, as
-    in the docs). None says the hits line up (review of PR #308)."""
+    in the docs). None says the hits line up."""
     verdict, *details = note.split("\n")
     assert verdict.startswith(VERDICTS), note
     assert "hits line up" not in note and "weak" not in note, note
@@ -589,9 +587,9 @@ def short(note):
     return [verdict, *details]
 
 
-@pytest.mark.parametrize("case", sorted(EVAL11))
+@pytest.mark.parametrize("case", sorted(KEYED))
 def test_diff_leads_with_its_verdict_where_a_key_pairs_every_hit(store, case):
-    before, after, key, moved = EVAL11[case]
+    before, after, key, moved = KEYED[case]
     saved(store, before, label="original")
     saved(store, after, edit="--- a/x\n+++ b/x\n", label="candidate")
     (note,) = alignment(notes(store, 1, 2))
@@ -612,10 +610,9 @@ def test_diff_leads_with_its_verdict_where_a_key_pairs_every_hit(store, case):
         (hit, hit, "both") for hit in range(1, len(before) + 1)
     ], note
     assert "hits line up" not in note and "may not line up" not in note, note
-    # The key pairs every hit, so a left-out value's alternate alignment is not said
-    # (twelfth evaluation: after `hits pair by p.name`, "saw the same values of `desk` in
-    # another order … does not settle whether the calls were reordered" read as a
-    # reorder); the value is named with the others left out.
+    # The key pairs every hit, so a left-out value's alternate alignment is not said (after `hits
+    # pair by p.name`, "saw the same values of `desk` in another order … does not settle whether the
+    # calls were reordered" would read as a reorder); the value is named with the others left out.
     assert rest == [LEFT_OUT[case]], note
     # The text table keeps the details under the verdict's `note:`.
     _, text = evidence.canned(store, "diff", {"a": 1, "b": 2}, table=True)
@@ -692,7 +689,7 @@ def test_every_alignment_note_leads_with_its_verdict(store):
 
 
 def test_a_value_unique_at_every_hit_pairs_the_hits_but_never_proves_they_line_up(store):
-    # Review of PR #308, 1: with no edit and no intervention, run 1's moments A, B, C, D
+    # With no edit and no intervention, run 1's moments A, B, C, D
     # and run 2's B, A, C, D (other arguments, or a program that runs differently each
     # time) both read `i` 1 to 4, and `x` differs at hit 4 only: "the hits line up by
     # `i`", though the first two moments are swapped. `i` agreeing, and unique across
@@ -743,9 +740,9 @@ def desks(store, side, **options):
 
 
 def test_a_key_that_pairs_every_hit_leaves_another_order_out(store):
-    # Twelfth evaluation (desks, rainfall, laps): after `hits pair by p.name`, "runs 1 and
-    # 2 saw the same values of `desk` in another order (…)" and "that alternate alignment
-    # does not settle whether the calls were reordered" read as a reorder. The key pairs
+    # After `hits pair by p.name`, "runs 1 and 2 saw the same values of `desk` in another
+    # order (…)" and "that alternate alignment does not settle whether the calls were
+    # reordered" would read as a reorder. The key pairs
     # every hit already: the selector is left out with the others, and the caveat that
     # pairing by number does not prove the hits are the same moments stays.
     desks(store, "a")
@@ -766,8 +763,8 @@ def test_a_key_that_pairs_every_hit_leaves_another_order_out(store):
         "from them, so they say nothing of how the hits pair (their rows above still show where they differ)"
     ), note
     # The same after an edit (the candidate's `desk` 0 at hit 4), and after an edit that
-    # swaps two calls where a counter-like key (`gleich`) agrees: review of PR #308, 2
-    # said a key may be a counter, so the note grades no sign, weak or strong.
+    # swaps two calls where a counter-like key (`gleich`) agrees: a key may be a
+    # counter, so the note grades no sign, weak or strong.
     desks(store, "b", edit="--- a/Desks.java\n+++ b/Desks.java\n")
     (note,) = alignment(notes(store, 1, 3))
     assert note.startswith("hits pair by `p.name`: "), note
@@ -813,7 +810,7 @@ def suggested_join(store, note):
 
 
 def test_the_join_a_pairing_note_names_pairs_the_hits_as_it_says(store):
-    # Review 2 of PR #308: alignment compares values with addresses masked, but plain
+    # Alignment compares values with addresses masked, but plain
     # `join` compares the stored text. `name` (a C++ string reference: its address, then
     # its text) agrees at both hits only once addresses are masked, and the note said
     # "pairs them as `queries join` by it would", though `join --param key=name` paired
@@ -868,7 +865,7 @@ def test_the_join_a_pairing_note_names_pairs_the_hits_as_it_says(store):
 
 
 def test_join_guidance_names_masked_where_only_addressed_values_tell_hits_apart(store):
-    # Review 2 of PR #308: "if they don't, pair hits by a value …: `peeky queries join …`"
+    # "if they don't, pair hits by a value …: `peeky queries join …`"
     # where only `p`, which carries addresses, tells the hits apart: plain `join` by `p`
     # pairs none, so the command names masked=1, and pairs every hit.
     saved(store, [{"p": '0x0000000100003f90 "x"'}, {"p": '0x0000000100003fa0 "y"'}])
@@ -913,7 +910,7 @@ def indicators(count):
 
 
 def test_a_pairing_note_names_only_a_join_that_join_takes(store):
-    # Review 3 of PR #308: `join` takes at most 8 selectors, and the note named all nine
+    # `join` takes at most 8 selectors, and the note named all nine
     # of `k1` to `k9`, so its command failed ("key names at most 8 selectors"). No 8 of
     # them are unique across the hits: the note names no `join`, and says why.
     hits = indicators(9)

@@ -1,4 +1,4 @@
-"""Whether a loop header's breakpoint stops only before its loop (#161): the control
+"""Whether a loop header's breakpoint stops only before its loop: the control
 flow read from LLDB's disassembly or Java bytecode, never from the source's shape."""
 
 from types import SimpleNamespace
@@ -101,7 +101,7 @@ def test_a_header_whose_location_runs_before_its_loop_stops_once():
     assert judged(unslid, 4, [0x100000474]) == (1, True)
 
 
-# Review of #166: clang -O0's `main` of this, as LLDB lists it before the program runs,
+# clang -O0's `main` of this, as LLDB lists it before the program runs,
 # and its `source info -f u.c -l 1` (the whole file's line table):
 #  3    for (int r = 0; r < 3; r++) {
 #  4        if (r == 2) for (int i = 0; i < 2; i++) {
@@ -288,7 +288,7 @@ def test_lines_that_run_at_each_pass_of_a_loop_around_them_get_no_note():
     assert stops(4, 0x100000460) == (1, True)
     # A line holding a whole loop (`for (...) a[j] = r;`, a macro's): its body too.
     assert stops(7, 0x1000004A0) is None
-    # `goto inside;` jumps into a loop whose header holds none of its code (Low 1).
+    # `goto inside;` jumps into a loop whose header holds none of its code.
     assert stops(9, 0x1000004F0) is None
     # The `while` the goto enters: its condition is in its loop, at each pass after the first.
     assert stops(10, 0x1000004F4) is None
@@ -306,7 +306,7 @@ def test_a_header_line_holding_a_body_statement_gets_no_note():
     assert stops_before_loop(found, table, 3, [0x100000438]) is None
 
 
-# Review 2 of #166: clang -O0's `main` of this, with LLDB's texts as before:
+# clang -O0's `main` of this, with LLDB's texts as before:
 #  3    int total = 0, z = argc - 1;
 #  4    if (z) { int w = 5; total += w; } for (int i = 0; i < 2; i++) { // CONDLOC
 #  5        total += i;
@@ -580,13 +580,13 @@ def test_the_worker_says_it_once_at_launch_and_drops_its_per_pass_warning(tmp_pa
         loop_header_note(4, 2) + " (each hit's stop, 1 to 2, says which)."
     ]
     assert worker.place_warnings() == []
-    # Review of #166: breakpoints set again (a probe re-arming after a --set-at) or
+    # Breakpoints set again (a probe re-arming after a --set-at) or
     # asked again keep the launch's answer, never analysing while the program waits.
     worker.note_places(runtime, [{"line": 4}], placed)
     worker.stop_reason = "breakpoint"
     worker.place_of({"line": 4, "instructionPointerReference": "0x100000999"})
     assert len(asked) == 1 and worker.loop_warnings()
-    # A runtime that cannot say: #157's warning stands.
+    # A runtime that cannot say: the warning on a line that stops several times stands.
     del runtime.loop_header_stops
     worker.loop_lines = worker.loop_headers(runtime)
     assert worker.loop_warnings() == []
@@ -594,7 +594,7 @@ def test_the_worker_says_it_once_at_launch_and_drops_its_per_pass_warning(tmp_pa
 
 
 def test_the_debugger_is_asked_once_per_file_and_function(tmp_path):
-    # Review of #166: each line and each place disassembled its function and read its
+    # Each line and each place disassembled its function and read its
     # line again (240 inlined copies: 1.1 s at launch).
     from peeky.native import NativeSession
 

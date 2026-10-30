@@ -1,4 +1,4 @@
-"""C and C++ previews (#136): written from the debugger's children, bounded, and never
+"""C and C++ previews: written from the debugger's children, bounded, and never
 guessing (unions, pointers, values with no value, standard-library types)."""
 
 from types import SimpleNamespace
@@ -80,7 +80,7 @@ GRAPH = {
         ],
     ),
     31: record("O", [("s", 30)]),
-    # Review 2: wide character bitfields; a member named as a base class.
+    # Wide character bitfields; a member named as a base class.
     32: ("base", "char16_t", "DW_ATE_UTF", 2),
     33: ("typedef", "wchar_t", 1),
     34: record("EB", [("w", 32, 9), ("wc", 33, 9), ("i8", 3, 3)]),
@@ -396,7 +396,7 @@ def test_a_char_bitfield_member_row_shows_its_number():
 
 
 def test_wide_character_bitfields_and_clashing_names_are_not_previewed():
-    # Review 2 of #136: `char16_t w : 9` read `u'̍'` for u'a'; in C `wchar_t` is a typedef
+    # `char16_t w : 9` read `u'̍'` for u'a'; in C `wchar_t` is a typedef
     # of `int`, so its name tells it. A number LLDB gives a char bitfield is masked too.
     assert Typed(GRAPH, 32, bits=9).wide_character() and Typed(GRAPH, 33, bits=9).wide_character()
     assert not Typed(GRAPH, 1, bits=9).wide_character()
@@ -513,7 +513,7 @@ def elements(*values, at=100):
 
 
 def test_a_vector_shows_its_first_elements_as_its_element_type_says():
-    # #181: `have` showed `size=3`, and only a session read `have[2] = ""`.
+    # `have` showed `size=3`, and only a session read `have[2] = ""`.
     fetch = Debugger({1: elements("1", "2", "3")})
     shown = preview(node("v", "size=3", "std::vector<int>", 1), fetch, holding(50), text)
     assert shown == "size=3 [1, 2, 3]" and fetch.requests == [(1, 3)]
@@ -601,7 +601,7 @@ def test_inside_a_struct_and_through_a_reference():
 
 
 def test_an_unordered_container_whose_count_is_not_proven_is_not_listed():
-    # #167: GCC's showed `{us = size=0 {}, n = 2}` for `us{7, 8}`; LLDB's formatter counts
+    # GCC's showed `{us = size=0 {}, n = 2}` for `us{7, 8}`; LLDB's formatter counts
     # it as empty. Each is asked by its way from the previewed value.
     asked = []
 
@@ -652,7 +652,7 @@ def test_an_unordered_container_whose_count_is_not_proven_is_not_listed():
 
 
 def test_a_preview_asks_each_unordered_container_by_its_variable_path():
-    # The debugger's own count is read by the path from the root local (#167).
+    # The debugger's own count is read by the path from the root local.
     native = session(fields=CONTAINERS)
     native.declarations[0]["types"]["h"] = {(67, "automatic", None)}
     native.declarations[0]["types"]["vs"] = {(68, "automatic", None)}
@@ -723,7 +723,7 @@ def test_a_container_is_read_only_where_no_library_call_may_be_changing_it():
     # No frames, or more than can be read: not read.
     assert native.containers_settled(inner, False, None, threads=one) is False
     full = stack(*["f"] * 10)
-    # More frames than are read: not read (#187: up to STACK_READ, not 64).
+    # More frames than are read: not read (up to STACK_READ, not 64).
     many = stack(*["f"] * STACK_READ)
     asked = []
     assert (
@@ -754,7 +754,7 @@ def test_an_element_of_a_container_a_library_call_may_be_changing_is_not_preview
     )
     assert shown is None
     # Through a reference or pointer to the vector, whose elements it lists as its own.
-    # (Review of #181's own: its elements were not taken for a container's.)
+    # (Its elements are not taken for a container's.)
     native.declarations[0]["types"]["rv"] = {(63, "automatic", None)}
     native.declarations[0]["types"]["pv"] = {(64, "automatic", None)}
     below = stack("main", "void std::_Destroy<Noisy>(Noisy*)", "caller")
@@ -794,7 +794,7 @@ def test_an_element_of_a_container_a_library_call_may_be_changing_is_not_preview
 
 
 def test_a_lifetime_under_way_below_a_container_withholds_it():
-    # Review of #181: `slot->~E(); ::new (slot) E(3);` in `main` leaves `v` holding an
+    # `slot->~E(); ::new (slot) E(3);` in `main` leaves `v` holding an
     # element whose lifetime ended, with no library frame on the stack.
     native = session()
     frames = stack("E::~E()", "E::~E()", "main", "start")
@@ -812,7 +812,7 @@ def test_a_lifetime_under_way_below_a_container_withholds_it():
 
 
 def test_a_local_reached_through_a_pointer_is_read_as_one():
-    # Review of #181: a structured binding of a reference (`DW_OP_deref`) is typed as
+    # A structured binding of a reference (`DW_OP_deref`) is typed as
     # the vector itself; its container must meet the whole-stack rule.
     native = session(fields=CONTAINERS)
     native.declarations[0]["types"]["items"] = {(50, "automatic", None)}
@@ -845,8 +845,8 @@ def test_a_local_reached_through_a_pointer_is_read_as_one():
 
 
 def test_why_a_row_read_through_a_changing_container_is_withheld():
-    # #187: the rows below a container a library call may be changing (#181's rule,
-    # without its one-thread part): the reason names the call and the container.
+    # The rows below a container a library call may be changing (without the
+    # rule's one-thread part): the reason names the call and the container.
     from peeky.native import _short_frame
 
     native = session(fields=CONTAINERS)
@@ -871,7 +871,7 @@ def test_why_a_row_read_through_a_changing_container_is_withheld():
         assert "pointer or reference" in reason and shown in reason, reason
     alone = stack("count(Owner const&)", "main", "start")
     assert native.changing_container(alone[0], ["rv", "[1]"], alone, threads=one) is None
-    # A lifetime under way (#181 review): below the frame, or anywhere through a
+    # A lifetime under way: below the frame, or anywhere through a
     # reference (the destructor's own frame too).
     ended = stack("E::~E()", "main", "start")
     reason = native.changing_container(ended[1], ["vp", "[0]", "x"], ended, threads=one)
@@ -892,7 +892,7 @@ def test_why_a_row_read_through_a_changing_container_is_withheld():
 
 
 def test_rows_read_through_a_container_need_one_thread_and_a_whole_stack():
-    # Review of #187: rows were withheld for library calls, never for another thread
+    # Rows were withheld for library calls, never for another thread
     # (`shared[0].x` read a moved-from `-1` while a worker thread relocated it), and a
     # partial `stackTrace` page (64 frames of 2,000) was taken for the whole stack.
     from peeky.worker import StackPage

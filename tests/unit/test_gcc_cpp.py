@@ -1,4 +1,4 @@
-"""C++ built by GCC (#167): what LLDB misreads in its debug information is withheld or
+"""C++ built by GCC: what LLDB misreads in its debug information is withheld or
 said, never shown as the program's. Unordered containers LLDB counts as empty, a
 structured binding of a bitfield with no location, and LLDB's own errors about the
 debug information, which lldb-dap 18 sends among the program's output."""
@@ -95,7 +95,7 @@ def test_counts_as_the_debugger_writes_them():
 
 
 def test_an_unordered_container_the_debugger_miscounts_is_withheld():
-    # #167: GCC's `std::unordered_set<int> us{4}` read `size=0 {}`, `um[1]` "would
+    # GCC's `std::unordered_set<int> us{4}` read `size=0 {}`, `um[1]` "would
     # insert the key", `us[#0]` "us has 0 entries".
     session = native()
     counts = Counts({"us._M_h._M_element_count": HASHTABLE.format(1)})
@@ -268,7 +268,7 @@ def test_a_libstdcxx_strings_own_buffer_is_sized_by_the_debug_information():
         string_graph(buffer=(4, 4)),
         string_graph(buffer=None),
         string_graph(element="wchar_t"),
-        # Review of #281: sizes that do not add up are never trusted. A 64-byte buffer in
+        # Sizes that do not add up are never trusted. A 64-byte buffer in
         # a 16-byte union of a 32-byte string would let a 40-byte text past the object.
         string_graph(buffer=(64,)),
         string_graph(buffer=(17,)),
@@ -354,7 +354,7 @@ GRAPH = {
         # GCC's `std::allocator<int>` has no template arguments: nothing proves it.
         (33, ("fixed",), [SET], "unknown"),
         (33, ("last",), [SET], "unknown"),
-        # Review of #281: `WeirdAlloc<double, int>` decodes an `int` as a `double`.
+        # `WeirdAlloc<double, int>` decodes an `int` as a `double`.
         (35, ("last",), [WEIRD], "type"),
         (35, ("fixed",), [WEIRD], "type"),
         # A `long double` (16-byte aligned) is past the 8 bytes LLDB skips in each node.
@@ -395,7 +395,7 @@ LONG = "std::unordered_set<long double>"
 @pytest.mark.parametrize(
     "base, pointer, container, proven",
     [
-        # Review round 2 of #281: an 8-byte `_M_nxt` in a 16-byte `_Hash_node_base`, with a
+        # An 8-byte `_M_nxt` in a 16-byte `_Hash_node_base`, with a
         # 16-aligned value: the value sits 16 bytes in, where LLDB reads 8 in. Proven by
         # `_Hash_node_base`'s size alone, it was listed.
         (
@@ -647,7 +647,7 @@ def test_a_withheld_container_row_has_no_value_handle_or_entries(tmp_path):
     )
 
 
-# #291: GCC's `auto [t, u] = pair;` names each element by a variable holding a reference
+# GCC's `auto [t, u] = pair;` names each element by a variable holding a reference
 # to `std::tuple_element<I, E>::type`; its row was the element's address.
 ELEMENT = "std::tuple_element<0, std::pair<long, long> >::type"
 POINT = "std::tuple_element<0, std::pair<Pt, int> >::type"
@@ -994,7 +994,7 @@ def test_the_worker_shows_a_pair_bindings_element_or_withholds_it(tmp_path):
 
 
 def test_a_newer_clangs_binding_is_told_by_its_line():
-    # #291: Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &`,
+    # Apple clang 21 describes `t` of `auto [t, u] = pair;` as a plain `long &`,
     # not artificial: its row was the element's address after the declaration ran.
     from peeky.c_source import Statements
 
@@ -1025,7 +1025,7 @@ def test_a_newer_clangs_binding_is_told_by_its_line():
 
 
 def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
-    # Review of #296: `auto &[d, e] = make(0)[0];` refers into a temporary the line
+    # `auto &[d, e] = make(0)[0];` refers into a temporary the line
     # destroyed; a later `make(7000)` reused its memory, and `d` showed `8000` with no note.
     from peeky.native import Withholding
 
@@ -1059,7 +1059,7 @@ def test_a_binding_by_reference_is_read_only_through_an_object_of_this_frame():
 
 
 def test_an_optimized_bindings_own_line_withholds_it():
-    # Review of #296: in an optimized build, where in its declaration's lines a stop is
+    # In an optimized build, where in its declaration's lines a stop is
     # cannot be told, so neither can whether this pass has set the reference.
     session = bound()
     session._not_yet_declared = lambda *args: None
@@ -1133,7 +1133,7 @@ UNIONS = """0x0000000b: DW_TAG_compile_unit
 
 
 def test_a_member_chain_through_a_union_is_never_proven():
-    # Round 2 of the #296 review: `auto &[a, b] = u.p;`, then `u.p.~pair(); new (&u.q)
+    # `auto &[a, b] = u.p;`, then `u.p.~pair(); new (&u.q)
     # std::pair<long, long>{7, 8};` showed `a = 7, b = 8`: which member of a union is alive
     # changes as the program runs, a standard library's union too.
     from peeky.fields import CPP_LIBRARIES, type_graph
@@ -1148,7 +1148,7 @@ def test_a_member_chain_through_a_union_is_never_proven():
     assert _member_object(holder, "missing") is None and _member_object(None, "p") is None
 
 
-# #297: bindings by reference into a local container, or of a call's result, which GCC
+# Bindings by reference into a local container, or of a call's result, which GCC
 # holds as references to `std::tuple_element<I, E>::type` (as BOUND's).
 HELD = """0x0000000b: DW_TAG_compile_unit
               DW_AT_name\t("t.cpp")
@@ -1494,7 +1494,7 @@ def held(optimization="O0", preprocessed=None, dwarf=HELD):
 
 
 def unproven(base, what, why):
-    # Eval 13: never "bind by value", which breaks a loop that writes through the binding.
+    # Never "bind by value", which breaks a loop that writes through the binding.
     element = re.fullmatch(r"an element of `(.+)`", what)
     instead = (
         f"Read `{element[1]}` itself, or print the value from the program"
@@ -1508,7 +1508,7 @@ def unproven(base, what, why):
 
 
 def test_a_binding_into_a_local_container_is_read_where_it_holds_that_element():
-    # #297: `for (const auto &[k, x] : m)` over a local map and `auto &[r, s] = v[0];` were
+    # `for (const auto &[k, x] : m)` over a local map and `auto &[r, s] = v[0];` were
     # `not shown`, though nothing changes either container while the binding refers to it.
     session, frame = held(), {"id": 1}
     entries = [
@@ -1613,8 +1613,8 @@ def test_a_binding_into_a_local_container_is_read_where_it_holds_that_element():
 
 
 def test_a_binding_of_a_calls_result_is_withheld():
-    # #297 read `auto &&[p, q] = one(argc);` in its frame's stack. Review of #368, round 3:
-    # with the named return value optimization the function called builds its result where
+    # `auto &&[p, q] = one(argc);` binds a call's result. With the named return value
+    # optimization the function called builds its result where
     # the caller keeps it, and may keep a pointer into it (`saved = &r; return r;`).
     from peeky.c_source import Statements
 
@@ -1637,7 +1637,7 @@ def test_a_binding_of_a_calls_result_is_withheld():
 
 
 def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
-    # Review of #368: `P *p = v.data(); auto &[r, s] = v[0]; std::destroy_at(p);` and a
+    # `P *p = v.data(); auto &[r, s] = v[0]; std::destroy_at(p);` and a
     # stop before `new (p) P{13, 14}` read dead bytes; the container's own uses were
     # checked, not the pointers and references they give, nor the binding's names.
     from peeky.c_source import Statements
@@ -1680,7 +1680,7 @@ def test_a_binding_is_read_only_where_nothing_may_end_its_elements_life():
 
 
 def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_them():
-    # Review of #368, round 2: a constructor of the program's element type, or its own
+    # A constructor of the program's element type, or its own
     # allocator or order, sees where each element is (`E() { saved = &x; }`), and may keep
     # it to end that element's life where the binding's scope shows nothing.
     frame = {"id": 1}
@@ -1721,7 +1721,7 @@ def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_the
         )
         container = siblings[0]["name"]
         assert found == unproven(row["name"], f"an element of `{container}`", policy), edit
-    # Review of #368, round 3: `std::allocator` calls `operator new`, which the program may
+    # `std::allocator` calls `operator new`, which the program may
     # replace, or a library the launch loads first; where Peeky can't tell, neither.
     for replaced, environment, why in (
         (
@@ -1754,7 +1754,7 @@ def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_the
     assert found == unproven(
         "k", "an element of `m`", "and Peeky can't tell whether the launch loads a library first"
     )
-    # Round 4: the host's `/etc/ld.so.preload`, read at launch, naming a library; unread.
+    # The host's `/etc/ld.so.preload`, read at launch, naming a library; unread.
     for preloaded, why in (
         (
             True,
@@ -1776,7 +1776,7 @@ def test_a_containers_elements_are_proven_only_where_the_library_alone_makes_the
 
 
 def test_the_hosts_ld_so_preload_is_read_at_launch(tmp_path, monkeypatch):
-    """Review of #368, round 4: glibc's loader loads the libraries `/etc/ld.so.preload`
+    """Glibc's loader loads the libraries `/etc/ld.so.preload`
     names into every program first, so one may replace `operator new`. Blank and comment
     lines name none; a file that can't be read whole is unknown; none at all, nothing."""
     import os
@@ -2203,7 +2203,7 @@ REPLACED = """
 
 
 def test_a_replaced_operator_new_is_told_from_the_build():
-    # Review of #368, round 3: `std::allocator` calls the global `operator new`, which a
+    # `std::allocator` calls the global `operator new`, which a
     # program may replace (`void *operator new(std::size_t n) { captured = p; ... }`) to
     # keep where each element of a container is.
     from peeky.native import _parse_dies, allocation_replaced
@@ -2216,7 +2216,7 @@ def test_a_replaced_operator_new_is_told_from_the_build():
 
 
 def test_a_calls_arguments_are_read_from_the_build():
-    # Review of #368: a binding's name passed to a call is proven only where every function
+    # A binding's name passed to a call is proven only where every function
     # of the call's name takes that argument by value, as a number or a character.
     from peeky.native import _parse_dies, call_arguments
 
@@ -2233,7 +2233,7 @@ def test_a_calls_arguments_are_read_from_the_build():
 
 
 def test_the_worker_lists_a_maps_later_pages(tmp_path):
-    # #297: a map's entries are listed in pages, for a binding's element to be found.
+    # A map's entries are listed in pages, for a binding's element to be found.
     from peeky.worker import DebugWorker
 
     worker = DebugWorker(tmp_path)
@@ -2247,7 +2247,7 @@ def test_the_worker_lists_a_maps_later_pages(tmp_path):
 
 
 def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_it_reads():
-    # Eval 13 prep, findings 2 and 3: below a destructor, or through a reference Peeky
+    # Below a destructor, or through a reference Peeky
     # can't place (lldb-dap 18), the row gave the debugger's miscount alone and said to
     # print the entries from the program, though they read in the frame that holds them,
     # or once the call returns.
@@ -2283,7 +2283,7 @@ def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_
         "wherever it is, perhaps part-way through changing it"
     ), found.why
     # Through a reference: candidate locals to inspect, which it may refer to; nothing
-    # proves which (#393 review).
+    # proves which.
     session.lldb_major, readable = 18, []
     session._nodes_readable = lambda frame, steps, count: readable.append(count) or True
     way = {"frame": {"id": 1}, "steps": [("stock", "Stock &")]}
@@ -2312,7 +2312,7 @@ def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_
         "a pointer it proves points at a live object, not `p`; print its entries from the program"
     ), said
     # Nothing more is said where no node would be read through a proven one either: its
-    # own count unread, or entries of a type Peeky doesn't read (review: a `double`).
+    # own count unread, or entries of a type Peeky doesn't read (a `double`).
     session._nodes_readable = lambda frame, steps, count: False
     assert session.unreached_container(withheld, "p", "pointer", [], **way) is withheld
     withheld.counted = None
@@ -2325,7 +2325,7 @@ def test_an_unordered_container_says_why_no_node_is_read_at_this_stop_and_where_
 
 
 def test_a_refused_change_says_where_a_captures_or_a_bindings_value_is():
-    # Eval 13: a GCC lambda's capture by value was refused as "`tariff` is const", while its
+    # A GCC lambda's capture by value was refused as "`tariff` is const", while its
     # rows say `[not settable: capture]`; a structured binding's refusal said to change it
     # "before the call", where no call passed it.
     from peeky.native import _binding_refused, capture_refused
@@ -2366,7 +2366,7 @@ def test_a_refused_change_says_where_a_captures_or_a_bindings_value_is():
 
 
 def test_describe_marks_static_only_a_local_at_one_fixed_address():
-    # Review of #393: any location naming `DW_OP_addr` was static, so a location list that
+    # Any location naming `DW_OP_addr` was static, so a location list that
     # places a local at an address for some code and in a register for the rest was too.
     from peeky.native import _static_names
 

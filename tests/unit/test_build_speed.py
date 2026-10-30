@@ -1,4 +1,4 @@
-"""Build speed without new trust (#398): toolchain probes run on every build, and only
+"""Build speed without new trust: toolchain probes run on every build, and only
 their tools' digests are kept across processes; a parallel group of independent build
 commands raises the earliest failure, as running them in order does, and starts nothing
 after a recorded failure."""
@@ -72,7 +72,7 @@ def probed(recipe, source):
 
 
 def test_a_config_file_rewritten_in_place_is_probed_again(source, tmp_path):
-    # Review of #400: a probe's output was reused while the tool's bytes and its
+    # A probe's output was reused while the tool's bytes and its
     # directory's entries were unchanged, so a clang.cfg rewritten in place went unseen.
     tool = python_tool(tmp_path / "tools")
     config = tool.parent / "clang.cfg"
@@ -87,7 +87,7 @@ def test_a_config_file_rewritten_in_place_is_probed_again(source, tmp_path):
 
 
 def test_a_wrappers_probe_follows_the_program_it_runs(source, tmp_path):
-    # Review of #400: a compiled wrapper's own bytes don't change when the program it
+    # A compiled wrapper's own bytes don't change when the program it
     # runs does; the probe must ask again.
     tool = python_tool(tmp_path / "tools")
     delegate = tmp_path / "real-clang"
@@ -221,7 +221,7 @@ def test_no_command_after_a_failure_starts(source, tmp_path, monkeypatch):
 
 
 def test_a_command_claimed_before_an_earlier_failure_never_starts(source, monkeypatch):
-    # Review of #400: a worker claimed a command, released the group's lock, and could
+    # A worker claimed a command, released the group's lock, and could
     # still start its process after a command before it had failed.
     from peeky import agent
 

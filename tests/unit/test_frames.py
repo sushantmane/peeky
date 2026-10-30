@@ -1,4 +1,4 @@
-"""#104: caller frames, Python module globals and Python object identity, with fakes."""
+"""Caller frames, Python module globals and Python object identity, with fakes."""
 
 from copy import deepcopy
 
@@ -159,7 +159,7 @@ def test_a_frame_sharing_the_innermost_frames_id_is_refused(worker):
 
 
 def test_python_globals_are_listed_and_proven_only_on_request(worker):
-    # Review of #104: every inspection listed the globals, running each one's repr in
+    # Every inspection listed the globals, running each one's repr in
     # the program, and computed the proof, even to read a local.
     snapshot = inspect(worker)
     assert [scope["name"] for scope in snapshot["scopes"]] == ["Locals"]
@@ -203,7 +203,7 @@ def test_python_globals_are_listed_read_only_and_once_at_module_level(worker):
 
 
 def test_python_values_carry_an_identity_but_scalars_and_groups_do_not(worker):
-    # Review of #104: the number alone identifies the object; its class can change.
+    # The number alone identifies the object; its class can change.
     snapshot = inspect(worker, frame=1, globals=True)
     a, b, n = snapshot["scopes"][0]["variables"]
     assert a["identity"] == b["identity"] == 8 and "identity" not in n
@@ -276,7 +276,7 @@ def test_a_missing_name_is_read_from_globals_only_when_proven_unshadowed(worker)
     ],
 )
 def test_each_reason_a_name_is_not_a_global_is_worded_for_what_binds_it(kind, owner, words):
-    # Review of #104: an enclosing function's local, a type parameter and a method's
+    # An enclosing function's local, a type parameter and a method's
     # missing `__class__` were all called "a local not yet assigned".
     class Proven:
         def dispatch(self, operation, args):
@@ -293,7 +293,7 @@ def test_each_reason_a_name_is_not_a_global_is_worded_for_what_binds_it(kind, ow
 
 
 def test_a_caller_frames_values_are_never_changed_or_marked_settable(worker):
-    # Review of #104: set_variable on a scope of `inspect --frame 1` changed the caller.
+    # set_variable on a scope of `inspect --frame 1` changed the caller.
     worker.runtime.settable = lambda variable, frame: True
     caller = inspect(worker, frame=1)
     assert not any(v.get("settable") for v in caller["scopes"][0]["variables"])
@@ -309,7 +309,7 @@ def test_a_caller_frames_values_are_never_changed_or_marked_settable(worker):
 
 
 def test_a_frame_outside_the_program_is_named_by_its_index(worker):
-    # Review of #104: the error named lldb-dap's frame id (`Frame 524291 (start)`).
+    # The error named lldb-dap's frame id (`Frame 524291 (start)`).
     def validate_stop(frame):
         if frame["name"] != "normalize":
             raise RuntimeError("not a prepared source")
@@ -390,7 +390,7 @@ def test_a_module_listing_of_only_debugpys_groups_reads_plainly():
 
 
 def test_debugpys_groups_are_read_once_per_inspection():
-    # Review of #104: every selector expanded a value's groups again.
+    # Every selector expanded a value's groups again.
     class Counting(Tree):
         def __init__(self, tree):
             super().__init__(tree)
@@ -535,14 +535,14 @@ def test_a_source_changed_after_the_program_started_proves_nothing(tmp_path):
     os.utime(path, (started + 5, started + 5))
     names, why = classify_names(path, "shadow", 7, NAMES, ["n"], loaded_by=started)
     assert names is None and why == "its source file changed after the program started"
-    # Review of #104: a file copied over it with an older mtime (`cp -p`) is changed too.
+    # A file copied over it with an older mtime (`cp -p`) is changed too.
     os.utime(path, (started - 3600, started - 3600))
     names, why = classify_names(path, "shadow", 7, NAMES, ["n"], loaded_by=started)
     assert names is None and why == "its source file changed after the program started"
 
 
 def test_the_index_keeps_no_syntax_tree_and_is_bounded_by_size(tmp_path, monkeypatch):
-    # Review of #104: each cached parse of a 3.9 MB module held about 1.4 GB.
+    # Each cached parse of a 3.9 MB module held about 1.4 GB.
     import ast
     import symtable
 
@@ -688,7 +688,7 @@ def outer():
 def test_a_name_the_function_reads_from_its_globals_is_global_whatever_its_comprehensions_bind(
     tmp_path,
 ):
-    # Review of #104 (round 2): `Y` of a generator expression, which runs in its own
+    # `Y` of a generator expression, which runs in its own
     # frame, was called "the variable of a comprehension in f" where f reads the global.
     path = tmp_path / "c2.py"
     path.write_text(COMPREHENSIONS)

@@ -1,6 +1,6 @@
-"""`--set-at LINE@HIT name=@before` (#305): write back the value a variable held just before
+"""`--set-at LINE@HIT name=@before`: write back the value a variable held just before
 the probe's latest change to it, made at the same hit of its own line, in the same call.
-Eleventh evaluation, tides: testing "skip `turn = p` on a stand" took six `--set-at`s, with
+tides: testing "skip `turn = p` on a stand" took six `--set-at`s, with
 the values to restore (1, 1, -1) copied by hand from an earlier probe, because `@all` can't
 restore values that differ."""
 
@@ -288,7 +288,7 @@ def test_no_earlier_change_is_refused(monkeypatch):
         in message
     )
     assert "(--set-at LINE@1 x=VALUE)" in message
-    # Twelfth evaluation's preparation: the restore's line stops before the change's line in
+    # The restore's line stops before the change's line in
     # each pass; the advice names that, as COOKBOOK 2.8 does.
     assert (
         f"This stop of line {FLAT} came before line {GUARD}'s change, so restore at a line that "
@@ -424,7 +424,7 @@ def test_the_watch_ends_with_the_last_restore(monkeypatch):
 
 
 def test_a_restore_to_other_storage_is_refused_before_it_writes(monkeypatch):
-    # Review of PR #322: Java `b.n=0`, then `b = new Box(9)`, then `b.n=@before` wrote 1
+    # Java `b.n=0`, then `b = new Box(9)`, then `b.n=@before` wrote 1
     # into the new Box. The worker compares the storage the change wrote with this one's.
     stops = [{"line": FIRST}, {"line": GUARD}, {"line": FLAT, "storage": "`n` of Box@31"}]
     worker = Calls(stops)
@@ -452,7 +452,7 @@ def test_a_restore_over_another_value_says_so(monkeypatch):
         "set x: 2 -> 1  (restored over the current 2, --set-at line 8@all, stop 1 of line 8, in f)"
         in (text)
     )
-    # Round 2 of the review of PR #322: the probe's own write through another name for
+    # The probe's own write through another name for
     # the same storage (`y` here; Java `c.n`, `c` being `b`'s Box) is no write of the
     # program's, so nothing says whose it was.
     request = Probe(
@@ -472,7 +472,7 @@ def test_a_restore_over_another_value_says_so(monkeypatch):
 
 
 def test_until_hits_waits_for_the_restore_its_last_change_awaits(monkeypatch):
-    # Review of PR #322: `--hits 2 --until hits` ended after the guard's second change,
+    # `--hits 2 --until hits` ended after the guard's second change,
     # before the restore that undoes it, with the guard left at 0.
     request = Probe(
         "main.c", GUARD, ("x",), hits=2, until="hits",
@@ -522,7 +522,7 @@ def test_a_change_never_restored_is_reported_and_exits_4(monkeypatch):
 
 
 def test_a_later_change_owes_no_restore(monkeypatch):
-    # Round 2 of the review of PR #322: `x=0`, its restore, then a later `x=2` all ran,
+    # `x=0`, its restore, then a later `x=2` all ran,
     # yet the restore was said not to undo the change at line 9@1, with exit 4.
     request = Probe(
         "main.c", GUARD, ("x",), hits="all",
@@ -554,7 +554,7 @@ CHAINED = Probe(
 
 
 def test_until_hits_waits_for_a_restore_of_a_restore(monkeypatch):
-    # Round 2 of the review of PR #322: with `--hits 2 --until hits`, the probe ended after
+    # With `--hits 2 --until hits`, the probe ended after
     # line 8 on pass 2, as the latest change was a restore, and line 9's never came.
     worker = Passes(chained(3), firsts=FIRSTS)
     result = run(monkeypatch, worker, CHAINED)
@@ -575,7 +575,7 @@ def test_until_hits_waits_for_a_restore_of_a_restore(monkeypatch):
 
 
 def test_a_restore_whose_line_never_stopped_is_listed_once(monkeypatch):
-    # Round 2 of the review of PR #322: it was listed as not made, and again as leaving
+    # It was listed as not made, and again as leaving
     # its change in place.
     stops = [{"line": FIRST}, {"line": GUARD, "set": "1"}]
     result = run(monkeypatch, Passes(stops), flip())
@@ -608,7 +608,7 @@ def flips(count):
 
 
 def test_every_change_a_restore_owed_is_named_not_only_the_latest(monkeypatch):
-    # Twelfth evaluation, rainfall: the guard was flipped at each of 6 hits, and the
+    # rainfall: the guard was flipped at each of 6 hits, and the
     # restore's line never ran once it was. None of the 6 was restored, yet the run said
     # "1 change left in place" and named only the one at hit 6.
     result = run(monkeypatch, Passes(flips(6)), flip())
@@ -643,7 +643,7 @@ def test_every_change_a_restore_owed_is_named_not_only_the_latest(monkeypatch):
 
 
 def test_writes_that_changed_nothing_are_not_called_changes(monkeypatch):
-    # Review of PR #333: the guard changes `x` at hit 1 only. At hits 2 to 6 it writes the
+    # The guard changes `x` at hit 1 only. At hits 2 to 6 it writes the
     # 0 already there, which the worker proves changed nothing, yet each was called a
     # change left in place.
     stops = flips(1) + [{"line": GUARD}] * 5
@@ -684,7 +684,7 @@ def test_writes_that_changed_nothing_are_not_called_changes(monkeypatch):
 
 
 def test_writes_to_several_names_at_one_place_are_each_counted(monkeypatch):
-    # Review of PR #333: the status counted writes by LINE@HIT alone, so `x` and `y`, both
+    # The status counted writes by LINE@HIT alone, so `x` and `y`, both
     # written at 5@1 and never restored, were "1 change".
     request = Probe(
         "main.c", GUARD, ("x",), hits="all",
@@ -800,7 +800,7 @@ def diverged(*after):
 
 
 def test_until_hits_waits_for_an_earlier_hit_still_owed(monkeypatch):
-    # Review of PR #333: where the lines' hit counts differ, the latest change (the flat
+    # Where the lines' hit counts differ, the latest change (the flat
     # line's restore at hit 1) is owed nothing, but EARLY's at hits 2 and 3 are, and the
     # probe waits for the flat line to reach them. What happens then:
     pass_ = [{"line": GUARD, "set": "1"}, {"line": FLAT}]
@@ -1185,7 +1185,7 @@ def test_the_evidence_names_every_write_with_no_matching_restore(monkeypatch, tm
 
 
 def test_set_effect_marks_a_write_proven_to_change_nothing(monkeypatch, tmp_path):
-    # Twelfth evaluation's preparation (rainfall run 2, hit 5): set_effect showed
+    # rainfall's run 2, hit 5: set_effect showed
     # `in_spell: False -> False`, where the probe's own text says `no change`.
     store = tmp_path / "evidence" / "evidence.db"
     evidence.record(store, run(monkeypatch, Passes(passes("0", "1"), proven=True), flip()))

@@ -6,6 +6,7 @@ import tempfile
 import time
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -258,8 +259,8 @@ def test_rust_launch_disables_symbol_file_scripts(monkeypatch):
 
 
 def test_lldb_waits_for_its_debug_server_as_long_as_peeky_waits_for_lldb(tmp_path):
-    # #193: under load, lldb-server answered after LLDB's 5 s packet timeout, and a value
-    # it could read came back as `invalid load address` (`p.a` unavailable). LLDB now
+    # Under load, lldb-server answered after LLDB's 5 s packet timeout, and a value
+    # it could read came back as `invalid load address` (`p.a` unavailable). LLDB
     # waits longer than Peeky's own 15 s request bound, which decides.
     from types import SimpleNamespace
 
@@ -731,7 +732,7 @@ def test_value_view_time_budget_degrades_to_opaque(worker, monkeypatch):
 
 
 def test_a_spent_value_view_budget_says_which_limit_ran_out(worker, monkeypatch):
-    # Review of #156, round 3: Peeky's own checks took the whole time, and a `&str` said
+    # Peeky's own checks took the whole time, and a `&str` said
     # "<Rust enum view budget exhausted>"; the row names the limit, and how much of the
     # time the debugger took.
     worker.dap.roots = [raw(f"some{index}", OPTION, 10) for index in range(30)]
@@ -909,7 +910,7 @@ def test_rust_locals_are_settable_only_when_kept_in_memory():
 def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fails(
     tmp_path,
 ):
-    # #138: a closure, a macro's twins or an inlined copy on the line may keep the local
+    # A closure, a macro's twins or an inlined copy on the line may keep the local
     # in memory: refused only when every function that can stop there rules it out.
     import json
     from types import SimpleNamespace
@@ -959,7 +960,7 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     session.memory = {("h1", "total"): True, ("h1", "flag"): True, ("h1", "width"): False}
     session.memory[("h3", "x")] = False
     session.memory.update({("h5", "k"): False, ("h5", "q"): True})
-    # What the IR declares each on: a `.dbg.spill` copy (review of PR #335: no declaration
+    # What the IR declares each on: a `.dbg.spill` copy (no declaration
     # proves no register).
     session.declarations_ir = {("h1", "width"): [(3, "copy")], ("h3", "x"): [(3, "copy")]}
     session.owned = SimpleNamespace(
@@ -983,7 +984,7 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
     assert judged("total") is None
     assert "`flag` is a bool; only integer locals" in judged("flag")
     code, message = judged("nope")
-    # One reason for both functions, said once (#151 review 2).
+    # One reason for both functions, said once.
     assert (
         code == "NOT_FOUND"
         and "app::outer and app::outer::{closure#0} have no local `nope`" in (message)
@@ -1008,7 +1009,7 @@ def test_a_set_is_refused_before_launch_only_where_every_function_on_the_line_fa
 
 
 def test_a_row_says_register_only_where_every_piece_is_the_debuggers_copy():
-    # Review of PR #335: a struct's row, and its fields', said `[not settable: register]`
+    # A struct's row, and its fields', said `[not settable: register]`
     # wherever the IR's memory proof wasn't True: a closure's capture (declared through its
     # environment's pointer), a binding with no declaration, pieces in a slot and in a
     # register. Only a binding whose every declaration is a `.dbg.spill` copy is in a
@@ -1048,7 +1049,7 @@ def test_a_row_says_register_only_where_every_piece_is_the_debuggers_copy():
 
 
 def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
-    # Review of #138: the IR's proof covers every binding of a name; the binding asked
+    # The IR's proof covers every binding of a name; the binding asked
     # for may have its slot while another, or an inlined copy, does not.
     from types import SimpleNamespace
 
@@ -1066,7 +1067,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ("h", "y"): [(9, "copy")],
         ("h", "far"): [(3, "inlined"), (3, "inlined")],
         ("h", "both"): [(5, "copy"), (5, "slot")],
-        # Review of PR #335: pieces of one binding, one spilled and one in a slot; a
+        # Pieces of one binding, one spilled and one in a slot; a
         # closure's capture, declared through its environment's pointer.
         ("h", "piece"): [(7, "copy"), (7, "copy"), (7, "slot")],
         ("h", "capture"): [(14, "unknown")],
@@ -1079,7 +1080,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     assert judged("h", "x", 7, "src/main.rs") == ("some", [4])  # not told which
     assert judged("h", "y") == ("own", None)
     assert judged("h", "far") == ("inlined", None)
-    # Review of PR #335: "register" only where every piece of the binding is a spill
+    # "register" only where every piece of the binding is a spill
     # copy; a slot and a spill on its line, no declaration, or one through a pointer
     # prove nothing.
     assert judged("h", "both") == ("unknown", None)
@@ -1095,7 +1096,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     assert "after the `let` on line 4" in advice
     rule, advice = RustSession._register_text("app::far", "y", ("inlined", None))
     assert "inlined where it is called" in rule and advice.startswith("Inlining prevents")
-    # `describe` gives each name the reason its rows give (review round 3).
+    # `describe` gives each name the reason its rows give.
     session.memory = {
         ("h0123456789abcdef", name): False
         for name in ("x", "y", "far", "k", "both", "piece", "capture", "spilled")
@@ -1132,11 +1133,11 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
         ({"src/main.rs": "#[no_mangle] pub fn free() {}"}, "src/main.rs"),
         ({"src/main.rs": 'unsafe extern "C" { fn getpid() -> i32; }'}, "src/main.rs"),
         ({"src/main.rs": "macro_rules! m { () => { unsafe { 1 } }; }"}, "src/main.rs"),
-        # Review of #156, round 3: `global_asm!` needs no `unsafe`, and can define `free`.
+        # `global_asm!` needs no `unsafe`, and can define `free`.
         ({"src/main.rs": 'std::arch::global_asm!(".globl free");'}, "src/main.rs"),
         ({"src/main.rs": "use std::arch::global_asm as g;"}, "src/main.rs"),
         ({"src/main.rs": 'fn f() { asm!("nop") }'}, "src/main.rs"),
-        # Review of #156, round 4: a macro may drop the `#` of `#unsafe`; only
+        # A macro may drop the `#` of `#unsafe`; only
         # `r#unsafe` is an identifier (`r#no_mangle` is `no_mangle`).
         (
             {
@@ -1162,7 +1163,7 @@ def test_a_name_not_proven_in_memory_says_which_binding_or_copy_is_why():
     ],
 )
 def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
-    # Review of #156: unsafe code anywhere in the crate (a closure, a callee, a pointer
+    # Unsafe code anywhere in the crate (a closure, a callee, a pointer
     # stored for later) can free what a Vec field still points at; dependencies (std)
     # are taken as sound.
     from peeky.rust import unsafe_source
@@ -1193,7 +1194,7 @@ def test_the_crates_unsafe_code_is_found_in_any_of_its_files(texts, found):
     ],
 )
 def test_a_nightly_feature_counts_as_unsafe_code(texts, found):
-    # Review of #156, round 4: Peeky's MIR builds set RUSTC_BOOTSTRAP, so
+    # Peeky's MIR builds set RUSTC_BOOTSTRAP, so
     # `#![feature(custom_mir)]` works, whose `Drop(*v, ...)` frees what a `&Vec` points
     # at with no `unsafe` token.
     from peeky.rust import unsafe_source
@@ -1213,7 +1214,7 @@ def test_a_nightly_feature_counts_as_unsafe_code(texts, found):
     "text,why",
     [
         ('fn f() { "unterminated }', "a comment, string or char literal does not end"),
-        # Review of #156, round 3: frontmatter is not read; a comment after `#!` is not
+        # Frontmatter is not read; a comment after `#!` is not
         # judged; brackets that do not pair up show a literal misread.
         (
             '---\nx = "\n---\nfn f() { unsafe { g() } } // "',
@@ -1231,3 +1232,177 @@ def test_a_source_peeky_cannot_be_sure_it_reads_counts_as_unsafe(text, why):
     found = unsafe_source({"src/main.rs": text}, ("src/main.rs",))
     assert found.startswith("Peeky cannot rule out unsafe code in src/main.rs (" + why), found
     assert found.endswith("and unsafe code can free a buffer without Peeky seeing it")
+
+
+TRY_MIR = """// MIR for `parse` after PreCodegen
+
+fn parse(_1: &str) -> Result<i64, ParseIntError> {
+    debug text => _1;                    // in scope 0 at src/main.rs:1:10: 1:14
+    let mut _0: std::result::Result<i64, std::num::ParseIntError>; // return place in scope 0 at src/main.rs:1:25: 1:61
+    let _2: i64;                         // in scope 0 at src/main.rs:2:9: 2:14
+    let _9: std::result::Result<std::convert::Infallible, std::num::ParseIntError>; // in scope 0 at src/main.rs:2:41: 2:42
+    let _12: i64;                        // in scope 0 at src/main.rs:2:22: 2:42
+    scope 1 {
+        debug cents => _2;               // in scope 1 at src/main.rs:2:9: 2:14
+        let _13: i64;                    // in scope 1 at src/main.rs:3:9: 3:12
+        scope 6 {
+            debug val => _13;            // in scope 6 at src/main.rs:3:9: 3:12
+        }
+    }
+    scope 2 {
+        debug residual => _9;            // in scope 2 at src/main.rs:2:41: 2:42
+        scope 3 {
+        }
+    }
+    scope 4 {
+        debug val => _12;                // in scope 4 at src/main.rs:2:22: 2:42
+        scope 5 {
+        }
+    }
+
+    bb0: {
+        return;                          // scope 0 at src/main.rs:5:2: 5:2
+    }
+}
+"""
+
+
+TRY_SOURCE = """fn parse(text: &str) -> Result<i64, std::num::ParseIntError> {
+    let cents: i64 = text.trim().parse()?;
+    let val = cents + 1;
+    Ok(val)
+}
+"""
+
+
+def _try_bindings(tmp_path, source=TRY_SOURCE, mir=TRY_MIR):
+    from peeky.rust import RustSession
+    from peeky.rust_mir import parse_body
+
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src/main.rs").write_text(source)
+    body = parse_body(mir)
+    session = SimpleNamespace(
+        lines={"src/main.rs": (1, 2, 3, 4, 5)},
+        prepared=SimpleNamespace(source_root=tmp_path),
+    )
+    texts = {}
+    return lambda name, line: RustSession._try_bindings(
+        session, [body], "src/main.rs", name, line, texts
+    )
+
+
+def test_a_questions_marks_bindings_are_told_by_where_their_spans_end(tmp_path):
+    # `describe` listed `residual @ main.rs:47` and `val @ main.rs:47` beside the
+    # program's own names. The DWARF doesn't mark them artificial; the MIR's span of each
+    # ends right after the `?` (`residual` spans only it, `val` the expression it tries).
+    desugared = _try_bindings(tmp_path)
+    assert desugared("residual", 2) and desugared("val", 2)
+    # The program's own `val`, and its other names, end with their names: listed.
+    assert not desugared("val", 3) and not desugared("cents", 2) and not desugared("text", 1)
+
+
+def test_a_binding_is_listed_where_its_source_says_otherwise(tmp_path):
+    # The same spans over a source whose line 2 has no `?` there (a stale or other file).
+    changed = TRY_SOURCE.replace("parse()?;", "parse().unwrap();")
+    assert not _try_bindings(tmp_path, source=changed)("residual", 2)
+    # A binding whose span the MIR doesn't give is listed.
+    bare = TRY_MIR.replace(
+        "// in scope 2 at src/main.rs:2:41: 2:42", "// in scope 2 at src/main.rs:2:41"
+    )
+    assert not _try_bindings(tmp_path, mir=bare)("residual", 2)
+
+
+LOOP_MIR = """// MIR for `plan` after PreCodegen
+
+fn plan(_1: &mut [Engineer], _2: u32) -> u32 {
+    debug team => _1;                    // in scope 0 at src/main.rs:1:9: 1:13
+    debug weeks => _2;                   // in scope 0 at src/main.rs:1:32: 1:37
+    let mut _0: u32;                     // return place in scope 0 at src/main.rs:1:45: 1:48
+    let mut _3: std::ops::RangeInclusive<u32>; // in scope 0 at src/main.rs:3:17: 3:26
+    let mut _5: u32;                     // in scope 0 at src/main.rs:3:9: 3:13
+    let mut _6: std::iter::Enumerate<std::slice::Iter<'_, Engineer>>; // in scope 0 at src/main.rs:4:23: 4:46
+    let _7: usize;                       // in scope 0 at src/main.rs:4:14: 4:15
+    let _8: &Engineer;                   // in scope 0 at src/main.rs:4:17: 4:18
+    let _9: usize;                       // in scope 0 at src/main.rs:8:9: 8:13
+    scope 1 {
+        debug iter => _3;                // in scope 1 at src/main.rs:3:17: 3:26
+        scope 2 {
+            debug week => _5;            // in scope 2 at src/main.rs:3:9: 3:13
+            scope 3 {
+                debug iter => _6;        // in scope 3 at src/main.rs:4:23: 4:46
+                scope 4 {
+                    debug i => _7;       // in scope 4 at src/main.rs:4:14: 4:15
+                    debug e => _8;       // in scope 4 at src/main.rs:4:17: 4:18
+                }
+            }
+        }
+    }
+    scope 5 {
+        debug iter => _9;                // in scope 5 at src/main.rs:8:9: 8:13
+    }
+
+    bb0: {
+        return;                          // scope 0 at src/main.rs:10:2: 10:2
+    }
+}
+"""
+
+
+LOOP_SOURCE = """fn plan(team: &mut [Engineer], weeks: u32) -> u32 {
+    let mut n = 0;
+    for week in 1..=weeks {
+        for (i, e) in team.iter().enumerate() {
+            n += week + e.shifts + i as u32;
+        }
+    }
+    let iter = n;
+    iter
+}
+"""
+
+
+def _loop_iterators(tmp_path, source=LOOP_SOURCE, mir=LOOP_MIR):
+    from peeky.rust import RustSession
+    from peeky.rust_mir import parse_body
+
+    (tmp_path / "src").mkdir(exist_ok=True)
+    (tmp_path / "src/main.rs").write_text(source)
+    body = parse_body(mir)
+    session = SimpleNamespace(
+        lines={"src/main.rs": tuple(range(1, 11))},
+        prepared=SimpleNamespace(source_root=tmp_path),
+    )
+    texts = {}
+    return lambda name, line: RustSession._loop_iterators(
+        session, [body], "src/main.rs", name, line, texts
+    )
+
+
+def test_a_for_loops_iterator_is_told_by_the_block_after_its_span(tmp_path):
+    # `describe` and `session inspect` listed `iter @ main.rs:32` and
+    # `iter @ main.rs:34`, the `for` loops' iterators. The MIR's span of each is the loop's
+    # iterator expression, which the loop's `{` follows.
+    desugared = _loop_iterators(tmp_path)
+    assert desugared("iter", 3) and desugared("iter", 4)
+    # The program's own `iter` spans its name: listed. So are the loops' own bindings.
+    assert not desugared("iter", 8) and not desugared("week", 3) and not desugared("e", 4)
+
+
+def test_an_iterator_is_listed_where_its_source_says_otherwise(tmp_path):
+    # A loop whose block opens on the next line still counts.
+    split = LOOP_SOURCE.replace("for week in 1..=weeks {", "for week in 1..=weeks\n    {").replace(
+        "    let iter = n;", "    let iter = n; // moved"
+    )
+    split_mir = LOOP_MIR.replace("src/main.rs:8:", "src/main.rs:9:").replace(
+        "src/main.rs:4:", "src/main.rs:5:"
+    )
+    assert _loop_iterators(tmp_path, split, split_mir)("iter", 3)
+    # A source whose line 3 holds no loop there (a stale or other file): listed.
+    changed = LOOP_SOURCE.replace("for week in 1..=weeks {", "let week = 1..=weeks; weeks;")
+    assert not _loop_iterators(tmp_path, changed)("iter", 3)
+    # A binding whose span the MIR doesn't give is listed.
+    bare = LOOP_MIR.replace(
+        "// in scope 1 at src/main.rs:3:17: 3:26", "// in scope 1 at src/main.rs:3:17"
+    )
+    assert not _loop_iterators(tmp_path, LOOP_SOURCE, bare)("iter", 3)

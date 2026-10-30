@@ -217,7 +217,7 @@ def test_breakpoint_notes_say_which_method_stops_on_a_shared_line():
 
 
 def test_reads_after_follows_the_code_from_the_stop():
-    # #164 review 2: a local a lambda captured before the stop is never read after it.
+    # A local a lambda captured before the stop is never read after it.
     from peeky.java_metadata import reads_after
 
     def method(code, handlers=()):
@@ -244,7 +244,7 @@ def test_reads_after_follows_the_code_from_the_stop():
 
 
 def test_one_bytecode_decoder_serves_loop_headers_and_reads_after():
-    # #161 and #164 share java_bytecode.decode: lengths, branches, switches, slots.
+    # Loop headers and reads_after share java_bytecode.decode: lengths, branches, switches, slots.
     from peeky.java_bytecode import decode
     from peeky.java_metadata import reads_after
     from peeky.loop_headers import java_instructions

@@ -1,4 +1,4 @@
-"""A libstdc++ unordered container's entries, read from its own nodes (#360): the debug
+"""A libstdc++ unordered container's entries, read from its own nodes: the debug
 information must prove where a node holds its value, the chain must end after exactly
 the container's own count, and the entries must be of types Peeky reads there."""
 
@@ -262,7 +262,7 @@ HEAP_TEXT = (
 
 
 def test_a_strings_text_is_read_from_its_own_buffer_only():
-    # #374 review: a string's text outside its node is in heap memory nothing proves still
+    # A string's text outside its node is in heap memory nothing proves still
     # allocated. One destroyed in place (`std::destroy_at(&m[1])`), before a new one is
     # built there, keeps a pointer to its freed text, which read as if it were its own.
     types = graph(value=35, value_size=32, extra=TEXTS)
@@ -457,7 +457,7 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
         [member], {"id": 1}, ("Locals", None), (owner,), trail=[holder]
     )
     assert read == [] and all(row["withheld_as"] == UNLISTED for row in (through, noted, unjudged))
-    # A reference is an indirection too (review 2 of #360): read only where its referent
+    # A reference is an indirection too: read only where its referent
     # is judged live, never where nothing is judged (a value with no address, a step the
     # build can't place).
     rows = [
@@ -519,7 +519,7 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
         ('__attribute__((section("t"), optimize(2))) int g();', True),
         ('[[gnu::optimize("O2")]] int f();', True),
         ('[[nodiscard, gnu::optimize("O1")]] int f();', True),
-        # Review 2 of #360: C++17's `using` prefix, which GCC 13 honours at -O0.
+        # C++17's `using` prefix, which GCC 13 honours at -O0.
         ('[[using gnu: optimize("O2")]] int f();', True),
         ('[[using gnu: noinline, optimize("O2")]] int f();', True),
         ('[[ using __gnu__ : cold , __optimize__ ( "O1" ) ]] int f();', True),
@@ -537,7 +537,7 @@ def test_the_worker_shows_a_container_read_from_its_nodes_as_a_value_view(tmp_pa
     ],
 )
 def test_a_source_that_may_optimize_a_function_is_told(text, asks):
-    # #360 review: a function GCC optimizes may keep a stored value in a register while
+    # A function GCC optimizes may keep a stored value in a register while
     # the nodes and count are unchanged, so no entry is read from the nodes then.
     from peeky.c_source import optimizes
 
@@ -574,7 +574,7 @@ def test_no_node_is_read_in_a_build_that_may_be_optimized():
 
 
 def test_a_row_says_to_read_a_container_later_only_where_its_entries_read_at_all():
-    # Eval 13 prep, finding 3: "read it after that call returns" is said only where Peeky
+    # "read it after that call returns" is said only where Peeky
     # reads entries of that type at all, as read_entries does, by their type alone.
     point = {
         40: record("Pt", 16, [("x", 1, 0), ("y", 43, 8)], library=False),
@@ -588,7 +588,7 @@ def test_a_row_says_to_read_a_container_later_only_where_its_entries_read_at_all
     }
     types = graph(extra=point)
     assert readable(types, 1) and readable(types, 9) and readable(types, 42), types
-    # A `double` and a wide character are read (#374); a struct with a base class, a
+    # A `double` and a wide character are read; a struct with a base class, a
     # `long double` and a `char8_t` never are.
     assert readable(types, 13) and readable(types, 45) and not readable(types, 44)
     types.update({46: ("base", "long double", "DW_ATE_float", 16)})
@@ -603,7 +603,7 @@ def test_a_row_says_to_read_a_container_later_only_where_its_entries_read_at_all
         read_entries(based, based[6], 1, Memory(0x1000, reader({0x1000: data})))
 
 
-# #374: more kinds of entries, read where proven, each as LLDB shows one it reads itself.
+# More kinds of entries, read where proven, each as LLDB shows one it reads itself.
 
 
 @pytest.mark.parametrize(
@@ -827,7 +827,7 @@ HEAP_BLOCK = (
 
 
 def test_a_container_held_in_a_node_is_read_from_it_or_withheld_on_its_own():
-    # #374 review: a vector's buffer is a heap block nothing proves still allocated. One
+    # A vector's buffer is a heap block nothing proves still allocated. One
     # destroyed in place (`std::destroy_at(&m[1])`), before a new one is built there,
     # keeps its old pointers, and its freed buffer still read `size=2 [2, 3]`.
     types = mapped(77, 32, 75)
@@ -911,7 +911,7 @@ def test_a_container_of_more_than_256_entries_is_walked_whole_and_read_when_aske
 
 
 def test_the_worker_pages_and_finds_a_key_among_entries_read_when_asked(tmp_path):
-    # #374: past 256 entries, a view's entries are read when a page, a position or a key
+    # Past 256 entries, a view's entries are read when a page, a position or a key
     # asks for them, on that expansion's own budget, past the inspection window too.
     from types import SimpleNamespace
 
@@ -981,7 +981,7 @@ def test_the_worker_pages_and_finds_a_key_among_entries_read_when_asked(tmp_path
 
 
 def test_a_listing_says_how_many_more_entries_a_container_holds():
-    # #374: a container read from its nodes counts its entries by its whole chain; the
+    # A container read from its nodes counts its entries by its whole chain; the
     # listing's last line says how many it doesn't list, and how to read one.
     from peeky import cli
 
@@ -1006,7 +1006,7 @@ def test_a_listing_says_how_many_more_entries_a_container_holds():
 
 
 def test_a_long_walk_through_variable_paths_is_never_begun_and_a_failed_one_forgets():
-    # #374 review: without `readMemory`, node N's path holds N steps, so a walk of 16,384
+    # Without `readMemory`, node N's path holds N steps, so a walk of 16,384
     # nodes would send about 1.2 GB of paths, each cached for the stop.
     from types import SimpleNamespace
 
@@ -1073,7 +1073,7 @@ def test_a_failed_walks_paths_are_not_cached(tmp_path):
 
 
 def test_a_worker_of_another_protocol_is_never_sent_anything_but_its_version(tmp_path):
-    # #374 review: a worker of protocol 9 ignores `expand`'s `key` and answers its first
+    # A worker of protocol 9 ignores `expand`'s `key` and answers its first
     # entries, and runs `continue` as it reads it. The `Client` SDK (and `python -m
     # peeky.client`) asks a worker's `version` before its first other request, once, and
     # sends nothing else to a worker of another protocol.
@@ -1125,7 +1125,7 @@ def test_a_worker_of_another_protocol_is_never_sent_anything_but_its_version(tmp
 
 
 def test_a_key_is_read_only_from_an_answer_for_that_key():
-    # #374 review: the client took the first entry of a worker that ignored `key` for the
+    # The client took the first entry of a worker that ignored `key` for the
     # entry of that key.
     from peeky.probe import _value_for_key
 
@@ -1181,7 +1181,7 @@ def test_a_key_is_read_only_from_an_answer_for_that_key():
 def test_a_local_session_never_sends_a_worker_of_another_protocol_anything_it_runs(
     tmp_path, monkeypatch, capsys, recorded
 ):
-    # #374 review 2: the protocol check read only the answer, after a local worker of
+    # The protocol check read only the answer, after a local worker of
     # protocol 9 had run `continue`, `step`, `set_variable` or `close`. A local session
     # keeps its worker's protocol; a record that names another, or none, is checked with
     # `version` first, and nothing else is sent.

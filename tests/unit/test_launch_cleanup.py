@@ -1,4 +1,4 @@
-"""A failed or timed-out launch ends every process the session started (#143).
+"""A failed or timed-out launch ends every process the session started.
 
 A fake adapter starts the program the way debugpy does: a launcher in the adapter's
 process group starts it in a group of its own, and it never reaches the debugger (it
@@ -28,7 +28,7 @@ from peeky.worker import DebugWorker, make_server
 # event) and dies ("announce-setsid": the program starts a session of its own, so only
 # the announcement shows it is the session's), and Peeky reads the end of its output only
 # once it has exited (a
-# holder keeps the pipe open until the adapter's children are handed on, #168: else
+# holder keeps the pipe open until the adapter's children are handed on: else
 # Peeky could list them while the adapter was still exiting); "attach": the adapter
 # announces a program it did not start (pid in argv 3). Every process started writes
 # "role pid" to the record.
@@ -126,7 +126,7 @@ def running(pid):
 
 @pytest.fixture
 def leftovers():
-    """Pids a failing (pre-#143) run leaves behind: killed after the test, by pid."""
+    """Pids a failing run leaves behind: killed after the test, by pid."""
     pids = []
     yield pids
     for pid in pids:
@@ -182,7 +182,7 @@ def test_a_program_whose_adapter_died_is_ended_by_its_announced_pid(tmp_path, le
 def test_a_program_no_listing_saw_before_its_adapter_died_is_ended_with_its_child(
     tmp_path, leftovers, monkeypatch
 ):
-    # #168: under load, the listing the announcement asks for can come only after the
+    # Under load, the listing the announcement asks for can come only after the
     # adapter died, when no ancestry leads to the program any more. It was then ended
     # by its announced pid alone, and the child in its group outlived it. Here no
     # listing runs before the end: what proves them the session's is the adapter's
@@ -202,7 +202,7 @@ def test_a_program_no_listing_saw_before_its_adapter_died_is_ended_with_its_chil
 def test_a_program_only_its_announcement_shows_is_ended_with_its_group(
     tmp_path, leftovers, monkeypatch
 ):
-    # PR #170 review: the program leaves the adapter's session (`setsid`) and no listing
+    # The program leaves the adapter's session (`setsid`) and no listing
     # runs before the adapter dies, so only its announced pid (and start) says it is the
     # session's. Its child, in its group, outlived it: the announced program's group is
     # ended too.
@@ -234,7 +234,7 @@ def test_without_its_announcement_such_a_program_is_not_known(tmp_path, leftover
 
 
 def test_a_dead_adapter_stays_unreaped_until_close(tmp_path):
-    # PR #170 review (High): `poll()` reaped the dead adapter at the next listing, and
+    # `poll()` reaped the dead adapter at the next listing, and
     # its pid, and so its group and session ids, could then name an unrelated session's
     # leader, whose processes the session rule and close() would end. Unreaped, a zombie
     # keeps the pid; only close() reaps it, after its last signal.
@@ -298,7 +298,7 @@ def test_an_adapter_reaped_elsewhere_proves_no_session_and_signals_no_group(tmp_
 
 @pytest.mark.parametrize("waitid", [True, False])
 def test_an_adapter_the_kernel_reaped_proves_no_session_and_signals_no_group(monkeypatch, waitid):
-    # Review of PR #170 (round 2): with SIGCHLD ignored (inherited), the kernel reaps the
+    # With SIGCHLD ignored (inherited), the kernel reaps the
     # adapter as it exits, behind Popen: `returncode` stays None and `waitid` fails, so
     # the guards above did not apply, and a new session leader at its pid (Docker) had
     # itself and its child ended by close(). Without os.waitid (macOS before Python
@@ -356,7 +356,7 @@ print(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL, file=sys.stderr)
 
 @pytest.mark.parametrize("entry", ["peeky.cli", "peeky.worker", "peeky.probe", "peeky.agent"])
 def test_every_command_that_starts_adapters_reaps_its_own_children(entry):
-    # Review of PR #170 (round 2): a SIGCHLD ignored by the parent is inherited, and the
+    # A SIGCHLD ignored by the parent is inherited, and the
     # kernel then reaps adapters behind Peeky. Each command sets it back first.
     ignoring = (
         "import os, signal, sys; signal.signal(signal.SIGCHLD, signal.SIG_IGN); "
@@ -457,8 +457,8 @@ def test_a_pid_announced_then_reused_is_never_ended():
 
 # A fake adapter whose launch runs: it starts the program, answers every request and
 # announces the program (`process`). argv: how, record. "family": the program, in a
-# group of its own, starts a child in that group and one in a session of its own (as
-# `c2/hang.c` of PR #147's review does); "leave": it starts a child in a session of its
+# group of its own, starts a child in that group and one in a session of its own;
+# "leave": it starts a child in a session of its
 # own and exits 1.5 s later; "graceful": it stays in the adapter's group (as java-debug's
 # JVM does) and takes 0.3 s to end on SIGTERM; "stop": the adapter reports a breakpoint
 # stop once configured. Each writes "role pid" to the record.
@@ -570,7 +570,7 @@ def start_running(tmp_path, how, leftovers, roles, **options):
 
 def kill_adapter(dap):
     """`kill -9` of the adapter, left unreaped as a crash leaves it: Peeky reaps it only
-    at close (PR #170 review)."""
+    at close."""
     os.kill(dap.process.pid, signal.SIGKILL)
     until(lambda: not dap._adapter_running())
 
@@ -588,8 +588,8 @@ def test_what_the_program_started_is_ended_after_its_debugger_dies(tmp_path, lef
         tmp_path, "family", leftovers, {"program", "same-group", "setsid"}
     )
     error = fail_after_adapter_death(worker, session)
-    # Before, the child in a session of its own outlived the program's group; now every
-    # process listed is ended, and the message says what may have escaped the listing.
+    # The child in a session of its own outlives the program's group: every process
+    # listed is ended, and the message says what may have escaped the listing.
     assert not any(running(pid) for pid in pids.values())
     listed = ", ".join(map(str, sorted(pids.values())))
     assert error["code"] == "DEBUGGER_ERROR"
@@ -633,8 +633,8 @@ def test_the_family_is_known_by_ancestry_identity_and_group():
     }
     family.announce(302, "s302")
     found, groups = family.record(table, root_running=True)
-    # The announced debuggee counts with its group (PR #170 review: it may have left
-    # the adapter's session).
+    # The announced debuggee counts with its group (it may have left the adapter's
+    # session).
     assert set(found) == {101, 200, 201, 202, 302} and groups == {200, 202, 302}
     # The adapter and the debuggee die: the children are reparented, and one more is
     # started in the debuggee's group after the listing (never listed itself).
@@ -696,12 +696,12 @@ def test_a_session_failed_with_no_request_in_flight_keeps_its_cleanup(tmp_path, 
     kill_adapter(worker.dap)
     time.sleep(0.3)
     # The pause guard, with no client waiting, fails resuming the stop: the session is
-    # kept as a failed one, and ended (PR #147 review 2: `--max-pause`, `kill -9`).
+    # kept as a failed one, and ended (`--max-pause`, `kill -9`).
     worker.guard_pause()
     assert worker.dap is None and worker.failed and not running(pids["program"])
     cleanup = worker.dispatch("report", session)["cleanup"]
     assert cleanup.startswith(f"terminated pid {pids['program']}; the debugger was gone")
-    # Before, the error replayed to the next request, and `close`, said nothing of it.
+    # The error replayed to the next request, and `close`, carry the cleanup too.
     with pytest.raises(SessionFailed) as again:
         worker.dispatch("inspect", {**session, "stop_id": "any"})
     assert classify(again.value)["cleanup"] == cleanup

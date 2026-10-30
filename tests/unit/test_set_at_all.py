@@ -1,6 +1,5 @@
-"""`--set-at LINE@all` (#265): a change at every stop of a line, each made and checked as
-one `--set-at LINE@N` is, up to the probe's hit cap (tenth evaluation, debounce: six
-hand-computed hits, near the cap of eight changes)."""
+"""`--set-at LINE@all`: a change at every stop of a line, each made and checked as
+one `--set-at LINE@N` is, up to the probe's hit cap."""
 
 import json
 
@@ -232,7 +231,7 @@ DEBOUNCE_REFUSAL = (
 
 
 def test_an_all_refused_in_a_callee_says_what_all_does_in_the_owning_frame(monkeypatch):
-    # debounce: line 36 runs only when the input is back at the accepted level, but there
+    # Line 36 runs only when the input is back at the accepted level, but there
     # `db` is a pointer; line 80, in main, runs once per sample, so `80@all` is another
     # experiment.
     class Refusing(Stops):
@@ -344,7 +343,7 @@ def test_the_evidence_keeps_each_change_and_says_how_the_request_went(monkeypatc
         == "1 request: x=5 (9@all, made at 5 stops, to the program's end)"
     )
     assert evidence._sets_text(row["value_a"]) == "none"
-    # Twelfth evaluation: two or three changes are all shown.
+    # Two or three changes are all shown.
     two = [["x", "5", "requested at 9@2"], ["y", "1", "requested at 9@3"]]
     assert evidence._sets_text(json.dumps(two)) == "2 changes: x=5 (9@2), y=1 (9@3)"
     # Where they don't fit, from the first change that differs from the other run's.
@@ -386,7 +385,7 @@ def test_diff_shows_many_alike_changes_as_one_row(tmp_path, monkeypatch):
     ]
 
 
-# Review of PR #278: comparisons hid how far an @all got. A run refused at hit 7, two runs
+# Comparisons hid how far an @all got. A run refused at hit 7, two runs
 # refused at different hits, and a run --until hits ended after one change, each read
 # like a run that changed every stop of the line.
 def recorded(monkeypatch, store, *runs):
@@ -572,7 +571,7 @@ def test_each_outcome_reads_as_how_far_the_change_got():
 
 
 def test_an_outcome_is_read_only_where_it_is_one_for_its_request():
-    # Review 3 of PR #278: `[{"made": 2, "ended": "refused", "hit": 3}]` for a `9@all`
+    # `[{"made": 2, "ended": "refused", "hit": 3}]` for a `9@all`
     # read "refused at that hit", and counted as recorded.
     bare = {"made": 2, "ended": "refused", "hit": 3}
     assert evidence._set_outcome(json.dumps(bare), '["x", "5", "9@all"]', 8, None) is None
@@ -608,7 +607,7 @@ def test_an_outcome_is_read_only_where_it_is_one_for_its_request():
 
 
 def test_an_outcome_of_another_type_or_hit_is_not_read():
-    # Review 4 of PR #278: an `ended` that is a list raised TypeError (failing the query),
+    # An `ended` that is a list raised TypeError (failing the query),
     # and a `9@4` change "refused at hit 7" read as recorded.
     for ended in ([], {}, 3, None):
         broken = outcome(made=2, ended="refused", hit=3) | {"ended": ended}
@@ -688,7 +687,7 @@ def test_a_schema_15_store_gains_outcomes_and_its_runs_keep_their_warnings(tmp_p
     ]
 
 
-# Review 2 of PR #278: runs saved before schema 16 have no outcomes. Their `@all` warnings
+# Runs saved before schema 16 have no outcomes. Their `@all` warnings
 # still say how it went where they can, and two such runs with the same request are never
 # said to have made it alike.
 UNRECORDED = (
@@ -756,7 +755,7 @@ def test_two_schema_15_runs_with_the_same_request_are_not_said_to_be_made_alike(
     # A run saved since (schema 16) against an older one: still not recorded for both.
     recorded(monkeypatch, store, (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)))
     for query in ("compare", "diff"):
-        # Review 3: the same request, so the note is that it wasn't recorded; the values
+        # The same request, so the note is that it wasn't recorded; the values
         # differ, as one says how it went and the other cannot.
         assert run_rows(store, query, 1, 4)["(sets)"][2:] == (1, UNRECORDED), query
     recorded(monkeypatch, store, (Stops([8, 8, 8]), Probe("main.py", 8, ("x",), set_at=every)))
@@ -766,11 +765,6 @@ def test_two_schema_15_runs_with_the_same_request_are_not_said_to_be_made_alike(
         "the same interventions, made alike",
     )
     assert "(sets)" not in run_rows(store, "diff", 4, 5)
-
-
-RECORDED_APART = (
-    "the runs requested different interventions (--set, --set-at), or made different ones"
-)
 
 
 def test_an_unrecorded_run_is_never_counted_as_recorded():
@@ -813,7 +807,7 @@ def tamper(store, run_id, outcomes):
 
 
 def test_an_outcome_that_is_not_its_requests_falls_back_to_the_warning(monkeypatch, tmp_path):
-    # Review 3 of PR #278: a capped run whose outcome lacks `at`, names another request, or
+    # A capped run whose outcome lacks `at`, names another request, or
     # whose entries are swapped reads as its warning did, and is not counted as recorded.
     store = tmp_path / "evidence" / "evidence.db"
     capped = Probe("main.py", 8, ("x",), set_at=((9, ALL, "x", "5"), (9, 1, "x", "1")))
@@ -825,7 +819,7 @@ def test_an_outcome_that_is_not_its_requests_falls_back_to_the_warning(monkeypat
     tamper(store, 2, [no_at, kept[1]])
     tamper(store, 3, [kept[0] | {"name": "z"}, kept[1]])
     tamper(store, 4, [kept[1], kept[0]])
-    # The review's own: no option, location, name, value or `complete`.
+    # One with no option, location, name, value or `complete`.
     tamper(store, 5, [{"made": 2, "ended": "refused", "hit": 3}, kept[1]])
     cap = f"requested at 9@all, made only at the first {MAX_HITS} stops: the cap"
     for run_id in (2, 3, 4, 5):

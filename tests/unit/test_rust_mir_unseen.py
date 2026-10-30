@@ -1,11 +1,9 @@
-"""#330 (found preparing the twelfth evaluation): after the program copied a local, a change to
-it was `[settable]` where the local was then replaced or ended before the copy was used.
-`u.push(y); let t = n; y = t;`, then `u` printed: `--set y=100` at `let t = n;` was reported,
-and the output kept the old value. The copy rule (#192) counted a copy only where it was used
-before the local was replaced or ended. Now a use after counts too, and an argument ends where
-the function returns. A value no path reads again (it is overwritten, or it ends, first) is
-refused too, saying where; a local the program reads again before replacing it stays
-settable."""
+"""After the program copied a local, a change to it was `[settable]` where the local was then
+replaced or ended before the copy was used. `u.push(y); let t = n; y = t;`, then `u` printed: `--set
+y=100` at `let t = n;` was reported, and the output kept the old value. A copy counts where it is
+used after the local is replaced or ended too, not only before, and an argument ends where the
+function returns. A value no path reads again (it is overwritten, or it ends, first) is refused too,
+saying where; a local the program reads again before replacing it stays settable."""
 
 import re
 from types import SimpleNamespace
@@ -663,7 +661,7 @@ fn param(_1: u32) -> u32 {
 """
 
 HASH = "h0123456789abcdef"
-# `Lap`, as the build's debug information shows it: two `u32`s, no cell (#321).
+# `Lap`, as the build's debug information shows it: two `u32`s, no cell.
 LAYOUTS = {
     **{
         name: CrateType(payloads=frozenset(), parts=frozenset({("prim", "u32")}))
@@ -776,7 +774,7 @@ def stop(text, line, statement):
 
 
 def test_a_copy_used_after_the_local_is_replaced_still_keeps_the_old_value():
-    # The issue: `u.push(y);` (line 10), `let t = n;` (11), `y = t;` (12), then `y + u[0]`
+    # `u.push(y);` (line 10), `let t = n;` (11), `y = t;` (12), then `y + u[0]`
     # reads `u`. Line 12 replaces `y` before the program uses `u`: the copy rule looked for
     # a use first, so `y` was settable at lines 11 and 12, and a change there was lost.
     body = body_of(PUSHED)
@@ -846,7 +844,7 @@ def test_a_local_read_again_before_it_is_replaced_stays_settable():
 def test_a_value_never_read_again_is_refused_saying_where_it_ends():
     # `let mut total = n + 1;` (44), `let k = n * 2;` (45), `total = k + 3;` (46): no path
     # from line 45, nor from line 46's start, reads `total` before line 46 assigns it. Each
-    # overflow check on the way may panic first (review 2), and the refusal says so.
+    # overflow check on the way may panic first, and the refusal says so.
     for line, statement in ((45, "StorageLive(_5)"), (46, "StorageLive(_8)")):
         assert why(UNREAD, "unread", line, stop(UNREAD, line, statement), "total") == (
             "the program does not read it after this stop, so a change would never be seen: it "
@@ -946,7 +944,7 @@ def test_a_refusal_of_a_value_never_read_again_hints_where_to_change_it():
     assert _mutation_hint(java) != hint
 
 
-# Review of PR #334: a type's own `Drop`, frame exits other than a return, and where each path
+# A type's own `Drop`, frame exits other than a return, and where each path
 # ends. rustc 1.96.0's MIR of this crate, as above.
 REVIEW_SOURCE = """use std::hint::black_box;
 
@@ -4249,7 +4247,7 @@ def hedged(name, line, copy, drop):
 
 
 def test_a_drop_reads_a_part_only_where_its_drop_surely_reads_it():
-    # Review 2 of PR #334: `impl Drop for D` prints `self.0` only. A drop counted as a read
+    # `impl Drop for D` prints `self.0` only. A drop counted as a read
     # wherever a `Drop` impl may run, so after `let z = d.1;` a change to `d.1` was
     # `[settable]`, and the program never saw it. Now only a proven read counts.
     first, second = (("field", 0),), (("field", 1),)
@@ -4316,7 +4314,7 @@ def test_a_drop_on_another_field_or_none_keeps_the_refusal_as_it_was():
     reason, row = review_why(
         HELD, "held", line, stop_text(HELD, line), "h", (("field", 0), ("field", 1))
     )
-    # `other()` may panic: a path a mark of settable leaves out, said so (review 3).
+    # `other()` may panic: a path a mark of settable leaves out, said so.
     assert reason == (
         "the program may not read it after this stop, so a change may never be seen: `h` is "
         f"dropped at line {dropped_at(HELD, local)} first, unless the program panics or exits "
@@ -4384,7 +4382,7 @@ def test_every_exit_of_the_frame_ends_its_locals_and_arguments():
     # `let z = x;`, the stop, `black_box(z + k);`, then `panic!` or `process::exit`: `x` is
     # never read again, and the program goes on with `z`. Only a `return;` ended an
     # argument, and a local only its `StorageDead`, which a panic's path has none of.
-    # Review 3: every path panics or exits there, and the refusal says so.
+    # Every path panics or exits there, and the refusal says so.
     for text, name, unsafe in (
         (PANICKED, "panicked", None),
         # A `String` beside it: the panic goes through a cleanup block to `resume;`.
@@ -4417,7 +4415,7 @@ def test_every_exit_of_the_frame_ends_its_locals_and_arguments():
 
 
 def test_a_panic_is_neither_an_end_nor_a_read():
-    # Review 3: a mark of settable covers the paths that don't panic. An edge only a panic
+    # A mark of settable covers the paths that don't panic. An edge only a panic
     # takes (`unwind: bb5`, or `unwind continue` beside a return edge) is not followed, and
     # std's panic (`std::rt::panic_fmt`) ends nothing; a return, `process::exit` and a
     # function of the crate's that returns `!` end the frame.
@@ -4502,10 +4500,10 @@ def test_where_a_value_ends_is_named_only_where_every_path_reaches_it():
 
 
 def test_a_mark_of_settable_covers_the_paths_that_dont_panic():
-    # Review 3: settable where, on every path from the stop that doesn't panic, the program
-    # reads the value before it overwrites or ends it, and some such path exists. Review 2
-    # refused `record(z); may_panic(k); x`, as a caller's `catch_unwind` may go on with `z`:
-    # that path panics, and is outside the mark.
+    # Settable where, on every path from the stop that doesn't panic, the program
+    # reads the value before it overwrites or ends it, and some such path exists.
+    # `record(z); may_panic(k); x` is not refused for a caller's `catch_unwind` that may go
+    # on with `z`: that path panics, and is outside the mark.
     for text, name in (
         (CAUGHT, "caught"),
         # `z * 10`'s overflow check may panic.
@@ -4546,7 +4544,7 @@ def why_x(text, name, unsafe=None):
 
 
 def test_a_loop_the_program_never_leaves_refuses_on_its_own_path():
-    # Review 4: `if k > 100 { record(z); loop {} }`, then `x + k`. The path into the loop
+    # `if k > 100 { record(z); loop {} }`, then `x + k`. The path into the loop
     # uses `z` and never reads `x`, and doesn't panic; another path reading `x` doesn't
     # make up for it. It was settable: the loop was handed to `exits_unread`, which gave
     # up where any path read `x`.
@@ -4562,7 +4560,7 @@ def test_a_loop_the_program_never_leaves_refuses_on_its_own_path():
     at = place(body, stop_text(SPUN, line))
     (copy,) = body.direct_copies_at(2, at)
     assert body.copy_kind(copy, 2, at) == "loop"
-    # Review 5: `loop { if other() == 0 { panic!("stop"); } }`, whose only way out is a
+    # `loop { if other() == 0 { panic!("stop"); } }`, whose only way out is a
     # panic, was taken for a loop with a way out: the path to `panic_fmt` (through
     # `Arguments::from_str`) is none.
     line = review_line("trapped", "let k")
@@ -4594,7 +4592,7 @@ def test_a_loop_the_program_never_leaves_refuses_on_its_own_path():
 
 
 def test_a_read_while_the_program_panics_doesnt_count():
-    # Review 4: `let z = d.0;`, the stop, `black_box(z + k); panic!("stop")`. Every path
+    # `let z = d.0;`, the stop, `black_box(z + k); panic!("stop")`. Every path
     # panics, and its cleanup drops `d`, whose `Drop` prints `self.0`: that read was taken
     # as the program's, and `d.0` was settable, though no path that doesn't panic exists.
     line = review_line("unwinding", "let k")
@@ -4641,9 +4639,9 @@ NOT_PANICS = (
 
 
 def test_panic_any_is_a_call_that_never_returns_in_either_spelling():
-    # Review 4: `panic\w*` took `std::panic::panic_any` for std's panic, while its bare
+    # `panic\w*` took `std::panic::panic_any` for std's panic, while its bare
     # spelling, which rustc prints unless the crate has a `panic_any` of its own, was an
-    # exit. Std's panic is now a list of entry points, without it.
+    # exit. Std's panic is a list of entry points, without it.
     # `if z == 0 { std::panic::panic_any(1); }`, then `x + k`: the path that calls it
     # never reads `x`, and the call ends the frame, in either spelling.
     line = review_line("anyed", "let k")
@@ -4675,7 +4673,7 @@ def test_panic_any_is_a_call_that_never_returns_in_either_spelling():
 
 
 def test_stds_other_panic_helpers_never_appear_in_a_crates_own_mir():
-    # Review 5: `_PANIC_CALL` lists the entry points std's macros call. `expect_failed`,
+    # `_PANIC_CALL` lists the entry points std's macros call. `expect_failed`,
     # `panic_bounds_check` and the slice and `str` `*_fail` helpers aren't listed: they
     # run inside calls that return (`expect`, `index`, `unwrap`), or behind a check's
     # `assert`, so no block of a crate's own MIR ends in one. Any that did would be an exit.

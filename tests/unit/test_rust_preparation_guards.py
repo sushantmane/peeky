@@ -1,10 +1,10 @@
-"""Rust preparation provenance guards (ported from the isolated 339def3 review fixes).
+"""Rust preparation provenance guards.
 
-Adapted to main: retry classification is ``compiler_diagnostic`` (main's stricter
-classifier, which also requires Cargo's exact stderr footer and a newline-terminated
-JSON stream), so fixtures model a complete Cargo failure. Main rejects a declared
-helper that PATH lookup cannot select by name when the target is configured, and
-rechecks PATH resolution before every command during preparation.
+Retry classification is ``compiler_diagnostic`` (which also requires Cargo's exact
+stderr footer and a newline-terminated JSON stream), so fixtures model a complete Cargo
+failure. A declared helper that PATH lookup cannot select by name is rejected when the
+target is configured, and PATH resolution is rechecked before every command during
+preparation.
 """
 
 import json
@@ -238,9 +238,8 @@ def test_retry_requires_complete_source_diagnostic():
 
 
 def test_many_diagnostics_are_still_a_compile_failure():
-    # Eval 3 follow-up: three errors and some warnings passed 16 KB of JSON, which used
-    # to read as possibly truncated, so a plain type error became an infrastructure
-    # failure.
+    # Three errors and some warnings pass 16 KB of JSON, which must not read as possibly
+    # truncated: a plain type error would become an infrastructure failure.
     error = {
         "reason": "compiler-message",
         "message": {

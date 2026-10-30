@@ -1,5 +1,5 @@
-"""A C or C++ character array's text up to its first NUL, read back from LLDB's summary
-(thirteenth evaluation): `char name[32]` showed `"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`,
+"""A C or C++ character array's text up to its first NUL, read back from LLDB's summary:
+`char name[32]` showed `"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001..."`,
 its leftovers as if part of its text, and byte 0x01 as `\\U00000001`."""
 
 from types import SimpleNamespace
@@ -9,7 +9,7 @@ import pytest
 from peeky.char_arrays import ELEMENTS, array_size, proven_rest, shown, summary_bytes
 from peeky.cxx_strings import shorten
 
-# LLDB's summary of the thirteenth evaluation's `char name[32]`: "Adeyemi", its NUL, and
+# LLDB's summary of a `char name[32]`: "Adeyemi", its NUL, and
 # leftovers, the trailing NULs dropped.
 WARD = (
     '"Adeyemi\\0\\x80\\xf8\\xe6\\xef\\U00000001\\0\\0\\0\\U00000001\\0\\0\\0\\U00000001\\0\\0\\0'
@@ -73,7 +73,7 @@ def test_each_shape_of_array(summary, size, value, buffer):
         assert found["buffer"] == buffer
 
 
-# Review of #390: LLDB's summary formats what part of its read succeeded, so bytes it
+# LLDB's summary formats what part of its read succeeded, so bytes it
 # doesn't show may be unreadable (an array that runs into a page that isn't mapped), not
 # NULs. Only the bytes Peeky reads again are claimed.
 @pytest.mark.parametrize(
@@ -274,7 +274,7 @@ def test_the_native_session_shows_a_char_array_so(language):
     assert found == {"value": '"hi" (then 6 NUL bytes)', "buffer": '"hi' + "\\0" * 6 + '"'}
     found = native.string_value(variable('"hi"', "char[8]"), lambda r, start=None: [], None, yes)
     assert found["value"] == '"hi" (then 6 bytes not read)'
-    # Round 2 of #390: an array reached through anything in doubt (an unproven pointer, a
+    # An array reached through anything in doubt (an unproven pointer, a
     # note, a taint, an optimized build), or by a caller that doesn't say, reads nothing
     # more: a read at its address would prove nothing of it.
     unread = lambda ref, n: pytest.fail("its memory read")  # noqa: E731

@@ -326,7 +326,7 @@ def plain(tmp_path):
 
 
 def test_hidden_files_in_tests_are_not_test_targets(plain):
-    # Review of #89: Cargo skips `._real.rs` (macOS) and `.#real.rs` (Emacs locks).
+    # Cargo skips `._real.rs` (macOS) and `.#real.rs` (Emacs locks).
     from peeky.rust_manifest import cargo_layout
 
     (plain / "tests/._real.rs").write_text("")
@@ -337,7 +337,7 @@ def test_hidden_files_in_tests_are_not_test_targets(plain):
 
 
 def test_a_bin_elsewhere_beside_src_main_rs_is_refused_up_front(plain):
-    # Review of #89: Cargo would infer src/main.rs as a second binary.
+    # Cargo would infer src/main.rs as a second binary.
     (plain / "src/app.rs").write_text("fn main() {}")
     (plain / "Cargo.toml").write_text(PLAIN + '\n[[bin]]\nname = "foo"\npath = "src/app.rs"\n')
     sources = ("src/app.rs", "src/main.rs")

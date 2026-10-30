@@ -1,6 +1,6 @@
-"""Eleventh evaluation: `peeky sql --schema` printed 20 KB in one block, which two agents'
-tools cut off, and the canned queries' parameters were hard to find (an agent passed
-set_effect `a` and `b`)."""
+"""`peeky sql --schema` prints a short index, not 20 KB in one block, which agents' tools
+cut off; `--schema NAME` prints a part in full, and `peeky queries --help` lists each canned
+query's parameters."""
 
 import json
 import re
@@ -23,7 +23,7 @@ def store(tmp_path):
 
 # What the index lists, in order: the tables, the views and the other parts of the whole
 # schema. Spelled out here, not taken from evidence.SCHEMA_PARTS, so that a part left
-# out of the code fails these tests (review of PR #307: `joins` was).
+# out of the code fails these tests.
 NAMES = [
     "runs",
     "captures",
@@ -61,8 +61,9 @@ def _tagged(table, column):
 
 
 def _main_schema_text(manifest):
-    """`peeky sql --schema` on main (8b8c2f2), verbatim: what `--schema all` must still print,
-    but for the languages that fill a column, beside its name (twelfth evaluation, desks 8)."""
+    """The whole schema as `peeky sql --schema` printed it in one block, verbatim: what
+    `--schema all` must still print, but for the languages that fill a column, beside its
+    name."""
     lines = [f"store: {manifest['store']} ({manifest['engine']})", ""]
     for name, info in manifest["tables"].items():
         lines.append(f"table {name}: {info['description']}")
@@ -153,7 +154,7 @@ def test_schema_joins_prints_the_joins(store, capsys):
 
 
 def test_the_joins_say_which_run_columns_the_evidence_view_has(store):
-    # Review 2 of PR #307: "the evidence view, which already has the run's columns", though
+    # "the evidence view, which already has the run's columns", though
     # it has only some; output, error_code, seconds and warnings need a join with runs.
     manifest = evidence.schema(store)
     joins = manifest["joins"]
@@ -174,7 +175,7 @@ def test_the_joins_say_which_run_columns_the_evidence_view_has(store):
 
 
 def test_each_query_summary_names_the_phases_and_runs_its_sql_reads():
-    # Review 2 of PR #307: `hits` and `values` read returned values as well as observed
+    # `hits` and `values` read returned values as well as observed
     # ones, and `values` leaves out candidate runs; `join`'s key takes several selectors.
     for name, (_, sql, params, _) in evidence.QUERIES.items():
         summary = evidence.QUERY_SUMMARIES[name]
@@ -192,7 +193,7 @@ def test_each_query_summary_names_the_phases_and_runs_its_sql_reads():
 
 
 def test_outputs_claims_no_outcome_for_an_older_run_that_recorded_none(store, capsys):
-    # Review 3 of PR #307: `outputs` said it gives "how they went", but a run saved before
+    # `outputs` said it gives "how they went", but a run saved before
     # schema 16 has no runs.set_outcomes, and with no warning about its changes nothing
     # says how they went. Its summary says "where recorded", and its rows claim nothing.
     import sqlite3
@@ -287,8 +288,8 @@ def test_sql_and_schema_together_are_still_refused(store, capsys):
 
 
 # Each canned query's parameters and what it answers, as `peeky queries --help` lists
-# them; each summary checked against the query's full description and SQL (review of
-# PR #307: `values` leaves out candidate runs and after-set values, and `wide` has a row
+# them; each summary checked against the query's full description and SQL (`values`
+# leaves out candidate runs and after-set values, and `wide` has a row
 # per hit and phase).
 HELP = [
     ("runs [count]", "the latest runs (20 unless count), newest first"),
@@ -363,3 +364,23 @@ def test_a_wrong_canned_query_or_parameter_points_to_queries_help(store, capsys,
     assert code == 2 and error["code"] == "INVALID_QUERY" and message in error["message"]
     assert error["hint"].startswith("`peeky queries --help` lists each canned query's --param")
     assert len(error["hint"]) <= 150
+
+
+def test_the_schema_marks_the_columns_only_some_languages_fill():
+    # A Java store's `sql --schema captures` listed C and C++ columns as its own.
+    lines = evidence._schema_lines(evidence.schema("store.db"), "captures")
+    marked = {line.split(":")[0].strip() for line in lines if " only]" in line.split(":")[0]}
+    assert marked == {
+        "identity [Python only]",
+        "scope [Python only]",
+        "instance [Rust only]",
+        "stop [C, C++, Rust only]",
+        "element_size [C, C++ only]",
+        "at_element_of [C, C++ only]",
+        "element_index [C, C++ only]",
+        "offset_from [C, C++ only]",
+        "element_offset [C, C++ only]",
+    }
+    assert "  value: Value as the debugger displays it" in "\n".join(lines)
+    text = evidence.schema_part_text(evidence.schema_part(evidence.schema("s"), ["interventions"]))
+    assert "  stop [C, C++, Rust only]: " in text and "  instance [Rust only]: " in text

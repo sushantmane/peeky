@@ -1,4 +1,4 @@
-"""C++ maps and sets: `[N]` is never LLDB's Nth entry (#119).
+"""C++ maps and sets: `[N]` is never LLDB's Nth entry.
 
 LLDB lists a map's or set's entries as [0], [1], ... in iteration order, where C++'s
 `m[k]` is the value for key k. These scripted listings are shaped as lldb-dap shows
@@ -7,6 +7,7 @@ them (libc++ and libstdc++ alike); the real builds are in tests/native.
 
 import pytest
 
+from peeky.native import NativeSession
 from peeky.probe import Probe, _children, _resolve, parse_selector
 
 
@@ -80,7 +81,7 @@ def snapshot(*variables, whole=True):
     return {**shown, "whole_string_summaries": True} if whole else shown
 
 
-# The issue's map, `std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}}`, as LLDB lists it.
+# A map, `std::map<int, int> m{{2, 20}, {1, 10}, {5, 50}}`, as LLDB lists it.
 MAP = local("m", "std::map<int, int>", 1, 3)
 TREE = {
     **entries(1, [("1", "10"), ("2", "20"), ("5", "50")]),
@@ -395,7 +396,7 @@ def strings(handle, keys, depth_limited=False):
     return tree
 
 
-# Review of #119 (PR #127): {"a\0b": 3, "zz": 9}, {"a": 1, "a\0": 2}.
+# {"a\0b": 3, "zz": 9}, {"a": 1, "a\0": 2}.
 NULS = {**strings(9, [("a", 3, "3"), ("zz", 2, "9")]), **strings(8, [("a", 1, "1"), ("a", 2, "2")])}
 LIBSTDCXX = snapshot(
     local("sso", "std::map<std::string, int>", 9, 2),
@@ -482,7 +483,7 @@ def test_only_the_standard_comparison_says_which_key_cxx_reads(kind, why):
 
 
 def test_a_custom_comparison_never_says_a_key_is_missing():
-    # Review of #119: under `ByAbs`, C++'s am[1] reads key -1's -10.
+    # Under `ByAbs`, C++'s am[1] reads key -1's -10.
     tree = entries(9, [("-1", "-10"), ("2", "20")])
     scopes = snapshot(local("am", "std::map<int, int, ByAbs>", 9, 2))
     message = refused("am[1]", tree, scopes)
@@ -497,7 +498,7 @@ def test_a_custom_comparison_never_says_a_key_is_missing():
     assert read("hm[2]", tree, scopes)["value"] == "20"
 
 
-# Review of #119: `Holder<T>::S` and `std::map<int, std::set<int>>::mapped_type`.
+# `Holder<T>::S` and `std::map<int, std::set<int>>::mapped_type`.
 UNSETTLED = snapshot(
     local("mt", "std::map<int, std::set<int> >::mapped_type", 3, 3, aliased_type="?"),
     local("vt", "std::vector<std::vector<int> >::value_type", 5, 3),
@@ -532,7 +533,7 @@ def test_types_peeky_cannot_place(kind, unplaced):
 
 
 def test_a_key_no_selector_can_write_is_listed_by_position():
-    # Review of #119: `ids[1234567]` is past the grammar's six digits.
+    # `ids[1234567]` is past the grammar's six digits.
     tree = entries(
         9, [("42", "1"), ("1234567", "7"), ("-999999", "9")], kind="std::pair<const long, int>"
     )
@@ -558,7 +559,7 @@ def test_a_key_type_is_named_without_its_own_qualifiers(kind, shown):
 
 
 def test_a_string_key_the_worker_notes_or_reads_whole_is_compared_as_shown():
-    # #128: where the debugger cannot read memory, the worker shows a libstdc++ key cut at
+    # Where the debugger cannot read memory, the worker shows a libstdc++ key cut at
     # a NUL with a note; where it can, the key's bytes (`"k\0x"`, `view: memory`).
     noted = strings(9, [("k", 3, "1"), ("zz", 2, "2")])
     noted[9001][0]["value"] = '"k" (shown up to a NUL at byte 1 of 3)'
@@ -575,7 +576,7 @@ def test_a_string_key_the_worker_notes_or_reads_whole_is_compared_as_shown():
 
 
 def test_a_withheld_entry_says_why_its_key_is_not_read():
-    # #187: an entry withheld (a library call may be changing the map) refused a key
+    # An entry withheld (a library call may be changing the map) refused a key
     # lookup with "the debugger shows it as None".
     from peeky.probe import _entry_part
 
@@ -583,3 +584,90 @@ def test_a_withheld_entry_says_why_its_key_is_not_read():
     entry.update(withheld=True, withheld_as="not shown", reason="a library call below …")
     with pytest.raises(ValueError, match=r"entries: not shown: a library call below …$"):
         _entry_part(None, {}, entry, "first", "o.tags")
+
+
+def test_template_arguments_split_at_their_top_level():
+    from peeky.native import _template_split
+
+    assert _template_split("std::map<int, long, type>") == ("std::map", ["int", "long", "type"], "")
+    assert _template_split(
+        "map<int, long int, main()::<lambda(int, int)>, std::allocator<std::pair<const int, long "
+        "int> > >"
+    ) == (
+        "map",
+        [
+            "int",
+            "long int",
+            "main()::<lambda(int, int)>",
+            "std::allocator<std::pair<const int, long int> >",
+        ],
+        "",
+    )
+    assert _template_split("const std::set<int, type> &") == (
+        "const std::set",
+        ["int", "type"],
+        " &",
+    )
+    assert _template_split("int") is None and _template_split("a<b") is None
+
+
+class _Session(NativeSession):
+    """A NativeSession with only the build's type graph: ``_root_type`` gives the local's
+    type offset in it."""
+
+    def __init__(self, graph, root):
+        self.graph, self.root = graph, root
+
+    def _root_type(self, frame, root):
+        if root.get("name") != "by_hour":
+            raise ValueError("no such local")
+        return self.root, True, self.graph
+
+
+def _record(name):
+    return ("record", name, "class", 48, 8, (), (), False, False, True, (), name, (), ())
+
+
+@pytest.mark.parametrize(
+    "shown,declared,named",
+    [
+        # Apple clang 21, libc++: LLDB names the lambda by `__type_identity<…>::type`.
+        (
+            "std::map<int, long, type>",
+            "map<int, long, (lambda at nightlot.cpp:23:24), std::__1::allocator<std::__1::pair"
+            "<const int, long> > >",
+            "std::map<int, long, (lambda at nightlot.cpp:23:24)>",
+        ),
+        # GCC 13, libstdc++: by `key_compare`.
+        (
+            "std::map<int, long, key_compare>",
+            "map<int, long int, main()::<lambda(int, int)>, std::allocator<std::pair<const int, "
+            "long int> > >",
+            "std::map<int, long, main()::<lambda(int, int)>>",
+        ),
+        # An unnamed struct's typedef name.
+        (
+            "std::set<int, Order>",
+            "set<int, (unnamed struct at a.cpp:3:9), std::__1::allocator<int> >",
+            "std::set<int, (unnamed struct at a.cpp:3:9)>",
+        ),
+    ],
+)
+def test_a_lambda_comparator_is_named_as_the_compiler_names_it(shown, declared, named):
+    # A map ordered by a lambda showed `std::map<int, long, type>`.
+    session = _Session({7: ("typedef", "Hours", 8), 8: _record(declared)}, 7)
+    variable = {"name": "by_hour", "type": shown}
+    assert session.display_type(variable, {}, top=True) == named
+
+
+def test_a_named_comparator_or_another_local_keeps_lldbs_type():
+    session = _Session({8: _record("map<int, long, ByAbs, std::allocator<int> >")}, 8)
+    assert (
+        session.display_type({"name": "by_hour", "type": "std::map<int, long, ByAbs>"}, {}) is None
+    )
+    assert session.display_type({"name": "other", "type": "std::map<int, long, type>"}, {}) is None
+    # Another class's record: nothing is taken from it.
+    lambdas = _Session({8: _record("set<int, (lambda at a.cpp:3:9)>")}, 8)
+    assert lambdas.display_type({"name": "by_hour", "type": "std::map<int, type>"}, {}) is None
+    # Fields keep LLDB's type.
+    assert session.display_type({"name": "m", "type": "std::map<int, type>"}, {}, top=False) is None
