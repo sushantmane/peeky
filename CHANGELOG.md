@@ -27,6 +27,8 @@
 
 ### Other changes
 
+- **`python -OO`:** `peeky` and `peeky setup-java` no longer fail at start when Python drops
+  docstrings (`-OO` or `PYTHONOPTIMIZE=2`).
 - **A Python program runs on its project's interpreter (protocol 12):** `--python PATH`, else the
   root's `.venv` or `venv`, else the active virtual environment, else Peeky's own. So Peeky
   installed with pipx or uv runs a program that imports its project's packages. The output names

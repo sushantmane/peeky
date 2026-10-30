@@ -717,9 +717,13 @@ def prune(progress=None) -> dict:
     return {"bundle": str(keep.resolve()) if keep else None, "pruned": pruned, "failed": failed}
 
 
+# The help text's first line; not read from the docstring, which `python -OO` drops.
+DESCRIPTION = "Build the Java adapter bundle that Peeky debugs Java with (`peeky setup-java`)."
+
+
 def main() -> None:
     """scripts/setup_java_adapter.py: build a bundle at --output and print its manifest."""
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=DESCRIPTION)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     print(json.dumps(setup(args.output), indent=2))
