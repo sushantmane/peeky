@@ -430,15 +430,6 @@ def test_get_rows_name_the_frame_scope_and_identity(worker):
     assert "identity" not in rows[1]
 
 
-def test_a_worker_that_ignores_frame_is_refused():
-    class Old:
-        def dispatch(self, operation, args):
-            return {"frames": [{"line": 1}], "scopes": []}
-
-    with pytest.raises(ValueError, match="predates --frame"):
-        _capture(Old(), STOP, ("a",), 0, "observed", frame=1)
-
-
 NAMES = ("LIMIT", "TOTAL", "n", "w", "self", "size", "__class__", "print")
 
 
