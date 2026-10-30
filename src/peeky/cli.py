@@ -4126,6 +4126,10 @@ def main(argv=None, _job=False, _edits=None):
         os.environ.update(taken)
 
 
+# The help text's first line; not read from the docstring, which `python -OO` drops.
+DESCRIPTION = "`peeky`: a standalone debugger tool that agents, harnesses and humans call."
+
+
 def _main(argv, _job, _edits):
     from peeky.processes import keep_children_waitable
 
@@ -4135,7 +4139,7 @@ def _main(argv, _job, _edits):
         # `peeky probe t --at 5 -- a b c` passes a, b and c to the program.
         split = argv.index("--")
         argv = argv[:split] + [f"--arg={value}" for value in argv[split + 1 :]]
-    parser = argparse.ArgumentParser(prog="peeky", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="peeky", description=DESCRIPTION)
     add_version(parser)
     commands = parser.add_subparsers(dest="command", required=True)
 
