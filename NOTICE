@@ -1,0 +1,14 @@
+Peeky
+Copyright 2026 Sushant Mane
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party software
+
+- debugpy (MIT License), a runtime dependency installed from PyPI; not included in
+  Peeky's distributions.
+- Microsoft java-debug (Eclipse Public License 1.0). scripts/setup_java_adapter.py
+  downloads its pinned source and runtime jars, applies one small patch whose text is in
+  that script (eventhub-log-guard), and builds a local adapter bundle that keeps the
+  upstream licence and notices. None of it is included in Peeky's distributions. See
+  adapters/java/NOTICES.md.
