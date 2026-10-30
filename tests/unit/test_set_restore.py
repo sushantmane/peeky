@@ -851,11 +851,11 @@ def test_hits_and_changes_are_named_as_people_read_them():
 
 class LostAt(Passes):
     """Passes, then the program's end after a stop the debugger never reported, seen at
-    main.c:`at`."""
+    main.c:`at`, or at `at` where it is text."""
 
     def __init__(self, stops, at):
         super().__init__(stops)
-        self.at = at
+        self.where = at if isinstance(at, str) else f"main.c:{at}"
 
     def dispatch(self, operation, args):
         if operation == "wait" and not self.order:
@@ -864,9 +864,9 @@ class LostAt(Passes):
                 "state": "terminated",
                 "unreported_stop": {
                     "thread_name": "main",
-                    "breakpoint": f"main.c:{self.at}",
+                    "breakpoint": self.where,
                     "function": "f",
-                    "location": f"main.c:{self.at}",
+                    "location": self.where,
                 },
             }
         return super().dispatch(operation, args)
@@ -903,6 +903,30 @@ def test_a_stop_lost_at_the_restore_line_leaves_the_guards_all_complete(monkeypa
         "2 may have run without the restore." in w
         for w in result["warnings"]
     ), result["warnings"]
+
+
+def test_a_stop_lost_where_no_line_matches_may_have_been_a_restores_hit(monkeypatch):
+    # Seen at a breakpoint Peeky can't match to a line, a lost stop counted only for an
+    # @all: the restore owed at line 8's hit 2 said "Line 8 stopped 1 time(s) before the
+    # probe ended, so its hit 2 never came".
+    result = run(monkeypatch, LostAt(passes("1", "1")[:-1], "Other.java:8"), flip())
+    assert not any("never came" in w for w in result["warnings"]), result["warnings"]
+    assert any(
+        f"Before the probe ended, the debugger reported 1 stop of line {FLAT}, and also stopped "
+        "without reporting it at a breakpoint Peeky can't match to a line, which may have been "
+        f"line {FLAT}'s. So the line's full count of stops is unknown, and its hit 2 may have "
+        "run without the restore." in w
+        for w in result["warnings"]
+    ), result["warnings"]
+    guard, restore = result["set_outcomes"]
+    # Either line's stop it may have been: neither is taken for complete.
+    assert (guard["ended"], guard["complete"]) == ("lost_stop", False), guard
+    assert (restore["ended"], restore["unrestored"]) == ("lost_stop", f"{GUARD}@2"), restore
+    # No line matched: no `unreported_stop`.
+    assert not any("unreported_stop" in entry for entry in result["unapplied"])
+    entry = next(e for e in result["unapplied"] if e["at"] == f"{FLAT}@all")
+    assert (entry["stops"], entry["made"], entry["unrestored"]) == (1, 1, f"{GUARD}@2"), entry
+    assert probe_exit_code(result) == 4
 
 
 def test_watch_stops_are_counted_apart(monkeypatch):

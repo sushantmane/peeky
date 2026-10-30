@@ -568,7 +568,7 @@ def test_each_outcome_reads_as_how_far_the_change_got():
         ", not made: no stop of its line was reported, and the debugger lost a stop"
     )
     assert said(made=0, ended="lost_stop", at="9@4") == (
-        ", not made: the debugger lost a stop of its line, which may have been that hit"
+        ", not made: the debugger lost a stop, which may have been that hit"
     )
     # A --set: at its probe line's set_hit (1 where runs.set_hit is NULL).
     assert said(
@@ -690,8 +690,8 @@ def test_a_schema_21_store_is_upgraded_for_one_hit_lost_stop_outcomes(tmp_path):
             [
                 "x",
                 "7",
-                "requested at 9@1, not made: the debugger lost a stop of its line, which may "
-                "have been that hit",
+                "requested at 9@1, not made: the debugger lost a stop, which may have been "
+                "that hit",
             ]
         ],
     ]

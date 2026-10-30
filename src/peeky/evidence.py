@@ -93,10 +93,9 @@ TABLES = {
             "at, ended: made (a change at a hit, made), exit (the program ended), "
             "until_hits (the probe ended after its last hit), cap (a LINE@all's 100 "
             "stops), refused or failed (at hit: its own change there), timeout or failed "
-            "(the probe's, first), or lost_stop (the debugger lost a stop of its line, which "
-            "may have run without it; for an @all, also one it can't place; before schema 22, "
-            "an @all's at any line, and never a change at one hit), complete: carried out in "
-            "full, and, for a restore "
+            "(the probe's, first), or lost_stop (the debugger lost a stop of its line, or one "
+            "Peeky can't match to a line, which may have run without it; before schema 22, "
+            "only an @all's, lost at any line), complete: carried out in full, and, for a restore "
             "(name=@before) that never made some it owed, unrestored: the LINE@HIT of the "
             "latest write it never restored, with unrestored_all: each one's, in the order "
             "made (no restore was made; the program may have written the value since)}; "
@@ -743,7 +742,7 @@ def _outcome_text(outcome):
             "lost_stop": ", not made: no stop of its line was reported, and the debugger lost a "
             "stop"
             if every
-            else ", not made: the debugger lost a stop of its line, which may have been that hit",
+            else ", not made: the debugger lost a stop, which may have been that hit",
             "timeout": ", not made: the probe timed out first",
             "failed": ", not made: the probe failed first",
         }.get(ended)
