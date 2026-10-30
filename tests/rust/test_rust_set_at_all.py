@@ -1,4 +1,4 @@
-"""`--set-at LINE@all` on a real Rust build (#265): a change at every stop of the line
+"""`--set-at LINE@all` on a real Rust build: a change at every stop of the line
 reached only in the case to test, in the frame that owns the value, each made and read
 back as one `--set-at LINE@N` is; through a `&mut` it is refused before the run."""
 

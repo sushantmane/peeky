@@ -1,4 +1,4 @@
-"""A stop at a function's start, before its prologue stores the parameters (#279), on
+"""A stop at a function's start, before its prologue stores the parameters, on
 real builds. GCC marks no prologue end in the line table, so LLDB stops a function whose
 code is all on its first line at its first instruction, and a step into it stops there
 too: `a` read the slot's leftovers (`a = 2` for `one(3)`), with no note. Each value must be
@@ -228,7 +228,7 @@ def test_a_step_into_a_one_line_function_withholds_what_is_not_stored(entries, c
 def test_a_stop_whose_address_is_unknown_is_withheld_on_a_prologues_line(
     entries, capsys, monkeypatch
 ):
-    # Review of #279: where the debugger reports no load address (a module with no
+    # Where the debugger reports no load address (a module with no
     # `addressRange`, which lldb-dap 20 and Apple's may send with a frame's `moduleId`),
     # no stop's address can be placed. The rule then fails closed on any line a prologue
     # runs on: GCC's, and clang's too, where a fault or a signal can stop in it.

@@ -1,4 +1,4 @@
-"""`queries wide` and `queries join` over probes of a real C program (#139)."""
+"""`queries wide` and `queries join` over probes of a real C program."""
 
 import json
 import os
@@ -109,7 +109,6 @@ int main(int argc, char **argv) {
 
 @pytest.mark.timeout(240)
 def test_wide_and_join_keep_notes_case_and_addresses_apart(bins, capsys):
-    # Review of #139 (PR #145, round 1).
     (bins / "bins.c").write_text(LOOP)
 
     def probe(line, capture, *args):
@@ -189,10 +188,10 @@ int main(int argc, char **argv) {
 
 @pytest.mark.timeout(240)
 def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
-    # Review 2 of #139 (PR #145). Line FIRST is a do body's first line: at hit 1, `k` and
-    # `v` hold leftovers (here `warm`'s, so they differ with the seed), which the probe
-    # marks [note]. diff listed them as the first divergences, note NULL, though the
-    # runs computed and printed the same; hits and values counted them.
+    # Line FIRST is a do body's first line: at hit 1, `k` and `v` hold leftovers (here
+    # `warm`'s, so they differ with the seed), which the probe marks [note]. The runs
+    # compute and print the same, so diff, hits and values never count them as
+    # divergences.
     (bins / "bins.c").write_text(LEFTOVERS)
     lines = {
         marker: next(i for i, text in enumerate(LEFTOVERS.splitlines(), 1) if marker in text)
@@ -236,8 +235,8 @@ def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
         "name": None,
     }
 
-    # Review 3: a noted value's row said only `missing in run b` (fewer hits) or
-    # `intervention only in run a` (a --set), and came first.
+    # A noted value's row says more than `missing in run b` (fewer hits) or `intervention
+    # only in run a` (a --set), and never comes first.
     probe("FIRST", "k,v,n", "1000", "--hits", "2")
     probe("FIRST", "k,v,n", "1000", "--set", "n=1", "--set-hit", "2")
     for a, b, said in ((1, 5, "missing in run b"), (6, 1, None)):
@@ -247,8 +246,8 @@ def test_diff_hits_and_values_never_count_leftovers_or_quoted_hex(bins, capsys):
         # A plain value's row first (`n`: a hit one run did not reach).
         assert values[0]["selector"] == "n" and "qualified" not in values[0]["note"], diff
         if said is None:
-            # Seventh evaluation, finding 10: `--set n=1` left `k` and `v` as they were,
-            # so their after-set rows are no difference of their own.
+            # `--set n=1` leaves `k` and `v` as they were, so their after-set rows are no
+            # difference of their own.
             assert not [row for row in noted if row["phase"] == "after-set"], diff
         else:
             assert any(row["note"].startswith(said + "; qualified (run a: note") for row in noted)
@@ -273,8 +272,8 @@ int main(int argc, char **argv) {
 
 @pytest.mark.timeout(240)
 def test_diff_says_a_pointer_to_another_element_may_differ(bins, capsys):
-    # #292: `top` points at the last 5 in run 1 and at the first in the candidate. The
-    # output and `top[0]` agree, and `diff` said `addresses only`, ranked last.
+    # `top` points at the last 5 in run 1 and at the first in the candidate. The output
+    # and `top[0]` agree, so `addresses only`, ranked last, would hide that.
     root = bins.parent / "peak"
     root.mkdir()
     (root / "peak.c").write_text(PEAK)

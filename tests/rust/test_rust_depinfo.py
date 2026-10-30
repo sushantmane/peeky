@@ -1,4 +1,4 @@
-r"""#177: rustc's dependency file lists every file a build read, and the provenance check
+r"""rustc's dependency file lists every file a build read, and the provenance check
 needs each (declared, inside the crate). It escapes only a space (`\ `): a `$$` is two
 dollars, and a U+2028 is part of a name, not a line break."""
 

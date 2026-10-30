@@ -19,7 +19,7 @@ def wait_stopped(worker, session):
 
 def test_real_target_secret_stripping_and_cleanup(tmp_path, monkeypatch):
     monkeypatch.setenv("DEBUG_TOKEN", "secret-control-token")
-    # A client's name for the same secret (pre-release security review).
+    # A client's name for the same secret.
     monkeypatch.setenv("PEEKY_WORKER_TOKEN", "secret-client-token")
     program = tmp_path / "target.py"
     program.write_text(

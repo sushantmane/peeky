@@ -1,11 +1,10 @@
-"""A value a call returns, given a pointer into the local or to what holds a copy of it,
-may be a copy (#320). After `let y = x.clone();`, `s.push_str(&x.to_string());` or `let y =
-unsafe { std::ptr::read(&x) };`, `x` was `[settable]` where the program goes on with the
-copy: `--set x=100` was reported, and the output kept the old value. Now `x` is refused
-there, naming the copy, and a change before the copy still reaches the program. The
-standard library's measures and comparisons (`len`, `contains`, `eq`, `cmp`) return no
-copy, but a crate's own `String::len` may. After `mem::take(&mut a)`, the refusal names
-its result `b`, not `a`."""
+"""A value a call returns, given a pointer into the local or to what holds a copy of it, may be
+a copy. After `let y = x.clone();`, `s.push_str(&x.to_string());` or `let y = unsafe {
+std::ptr::read(&x) };`, the program goes on with the copy: `--set x=100` would be reported while
+the output keeps the old value. `x` is refused there, naming the copy, and a change before the
+copy still reaches the program. The standard library's measures and comparisons (`len`,
+`contains`, `eq`, `cmp`) return no copy, but a crate's own `String::len` may. After
+`mem::take(&mut a)`, the refusal names its result `b`, not `a`."""
 
 import json
 import os
@@ -153,7 +152,7 @@ fn main() {
     println!("HELD {}", held(x));
 }
 """
-# #320 review: types of the crate's own named as the standard library's `String` and `Vec`,
+# Types of the crate's own named as the standard library's `String` and `Vec`,
 # whose `len` the dump names `String::len` and `Vec::len`, as it would the standard one.
 OWNED = """use std::env;
 
@@ -207,7 +206,7 @@ fn main() {
 }
 """
 
-# #320 review round 2: a crate `mod alloc` whose `str::Chars` holds a value beside a
+# A crate `mod alloc` whose `str::Chars` holds a value beside a
 # reference, and the standard library's iterator adapters.
 ADAPTERS = """use std::env;
 
@@ -291,7 +290,7 @@ fn main() {
 }
 """
 
-# #320 review round 3: a crate module named `alloc` or `core`, beside `a.len()`, the
+# A crate module named `alloc` or `core`, beside `a.len()`, the
 # standard library's `core::slice::<impl [u32]>::len`.
 ROOTS = """use std::env;
 
@@ -367,7 +366,7 @@ def test_a_copy_a_call_returns_withholds_the_local_where_the_program_goes_on_wit
         ("TAKEN", "b", "TAKE"),
         ("FORMATTED", "s", None),
         ("EXTENDED", "v", "EXTEND"),
-        # #320 review: a value beside a reference, `(u32, &'static ())` and `Hybrid<'_>`.
+        # A value beside a reference, `(u32, &'static ())` and `Hybrid<'_>`.
         ("PAIRED", "h", "PAIR"),
         ("HELD", "h", "HOLD"),
     ):
@@ -419,9 +418,9 @@ def test_the_standard_librarys_measures_and_comparisons_leave_the_local_settable
 
 @pytest.mark.timeout(400)
 def test_a_crate_type_named_like_a_standard_one_measures_nothing(crate, capsys):
-    # #320 review: `String::len(&x.to_string())` and `Vec::len(&vec![x, 2])` call the
-    # crate's own `len`, which returns what it reads. Taken for the standard library's,
-    # `x` was settable after them, and the program printed the old `n`.
+    # `String::len(&x.to_string())` and `Vec::len(&vec![x, 2])` call the crate's own `len`,
+    # which returns what it reads. Taken for the standard library's, `x` would be settable
+    # after them, while the program prints the old `n`.
     root = crate("owned", OWNED)
     for marker, made in (("TEXTS", "TEXT"), ("ITEMS", "ITEM")):
         message = refused(*probe(capsys, root, marker, "--set", "x=100", text=OWNED), marker)

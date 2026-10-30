@@ -109,7 +109,7 @@ MERGE = 'package demo;\n\nimport java.util.ArrayList;\nimport java.util.List;\n\
 
 @pytest.mark.timeout(120)
 def test_java_objects_show_their_fields_and_lists_index_like_arrays(tmp_path):
-    # #78 (eval 3, Java): values read `Merge$Interval@172`, so every field needed its own
+    # Values read `Merge$Interval@172`, so every field needed its own
     # selector, and `merged[0]` failed on an ArrayList's raw fields.
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
     if not bundle:
@@ -162,7 +162,7 @@ public class Lists {
 
 @pytest.mark.timeout(120)
 def test_java_previews_depend_only_on_the_value_and_lists_read_within_bounds(tmp_path):
-    # Review of #87: a preview depended on the siblings listed before it; a list whose
+    # A preview depended on the siblings listed before it; a list whose
     # backing array holds over 512 slots, or a node budget cut short by earlier
     # selectors, failed list indexing.
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
@@ -205,7 +205,7 @@ public class Bud {
 
 @pytest.mark.timeout(120)
 def test_a_java_preview_after_selectors_that_used_the_budget_is_complete(tmp_path):
-    # Review of #87: an object preview cut short by the node budget showed `{a=1}`.
+    # An object preview cut short by the node budget showed `{a=1}`.
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")
     if not bundle:
         pytest.skip("set PEEKY_JAVA_ADAPTER to a prepared Java adapter bundle")

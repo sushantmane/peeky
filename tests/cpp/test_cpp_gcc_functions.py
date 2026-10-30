@@ -1,6 +1,6 @@
 """C++ functions Peeky cannot place among the program's declarations, whose locals it
-withholds, and GCC's lambdas and implicit constructors, which it places by their class
-(#167). Each case runs with clang++ and with g++: the g++ cases skip where no g++ is GCC
+withholds, and GCC's lambdas and implicit constructors, which it places by their class.
+Each case runs with clang++ and with g++: the g++ cases skip where no g++ is GCC
 (macOS), and the clang cases where the lane builds C++ with g++."""
 
 import json
@@ -69,8 +69,8 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_a_function_peeky_cannot_place_withholds_its_locals(compiler, tmp_path, capsys):
-    # Before: `x = 281474976709600` and `y = 20879` (clang; g++ alike), leftovers shown as
-    # values with no note, as GCC's lambdas and implicit constructors were (#167).
+    # Not `x = 281474976709600` and `y = 20879` (clang; g++ alike), leftovers shown as
+    # values with no note.
     path = tmp_path / "lined.cpp"
     path.write_text(LINED)
     code, result = probed(capsys, path, line_of(LINED, "// X"), "a,x,y")
@@ -91,8 +91,8 @@ def test_a_function_peeky_cannot_place_withholds_its_locals(compiler, tmp_path, 
     assert code == 0 and row["error"].startswith("no value yet: declared on line 15"), row
 
 
-# Review of #282: the same helper, forced inline into `main`. Its frame shares `main`'s code,
-# where Peeky found `main`'s entry, so nothing was withheld.
+# The same helper, forced inline into `main`. Its frame shares `main`'s code, where Peeky
+# finds `main`'s entry, which must not leave its locals unwithheld.
 INLINED = """#include <cstdio>
 __attribute__((noinline)) static long twice(long v) {
     long w = v * 2;
@@ -117,8 +117,8 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_an_inlined_function_peeky_cannot_place_withholds_its_locals(compiler, tmp_path, capsys):
-    # Before (the reviewed head): `x = 281474976709728`, `y = 4294967295` (clang; g++
-    # alike) in the inlined `helper`, as values with no note.
+    # Not `x = 281474976709728`, `y = 4294967295` (clang; g++ alike) in the inlined
+    # `helper`, as values with no note.
     path = tmp_path / "inlined.cpp"
     path.write_text(INLINED)
     code, result = probed(capsys, path, line_of(INLINED, "// X"), "a,x,y")
@@ -131,8 +131,6 @@ def test_an_inlined_function_peeky_cannot_place_withholds_its_locals(compiler, t
     line = line_of(INLINED, "// TWICE")
     code = main(["session", "start", str(path), "--at", str(line), "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         code, rows = run(capsys, "session", "get", "x", "--frame", "1")
@@ -149,7 +147,7 @@ def test_an_inlined_function_peeky_cannot_place_withholds_its_locals(compiler, t
         capsys.readouterr()
 
 
-# Review round 2 of #282: at -O1, `wrap`'s inlined code ends with its call to `twice`, so
+# At -O1, `wrap`'s inlined code ends with its call to `twice`, so
 # `wrap`'s frame returns to the first address past that code, `run`'s; and `run`'s frame
 # is at the start of `wrap`'s code (lldb-dap 18 and 20, clang and GCC alike). Each frame's
 # code changes at its address: its line and name tell whose it is.
@@ -193,8 +191,6 @@ def test_frames_whose_code_changes_at_their_address_are_told_apart(compiler, tmp
     at = f"last.cpp:{line_of(LAST_CALL, '// TWICE')}"
     code = main(["session", "start", str(tmp_path), "--config", str(config), "--at", at, "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         frames = [(1, "a", "wrap", "// WRAP")]
@@ -300,15 +296,13 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_an_unnamed_structs_implicit_constructor_withholds_this(compiler, tmp_path, capsys):
-    # GCC names it `<constructor>`, with no source: frame 1's `this.t` showed `20943`, a
-    # leftover of `scribble()`, while `t = twice(14)` was still running.
+    # GCC names it `<constructor>`, with no source: frame 1's `this.t` holds `20943`, a
+    # leftover of `scribble()`, while `t = twice(14)` is still running.
     path = tmp_path / "unnamed.cpp"
     path.write_text(UNNAMED_CONSTRUCTOR)
     line = line_of(UNNAMED_CONSTRUCTOR, "// TWICE")
     code = main(["session", "start", str(path), "--at", str(line), "--hit", "2", "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         code, rows = run(capsys, "session", "get", "this", "this.t", "--frame", "1")
@@ -334,9 +328,9 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_a_generic_lambda_is_no_class_its_function_runs(compiler, tmp_path, capsys):
-    # Clang and GCC name a generic lambda's call operator `operator()<int>`, which was not
-    # taken for a lambda's: its closure counted as a class `main` defines, and `s` was
-    # withheld as "outside its function's own lines".
+    # Clang and GCC name a generic lambda's call operator `operator()<int>`, a lambda's
+    # too: its closure is no class `main` defines, and `s` is not withheld as "outside its
+    # function's own lines".
     path = tmp_path / "generic.cpp"
     path.write_text(GENERIC)
     code, result = probed(capsys, path, line_of(GENERIC, "// S"), "s")
@@ -360,15 +354,13 @@ int main() {
 
 @pytest.mark.timeout(300)
 def test_a_lambdas_own_parameter_is_judged_as_its_own(compiler, tmp_path, capsys):
-    # GCC's lambda had no entry, so its frame was judged by `main`'s declarations: its own
-    # parameter `t` (40) was withheld as "the code here names the structured binding `t`".
+    # GCC's lambda's frame is judged by its own declarations, not `main`'s: its own parameter
+    # `t` (40) is not withheld as "the code here names the structured binding `t`".
     path = tmp_path / "range_lambda.cpp"
     path.write_text(RANGE_LAMBDA)
     line = line_of(RANGE_LAMBDA, "// ID")
     code = main(["session", "start", str(path), "--at", str(line), "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         code, rows = run(capsys, "session", "get", "t", "--frame", "1")

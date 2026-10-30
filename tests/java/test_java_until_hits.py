@@ -1,6 +1,6 @@
-"""#203 on a launched JVM: resumed after its last hit, a `--until hits` probe's program
-runs on until the probe ends it. Its output read meanwhile was "so far (the program was
-still running)", even when it had exited."""
+"""On a launched JVM: resumed after its last hit, a `--until hits` probe's program runs on
+until the probe ends it. Its output read meanwhile is not "so far (the program was still
+running)" when it has exited."""
 
 import json
 import os

@@ -198,7 +198,7 @@ def test_float_scalars_and_fields_show_as_the_program_prints_them(crate, capsys)
     # Rust types where LLDB has C names: from the build's MIR for a local, and for a
     # field from the one primitive LLDB's name can be.
     assert (rows["f_a"]["type"], rows["f_a"]["debugger_type"]) == ("f64", "double")
-    # Where memory reads qualify, `pt` previews (#106) and its fields are read with
+    # Where memory reads qualify, `pt` previews and its fields are read with
     # their DWARF types; otherwise (lldb-dap 18) LLDB reads the field.
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or rows["pt.y"].get("view") == "memory":
         assert (rows["pt.y"]["type"], rows["pt.y"].get("view")) == ("f32", "memory")
@@ -208,7 +208,7 @@ def test_float_scalars_and_fields_show_as_the_program_prints_them(crate, capsys)
 
 @pytest.mark.timeout(300)
 def test_scalar_locals_show_their_rust_types(crate, capsys):
-    # #79: LLDB names usize and u64 both `unsigned long`; the MIR tells them apart.
+    # LLDB names usize and u64 both `unsigned long`; the MIR tells them apart.
     rows, _ = probe(capsys, crate, "OBSERVE", ("t_usize", "t_u64", "t_i8", "t_char", "t_bool", "n"))
     assert {name: rows[name]["type"] for name in rows} == {
         "t_usize": "usize",
@@ -219,13 +219,13 @@ def test_scalar_locals_show_their_rust_types(crate, capsys):
         "n": "usize",
     }
     assert rows["t_u64"]["debugger_type"] == rows["t_usize"]["debugger_type"] == "unsigned long"
-    # Review of #84: LLDB shows u8/i8 as C character literals ('\xff').
+    # LLDB shows u8/i8 as C character literals ('\xff'); Peeky shows the number.
     assert rows["t_i8"]["value"] == "-1"
 
 
 @pytest.mark.timeout(300)
 def test_scalar_parameters_show_their_rust_types_and_bytes_their_values(crate, capsys):
-    # Review of #84: MIR types arguments only in the function's header.
+    # MIR types arguments only in the function's header.
     rows, output = probe(capsys, crate, "SCALED", ("count", "scale", "level", "letter", "local"))
     shown = {name: (rows[name]["type"], rows[name]["value"]) for name in rows}
     assert shown == {

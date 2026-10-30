@@ -1,6 +1,6 @@
-"""C++ locals in static storage (#364), built by clang and by g++: a `static` local, and a
+"""C++ locals in static storage, built by clang and by g++: a `static` local, and a
 `const` aggregate GCC builds at compile time in read-only data (`const Span cs{8, 9};`).
-lldb-dap lists none of them among a frame's locals, so each was `not found`. Peeky reads
+lldb-dap lists none of them among a frame's locals. Peeky reads
 the one the code at the stop names, once C++ has run its initializer (its guard variable
 says so), and never changes one."""
 
@@ -68,7 +68,7 @@ def directory(tmp_path, monkeypatch):
 
 @pytest.mark.timeout(300)
 def test_a_static_local_shows_once_its_initializer_has_run(directory, cxx, capsys):
-    # #364: `w` and `calls` were `not found: tick declares 'w' in static storage`.
+    # `w` and `calls` are read, not `not found`.
     path = directory / "statics.cpp"
     path.write_text(STATICS)
     declared = line_of(STATICS, "static Widget w(")
@@ -114,7 +114,7 @@ def test_a_static_local_is_never_changed_in_cpp(directory, cxx, capsys):
 
 @pytest.mark.timeout(240)
 def test_describe_marks_a_static_local_static(directory, cxx, capsys):
-    # Eval 13 (#385): `describe` listed a `static` local as if it were the frame's own.
+    # `describe` marks a `static` local as static, not as the frame's own.
     path = directory / "statics.cpp"
     path.write_text(STATICS)
     assert main(["describe", str(path), "--json"]) == 0
@@ -128,7 +128,7 @@ def test_describe_marks_a_static_local_static(directory, cxx, capsys):
     assert run.get("statics") == ["calls"], run
 
 
-# Review of PR #370: two instances of a template, each with its own `calls`, which share
+# Two instances of a template, each with its own `calls`, which share
 # their declaration's file and line; LLDB names g++'s by its symbol,
 # `long tick<int>(int)::calls`.
 TEMPLATES = """#include <cstdio>

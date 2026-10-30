@@ -1,4 +1,4 @@
-"""#191: a Rust local or parameter whose name is not plain ASCII (`größe`). LLVM IR
+"""A Rust local or parameter whose name is not plain ASCII (`größe`). LLVM IR
 quotes it (`%"gr\\C3\\B6\\C3\\9Fe"`), and the IR's proofs matched only plain names, so a
 reference parameter so named stayed a raw pointer, where `values: &Vec<i64>` reads."""
 
@@ -69,7 +69,7 @@ def test_a_reference_parameter_named_in_unicode_reads_as_its_ascii_twin(crate, c
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or parameter.get("view") == "memory":
         assert parameter["value"] == "[3, 4, 5]" and parameter["view"] == "memory", parameter
         # Its Rust type, as for a reference parameter the IR proves, spelled as Rust
-        # writes it (#183).
+        # writes it.
         assert parameter["type"] == "&Vec<i64>", parameter
         # An owned Vec so named read already: the MIR names it as the source does.
         owned = variables["stücke"]

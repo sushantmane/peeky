@@ -1,4 +1,4 @@
-"""Setting a C `char` array to a text (#137 part 2), on real C builds: the text and a
+"""Setting a C `char` array to a text, on real C builds: the text and a
 NUL, if both fit in the array; never past it, and never through a pointer."""
 
 import json
@@ -11,7 +11,7 @@ from peeky.cli import main
 
 
 def _refused_code(result):
-    # #165: a probe refused before it ran exits 2; a refusal at a stop, 1.
+    # A probe refused before it ran exits 2; a refusal at a stop, 1.
     return 2 if result.get("refused_before_launch") else 1
 
 
@@ -57,8 +57,7 @@ def refused(capsys, root, *argv):
 
 @pytest.mark.timeout(240)
 def test_a_char_array_takes_a_text_and_a_nul_that_fit(texts, capsys):
-    # #137 part 2: `--set name="apple"` was refused ("Native mutations require bounded
-    # decimal integer literals"), so a text could only be changed by editing the source.
+    # `--set name="apple"` changes a text, which otherwise only editing the source could.
     code, result = probe(capsys, texts, "--set", 'name="apple"', "--set", 'code="12345"')
     assert code == 0, result.get("error")
     assert "NAME:apple CODE:12345 LABEL:literal TAG:rec LEN:5" in result["output"], result
@@ -96,7 +95,7 @@ def test_a_char_array_takes_a_text_and_a_nul_that_fit(texts, capsys):
 
 @pytest.mark.timeout(240)
 def test_a_text_is_refused_where_it_does_not_fit_or_is_not_a_char_array(texts, capsys):
-    # #137 part 2: never past a buffer, and nothing changed by a refusal.
+    # Never past a buffer, and nothing changed by a refusal.
     message = refused(capsys, texts, "--set", 'code="123456"')
     assert (
         "the text does not fit: `code` is a char[6], which holds 5 bytes of text and a NUL, and the text is 6 bytes"
@@ -139,8 +138,8 @@ int main(void) {
 def test_a_const_or_volatile_array_is_never_changed_and_a_typedef_is_judged_by_its_type(
     texts, capsys
 ):
-    # #164 review: a const object was changed (and marked [settable]): undefined
-    # behavior. What the array is comes from the debug information, under any typedef.
+    # Changing a const object (or marking it [settable]) would be undefined behavior. What
+    # the array is comes from the debug information, under any typedef.
     (texts / "texts.c").write_text(QUALIFIED)
     see = next(i for i, text in enumerate(QUALIFIED.splitlines(), 1) if "// SEE" in text)
     at = ["probe", str(texts), "--at", f"texts.c:{see}", "--capture", "tag,fixed,konst,shared"]

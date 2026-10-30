@@ -200,7 +200,7 @@ def test_rust_program_stopped_when_its_debugger_dies_is_ended(rust_worker):
         client.call("inspect", **session, stop_id=stop["stop_id"])
     error = json.load(failed.value)["error"]
     # Apple's debugserver outlives lldb-dap and keeps the program stopped: Peeky ends both,
-    # as it listed them (#143). Linux's lldb-server ends its tracee itself.
+    # as it listed them. Linux's lldb-server ends its tracee itself.
     assert error["code"] == "DEBUGGER_ERROR"
     cleanup = error["cleanup"]
     assert "; the debugger was gone: a process the program started in the last " in cleanup

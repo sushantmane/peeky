@@ -1,6 +1,6 @@
 """Egress policy check: label each destination address before allowing traffic.
 
-Uses ipaddress39.py, CPython 3.9.6's Lib/ipaddress.py copied verbatim.
+Uses ipaddress39.py, CPython 3.9.6's Lib/ipaddress.py copied verbatim below its notice.
 """
 
 import sys

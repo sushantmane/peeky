@@ -1,12 +1,13 @@
-"""C++ strings with a NUL byte (#128): shown whole, or with a note, never cut silently.
+"""C++ strings on real builds: shown as their text, with no library members; with a NUL
+byte, shown whole, or with a note, never cut silently.
 
 LLDB's summary of a libstdc++ (Linux) `std::string` is a C string, which ends at the
-first NUL: `"a\\0b"` showed as `"a"`. A `std::string` LLDB names by that typedef got
+first NUL: `"a\\0b"` shows as `"a"`. A `std::string` LLDB names by that typedef gets
 `error: summary string parsing error` instead. libc++ (macOS) prints every byte, so
 there the values are LLDB's own, unchanged. Where the debugger reads memory (lldb-dap
 20), the worker reads a libstdc++ string's bytes; elsewhere it adds a note.
 
-Built by clang and by g++ (#167). GCC describes `std::string` whole, where clang's default
+Built by clang and by g++. GCC describes `std::string` whole, where clang's default
 leaves it bare, so with lldb-dap 18 LLDB's summary of a GCC build works: it ends at the
 first NUL, and Peeky says where (`"a" (shown up to a NUL at byte 1 of 3)`).
 """
@@ -110,9 +111,9 @@ def whole(row):
 
 
 def test_a_string_with_a_nul_is_never_shown_cut_short(strings, cxx, capsys):
-    # #128: on Linux `sso` ("a\0b", in the local buffer), `heap` (31 bytes on the heap),
-    # `trail` ("q\0") and `grown` (3 bytes in a heap buffer) showed LLDB's
-    # `error: summary string parsing error`, and a `std::basic_string<char>` showed "a".
+    # On Linux, LLDB shows `sso` ("a\0b", in the local buffer), `heap` (31 bytes on the
+    # heap), `trail` ("q\0") and `grown` (3 bytes in a heap buffer) as
+    # `error: summary string parsing error`, and a `std::basic_string<char>` as "a".
     with session(strings, capsys) as get:
         rows = get("sso", "heap", "trail", "plain", "grown")
         for name, row in rows.items():
@@ -132,8 +133,8 @@ def test_a_string_with_a_nul_is_never_shown_cut_short(strings, cxx, capsys):
 
 
 def test_a_string_inside_a_struct_a_vector_or_a_map_is_never_cut_short(strings, cxx, capsys):
-    # #128: `vs[0]` and `ms[1]` (LLDB names them `std::basic_string<char>`) showed "v"
-    # and "m" on Linux, with no note; `rec.name` showed the summary's parsing error.
+    # LLDB shows `vs[0]` and `ms[1]` (it names them `std::basic_string<char>`) as "v" and
+    # "m" on Linux, and `rec.name` as the summary's parsing error.
     with session(strings, capsys) as get:
         rows = get("rec.name", "vs[0]", "vs[1]", "ms[1]", "rec", "vs", "ms")
         for name in ("rec.name", "vs[0]", "vs[1]", "ms[1]"):
@@ -158,8 +159,8 @@ def test_a_string_inside_a_struct_a_vector_or_a_map_is_never_cut_short(strings, 
 
 
 def test_a_strings_pointer_reference_and_wide_string_are_never_cut_short(strings, cxx, capsys):
-    # #128: `ref` and `ptr` showed their address and the summary's parsing error; `wide`
-    # (an std::wstring) too, and `u16` (std::u16string) showed no text where it can.
+    # LLDB shows `ref` and `ptr` as their address and the summary's parsing error; `wide`
+    # (an std::wstring) too, and `u16` (std::u16string) with no text where it can.
     with session(strings, capsys) as get:
         rows = get("ref", "ptr", "ptr[0]", "wide", "u16")
         if whole(rows["ptr[0]"]):
@@ -193,7 +194,7 @@ def test_a_strings_pointer_reference_and_wide_string_are_never_cut_short(strings
 
 
 def test_a_probe_and_its_evidence_keep_the_whole_string(strings, capsys):
-    # #128: probe rows, and the evidence store they are saved to, held "v" for "v\0w".
+    # Probe rows, and the evidence store they are saved to, hold "v\0w", not "v".
     from peeky.cli import main
 
     capture = "vs[0],ms[1],keys['zz'],keys['k']"
@@ -206,12 +207,12 @@ def test_a_probe_and_its_evidence_keep_the_whole_string(strings, capsys):
             assert saved[name]["value"] == WHOLE[name], saved[name]
         else:
             assert saved[name]["value"].endswith("(shown up to a NUL at byte 1 of 3)")
-    # A key "k\0x" is no key "k", however it is shown (#119).
+    # A key "k\0x" is no key "k", however it is shown.
     assert saved["keys['zz']"]["value"] == "2"
     assert 'no key "k"' in saved["keys['k']"]["error"], saved["keys['k']"]
 
 
-# Review of #128 (PR #131): strings by a typedef's name, digits after a NUL, long text.
+# Strings by a typedef's name, digits after a NUL, long text.
 NAMED = """#include <cstdio>
 #include <string>
 #include <vector>
@@ -282,9 +283,9 @@ def named(tmp_path, capsys, marker="// OBSERVE"):
 
 
 def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, cxx, tmp_path, capsys):
-    # Review of #128: `Bytes b` (typedef std::basic_string<char>) showed "b" for "b\0y",
-    # and `bx.b` "x", `b2` (std::__cxx11::basic_string<char>) "c": no note. A typedef of
-    # std::string (`Name`) showed `error: summary string parsing error`, as the value.
+    # LLDB shows `Bytes b` (typedef std::basic_string<char>) as "b" for "b\0y", `bx.b` as
+    # "x", `b2` (std::__cxx11::basic_string<char>) as "c", and a typedef of std::string
+    # (`Name`) as `error: summary string parsing error`.
     with named(tmp_path, capsys) as get:
         rows = get("b", "b2", "bx.b", "tn", "per.name", "hs", "per")
         for name in ("b", "b2", "bx.b", "tn", "per.name", "hs"):
@@ -318,8 +319,8 @@ def test_a_string_by_a_typedefs_name_is_never_cut_short(strings, cxx, tmp_path, 
 
 
 def test_a_nul_or_byte_before_a_digit_reads_back_as_the_same_bytes(strings, cxx, tmp_path, capsys):
-    # Review of #128: "n\0" "64" showed `"n\064"`, which C reads as "n4", and "x\0" "5"
-    # `"x\05"`; also LLDB's own libc++ text on macOS. A raw byte before a hex digit the
+    # "n\0" "64" is not `"n\064"`, which C reads as "n4", nor "x\0" "5" `"x\05"`; nor in
+    # LLDB's own libc++ text on macOS. A raw byte before a hex digit the
     # same: `"\xffa"` is one character to C.
     with named(tmp_path, capsys) as get:
         rows = get("v[0]", "v[1]", "digits")
@@ -337,9 +338,8 @@ def test_a_nul_or_byte_before_a_digit_reads_back_as_the_same_bytes(strings, cxx,
 
 
 def test_a_long_string_is_cut_between_characters_and_says_so(strings, tmp_path, capsys):
-    # Review of #128: 500 control bytes, a NUL and "z" showed 5041 characters on
-    # lldb-dap 18 (the note's text past the worker's 2000), and macOS's 2000 ended inside
-    # an escape with no `...`.
+    # 500 control bytes, a NUL and "z": not 5041 characters on lldb-dap 18 (the note's text
+    # past the worker's 2000), nor macOS's 2000 ending inside an escape with no `...`.
     with named(tmp_path, capsys) as get:
         value = get("v[2]")["v[2]"]["value"]
         assert len(value) <= 2000, len(value)
@@ -352,7 +352,7 @@ def test_a_long_string_is_cut_between_characters_and_says_so(strings, tmp_path, 
 
 
 def test_a_named_strings_evidence_is_never_lldbs_error_text(strings, cxx, tmp_path, capsys):
-    # Review of #128: `queries run` showed `tn  Name  error: summary string parsing error`.
+    # `queries run` never shows `tn  Name  error: summary string parsing error`.
     from peeky.cli import main
 
     source = tmp_path / "named.cpp"
@@ -370,3 +370,160 @@ def test_a_named_strings_evidence_is_never_lldbs_error_text(strings, cxx, tmp_pa
         assert saved["tn"]["value"] == '"t" (shown up to a NUL at byte 1 of 3)', saved["tn"]
     else:
         assert saved["tn"]["value"] == NAMED_WHOLE["tn"] or saved["tn"]["unavailable"]
+
+
+STOCK = """#include <cstdio>
+#include <map>
+#include <string>
+
+// Parses "name:qty,name:qty,..." and prints the total per name, sorted by name.
+static std::string trim_left(const std::string &s) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == ' ') i++;
+    return s.substr(i);
+}
+
+int main(int argc, char **argv) {
+    std::string input = argc > 1 ? argv[1] : "";
+    std::map<std::string, long> stock;
+    size_t pos = 0;
+    while (pos <= input.size()) {
+        size_t comma = input.find(',', pos);
+        if (comma == std::string::npos) comma = input.size();
+        std::string entry = input.substr(pos, comma - pos);
+        size_t colon = entry.find(':');
+        if (colon != std::string::npos) {
+            std::string name = trim_left(entry.substr(0, colon));
+            long qty = std::stol(entry.substr(colon + 1));
+            stock[name] += qty;
+        }
+        pos = comma + 1;
+    }
+    std::string out;
+    for (const auto &item : stock) {
+        if (!out.empty()) out += ",";
+        out += item.first + "=" + std::to_string(item.second);
+    }
+    std::printf("STOCK:%s\\n", out.c_str());
+    return 0;
+}
+"""
+
+
+ARGS = ["--arg", "apple:3, pear:2, apple :4"]
+
+
+TEXTS = """#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
+using Name = std::string;
+typedef std::string *StrPtr;
+struct Rec { std::string name; int id; };
+int main() {
+    std::string name("apple");
+    const std::string &ref = name;
+    std::string *ptr = &name;
+    StrPtr sp = &name;
+    Name tn("typed");
+    Rec rec{"r", 1};
+    std::vector<std::string> vs{"a", "b"};
+    std::map<std::string, std::string> ms{{"k", "v"}};
+    size_t n = name.size() + ref.size() + ptr->size() + sp->size() + tn.size() + rec.name.size();
+    std::printf("%zu %zu %zu\\n", n, vs.size(), ms.size()); // HERE
+    return 0;
+}
+"""
+
+
+@pytest.fixture
+def cpp(tmp_path, monkeypatch):
+    if not os.environ.get("PEEKY_NATIVE_DAP") or not os.environ.get("PEEKY_NATIVE_CXX"):
+        pytest.skip("set PEEKY_NATIVE_DAP and PEEKY_NATIVE_CXX to enable C++ conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+
+    def write(name, text):
+        (tmp_path / name).write_text(text)
+        return tmp_path / name
+
+    return write
+
+
+def shows(row, text):
+    """Whether a string's row shows ``text``, or, where it cannot (lldb-dap 18: LLDB's
+    summary of a libstdc++ `std::string` fails, and no memory is read), says how many
+    bytes it holds."""
+    value = row.get("value") or ""
+    return value.endswith(text) or "it holds" in (row.get("error") or value)
+
+
+def line_of(text, marker):
+    return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
+
+
+@contextlib.contextmanager
+def session_at(source, line, capsys, *extra):
+    from peeky.cli import main
+
+    assert main(["session", "start", str(source), "--at", str(line), *extra]) == 0
+    started = capsys.readouterr().out
+
+    def get(*selectors, text=False):
+        main(["session", "get", *selectors, *([] if text else ["--json"])])
+        out = capsys.readouterr().out
+        return out if text else {row["selector"]: row for row in json.loads(out)}
+
+    try:
+        yield get, started
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()
+
+
+@pytest.mark.timeout(120)
+def test_a_string_shows_its_text_and_no_library_members(cpp, capsys):
+    # `session get name` lists no `[not selectable]:
+    # std::basic_string<char>::(anonymous struct) = ... @ 0x16b24f238` (libc++), nor
+    # `_M_dataplus`, `_M_string_length` and an unnamed union on Linux (libstdc++).
+    from peeky.cli import main
+
+    source = cpp("stock.cpp", STOCK)
+    with session_at(source, 24, capsys, *ARGS) as (get, _):
+        text = get("name", "entry", text=True)
+        assert text.splitlines()[0].startswith("name: std::string = "), text
+        assert "[not selectable]" not in text and "_M_" not in text, text
+        assert len(text.splitlines()) == 2, text
+        assert shows(get("name")["name"], '"apple"')
+        main(["session", "inspect"])
+        listed = capsys.readouterr().out
+        assert "(children: peeky session get name)" not in listed, listed
+        # A struct or container still lists what it holds.
+        assert "(children: peeky session get stock)" in listed, listed
+    source = cpp("texts.cpp", TEXTS)
+    with session_at(source, line_of(TEXTS, "// HERE"), capsys) as (get, _):
+        rows = get("name", "ref", "ptr", "ptr[0]", "tn", "rec", "vs", "ms", "ms[#0]")
+        for selector in ("name", "ref", "ptr", "ptr[0]", "tn"):
+            assert not rows[selector].get("children"), rows[selector]
+            assert shows(rows[selector], '"typed"' if selector == "tn" else '"apple"')
+        # Its members are the library's, as an element's or a field's.
+        for selector, child in (("rec", "rec.name"), ("vs", "vs[0]"), ("ms", 'ms["k"]')):
+            listed = {c.get("selector"): c for c in rows[selector]["children"]}
+            assert not listed[child].get("expandable"), listed[child]
+        assert {c.get("selector") for c in rows["rec"]["children"]} == {"rec.name", "rec.id"}
+        first = {c.get("selector"): c for c in rows["ms[#0]"]["children"]}["ms[#0].first"]
+        assert first["value"] == '"k"' and not first.get("expandable"), first
+        # Selecting inside one says why, and what to do instead.
+        # Element 0 however written (`ptr[00]`), through a typedef'd pointer too: not
+        # refused as past the pointee.
+        pointed = get("ptr[00]", "sp[0]", "sp[00]")
+        for selector, row in pointed.items():
+            assert "error" not in row and shows(row, '"apple"'), row
+            assert row["value"] == rows["ptr[0]"]["value"], row
+        errors = get("name[0]", "name.size", "ptr[1]")
+        if rows["name"].get("unavailable"):
+            # lldb-dap 18: no text to compare, and the reason says so.
+            assert "it holds 5 bytes" in errors["name[0]"]["error"], errors["name[0]"]
+        else:
+            assert "is a C++ string, shown whole as its text" in errors["name[0]"]["error"]
+            assert "capture name and compare its text" in errors["name.size"]["error"]
+        assert "ptr[0] is the std::string it points at" in errors["ptr[1]"]["error"]

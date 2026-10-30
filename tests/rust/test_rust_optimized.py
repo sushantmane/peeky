@@ -1,4 +1,4 @@
-"""#13: optimized Rust builds are opt-in and every result says values may be wrong.
+"""Optimized Rust builds are opt-in and every result says values may be wrong.
 
 Observed with Rust 1.96 at opt-level 2: `start` read 1 at the OBSERVE line where the
 unoptimized build (and the program's logic) gives 3; LLDB does not flag it.

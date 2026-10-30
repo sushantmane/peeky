@@ -1,8 +1,6 @@
-"""The tenth agent evaluation's C finding (prep 9, seen in Rust): a refused field change
-through a pointer that is a local, not a parameter, said to change it "before the call
-that passed it", though no call passed it. Review of #276: only a pointer proven a
-parameter at the stop gets call advice: not a local shadowing a parameter, a static, or
-a parameter that the function points elsewhere (round 2)."""
+"""A refused field change through a C pointer gets the call advice ("before the call that
+passed it") only where the pointer is proven a parameter at the stop: not a local, a local
+shadowing a parameter, a static, or a parameter that the function points elsewhere."""
 
 import json
 import os
@@ -129,8 +127,7 @@ def test_a_local_shadowing_a_parameter_is_not_taken_for_it(program, capsys):
 
 @pytest.mark.timeout(120)
 def test_a_parameter_pointed_elsewhere_gets_no_call_claim(program, capsys):
-    # Review round 2 of #276: `a = &global;` before the stop, and `a` was still called a
-    # parameter, with the caller's line.
+    # `a = &global;` before the stop: `a` is no longer what the caller passed.
     error = refusal(program, capsys, "REDIRECTED", "a.count=5")
     message = error["message"]
     assert f"`a` isn't proven a parameter here, so Peeky names no call: {NO_CALL}" in message

@@ -1,9 +1,8 @@
-"""#222: `let label: String;` then `label = format!(…);`, stopped at the next line's first
-stop. `format!`'s last call (`must_use`, spanned in std's `alloc/src/macros.rs`, its code
-on line 4 or inlined from there) returns into the MIR block of line 5's `println!`, and
-was taken for line 5's code: the stop was placed before `label`'s store, so `label` was
-withheld (`no value yet`) and `sum` refused, citing "line 113" of another file as if it
-were the program's."""
+"""`let label: String;` then `label = format!(…);`, stopped at the next line's first stop.
+`format!`'s last call (`must_use`, spanned in std's `alloc/src/macros.rs`, its code on line 4
+or inlined from there) returns into the MIR block of line 5's `println!`, but is no code of
+line 5's: the stop is past `label`'s store, so `label` reads, and `sum`'s refusal cites no
+"line 113" of another file as if it were the program's."""
 
 import json
 import os
@@ -80,7 +79,7 @@ def test_a_deferred_macro_assignment_reads_at_the_next_lines_first_stop(tmp_path
     if os.environ.get("PEEKY_EXPECT_READ_MEMORY") or first.get("view") == "memory":
         assert [rows[(hit, "label")]["value"] for hit in (1, 2, 3)] == ['"sum 6"'] * 3, rows
     # Nothing under way has read `sum` there, but `label` holds what `format!` made of it,
-    # which the program prints and never reads `sum` again (#320): a change is never seen.
+    # which the program prints and never reads `sum` again: a change is never seen.
     assert rows[(1, "sum")].get("settable") is False, rows[(1, "sum")]
     assert rows[(1, "sum")].get("not_settable") == "the program may hold a copy (line 4)"
     code, result = probe(capsys, crate, 5, "--capture", "sum", "--set", "sum=7")
@@ -124,7 +123,7 @@ A_MOD = """pub fn f(n: i32) -> usize {
 
 @pytest.mark.timeout(400)
 def test_modules_named_alike_in_two_directories_keep_their_own_lines(tmp_path, state, capsys):
-    # #230 review: the IR's files are told apart by directory, not by name alone, and
+    # The IR's files are told apart by directory, not by name alone, and
     # each module's own `format!` assignment is its own line's.
     crate = crate_at(
         tmp_path,

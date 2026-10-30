@@ -1,5 +1,5 @@
 """A Java row is marked [settable] only where `set` would change it, and says why not
-elsewhere (#261), through real java-debug: an array a JDK class's field holds under
+elsewhere, through real java-debug: an array a JDK class's field holds under
 another name (a list an unmodifiable view wraps), an array more objects refer to than
 the launcher reads, a local the program never reads again, a constant, a final field and
 a caller's frame. A refusal names the whole selector, and its hint promises nothing a
@@ -140,7 +140,7 @@ def test_a_settable_mark_promises_only_what_set_does(marks, capsys):
         error = capsys.readouterr().err
         assert "`this.shared[0]`" in error and "more than 64 objects refer" in error, error
         # The program's own array changes. A line breakpoint stops only its own thread,
-        # and the JVM's other threads run on, so no element is promised (#261 review).
+        # and the JVM's other threads run on, so no element is promised.
         for child in get(capsys, "choice")[0]["children"]:
             assert child["settable"] is False and child["maybe_settable"] == RUNNING, child
         assert main(["session", "set", "choice[1]=1"]) == 0
@@ -250,7 +250,7 @@ public class Racing {
 def test_another_thread_can_make_a_jdk_class_hold_the_array_after_a_read(
     tmp_path, monkeypatch, capsys
 ):
-    # #261 review: the verdict was kept for the whole stop, but a line breakpoint stops
+    # The verdict was kept for the whole stop, but a line breakpoint stops
     # only its own thread. Here a background thread wraps a list holding `target` in an
     # unmodifiable view after the first read: `get` said settable, and `set` was refused.
     bundle = os.environ.get("PEEKY_JAVA_ADAPTER")

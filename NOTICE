@@ -12,3 +12,7 @@ Third-party software
   that script (eventhub-log-guard), and builds a local adapter bundle that keeps the
   upstream licence and notices. None of it is included in Peeky's distributions. See
   adapters/java/NOTICES.md.
+- CPython 3.9.6's Lib/ipaddress.py (PSF License Agreement), copied as
+  examples/real/ipaddress_mapped/ipaddress39.py with a notice of its origin added: a real
+  program the tests debug. It is in Peeky's source distribution, with its licence in
+  examples/real/ipaddress_mapped/LICENSE-PSF.

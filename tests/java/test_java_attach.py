@@ -80,7 +80,7 @@ def test_attached_probe_observes_intervenes_and_detaches_without_killing(attache
 
 @pytest.mark.timeout(120)
 def test_an_attached_jvms_array_element_takes_set(attached):
-    # #86: fields and elements change in an attached JVM too.
+    # Fields and elements change in an attached JVM too.
     root, target, process, line = attached
     probe = Probe(SOURCE, line, ("items[3]",), (("items[3]", "99"),))
     result = run_probe(root, probe, adapter=target)
@@ -88,8 +88,8 @@ def test_an_attached_jvms_array_element_takes_set(attached):
     assert [(c["name"], c["before"], c["after"]) for c in result["interventions"]] == [
         ("items[3]", "40", "99")
     ]
-    # The JVM's other threads run on at a line breakpoint: no element is promised
-    # (#261 review), though the change is made.
+    # The JVM's other threads run on at a line breakpoint: no element is promised, though
+    # the change is made.
     assert {r["phase"]: (r["settable"], r.get("maybe_settable")) for r in result["rows"]} == {
         "observed": (False, "other threads, the JVM's own included, are running; set checks again"),
         "after-set": (
@@ -129,7 +129,7 @@ def test_attached_session_close_detaches_and_the_jvm_finishes_normally(
     assert main(["describe", str(root), "--config", str(config), "--at", SOURCE, "--json"]) == 0
     manifest = json.loads(capsys.readouterr().out)
     assert line in manifest["breakpoint_lines"][SOURCE]
-    # #91: the attached classes' own LocalVariableTable names each method's locals.
+    # The attached classes' own LocalVariableTable names each method's locals.
     main_scope = next(s for s in manifest["scopes"] if s["scope"] == "PaginationBug.main")
     assert {"args", "page", "pageSize", "items", "start", "end"} <= set(main_scope["names"])
     assert main(["session", "close"]) == 0
@@ -174,7 +174,7 @@ def test_a_failed_attach_detaches_and_never_ends_the_jvm(attached, monkeypatch):
     with pytest.raises(TimeoutError) as caught:
         worker.dispatch("launch", {"program": SOURCE, "breakpoints": [{"line": line}]})
     error = classify(caught.value)
-    # Peeky did not start this JVM (#143): it detaches, and the JVM runs on to its end.
+    # Peeky did not start this JVM: it detaches, and the JVM runs on to its end.
     assert error["code"] == "TIMEOUT" and "did not start" not in error["message"]
     assert error["cleanup"] == "detached; the attached program keeps running"
     output = process.stdout.read()
@@ -296,7 +296,7 @@ def test_attached_sessions_step_within_the_declared_sources(
     assert process.wait(timeout=30) == 0 and "PAGE:[40, 50, 60]" in output
 
 
-# #27: java-debug sometimes never sends `stopped` for an attached JVM although the
+# java-debug sometimes never sends `stopped` for an attached JVM although the
 # thread sits suspended at the breakpoint. The loss is not reproducible on demand, so
 # these tests drop the event at Peeky's DAP client; java-debug itself runs normally.
 LOOP_SOURCE = "src/demo/Loop.java"
@@ -526,7 +526,7 @@ public class Storm {
 def test_a_breakpoint_that_never_ran_is_never_a_lost_stop_under_a_class_load_storm(
     tmp_path, monkeypatch
 ):
-    # The review's H1. java-debug's class-load requests for a breakpoint's class and
+    # java-debug's class-load requests for a breakpoint's class and
     # its nested classes suspend every thread while it looks for the line; a thread
     # blocked entering `synchronized` then shows the line inside the block. Loading a
     # nested class with 800 methods over and over keeps that happening.
@@ -560,11 +560,11 @@ def test_a_breakpoint_that_never_ran_is_never_a_lost_stop_under_a_class_load_sto
         process.wait(timeout=10)
 
 
-# #27's root cause: java-debug's "Event Hub" thread died on ObjectCollectedException while
-# building a log line naming a short-lived thread the JVM had already collected, and no
-# JVM event was processed again. Two threads starting short-lived threads in a 32 MB heap
-# with constant garbage reproduce it at once with the unpatched adapter (review round 2,
-# work/vr27/churn/drive6.py); setup_java_adapter.py now patches it (eventhub-log-guard).
+# java-debug's "Event Hub" thread can die on ObjectCollectedException while building a log
+# line naming a short-lived thread the JVM has already collected, and then no JVM event is
+# processed again. Two threads starting short-lived threads in a 32 MB heap with constant
+# garbage reproduce it at once with the unpatched adapter; setup_java_adapter.py patches it
+# (eventhub-log-guard).
 CHURN_SOURCE = "src/demo/Churn.java"
 CHURN = """package demo;
 
@@ -692,7 +692,7 @@ def test_an_unpatched_adapters_dead_event_hub_ends_the_session_at_once(churning,
 def test_an_unattended_session_fails_fast_on_a_lost_stop_at_a_breakpoint_pending_at_launch(
     attached_loop, monkeypatch
 ):
-    # Review round 4: attaching to a suspend=y JVM (Gradle's --debug-jvm), the breakpoint
+    # Attaching to a suspend=y JVM (Gradle's --debug-jvm), the breakpoint
     # is pending until its class loads and is verified by a `breakpoint` event. With no
     # client waiting, only the pause guard runs: it must still see the lost stop.
     from peeky.worker import DebugWorker, LostStop
@@ -768,7 +768,7 @@ def test_a_waiting_client_receives_every_stop_exactly_once_beside_the_pause_guar
 
 @pytest.mark.timeout(120)
 def test_the_pause_guard_alone_ends_a_session_whose_event_thread_died(churning, monkeypatch):
-    # Review round 4: nothing noticed the dead event thread with no client waiting.
+    # The dead event thread is noticed with no client waiting.
     unpatched = os.environ.get("PEEKY_JAVA_ADAPTER_UNPATCHED")
     if not unpatched:
         pytest.skip("set PEEKY_JAVA_ADAPTER_UNPATCHED to a bundle built without the patch")
