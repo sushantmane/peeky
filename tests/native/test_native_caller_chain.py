@@ -6,6 +6,7 @@ import json
 import os
 
 import pytest
+from native_compilers import cc_is_gcc
 
 from peeky.cli import main
 
@@ -401,6 +402,8 @@ ADDRESSES = {
 @pytest.mark.parametrize("case", list(ADDRESSES))
 def test_an_address_no_ampersand_shows_takes_the_claim_away(c_program, capsys, case):
     owner, lend, wrap = ADDRESSES[case]
+    if "__builtin_addressof" in owner + lend + wrap and cc_is_gcc():
+        pytest.skip("GCC's C has no `__builtin_addressof`; the clang lanes build this case")
     text = UNSEEN.replace("OWNER", owner).replace("LEND", lend).replace("WRAP", wrap)
     source = c_program("m.c", text)
     at, call = line_of(text, "/* AT */"), line_of(text, "/* CALL */")

@@ -3588,12 +3588,29 @@ def _in_scope(table, name, source, line, address):
 
 
 def declared_running(
-    table, name, source, line, address, through, included=None, site=None, skipped=None
+    table,
+    name,
+    source,
+    line,
+    address,
+    through,
+    included=None,
+    site=None,
+    skipped=None,
+    plain=None,
+    entered=None,
 ):
     """For the frame stopped in, at ``source:line``: ``(at, end, declared_in, where)``
     for a C/C++ local of that name whose declaration may not have run there, else None.
     That is one declared above the stop whose statement reaches the stop's line
     (``at < line <= end``), or whose end the source does not give (``end`` None).
+
+    One declared on the stop's line is running where the stop (``address``, unslid) is
+    that line's first row and the code just before it is of a later line of its
+    statement: GCC runs `struct outer o = {` over several lines as its members' code,
+    then their stores on the first line. Only for a plain declaration
+    (``plain(source, at, name)``: not a statement's header), and unless control comes
+    to the row only from code at or above it (``entered(address)`` False; runs_into).
 
     For one declared in another file, ``where`` is the line of the `#include` in
     ``source`` that brings that file in (``site(source, declared_in)``, None if none is
@@ -3620,12 +3637,37 @@ def declared_running(
             ):
                 return at, None, declared_in, where
             continue
-        if at >= line:
+        if at > line:
             continue
         end = through(source, at, base)
+        if at == line:
+            if (
+                plain is not None
+                and end is not None
+                and end > line
+                and _after_own_lines(function, (base, source, line), address, end)
+                and plain(source, at, base)
+                and (entered is None or entered(address) is not False)
+            ):
+                return at, end, declared_in, None
+            continue
         if end is None or line <= end:
             return at, end, declared_in, None
     return None
+
+
+def _after_own_lines(function, key, address, end):
+    """Whether ``address`` is the first row of the declaration line ``key`` ((name,
+    source, line)) in its block, with code of a later line of its statement, through
+    ``end``, just before it (local_declarations ``preceded``)."""
+    if address is None or address not in function.get("preceded", {}).get(key, ()):
+        return False
+    order = function.get("order") or ()
+    index = bisect.bisect_left(order, (address,)) - 1
+    if index < 0:
+        return False
+    _, source, number = order[index]
+    return source == key[1] and type(number) is int and key[2] < number <= end
 
 
 def declared_mid_line(table, name, source, line, address, settled):
@@ -8970,6 +9012,9 @@ class NativeSession:
                 self._included,
                 self._include_site,
                 self._jumped_past_include,
+                # The stop's own line only: a line remapped from another says nothing.
+                plain=self._plain if (here, line) == (stopped, raw_line) else None,
+                entered=getattr(self, "runs_into", {}).get,
             )
         ):
             at, end, declared_in, where = running
@@ -9186,6 +9231,13 @@ class NativeSession:
         """Statements.declared_through for the prepared ``source``, or None."""
         statements = self._statements(source)
         return None if statements is None else statements.declared_through(line, name)
+
+    def _plain(self, source, line, name):
+        """Whether a plain declaration statement, not a statement's header, declares
+        ``name`` on ``line`` of the prepared ``source`` (Statements.declaration)."""
+        statements = self._statements(source)
+        found = None if statements is None else statements.declaration(line, name)
+        return found is not None and not found[2]
 
     def _header(self, source, line, name):
         """The keyword of the statement header that declares ``name`` on ``line`` (`for`,

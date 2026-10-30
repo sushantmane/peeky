@@ -1959,6 +1959,43 @@ def test_a_stop_inside_a_declaration_statement_withholds_its_local():
     assert declared_running([run], "o", "t.c", 5, 115, through, site=site) == (17, None, "a.c", 5)
 
 
+def test_a_declarations_first_row_after_its_own_lines_code_is_running():
+    from peeky.native import declared_running
+
+    # GCC: `struct outer o = {` (17) stores its members after their lines' code (19, 20),
+    # so line 17's first row, 120, follows line 20's.
+    run = _aggregate_run()
+    run["rows"][("a.c", 17)] = (120, 124)
+    order = [(90, "a.c", 16), (100, "a.c", 19), (110, "a.c", 20), (120, "a.c", 17)]
+    order.append((130, "a.c", 23))
+    run["order"], run["preceded"] = tuple(order), {("o", "a.c", 17): {120}}
+    through = _through({("a.c", 17): 22, ("a.c", 16): 16})
+
+    def plain(source, at, name):
+        return True
+
+    running = (17, 22, "a.c", None)
+    assert declared_running([run], "o", "a.c", 17, 120, through, plain=plain) == running
+    assert declared_running([run], "o", "a.c", 17, 120, through, plain=plain, entered={}.get) == (
+        running
+    )
+    # Not the stop's own line (no `plain`), past the first row, or a header's declaration.
+    assert declared_running([run], "o", "a.c", 17, 120, through) is None
+    assert declared_running([run], "o", "a.c", 17, 122, through, plain=plain) is None
+    assert declared_running([run], "o", "a.c", 17, 120, through, plain=lambda *_: False) is None
+    # Control comes to the row only from code at or above it: the declaration has not
+    # started, as other rules say.
+    above = {120: False}.get
+    assert declared_running([run], "o", "a.c", 17, 120, through, plain=plain, entered=above) is None
+    # The code just before it is of a line past its statement (a landing pad's), or its
+    # statement's end is unknown.
+    order[2] = (110, "a.c", 23)
+    run["order"] = tuple(order)
+    assert declared_running([run], "o", "a.c", 17, 120, through, plain=plain) is None
+    run["order"] = tuple(order[:2] + [(110, "a.c", 20)] + order[3:])
+    assert declared_running([run], "o", "a.c", 17, 120, _through({}), plain=plain) is None
+
+
 def test_a_local_a_jump_can_skip_is_withheld_below_the_label():
     from peeky.native import declared_skipped
 

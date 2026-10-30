@@ -4390,6 +4390,9 @@ class DebugWorker:
                     # An element read through a reference is never changed.
                     and reference_kind is None
                     and self.has_memory_location(variable)
+                    # `set` refuses a value the debugger cannot read (GCC's row for a
+                    # block's `extern`, which it gives no location).
+                    and not (self.placeholders() and is_unavailable(variable.get("value")))
                     and (bool(check(variable, frame)) or self.text_settable(variable, frame))
                     # Marked only where a selector reaches it: `t` for LLDB's
                     # `t @ my file.c:3`, never a row no selector names.

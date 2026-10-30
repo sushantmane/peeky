@@ -244,6 +244,10 @@ frame's entry: the narrowest function whose code holds the frame's address.
   jumps back come. Anything else is None, and so is a landing pad, or tables Peeky can't read.
 - False makes the row a start. True shows the local. None, or a disassembly Peeky can't read,
   shows it with a note, and refuses a change.
+- One rule comes first: `declared_running` withholds the local as still running where the code
+  just before the row is of a later line of its own statement. GCC builds `struct outer o = {`
+  over several lines so: the elements' code, then their stores on the first line. This holds for
+  a plain declaration, not a header's, unless `runs_into` is False.
 
 ## A caller's local whose declaration line has no code
 

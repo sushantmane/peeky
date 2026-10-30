@@ -5,7 +5,7 @@ import json
 import os
 
 import pytest
-from native_compilers import cxx_is_gcc
+from native_compilers import cc_is_gcc, cxx_is_gcc
 
 from peeky.cli import main
 
@@ -148,6 +148,48 @@ def test_an_aggregate_is_withheld_while_its_initializer_runs_in_the_stopped_fram
     # Once its declaration has run, and a loop counter in its body, read as ever.
     rows = shown_at(capsys, path, line_of(source, "// loop body"), "t.p.y", "i", "head", hit=2)
     assert [rows[name]["value"] for name in ("t.p.y", "i", "head")] == ["16", "1", "5"]
+
+
+NESTED = (
+    """#include <stdio.h>
+
+struct pair { long x, y; };
+struct outer { struct pair in; };
+"""
+    + HELPERS
+    + """
+__attribute__((noinline)) static long run(long seed) {
+    long head = seed;
+    struct outer o = {  // o
+        .in = {
+            .x = head + 1,
+            .y = head * 3,
+        },
+    };
+    printf("%ld %ld\\n", o.in.x, o.in.y);
+    return o.in.x;
+}
+
+int main(void) {
+    scribble();
+    return (int)(run(5) & 1);
+}
+"""
+)
+
+
+@pytest.mark.timeout(300)
+def test_a_declarations_first_line_run_after_its_members_lines_is_withheld(directory, capsys):
+    # GCC runs `.x = head + 1` before the stores on `struct outer o = {`, whose first
+    # instruction the stop is at: `o` was shown as a value, its leftovers, with no note.
+    # clang puts no code on that line, so the stop is on the members' line.
+    path = directory / "nested.c"
+    path.write_text(NESTED)
+    at = line_of(NESTED, "// o")
+    rows = shown_at(capsys, path, at, "o", "o.in.x", "head")
+    assert withheld(rows["o"], f"(lines {at}-{at + 5}) is still running"), rows
+    assert withheld(rows["o.in.x"], "'o' has no value here"), rows
+    assert rows["head"]["value"] == "5"
 
 
 BUILDING = (
@@ -1242,12 +1284,12 @@ def test_locals_below_the_stop_are_withheld_whatever_the_line_runs_after(
     path = directory / name
     path.write_text(source)
     rows = shown_at(capsys, path, line_of(source, f"// {marker}"), *below, *above, hit=hit)
-    if marker == "TEMPS" and cxx_is_gcc():
+    if marker in ("TEMPS", "CLEANUP") and (cxx_is_gcc() if name.endswith(".cpp") else cc_is_gcc()):
         # GCC tests a `for` loop at its bottom, which branches back to the body's first
-        # instruction (#167): there `head` holds the last pass's string, or leftovers on
-        # the first pass, and says so.
+        # instruction (#167): there `head` (`buf`) holds the last pass's value, or
+        # leftovers on the first pass, and says so.
         note = "may be the last pass's value, or leftovers on the first pass: this line is "
-        assert rows["head"]["note"].startswith(note + "reached again by the loop"), rows
+        assert rows[below[0]]["note"].startswith(note + "reached again by the loop"), rows
         below = below[1:]
     assert all(withheld(rows[local], "no value yet") for local in below), rows
     # Read, or unreadable for another reason (a libstdc++ string where memory is not
@@ -1709,6 +1751,22 @@ int main() {
 }
 
 
+def listed_apart(source, name, local, phrase):
+    """(the outer local's selector, the phrase its row gives, the block's `extern`'s
+    selector or None). GCC's debug information declares a block's `extern` too, so
+    lldb-dap lists it apart (`gcount @ shadow.c:11`), beside the outer local (`gcount @
+    shadow.c:8`), and neither as the plain name: clang declares it nowhere."""
+    if "extern" not in phrase or name.endswith(".cpp") or not cc_is_gcc():
+        return local, phrase, None
+    outer, block = line_of(source, f"long {local} = 6"), line_of(source, f"extern long {local}")
+    listed = f"{local} @ {name}:{block}"
+    return (
+        f"{local} @ {name}:{outer}",
+        f"{phrase} (line {block}), listed separately as `{listed}`",
+        listed,
+    )
+
+
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize(
     "name, marker, local, phrase",
@@ -1727,9 +1785,13 @@ def test_an_outer_local_a_blocks_static_or_extern_hides_is_withheld(
     path = directory / name
     path.write_text(source)
     line = line_of(source, f"// {marker}")
-    rows = shown_at(capsys, path, line, local, "total")
+    local, phrase, listed = listed_apart(source, name, local, phrase)
+    rows = shown_at(capsys, path, line, local, "total", *filter(None, [listed]))
     assert withheld(rows[local], phrase) and "what the code reads" in rows[local]["error"]
     assert "value" in rows["total"], rows
+    if listed:
+        # The debugger reads no value for GCC's `extern`, and `set` refuses one: unmarked.
+        assert "value" not in rows[listed] and not rows[listed].get("settable"), rows
     assert main(["session", "start", str(path), "--at", str(line)]) == 0
     capsys.readouterr()
     try:
@@ -2046,6 +2108,7 @@ def test_a_name_a_block_declares_otherwise_hides_the_outer_local(
     path = directory / name
     path.write_text(source)
     line = line_of(source, f"// {marker}")
+    local, phrase, _ = listed_apart(source, name, local, phrase)
     rows = shown_at(capsys, path, line, local)
     assert withheld(rows[local], phrase), rows[local]
     assert main(["session", "start", str(path), "--at", str(line)]) == 0
