@@ -26,8 +26,7 @@ A dash means that no design budget is recorded. The job's timeout still applies.
 
 - Every hosted CI job has a four-minute timeout, except three. Remote SSH e2e and C++ LLVM 18
   conformance have six minutes, and C++ GCC 13 conformance has ten. The C++ jobs run each
-  compiler-aware case with g++ as well (in the Docker mirror, `cpp` takes 141 s and `cpp-gcc` 222
-  s).
+  compiler-aware case with g++ as well, so they take longest.
 - The Docker mirror's lanes have no timeout.
 - The goal is under 5 minutes of execution wall time for the required checks, and ideally under 3.
 - Queue delays are recorded separately. They are outside the workflow's control.
@@ -38,6 +37,7 @@ A dash means that no design budget is recorded. The job's timeout still applies.
 
 - Pip caching uses the package and dev requirements as keys.
 - Superseded branch and PR runs are canceled.
+- Every job runs on every change: no path filter skips a language's lane.
 - Actions are pinned to commit SHAs. Permissions are read-only.
 - PR CI needs no live model, API token, user program or paid external service.
 - PR CI needs no external or persistent networked debugger target. The remote lane creates an
@@ -56,8 +56,9 @@ that hosted CI doesn't have:
   Rust memory views, and libstdc++ strings with a NUL byte. In `cpp-llvm20`,
   `PEEKY_EXPECT_READ_MEMORY=1` makes the C++ tests expect libstdc++ strings read whole from memory;
 - `c-gcc-llvm20`: C built by GCC, with LLVM 20's lldb-dap. It runs the `tests/native` files whose
-  cases depend on what GCC builds: prologues, loop headers, `.incbin` and previews. The rest
-  expect clang's lines and text. The `c` lane runs these files' GCC cases with lldb-dap 18;
+  cases depend on what GCC builds: prologues, loop headers, `.incbin`, previews and static
+  storage. The rest expect clang's lines and text. The `c` lane runs these files' GCC cases with
+  lldb-dap 18;
 - `cpp-gcc-llvm20`: every C++ case built by GCC, with LLVM 20's lldb-dap, as `cpp-gcc` (the
   `native-cpp-gcc` job) runs them with lldb-dap 18;
 - `gdb-dap`: GDB's DAP, which the CUDA qualification drives (`scripts/cuda/qualify.py`).
@@ -166,120 +167,36 @@ and sdist artifacts, which are kept for seven days.
 - Later release automation should use a release checklist, and explicit decisions about the
   environment and registry.
 
-## Measurements
+## Merge enforcement limitation
 
-The first hosted run is a cold-cache baseline. It doesn't establish a long-term latency guarantee.
-
-Local bootstrap: Python 3.11 on macOS, **36 tests passed in 2.94 seconds**. The isolated wheel and
-sdist build succeeded.
-
-[First hosted CI run](https://github.com/sushantmane/peeky/actions/runs/38526357448), commit
-`75dd4cd`, 2026-10-14: it completed successfully in **22 seconds**, from the workflow's creation to
-the last job's completion. Jobs began within 3–4 seconds and ran concurrently. The execution span
-was 19 seconds.
-
-| Job | Observed duration |
-| --- | ---: |
-| quality | 12s |
-| unit | 16s |
-| integration Python 3.11 | 17s |
-| integration Python 3.13 | 18s |
-| wheel smoke, including real debugger | 19s |
-
-These are the GitHub API's job start and completion timestamps, including each job's setup and
-teardown. This run met the under-5-minute target with plenty of room. Measure again as coverage
-grows.
-
-- **Artifact delivery:** the
-  [artifact run](https://github.com/sushantmane/peeky/actions/runs/38526401333) built and
-  uploaded the distributions, in a 29-second job.
-- **Bounded transport:** the
-  [PR run](https://github.com/sushantmane/peeky/actions/runs/38528024457), commit `7e3a9d3`,
-  passed all five concurrent jobs, with a 21-second execution span. Local validation was 42 tests
-  in 5.14s.
-
-  | quality | unit | integration (each) | wheel |
-  | ---: | ---: | ---: | ---: |
-  | 11s | 18s | 19s | 21s |
-
-### Merge enforcement limitation
-
-- While the repository was private, GitHub refused to require checks on `main` (HTTP 403).
+- GitHub enforces required checks on `main` only for a public repository or a paid plan (HTTP 403).
 - CI runs on pushes to `main` and on PRs, but its checks are not yet enforced merge gates.
 - Until they are, use PRs, and check by hand that all checks are green.
 
-## C investigation slice (2026-10-14)
+## Measurements
 
-PR #20, run 38542794719: all seven independent hosted jobs passed. The final source head was
-`4cca330`, merged as `07d1835`. Durations are job execution times, excluding queue time:
+Each run's job durations are on GitHub. The native, Rust and remote jobs also write their toolchain
+acquisition and test times to the run's summary. The Docker mirror prints each lane's time on its
+PASS or FAIL line.
+
+The [first hosted CI run](https://github.com/sushantmane/peeky/actions/runs/38526357448), on
+2026-10-14 at commit `75dd4cd`, had five jobs: quality, unit, integration on Python 3.11 and 3.13,
+and wheel smoke. It took 22 seconds from the workflow's creation to the last job's completion.
+
+Two later runs, with each job's execution time, excluding queue time:
+
+### C investigation slice (2026-10-14)
+
+PR #20, run 38542794719: all seven independent hosted jobs passed, at source head `4cca330`.
 
 | C LLVM 18 | Java (longest) | quality | unit | Python 3.11 / 3.13 | wheel smoke |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | 50 s | 68 s | 10 s | 21 s | 20 / 19 s | 19 s |
 
-## C++ investigation slice (2026-10-14)
+### C++ investigation slice (2026-10-14)
 
-PR #21, run 38549552255: all eight independent jobs passed. Source head `18e00a5`, merged as
-`8890113`. Job execution excludes queue time:
+PR #21, run 38549552255: all eight independent jobs passed, at source head `18e00a5`.
 
 | C++ LLVM 18 | C | Java (critical lane) | quality | unit | Python | wheel |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 37 s | 50 s | 70 s | 12 s | 21 s | 21 / 20 s | 21 s |
-
-## Rust engineering gate (2026-10-14)
-
-PR #22, run 38556716292, final source `770c60a`: nine independent checks passed. Job durations
-exclude queue time:
-
-| Rust | C | C++ | Java | Python | unit | quality | wheel |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 41 s | 40 s | 31 s | 72 s | 16 / 18 s | 19 s | 10 s | 23 s |
-
-- The Rust raw probe took 2.03 s. It is not an HTTP worker or repair benchmark.
-- The first Linux symbol capture failed at the 2 MiB ceiling. The engineering capture permits
-  16 MiB explicitly, and measured 4,808,912 bytes.
-- Five regressions keep production parsing capped at 2 MiB.
-
-## Rust worker conformance (2026-10-14)
-
-Branch `feat/rust-worker`, head `bd2ade2`, run 38666345665 (`workflow_dispatch`): nine independent
-checks passed. Job durations exclude queue time:
-
-| Rust | C | Java | C++ | unit | Python | quality | wheel |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 43 s | 51 s | 53 s | 39 s | 21 s | 17 / 19 s | 9 s | 21 s |
-
-The Rust lane runs the raw probe, and real HTTP worker conformance:
-
-| Rust test | Time |
-| --- | ---: |
-| Raw probe | 3.44 s |
-| Application symbols, in the raw probe | 0.242 s |
-| Inspection and intervention | 1.88 s |
-| Source drift | 1.31 s |
-| Compile failure | 0.54 s |
-
-No Rust test is skipped in CI. Local macOS runs set `PEEKY_RUST_DSYMUTIL` as well.
-
-## Rust verification and review fixes (2026-10-14)
-
-PR #23, head `9d1e338`, run 38684077815 (`pull_request`): nine independent checks passed.
-
-| Rust | Java (longest) | C | C++ | unit | Python | quality | wheel |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 50 s | 58 s | 51 s | 33 s | 29 s | 20 / 25 s | 13 s | 20 s |
-
-Linux Rust tests: 6 passed in 20.08 s, none skipped.
-
-| Rust test | Time |
-| --- | ---: |
-| Full deterministic investigation | 8.78 s |
-| Frozen-test drift | 3.44 s |
-| HTTP worker flow | 2.31 s |
-| Source drift | 1.62 s |
-| Raw probe | 0.94 s |
-| Compile failure | 0.57 s |
-
-- The previous head, `9985257` (run 38683005986), also passed all nine lanes.
-- Locally on macOS, 436 unit tests ran in about 9.3 s. The suite includes deadline and timeout
-  regressions that sleep on purpose.

@@ -8,7 +8,7 @@ An investigation should explain which code was running, what the debugger actual
 
 Add a small versioned evidence envelope to the existing reports first. Correlate records locally through explicit IDs and artifact manifests. Add optional imported logs and metrics after the envelope is tested. Do not introduce a tracing SDK, telemetry backend, background network exporter, or automatic application instrumentation in this slice. Collection and report generation must remain useful offline.
 
-This extends the session and verification contracts in [DESIGN.md](../DESIGN.md) and the source/build requirements in [LANGUAGES.md](../LANGUAGES.md). It does not replace debugger capabilities or provide replay.
+This extends the session and verification contracts in [DESIGN.md](../DESIGN.md) and the source/build requirements in [ROADMAP.md](../ROADMAP.md#what-a-language-needs-before-peeky-claims-it). It does not replace debugger capabilities or provide replay.
 
 ## Identities and provenance
 
