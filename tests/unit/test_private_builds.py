@@ -134,7 +134,7 @@ def test_the_state_directory_is_private_whatever_the_umask(tmp_path, shared, mon
     # One that an earlier Peeky made group-writable loses that.
     state.chmod(0o775)
     assert private_base() == (state / "scratch").resolve()
-    assert stat.S_IMODE(state.stat().st_mode) == 0o755
+    assert stat.S_IMODE(state.stat().st_mode) == 0o700
 
 
 def test_a_crate_builds_in_the_runtime_directory_if_cargo_reads_configuration_above_scratch(

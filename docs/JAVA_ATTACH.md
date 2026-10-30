@@ -302,6 +302,8 @@ The cause:
   `Logger.isLoggable`, and the old one doesn't.
 - Peeky refuses a bundle without the patch, with `UNSUPPORTED` and the rebuild command. This holds
   whatever the bundle's `adapter.json` lists under `patches`, which is kept as documentation.
+- Peeky also requires the bundle's recorded recipe, which holds each patch's text, to be the one
+  it builds ([Java 7.3](lang/java-cookbook.md#build-the-adapter)).
 - CI builds a fresh bundle with `scripts/setup_java_adapter.py`, which runs the same setup, so it
   tests the patched adapter.
 

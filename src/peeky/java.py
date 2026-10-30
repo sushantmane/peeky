@@ -459,25 +459,37 @@ STALE_BUNDLE = (
     "one a config names, add `--output <a new directory>` and point the config's bundle at "
     "it. Without eventhub-log-guard, java-debug can stop reporting stops and exits"
 )
+# A bundle whose recorded recipe (peeky.java_setup.recipe) isn't the one this Peeky builds
+# with the JDK it names: its patches' text, launcher, lock, notices, compiler flags or JDK.
+OTHER_BUILD = (
+    "The Java adapter bundle at {bundle} is not what this Peeky's setup builds ({why}): "
+    "rebuild it with `peeky setup-java`, which replaces Peeky's own bundle; for one a config "
+    "names, add `--output <a new directory>` and point the config's bundle at it"
+)
 
 
 def bundle_directory(bundle):
     """The adapter bundle's resolved directory; where there is none, a refusal that says
-    how to build it."""
-    from peeky.java_setup import default_bundle
+    how to build it. For Peeky's own bundle (no bundle in the config), the version its
+    pointer names, resolved now, once, so that a later `peeky setup-java` doesn't change
+    the bundle a session runs (peeky.java_setup.installed checks whose it is)."""
+    from peeky.java_setup import default_bundle, installed
 
     path = Path(bundle)
+    if path.resolve() == default_bundle().resolve():
+        version = installed()
+        if version is None:
+            raise ValueError(
+                f"No Java adapter bundle at {path}, where Peeky looks when the config names "
+                "no bundle: build it once with `peeky setup-java`"
+            )
+        return version.resolve(strict=True)
     try:
         resolved = path.resolve(strict=True)
     except FileNotFoundError:
         resolved = None
     if resolved is not None and resolved.is_dir():
         return resolved
-    if path.resolve() == default_bundle().resolve():
-        raise ValueError(
-            f"No Java adapter bundle at {path}, where Peeky looks when the config names no "
-            "bundle: build it once with `peeky setup-java`"
-        )
     raise ValueError(
         f"No Java adapter bundle at {path}, which the config names: build one there with "
         f"`peeky setup-java --output {path}`, or drop the config's bundle to use the one "
@@ -504,10 +516,14 @@ def _bundle(bundle, java):
 
 
 def _verify_bundle(bundle, java):
+    from peeky.java_setup import read_manifest, recipe_mismatch
+
     manifest_path = bundle / "adapter.json"
-    if manifest_path.is_symlink() or manifest_path.stat().st_size > 1024 * 1024:
-        raise ValueError("Invalid adapter manifest")
-    manifest = json.loads(manifest_path.read_text())
+    manifest_path.stat()  # A bundle without one is a path that does not exist.
+    try:
+        manifest = read_manifest(bundle)
+    except ValueError as exc:
+        raise ValueError(OTHER_BUILD.format(bundle=bundle, why=exc)) from None
     if manifest.get("schema") != 1:
         raise ValueError("Unsupported adapter manifest schema")
     command = manifest.get("command")
@@ -549,6 +565,9 @@ def _verify_bundle(bundle, java):
     jars = sorted(name for name in files if name.startswith("lib/") and name.endswith(".jar"))
     if not jars:
         raise ValueError("Adapter bundle has no dependencies")
+    # The exact recipe, the patches' text included, with the JDK as it is now.
+    if (why := recipe_mismatch(manifest)) is not None:
+        raise ValueError(OTHER_BUILD.format(bundle=bundle, why=why))
     # Avoid runtime wildcard discovery: execute only the verified inventory.
     classpath = os.pathsep.join([str(bundle / "classes"), *(str(bundle / name) for name in jars)])
     return (java, "-cp", classpath, "PeekyJavaAdapter"), _hash(manifest_path)

@@ -132,6 +132,13 @@ A process running as the same user, or as root, isn't covered.
   build. It also refuses any of those directories that another user can write.
 - Cargo runs with `RUSTC_WRAPPER` set empty, so no configured `build.rustc-wrapper` runs. A file
   that the same user adds between that check and Cargo's read isn't caught.
+- A Java adapter bundle's `adapter.json` lists its files' hashes, so it vouches only for itself.
+  Peeky runs its own bundle, the one `peeky setup-java` installs, only from directories you own,
+  mode 0700, under none that another user can write. A bundle a config names is trusted as the
+  config is.
+- Peeky runs a Java adapter bundle only if its recorded recipe is the one this Peeky builds with
+  that JDK. The recipe holds the patches' text, the launcher, the lock, the notices, the compiler
+  flags, and java's and javac's versions.
 
 ## Failure handling
 

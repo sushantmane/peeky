@@ -21,6 +21,7 @@ import select
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -63,13 +64,20 @@ MAX_SESSION_SECONDS = 300
 
 
 def _state_base():
-    """Peeky's state directory (peeky.state_home), made if missing."""
+    """Peeky's state directory (peeky.state_home), made if missing: a real directory (not a
+    link) that you own, mode 0700."""
     base = state_home()
-    # No other user may write it, whatever the umask (002 where each user has a group of
-    # their own): Peeky builds under it (build.private_base).
+    # Only yours, whatever the umask (002 where each user has a group of their own): Peeky
+    # builds under it (build.private_base), and runs its own Java adapter from it.
     base.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if (info := base.stat()).st_uid == os.getuid() and info.st_mode & 0o022:
-        base.chmod(info.st_mode & 0o7755)
+    info = base.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError(
+            f"Peeky's state directory must be a directory you own, not a link: {base}. Move "
+            "it aside, or set PEEKY_STATE_DIR to a directory of yours"
+        )
+    if info.st_mode & 0o077:
+        base.chmod(0o700)
     return base
 
 
@@ -4048,47 +4056,43 @@ def _job_text(spec, out):
 
 def setup_java(args):
     """`peeky setup-java`: build the Java adapter bundle (peeky.java_setup). Without
-    --output, Peeky's own bundle in its state directory: kept while it is up to date,
-    replaced once a new one is complete otherwise."""
+    --output, install Peeky's own: kept while it is up to date, otherwise a new version,
+    switched to once it is complete."""
     from peeky import java_setup
 
-    default = args.output is None
-    if default:
-        _state_base()
-        output = java_setup.default_bundle()
+    def progress(message):
+        if not args.quiet:
+            print(message, file=sys.stderr, flush=True)
+
+    if args.output is None:
+        result = {**java_setup.install(force=args.force, progress=progress), "default": True}
     elif args.force:
         raise ValueError(
             "--force replaces only Peeky's own bundle (no --output); give --output a new directory"
         )
     else:
         output = Path(os.path.abspath(os.path.expanduser(args.output)))
-    action, why = "Building", None
-    if default and os.path.lexists(output):
-        why = None if args.force else java_setup.current(output)
-        if not args.force and why is None:
-            manifest = json.loads((output.resolve() / "adapter.json").read_text())
-            _emit(
-                {"bundle": str(output), "built": False, "default": True, "adapter": manifest},
-                args.json,
-                lambda r: (
-                    f"The Java adapter at {r['bundle']} is up to date: nothing to do "
-                    "(--force rebuilds it)."
-                ),
+        own = java_setup.default_bundle().resolve()
+        if output.resolve() == own or own in output.resolve().parents:
+            raise ValueError(
+                f"--output {output} is in Peeky's own bundle's directory, which `peeky "
+                "setup-java` manages: run it without --output, or give another directory"
             )
-            return 0
-        action = "Rebuilding" if args.force else "Replacing"
-    if not args.quiet:
-        print(
-            f"{action} the Java adapter in {output}{f' ({why})' if why else ''}: downloading "
-            "java-debug and its jars (pinned by SHA-256) and compiling them can take a minute.",
-            file=sys.stderr,
-            flush=True,
+        progress(
+            f"Building the Java adapter in {output}: downloading java-debug and its jars "
+            "(pinned by SHA-256) and compiling them can take a minute."
         )
-    manifest = java_setup.setup(output, replace=default, private=default)
-    built = output.absolute().parent.resolve() / output.name
+        manifest = java_setup.setup(output)
+        built = output.absolute().parent.resolve() / output.name
+        result = {"bundle": str(built), "built": True, "default": False, "adapter": manifest}
 
     def text(result):
         adapter = result["adapter"]
+        if not result["built"]:
+            return (
+                f"The Java adapter at {result['bundle']} is up to date: nothing to do "
+                "(--force rebuilds it)."
+            )
         use = (
             'Java configs without "bundle" use it.'
             if result["default"]
@@ -4100,11 +4104,7 @@ def setup_java(args):
             f"({', '.join(sorted(adapter['patches']))}).\n{use}"
         )
 
-    _emit(
-        {"bundle": str(built), "built": True, "default": default, "adapter": manifest},
-        args.json,
-        text,
-    )
+    _emit(result, args.json, text)
     return 0
 
 

@@ -21,6 +21,9 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 - Run `peeky setup-java` once. It builds the adapter bundle into `~/.peeky/java-adapter`
   (`$PEEKY_STATE_DIR/java-adapter`). It needs JDK 17 or later, and access to GitHub and Maven
   Central ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- Peeky runs that bundle only from directories you own, mode 0700, under none another user can
+  write. Otherwise it is `UNSUPPORTED`, and the message names the path
+  ([Java 7.3](java-cookbook.md#build-the-adapter)).
 - A launched Java target needs `--config <file.json>`. The file names the sources and the main
   class. `arguments` is optional. For example:
   `{"sources": ["shop/Main.java"], "main_class": "shop.Main"}`
@@ -33,9 +36,10 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   that holds the `--old` text ([6.1](../COOKBOOK.md#61-check-one-edit-on-a-fresh-build)).
 - Without a bundle, a probe is refused before anything runs: `INVALID_REQUEST`, and the message
   gives the `peeky setup-java` command to run.
-- A bundle built before Peeky's java-debug patches is refused before anything runs:
-  `UNSUPPORTED`, exit status 2, no table. Run `peeky setup-java` again: it replaces Peeky's own
-  bundle. For one a config names, build a new one with `--output`, and point `bundle` at it
+- A bundle is refused before anything runs if it isn't what this Peeky's setup builds with that
+  JDK. Examples are one built before Peeky's java-debug patches, by another Peeky, or with a JDK
+  that changed since. That is `UNSUPPORTED`, exit status 2, no table. Run `peeky setup-java`
+  again. For a bundle a config names, build a new one with `--output`, and point `bundle` at it
   ([ERRORS](../ERRORS.md)).
 - Starting the JVM takes most of a run's time. A session's commands after `session start` reuse
   its JVM, so they are quicker than a probe.

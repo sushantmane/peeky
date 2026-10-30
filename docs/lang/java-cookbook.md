@@ -212,31 +212,59 @@ peeky setup-java
 
 ```text
 Building the Java adapter in /home/me/.peeky/java-adapter: downloading java-debug and its jars (pinned by SHA-256) and compiling them can take a minute.
-Built the Java adapter at /home/me/.peeky/java-adapter in 2.7 s: java-debug 6a597f2bcccd with Peeky's patches (eventhub-log-guard).
+Built the Java adapter at /home/me/.peeky/java-adapter/823ca782d95c0373461f-f80de9f7 in 2.8 s: java-debug 6a597f2bcccd with Peeky's patches (eventhub-log-guard).
 Java configs without "bundle" use it.
 ```
 
-- The bundle goes to `java-adapter` in Peeky's state directory: `$PEEKY_STATE_DIR`, else
-  `~/.peeky`. Only you can read it.
-- Run it again after you upgrade Peeky. A bundle that is up to date is kept. An older one is
-  replaced once the new one is built. `--force` rebuilds it anyway.
-- `--output DIR` builds into a new directory instead. Name it as the config's `bundle`.
+- Setup downloads java-debug's source and five jars, each checked against a pinned SHA-256. It
+  needs access to GitHub and Maven Central. The downloads have 300 s in all.
+- It builds java-debug and Peeky's launcher in a staging directory. A failure installs nothing,
+  and leaves no staging behind.
 - `--json` prints `bundle`, `built`, `default` (whether it is Peeky's own bundle), and `adapter`,
   the bundle's `adapter.json`.
-- Setup downloads java-debug's source and five jars, each checked against a pinned SHA-256. It
-  needs access to GitHub and Maven Central. A failure installs nothing, and leaves no staging
-  behind.
+- `--output DIR` builds into a new directory instead, outside Peeky's own `java-adapter`. Name it
+  as the config's `bundle`.
 - In a source checkout, `python scripts/setup_java_adapter.py --output DIR` does the same without
   Peeky installed. CI uses it.
-- Setup builds java-debug from its pinned, checksummed source, and Peeky's launcher. It applies
-  Peeky's patches to java-debug before compiling, and lists them in the bundle's `adapter.json`,
-  under `patches`. The upstream licence and notices are in the bundle's `notices`.
+
+Without `--output`, setup installs Peeky's own bundle, in `java-adapter` in Peeky's state
+directory: `$PEEKY_STATE_DIR`, else `~/.peeky`.
+
+- Each build is a new version directory there, such as `823ca782d95c0373461f-f80de9f7`. A file
+  there, `current`, names the version in use. Setup switches it in one step, once the new version
+  is complete.
+- A session uses the version `current` named when it started, to its end.
+- Setup keeps the version before the new one, for sessions still using it. It removes older ones.
+- One setup runs at a time. Another waits for it, for up to 10 minutes.
+- Run it again after you upgrade Peeky. A version that is up to date is kept. `--force` builds a
+  new one anyway.
+
+Peeky runs its own bundle only where no other user can change it. A bundle's `adapter.json`
+lists its files' hashes, so it vouches only for itself.
+
+- The state directory, `java-adapter` and the version must be directories you own, not links,
+  with mode 0700. No directory above them may be writable by another user.
+- `current` must be a file of yours, with mode 0600, that names a version.
+- Otherwise Peeky refuses before anything runs: `UNSUPPORTED`, with
+  `Peeky's own Java adapter can't be used: …`. The message names the path, and what to do.
+- Setup makes the state directory and `java-adapter` mode 0700 itself.
+
+A bundle records its recipe, and that recipe's fingerprint, in `adapter.json`. The recipe is
+the text of each patch, and the hashes of the launcher, the dependency lock and the notices. It
+is also the compiler flags, and java's and javac's paths and version texts.
+
+- Setup keeps a version only if its fingerprint is the one it would build now.
+- Peeky checks the same before it runs any bundle, one a config names too. A bundle from another
+  Peeky, or from a JDK that changed since, is refused before anything runs. That is
+  `UNSUPPORTED`, with `… is not what this Peeky's setup builds (…)` and the rebuild command.
+- The patches are applied to java-debug before compiling, and listed in `adapter.json`, under
+  `patches`. The upstream licence and notices are in the bundle's `notices`.
 - One patch, `eventhub-log-guard`, keeps java-debug's event thread alive. Without it, that thread
   could die and stop reporting every stop and exit
   ([JAVA_ATTACH.md](../JAVA_ATTACH.md#root-cause-java-debugs-event-thread-died)).
-- Peeky checks each patch in the compiled classes, not in the list: the patched `EventHub.class`
-  calls `Logger.isLoggable`. A bundle without it is refused with `UNSUPPORTED` and the rebuild
-  command.
+- Peeky also checks each patch in the compiled classes: the patched `EventHub.class` calls
+  `Logger.isLoggable`. A bundle without it is refused with `UNSUPPORTED`, as one that predates
+  Peeky's java-debug fixes.
 
 ### What Peeky checks about a Java build
 

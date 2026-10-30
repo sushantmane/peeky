@@ -95,13 +95,19 @@ def test_the_runtime_requires_every_patch_setup_applies(bootstrap):
 EVENT_HUB_CLASS = "classes/com/microsoft/java/debug/core/EventHub.class"
 
 
+def fake_tools(java):
+    return {"java": java, "java_version": "17", "javac": java, "javac_version": "17"}
+
+
 def fake_bundle(root, event_hub, patches=None):
-    """A bundle that passes every other check: its command, inventory and checksums."""
+    """A bundle that passes every other check: its command, inventory, checksums and recipe
+    (with fake_tools for the JDK, which java_setup.toolchain must then return)."""
     import hashlib
     import json
     import os
 
     from peeky.java import _tool
+    from peeky.java_setup import fingerprint, recipe
 
     files = {
         "classes/PeekyJavaAdapter.class": b"\xca\xfe\xba\xbe launcher",
@@ -116,6 +122,8 @@ def fake_bundle(root, event_hub, patches=None):
         "schema": 1,
         "command": [java, "-cp", f"{root}/classes{os.pathsep}{root}/lib/*", "PeekyJavaAdapter"],
         "files": {name: hashlib.sha256(data).hexdigest() for name, data in files.items()},
+        "recipe": recipe(fake_tools(java)),
+        "fingerprint": fingerprint(recipe(fake_tools(java))),
         **({} if patches is None else {"patches": patches}),
     }
     (root / "adapter.json").write_text(json.dumps(manifest))
@@ -155,10 +163,13 @@ def test_a_bundle_without_the_event_hub_class_is_refused(tmp_path):
 
 
 @pytest.mark.parametrize("patches", [None, {"eventhub-log-guard": {}}])
-def test_the_compiled_patch_is_what_counts(tmp_path, patches):
+def test_the_compiled_patch_is_what_counts(tmp_path, patches, monkeypatch):
+    # The `patches` record is documentation; the recipe holds each patch's text.
+    from peeky import java_setup
     from peeky.java import _verify_bundle
 
     java = fake_bundle(tmp_path, PATCHED_EVENT_HUB, patches)
+    monkeypatch.setattr(java_setup, "toolchain", lambda java, javac: fake_tools(java))
     command, _ = _verify_bundle(tmp_path, java)
     assert command[-1] == "PeekyJavaAdapter"
 

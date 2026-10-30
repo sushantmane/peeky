@@ -28,9 +28,12 @@
 ### Other changes
 
 - **Java from a wheel:** `peeky setup-java` builds the Java adapter from the installed package,
-  into `~/.peeky/java-adapter`, which only you can read. A Java config without `bundle` uses it,
-  and one built before the fixes is replaced when run again. A missing bundle's error gives the
-  command. `scripts/setup_java_adapter.py` runs the same setup in a checkout (#407).
+  into `~/.peeky/java-adapter`. A Java config without `bundle` uses it. Each build is a version
+  there, switched to in one step under a lock; a session keeps the version it started with.
+  Peeky runs it only from directories only you can use, and runs any bundle only if its recorded
+  recipe (patch text, launcher, lock, flags, JDK) is the one it builds. A missing bundle's error
+  gives the command. `scripts/setup_java_adapter.py` runs the same setup in a checkout. The state
+  directory is now made mode 0700, and refused if it is a link or another user's (#407).
 - **A rare failure closing a session:** closing a session just as its program started a
   process could fail with "cannot join thread before it is started". It no longer does.
 - **Faster C and C++ builds:** sources preprocess and compile in parallel, the checks of

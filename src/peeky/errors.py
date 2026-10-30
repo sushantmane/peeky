@@ -240,7 +240,8 @@ _RULES = (
         False,
     ),
     (
-        r"adapter bundle at .* predates Peeky's java-debug fixes",
+        r"adapter bundle at .* (predates Peeky's java-debug fixes|is not what this Peeky's setup "
+        r"builds)",
         "UNSUPPORTED",
         "Rebuild it with `peeky setup-java`; for a bundle the config names, add --output <a "
         "new directory> and point the config's bundle at it.",
@@ -251,6 +252,13 @@ _RULES = (
         "INVALID_REQUEST",
         "Build it with the `peeky setup-java` command the message gives; it needs JDK 17 or "
         "later, and access to GitHub and Maven Central.",
+        False,
+    ),
+    (
+        r"^Peeky's own Java adapter can't be used: ",
+        "UNSUPPORTED",
+        "Nothing ran. Do what the message says, or set PEEKY_STATE_DIR to a directory only you "
+        "can use and run `peeky setup-java`.",
         False,
     ),
     (
