@@ -1,5 +1,4 @@
 {
-  "bundle": "../../work/java-adapter",
   "sources": ["demo/PaginationBug.java"],
   "main_class": "demo.PaginationBug",
   "arguments": []

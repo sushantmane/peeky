@@ -333,7 +333,11 @@ def test_the_docs_peeky_prints_exist():
     )
     paths = re.findall(r"(?<![\w/.-])([\w/.-]+\.md)(?:#([\w-]+))?", source)
     assert {"docs/lang/rust-cookbook.md", "ERRORS.md"} <= {path for path, _ in paths}
+    # The package's own data files that the code reads (`peeky setup-java`'s NOTICES.md).
+    data = {path.name for path in (DOCS.parent / "src/peeky").rglob("*.md")}
     for path, anchor in paths:
+        if path in data:
+            continue
         page = DOCS.parent / path if path.startswith("docs/") else DOCS / path
         assert page.is_file(), path
         assert not anchor or anchor in set(_slugs(_headings(page))), (path, anchor)

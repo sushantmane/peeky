@@ -662,10 +662,13 @@ def test_an_unpatched_adapters_dead_event_hub_ends_the_session_at_once(churning,
     from dataclasses import replace
 
     import peeky.java
+    import peeky.java_setup
     from peeky.errors import classify
     from peeky.worker import DebugWorker
 
+    # Neither its compiled classes nor its recipe are this Peeky's.
     monkeypatch.setattr(peeky.java, "JAVA_DEBUG_PATCHES", {})
+    monkeypatch.setattr(peeky.java_setup, "recipe_mismatch", lambda manifest: None)
     root, target, process, line = churning
     worker = DebugWorker(root, adapter=replace(target, bundle=Path(unpatched)))
     began = time.monotonic()
@@ -775,9 +778,11 @@ def test_the_pause_guard_alone_ends_a_session_whose_event_thread_died(churning, 
     from dataclasses import replace
 
     import peeky.java
+    import peeky.java_setup
     from peeky.worker import DebugWorker, SessionFailed
 
     monkeypatch.setattr(peeky.java, "JAVA_DEBUG_PATCHES", {})
+    monkeypatch.setattr(peeky.java_setup, "recipe_mismatch", lambda manifest: None)
     root, target, process, line = churning
     worker = DebugWorker(root, adapter=replace(target, bundle=Path(unpatched)))
     launch = {"program": CHURN_SOURCE, "breakpoints": [{"line": line}], "max_pause": 3}

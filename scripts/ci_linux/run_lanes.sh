@@ -83,5 +83,6 @@ lane wheel bash -c 'pip install -q build==1.3.0 && python -m build >/dev/null 2>
   python3 -m venv /wheel && /wheel/bin/pip install -q dist/*.whl &&
   /wheel/bin/python -c "import peeky.client; import peeky.dap" &&
   for tool in peeky-worker peeky-agent peeky-probe peeky; do /wheel/bin/$tool --help >/dev/null || exit 1; done &&
+  /wheel/bin/peeky setup-java --help >/dev/null &&
   /wheel/bin/python scripts/smoke_wheel.py && echo "wheel ok"'
 exit $status

@@ -8,6 +8,6 @@ recursive-include tests *.py
 recursive-include scripts *.py
 # The pages, their measurements, and the presentation the README links.
 recursive-include docs *.md *.json *.pdf *.pptx
-recursive-include adapters *.java *.json *.md
+recursive-include src/peeky/java_adapter *.java *.json *.md
 # A crate's build output never ships.
 prune examples/rust/target

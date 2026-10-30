@@ -436,7 +436,7 @@ def test_java_adapters_built_before_stepping_are_refused_cleanly(tmp_path):
     worker.dap, worker.session, worker.thread_id = SimpleNamespace(), "s1", 1
     worker.runtime = SimpleNamespace(assert_current=lambda: None)
     worker.state, worker.stop_id, worker.capabilities = "stopped", "stop1", caps
-    with pytest.raises(ValueError, match="rebuild it with scripts/setup_java_adapter.py"):
+    with pytest.raises(ValueError, match="rebuild it with `peeky setup-java`"):
         worker.dispatch("step", {"session_id": "s1", "stop_id": "stop1", "kind": "over"})
     assert worker.state == "stopped"
 

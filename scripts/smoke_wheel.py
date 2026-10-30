@@ -6,8 +6,13 @@ import threading
 import time
 from pathlib import Path
 
+from peeky import java_setup
 from peeky.client import Client
 from peeky.worker import make_server
+
+# `peeky setup-java` builds the Java adapter from these, so the wheel must hold them.
+for path in (java_setup.LAUNCHER, java_setup.LOCK, java_setup.NOTICES):
+    assert path.is_file(), f"the wheel lacks {path.name}"
 
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)

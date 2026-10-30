@@ -3165,7 +3165,7 @@ class DebugWorker:
             ):
                 raise ValueError(
                     "This Java adapter bundle predates String changes (text in double quotes); "
-                    "rebuild it with scripts/setup_java_adapter.py"
+                    "rebuild it with `peeky setup-java`"
                 )
             if "handle" in args:
                 return self.set_member(args, runtime)
@@ -3397,7 +3397,7 @@ class DebugWorker:
             if self.capabilities.get("supports_stepping") is False:
                 raise ValueError(
                     "Stepping is not supported by this debugger adapter (a Java adapter bundle "
-                    "built before stepping: rebuild it with scripts/setup_java_adapter.py); use "
+                    "built before stepping: rebuild it with `peeky setup-java`); use "
                     "`session continue --to LINE` to stop at another line"
                 )
             if self.co_stopped() is not None or self.co_served or self.pending_stop_elsewhere():
@@ -5992,7 +5992,7 @@ class DebugWorker:
         if not self.member_set():
             raise ValueError(
                 "This Java adapter bundle predates field and element changes, so only locals "
-                "can be changed; rebuild it with scripts/setup_java_adapter.py"
+                "can be changed; rebuild it with `peeky setup-java`"
                 if check is not None
                 else "Only the stopped function's own locals can be changed for this language "
                 "with this debugger, which cannot change fields and elements"
@@ -7598,6 +7598,18 @@ def _probe_failure(status, exc, requested=True, *, secret=None):
     return failure
 
 
+def _java_bundle(path, config):
+    """The adapter bundle a Java configuration at ``path`` names, relative to it; without
+    one, the bundle `peeky setup-java` builds in Peeky's state directory."""
+    if "bundle" not in config:
+        from peeky.java_setup import default_bundle
+
+        return default_bundle()
+    if not isinstance(config["bundle"], str) or not config["bundle"]:
+        raise ValueError("Java bundle must be a nonempty path string")
+    return (path.resolve().parent / config["bundle"]).resolve()
+
+
 def load_java_target(path):
     """Load a fixed trusted target; request bodies never supply this configuration."""
     from peeky.java import JavaTarget
@@ -7608,13 +7620,11 @@ def load_java_target(path):
         raise ValueError("Java configuration must be an object")
     if set(config) - {"bundle", "sources", "main_class", "java", "javac", "arguments"}:
         raise ValueError("Unknown Java configuration field")
-    if not {"bundle", "sources", "main_class"} <= set(config):
-        raise ValueError("Java configuration requires bundle, sources and main_class")
-    if not isinstance(config["bundle"], str) or not config["bundle"]:
-        raise ValueError("Java bundle must be a nonempty path string")
+    if not {"sources", "main_class"} <= set(config):
+        raise ValueError("Java configuration requires sources and main_class")
     if not isinstance(config["sources"], list) or not isinstance(config.get("arguments", []), list):
         raise ValueError("Java sources and arguments must be JSON arrays")
-    config["bundle"] = (path.resolve().parent / config["bundle"]).resolve()
+    config["bundle"] = _java_bundle(path, config)
     config["sources"] = tuple(config["sources"])
     config["arguments"] = tuple(config.get("arguments", []))
     return JavaTarget(**config)
@@ -7693,13 +7703,13 @@ def load_java_attach_target(path):
         raise ValueError("Java attach configuration must be an object")
     config.pop("language", None)
     allowed = {"bundle", "port", "sources", "class_roots", "java", "host", "timeout_ms"}
-    if set(config) - allowed or not {"bundle", "port", "sources", "class_roots"} <= set(config):
-        raise ValueError("Java attach configuration needs bundle, port, sources and class_roots")
+    if set(config) - allowed or not {"port", "sources", "class_roots"} <= set(config):
+        raise ValueError("Java attach configuration needs port, sources and class_roots")
     for key in ("sources", "class_roots"):
         if not isinstance(config[key], list):
             raise ValueError(f"Java attach {key} must be a JSON array")
         config[key] = tuple(config[key])
-    config["bundle"] = (path.resolve().parent / config["bundle"]).resolve()
+    config["bundle"] = _java_bundle(path, config)
     return JavaAttachTarget(**config)
 
 

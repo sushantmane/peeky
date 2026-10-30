@@ -72,8 +72,10 @@ public class Loop {
 }
 ```
 
-Start the JVM waiting for a debugger on port 5005, and describe it in a trusted config,
-`attach.json`:
+Build the adapter bundle once, with `peeky setup-java`
+([Java 7.3](lang/java-cookbook.md#build-the-adapter)). Start the JVM waiting for a debugger on
+port 5005, and describe it in a trusted config, `attach.json`. Without `bundle`, it uses the bundle
+`peeky setup-java` built:
 
 ```sh
 java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:5005 -cp classes demo.Loop
@@ -81,7 +83,6 @@ java -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:500
 
 ```json
 {
-  "bundle": "/absolute/path/to/peeky/work/java-adapter",
   "port": 5005,
   "sources": ["demo/Loop.java"],
   "class_roots": ["classes"]
@@ -132,11 +133,10 @@ reproduce the runs on this page, you need:
   build;
 - on Apple Silicon, Rosetta 2 (step 2);
 - port 5005 free;
-- Peeky's repository or source archive, to build the adapter bundle (step 1).
+- Peeky installed, to build the adapter bundle (step 1).
 
-1. Build the adapter once, with an absolute path:
-   `python scripts/setup_java_adapter.py --output "$PWD/work/java-adapter"`. Bundles built before
-   the event-thread patch ([The fix](#the-fix)) are refused. Rebuild them into a new directory.
+1. Build the adapter once: `peeky setup-java`. Bundles built before the event-thread patch
+   ([The fix](#the-fix)) are refused. Run `peeky setup-java` again to replace one.
 2. Build Venice's tests. On Apple Silicon, this needs Rosetta 2
    (`softwareupdate --install-rosetta`), because grpc-java ships its macOS code generator for
    x86_64 only. The runs here used a natively built generator instead, which changes only how
@@ -156,7 +156,6 @@ reproduce the runs on this page, you need:
    `~/.peeky/venice/attach-TestEmptyPush.json`:
    ```json
    {
-     "bundle": "/absolute/path/to/peeky/work/java-adapter",
      "port": 5005,
      "sources": ["internal/venice-test-common/src/integrationTest/java/com/linkedin/venice/endToEnd/TestEmptyPush.java"],
      "class_roots": ["internal/venice-test-common/build/classes/java/integrationTest"]
@@ -207,7 +206,6 @@ JVM. `peeky describe` without `--at` lists the breakpoint lines of every declare
 
 ```json
 {
-  "bundle": "/absolute/path/to/peeky/work/java-adapter",
   "port": 5005,
   "sources": [
     "internal/venice-common/src/main/java/com/linkedin/venice/controllerapi/ControllerClient.java",
@@ -295,7 +293,7 @@ The cause:
 
 ### The fix
 
-`scripts/setup_java_adapter.py` patches the pinned `EventHub.java` before compiling it
+`peeky setup-java` patches the pinned `EventHub.java` before compiling it
 (`eventhub-log-guard`):
 
 - It logs only when FINE is loggable, and catches any `RuntimeException` around the log call.
@@ -304,7 +302,10 @@ The cause:
   `Logger.isLoggable`, and the old one doesn't.
 - Peeky refuses a bundle without the patch, with `UNSUPPORTED` and the rebuild command. This holds
   whatever the bundle's `adapter.json` lists under `patches`, which is kept as documentation.
-- CI builds a fresh bundle with the script, so it tests the patched adapter.
+- Peeky also requires the bundle's recorded recipe, which holds each patch's text, to be the one
+  it builds ([Java 7.3](lang/java-cookbook.md#build-the-adapter)).
+- CI builds a fresh bundle with `scripts/setup_java_adapter.py`, which runs the same setup, so it
+  tests the patched adapter.
 
 ### Two detectors fail fast if it happens anyway
 

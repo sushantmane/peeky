@@ -1,6 +1,6 @@
 # Experimental Java adapter provenance
 
-The setup script downloads the exact Microsoft java-debug source archive and five runtime jars pinned by URL and SHA-256 in `dependencies.lock.json`. It compiles the debugger core sources, with one small patch whose text is in the setup script (`eventhub-log-guard`: a log line no longer kills java-debug's event thread), plus Peeky's launcher. Downloaded source/jars/classes must not be committed.
+`peeky setup-java` (`peeky/java_setup.py`) downloads the exact Microsoft java-debug source archive and five runtime jars pinned by URL and SHA-256 in `dependencies.lock.json`. It compiles the debugger core sources, with one small patch whose text is in `java_setup.py` (`eventhub-log-guard`: a log line no longer kills java-debug's event thread), plus Peeky's launcher. Peeky's packages hold this directory, never the downloaded source, jars or compiled classes, which must not be committed either.
 
 Microsoft java-debug is EPL-1.0. The produced bundle retains upstream `LICENSE.txt` and `ThirdPartyNotices.txt` in `notices/`. Upstream source: https://github.com/microsoft/java-debug/tree/6a597f2bcccdd0aac7e91631588361826fde11f3 . Sources remain available at the pinned URL in the lock. No JDT LS code is bundled.
 

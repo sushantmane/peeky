@@ -300,4 +300,5 @@ jobs:
           "$RUNNER_TEMP/peeky-wheel/bin/peeky-agent" --help
           "$RUNNER_TEMP/peeky-wheel/bin/peeky-probe" --help
           "$RUNNER_TEMP/peeky-wheel/bin/peeky" --help
+          "$RUNNER_TEMP/peeky-wheel/bin/peeky" setup-java --help
           "$RUNNER_TEMP/peeky-wheel/bin/python" "$GITHUB_WORKSPACE/scripts/smoke_wheel.py"

@@ -7,11 +7,9 @@ the probe process, a Python candidate's interpreter, checkers, candidates and th
 """
 
 import argparse
-import importlib.util
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -40,13 +38,10 @@ def test_both_names_of_the_token_are_credentials():
     assert without_credentials((*CREDENTIALS.items(), ("PATH", "/bin"))) == {"PATH": "/bin"}
 
 
-def test_the_java_adapter_setup_script_strips_the_same_names():
-    # It runs without Peeky installed, so it keeps its own copy of the names.
-    path = Path(__file__).resolve().parents[2] / "scripts/setup_java_adapter.py"
-    spec = importlib.util.spec_from_file_location("java_setup_credentials", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    assert module.CREDENTIAL_ENV == set(CREDENTIALS)
+def test_the_java_adapter_setup_strips_the_same_names():
+    from peeky import java_setup
+
+    assert java_setup.CREDENTIAL_ENV == set(CREDENTIALS)
 
 
 def test_a_sessions_local_worker_gets_only_its_own_token(tmp_path, monkeypatch, credentials):

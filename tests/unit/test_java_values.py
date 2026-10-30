@@ -228,7 +228,7 @@ def test_before_the_run_only_classes_that_may_be_the_value_count():
 def test_a_launcher_that_names_no_declaring_class_changes_no_field():
     field = {"name": "end", "type": "int", "value": "5"}
     reason = owners(field_owners=False).internal_member(field, parent="Interval")
-    assert "predates" in reason and "scripts/setup_java_adapter.py" in reason
+    assert "predates" in reason and "`peeky setup-java`" in reason
     assert not hasattr(reason, "row")
     assert "cannot tell which class declares it" in owners().internal_member(field)
     # A root local's array needs no declaring class.
@@ -302,7 +302,7 @@ def test_an_elements_mark_asks_the_launcher_what_holds_its_array():
     # A launcher that cannot search before a change: neither, and it says to rebuild it.
     session.array_holders = False
     reason, settled = session.array_holder(Launcher({}), array)
-    assert "rebuild it with scripts/setup_java_adapter.py" in reason and reason.unproven is True
+    assert "rebuild it with `peeky setup-java`" in reason and reason.unproven is True
 
 
 def test_while_other_threads_run_no_element_is_promised_settable():

@@ -10,7 +10,7 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 | --- | --- |
 | java-debug | Microsoft's debugger for Java. Peeky drives it. |
 | JDI | The Java Debug Interface: the JDK's API that java-debug uses to read and change a JVM. |
-| adapter bundle | A directory with java-debug, built with Peeky's patches. `scripts/setup_java_adapter.py` builds it. |
+| adapter bundle | A directory with java-debug, built with Peeky's patches. `peeky setup-java` builds it. |
 | launch | Peeky starts the JVM itself, from the config's `main_class`. |
 | attach | Peeky connects to a JVM that is already running and waiting for a debugger. |
 | object number | The `@143` in `Merge$Interval@143`. It names one object within one run. |
@@ -18,17 +18,32 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
 
 ## Set up a Java target
 
-- A launched Java target needs `--config <file.json>`. The file names the adapter bundle, the
-  sources and the main class. `arguments` is optional. For example:
-  `{"bundle": "work/java-adapter", "sources": ["shop/Main.java"], "main_class": "shop.Main"}`
+- Run `peeky setup-java` once. It builds the adapter bundle into `~/.peeky/java-adapter`
+  (`$PEEKY_STATE_DIR/java-adapter`). It needs JDK 17 or later, and access to GitHub and Maven
+  Central ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- Peeky runs that bundle only from directories you own, mode 0700, under none another user can
+  write. Otherwise it is `UNSUPPORTED`, and the message names the path
+  ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- A launched Java target needs `--config <file.json>`. The file names the sources and the main
+  class. `arguments` is optional. For example:
+  `{"sources": ["shop/Main.java"], "main_class": "shop.Main"}`
   ([Java 7.3](java-cookbook.md#73-java-launched)).
+- A config without `bundle` uses the bundle `peeky setup-java` built. `bundle` names another one,
+  relative to the config.
 - The commands that `describe` prints repeat the `--config`
   ([Java 7.3](java-cookbook.md#73-java-launched)).
 - `verify` edits the config's one source without `--at`. With several, pass `--at` with the source
   that holds the `--old` text ([6.1](../COOKBOOK.md#61-check-one-edit-on-a-fresh-build)).
-- Build the adapter bundle with `scripts/setup_java_adapter.py`. A bundle built before Peeky's
-  java-debug patches is refused before anything runs: `UNSUPPORTED`, exit status 2, no table.
-  Rebuild it, and point the config's `bundle` at the new one ([ERRORS](../ERRORS.md)).
+- Without a bundle, a probe is refused before anything runs: `INVALID_REQUEST`, and the message
+  gives the `peeky setup-java` command to run.
+- A bundle is refused before anything runs if it isn't what this Peeky's setup builds. Examples
+  are one built before Peeky's java-debug patches, or by another Peeky. That is `UNSUPPORTED`,
+  exit status 2, no table. Run `peeky setup-java` again. For a bundle a config names, build a new
+  one with `--output`, and point `bundle` at it ([ERRORS](../ERRORS.md)).
+- The bundle is compiled with `--release 17`, so it runs on JDK 17 or later. Peeky doesn't check
+  the JDK that runs it ([Java 7.3](java-cookbook.md#build-the-adapter)).
+- Setup keeps older versions of its bundle for sessions still using them.
+  `peeky setup-java --prune` removes them. A session still using one fails its next step.
 - Starting the JVM takes most of a run's time. A session's commands after `session start` reuse
   its JVM, so they are quicker than a probe.
 - If a probe or `verify` may outlast your tool's timeout, add `--background`. Then run
@@ -130,8 +145,8 @@ details, in the [Java cookbook](java-cookbook.md) or the [COOKBOOK](../COOKBOOK.
   ([Java 7.3](java-cookbook.md#set-a-string)).
 - What a variable is declared decides. `Object o = "x"` holds a String but takes no text
   ([Java 7.3](java-cookbook.md#the-declared-type-decides)).
-- Field, char and String changes need an adapter bundle built by this version of
-  `scripts/setup_java_adapter.py` ([Java 7.3](java-cookbook.md#what-can-be-set)).
+- Field, char and String changes need an adapter bundle built by this version of Peeky, with
+  `peeky setup-java` ([Java 7.3](java-cookbook.md#what-can-be-set)).
 
 ### What can't be set
 
