@@ -307,7 +307,7 @@ def test_the_docs_peeky_prints_exist():
 
 # The docs are written in short sentences. A sentence here is prose outside code blocks,
 # tables, headings and quotes, split at a full stop, colon or semicolon and at each list item;
-# inline code counts as one word. History records (evaluations, reviews, ADRs, and pages marked
+# inline code counts as one word. History records (evaluations, ADRs, and pages marked
 # historical) are kept as written.
 LONGEST_SENTENCE = 40
 
