@@ -22,7 +22,7 @@ _OPENING = {")": "(", "]": "[", "}": "{"}
 
 def _preamble(text):
     """(where ``text``'s tokens start, why that cannot be told or None): past a byte-order
-    mark and a shebang line, as rustc skips them (#156 review: `#!/usr/bin/env -S echo "`
+    mark and a shebang line, as rustc skips them (`#!/usr/bin/env -S echo "`
     is no string). A shebang is a `#!` at the very start that whitespace does not part
     from a `[` (`#![allow(x)]` is an attribute); a comment after the `#!` is not judged,
     nor is a frontmatter block (`---`, a nightly feature)."""
