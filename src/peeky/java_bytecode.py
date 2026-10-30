@@ -1,6 +1,6 @@
 """One decoder of a method's Java bytecode (JVMS 6.5), shared by the loop-header check
-(#161, ``loop_headers.java_instructions``) and a local's reads after a stop (#164,
-``java_metadata.reads_after``): each instruction's length, how control leaves it (the
+(``loop_headers.java_instructions``) and a local's reads after a stop
+(``java_metadata.reads_after``): each instruction's length, how control leaves it (the
 next instruction, a branch, a jump or switch, a return, a throw) and the local slot it
 reads or writes. A method's exception handlers come from its Code attribute
 (``java_metadata._class_metadata``)."""

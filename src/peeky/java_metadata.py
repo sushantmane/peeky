@@ -83,7 +83,7 @@ def reads_after(method, slot, starts):
     """Whether the method's code may read local ``slot`` on some path from any of
     ``starts`` (the pcs where the stop's line begins: a breakpoint or a step stops
     there) before storing into it again: True, False, or None where the code does not
-    decode (#164: a change to a local the code never reads again is never seen, as when
+    decode (a change to a local the code never reads again is never seen, as when
     a lambda captured its value before the stop)."""
     decoded = decode(method["code"])
     if decoded is None or not starts or any(each.kind == "indirect" for each in decoded):
@@ -146,7 +146,7 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
     for each method with code, its names from the LocalVariableTable (`javac -g`);
     ``details``: the scope's "types", and its block locals' lines (_block_lines). With
     ``codes`` (a list), also appends (method, descriptor, bytecode, {pc: line}, [(start, end,
-    handler)]) for each method with code, in class-file order (#161). With ``shared`` (a
+    handler)]) for each method with code, in class-file order. With ``shared`` (a
     dict), also records {line: {"stops": method, "never": [methods]}} for lines that
     several methods of the class share (a lambda body on its enclosing method's line, a
     static initializer's lambda, nested lambdas, a field initializer in each
@@ -155,7 +155,7 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
     dict), also fills in "super" (the superclass's internal name), "interfaces" (its
     direct superinterfaces' internal names), "fields" ({name:
     descriptor}) and "methods": [{"name", "first", "last", "locals": [(name, descriptor,
-    {lines its scope's code is on}, whether the code ever reads it)]}] (#164: what a
+    {lines its scope's code is on}, whether the code ever reads it)]}] (what a
     variable is declared, and a constant local javac folds into its uses, which the
     program never reads)."""
     if len(data) > MAX_CLASS_BYTES:
@@ -382,7 +382,7 @@ def _class_metadata(data, shared=None, scopes=None, declarations=None, codes=Non
                     for name in dict.fromkeys(name for _, _, name in sorted(names))
                     if is_name(name)
                 ]
-                # Each name's declared type (#183), as Java writes it.
+                # Each name's declared type, as Java writes it.
                 kinds = {}
                 for local, descriptor_of, _, _, _ in declared:
                     kinds.setdefault(local, set()).add(descriptor_name(descriptor_of))
@@ -435,7 +435,7 @@ _MAX_SPANS = 8
 
 def _block_lines(declared, method_lines, code_length, names):
     """{"spans": {name: [[first, last], ...]}} for the locals that a method does not
-    declare once for the rest of its code (#264: a `for` loop's `b`, declared again in a
+    declare once for the rest of its code (a `for` loop's `b`, declared again in a
     later loop), from the LocalVariableTable. A name whose one declaration's scope runs
     to the end of the code (where javac ends a method-level local's) gets none; any
     other gets each declaration's lines, one ending there included.
@@ -530,7 +530,7 @@ def _own_constructor_lines(scopes):
 
 def java_declarations(mapping, classes_dir, workspace):
     """{internal class name: ``_class_metadata``'s declarations, plus "source" (its path
-    relative to ``workspace``)} for each prepared class (#164)."""
+    relative to ``workspace``)} for each prepared class."""
     workspace = Path(workspace).resolve()
     found = {}
     for binary, entry in mapping["classes"].items():
@@ -572,8 +572,8 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
                     "source": source,
                     "lines": [first, last],
                     "names": names,
-                    # Declared types, as other languages' scopes give them (#183), and
-                    # the lines of the blocks declaring a block's local (#264).
+                    # Declared types, as other languages' scopes give them, and the
+                    # lines of the blocks declaring a block's local.
                     **details,
                 }
             )
@@ -586,7 +586,7 @@ def java_scopes(mapping, classes_dir, workspace, limit=300):
 def loop_header_stops(mapping, classes_dir, source, line):
     """(stops, exact) of java-debug at ``line`` of ``source`` each time its loop
     starts (see ``loop_headers.stops_before_loop``), where the line is a loop header whose breakpoint is bound before the loop
-    (#161: `for (int i = 0; ...)` binds `i = 0`, a for-each its array or iterator); else
+    (`for (int i = 0; ...)` binds `i = 0`, a for-each its array or iterator); else
     None (no loop of the line, a stop at each pass, or unclear: the line in several
     classes, bytecode that does not decode). java-debug binds a line breakpoint to the
     first method holding the line, in class-file order, at its first code there."""

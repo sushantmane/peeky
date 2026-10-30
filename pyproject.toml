@@ -9,6 +9,8 @@ description = "A debugger worker and runtime experimentation client for coding a
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Sushant Mane" }]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = ["debugpy==1.8.22"]
 
 [project.urls]

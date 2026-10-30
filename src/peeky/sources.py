@@ -1,5 +1,5 @@
 """The sources a worker's target reads, as {path: sha256}: what a remote client and the
-worker compare before anything launches (#249).
+worker compare before anything launches.
 
 The worker's trusted target names them: Java's `sources`; C and C++ `sources` and
 `headers`; Rust's Cargo.toml, Cargo.lock, `sources` and `tests`. A Python program may
