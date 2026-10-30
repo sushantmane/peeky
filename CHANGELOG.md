@@ -29,6 +29,11 @@
 - **Faster C and C++ builds:** sources preprocess and compile in parallel, the checks of
   preprocessed text are 4× faster, and a new process doesn't rehash the toolchain binaries. An
   8-file C++ probe takes 2.3 s on macOS, down from 6.1 s (#398).
+- **Bigger C, C++ and Rust programs:** Peeky reads a build's symbols as llvm-dwarfdump writes
+  them, keeping at most 300 MiB, not 2 MiB and 16 MiB of text. An 8-file C++ program using the
+  STL, and a Rust crate using BTreeMap, are no longer refused or read without their checks. A
+  build over a bound is `BUDGET_EXHAUSTED`, and says what to do. A symbol read that times out or
+  whose tool fails is a `TIMEOUT` or `DEBUGGER_ERROR` (#397).
 - **Frames after a step:** after a step that stopped in your code, a frame outside your sources
   is refused by its index, as before the step. It no longer says your code left the stack (#379).
 - **Thirteenth evaluation's CLI fixes:** `queries diff` tells a value one run has none of from a

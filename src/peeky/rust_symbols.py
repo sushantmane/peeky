@@ -21,25 +21,44 @@ import json
 import math
 import re
 import struct
+import sys
 import time
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
 
 from peeky.adapters import ViewBudgetExhausted
-from peeky.native import _metadata, parse_lines
+from peeky.native import (
+    _ENTRY_BYTES,
+    _NAME_BYTES,
+    _NAMES_BASE,
+    _RANGE_BYTES,
+    _VALUE_BYTES,
+    MAX_DEBUG_INFO,
+    MAX_DIES,
+    MAX_KEPT,
+    MAX_LINE_TEXT,
+    Kept,
+    _held,
+    _LineParser,
+    _metadata,
+    _size,
+    _symbol_text,
+    parse_lines,
+    symbol_limit,
+)
 from peeky.rust_chars import ESCAPED
 from peeky.rust_lexer import code_only
 from peeky.textlines import octal_string, split_lines
 
-# An application unit's own DWARF: a program using std's collections has megabytes of
-# monomorphized types (4.4 MB for one using HashMap); dumping and parsing it takes
-# tens of milliseconds, inside the symbol deadline.
+# The text of the units' index, and of a unit given as text. An application unit's own
+# DWARF is read as llvm-dwarfdump writes it (#397), within native.MAX_DEBUG_INFO and
+# MAX_DIES: a crate using std's collections has megabytes of monomorphized types (33 MB
+# of text, 95,000 entries, for one using BTreeMap).
 RUST_METADATA = 16 * 1024 * 1024
 
 MAX_UNITS = 4096
 MAX_APPLICATION_UNITS = 16
-MAX_DIES = 200_000
 MAX_DEPTH = 64
 MAX_LAYOUTS = 4096
 SYMBOL_DEADLINE_S = 30
@@ -92,6 +111,30 @@ class RustUnit:
     name: str
 
 
+def _die_bytes():
+    """The most one entry of ``parse_dies`` keeps past its attributes and values, as
+    native._ENTRY_BYTES reckons a native entry's, and never less than that: one build's
+    units read either way must keep alike (application_symbols)."""
+    die = _Die(1 << 40, "", {}, [])
+    own = (
+        sys.getsizeof(die)
+        + sys.getsizeof(die.__dict__)
+        + _NAMES_BASE
+        + sys.getsizeof([])
+        + sys.getsizeof({})
+        + sys.getsizeof(1 << 40)
+        + 9
+        + 48
+    )
+    return max(own, _ENTRY_BYTES)
+
+
+_DIE_BYTES = _die_bytes()
+# A new list of continued rows (`DW_AT_ranges`, a location list): its slot in the entry's
+# `continued` dict, and the list.
+_CONTINUED_BYTES = 240
+
+
 def _string(raw):
     match = re.fullmatch(r'(".*")\)', raw or "")
     if not match:
@@ -127,18 +170,40 @@ def _close_deeper(stack, depth):
     del stack[depth:]
 
 
-def parse_dies(text, *, units):
+def parse_dies(text, *, units, tally=None):
     """Parse llvm-dwarfdump DIE output by indentation; unknown rows fail closed.
+    ``text``: its text, or its lines as llvm-dwarfdump writes them (#397). At most
+    MAX_DIES entries and MAX_KEPT bytes kept (SymbolLimit), with ``tally`` (a native.Kept:
+    what other units of the build keep, added to here): each line's cost is reckoned, at
+    most, before anything of it is kept or copied.
 
     Attributes print at 12 + 2 + 2*depth columns independent of offset width.
     Every child list in --show-children output must end with its own NULL.
     """
-    if len(text.encode()) > RUST_METADATA:
-        raise ValueError("Rust debug information exceeds limit")
-    roots, stack, pending, last, seen, count = [], [], None, None, False, 0
-    attribute = None
-    for raw in split_lines(text):
-        if not raw.strip():
+    if isinstance(text, str):
+        if len(text.encode()) > RUST_METADATA:
+            raise ValueError("Rust debug information exceeds limit")
+        text = split_lines(text)
+    tally = Kept() if tally is None else tally
+    roots, stack, pending, last, seen, count = [], [], None, None, False, tally.entries
+    attribute, size = None, tally.bytes
+    # One copy of each repeated name and value: a unit's text repeats most of itself.
+    kept = {}
+
+    def room(need):
+        if size + need > MAX_KEPT:
+            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
+
+    def one(item):
+        nonlocal size
+        if (found := kept.get(item)) is None:
+            kept[item] = found = item
+            size += sys.getsizeof(item) + _VALUE_BYTES
+        return found
+
+    for raw in text:
+        # As `not raw.strip()`, without a copy of the line.
+        if not raw or raw.isspace():
             continue
         if not seen and (raw == ".debug_info contents:" or _HEADER.fullmatch(raw)):
             continue
@@ -172,8 +237,10 @@ def parse_dies(text, *, units):
                 continue
             count += 1
             if count > MAX_DIES:
-                raise ValueError("Too many DWARF entries")
-            die = _Die(int(match[1][2:-1], 16), match[3], {}, [], depth=depth)
+                raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
+            room(_DIE_BYTES + _held(raw, match.start(3), match.end(3)))
+            size += _DIE_BYTES
+            die = _Die(int(match[1][2:-1], 16), one(match[3]), {}, [], depth=depth)
             if depth == 0:
                 if units:
                     if pending is None:
@@ -193,17 +260,35 @@ def parse_dies(text, *, units):
             last = die
             continue
         if match := _ATTRIBUTE.fullmatch(raw):
-            if last is None or len(match[1]) != 14 + 2 * last.depth:
+            if last is None or match.end(1) - match.start(1) != 14 + 2 * last.depth:
                 raise ValueError("DWARF attribute is not attached to an entry")
+            ranged = match.end(2) - match.start(2) == len("DW_AT_ranges") and raw.startswith(
+                "DW_AT_ranges", match.start(2)
+            )
+            # As native._parse_dies counts the ranges it reads from such a value: at most
+            # one a `[`.
+            spans = raw.count("[", match.start(3)) if ranged else 0
+            room(
+                _NAME_BYTES
+                + _held(raw, match.start(2), match.end(2))
+                + _held(raw, match.start(3), match.end(3))
+                + spans * _RANGE_BYTES
+            )
             if match[2] in last.attributes:
                 raise ValueError("Duplicate DWARF attribute")
-            last.attributes[match[2]] = match[3]
-            attribute = match[2]
+            attribute, value = one(match[2]), one(match[3])
+            last.attributes[attribute] = value
+            size += _NAME_BYTES + spans * _RANGE_BYTES
             continue
         if last is not None and last.attributes and _CONTINUATION.fullmatch(raw):
-            last.continued.setdefault(attribute, []).append(raw.strip())
+            new = attribute not in last.continued
+            room(_held(raw, 0, len(raw)) + _RANGE_BYTES + (_CONTINUED_BYTES if new else 0))
+            row = raw.strip()
+            last.continued.setdefault(attribute, []).append(row)
+            size += sys.getsizeof(row) + _RANGE_BYTES + (_CONTINUED_BYTES if new else 0)
             continue
         raise ValueError("Unrecognized DWARF entry output")
+    tally.entries, tally.bytes = count, size
     if pending is not None or not roots:
         raise ValueError("Missing DWARF unit entry")
     _close_deeper(stack, 0)
@@ -1670,31 +1755,50 @@ def application_symbols(
         raise ValueError("Rust symbol extraction has no remaining time budget")
     deadline = _clock() + budget
 
-    def dump(arguments):
-        remaining = deadline - _clock()
-        if remaining <= 0:
+    def remaining():
+        left = deadline - _clock()
+        if left <= 0:
             raise ValueError("Rust symbol extraction exceeded its shared deadline")
-        return _metadata(
+        return min(15, left)
+
+    # The bounds hold for all the units together (#397), as when the session reads
+    # them again in one go (RustSession._unit_symbols): what passes here passes there.
+    tally, line_text, info_text = Kept(), [0], [0]
+
+    def stream(arguments, what, limit, spent):
+        # Read as llvm-dwarfdump writes it (#397): never the whole text at once.
+        return _symbol_text(
             dwarfdump,
-            arguments,
+            [arguments],
             workspace,
             env,
-            max_bytes=RUST_METADATA,
-            timeout=min(15, remaining),
+            limit=limit,
+            timeout=remaining(),
+            what=what,
+            spent=spent,
         )
 
-    index = dump(["--debug-info", "--recurse-depth=0", str(symbols)])
+    index = _metadata(
+        dwarfdump,
+        ["--debug-info", "--recurse-depth=0", str(symbols)],
+        workspace,
+        env,
+        max_bytes=RUST_METADATA,
+        timeout=remaining(),
+    )
     units = application_units(index, workspace, entrypoint=entrypoint, crate=crate)
-    tables, layouts, blocks, interior = [], {}, {}, {}
+    tables, layouts, blocks, interior = _LineParser(workspace, declared, rust=True), {}, {}, {}
     for unit in units:
-        table = dump([f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)])
-        offsets = re.findall(r"^debug_line\[0x([0-9a-f]{8,16})\]$", table, re.MULTILINE)
-        if [int(offset, 16) for offset in offsets] != [unit.stmt_list]:
+        before = len(tables.headers)
+        arguments = [f"--debug-line=0x{unit.stmt_list:08x}", str(symbols)]
+        with stream(arguments, "line tables", MAX_LINE_TEXT, line_text) as lines:
+            tables.feed(lines)
+        if tables.headers[before:] != [unit.stmt_list]:
             raise ValueError("Rust line table does not match its application unit")
-        tables.append(table)
-        info = dump([f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)])
-        (root,) = parse_dies(info, units=False)
-        found = {**enum_layouts(info, unit, root), **container_layouts(info, unit, root)}
+        arguments = [f"--debug-info=0x{unit.die:08x}", "--show-children", str(symbols)]
+        with stream(arguments, "debug information", MAX_DEBUG_INFO, info_text) as lines:
+            (root,) = parse_dies(lines, units=False, tally=tally)
+        found = {**enum_layouts(None, unit, root), **container_layouts(None, unit, root)}
         for name, layout in found.items():
             if layouts.get(name, layout) != layout:
                 layout = {"kind": "unqualified"}
@@ -1714,7 +1818,7 @@ def application_symbols(
             interior = None
         for name, entry in types.items() if interior is not None else ():
             merge_layout(interior, name, entry)
-    lines = parse_lines("\n".join(tables), workspace, declared, limit=RUST_METADATA, rust=True)
+    lines = parse_lines(tables.table(), workspace, declared, rust=True)
     return lines, layouts, units, blocks, interior
 
 

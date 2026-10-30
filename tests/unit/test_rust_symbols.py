@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from peeky.native import MAX_METADATA
+from peeky.native import MAX_METADATA, SymbolLimit
 from peeky.rust_symbols import (
     QUALIFIED_OPTIONS,
     RUST_METADATA,
@@ -263,6 +263,157 @@ def test_die_parser_tolerates_only_attribute_range_continuations():
         parse_dies(" " * (MAX_METADATA + 1), units=False)
 
 
+def test_a_unit_read_as_it_is_written_is_the_texts_and_bounded(monkeypatch):
+    # Its lines as llvm-dwarfdump writes them (#397), as its whole text gives them.
+    from peeky.native import SymbolLimit
+    from peeky.textlines import split_lines
+
+    text = option_dump()
+    assert parse_dies(iter(split_lines(text)), units=False) == parse_dies(text, units=False)
+    # Its bound is the number of entries, not the text's size: a unit using BTreeMap has 33
+    # MB of text, and 95,000 entries.
+    monkeypatch.setattr("peeky.rust_symbols.MAX_DIES", 3)
+    with pytest.raises(SymbolLimit, match="at most 3 entries of a build's debug information"):
+        parse_dies(iter(split_lines(text)), units=False)
+
+
+def unit_of_unique_names(count):
+    """A unit of ``count`` variables and functions whose every name and value differs, so
+    that nothing is kept once for many: ranges on one line and on several, and location
+    lists, which only Rust's parse keeps."""
+    lines = entry(0x0B, 0, "DW_TAG_compile_unit", ("DW_AT_name", json.dumps(APP)))
+    offset = 0x100
+    for number in range(count):
+        attributes = [
+            ("DW_AT_name", f'"local_{number}"'),
+            ("DW_AT_type", f'0x{0x10000000 + number:08x} "Type{number}<u{number}>"'),
+            ("DW_AT_decl_file", f'"/work/src/module_{number}.rs"'),
+            ("DW_AT_decl_line", str(number)),
+        ]
+        if number % 3 == 0:
+            ranges = f"0x{number:08x} [0x{number:016x}, 0x{number + 1:016x}))"
+            attributes.append(("DW_AT_ranges", ranges[:-1]))
+        lines += entry(offset, 1, "DW_TAG_variable", *attributes)
+        if number % 3 == 1:
+            indent = " " * 16
+            lines += [f"{indent}DW_AT_ranges\t(0x{number:08x}"]
+            lines += [f"{indent}   [0x{number:016x}, 0x{number + 8:016x})" for _ in range(3)]
+            lines[-1] += ")"
+            lines += [f"{indent}DW_AT_location\t(0x{number:08x}: "]
+            lines += [f"{indent}   [0x{number:016x}, 0x{number + 4:016x}): DW_OP_reg{number % 8}"]
+            lines[-1] += ")"
+        offset += 0x40
+    lines += null(offset, 1)
+    return lines
+
+
+def test_what_a_parse_keeps_is_never_more_than_it_reckons(monkeypatch):
+    # MAX_KEPT is a bound on what Python holds (#397 review): each parse reckons it as it
+    # goes, and Rust's never below the native one's for the same text (what passes in
+    # `prepare` passes when the session reads the units again).
+    import tracemalloc
+
+    from peeky.native import DieMap, Kept, _parse_dies
+
+    lines = unit_of_unique_names(3000)
+    measured = {}
+    for parse in ("native", "rust"):
+        tally = Kept()
+        tracemalloc.start()
+        if parse == "native":
+            found = _parse_dies(iter(lines), DieMap())
+            reckoned = found.kept
+        else:
+            found = parse_dies(iter(lines), units=False, tally=tally)
+            reckoned = tally.bytes
+        held, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        # Rust's reckons each entry as a native one, which holds more.
+        assert held <= peak <= reckoned <= (1.6 if parse == "native" else 2.2) * peak, (
+            parse,
+            held,
+            peak,
+            reckoned,
+        )
+        measured[parse] = reckoned
+        del found
+    assert measured["rust"] >= measured["native"]
+    for limit in (measured["native"] - 1, measured["rust"] - 1):
+        monkeypatch.setattr("peeky.native.MAX_KEPT", limit)
+        monkeypatch.setattr("peeky.rust_symbols.MAX_KEPT", limit)
+        with pytest.raises(SymbolLimit, match=f"keeps at most {limit:,} bytes of a build's debug"):
+            if limit == measured["native"] - 1:
+                _parse_dies(iter(lines))
+            else:
+                parse_dies(iter(lines), units=False)
+
+
+@pytest.mark.parametrize("kind", ["value", "ranges", "rows"])
+def test_rust_refuses_what_is_over_what_is_left_before_it_is_kept(monkeypatch, kind):
+    # Each line's cost is reckoned before anything of it is kept or copied (review): a 10
+    # MiB name, or a block of continued rows past the bound.
+    import tracemalloc
+
+    from peeky.native import _RANGE_BYTES, Kept
+
+    lines = [
+        *entry(0x0B, 0, "DW_TAG_compile_unit", ("DW_AT_name", json.dumps(APP))),
+        *entry(0x20, 1, "DW_TAG_subprogram", ("DW_AT_name", '"main"')),
+    ]
+    ranges = [f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(30_000)]
+    if kind == "value":
+        lines += [" " * 16 + 'DW_AT_linkage_name\t("' + "n" * (10 << 20) + '")']
+    elif kind == "ranges":
+        lines += [" " * 16 + f"DW_AT_ranges\t(0x00000000 {' '.join(ranges)})"]
+    else:
+        lines += [" " * 16 + "DW_AT_ranges\t(0x00000000"]
+        lines += [" " * 19 + f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(30_000)]
+    monkeypatch.setattr("peeky.rust_symbols.MAX_KEPT", 1 << 20)
+    tally = Kept()
+    tracemalloc.start()
+    try:
+        with pytest.raises(SymbolLimit, match="keeps at most 1 MiB of a build's debug info"):
+            parse_dies(iter(lines), units=False, tally=tally)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert 30_000 * _RANGE_BYTES > 4 << 20 and peak < 1 << 20, peak
+
+
+@pytest.mark.parametrize("one_line", [True, False])
+def test_rust_reads_ranges_near_the_bound_within_it(monkeypatch, one_line):
+    # Accepted, a value's ranges are counted by its `[`s, never matched all at once.
+    import tracemalloc
+
+    from peeky.native import Kept
+
+    lines = [
+        *entry(0x0B, 0, "DW_TAG_compile_unit", ("DW_AT_name", json.dumps(APP))),
+        *entry(0x20, 1, "DW_TAG_subprogram", ("DW_AT_name", '"main"')),
+    ]
+    # Near the bound: a row also keeps its text, a range on one line only its count.
+    count = 30_000 if one_line else 27_000
+    ranges = [f"[0x{n:016x}, 0x{n + 1:016x})" for n in range(count)]
+    if one_line:
+        lines += [" " * 16 + f"DW_AT_ranges\t(0x00000000 {' '.join(ranges)})"]
+    else:
+        lines += [" " * 16 + "DW_AT_ranges\t(0x00000000"]
+        lines += [" " * 19 + each for each in ranges]
+    lines += null(0x30, 2) + null(0x40, 1)
+    monkeypatch.setattr("peeky.rust_symbols.MAX_KEPT", 8 << 20)
+    tally = Kept()
+    tracemalloc.start()
+    try:
+        (root,) = parse_dies(iter(lines), units=False, tally=tally)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    (main,) = root.children
+    assert "DW_AT_ranges" in main.attributes and 6 << 20 < tally.bytes <= 8 << 20
+    assert len(main.continued.get("DW_AT_ranges", ())) == (0 if one_line else count)
+    assert peak < 8 << 20, peak
+
+
 def test_enum_layouts_follow_compiler_discriminants_and_qualify_only_i32():
     layouts = enum_layouts(option_dump(), UNIT)
     assert layouts == {
@@ -363,12 +514,16 @@ def fake_dwarfdump(tmp_path, files):
     script = tmp_path / "dwarfdump"
     script.write_text(
         f"#!{sys.executable}\n"
-        "import os, pathlib, sys\n"
+        "import os, pathlib, sys, time\n"
         "args = sys.argv[1:]\n"
+        "mode = os.environ.get('FAKE_MODE', 'ok')\n"
+        "if mode == 'sleep' and '--version' not in args: time.sleep(30)\n"
+        "if mode == 'fail': sys.stderr.write('dwarfdump: error: bad unit\\n'); sys.exit(3)\n"
         "name = 'index' if '--recurse-depth=0' in args else args[0].split('=', 1)[1]\n"
         "if '--debug-line=' in args[0]: name = 'line-' + name\n"
         "source = pathlib.Path(os.environ['FAKE_DWARF']) / name\n"
-        "pathlib.Path(args[args.index('-o') + 1]).write_text(source.read_text())\n"
+        "if '-o' in args: pathlib.Path(args[args.index('-o') + 1]).write_text(source.read_text())\n"
+        "else: sys.stdout.write(source.read_text())\n"
     )
     script.chmod(0o755)
     return str(script), {**os.environ, "FAKE_DWARF": str(data)}
@@ -487,6 +642,122 @@ def test_application_symbols_reject_mismatched_tables(tmp_path, files):
             crate="peeky_pagination",
             declared=("src/main.rs",),
         )
+
+
+def two_units(tmp_path):
+    """A crate built as two codegen units (`-cgu.0`, `-cgu.1`), each like the one above."""
+    workspace = rust_workspace(tmp_path)
+    second = APP.replace("cgu.0", "cgu.1")
+    tool, env = fake_dwarfdump(
+        tmp_path,
+        {
+            "index": index(
+                unit(0, 0x1000, comp_dir=workspace),
+                unit(0x1000, 0x2000, name=second, comp_dir=workspace, stmt=0x100),
+            ),
+            "line-0x00000000": line_table(),
+            "line-0x00000100": line_table(offset=0x100),
+            "0x0000000b": option_dump(),
+            # Its entries 0x1000 on, in its own unit.
+            "0x0000100b": re.sub(
+                r"0x([0-9a-f]{8})",
+                lambda found: f"0x{int(found[1], 16) + 0x1000:08x}",
+                option_dump().replace(APP, second),
+            ),
+        },
+    )
+    return workspace, tool, env
+
+
+def test_application_symbols_bound_the_units_together(tmp_path, monkeypatch):
+    # The session reads every unit again in one go (`RustSession._unit_symbols`), bounded
+    # as one: a crate whose units pass one by one there would fail mid-session.
+    workspace, tool, env = two_units(tmp_path)
+    found = application_symbols(
+        tool,
+        "program",
+        workspace,
+        env,
+        entrypoint="src/main.rs",
+        crate="peeky_pagination",
+        declared=("src/main.rs",),
+    )
+    assert [unit.die for unit in found[2]] == [0x0B, 0x100B]
+    (root,) = parse_dies(option_dump(), units=False)
+    entries, stack = 0, [root]
+    while stack:
+        entries, stack = entries + 1, stack[:-1] + stack[-1].children
+    monkeypatch.setattr("peeky.rust_symbols.MAX_DIES", entries + 1)
+    with pytest.raises(SymbolLimit, match=f"at most {entries + 1} entries"):
+        application_symbols(
+            tool,
+            "program",
+            workspace,
+            env,
+            entrypoint="src/main.rs",
+            crate="peeky_pagination",
+            declared=("src/main.rs",),
+        )
+
+
+def session_of(tmp_path, monkeypatch, mode):
+    """A RustSession of the two-unit crate, as `prepare` left it, whose dwarfdump now
+    ``mode``s: "ok", "sleep" or "fail"."""
+    from types import SimpleNamespace
+
+    from peeky.rust import RustSession
+
+    workspace, tool, env = two_units(tmp_path)
+    session = object.__new__(RustSession)
+    session.target = SimpleNamespace(dwarfdump=tool)
+    session.prepared = SimpleNamespace(
+        workspace=workspace,
+        manifest=SimpleNamespace(effective_environment={**env, "FAKE_MODE": mode}),
+    )
+    session.symbols = workspace / "program"
+    session.units = (
+        RustUnit(0, 0x0B, 0x1000, 0, APP),
+        RustUnit(0x1000, 0x100B, 0x2000, 0x100, APP.replace("cgu.0", "cgu.1")),
+    )
+    session._lines_data = json.dumps({"src/main.rs": [2]})
+    session.assert_current = lambda: None
+    return session
+
+
+# What reads the units again after `prepare`: `describe`, a field or element change, a
+# change after a step, and a text change's borrow check.
+REREADS = {
+    "function_scopes": lambda session: session.function_scopes(),
+    "field_types": lambda session: session._field_types(),
+    "address_rows": lambda session: session._address_rows(),
+    "text_change": lambda session: session._free_types(),
+}
+
+
+@pytest.mark.parametrize("failure", ["limit", "timeout", "tool"])
+@pytest.mark.parametrize("reader", sorted(REREADS))
+def test_a_reread_that_does_not_finish_is_said_as_it_is(tmp_path, monkeypatch, reader, failure):
+    # Never "no rows", a cached refusal of every field change (INVALID_REQUEST), or a
+    # borrow check without the crate's types: a bound, a timeout or a failing tool.
+    from peeky.native import SymbolToolError
+
+    if failure == "limit":
+        monkeypatch.setattr("peeky.native.MAX_DIES", 2)
+        monkeypatch.setattr("peeky.native.MAX_LINE_TEXT", 10)
+    if failure == "timeout":
+        monkeypatch.setattr("peeky.rust.UNIT_READ_S", 0.5)
+    mode = {"limit": "ok", "timeout": "sleep", "tool": "fail"}[failure]
+    session = session_of(tmp_path, monkeypatch, mode)
+    expected = {"limit": SymbolLimit, "timeout": TimeoutError, "tool": SymbolToolError}[failure]
+    for _ in range(2):
+        with pytest.raises(expected):
+            REREADS[reader](session)
+    assert not {"_rows", "_field_cache", "_free_cache"} & set(vars(session))
+
+
+def test_a_reread_that_finishes_gives_its_rows(tmp_path, monkeypatch):
+    session = session_of(tmp_path, monkeypatch, "ok")
+    assert session._address_rows() == [(0x401008, "src/main.rs", 2), (0x401008, "src/main.rs", 2)]
 
 
 LAYOUTS = {

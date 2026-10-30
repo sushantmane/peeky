@@ -14,6 +14,7 @@ import os
 import platform
 import posixpath
 import re
+import selectors
 import shutil
 import signal
 import struct
@@ -61,8 +62,16 @@ from peeky.text_sets import text_kind
 from peeky.textlines import octal_string, read_source, source_lines, split_lines
 
 MAX_METADATA = 2 * 1024 * 1024
-# Type-rich C++ units (iostream) carry megabytes of DIEs; read only by `describe`.
-MAX_DEBUG_INFO = 16 * 1024 * 1024
+# A build's line tables and debug information are read as llvm-dwarfdump writes them,
+# never held whole (#397): what is kept is parsed, and bounded by MAX_DIES. An 8-file C++
+# program using the STL has 2-3 MB of line tables and 20-40 MB of debug information
+# (75,000-100,000 entries), as has a Rust crate using BTreeMap.
+MAX_LINE_TEXT = 64 * 1024 * 1024
+MAX_DEBUG_INFO = 256 * 1024 * 1024
+# The longest line of that text Peeky reads (the longest real ones are about 1.6 KB). MAX_KEPT
+# bounds what a parse keeps; reading one line uses memory past it for a while, bounded by
+# this: the line, its read, and what matching it copies.
+MAX_LINE = 4 * 1024 * 1024
 FLAGS = ("-std=c11", "-g", "-gdwarf-4", "-O0", "-fno-omit-frame-pointer")
 CPP_FLAGS = ("-std=c++17", *FLAGS[1:])
 OPTIMIZATIONS = ("O0", "Og", "O1", "O2")
@@ -209,43 +218,210 @@ def _metadata(tool, arguments, workspace, env, *, max_bytes=MAX_METADATA, timeou
         return read(output) if read else output.read_bytes().decode("utf-8")
 
 
-def _line_rows(
-    text,
-    workspace,
-    declared,
-    limit=MAX_METADATA,
-    replaced=None,
-    epilogues=None,
-    rust=False,
-    prologues=None,
-):
-    """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
+class SymbolLimit(ValueError):
+    """A build whose symbols are over one of Peeky's bounds (#397), refused as
+    BUDGET_EXHAUSTED. ``detail``: which bound, in a few words, for a value's note."""
 
-    Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
-    headers) and end-of-sequence rows are skipped. Of the rows a sequence gives one
-    address (GCC -O2), LLDB keeps the last: each earlier one of another line or file
-    runs no code. It is skipped if it is not a statement; a statement row is kept,
-    since a breakpoint can be set on its line, and added to ``replaced`` when given.
-    ``epilogues``, when given, gets the address of each row that begins an epilogue;
-    ``prologues``, that of each row marked `prologue_end`, in any file (#279).
-    """
-    if len(text.encode()) > limit:
-        raise ValueError("Native line metadata exceeds limit")
-    workspace = Path(workspace).resolve()
-    inputs = {str((workspace / name).resolve()): name for name in declared}
-    # As the compiler counts lines (``rust``: rustc, at `\n` alone; else clang, at a lone
-    # `\r` too), told by the caller: a Rust module may have any name (#188 review).
-    counts = {name: len(source_lines(read_source(workspace / name), rust)) for name in declared}
-    directories, files, current = {0: str(workspace)}, {}, None
-    # {file id: declared name or None} for this table: one resolve per file, not per row.
-    resolved = {}
-    table_count = 0
-    version = None
-    rows = []
-    # The rows of one address in a sequence: (address, name, line, statement, ending).
-    group = []
+    def __init__(self, message, detail):
+        super().__init__(message)
+        self.detail = detail
 
-    def flush():
+
+_SMALLER = "probe a smaller program (fewer source files, standard headers or std collections)"
+
+
+def symbol_limit(limit, what, kept=False, line=False):
+    """The refusal of a build whose ``what`` (`line tables`) is over ``limit`` (`64 MiB`):
+    of what Peeky reads, of one line of it (``line``), or (``kept``) of what it keeps of
+    it in memory."""
+    if line:
+        return SymbolLimit(
+            f"Peeky reads at most {limit} of one line of a build's {what}, and this build has "
+            f"a longer one: {_SMALLER}.",
+            f"a line over Peeky's limit of {limit}; {_SMALLER.split(' (')[0]}",
+        )
+    if kept:
+        return SymbolLimit(
+            f"Peeky keeps at most {limit} of a build's {what} in memory, and this build needs "
+            f"more: {_SMALLER}.",
+            f"over Peeky's limit of {limit} in memory; {_SMALLER.split(' (')[0]}",
+        )
+    return SymbolLimit(
+        f"Peeky reads at most {limit} of a build's {what}, and this build has more: {_SMALLER}.",
+        f"over Peeky's limit of {limit}; {_SMALLER.split(' (')[0]}",
+    )
+
+
+class SymbolToolError(RuntimeError):
+    """llvm-dwarfdump failed while Peeky read a build's symbols: a DEBUGGER_ERROR."""
+
+
+# A read of a build's symbols that did not finish (#397): over a bound, out of time, or
+# its tool failed. Never a parse that could not read the text: an optional proof that
+# falls back without its text must let these through.
+SYMBOL_FAILURES = (SymbolLimit, TimeoutError, SymbolToolError)
+
+
+def _size(limit):
+    return f"{limit >> 20} MiB" if limit % (1 << 20) == 0 else f"{limit:,} bytes"
+
+
+@contextlib.contextmanager
+def _symbol_text(tool, commands, workspace, env, *, limit, timeout, what, spent=None):
+    """The lines llvm-dwarfdump writes for each argument list of ``commands`` in turn,
+    as it writes them (#397): the text is parsed as it comes and never held whole.
+    Lines end at `\\n` as ``split_lines`` ends them. At most ``limit`` bytes in all
+    (SymbolLimit), with ``spent`` (a one-item list: bytes earlier reads of the same build
+    took of it, added to here), within ``timeout`` seconds (TimeoutError); a tool that
+    fails, or writes over 16,000 bytes of diagnostics, is a SymbolToolError. Each tool
+    is ended when the block is left; the iterator must be read to its end."""
+    if type(limit) is not int or not 0 < limit <= MAX_DEBUG_INFO:
+        raise ValueError("Invalid native metadata capture limit")
+    if type(timeout) not in (int, float) or not 0 < timeout <= 15:
+        raise ValueError("Invalid native metadata time limit")
+    from peeky.agent import kill_process_group
+
+    deadline = time.monotonic() + timeout
+    running, ended = [], []
+    with tempfile.TemporaryDirectory(prefix="peeky-symbols-", dir=workspace) as scratch:
+
+        def failed(process, errors, why):
+            with errors.open("rb") as diagnostics:
+                detail = diagnostics.read(2000).decode("utf-8", errors="replace")
+            return SymbolToolError(
+                f"Native symbol command failed ({why}): exit={process.returncode}, "
+                f"diagnostics={detail}"
+            )
+
+        def late():
+            error = TimeoutError(
+                f"Reading the build's {what} timed out after {timeout:.1f} s: {_SMALLER}, "
+                "or retry when the machine is less busy"
+            )
+            error.detail = f"it took over {timeout:.1f} s; {_SMALLER.split(' (')[0]}"
+            return error
+
+        def lines():
+            total = spent if spent is not None else [0]
+            for index, arguments in enumerate(commands):
+                errors = Path(scratch) / f"errors-{index}.txt"
+                with errors.open("wb") as stderr:
+                    process = subprocess.Popen(
+                        [tool, *arguments],
+                        cwd=workspace,
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=stderr,
+                        start_new_session=True,
+                    )
+                running.append(process)
+                source, pending = process.stdout.fileno(), bytearray()
+                with selectors.DefaultSelector() as waiting:
+                    waiting.register(source, selectors.EVENT_READ)
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise late()
+                        ready = waiting.select(min(remaining, 0.5))
+                        if errors.stat().st_size > 16000:
+                            raise failed(process, errors, "too many diagnostics")
+                        if not ready:
+                            continue
+                        chunk = os.read(source, 1 << 20)
+                        if not chunk:
+                            break
+                        total[0] += len(chunk)
+                        if total[0] > limit:
+                            raise symbol_limit(_size(limit), what)
+                        end, first = chunk.rfind(b"\n"), chunk.find(b"\n")
+                        # A line is never held longer than MAX_LINE, nor read into one.
+                        if len(pending) + (len(chunk) if end < 0 else first) > MAX_LINE:
+                            raise symbol_limit(_size(MAX_LINE), what, line=True)
+                        if end < 0:
+                            pending += chunk
+                            continue
+                        pending += chunk[:end]
+                        # Whole lines only: UTF-8 never holds a `\n` inside a character.
+                        block = pending.decode("utf-8")
+                        pending = bytearray(chunk[end + 1 :])
+                        for line in block.split("\n"):
+                            if len(line) > MAX_LINE:
+                                raise symbol_limit(_size(MAX_LINE), what, line=True)
+                            yield line[:-1] if line.endswith("\r") else line
+                if pending:
+                    if len(pending) > MAX_LINE:
+                        raise symbol_limit(_size(MAX_LINE), what, line=True)
+                    # As split_lines keeps it: a last line's `\r` is its own.
+                    yield pending.decode("utf-8")
+                try:
+                    process.wait(timeout=max(deadline - time.monotonic(), 0.01))
+                except subprocess.TimeoutExpired:
+                    raise late() from None
+                if process.returncode or errors.stat().st_size > 16000:
+                    raise failed(process, errors, "exit status or diagnostics")
+            ended.append(True)
+
+        found = lines()
+        try:
+            yield found
+            if not ended:
+                raise RuntimeError("Native symbol text was not read to its end")
+        finally:
+            found.close()
+            for process in running:
+                kill_process_group(process)
+                process.wait(timeout=3)
+                process.stdout.close()
+
+
+class LineTable(NamedTuple):
+    """A build's line tables as ``_LineParser`` read them (#397): the rows ``_line_rows``
+    gives, and the marks it collects, for the sources (``key``) they were read for."""
+
+    key: tuple
+    rows: tuple
+    replaced: frozenset
+    epilogues: frozenset
+    prologues: frozenset
+
+
+def _line_key(workspace, declared, rust):
+    return str(Path(workspace).resolve()), frozenset(declared), bool(rust)
+
+
+# A Rust unit's own line table names its offset so (application_symbols).
+_TABLE_HEADER = re.compile(r"debug_line\[0x([0-9a-f]{8,16})\]")
+
+
+class _LineParser:
+    """``_line_rows``'s reading of line-table text, fed its lines as they come (``feed``,
+    once per dump: several tables in turn read as the text of all of them would)."""
+
+    def __init__(self, workspace, declared, rust=False):
+        workspace = Path(workspace).resolve()
+        self.key = _line_key(workspace, declared, rust)
+        self.workspace = workspace
+        self.inputs = {str((workspace / name).resolve()): name for name in declared}
+        # As the compiler counts lines (``rust``: rustc, at `\n` alone; else clang, at a
+        # lone `\r` too), told by the caller: a Rust module may have any name (#188 review).
+        self.counts = {
+            name: len(source_lines(read_source(workspace / name), rust)) for name in declared
+        }
+        self.directories, self.files, self.current = {0: str(workspace)}, {}, None
+        # {file id: declared name or None} for this table: one resolve per file, not per row.
+        self.resolved = {}
+        self.table_count = 0
+        self.version = None
+        self.rows = []
+        self.replaced, self.epilogues, self.prologues = set(), set(), set()
+        # The rows of one address in a sequence: (address, name, line, statement, ending).
+        self.group = []
+        # The offset each table's header names, in order.
+        self.headers = []
+
+    def flush(self):
+        group, rows = self.group, self.rows
         if not group:
             return
         *earlier, last = group
@@ -256,76 +432,145 @@ def _line_rows(
                 rows.append((address, name, number))
             elif statement:
                 rows.append((address, name, number))
-                if replaced is not None:
-                    replaced.add((address, name, number))
+                self.replaced.add((address, name, number))
         if last[1] is not None and not last[4]:
             rows.append(last[:3])
         group.clear()
 
-    for raw in split_lines(text):
-        line = raw.strip()
-        if line.startswith("debug_line["):
-            table_count += 1
-            if table_count > 4096:
-                raise ValueError("Too many native line tables")
-            flush()
-            directories, files, current = {0: str(workspace)}, {}, None
-            resolved = {}
-            version = None
-        elif match := re.fullmatch(r"version:\s+(\d+)", line):
-            version = int(match[1])
-            if version != 4:
-                raise ValueError("Only explicitly built DWARF4 line tables are supported")
-        elif match := re.fullmatch(r"include_directories\[\s*(\d+)\]\s*=\s*(\".*\")", line):
-            key = int(match[1])
-            if key in directories and key != 0:
-                raise ValueError("Duplicate line directory")
-            directories[key] = _line_string(match[2])
-        elif match := re.fullmatch(r"file_names\[\s*(\d+)\]:", line):
-            current = int(match[1])
-            if current in files:
-                raise ValueError("Duplicate line file identity")
-            files[current] = {}
-        elif match := re.fullmatch(r"name:\s*(\".*\")", line):
-            if current is None:
-                raise ValueError("Missing line file identity")
-            files[current]["name"] = _line_string(match[1])
-        elif match := re.fullmatch(r"dir_index:\s*(\d+)", line):
-            if current is None:
-                raise ValueError("Missing line file identity")
-            files[current]["directory"] = int(match[1])
-        elif line.startswith("0x"):
-            fields = line.split()
-            if version != 4 or len(fields) < 4 or not re.fullmatch(r"0x[0-9a-fA-F]+", fields[0]):
-                raise ValueError("Malformed native line row")
-            try:
-                number, file_id = int(fields[1]), int(fields[3])
-                if file_id not in resolved:
-                    entry = files[file_id]
-                    directory = directories[entry["directory"]]
-                    path = (workspace / directory / entry["name"]).resolve()
-                    # SDK/system header instructions are not selectable user source.
-                    resolved[file_id] = inputs.get(str(path))
-            except (ValueError, KeyError, TypeError) as exc:
-                raise ValueError("Unresolved native line source") from exc
-            address, name = int(fields[0], 16), resolved[file_id]
-            ending = "end_sequence" in fields or number == 0
-            if epilogues is not None and "epilogue_begin" in fields and not ending:
-                epilogues.add(address)
-            if prologues is not None and "prologue_end" in fields and "end_sequence" not in fields:
-                prologues.add(address)
-            if name is not None and not ending and not 0 < number <= counts[name]:
-                raise ValueError("Native line exceeds declared source length")
-            if group and group[0][0] != address:
-                flush()
-            group.append((address, name, number, "is_stmt" in fields, ending))
-            if "end_sequence" in fields:
-                # The next sequence may start at this address: its rows are its own.
-                flush()
-    flush()
-    if not table_count:
-        raise ValueError("Missing executable native debug symbol line information")
-    return rows
+    def feed(self, lines):
+        workspace, inputs, counts, group = self.workspace, self.inputs, self.counts, self.group
+        epilogues, prologues = self.epilogues, self.prologues
+        for raw in lines:
+            line = raw.strip()
+            if line.startswith("0x"):
+                fields = line.split()
+                if (
+                    self.version != 4
+                    or len(fields) < 4
+                    or not re.fullmatch(r"0x[0-9a-fA-F]+", fields[0])
+                ):
+                    raise ValueError("Malformed native line row")
+                resolved = self.resolved
+                try:
+                    number, file_id = int(fields[1]), int(fields[3])
+                    if file_id not in resolved:
+                        entry = self.files[file_id]
+                        directory = self.directories[entry["directory"]]
+                        path = (workspace / directory / entry["name"]).resolve()
+                        # SDK/system header instructions are not selectable user source.
+                        resolved[file_id] = inputs.get(str(path))
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise ValueError("Unresolved native line source") from exc
+                address, name = int(fields[0], 16), resolved[file_id]
+                ending = "end_sequence" in fields or number == 0
+                if "epilogue_begin" in fields and not ending:
+                    epilogues.add(address)
+                if "prologue_end" in fields and "end_sequence" not in fields:
+                    prologues.add(address)
+                if name is not None and not ending and not 0 < number <= counts[name]:
+                    raise ValueError("Native line exceeds declared source length")
+                if group and group[0][0] != address:
+                    self.flush()
+                group.append((address, name, number, "is_stmt" in fields, ending))
+                if "end_sequence" in fields:
+                    # The next sequence may start at this address: its rows are its own.
+                    self.flush()
+            elif line.startswith("debug_line["):
+                self.table_count += 1
+                if self.table_count > 4096:
+                    raise ValueError("Too many native line tables")
+                if header := _TABLE_HEADER.fullmatch(raw):
+                    self.headers.append(int(header[1], 16))
+                self.flush()
+                self.directories, self.files, self.current = {0: str(workspace)}, {}, None
+                self.resolved = {}
+                self.version = None
+            elif match := re.fullmatch(r"version:\s+(\d+)", line):
+                self.version = int(match[1])
+                if self.version != 4:
+                    raise ValueError("Only explicitly built DWARF4 line tables are supported")
+            elif match := re.fullmatch(r"include_directories\[\s*(\d+)\]\s*=\s*(\".*\")", line):
+                key = int(match[1])
+                if key in self.directories and key != 0:
+                    raise ValueError("Duplicate line directory")
+                self.directories[key] = _line_string(match[2])
+            elif match := re.fullmatch(r"file_names\[\s*(\d+)\]:", line):
+                self.current = int(match[1])
+                if self.current in self.files:
+                    raise ValueError("Duplicate line file identity")
+                self.files[self.current] = {}
+            elif match := re.fullmatch(r"name:\s*(\".*\")", line):
+                if self.current is None:
+                    raise ValueError("Missing line file identity")
+                self.files[self.current]["name"] = _line_string(match[1])
+            elif match := re.fullmatch(r"dir_index:\s*(\d+)", line):
+                if self.current is None:
+                    raise ValueError("Missing line file identity")
+                self.files[self.current]["directory"] = int(match[1])
+
+    def table(self):
+        self.flush()
+        if not self.table_count:
+            raise ValueError("Missing executable native debug symbol line information")
+        return LineTable(
+            self.key,
+            tuple(self.rows),
+            frozenset(self.replaced),
+            frozenset(self.epilogues),
+            frozenset(self.prologues),
+        )
+
+
+def read_line_table(tool, commands, workspace, env, declared, *, timeout, rust=False):
+    """The LineTable of llvm-dwarfdump's line-table text for each argument list of
+    ``commands`` (`["--debug-line", symbols]`), read as it is written (#397)."""
+    parser = _LineParser(workspace, declared, rust)
+    with _symbol_text(
+        tool, commands, workspace, env, limit=MAX_LINE_TEXT, timeout=timeout, what="line tables"
+    ) as lines:
+        parser.feed(lines)
+    return parser.table()
+
+
+def _line_rows(
+    text,
+    workspace,
+    declared,
+    limit=MAX_LINE_TEXT,
+    replaced=None,
+    epilogues=None,
+    rust=False,
+    prologues=None,
+):
+    """Rows of the LLVM DWARF4 line-table dump for declared sources: (address, name, line).
+    ``text``: the dump's text, or the LineTable ``read_line_table`` read of it.
+
+    Unrecognized rows fail closed. Rows outside the declared sources (SDK and system
+    headers) and end-of-sequence rows are skipped. Of the rows a sequence gives one
+    address (GCC -O2), LLDB keeps the last: each earlier one of another line or file
+    runs no code. It is skipped if it is not a statement; a statement row is kept,
+    since a breakpoint can be set on its line, and added to ``replaced`` when given.
+    ``epilogues``, when given, gets the address of each row that begins an epilogue;
+    ``prologues``, that of each row marked `prologue_end`, in any file (#279).
+    """
+    if isinstance(text, LineTable):
+        table = text
+        if table.key != _line_key(workspace, declared, rust):
+            raise ValueError("The line table was read for other sources")
+    else:
+        if len(text.encode()) > limit:
+            raise symbol_limit(_size(limit), "line tables")
+        parser = _LineParser(workspace, declared, rust)
+        parser.feed(split_lines(text))
+        table = parser.table()
+    for found, kept in (
+        (replaced, table.replaced),
+        (epilogues, table.epilogues),
+        (prologues, table.prologues),
+    ):
+        if found is not None:
+            found.update(kept)
+    return list(table.rows)
 
 
 def _line_string(quoted):
@@ -337,8 +582,9 @@ def _line_string(quoted):
     return name
 
 
-def parse_lines(text, workspace, declared, *, limit=MAX_METADATA, rust=False):
-    """Parse the LLVM DWARF4 line-table dump; unrecognized rows fail closed."""
+def parse_lines(text, workspace, declared, *, limit=MAX_LINE_TEXT, rust=False):
+    """Parse the LLVM DWARF4 line-table dump (or its LineTable); unrecognized rows fail
+    closed."""
     result = {name: set() for name in declared}
     for _, name, number in _line_rows(text, workspace, declared, limit, rust=rust):
         result[name].add(number)
@@ -348,7 +594,45 @@ def parse_lines(text, workspace, declared, *, limit=MAX_METADATA, rust=False):
 
 
 MAX_SCOPES = 300
-MAX_DIES = 200_000
+# The entries of a build's debug information Peeky keeps (#397): the STL-heavy 8-file C++
+# program and the Rust crate using BTreeMap have 59,000-130,000 each.
+MAX_DIES = 400_000
+# What Peeky keeps in memory of a build's parsed debug information (#397), reckoned as it
+# parses: never less than what Python holds for it (tests check, with tracemalloc). Those
+# programs keep 57-136 MB by this reckoning, which overstates what is held by 25-70%.
+MAX_KEPT = 300 * 1024 * 1024
+# A dict of n names (an entry's attributes) takes at most _NAMES_BASE + n * _NAME_BYTES.
+_NAME_BYTES = 56
+_NAMES_BASE = sys.getsizeof({"a": 0}) - _NAME_BYTES
+# The most one entry keeps past its attributes and values: its dict, its attributes'
+# dict's base, its two lists, its offset, its slot in the DieMap (72), its place in its
+# parent's children (9) and that list's spare room (48).
+_ENTRY_BYTES = (
+    sys.getsizeof({"tag": "", "attrs": {}, "parent": 0, "children": [], "depth": 0, "ranges": []})
+    + _NAMES_BASE
+    + 2 * sys.getsizeof([])
+    + sys.getsizeof(1 << 40)
+    + 72
+    + 9
+    + 48
+)
+# A distinct name or value's slot in the parse's pool; its text is sys.getsizeof's.
+_VALUE_BYTES = 80
+# A str's own bytes past its characters, at most (one of 4-byte characters has the most).
+_STR_BYTES = max(
+    sys.getsizeof(text) - len(text) * width
+    for text, width in (("a", 1), ("\u00e9", 1), ("\u0100", 2), ("\U00010000", 4))
+)
+
+
+def _held(raw, start, end):
+    """The most keeping ``raw[start:end]`` as a new distinct value can take, reckoned
+    before it is copied out of its line: 4 bytes a character unless the line is ASCII."""
+    return _STR_BYTES + (end - start) * (1 if raw.isascii() else 4) + _VALUE_BYTES
+
+
+# One `[low, high)` of an entry's code: its tuple, its numbers and its place in a list.
+_RANGE_BYTES = 200
 _DIE = re.compile(r"(0x[0-9a-fA-F]+):( +)(DW_TAG_\w+|NULL)")
 _ATTRIBUTE = re.compile(r" +(DW_AT_\w+)\s+\((.*)\)$")
 _RANGES_START = re.compile(r" +DW_AT_ranges\s+\((0x[0-9a-fA-F]+)\s*$")
@@ -379,12 +663,32 @@ def _reusing_dies():
         _PARSED.last = None
 
 
+class Kept:
+    """What the parses of one build's debug information keep in all (#397): ``entries``,
+    and ``bytes`` as MAX_KEPT reckons them."""
+
+    def __init__(self):
+        self.entries = self.bytes = 0
+
+
+class DieMap(dict):
+    """{offset: die} as ``_parse_dies`` reads dwarfdump's `--debug-info` text, which may
+    be read as llvm-dwarfdump writes it (``read_debug_info``, #397), never held whole.
+    ``tail_calls``: has_tail_calls of that text; ``kept``: the bytes it keeps (MAX_KEPT)."""
+
+    tail_calls = False
+    kept = 0
+
+
 def _dies(text):
     """A bounded, lenient parse of `dwarfdump --debug-info`, for display only.
 
     Returns {offset: die} with each die {tag, attrs, parent, children, depth, ranges};
     nesting is read from the indentation (one level per two spaces after the offset).
+    ``text``: the dump's text, or the DieMap already read of it.
     """
+    if isinstance(text, DieMap):
+        return text
     last = getattr(_PARSED, "last", None)
     if last is not None and last[0] is text:
         return last[1]
@@ -394,25 +698,53 @@ def _dies(text):
     return dies
 
 
-def _parse_dies(text):
-    dies, stack, ranges = {}, [], None
-    for raw in split_lines(text):
+def _parse_dies(text, into=None):
+    """``text``: dwarfdump's `--debug-info` text, or its lines as they come. ``into``: a
+    DieMap to add them to (several dumps read in turn, as the text of all of them).
+    At most MAX_DIES entries, and MAX_KEPT bytes kept (SymbolLimit): each line's cost is
+    reckoned, at most, before anything of it is kept or copied."""
+    dies = DieMap() if into is None else into
+    stack, ranges, tail_calls, size = [], None, dies.tail_calls, dies.kept
+    # One copy of each repeated name and value (a type's name, a header's path): a dump
+    # of tens of megabytes repeats most of its text.
+    kept = {}
+
+    def room(need):
+        if size + need > MAX_KEPT:
+            raise symbol_limit(_size(MAX_KEPT), "debug information", kept=True)
+
+    def one(item):
+        nonlocal size
+        if (found := kept.get(item)) is None:
+            kept[item] = found = item
+            size += sys.getsizeof(item) + _VALUE_BYTES
+        return found
+
+    for raw in split_lines(text) if isinstance(text, str) else text:
+        if not tail_calls and "tail_call" in raw and _TAIL_CALL.search(raw):
+            tail_calls = True
         if ranges is not None:
-            ranges.extend((int(lo, 16), int(hi, 16)) for lo, hi in _RANGE.findall(raw))
+            # At most one range a `[`, each counted before it is read, then read one at a
+            # time: never all of a line's matches at once.
+            room(raw.count("[") * _RANGE_BYTES)
+            for found in _RANGE.finditer(raw):
+                ranges.append((int(found[1], 16), int(found[2], 16)))
+                size += _RANGE_BYTES
             if raw.rstrip().endswith("))") or not _RANGE.search(raw):
                 ranges = None
-            continue
-        if match := _DIE.match(raw):
-            if len(dies) >= MAX_DIES:
-                raise ValueError("Too many debug-info entries to list function scopes")
+        elif match := _DIE.match(raw):
             depth = (len(match[2]) - 1) // 2
             del stack[depth:]
             if match[3] == "NULL":
                 continue
+            if len(dies) >= MAX_DIES:
+                raise symbol_limit(f"{MAX_DIES:,} entries", "debug information")
+            room(_ENTRY_BYTES + _held(raw, match.start(3), match.end(3)))
             offset = int(match[1], 16)
             parent = stack[-1] if stack else None
+            size += _ENTRY_BYTES
             dies[offset] = {
-                "tag": match[3],
+                "tag": one(match[3]),
                 "attrs": {},
                 "parent": parent,
                 "children": [],
@@ -424,12 +756,45 @@ def _parse_dies(text):
             stack.append(offset)
         elif stack and _RANGES_START.match(raw):
             # A multi-line range list: `[low, high)` rows until the closing `))`.
+            room(_NAME_BYTES)
             ranges = dies[stack[-1]]["ranges"]
+            size += _NAME_BYTES
         elif stack and (match := _ATTRIBUTE.match(raw)):
-            dies[stack[-1]]["attrs"].setdefault(match[1], match[2])
-            if match[1] == "DW_AT_ranges":
-                found = _RANGE.findall(match[2])
-                dies[stack[-1]]["ranges"].extend((int(lo, 16), int(hi, 16)) for lo, hi in found)
+            ranged = raw.startswith("DW_AT_ranges", match.start(1)) and match.end(1) == (
+                match.start(1) + len("DW_AT_ranges")
+            )
+            room(
+                _NAME_BYTES
+                + _held(raw, match.start(1), match.end(1))
+                + _held(raw, match.start(2), match.end(2))
+                + (raw.count("[", match.start(2)) * _RANGE_BYTES if ranged else 0)
+            )
+            name, value = one(match[1]), one(match[2])
+            size += _NAME_BYTES
+            dies[stack[-1]]["attrs"].setdefault(name, value)
+            if ranged:
+                spans = dies[stack[-1]]["ranges"]
+                for found in _RANGE.finditer(value):
+                    spans.append((int(found[1], 16), int(found[2], 16)))
+                    size += _RANGE_BYTES
+    dies.tail_calls, dies.kept = tail_calls, size
+    return dies
+
+
+def read_debug_info(tool, commands, workspace, env, *, timeout):
+    """The DieMap of llvm-dwarfdump's `--debug-info` text for each argument list of
+    ``commands`` in turn, read as it is written (#397)."""
+    dies = DieMap()
+    with _symbol_text(
+        tool,
+        commands,
+        workspace,
+        env,
+        limit=MAX_DEBUG_INFO,
+        timeout=timeout,
+        what="debug information",
+    ) as lines:
+        _parse_dies(lines, dies)
     return dies
 
 
@@ -2669,10 +3034,13 @@ _TAIL_CALL = re.compile(r"\bDW_AT_(?:call_tail_call|GNU_tail_call)\b")
 
 
 def has_tail_calls(info):
-    """Whether the build's debug information (dwarfdump's `--debug-info` text) describes a
-    tail call (a call site's `DW_AT_call_tail_call`, or GCC's `DW_AT_GNU_tail_call`). LLDB
-    rebuilds a frame from one for a caller that has none of its own left (an artificial
-    frame), whose address is no physical call's return."""
+    """Whether the build's debug information (dwarfdump's `--debug-info` text, or the
+    DieMap read of it) describes a tail call (a call site's `DW_AT_call_tail_call`, or
+    GCC's `DW_AT_GNU_tail_call`). LLDB rebuilds a frame from one for a caller that has
+    none of its own left (an artificial frame), whose address is no physical call's
+    return."""
+    if isinstance(info, DieMap):
+        return info.tail_calls
     return _TAIL_CALL.search(info) is not None
 
 
@@ -4589,11 +4957,12 @@ class NativeTarget:
                 else binary
             )
             env = dict(prepared.manifest.effective_environment)
-            text = _metadata(
+            text = read_line_table(
                 dwarfdump,
-                ["--debug-line", str(symbols)],
+                [["--debug-line", str(symbols)]],
                 prepared.workspace,
                 env,
+                self.sources + self.headers,
                 timeout=_remaining(deadline),
             )
             lines = parse_lines(text, prepared.workspace, self.sources + self.headers)
@@ -4609,12 +4978,11 @@ class NativeTarget:
             tail_calls = None
             code, statics, results = None, (), None
             try:
-                info = _metadata(
+                info = read_debug_info(
                     dwarfdump,
-                    ["--debug-info", str(symbols)],
+                    [["--debug-info", str(symbols)]],
                     prepared.workspace,
                     env,
-                    max_bytes=MAX_DEBUG_INFO,
                     timeout=_remaining(deadline),
                 )
                 tail_calls = has_tail_calls(info)
@@ -4707,13 +5075,16 @@ class NativeTarget:
                                     _dies(info), aimed, CPP_LIBRARIES
                                 ).items():
                                     fields.setdefault(offset, node)
-            except (RuntimeError, ValueError, OSError) as exc:
-                # Without it, values show as the debugger reads them, each local with a
+            except (ValueError, RecursionError) as exc:
+                # Debug information over Peeky's bounds (SymbolLimit), or that its parse
+                # cannot read: values show as the debugger reads them, each local with a
                 # note that its initialization is not judged (and no field or element
-                # can be changed).
+                # can be changed). A read that times out (TimeoutError), a failing
+                # dwarfdump (SymbolToolError) or another OS error fails the launch.
                 declarations, fields, prologues, code = None, None, None, None
                 statics, results = (), None
-                unjudged = ("unreadable", str(exc)[:120] or type(exc).__name__, None)
+                detail = getattr(exc, "detail", None) or str(exc)[:120] or type(exc).__name__
+                unjudged = ("unreadable", detail, None)
             session = NativeSession(
                 self,
                 prepared,
@@ -6450,23 +6821,16 @@ class NativeSession:
         """Each function in the declared sources, its line span and locals (for describe)."""
         dwarfdump = _tool(self.target.dwarfdump)
         env = dict(self.prepared.manifest.effective_environment)
-        workspace = self.prepared.workspace
-
-        def dump(option, limit):
-            return _metadata(
-                dwarfdump, [option, str(self.symbols)], workspace, env, max_bytes=limit
-            )
-
+        workspace, declared = self.prepared.workspace, tuple(self.lines)
         from peeky.fields import CPP_LIBRARIES
 
-        info = dump("--debug-info", MAX_DEBUG_INFO)
-        return function_scopes(
-            info,
-            dump("--debug-line", MAX_METADATA),
-            workspace,
-            tuple(self.lines),
-            settable=(CPP_LIBRARIES, None),
+        info = read_debug_info(
+            dwarfdump, [["--debug-info", str(self.symbols)]], workspace, env, timeout=15
         )
+        table = read_line_table(
+            dwarfdump, [["--debug-line", str(self.symbols)]], workspace, env, declared, timeout=15
+        )
+        return function_scopes(info, table, workspace, declared, settable=(CPP_LIBRARIES, None))
 
     def typedef_kind(self, kind):
         """(kind, pointee) for a type lldb-dap names by a typedef (`const RowPtr`): see

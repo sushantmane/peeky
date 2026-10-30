@@ -33,7 +33,7 @@ The last column is the `retryable` field.
 | `BUILD_FAILED` | The program didn't compile, or its build timed out ([details](#build_failed)). | Fix what the compiler reports, and run again. | no |
 | `PROVENANCE_CHANGED` | Sources, build outputs or tools changed, or a remote worker's sources differ from yours ([details](#provenance_changed)). | Start a new session on a fresh build, or sync the file it names. | no |
 | `TIMEOUT` | A time bound was hit, and the session was discarded ([details](#timeout)). | Start again. Never blindly retry a change. | no |
-| `DEBUGGER_ERROR` | The adapter or debugger failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
+| `DEBUGGER_ERROR` | The adapter, the debugger or llvm-dwarfdump failed, and the session was discarded ([details](#debugger_error)). | Start again. | no |
 | `SESSION_ACTIVE` | A session was misused: one is already open. | Close the session. | no |
 | `NO_SESSION` | A session was misused: there is no such session. | Start a session. | no |
 | `BUSY` | Another probe is running on this worker. | Retry later. | yes |
@@ -90,6 +90,14 @@ The last column is the `retryable` field.
 
 - A read went past one of Peeky's bounds, such as on the children it lists. Read a narrower
   selector.
+- A build's symbols are over Peeky's bounds: 300 MiB or 400,000 entries of debug information kept
+  after parsing, or 64 MiB of line tables or 256 MiB of debug information as llvm-dwarfdump writes
+  them, or a line of it over 4 MiB. The program didn't run.
+  Probe a smaller program: fewer source files or standard headers, or in Rust fewer std
+  collections.
+- A C or C++ program whose debug information is over its bounds isn't refused. It runs, but no
+  local is judged or can be changed, and each says why
+  ([NATIVE_INTERNALS](NATIVE_INTERNALS.md#reading-a-builds-symbols)).
 - A probe ended at the 100th stop in a row on the same signal, or C++ throw or catch filter, at
   one place in a call from one line of your code. Peeky let the program go on after each of the
   first 99, and doesn't take them for a crash.
@@ -124,7 +132,9 @@ The last column is the `retryable` field.
 - The causes are:
   - a broken protocol stream, for example a reply over 4 MiB;
   - java-debug's event thread dying;
-  - an attached JVM's stop that the debugger never reported (`Lost stop:`).
+  - an attached JVM's stop that the debugger never reported (`Lost stop:`);
+  - llvm-dwarfdump failing while Peeky reads a C, C++ or Rust build's symbols (`Native symbol
+    command failed`), with its exit status and diagnostics.
 - If values are huge, capture narrower selectors.
 - For Java, keep `debugger_events` for Peeky's issue #27. See
   [Two Java debugger failures](#two-java-debugger-failures).

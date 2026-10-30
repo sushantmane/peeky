@@ -47,6 +47,10 @@ Peeky debugs Rust with lldb-dap, LLVM's debugger.
 - Through a worker, `Cargo.toml`, `Cargo.lock` and every file in the config's `sources` and `tests`
   are compared with yours before the build. One that differs is refused by name
   ([REMOTE](../REMOTE.md#source-identity)).
+- Peeky keeps up to 400,000 debug-information entries of the crate's own code, in at most 300 MiB
+  of memory. A crate using BTreeMap has about 95,000, in about 100 MB: the std code it uses
+  counts. Over that, the probe is refused with
+  `BUDGET_EXHAUSTED` ([NATIVE_INTERNALS](../NATIVE_INTERNALS.md#reading-a-builds-symbols)).
 - If the build fails, the probe is refused before launch with `BUILD_FAILED`. It exits 2, with no
   table and no run saved. A candidate edit that doesn't compile counts too. In `verify`, it is a
   failed verify, which exits 1 ([ERRORS](../ERRORS.md)).

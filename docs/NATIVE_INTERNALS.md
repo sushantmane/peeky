@@ -35,6 +35,80 @@ them. The rules themselves are in [c-cpp.md](lang/c-cpp.md) and the
 - The first target was tiny, unoptimized code. Symbol tool and debugger versions remain part of
   what is qualified.
 
+## Reading a build's symbols
+
+Peeky reads a build's line tables and debug information as llvm-dwarfdump writes them
+(`native._symbol_text`). It parses each line as it comes, and never holds the whole text.
+
+- What the proofs need is spread over the whole text, so Peeky reads every entry:
+  - the code index needs every function with code, the standard library's too;
+  - `call_arguments` needs every function's parameters, a standard class's methods too;
+  - a local's type may be a standard library class, with its members and template arguments.
+- A query by name or offset (`--name`, `--lookup`) would leave out some of these, and so drop a
+  proof. Rust already reads only the crate's own units, one dump each.
+- `_LineParser` reads the line tables once, into a `LineTable`. It holds the rows of the
+  program's own files, and the replaced, prologue and epilogue marks. Every reader of rows takes
+  it, as `_line_rows` takes the text.
+- `_parse_dies` reads the debug information into a `DieMap`, the `{offset: entry}` the text
+  gives. It keeps one copy of each repeated name or value. It also notes whether the text
+  describes a tail call.
+- Rust's `parse_dies` reads a unit's lines the same way, fail-closed as before.
+
+The bounds are on what is kept, and on the time:
+
+- 300 MiB kept in memory (`MAX_KEPT`). Each parse reckons it as it goes: each entry's dicts and
+  lists, each attribute's slot, each range, and each distinct name or value by `sys.getsizeof`.
+  The sizes of an entry's dicts and lists come from `sys.getsizeof` on the running Python.
+- That reckoning is never below what Python holds. A test measures it with `tracemalloc`, on a
+  unit whose every value differs. On these programs it overstates what is held by 25-70%.
+- Each line's cost is reckoned before anything of it is kept or copied out of it: a value at 4
+  bytes a character unless its line is ASCII, a range for each `[`. So a value or a block of ranges
+  past what is left is refused before it is kept, and the bound is never passed. A line's ranges
+  are then read one at a time (`finditer`), never all its matches at once. Tests check both with
+  `tracemalloc`, refused and accepted near the bound.
+- `MAX_KEPT` bounds what the parse keeps. Reading one line uses memory past it for a while: the
+  line, at most 4 MiB long (`MAX_LINE`), its 1 MiB read, and what matching it copies. A longer line
+  is refused as it is read, with `BUDGET_EXHAUSTED`. The longest real lines are about 1.6 KB.
+- An 8-file C++ program using the STL keeps 57-136 MB by it; the Rust crate using BTreeMap, 94-98
+  MB.
+- 400,000 debug-information entries (`MAX_DIES`). These programs have 59,000-130,000.
+- 64 MiB of line-table text (`MAX_LINE_TEXT`), and 256 MiB of debug-information text
+  (`MAX_DEBUG_INFO`), which bound the time. Such a program has 2-4 MB and 19-45 MB.
+- 15 s for each read, or less if the launch's deadline is nearer.
+- Rust's `prepare` applies the bounds to the crate's application units together, as the session
+  reads them again later in one go. Its reckoning of an entry is never below the native one's, so a
+  crate that passes `prepare` passes the later reads.
+
+Over a bound (`SymbolLimit`), the message names the bound and says to probe a smaller program:
+
+- Line tables over theirs are refused with `BUDGET_EXHAUSTED`, before the launch.
+- C or C++ debug information over its bounds isn't read. The program runs, but every local is
+  marked not judged, with the bound, and no value can be changed. So is debug information the
+  parse can't read.
+- The crate's application units together over a bound are refused with `BUDGET_EXHAUSTED`.
+- A read that takes too long is a `TIMEOUT`. A dwarfdump that fails (`SymbolToolError`) is a
+  `DEBUGGER_ERROR`. Either fails the launch: neither is taken for unreadable debug information.
+- `SYMBOL_FAILURES` are these three. A later read that falls back without its text lets them
+  through: Rust's address rows, field types and text changes' borrow checks.
+- `describe` shows "function names: unavailable", with the reason, for any of them.
+
+Before, Peeky held at most 2 MiB of line tables and 16 MiB of debug information. Wall time of
+one probe, as measured on the programs in `examples/large` and a ninth C++ file using
+`std::regex`, before builds ran in parallel:
+
+| Program | macOS before | macOS after | Linux before | Linux after |
+| --- | ---: | ---: | ---: | ---: |
+| `cpp-shop`, 8 files | 5.6 s, not judged | 6.5 s | 3.3 s (g++ 3.3 s), not judged | 3.6 s (g++ 3.9 s) |
+| `cpp-shop` and `audit.cpp` | 5.3 s, refused | 7.6 s | 3.6 s (g++ 3.9 s), refused | 4.7 s (g++ 5.2 s) |
+| `rust-shop` | 3.6 s, refused | 5.4 s | 3.0 s, refused | 4.7 s |
+| The same crate without BTreeMap | 3.6-3.9 s | 3.6 s | 3.0-3.2 s | 3.0 s |
+
+- What's new in each is the reading and checking the old bounds cut short.
+- Reading 32 MB of debug information takes 0.27 s as it is written, against 0.39 s through a file.
+- The probe's peak memory for `cpp-shop` on macOS is 195 MB, against 148 MB for the part it read.
+- Tests: `tests/unit/test_metadata_budget.py`, `tests/cpp/test_cpp_scale.py` and
+  `tests/rust/test_rust_scale.py`.
+
 ## Building C++
 
 - Peeky builds C++ with clang or GCC, by what the compiler's `--version` says
