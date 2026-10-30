@@ -227,3 +227,72 @@ def test_a_candidate_with_several_edits_maps_the_line_through_them(loop, capsys)
     assert "TOTAL:103" in result["output"] and source.read_bytes() == before
     assert "+  int bonus = 100;" in result["candidate"]["diff"]
     assert '+  printf("TOTAL:%d\\n", total + bonus);' in result["candidate"]["diff"]
+
+
+@pytest.fixture
+def c_program(tmp_path, monkeypatch):
+    if not os.environ.get("PEEKY_NATIVE_DAP"):
+        pytest.skip("set PEEKY_NATIVE_DAP and native tool paths to enable native conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+
+    def write(name, text):
+        (tmp_path / name).write_text(text)
+        return tmp_path / name
+
+    return write
+
+
+def run(capsys, *argv):
+    code = main([str(arg) for arg in argv])
+    return code, capsys.readouterr().out
+
+
+OTHER_MAIN = """#include <stdio.h>
+#include "ring.h"
+int push(struct ring *r, int v) {
+    r->buf[r->tail % 4] = v; /* AT */
+    r->tail++;
+    return r->tail;
+}
+int main(void) {
+    int total = helper();
+    printf("%d\\n", total);
+    return 0;
+}
+"""
+
+
+OTHER = """#include "ring.h"
+
+int helper(void) {
+    struct ring q = { 0, 0, { 0 } };
+    int t = 0;
+    t += push(&q, 2);
+    return t;
+}
+"""
+
+
+RING_H = """struct ring { int head; int tail; int buf[4]; };
+int push(struct ring *r, int v);
+int helper(void);
+"""
+
+
+@pytest.mark.timeout(240)
+def test_compare_needs_every_source_unchanged(c_program, capsys):
+    # Round 2 of PR #165, Low 2: after main.c changed on disk, a candidate on other.c
+    # was paired with a run of the old main.c, and `diff` credited the change to the edit.
+    root = c_program("main.c", OTHER_MAIN.replace("r->tail++;", "r->tail += 100;")).parent
+    c_program("other.c", OTHER)
+    c_program("ring.h", RING_H)
+    probe = ["probe", root, "--at", "other.c:7", "--capture", "t", "--quiet"]
+    edit = ["--old", "t += push(&q, 2);", "--new", "t += push(&q, 3);"]
+    assert run(capsys, *probe)[0] == 0  # run 1
+    main_c = root / "main.c"
+    main_c.write_text(main_c.read_text().replace("r->tail += 100;", "r->tail += 1;"))
+    code, out = run(capsys, *probe, *edit)  # run 2
+    assert code == 0 and "compare: no saved run is this probe without the edit" in out, out
+    assert run(capsys, *probe)[0] == 0  # run 3
+    code, out = run(capsys, *probe, *edit)  # run 4
+    assert "compare: peeky queries diff --param a=3 --param b=4" in out, out

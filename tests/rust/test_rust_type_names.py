@@ -103,18 +103,6 @@ def test_a_fields_type_is_its_rust_name(crate, capsys):
     assert " w.k       usize " in capsys.readouterr().out
 
 
-@pytest.mark.timeout(400)
-def test_describe_says_which_rust_locals_have_settable_fields(crate, capsys):
-    # Finding 16: `describe`'s `mutable:` line listed only register-bound locals, not
-    # that `w.k` is settable.
-    assert main(["describe", str(crate)]) == 0
-    (mutable,) = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
-    # #183: the paths themselves (`w.values`' elements are not settable).
-    assert ": movavg::main: w.k, w.sum. Never settable" in mutable, mutable
-    # `self` is a reference: its fields are not changed through it.
-    assert "push: self" not in mutable.split("Never settable")[0], mutable
-
-
 SPAN = """#[derive(Debug, Clone, Copy)]
 struct Span {
     start: usize,

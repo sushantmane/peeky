@@ -1,11 +1,14 @@
 """Protocol v1 error codes and lifecycle conformance against real debugpy (issue #6)."""
 
+import http.client
 import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -13,8 +16,9 @@ import pytest
 
 from peeky.client import Client
 from peeky.errors import PROTOCOL_VERSION, PeekyError, classify
-from peeky.worker import make_server
+from peeky.worker import MAX_HISTORY_BYTES, DebugWorker, make_server
 
+ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "lifecycle-test-token-123456"
 
 
@@ -278,3 +282,145 @@ def test_what_a_python_program_started_is_ended_when_its_debugger_dies(worker):
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+def gone(pid, seconds=5):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return True
+        except ChildProcessError:
+            pass
+        time.sleep(0.05)
+    return False
+
+
+def worker_stop(worker, session):
+    for _ in range(30):
+        state = worker.dispatch("wait", {**session, "timeout": 1})
+        if state["state"] == "stopped":
+            return {**session, "stop_id": state["stop_id"]}
+    pytest.fail("program did not stop")
+
+
+def pid_program(path, extra=""):
+    path.write_text(
+        "import os\n"
+        "open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pid'), 'w')"
+        ".write(str(os.getpid()))\n" + extra + "print('stop here')\n"
+    )
+    return len(path.read_text().splitlines())
+
+
+def test_a_failed_transport_still_ends_the_launched_program(tmp_path):
+    # A scope whose variables reply exceeds the 4 MiB frame limit fails the transport.
+    huge = "".join(f"v{i} = 'x' * 100000\n" for i in range(100))
+    line = pid_program(tmp_path / "huge.py", huge)
+    worker = DebugWorker(tmp_path)
+    launch = worker.dispatch("launch", {"program": "huge.py", "breakpoints": [{"line": line}]})
+    stop = worker_stop(worker, {"session_id": launch["session_id"]})
+    pid = int((tmp_path / "pid").read_text())
+    with pytest.raises(RuntimeError) as caught:
+        worker.dispatch("inspect", stop)
+    payload = classify(caught.value)
+    assert payload["code"] == "DEBUGGER_ERROR" and "protocol stream" in payload["hint"]
+    assert "closed the session: start a new one" in payload["hint"], payload["hint"]
+    assert payload["session_closed"] is True
+    assert gone(pid), "debugpy's debuggee (its own process group) survived the closed session"
+
+
+def test_history_is_bounded_in_bytes(tmp_path):
+    worker = DebugWorker(tmp_path)
+    worker.record({"time": 0, "operation": "inspect", "arguments": {}, "result": "x" * 300_000})
+    assert worker.audit[0]["result"]["omitted"] and worker.audit[0]["result"]["bytes"] > 300_000
+    for _ in range(100):
+        worker.record({"time": 0, "operation": "inspect", "arguments": {}, "result": "y" * 200_000})
+    assert worker.audit_bytes <= MAX_HISTORY_BYTES
+    assert len(json.dumps(worker.audit)) < MAX_HISTORY_BYTES + 100_000
+    assert worker.audit_bytes == sum(len(json.dumps(e["result"])) for e in worker.audit)
+
+
+@pytest.fixture
+def served(tmp_path):
+    server = make_server(tmp_path, TOKEN, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.worker.close()
+    server.shutdown()
+    server.server_close()
+
+
+def test_worker_calls_never_use_an_http_proxy(served, monkeypatch):
+    for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in ("no_proxy", "NO_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    client = Client(f"http://127.0.0.1:{served.server_port}", TOKEN)
+    from peeky.errors import PROTOCOL_VERSION
+
+    assert client.call("version")["protocol"] == PROTOCOL_VERSION
+
+
+def test_malformed_requests_are_request_errors(served):
+    def post(headers, body):
+        connection = http.client.HTTPConnection("127.0.0.1", served.server_port, timeout=10)
+        connection.putrequest("POST", "/version")
+        for key, value in headers.items():
+            connection.putheader(key, value)
+        connection.putheader("Content-Length", str(len(body)))
+        connection.endheaders(body)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read())
+
+    status, body = post({"Authorization": "Bearer \xe9".encode("latin-1")}, b"{}")
+    assert status == 401 and body["error"]["code"] == "UNAUTHORIZED"
+    status, body = post({"Authorization": f"Bearer {TOKEN}"}, b"[" * 30000 + b"]" * 30000)
+    assert status == 400 and body["error"]["code"] == "INVALID_REQUEST"
+    assert body["error"]["session_closed"] is False
+
+
+def spawn_worker(root, *extra):
+    process = subprocess.Popen(
+        [sys.executable, "-m", "peeky.worker", "--root", str(root), "--port", "0", *extra],
+        env={**os.environ, "DEBUG_TOKEN": TOKEN, "PYTHONPATH": str(ROOT / "src")},
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    banner = process.stdout.readline()
+    return process, Client(banner.split()[2].rstrip(";"), TOKEN)
+
+
+def test_workers_close_their_program_on_sigterm(tmp_path):
+    line = pid_program(tmp_path / "paused.py")
+    process, client = spawn_worker(tmp_path)
+    try:
+        launch = client.call("launch", program="paused.py", breakpoints=[{"line": line}])
+        session = {"session_id": launch["session_id"]}
+        for _ in range(30):
+            if client.call("wait", **session, timeout=1)["state"] == "stopped":
+                break
+        pid = int((tmp_path / "pid").read_text())
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=10)
+        assert gone(pid), "SIGTERM left the paused program behind"
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
+def test_session_workers_exit_after_their_idle_timeout(tmp_path):
+    line = pid_program(tmp_path / "paused.py")
+    process, client = spawn_worker(tmp_path, "--idle-timeout", "1", "--exit-when-idle")
+    try:
+        client.call("launch", program="paused.py", breakpoints=[{"line": line}])
+        process.wait(timeout=15)
+        assert gone(int((tmp_path / "pid").read_text()))
+    finally:
+        if process.poll() is None:
+            process.kill()

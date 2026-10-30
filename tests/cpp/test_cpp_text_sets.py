@@ -196,3 +196,86 @@ def test_a_const_string_is_never_changed_and_a_change_warns_of_earlier_views(tex
     code = main([*at, "--set", f's="{"c" * 48}"', "--json", "--quiet"])
     result = json.loads(capsys.readouterr().out)
     assert code == 1 and "with room for 47 bytes" in result["error"]["message"], result
+
+
+# The evaluation's case, as the agent had it.
+STOCK = """#include <cstdio>
+#include <map>
+#include <string>
+
+// Parses "name:qty,name:qty,..." and prints the total per name, sorted by name.
+static std::string trim_left(const std::string &s) {
+    size_t i = 0;
+    while (i < s.size() && s[i] == ' ') i++;
+    return s.substr(i);
+}
+
+int main(int argc, char **argv) {
+    std::string input = argc > 1 ? argv[1] : "";
+    std::map<std::string, long> stock;
+    size_t pos = 0;
+    while (pos <= input.size()) {
+        size_t comma = input.find(',', pos);
+        if (comma == std::string::npos) comma = input.size();
+        std::string entry = input.substr(pos, comma - pos);
+        size_t colon = entry.find(':');
+        if (colon != std::string::npos) {
+            std::string name = trim_left(entry.substr(0, colon));
+            long qty = std::stol(entry.substr(colon + 1));
+            stock[name] += qty;
+        }
+        pos = comma + 1;
+    }
+    std::string out;
+    for (const auto &item : stock) {
+        if (!out.empty()) out += ",";
+        out += item.first + "=" + std::to_string(item.second);
+    }
+    std::printf("STOCK:%s\\n", out.c_str());
+    return 0;
+}
+"""
+
+
+@pytest.fixture
+def cpp(tmp_path, monkeypatch):
+    if not os.environ.get("PEEKY_NATIVE_DAP") or not os.environ.get("PEEKY_NATIVE_CXX"):
+        pytest.skip("set PEEKY_NATIVE_DAP and PEEKY_NATIVE_CXX to enable C++ conformance")
+    monkeypatch.setenv("PEEKY_STATE_DIR", str(tmp_path / "state"))
+
+    def write(name, text):
+        (tmp_path / name).write_text(text)
+        return tmp_path / name
+
+    return write
+
+
+def line_of(text, marker):
+    return next(i for i, line in enumerate(text.splitlines(), 1) if marker in line)
+
+
+@pytest.mark.timeout(240)
+def test_a_name_set_to_its_trimmed_text_fixes_the_totals(cpp, cxx, capsys):
+    # #137 part 2 (sixth evaluation, `stock`): the names with a trailing space were the
+    # bug; setting `name` to the trimmed text, which a string's change now does, shows
+    # that trimming them is the fix, without changing the parser's offsets.
+    source = cpp("stock.cpp", STOCK)
+    qty = line_of(STOCK, "long qty = ")
+    add = line_of(STOCK, "stock[name] += qty")
+    sets = ["--set-at", f"{qty}@3", 'name="apple"', "--set-at", f"{qty}@4", 'name="pear"']
+    argv = ["probe", str(source), "--at", str(add), "--capture", "name", "--hits", "all"]
+    code = main([*argv, *sets, "--json", "--quiet", "--", "apple:3, pear:2, apple :4,pear :1"])
+    result = json.loads(capsys.readouterr().out)
+    reads = sys.platform == "darwin" or any(row.get("view") == "memory" for row in result["rows"])
+    # A GCC build's names read whole from LLDB's summary, with no memory read to see.
+    reads = reads or bool(os.environ.get("PEEKY_EXPECT_READ_MEMORY"))
+    if not reads:
+        # lldb-dap 18 cannot tell whether a libstdc++ string's text is in the string.
+        assert code == 1 and "cannot read memory" in result["error"]["message"], result
+        return
+    assert code == 0, result.get("error")
+    assert "STOCK:apple=7,pear=3" in result["output"], result["output"]
+    assert [
+        (change["before"], change["after"], change["line"], change["hit"])
+        for change in result["interventions"]
+    ] == [('"apple "', '"apple"', qty, 3), ('"pear "', '"pear"', qty, 4)]

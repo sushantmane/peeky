@@ -731,3 +731,52 @@ def test_closure_and_instance_labels_are_found_in_sql(tmp_path, state, capsys):
         "WHERE run_id = RUN"
     )
     assert latest_rows(capsys, sql) == [{"names": 1, "instances": 2, "i16": 2}]
+
+
+# The evaluation's case, as the agent had it.
+MOVAVG = """use std::env;
+
+/// Rolling mean over the last `k` values, printed with one decimal after each value.
+struct Window {
+    k: usize,
+    values: Vec<i64>,
+    sum: i64,
+}
+
+impl Window {
+    fn push(&mut self, v: i64) -> f64 {
+        self.values.push(v);
+        self.sum += v;
+        if self.values.len() >= self.k {
+            let old = self.values.remove(0);
+            self.sum -= old;
+        }
+        self.sum as f64 / self.values.len() as f64
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    let k: usize = args[1].parse().unwrap();
+    let mut w = Window { k, values: Vec::new(), sum: 0 };
+    let mut out = Vec::new();
+    for v in args[2].split(',') {
+        let mean = w.push(v.parse().unwrap());
+        out.push(format!("{:.1}", mean));
+    }
+    println!("MEANS:{}", out.join(","));
+}
+"""
+
+
+@pytest.mark.timeout(400)
+def test_describe_says_which_rust_locals_have_settable_fields(tmp_path, state, capsys):
+    # Finding 16: `describe`'s `mutable:` line listed only register-bound locals, not
+    # that `w.k` is settable.
+    crate = crate_at(tmp_path, "movavg", MOVAVG)
+    assert main(["describe", str(crate)]) == 0
+    (mutable,) = [line for line in capsys.readouterr().out.splitlines() if "mutable:" in line]
+    # #183: the paths themselves (`w.values`' elements are not settable).
+    assert ": movavg::main: w.k, w.sum. Never settable" in mutable, mutable
+    # `self` is a reference: its fields are not changed through it.
+    assert "push: self" not in mutable.split("Never settable")[0], mutable

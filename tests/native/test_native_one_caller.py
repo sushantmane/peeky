@@ -186,45 +186,6 @@ def test_callers_peeky_cannot_single_out_keep_the_general_advice(c_program, caps
 
 
 @pytest.mark.timeout(240)
-def test_describe_names_c_structs_unions_and_enums_as_c_does(c_program, capsys):
-    # Finding 17: `describe` printed `r (ring)` for a C `struct ring` with no typedef.
-    source = c_program("ring.c", RING)
-    code, out = run(capsys, "describe", source)
-    assert code == 0, out
-    assert "names in push (ring.c:13-19): r (struct ring *), v (int)" in out, out
-    assert "argv (char **), first (int), i (int, lines 34-44), r (struct ring)," in out, out
-    source = c_program("callers.c", CALLERS)
-    code, out = run(capsys, "describe", source, "--json")
-    (main_scope,) = [s for s in json.loads(out)["scopes"] if s["scope"] == "main"]
-    types = main_scope["types"]
-    # A typedef's name stays; a union and an enum get their tags.
-    assert types["b"] == "struct box" and types["t"] == "box_t", types
-    assert types["u"] == "union num" and types["c"] == "enum color", types
-    assert types["p"] == "struct box *" and types["arr"] == "int[3]", types
-
-
-@pytest.mark.timeout(240)
-def test_describe_says_which_locals_have_settable_fields(c_program, capsys):
-    # Finding 16: the `mutable:` line did not say that `r`'s fields are settable.
-    source = c_program("ring.c", RING)
-    code, out = run(capsys, "describe", source)
-    (mutable,) = [line for line in out.splitlines() if line.startswith("mutable:")]
-    # #183: the paths themselves, `[*]` for any element.
-    assert mutable.endswith(
-        ". Such fields and elements (`[*]`: any element): main: r.buf[*], r.head, r.tail, r.count"
-    ), mutable
-    source = c_program("callers.c", CALLERS)
-    code, out = run(capsys, "describe", source, "--json")
-    (main_scope,) = [s for s in json.loads(out)["scopes"] if s["scope"] == "main"]
-    # A union, a pointer and a scalar have no settable fields; a typedef'd struct does.
-    assert main_scope["settable_parts"] == {
-        "arr": ["arr[*]"],
-        "b": ["b.n", "b.m"],
-        "t": ["t.n", "t.m"],
-    }
-
-
-@pytest.mark.timeout(240)
 def test_a_set_at_refused_before_the_run_names_the_caller_and_shows_no_table(c_program, capsys):
     # Findings 13 and 14 with #151's `--set-at`: judged at its own line before the run,
     # the refusal names push's one caller, prints no table and exits 2.
@@ -563,22 +524,3 @@ def test_no_settable_claim_but_for_a_plain_call_of_reads(c_program, capsys, site
             f"{call}@1", "r.tail=3", "--json",
         )  # fmt: skip
         assert json.loads(out)["rows"][0]["value"] == "5", out
-
-
-@pytest.mark.timeout(240)
-def test_compare_needs_every_source_unchanged(c_program, capsys):
-    # Round 2 of PR #165, Low 2: after main.c changed on disk, a candidate on other.c
-    # was paired with a run of the old main.c, and `diff` credited the change to the edit.
-    root = c_program("main.c", OTHER_MAIN.replace("r->tail++;", "r->tail += 100;")).parent
-    c_program("other.c", OTHER)
-    c_program("ring.h", RING_H)
-    probe = ["probe", root, "--at", "other.c:7", "--capture", "t", "--quiet"]
-    edit = ["--old", "t += push(&q, 2);", "--new", "t += push(&q, 3);"]
-    assert run(capsys, *probe)[0] == 0  # run 1
-    main_c = root / "main.c"
-    main_c.write_text(main_c.read_text().replace("r->tail += 100;", "r->tail += 1;"))
-    code, out = run(capsys, *probe, *edit)  # run 2
-    assert code == 0 and "compare: no saved run is this probe without the edit" in out, out
-    assert run(capsys, *probe)[0] == 0  # run 3
-    code, out = run(capsys, *probe, *edit)  # run 4
-    assert "compare: peeky queries diff --param a=3 --param b=4" in out, out

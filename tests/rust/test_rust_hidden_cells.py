@@ -251,7 +251,7 @@ fn main() {
 
 # Review of PR #328: values built of a sharer, a default type argument, cells that can't
 # take the value, `PhantomData`, function types.
-REVIEW = """use std::cell::Cell;
+SHARERS = """use std::cell::Cell;
 use std::env;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -490,7 +490,7 @@ fn main() {
 # Review rounds 2 and 3 of PR #328: plain cells of a value with one state (a cell of one, an
 # enum of one fieldless variant), a channel of `()`, a `RefCell<()>`'s borrow flag, empty
 # arrays, defaults naming an earlier parameter, and a cell that takes a field of `x`.
-ROUND = """use std::cell::{Cell, RefCell};
+STATELESS = """use std::cell::{Cell, RefCell};
 use std::env;
 use std::marker::PhantomData;
 use std::sync::mpsc;
@@ -680,13 +680,13 @@ def crate(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def review(tmp_path, monkeypatch):
-    return make(tmp_path, monkeypatch, "review", REVIEW)
+def sharers(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "sharers", SHARERS)
 
 
 @pytest.fixture
-def rounds(tmp_path, monkeypatch):
-    return make(tmp_path, monkeypatch, "rounds", ROUND)
+def stateless(tmp_path, monkeypatch):
+    return make(tmp_path, monkeypatch, "stateless", STATELESS)
 
 
 def probe(capsys, root, marker, *argv, text=HIDDEN):
@@ -772,7 +772,7 @@ def test_a_value_without_cells_lent_by_a_shared_reference_leaves_the_local_setta
 
 
 @pytest.mark.timeout(900)
-def test_a_value_built_of_what_shares_the_state_withholds_the_local(review, capsys):
+def test_a_value_built_of_what_shares_the_state_withholds_the_local(sharers, capsys):
     # `HoldRx { rx }`, `HoldRc { c: Rc::clone(&a) }` and `a.clone()`, `HoldArc { m:
     # Arc::clone(&a) }` and `a.clone()`, and a closure capturing `b = a.clone()`, each built
     # before the call. On the PR's first head `HELD_RX`, `HELD_RC`, `HELD_RCM` and `CAPTURED`
@@ -785,10 +785,10 @@ def test_a_value_built_of_what_shares_the_state_withholds_the_local(review, caps
         ("HELD_ARCM", "h", "LOCK_ARCM"),
         ("CAPTURED", "f", "PUT_CAP"),
     ):
-        code, result = probe(capsys, review, marker, "--set", "x=100", text=REVIEW)
+        code, result = probe(capsys, sharers, marker, "--set", "x=100", text=SHARERS)
         message, _ = refused(code, result, marker)
         assert f"`{holder}` (at lines " in message, (marker, message)
-        assert f"{line_of(call, REVIEW)}) may hold a copy of `x` that it goes on with" in message
+        assert f"{line_of(call, SHARERS)}) may hold a copy of `x` that it goes on with" in message
     for marker, printed in (
         ("SEND_RX", "HELD_RX 101"),
         ("PUT_RC", "HELD_RC 101"),
@@ -797,14 +797,14 @@ def test_a_value_built_of_what_shares_the_state_withholds_the_local(review, caps
         ("LOCK_ARCM", "HELD_ARCM 101"),
         ("PUT_CAP", "CAPTURED 101"),
     ):
-        code, result = probe(capsys, review, marker, "--set", "x=100", text=REVIEW)
+        code, result = probe(capsys, sharers, marker, "--set", "x=100", text=SHARERS)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
 
 
 @pytest.mark.timeout(900)
 def test_an_instance_judged_by_its_default_cells_that_cant_take_it_and_types_that_hold_nothing(
-    review, capsys
+    sharers, capsys
 ):
     # `look(&g, x)` with `g: Dflt` (`struct Dflt<T = u32>`), beside a `Dflt<Cell<u32>>`;
     # `PhantomData<Cell<u32>>` and a `Tag<Cell<u32>>` holding only one; function pointers and
@@ -815,10 +815,10 @@ def test_an_instance_judged_by_its_default_cells_that_cant_take_it_and_types_tha
         ("PHANTOM", "PHANTOM 103"),
         ("POINTERS", "POINTERS 109"),
     ):
-        code, result = probe(capsys, review, marker, "--set", "x=100", text=REVIEW)
+        code, result = probe(capsys, sharers, marker, "--set", "x=100", text=SHARERS)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
-    code, result = probe(capsys, review, "DEFAULTED_CELL", "--set", "x=100", text=REVIEW)
+    code, result = probe(capsys, sharers, "DEFAULTED_CELL", "--set", "x=100", text=SHARERS)
     message, _ = refused(code, result, "DEFAULTED_CELL")
     assert "the program's own `gc` (at lines " in message, message
     # `Cell<bool>`, a struct whose only cell holds a `bool`, and a `Sender<bool>` given a
@@ -828,7 +828,7 @@ def test_an_instance_judged_by_its_default_cells_that_cant_take_it_and_types_tha
         ("RAISED", "f", "x=100"),
         ("SENTB", "rx", 's="zz"'),
     ):
-        code, result = probe(capsys, review, marker, "--set", change, text=REVIEW)
+        code, result = probe(capsys, sharers, marker, "--set", change, text=SHARERS)
         message, hint = refused(code, result, marker)
         variable = change.split("=", 1)[0]
         assert (
@@ -837,13 +837,13 @@ def test_an_instance_judged_by_its_default_cells_that_cant_take_it_and_types_tha
         ), (marker, message)
         assert "copies it" not in message + hint and "uses it" in hint, (marker, hint)
     for marker, printed in (("FLAG", "FLAGGED 2"), ("RAISE", "RAISED 5")):
-        code, result = probe(capsys, review, marker, "--set", "x=100", text=REVIEW)
+        code, result = probe(capsys, sharers, marker, "--set", "x=100", text=SHARERS)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
 
 
 @pytest.mark.timeout(900)
-def test_what_holds_no_state_leaves_the_local_settable_and_what_does_is_derived(rounds, capsys):
+def test_what_holds_no_state_leaves_the_local_settable_and_what_does_is_derived(stateless, capsys):
     # `Cell<()>`, `Cell<PhantomData<u32>>`, `Cell<Cell<()>>` and cells of enums of one
     # fieldless variant (whatever is stored, the same value), an empty array of cells, and
     # `Pair<u32>`/`Lst<u32>` of `struct Pair<T, U = T>` and `struct Lst<T, U = Vec<T>>`: none
@@ -853,7 +853,7 @@ def test_what_holds_no_state_leaves_the_local_settable_and_what_does_is_derived(
         ("ARRAYS", "ARRAYS 103"),
         ("PAIRS", "PAIRS 109"),
     ):
-        code, result = probe(capsys, rounds, marker, "--set", "x=100", text=ROUND)
+        code, result = probe(capsys, stateless, marker, "--set", "x=100", text=STATELESS)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])
     # A `Sender<()>` keeps a message count, and a `RefCell<()>` its borrow flag (`lend(&c,
@@ -865,7 +865,7 @@ def test_what_holds_no_state_leaves_the_local_settable_and_what_does_is_derived(
         ("LEAKED", "c", "x=100"),
         ("PARTED", "c", "x.a=100"),
     ):
-        code, result = probe(capsys, rounds, marker, "--set", change, text=ROUND)
+        code, result = probe(capsys, stateless, marker, "--set", change, text=STATELESS)
         message, hint = refused(code, result, marker)
         assert f"the program's own `{holder}` (at lines " in message, (marker, message)
         assert "may hold state derived from `x` that it goes on with" in message, message
@@ -876,6 +876,6 @@ def test_what_holds_no_state_leaves_the_local_settable_and_what_does_is_derived(
         ("LEND", "x=100", "LEAKED 1"),
         ("KEEP", "x.a=100", "PARTED 102"),
     ):
-        code, result = probe(capsys, rounds, marker, "--set", change, text=ROUND)
+        code, result = probe(capsys, stateless, marker, "--set", change, text=STATELESS)
         assert code == 0, (marker, result.get("error"))
         assert printed in result["output"].splitlines(), (marker, result["output"])

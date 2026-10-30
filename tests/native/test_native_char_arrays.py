@@ -157,3 +157,47 @@ def test_bytes_past_an_unreadable_page_are_never_called_nuls(arrays, capsys):
     assert main(["sql", query, "--json"]) == 0
     texts = {row["selector"]: row["t"] for row in json.loads(capsys.readouterr().out)["rows"]}
     assert texts == {"local": "hi", "p.label": "held", "r.label": None}, texts
+
+
+TEXTS = """#include <stdio.h>
+#include <string.h>
+
+struct buffer { char text[8192]; size_t used; };
+
+int main(void) {
+    struct buffer out = {{0}, 0};
+    char full[2048] = {0};
+    strcpy(out.text, "    The quick brown fox");
+    memset(full, 'x', sizeof full - 1);
+    printf("%s %zu\\n", out.text, strlen(full)); /* SHOW */
+    return 0;
+}
+"""
+
+
+@pytest.mark.timeout(120)
+def test_a_long_char_array_shows_where_its_text_ends(arrays, capsys):
+    # wrap 7: `out->text` (a `char[8192]`) showed `"    The quick brown fox"...`, whose
+    # `...` suggests a cut where the text ended at its NUL (LLDB adds it to any array
+    # past its 1024-byte summary limit), and `<children: Variable collection exceeds
+    # bounded expansion limit>`.
+    path = arrays.with_name("texts.c")
+    path.write_text(TEXTS)
+    line = next(i for i, text in enumerate(TEXTS.splitlines(), 1) if "/* SHOW */" in text)
+    assert main(["session", "start", str(path), "--at", str(line)]) == 0
+    capsys.readouterr()
+    try:
+        assert main(["session", "get", "out.text", "full", "--json"]) == 0
+        rows = {row["selector"]: row for row in json.loads(capsys.readouterr().out)}
+        # LLDB read its first 1024 bytes: what follows the NUL is counted, not shown.
+        assert rows["out.text"]["value"] == (
+            '"    The quick brown fox" (then a NUL and 8168 bytes not shown)'
+        ), rows["out.text"]
+        assert "children_error" not in rows["out.text"], rows["out.text"]
+        # 2047 bytes with no NUL in LLDB's first 1024: cut, and it says so.
+        assert rows["full"]["value"] == '"' + "x" * 1024 + '"...', rows["full"]["value"][-20:]
+        assert main(["session", "get", "out.text"]) == 0
+        assert "<children:" not in capsys.readouterr().out
+    finally:
+        main(["session", "close"])
+        capsys.readouterr()

@@ -276,7 +276,7 @@ def test_an_optimized_build_previews_nothing(c_program, tmp_path, capsys, compil
             assert not str(row.get("value")).startswith(("{", "[")), row
 
 
-ROUND1 = """#include <stdbool.h>
+UNVOUCHED = """#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <wchar.h>
@@ -325,11 +325,11 @@ def test_what_the_debug_information_cannot_vouch_for_is_not_previewed(
     built = os.environ.get("PEEKY_NATIVE_CC", "clang") if compiler == "clang" else _gcc()
     if built is None:
         pytest.skip("needs GCC")
-    c_program("round1.c", ROUND1)
-    config = configured(tmp_path, "round1.c", built)
-    line = line_of(ROUND1, "// HERE")
+    c_program("unvouched.c", UNVOUCHED)
+    config = configured(tmp_path, "unvouched.c", built)
+    line = line_of(UNVOUCHED, "// HERE")
     selectors = "a,b,op[0],npp[0],npp[0][0],fx[0],bt,bt.sc,bt.uc,bt.pc,w,r,rc"
-    command = ["probe", str(tmp_path), "--config", str(config), "--at", f"round1.c:{line}"]
+    command = ["probe", str(tmp_path), "--config", str(config), "--at", f"unvouched.c:{line}"]
     assert main([*command, "--capture", selectors, "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     rows = {row["selector"]: row for row in result["rows"]}

@@ -635,7 +635,7 @@ def test_cpp_braces_that_are_no_blocks_and_a_lambdas_return_address_are_refused(
     assert "D 1061 2" in text, text
 
 
-ROUND3 = """#include <stdio.h>
+SHAPES = """#include <stdio.h>
 
 struct P { long x; long y; };
 
@@ -689,15 +689,15 @@ def test_c_a_statement_calling_an_always_inline_function_is_refused(directory, c
     # and runs before the statement's lowest row: at `t = inl(&p) + p.y;`, `set p.x=50`
     # reported `1 -> 50` and the program printed `A 1003`; `t = getx(&p) + g();`,
     # `B 1050`. Root integers were marked [settable] there too.
-    start_at(directory, capsys, "r3.c", ROUND3, "INLINED")
+    start_at(directory, capsys, "shapes.c", SHAPES, "INLINED")
     refused(capsys, "p.x=50", "makes a call the compiler inlined (`always_inline`, `flatten`)")
     assert main(["session", "inspect", "--json"]) == 0
     snapshot = json.loads(capsys.readouterr().out)
     rows = {v["name"]: v for s in snapshot["scopes"] for v in s["variables"]}
     assert not rows["t"].get("settable"), rows["t"]
-    continue_to(capsys, ROUND3, "GETX")
+    continue_to(capsys, SHAPES, "GETX")
     refused(capsys, "p.x=60", "makes a call the compiler inlined")
-    continue_to(capsys, ROUND3, "PLAIN")
+    continue_to(capsys, SHAPES, "PLAIN")
     code, result = change(capsys, "p.x=5")
     assert code == 0 and result["after"] == "5", result
     text = output(capsys)
@@ -708,7 +708,7 @@ def test_c_a_statement_calling_an_always_inline_function_is_refused(directory, c
 def test_c_a_macro_loop_inside_a_statement_expression_is_refused(directory, capsys):
     # Review of #105 (round 3): `REPEAT(k, 1) {` (a `for` header) inside `t = p.x + ({`
     # read as a function's body, and `set p.x=50` printed `F 1001`.
-    start_at(directory, capsys, "r3.c", ROUND3, "LOOP_BODY")
+    start_at(directory, capsys, "shapes.c", SHAPES, "LOOP_BODY")
     refused(capsys, "p.x=50", "continues a statement")
     assert "F 1001" in output(capsys)
 
@@ -720,10 +720,10 @@ def test_c_a_functions_first_line_needs_its_statements_first_instruction(directo
     # the first row after the prologue: `set p.x=50` printed `E 1001`. So did
     # `{ return` with its expression on the next line.
     for marker, tag in (("FIRST_2", "E"), ("RETURN_2", "R")):
-        start_at(directory, capsys, "r3.c", ROUND3, marker)
+        start_at(directory, capsys, "shapes.c", SHAPES, marker)
         assert main(["session", "step"]) == 0
         capsys.readouterr()
-        top = line_of(ROUND3, marker) - 1
+        top = line_of(SHAPES, marker) - 1
         refused(capsys, "p.x=50", f"first instruction of the statement on lines {top}-{top + 1}")
         assert f"{tag} 1001" in output(capsys)
 
@@ -731,7 +731,7 @@ def test_c_a_functions_first_line_needs_its_statements_first_instruction(directo
 @pytest.mark.timeout(240)
 def test_c_a_k_and_r_definition_is_refused_as_one(directory, capsys):
     # Review of #105 (round 3): a K&R body was refused as "line N continues a statement".
-    start_at(directory, capsys, "r3.c", ROUND3, "OLD")
+    start_at(directory, capsys, "shapes.c", SHAPES, "OLD")
     refused(capsys, "a=9", "K&R-style definition")
     assert "K 3" in output(capsys)
 

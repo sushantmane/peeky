@@ -4952,3 +4952,10 @@ def test_saved_evidence_keeps_a_moved_locals_fields_stale(plain, capsys):
     assert caveats == {"h.o": "stale", "h.n": "stale", "h.s.start": "stale"}, wide
     code, stored = run(capsys, "queries", "run")
     assert all(row["view"] == "stale" and _stale_note(row["note"]) for row in stored["rows"])
+
+
+@pytest.mark.timeout(400)
+def test_describe_shows_verify_without_at_for_a_one_file_crate(plain, capsys):
+    assert main(["describe", str(plain), "--json"]) == 0
+    verify = json.loads(capsys.readouterr().out)["commands"]["verify"]
+    assert verify.startswith(f"peeky verify {plain} --check "), verify

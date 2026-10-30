@@ -296,7 +296,7 @@ fn main() {
     ids=["freed-after-a-call-that-cannot-unwind", "moved-after-it", "same-named-method"],
 )
 @pytest.mark.timeout(300)
-def test_review_false_proofs_stay_refused(crate, capsys, program, marker, selectors):
+def test_false_proofs_stay_refused(crate, capsys, program, marker, selectors):
     (crate / "src/main.rs").write_text(program)
     at = next(i for i, text in enumerate(program.splitlines(), 1) if f"// {marker}" in text)
     code = main(

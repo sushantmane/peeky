@@ -131,8 +131,6 @@ def test_an_inlined_function_peeky_cannot_place_withholds_its_locals(compiler, t
     line = line_of(INLINED, "// TWICE")
     code = main(["session", "start", str(path), "--at", str(line), "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         code, rows = run(capsys, "session", "get", "x", "--frame", "1")
@@ -193,8 +191,6 @@ def test_frames_whose_code_changes_at_their_address_are_told_apart(compiler, tmp
     at = f"last.cpp:{line_of(LAST_CALL, '// TWICE')}"
     code = main(["session", "start", str(tmp_path), "--config", str(config), "--at", at, "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         frames = [(1, "a", "wrap", "// WRAP")]
@@ -307,8 +303,6 @@ def test_an_unnamed_structs_implicit_constructor_withholds_this(compiler, tmp_pa
     line = line_of(UNNAMED_CONSTRUCTOR, "// TWICE")
     code = main(["session", "start", str(path), "--at", str(line), "--hit", "2", "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         code, rows = run(capsys, "session", "get", "this", "this.t", "--frame", "1")
@@ -367,8 +361,6 @@ def test_a_lambdas_own_parameter_is_judged_as_its_own(compiler, tmp_path, capsys
     line = line_of(RANGE_LAMBDA, "// ID")
     code = main(["session", "start", str(path), "--at", str(line), "--json"])
     started = json.loads(capsys.readouterr().out)
-    if code != 0 and (started.get("error") or {}).get("code") == "UNSUPPORTED":
-        pytest.skip(f"waits for #167 (C++ with GCC): {started['error']['message'][:120]}")
     assert code == 0, started
     try:
         code, rows = run(capsys, "session", "get", "t", "--frame", "1")
