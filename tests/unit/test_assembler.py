@@ -202,3 +202,75 @@ def test_judged_names_what_reads_a_file():
     assert "assembler macro" in judged(".macro m\n.endm")
     assert judged("ldr x0, =my.includes") is None
     assert judged(".section .text\n.globl f") is None
+
+
+def reference_c_refusal(output, cpp):
+    """`c_refusal` as it was before it was made faster (#398): it read where every line
+    is from, and scanned for keywords with a regex that starts with a lookbehind."""
+    import bisect
+    import re
+
+    from peeky.assembler import _C_KEYWORD, _C_OPERAND, _C_QUALIFIERS, _c_group, _c_places
+    from peeky.assembler import refusal as refused
+    from peeky.c_source import blank
+
+    text = output.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    places, text, blanked = _c_places(text, blank(text, cpp))
+    starts = [0]
+    starts += [found.end() for found in re.finditer("\n", text)]
+
+    def where(offset):
+        name, line = places[min(bisect.bisect_right(starts, offset) - 1, len(places) - 1)]
+        return f"the asm at {name}:{line}"
+
+    for keyword in _C_KEYWORD.finditer(blanked):
+        opening = _C_QUALIFIERS.match(blanked, keyword.end()).end()
+        if blanked[opening : opening + 1] != "(":
+            continue
+        _, literals = _c_group(text, opening, cpp)
+        first = re.compile(r"\s*").match(text, opening + 1).end()
+        if cpp and (not literals or literals[0][0] != first):
+            return refused(
+                where(keyword.start()),
+                "has a template that is not a string literal, which Peeky does not evaluate",
+            )
+        runs = []
+        for start, end, value in literals:
+            if runs and not text[runs[-1][1] : start].strip():
+                runs[-1] = (runs[-1][0], end, runs[-1][2] + value)
+            else:
+                runs.append((start, end, value))
+        for start, _, value in runs:
+            if what := judged(value, _C_OPERAND):
+                return refused(where(start), what)
+    return None
+
+
+PIECES = ["asm", "__asm", "__asm__", "volatile", "goto", "(", ")", "((", '"', "'", " ", "\n"]
+PIECES += ["\r", "\r\n", ".incbin", ".inc", "bin", ".macro", "%c0", "{}", "nop", ";", ":", "x"]
+PIECES += ["_", "$", "\\", "#", '# 12 "a.c"\n', '# 3 "b\\342\\200\\250.h" 2\n', "#pragma x\n"]
+PIECES += ["  # 7\n", 'R"x(', ')x"', "/*", "*/", "//", "é", '".inc" "bin"', "s()"]
+
+
+def test_c_refusal_is_unchanged_by_its_faster_scan():
+    import random
+
+    pick = random.Random(398)
+    for _ in range(20000):
+        text = "".join(pick.choice(PIECES) for _ in range(pick.randint(0, 30)))
+        for cpp in (False, True):
+            new, old = c_refusal(text.encode(), cpp), reference_c_refusal(text.encode(), cpp)
+            assert (new and str(new)) == (old and str(old)), (repr(text), cpp)
+
+
+def test_c_keywords_are_the_keyword_regexs_matches():
+    import random
+
+    from peeky.assembler import _C_KEYWORD, _c_keywords
+
+    pieces = ["a", "s", "m", "asm", "__", "_", "$", " ", "é", "x", "\n", "("]
+    pick = random.Random(398)
+    for _ in range(20000):
+        text = "".join(pick.choice(pieces) for _ in range(pick.randint(0, 16)))
+        expected = [found.span() for found in _C_KEYWORD.finditer(text)]
+        assert [found.span() for found in _c_keywords(text)] == expected, repr(text)

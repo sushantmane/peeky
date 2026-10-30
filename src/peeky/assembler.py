@@ -74,6 +74,8 @@ def refusal(where, what):
 
 # C and C++ (a translation unit as `-E` gives it).
 _C_KEYWORD = re.compile(r"(?<![\w$])(?:asm|__asm|__asm__)(?![\w$])")
+# Where a keyword may be: each `asm` (a regex with a lookbehind first scans slowly).
+_C_ASM = re.compile("asm")
 _C_QUALIFIERS = re.compile(
     r"(?:\s|(?<![\w$])(?:volatile|__volatile__|__volatile|inline|__inline__|__inline|goto)"
     r"(?![\w$]))*"
@@ -81,6 +83,10 @@ _C_QUALIFIERS = re.compile(
 _C_LINE = re.compile(r"[^\n]*\n?")
 # A line of the output that is a directive or a line marker (`# 12 "a.c" 2`, `#pragma`).
 _C_DIRECTIVE = re.compile(r"[ \t]*#")
+# The same, to the line's end; and one after a newline (a regex that starts with a
+# character scans fast).
+_C_DIRECTIVE_LINE = re.compile(r"[ \t]*#[^\n]*")
+_C_NEXT_DIRECTIVE = re.compile(r"\n([ \t]*#[^\n]*)")
 _C_MARKER = re.compile(r'[ \t]*#[ \t]*(?:line[ \t]+)?([0-9]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?')
 _C_ESCAPE = re.compile(
     r"\\(?:([0-7]{1,3})|x([0-9a-fA-F]+)|u([0-9a-fA-F]{4})|U([0-9a-fA-F]{8})|(.))", re.DOTALL
@@ -169,19 +175,58 @@ def _c_places(text, blanked):
     return places, "".join(kept[0]), "".join(kept[1])
 
 
+def _c_keywords(text):
+    """``_C_KEYWORD.finditer(text)``'s matches, found faster: from each `asm`."""
+    for found in _C_ASM.finditer(text):
+        at = found.start()
+        for start in (at - 2, at) if at >= 2 and text.startswith("__", at - 2) else (at,):
+            if (keyword := _C_KEYWORD.match(text, start)) is not None:
+                yield keyword
+                break
+
+
+def _c_without_directives(text, blanked):
+    """``text`` and ``blanked`` with their directive lines blanked, as `_c_places` gives
+    them where neither has a lone carriage return (``blank`` reads one as a line break)."""
+    spans = [first.span()] if (first := _C_DIRECTIVE_LINE.match(blanked)) else []
+    spans += [found.span(1) for found in _C_NEXT_DIRECTIVE.finditer(blanked)]
+    pieces, kept, done = [], [], 0
+    for start, end in spans:
+        spaces = " " * (end - start)
+        pieces += [text[done:start], spaces]
+        kept += [blanked[done:start], spaces]
+        done = end
+    return "".join(pieces) + text[done:], "".join(kept) + blanked[done:]
+
+
 def c_refusal(output, cpp):
     """The refusal (a ValueError) for inline assembly that can read a file in a
-    translation unit as the compiler's `-E` gives it (``output``, bytes), or None."""
+    translation unit as the compiler's `-E` gives it (``output``, bytes), or None.
+    Blanking a literal, comment or directive only makes spaces, so a keyword in the
+    blanked text is one in the text too: a text without one is passed at once."""
     text = output.decode("utf-8", errors="replace").replace("\r\n", "\n")
-    places, text, blanked = _c_places(text, blank(text, cpp))
-    starts = [0]
-    starts += [found.end() for found in re.finditer("\n", text)]
+    if next(_c_keywords(text), None) is None:
+        return None
+    original, literals_blanked = text, blank(text, cpp)
+    if "\r" in text:
+        places, text, blanked = _c_places(original, literals_blanked)
+    else:
+        # Where each line is from is read only for a refusal.
+        places = None
+        text, blanked = _c_without_directives(original, literals_blanked)
+    starts = []
 
     def where(offset):
+        nonlocal places
+        if places is None:
+            places = _c_places(original, literals_blanked)[0]
+        if not starts:
+            starts.append(0)
+            starts.extend(found.end() for found in re.finditer("\n", text))
         name, line = places[min(bisect.bisect_right(starts, offset) - 1, len(places) - 1)]
         return f"the asm at {name}:{line}"
 
-    for keyword in _C_KEYWORD.finditer(blanked):
+    for keyword in _c_keywords(blanked):
         opening = _C_QUALIFIERS.match(blanked, keyword.end()).end()
         if blanked[opening : opening + 1] != "(":
             continue
