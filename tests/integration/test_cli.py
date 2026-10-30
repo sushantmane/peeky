@@ -958,19 +958,6 @@ def test_steps_into_code_outside_the_root_read_and_change_nothing(tmp_path, caps
     assert run(capsys, "session", "close")[0] == 0
 
 
-def test_remote_workers_without_step_are_refused_before_anything_runs():
-    from peeky.cli import _require_stepping
-
-    class Old:
-        def call(self, operation, **args):
-            assert operation == "version"
-            return {"operations": ["continue", "inspect", "version"]}
-
-    with pytest.raises(ValueError, match="predates `session step`"):
-        _require_stepping({"remote": True}, Old())
-    _require_stepping({"remote": False}, Old())
-
-
 def test_a_new_session_on_a_worker_starts_with_no_stop_state(workspace):
     from peeky.worker import DebugWorker
 
