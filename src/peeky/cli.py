@@ -11,6 +11,7 @@ detection with a trusted target configuration (required for Java).
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -29,7 +30,7 @@ from pathlib import Path
 
 from peeky import add_version
 from peeky.adapters import COPY_NOTE, PYDEVD_GROUPS
-from peeky.client import LOOPBACK_URL, MIN_TOKEN_CHARS, Client
+from peeky.client import LOOPBACK_URL, MIN_TOKEN_CHARS, WORKER_TOKEN_ENV, Client, client_token
 from peeky.errors import PROTOCOL_VERSION
 from peeky.identifiers import is_name, look_alike, reachable
 from peeky.probe import (
@@ -52,7 +53,7 @@ from peeky.probe import (
     run_probe,
     split_selectors,
 )
-from peeky.processes import without_credentials
+from peeky.processes import CREDENTIAL_ENV, without_credentials
 from peeky.textlines import split_lines
 
 RUST_VERSION = "1.96.0"
@@ -2923,7 +2924,6 @@ def _pause_text(state):
     return f" ({text})"
 
 
-WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
 # The worker's token, by the names `main` took out of the environment (take_credentials).
 _CREDENTIALS = {}
 
@@ -2942,12 +2942,9 @@ def _remote(url):
             "--worker must be a loopback URL (http://127.0.0.1:PORT); for a remote worker, "
             "ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host"
         )
-    token = _CREDENTIALS.get(WORKER_TOKEN_ENV) or os.environ.get(WORKER_TOKEN_ENV, "")
-    if len(token) < MIN_TOKEN_CHARS:
-        raise ValueError(
-            f"Set {WORKER_TOKEN_ENV} to the worker's DEBUG_TOKEN, of at least {MIN_TOKEN_CHARS} "
-            "characters; tokens are never accepted as arguments"
-        )
+    # Taken out of the environment by `main`; a caller in this process may set them later.
+    present = {name: os.environ[name] for name in CREDENTIAL_ENV if name in os.environ}
+    token = client_token({**present, **_CREDENTIALS})
     client = _RemoteClient(url, token)
     version = client.call("version")
     protocol = version.get("protocol") if isinstance(version, dict) else None
@@ -4182,6 +4179,8 @@ def _main(argv, _job, _edits):
     sub.add_argument("--launch-marker", type=Path, help=argparse.SUPPRESS)
     # A worker's probe child: where a remote Python run's bytecode cache goes.
     sub.add_argument("--pycache-dir", type=Path, help=argparse.SUPPRESS)
+    # A worker's probe child: errors keep their text long (errors.relayed).
+    sub.add_argument("--relay-errors", action="store_true", help=argparse.SUPPRESS)
     sub.add_argument(
         "--arg",
         action="append",
@@ -4438,33 +4437,40 @@ def _main(argv, _job, _edits):
 
     signal.signal(signal.SIGTERM, terminate)
     _NOTES.clear()
-    try:
-        if getattr(args, "background", False) and not _job:
-            _emit(
-                _background(argv, args.command, _submitted_edits(args)),
-                args.json,
-                lambda j: f"job {j['job']} started; collect it with `{j['next']}`",
-            )
-            return 0
-        return handlers[args.command](args)
-    except Exception as exc:
-        # Every failure, including unexpected ones, is a structured error, never a traceback.
-        from peeky.errors import classify
+    from peeky.errors import relayed
 
-        payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
-        if getattr(args, "json", False):
-            shown = {"error": payload}
-            if getattr(args, "command", None) == "probe" and getattr(exc, "before_launch", False):
-                # As a probe the worker refused: its launch request was not sent.
-                shown = {"status": "failed", **shown, "refused_before_launch": True}
-            print(json.dumps(shown, indent=2))
-        # Whatever the command printed comes before why it failed.
-        sys.stdout.flush()
-        print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
-        print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
-        if payload.get("cleanup"):
-            print(f"  cleanup: {payload['cleanup']}", file=sys.stderr)
-        return 2
+    # A worker's probe child: its errors' text stays long, for the worker to remove its
+    # token from, then cut (errors.bound).
+    with relayed() if getattr(args, "relay_errors", False) else contextlib.nullcontext():
+        try:
+            if getattr(args, "background", False) and not _job:
+                _emit(
+                    _background(argv, args.command, _submitted_edits(args)),
+                    args.json,
+                    lambda j: f"job {j['job']} started; collect it with `{j['next']}`",
+                )
+                return 0
+            return handlers[args.command](args)
+        except Exception as exc:
+            # Every failure, including unexpected ones, is a structured error, never a traceback.
+            from peeky.errors import classify
+
+            payload = classify(exc, session_closed=False if isinstance(exc, ValueError) else None)
+            if getattr(args, "json", False):
+                shown = {"error": payload}
+                if getattr(args, "command", None) == "probe" and getattr(
+                    exc, "before_launch", False
+                ):
+                    # As a probe the worker refused: its launch request was not sent.
+                    shown = {"status": "failed", **shown, "refused_before_launch": True}
+                print(json.dumps(shown, indent=2))
+            # Whatever the command printed comes before why it failed.
+            sys.stdout.flush()
+            print(f"peeky: [{payload.get('code')}] {payload.get('message')}", file=sys.stderr)
+            print(f"  hint: {payload.get('hint', '')}", file=sys.stderr)
+            if payload.get("cleanup"):
+                print(f"  cleanup: {payload['cleanup']}", file=sys.stderr)
+            return 2
 
 
 if __name__ == "__main__":

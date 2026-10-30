@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import http.client
 import json
-import os
 import re
 import secrets
 import socket
@@ -34,6 +33,32 @@ PROTOCOL_HEADER = "X-Peeky-Protocol"
 LOOPBACK_URL = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}")
 # A token's least length: `hello` lets anyone who can connect test guesses of it offline.
 MIN_TOKEN_CHARS = 32
+# Its most: a worker's probe child cuts its errors' text far beyond any token's quoted form
+# (errors.RELAYED_CHARS), so the worker can remove the token from them whole.
+MAX_TOKEN_CHARS = 512
+# One name per role: the worker reads its token from DEBUG_TOKEN, every client from this.
+WORKER_TOKEN_ENV = "PEEKY_WORKER_TOKEN"
+
+
+def client_token(credentials):
+    """The worker's token as a client reads it, from PEEKY_WORKER_TOKEN alone.
+    ``credentials``: {name: value} of the names set (take_credentials). A client never
+    reads DEBUG_TOKEN, the worker's own name: set alone, it is refused, by name."""
+    token = credentials.get(WORKER_TOKEN_ENV) or ""
+    if not token and credentials.get("DEBUG_TOKEN"):
+        raise ValueError(
+            f"A client reads the worker's token from {WORKER_TOKEN_ENV}, not DEBUG_TOKEN, "
+            f"which only the worker reads: set {WORKER_TOKEN_ENV} to the worker's token"
+        )
+    if not MIN_TOKEN_CHARS <= len(token) <= MAX_TOKEN_CHARS:
+        raise ValueError(
+            f"Set {WORKER_TOKEN_ENV} to the worker's token (its DEBUG_TOKEN), of "
+            f"{MIN_TOKEN_CHARS} to {MAX_TOKEN_CHARS} characters; tokens are never accepted as "
+            "arguments"
+        )
+    return token
+
+
 # What a worker's `hello` proof is a MAC of, before the client's nonce: no other message
 # of Peeky's starts so.
 HELLO_LABEL = b"peeky worker hello v1\x00"
@@ -289,11 +314,15 @@ if __name__ == "__main__":
     parser.add_argument("arguments", nargs="?", default="{}")
     parser.add_argument("--url", default="http://127.0.0.1:8765")
     args = parser.parse_args()
+    from peeky.processes import take_credentials
+
+    try:
+        token = client_token(take_credentials())
+    except ValueError as exc:
+        parser.error(str(exc))
     print(
         json.dumps(
-            Client(args.url, os.environ["DEBUG_TOKEN"]).call(
-                args.operation, **json.loads(args.arguments)
-            ),
+            Client(args.url, token).call(args.operation, **json.loads(args.arguments)),
             indent=2,
         )
     )

@@ -4122,7 +4122,8 @@ unset token
 ```
 
 Don't `export DEBUG_TOKEN`: a restarted worker would reuse the old token
-([REMOTE.md](REMOTE.md#separate-host-procedure)).
+([REMOTE.md](REMOTE.md#separate-host-procedure)). Only the worker reads `DEBUG_TOKEN`. Your
+side, `peeky` or `peeky-agent --url`, reads `PEEKY_WORKER_TOKEN`.
 
 On your machine, with the same sources, open the tunnel and give the same token:
 

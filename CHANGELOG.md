@@ -101,6 +101,12 @@
   classifiers, keywords and links to the docs, issues and changelog. The README's links are full
   URLs, so they work there. The source archive has the presentation, the changelog and the code
   of conduct. `scripts/venice/native-grpc.sh`, a Venice build helper, is gone.
+- **Release hardening:** `peeky-agent --url` reads the worker's token from `PEEKY_WORKER_TOKEN`,
+  as every client does. Given only `DEBUG_TOKEN`, the worker's own name, a client refuses it and
+  names the right one. No error the worker sends quotes a request's headers. As a second defence,
+  the worker removes its token from the error text it builds, a probe child's too. A token must be
+  32 to 512 characters. CI's checkouts keep no credentials, and
+  [docs/DESIGN.md](docs/DESIGN.md#module-map) has a module map (#407).
 
 ## 0.1.0 (2026-10-26)
 

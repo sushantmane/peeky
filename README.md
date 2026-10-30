@@ -157,6 +157,8 @@ PASS: 12 independent pagination checks
   debugger service. [THREAT_MODEL.md][threat-model] has the trusted-code assumptions.
 - The worker takes a secret token, and listens only on loopback (`127.0.0.1`). Reach it from
   another machine through SSH forwarding.
+- The worker reads its token from `DEBUG_TOKEN`. Every client, `peeky-agent --url` too, reads it
+  from `PEEKY_WORKER_TOKEN`.
 - Start that tunnel with `ssh -N -o ExitOnForwardFailure=yes -L 8765:127.0.0.1:8765 user@host`.
   Without the option, ssh only warns when another process holds the local port, and the token goes
   to that process.

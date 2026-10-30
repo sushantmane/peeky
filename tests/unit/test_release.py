@@ -400,3 +400,22 @@ def test_a_run_on_a_worker_infers_no_program_among_several_files(
         "tell which defines main"
     )
     assert cli.resolve(tmp_path, "gen.c:2", tools=False)[1] == "gen.c"
+
+
+def test_every_checkout_in_ci_keeps_no_credentials():
+    # Otherwise the job's token stays in .git/config, for every later step and action.
+    found = 0
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        lines = path.read_text().splitlines()
+        for number, line in enumerate(lines):
+            if "uses: actions/checkout@" not in line:
+                continue
+            found += 1
+            dash = len(line) - len(line.lstrip())
+            step = []
+            for later in lines[number + 1 :]:
+                if later.strip() and len(later) - len(later.lstrip()) <= dash:
+                    break
+                step.append(later.strip())
+            assert "persist-credentials: false" in step, (path.name, number + 1)
+    assert found >= 2

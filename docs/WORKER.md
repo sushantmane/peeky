@@ -23,6 +23,8 @@ DEBUG_TOKEN="$token" peeky-worker --root "$PWD" --port 8765
 - Make a new token each time you start a worker, and give it to the worker alone.
 - Don't `export DEBUG_TOKEN`: a restarted worker would reuse the old token, and every program the
   shell starts would get it ([REMOTE.md](REMOTE.md#separate-host-procedure)).
+- Only the worker reads `DEBUG_TOKEN`. Every client reads `PEEKY_WORKER_TOKEN`, and refuses
+  `DEBUG_TOKEN` given alone.
 - A session left idle for `--idle-timeout` seconds (default 300) is closed, and its program ended.
 
 In a second terminal, run this with the Python Peeky is installed in. Set `PEEKY_WORKER_TOKEN` to

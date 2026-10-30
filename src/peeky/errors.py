@@ -5,6 +5,7 @@ next, whether retrying the same request can help, and whether the session was
 closed. Codes are part of the protocol; messages are for humans and may change.
 """
 
+import contextlib
 import io
 import json
 import re
@@ -87,8 +88,8 @@ _RULES = (
     (
         r"did not prove it holds the worker's token",
         "UNAUTHORIZED",
-        "Use the worker's own DEBUG_TOKEN. If it is, another program holds the port: stop it, "
-        "or restart the worker.",
+        "Set PEEKY_WORKER_TOKEN to the worker's DEBUG_TOKEN. If it is, another program holds "
+        "the port: stop it, or restart the worker.",
         False,
     ),
     (
@@ -335,8 +336,53 @@ def _compiler_errors(stdout):
     return found
 
 
-def _build_failure(exc):
-    """BUILD_FAILED with the compiler's own words, for a build command that failed."""
+# How long an error's text may be, as sent: its message, a build's output in it, and its
+# cleanup. A worker's probe child cuts its errors at RELAYED_CHARS instead (``relayed``):
+# the worker removes its token from them, which the child doesn't hold, then cuts them to
+# these (``bound``). RELAYED_CHARS is far beyond these and any token's quoted form.
+MESSAGE_CHARS, BUILD_OUTPUT_CHARS, CLEANUP_CHARS = 2000, 1500, 300
+RELAYED_CHARS = 65536
+_relayed = False
+
+
+@contextlib.contextmanager
+def relayed():
+    """Within it, ``classify`` cuts no text below RELAYED_CHARS: in a worker's probe child,
+    whose errors the worker bounds (``bound``) once it has removed its token."""
+    global _relayed
+    before, _relayed = _relayed, True
+    try:
+        yield
+    finally:
+        _relayed = before
+
+
+def _limit(chars):
+    return RELAYED_CHARS if _relayed else chars
+
+
+def _cut_output(output, chars):
+    return output[:chars] + "\n... (output truncated)" if len(output) > chars else output
+
+
+def bound(error, secret=None):
+    """An error object a worker's probe child sent (``relayed``), with ``secret`` removed
+    from its text first, then its text cut as ``classify`` cuts it."""
+    error = dict(redact(error, secret))
+    message = error.get("message")
+    if isinstance(message, str) and error.get("code") == "BUILD_FAILED":
+        head, newline, output = message.partition("\n")
+        error["message"] = head + newline + _cut_output(output, BUILD_OUTPUT_CHARS)
+    elif isinstance(message, str):
+        error["message"] = message[:MESSAGE_CHARS]
+    if isinstance(error.get("cleanup"), str):
+        error["cleanup"] = error["cleanup"][:CLEANUP_CHARS]
+    return error
+
+
+def _build_failure(exc, secret=None):
+    """BUILD_FAILED with the compiler's own words, for a build command that failed.
+    ``secret``: the worker's token, removed before the words are cut (``redact``)."""
     from peeky.build import BuildCommandError
 
     if not isinstance(exc, BuildCommandError):
@@ -357,8 +403,7 @@ def _build_failure(exc):
             if line.strip() and not line.strip().startswith("Compiling ")
         ]
         output = "\n".join([*errors, *footer])
-    if len(output) > 1500:
-        output = output[:1500] + "\n... (output truncated)"
+    output = _cut_output(redact(output, secret), _limit(BUILD_OUTPUT_CHARS))
     return {
         "code": "BUILD_FAILED",
         "message": f"The build failed: {what}" + (f"\n{output}" if output else ""),
@@ -648,21 +693,44 @@ class UnplacedStop(ValueError):
         self.frame = dict(frame or {})
 
 
-def classify(exc, *, session_closed=None):
+# What stands for the worker's token in the text of an error it sends (``redact``).
+REDACTED_TOKEN = "[token removed]"
+
+
+def redact(value, secret):
+    """``value``, a JSON value such as an error object, with ``secret`` replaced in all its
+    text, also as Python and JSON quote it. The worker's token is in no exception the worker
+    raises, but a request may carry it: its error never sends it back."""
+    if not secret:
+        return value
+    if isinstance(value, str):
+        forms = {secret, repr(secret)[1:-1], json.dumps(secret)[1:-1]}
+        for form in sorted(forms, key=len, reverse=True):
+            value = value.replace(form, REDACTED_TOKEN)
+        return value
+    if isinstance(value, dict):
+        return {redact(key, secret): redact(item, secret) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact(item, secret) for item in value]
+    return value
+
+
+def classify(exc, *, session_closed=None, secret=None):
     """Map an exception to the protocol error object.
 
     An error that ended a session says what became of the processes it started
     (``cleanup``): "terminated pid N", "nothing Peeky could identify was still running", or
-    why not.
+    why not. ``secret``: the worker's token, removed from every text (``redact``), before
+    the message is cut to its bound too.
     """
-    payload = _classify(exc, session_closed)
+    payload = _classify(exc, session_closed, secret)
     if isinstance(cleanup := getattr(exc, "cleanup", None), str) and "cleanup" not in payload:
-        payload = {**payload, "cleanup": cleanup[:300]}
-    return payload
+        payload = {**payload, "cleanup": redact(cleanup, secret)[: _limit(CLEANUP_CHARS)]}
+    return redact(payload, secret)
 
 
-def _classify(exc, session_closed):
-    message = str(exc) or type(exc).__name__
+def _classify(exc, session_closed, secret=None):
+    message = redact(str(exc) or type(exc).__name__, secret)
     if isinstance(exc, PeekyError):
         return exc.payload
     closed = (
@@ -670,13 +738,13 @@ def _classify(exc, session_closed):
         if session_closed is None
         else session_closed
     )
-    if failure := _build_failure(exc):
+    if failure := _build_failure(exc, secret):
         return {**failure, "session_closed": True}
     if isinstance(exc, FileNotFoundError):
         # A missing target, config, checker or tool: the request, not the debugger.
         return {
             "code": "INVALID_REQUEST",
-            "message": message[:2000],
+            "message": message[: _limit(MESSAGE_CHARS)],
             "hint": "A path does not exist; check the target, --at, --config, --check and "
             "PEEKY_* tool paths.",
             "retryable": False,
@@ -689,7 +757,7 @@ def _classify(exc, session_closed):
             hint = _mutation_hint(message)
         return {
             "code": code,
-            "message": message[:2000],
+            "message": message[: _limit(MESSAGE_CHARS)],
             "hint": hint,
             "retryable": retryable,
             "session_closed": bool(closed),
@@ -724,7 +792,7 @@ def _classify(exc, session_closed):
             )
     return {
         "code": code,
-        "message": message[:2000],
+        "message": message[: _limit(MESSAGE_CHARS)],
         "hint": hint,
         "retryable": retryable,
         "session_closed": bool(closed),

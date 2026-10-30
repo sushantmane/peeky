@@ -269,7 +269,7 @@ def test_a_token_is_at_least_32_characters(tmp_path, monkeypatch, capsys):
     from peeky.cli import _remote
 
     short = "s" * 31
-    with pytest.raises(ValueError, match="at least 32 characters"):
+    with pytest.raises(ValueError, match="32 to 512 characters"):
         make_server(tmp_path, short, 0)
     make_server(tmp_path, "s" * 32, 0).server_close()
     monkeypatch.setenv("DEBUG_TOKEN", short)
@@ -277,7 +277,7 @@ def test_a_token_is_at_least_32_characters(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(worker_module, "make_server", lambda *a, **k: pytest.fail("started"))
     with pytest.raises(SystemExit) as stopped:
         worker_module.main()
-    assert stopped.value.code == 2 and "at least 32 characters" in capsys.readouterr().err
+    assert stopped.value.code == 2 and "32 to 512 characters" in capsys.readouterr().err
     monkeypatch.setenv("PEEKY_WORKER_TOKEN", short)
-    with pytest.raises(ValueError, match="at least 32 characters"):
+    with pytest.raises(ValueError, match="32 to 512 characters"):
         _remote("http://127.0.0.1:9")
